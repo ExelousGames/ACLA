@@ -48,4 +48,6 @@ Download [MongoDB Compass] for easy database editing:
       npm install
       npm start
 
-    
+
+### For Windows:
+
