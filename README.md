@@ -1,28 +1,40 @@
 # ACLA
 
 
-Installation 
+## Installation
 
 
-For Mac:
+### For Mac:
 
-Initial Start:
 
-  Install Mongo DB server(https://www.mongodb.com/docs/v7.0/tutorial/install-mongodb-on-os-x/):
-    Install the Xcode command-line tools by running the following command in your macOS Terminal:
+#### Install Mongo DB server
+For more detail about [Install MongoDB]
+
+[Install MongoDB]: https://www.mongodb.com/docs/v7.0/tutorial/install-mongodb-on-os-x/ 
+
+1. Install the Xcode command-line tools by running the following command in your macOS Terminal:
+
       xcode-select --install
-  Install Homebrew
+
+2. Install Homebrew
     macOS does not include the Homebrew brew package by default.
-    Install brew using the official Homebrew installation instructions. https://brew.sh/#install
-
-  Tap the MongoDB Homebrew Tap to download the official Homebrew formula for MongoDB and the Database Tools, by running the following command in your macOS Terminal:
-    brew tap mongodb/brew
+    Install brew using the official [Homebrew installation instructions]. 
     
-  install MongoDB, run the following command in your macOS Terminal application:
-    brew install mongodb-community@7.0
+[Homebrew installation instructions]: https://brew.sh/#install
 
-  Download MongoDB Compass for easy database editing:
-    https://www.mongodb.com/products/tools/compass
+3. Tap the MongoDB Homebrew Tap to download the official Homebrew formula for MongoDB and the Database Tools, by running the following command in your macOS Terminal:
+   ```
+   brew tap mongodb/brew
+   ```
+    
+4. install MongoDB, run the following command in your macOS Terminal application:
+   ```
+   brew install mongodb-community@7.0
+   ```
+   
+#### Install MongoDB Compas
+Download [MongoDB Compass] for easy database editing:
+[MongoDB CompassB]: https://www.mongodb.com/products/tools/compass
     
   Open Command line:
     cd acla_backend
