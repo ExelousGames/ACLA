@@ -34,16 +34,17 @@ For more detail about [Install MongoDB]
    
 #### Install MongoDB Compas
 Download [MongoDB Compass] for easy database editing:
-[MongoDB CompassB]: https://www.mongodb.com/products/tools/compass
-    
-  Open Command line:
-    cd acla_backend
-    npm install
-    npm run start
 
-    cd ..
-    cd acla_front
-    npm install
-    npm start
+[MongoDB CompassB]: https://www.mongodb.com/products/tools/compass
+
+#### Start Backend
+      cd acla_backend
+      npm install
+      npm run start
+      
+#### Start Frontend
+      cd acla_front
+      npm install
+      npm start
 
     
