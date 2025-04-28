@@ -13,13 +13,14 @@ For more detail about [Install MongoDB]
 [Install MongoDB]: https://www.mongodb.com/docs/v7.0/tutorial/install-mongodb-on-os-x/ 
 
 1. Install the Xcode command-line tools by running the following command in your macOS Terminal:
-
+      ```
       xcode-select --install
+      ```
 
 2. Install Homebrew
     macOS does not include the Homebrew brew package by default.
     Install brew using the official [Homebrew installation instructions]. 
-    
+
 [Homebrew installation instructions]: https://brew.sh/#install
 
 3. Tap the MongoDB Homebrew Tap to download the official Homebrew formula for MongoDB and the Database Tools, by running the following command in your macOS Terminal:
