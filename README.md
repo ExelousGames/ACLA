@@ -51,3 +51,8 @@ Download [MongoDB Compass] for easy database editing:
 
 ### For Windows:
 
+
+#### Design Desktop Application Prerequisite
+Sign into a popular application design website [Figma]
+
+[Figma]: www.figma.com
