@@ -123,3 +123,25 @@ ___
 
 <a id="formatting-1"></a>
 
+### Using Tkinter Designer <small>[[Top](#table-of-contents)]</small>
+
+<a id="using-1"></a>
+
+#### 1. Personal Access Token
+
+1. Log into your Figma account
+2. Navigate to Settings
+3. In the **Account** tab, scroll down to **Personal access tokens**
+4. Enter the name of your access token in the entry form and press <kbd>Enter</kbd>
+5. Your personal access token will be created.
+   - Copy this token and keep it somewhere safe.
+   - **You will not get another chance to copy this token.**
+
+<a id="using-2"></a>
+
+#### 2. Getting your File URL
+
+1. In your Figma design file, click the **Share** button in the top bar, then click on **&#x1f517; Copy link**
+
+<a id="using-cli"></a>
+
