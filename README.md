@@ -73,6 +73,8 @@ ___
 
 ### 2. Install Tkinter Designer
 
+https://github.com/ParthJadhav/Tkinter-Designer/blob/master/docs/instructions.md
+
 *Three options:*
 
 1. `pip install tkdesigner`
