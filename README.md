@@ -57,7 +57,7 @@ Download [MongoDB Compass] for easy database editing:
 
 
 ## Design Desktop Application Prerequisite
-
+https://github.com/ParthJadhav/Tkinter-Designer/blob/master/docs/instructions.md
 ### 1. Install Python
 
 Before using Tkinter Designer, you'll need to install Python.  
