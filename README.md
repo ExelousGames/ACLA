@@ -41,7 +41,7 @@ Download [MongoDB Compass] for easy database editing:
 #### Start Backend
       cd acla_backend
       npm install
-      npm run start
+      npm start
       
 #### Start Frontend
       cd acla_front
@@ -59,7 +59,7 @@ Download [MongoDB Compass] for easy database editing:
 #### Start Backend
       cd acla_backend
       npm install
-      npm run start
+      npm start
       
 #### Start Frontend
       cd acla_front
