@@ -51,9 +51,36 @@ Download [MongoDB Compass] for easy database editing:
 
 ### For Windows:
 
+#### Install MongoDB Compas
+Download [MongoDB Compass] for easy database editing:
 
+[MongoDB Compass]: https://www.mongodb.com/products/tools/compass
 
+#### Start Backend
+      cd acla_backend
+      npm install
+      npm run start
+      
+#### Start Frontend
+      cd acla_front
+      npm install
+      npm start
 
+## Desktop Python Application Installation 
+### 1. Install Python
+
+Before using Tkinter Designer, you'll need to install Python.  
+- [Here is a link to the Python downloads page.](https://www.python.org/downloads)  
+- [Here is a helpful guide to installing Python on various operating systems.](https://wiki.python.org/moin/BeginnersGuide/Download)
+
+*Later in this guide, you will use the Package Installer for Python (pip), which may require you to add Python to your system PATH.*
+
+### 2. Running python application prerequisite
+      inside desktop_application/build folder
+      
+      ```
+      pip install -r requirements.txt
+      ```
 
 
 ## Design Desktop Application Prerequisite
