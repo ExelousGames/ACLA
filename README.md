@@ -66,7 +66,7 @@ Download [MongoDB Compass] for easy database editing:
       npm install
       npm start
 
-## Desktop Python Application Installation 
+## Install Desktop Python Application 
 ### 1. Install Python
 
 Before using Tkinter Designer, you'll need to install Python.  
