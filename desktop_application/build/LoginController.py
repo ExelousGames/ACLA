@@ -1,18 +1,16 @@
 import requests
 
-base_url = "https://pokeapi.co/api/v2/"
+base_url = "http://localhost:7001"
 
 def get_pokemon_info(name):
-    url = f"{base_url}/pokemon/{name}"
-    response = requests.get(url)
-    print("hello")
-    if response.status_code == 200:
-        pokemon_data = response.json()
-        return pokemon_data
-    else:
-        print(f"Failed to retrieve data {response.status_code}")
+    url = f"{base_url}/userinfo"
+    json = {'infoDto': { 'name' : name }}
 
-pokemon_name = "pikachu"
-pokemon_info = get_pokemon_info(pokemon_name)
-
+    try:
+        response = requests.post(url,json)
+        if response.status_code == 200:
+            pokemon_data = response.json()
+            return pokemon_data
+    except response:
+        print(f"Failed to retrieve data {response}")
 
