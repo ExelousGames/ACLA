@@ -39,12 +39,13 @@ Download [MongoDB Compass] for easy database editing:
 [MongoDB Compass]: https://www.mongodb.com/products/tools/compass
 
 #### Create New Database
-1. Create a new connection
-2. Make Sure the coonection URL has "127.0.0.1" inside
-3. Give it any name you want
-4. Save and Connect
-5. Create a new database by clicking "create database" inside your new connection
-6. Name the new database "DBCollections"
+1. Open MongoDB Compass
+2. Create a new connection
+3. Make Sure the coonection URL has "127.0.0.1" inside
+4. Give it any name you want
+5. Save and Connect
+6. Create a new database by clicking "create database" inside your new connection
+7. Name the new database "DBCollections"
    
 #### Start Backend
       cd acla_backend
@@ -75,12 +76,13 @@ Download [MongoDB Compass] for easy database editing:
       npm start
 
 #### Create New Database
-1. Create a new connection
-2. Make Sure the coonection URL has "127.0.0.1" inside
-3. Give it any name you want
-4. Save and Connect
-5. Create a new database by clicking "create database" inside your new connection
-6. Name the new database "DBCollections"
+1. Open MongoDB Compass
+2. Create a new connection
+3. Make Sure the coonection URL has "127.0.0.1" inside
+4. Give it any name you want
+5. Save and Connect
+6. Create a new database by clicking "create database" inside your new connection
+7. Name the new database "DBCollections"
 
 
 ## Install Desktop Python Application 
