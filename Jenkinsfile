@@ -17,7 +17,7 @@ pipeline{
             }
         }
 
-        stage('test desktop'){
+        stage('build desktop'){
             steps{
                 sh 'cd desktop_application/build'
                 sh 'pip install -r requirements.txt'
