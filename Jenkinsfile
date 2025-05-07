@@ -9,7 +9,7 @@ pipeline{
             }
         }
 
-        stage('build frontend'){
+        stage('build backend'){
             steps{
                 sh 'cd acla_front'
                 sh 'npm install'
