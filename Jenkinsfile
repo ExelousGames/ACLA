@@ -18,7 +18,7 @@ pipeline{
             steps{
                 sh 'python3 --version'
                 sh 'python3 -m ensurepip --upgrade'
-                sh 'pip install -r --target ./desktop_application/build requirements.txt'
+                sh 'pip3 install -r --target ./desktop_application/build requirements.txt'
 
             }
         }
