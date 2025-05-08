@@ -16,8 +16,8 @@ pipeline{
 
         stage('build desktop'){
             steps{
-                sh 'python -V'
-                sh 'python -m ensurepip --upgrade'
+                sh 'python3 --version'
+                sh 'python3 -m ensurepip --upgrade'
                 sh 'pip install -r --target ./desktop_application/build requirements.txt'
 
             }
