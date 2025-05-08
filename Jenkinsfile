@@ -10,17 +10,15 @@ pipeline{
 
         stage('build backend'){
             steps{
-                sh 'cd acla_front'
-                sh 'npm install'
-                sh 'cd ..'
+                sh 'npm install --prefix acla_front'
             }
         }
 
         stage('build desktop'){
             steps{
-                sh 'cd desktop_application/build'
-                sh 'pip install -r requirements.txt'
-                sh 'cd ..'
+  
+                sh 'pip install -r --target ./desktop_application/build requirements.txt'
+
             }
         }
 
