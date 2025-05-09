@@ -1,0 +1,2 @@
+#ignore these folders when we build the image
+node_modules
