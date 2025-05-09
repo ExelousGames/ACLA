@@ -4,6 +4,9 @@ services:
     container_name: acla_front_c
     ports:
       - '3000:3000'
+    volumes:
+      - .:/docker-image
+      - ./node_modules:/docker-image/node_modules
     stdin_open: true
     tty: true
 
