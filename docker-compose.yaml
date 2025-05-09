@@ -1,0 +1,14 @@
+services:
+  frontend-image:
+    build: ./acla_front
+    container_name: acla_front_c
+    ports:
+      - '3000:3000'
+    stdin_open: true
+    tty: true
+
+  backend-image:
+    build: ./acla_backend
+    container_name: acla_backend_c
+    ports:
+      - '7001:7001'
