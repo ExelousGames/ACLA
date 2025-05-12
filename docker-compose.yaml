@@ -4,9 +4,11 @@ services:
     container_name: acla_front_c
     ports:
       - '3000:3000'
+    # Mounts the current directory and node_modules for hot-reloading.
     volumes:
-      - .:/docker-image
-      - ./node_modules:/docker-image/node_modules
+      - ./acla_front:/app_volumes
+
+    # stdin_open and tty: Keep the container running and interactive.
     stdin_open: true
     tty: true
 
@@ -14,4 +16,4 @@ services:
     build: ./acla_backend
     container_name: acla_backend_c
     ports:
-      - '7001:7001'
+      - '4000:4000'

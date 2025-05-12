@@ -1,6 +1,6 @@
 FROM node:24-alpine
 
-WORKDIR /docker-image
+WORKDIR /app
 
 COPY package.json .
 

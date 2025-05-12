@@ -1,13 +1,20 @@
 FROM node:24-alpine
 
-WORKDIR /docker-image
+RUN mkdir -p /app
 
-COPY package.json .
+#set the work directory inside the container
+WORKDIR /app
 
+#Copy package json and package-lock.json to work directory first
+COPY package*.json .
+
+#install dependencies
 RUN npm install
 
+#copy rest of the application
 COPY . .
 
 EXPOSE 3000 
 
+# Define the command to run your app
 CMD [ "npm", "start" ]
