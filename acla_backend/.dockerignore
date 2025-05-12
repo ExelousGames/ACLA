@@ -1,0 +1,8 @@
+#ignore these folders when we build the image
+node_modules
+npm-debug.log
+Dockerfile
+.dockerignore
+.git
+.gitignore
+.env
