@@ -27,7 +27,7 @@ let UserInfoController = class UserInfoController {
         return this.userinfoService.getUser(id);
     }
     createUser(createUserInfoDto) {
-        console.log("createUser");
+        console.log("create User");
         this.userinfoService.createUser(createUserInfoDto).then((dto) => {
             return dto;
         }).catch((error) => {
