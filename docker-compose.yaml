@@ -6,14 +6,74 @@ services:
       - '3000:3000'
     # Mounts the current directory and node_modules for hot-reloading.
     volumes:
-      - ./acla_front:/app_volumes
-
+      - ./acla_front:/app
+      - frontend-node-modules:/app/node_modules
     # stdin_open and tty: Keep the container running and interactive.
     stdin_open: true
     tty: true
+    networks:
+      - frontend-network
 
   backend-image:
     build: ./acla_backend
     container_name: acla_backend_c
+    env_file:
+      - .env
+    volumes:
+      - ./acla_backend:/app
+      - backend-node-modules:/app/node_modules
     ports:
-      - '4000:4000'
+      - '7001:7001'
+    networks:
+      - db-network
+      - frontend-network
+
+  mongodb:
+    build: ./acla_db
+    container_name: mongodb_c
+    restart: always
+    environment:
+      #create a user for authticated database access
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ADMINUSERNAME}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ADMINPASSWORD}
+      MONGO_INITDB_DATABASE: ${MONGO_DATEBASE}
+    volumes:
+      - ./acla_db/Init.js:/docker-entrypoint-initdb.d/Init.js:ro
+      - ./acla_db/mongodb_data:/data/db
+    env_file:
+      - .env
+    ports:
+      - "27017:27017"
+    networks:
+      - db-network
+
+  #The default values for the first login are "admin" for username and "pass" for password
+  mongo-express:
+    image: mongo-express
+    container_name: mongo-express
+    ports:
+      - 8081:8081
+    environment:
+      ME_CONFIG_MONGODB_PORT: 27017
+      #use the created admin user inside this compose file for authenticated database access
+      ME_CONFIG_MONGODB_URL: mongodb://${MONGO_ADMINUSERNAME}:${MONGO_ADMINPASSWORD}@mongodb_c:27017
+    volumes:
+      - ./acla_db/mongodb_data:/data/db
+    networks:
+      - db-network
+    depends_on:
+      - mongodb
+
+volumes:
+  backend-node-modules:
+    name: backend-node-modules
+
+  frontend-node-modules:
+    name: frontend-node-modules
+
+networks:
+  db-network:
+    driver: bridge
+
+  frontend-network:
+    driver: bridge
