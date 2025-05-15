@@ -17,6 +17,7 @@ export class UserInfoController {
     @Post()
     createUser(@Body('infoDto') createUserInfoDto: CreateUserInfoDto): UserInfo {
 
+        console.log("create User");
         this.userinfoService.createUser(createUserInfoDto).then(
             (dto) => {
                 return dto;

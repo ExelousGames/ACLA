@@ -3,11 +3,15 @@ import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { UserInfoModule } from './user-info/user-info.module';
 import { MongooseModule } from '@nestjs/mongoose';
+import { ThrottlerModule } from '@nestjs/throttler';
 
 @Module({
 
   //MongooseModule.forRoot --- this is the port where the database is connected
-  imports: [UserInfoModule, MongooseModule.forRoot('mongodb://127.0.0.1/DBCollections')],
+  imports: [UserInfoModule,
+    ThrottlerModule.forRoot([{ limit: 10, ttl: 60 }]),
+    //getting Environment variable from .env coming from docker-compose.yaml
+    MongooseModule.forRoot('mongodb://' + process.env.MONGO_ADMINUSERNAME + ':' + process.env.MONGO_ADMINPASSWORD + '@mongodb_c:27017')],
   controllers: [AppController],
   providers: [AppService],
 })
