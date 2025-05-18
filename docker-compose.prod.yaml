@@ -1,0 +1,61 @@
+services:
+  frontend:
+    build: ./acla_front
+    container_name: acla_front_c
+    ports:
+      - '3000:3000'
+    env_file:
+      - .env
+    networks:
+      - frontend-network
+    stdin_open: true
+    tty: true
+
+  backend:
+    build: ./acla_backend
+    container_name: acla_backend_c
+    depends_on:
+      - mongodb
+    env_file:
+      - .env
+    ports:
+      - '7001:7001'
+    networks:
+      - db-network
+      - frontend-network
+
+  mongodb:
+    build: ./acla_db
+    container_name: mongodb_c
+    restart: always
+    environment:
+      #create a user for authticated database access
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ADMINUSERNAME}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ADMINPASSWORD}
+      MONGO_INITDB_DATABASE: ${MONGO_DATEBASE}
+    volumes:
+      - ./acla_db/Init.js:/docker-entrypoint-initdb.d/Init.js:ro
+      - ./acla_db/mongodb_data:/data/db
+    env_file:
+      - .env
+    ports:
+      - "27017:27017"
+    networks:
+      - db-network
+
+  backend_proxy:
+    image: nginx:stable-perl
+    ports:
+      - "80:80"
+    volumes:
+      - ./backend_nginx/nginx.prod.conf:/etc/nginx/nginx.conf:ro
+      - ./static:/usr/share/nginx/html
+    depends_on:
+      - backend
+    restart: always
+
+networks:
+  db-network:
+    driver: bridge
+  frontend-network:
+    driver: bridge
