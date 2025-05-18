@@ -14,7 +14,5 @@ RUN npm install
 #copy rest of the application
 COPY . .
 
-EXPOSE 3000 
-
 # Define the command to run your app
 CMD [ "npm", "start" ]

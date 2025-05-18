@@ -7,7 +7,7 @@ const CreateUserInfo = ({ onTaskCreated }) => {
 
     const handleSubmit = (e) => {
         e.preventDefault();
-        axios.post('http://localhost:7001/userinfo', { infoDto: { name: name } })
+        axios.post('http://localhost:80/userinfo', { infoDto: { name: name } })
             .then(response => {
                 setName('');
                 setDescription('');
