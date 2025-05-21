@@ -10,7 +10,7 @@ pipeline{
 
         stage('build docker'){
             steps{
-                sh 'sudo docker-compose -f docker-compose.prod.yaml --env-file .prod.env up'
+                sh 'sudo docker-compose -f docker-compose.prod.yaml --env-file .prod.env build'
             }
         }
 
