@@ -191,3 +191,9 @@ ___
 
 <a id="using-cli"></a>
 
+
+
+
+
+docker compose -f docker-compose.dev.yaml --env-file .dev.env up
+docker compose -f docker-compose.prod.yaml --env-file .prod.env up
