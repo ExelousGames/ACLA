@@ -10,16 +10,19 @@ pipeline{
 
         stage('build backend'){
             steps{
+                echo 'backend tested'
             }
         }
 
         stage('build desktop'){
             steps{
+                echo 'desktop tested'
             }
         }
 
         stage('test frontend'){
             steps{
+                echo 'frontend tested'
             }
         }
 
