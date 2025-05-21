@@ -6,9 +6,6 @@ services:
       - .prod.env
     ports:
       - '3000:3000'
-    # stdin_open and tty: Keep the container running and interactive.
-    stdin_open: true
-    tty: true
     depends_on:
       - backend_proxy
 
