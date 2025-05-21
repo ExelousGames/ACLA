@@ -2,6 +2,8 @@ services:
   frontend:
     build: ./acla_front
     container_name: acla_front_c
+    env_file:
+      - .dev.env
     ports:
       - '3000:3000'
     # Mounts the current directory and node_modules for hot-reloading.
@@ -20,7 +22,7 @@ services:
     ports:
       - "80:80"
     volumes:
-      - ./backend_nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./backend_nginx/nginx.dev.conf:/etc/nginx/nginx.conf:ro
       - ./static:/usr/share/nginx/html
     depends_on:
       - backend
@@ -31,7 +33,7 @@ services:
     build: ./acla_backend
     container_name: acla_backend_c
     env_file:
-      - .env
+      - .dev.env
     volumes:
       - ./acla_backend:/app
       - backend-node-modules:/app/node_modules
@@ -56,7 +58,7 @@ services:
       - ./acla_db/Init.js:/docker-entrypoint-initdb.d/Init.js:ro
       - ./acla_db/mongodb_data:/data/db
     env_file:
-      - .env
+      - .dev.env
     ports:
       - "27017:27017"
     networks:
@@ -64,10 +66,12 @@ services:
 
   #The default values for the first login are "admin" for username and "pass" for password
   mongo-express:
-    image: mongo-express
+    image: mongo-express:1.0.2-20-alpine3.19
     container_name: mongo-express
     ports:
       - 8081:8081
+    env_file:
+      - .dev.env
     environment:
       ME_CONFIG_MONGODB_PORT: 27017
       #use the created admin user inside this compose file for authenticated database access

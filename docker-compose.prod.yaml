@@ -2,22 +2,36 @@ services:
   frontend:
     build: ./acla_front
     container_name: acla_front_c
+    env_file:
+      - .prod.env
     ports:
       - '3000:3000'
-    env_file:
-      - .env
-    networks:
-      - frontend-network
+    # stdin_open and tty: Keep the container running and interactive.
     stdin_open: true
     tty: true
+    depends_on:
+      - backend_proxy
+
+  backend_proxy:
+    image: nginx:stable-perl
+    container_name: backend_proxy_c
+    ports:
+      - "80:80"
+    volumes:
+      - ./backend_nginx/nginx.prod.conf:/etc/nginx/nginx.conf:ro
+      - ./static:/usr/share/nginx/html
+    depends_on:
+      - backend
+    networks:
+      - frontend-network
 
   backend:
     build: ./acla_backend
     container_name: acla_backend_c
+    env_file:
+      - .prod.env
     depends_on:
       - mongodb
-    env_file:
-      - .env
     ports:
       - '7001:7001'
     networks:
@@ -37,25 +51,15 @@ services:
       - ./acla_db/Init.js:/docker-entrypoint-initdb.d/Init.js:ro
       - ./acla_db/mongodb_data:/data/db
     env_file:
-      - .env
+      - .prod.env
     ports:
       - "27017:27017"
     networks:
       - db-network
 
-  backend_proxy:
-    image: nginx:stable-perl
-    ports:
-      - "80:80"
-    volumes:
-      - ./backend_nginx/nginx.prod.conf:/etc/nginx/nginx.conf:ro
-      - ./static:/usr/share/nginx/html
-    depends_on:
-      - backend
-    restart: always
-
 networks:
   db-network:
     driver: bridge
+
   frontend-network:
     driver: bridge
