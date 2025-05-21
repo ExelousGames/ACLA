@@ -4,10 +4,13 @@ import axios from 'axios';
 const CreateUserInfo = ({ onTaskCreated }) => {
     const [name, setName] = useState('');
     const [description, setDescription] = useState('');
+    const serverIPandPort = process.env.REACT_APP_BACKEND_SERVER_IP + ":" + process.env.REACT_APP_BACKEND_PROXY_PORT
+    const server_url_header = 'http://' + serverIPandPort
 
+    console.log(server_url_header);
     const handleSubmit = (e) => {
         e.preventDefault();
-        axios.post('http://localhost:80/userinfo', { infoDto: { name: name } })
+        axios.post(server_url_header + '/userinfo', { infoDto: { name: name } })
             .then(response => {
                 setName('');
                 setDescription('');

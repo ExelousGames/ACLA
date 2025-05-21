@@ -1,28 +1,25 @@
 pipeline{
     agent any 
     stages{
-        stage('build frontend'){
+        stage('init docker'){
             steps{
-                sh 'npm install --prefix acla_backend'
+                sh 'sudo yum update -y ; sudo amazon-linux-extras install docker ; sudo service docker start'
 
             }
         }
 
         stage('build backend'){
             steps{
-                sh 'npm install --prefix acla_front'
             }
         }
 
         stage('build desktop'){
             steps{
-                sh 'cd desktop_application/build/ ; pip3 install -r requirements.txt'
             }
         }
 
         stage('test frontend'){
             steps{
-                echo 'test frontend'
             }
         }
 
