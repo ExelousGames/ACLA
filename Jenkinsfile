@@ -1,22 +1,22 @@
 pipeline{
     agent any 
     stages{
-        stage('init docker'){
+        stage('clean docker'){
+            steps{
+                sh 'sudo docker-compose -f docker-compose.prod.yaml down'
+
+            }
+        }
+
+        stage('build docker'){
             steps{
                 sh 'sudo docker-compose -f docker-compose.prod.yaml --env-file .prod.env up'
-
             }
         }
 
-        stage('build backend'){
+        stage('stop docker'){
             steps{
-                echo 'backend tested'
-            }
-        }
-
-        stage('build desktop'){
-            steps{
-                echo 'desktop tested'
+                sh 'sudo docker-compose -f docker-compose.prod.yaml down'
             }
         }
 
