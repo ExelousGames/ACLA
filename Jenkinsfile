@@ -3,7 +3,7 @@ pipeline{
     stages{
         stage('init docker'){
             steps{
-                sh 'docker compose -f docker-compose.prod.yaml --env-file .prod.env up'
+                sh 'docker-compose -f docker-compose.prod.yaml --env-file .prod.env up'
 
             }
         }
