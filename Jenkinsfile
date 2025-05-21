@@ -20,7 +20,7 @@ pipeline{
             }
         }
 
-        stage('test frontend'){
+        stage('test'){
             steps{
                 echo 'frontend tested'
             }
