@@ -3,7 +3,7 @@ pipeline{
     stages{
         stage('init docker'){
             steps{
-                echo 'docker tested'
+                sh 'docker compose -f docker-compose.prod.yaml --env-file .prod.env up'
 
             }
         }
