@@ -39,7 +39,7 @@ pipeline{
             }
         }
 
-        stage('push artifacts to server'){
+        stage('deploy artifacts to server'){
             steps{
 
                 echo "${env.WORKSPACE}/deployment.zip file will be pushed "
@@ -57,7 +57,7 @@ pipeline{
                                         cd deployment
                                         sudo docker-compose -f docker-compose.prod.yaml down
                                         unzip deployment.zip
-                                        sudo docker-compose -f docker-compose.prod.yaml --env-file .prod.env build
+                                        sudo docker-compose -f docker-compose.prod.yaml --env-file .prod.env up -d
                                         ''', 
                                     execTimeout: 120000, 
                                     flatten: false, 
