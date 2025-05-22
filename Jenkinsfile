@@ -55,7 +55,11 @@ pipeline{
                                 sshTransfer(
                                     cleanRemote: false, 
                                     excludes: '', 
-                                    execCommand: '', 
+                                    execCommand: 
+                                        '''
+                                        unzip filename.zip
+                                        sudo docker-compose -f docker-compose.prod.yaml --env-file .prod.env build"
+                                        ''', 
                                     execTimeout: 120000, 
                                     flatten: false, 
                                     makeEmptyDirs: false, 
@@ -64,7 +68,7 @@ pipeline{
                                     remoteDirectory: '', 
                                     remoteDirectorySDF: false, 
                                     removePrefix: '', 
-                                    sourceFiles: "${env.WORKSPACE}"
+                                    sourceFiles: "${env.WORKSPACE}/deployment.zip"
                                 )
                             ], 
                             usePromotionTimestamp: false, 
