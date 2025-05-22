@@ -1,7 +1,7 @@
 pipeline{
     agent {
         node {
-            label 'acla cd'
+            label any
             customWorkspace "${JENKINS_HOME}/workspace/${JOB_NAME}/${BUILD_NUMBER}"
         }
     } 
