@@ -19,12 +19,6 @@ pipeline{
             }
         }
 
-        stage('clean docker'){
-            steps{
-                sh 'sudo docker-compose -f docker-compose.prod.yaml down'
-            }
-        }
-
         stage('deploy to server'){
             steps{
                 echo 'frontend tested'
