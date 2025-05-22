@@ -23,7 +23,24 @@ pipeline{
 
         stage('stop server'){
             steps{
-                echo 'frontend tested'
+                sshPublisher(
+                    publishers: [
+                        sshPublisherDesc(
+                            configName: 'ACLA-server', 
+                            transfers: [
+                                sshTransfer(
+                                    execCommand: 
+                                        '''
+                                        sudo docker stop $(sudo docker ps -a -q)
+                                        sudo docker container prune
+                                        ''', 
+                                    execTimeout: 120000, 
+                                )
+                            ], 
+                            usePromotionTimestamp: false, 
+                            useWorkspaceInPromotion: false, 
+                            verbose: false)]
+                    )
             }
         }
 
@@ -72,7 +89,8 @@ pipeline{
                             ], 
                             usePromotionTimestamp: false, 
                             useWorkspaceInPromotion: false, 
-                            verbose: false)])
+                            verbose: false)]
+                    )
             }
         }
 
