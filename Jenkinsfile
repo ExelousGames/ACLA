@@ -1,5 +1,8 @@
 pipeline{
     agent any 
+    node {
+      customWorkspace "${JENKINS_HOME}/workspace/${JOB_NAME}/${BUILD_NUMBER}"
+    }
     stages{
         stage('clean docker'){
             steps{
@@ -14,13 +17,13 @@ pipeline{
             }
         }
 
-        stage('stop docker'){
+        stage('clean docker'){
             steps{
                 sh 'sudo docker-compose -f docker-compose.prod.yaml down'
             }
         }
 
-        stage('frontend'){
+        stage('deploy to server'){
             steps{
                 echo 'frontend tested'
             }
