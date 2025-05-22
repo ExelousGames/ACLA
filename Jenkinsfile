@@ -1,8 +1,11 @@
 pipeline{
-    agent any 
-    node {
-      customWorkspace "${JENKINS_HOME}/workspace/${JOB_NAME}/${BUILD_NUMBER}"
-    }
+    agent {
+        any
+        node {
+            customWorkspace "${JENKINS_HOME}/workspace/${JOB_NAME}/${BUILD_NUMBER}"
+        }
+    } 
+    
     stages{
         stage('clean docker'){
             steps{
