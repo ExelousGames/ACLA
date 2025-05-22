@@ -33,6 +33,18 @@ pipeline{
             }
         }
 
+        stage('Package Deployment') {
+            steps {
+                sh '''
+                    mkdir -p deployment
+                    cp -R acla_backend/ acla_db/ acla_front/ backend_nginx/ deployment/
+                    cp docker-compose.prod.yaml .prod.env deployment/
+                    zip -r deployment.zip deployment/
+                '''
+                archiveArtifacts artifacts: 'deployment.zip', fingerprint: true
+            }
+        }
+
         stage('push artifacts to server'){
             steps{
                 sshPublisher(
@@ -52,7 +64,7 @@ pipeline{
                                     remoteDirectory: '', 
                                     remoteDirectorySDF: false, 
                                     removePrefix: '', 
-                                    sourceFiles: "/home/ec2-user/workspace/${JOB_NAME}/${BUILD_NUMBER}"
+                                    sourceFiles: "${env.WORKSPACE}"
                                 )
                             ], 
                             usePromotionTimestamp: false, 
