@@ -8,12 +8,6 @@ pipeline{
     
     stages{
 
-        stage('get workspace directory docker'){
-            steps{
-                 echo "Current workspace: ${env.WORKSPACE}"
-            }
-        }
-
         stage('clean built docker image'){
             steps{
                 sh 'sudo docker-compose -f docker-compose.prod.yaml down'
@@ -47,6 +41,9 @@ pipeline{
 
         stage('push artifacts to server'){
             steps{
+
+                echo "${env.WORKSPACE}/deployment.zip file will be pushed "
+
                 sshPublisher(
                     publishers: [
                         sshPublisherDesc(
@@ -69,7 +66,7 @@ pipeline{
                                     remoteDirectory: '', 
                                     remoteDirectorySDF: false, 
                                     removePrefix: '', 
-                                    sourceFiles: "${env.WORKSPACE}/deployment.zip"
+                                    sourceFiles: "deployment.zip"
                                 )
                             ], 
                             usePromotionTimestamp: false, 
