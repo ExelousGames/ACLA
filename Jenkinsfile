@@ -37,7 +37,7 @@ pipeline{
             steps {
                 sh '''
                     mkdir -p deployment
-                    cp -R acla_backend/ acla_db/ acla_front/ backend_nginx/ deployment/
+                    cp -R acla_backend/. acla_db/. acla_front/. backend_nginx/. deployment/
                     cp docker-compose.prod.yaml .prod.env deployment/
                     zip -r deployment.zip deployment/
                 '''
