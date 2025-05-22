@@ -2,7 +2,7 @@ pipeline{
     agent {
         node {
             label ''
-            customWorkspace "${JENKINS_HOME}/workspace/${JOB_NAME}/${BUILD_NUMBER}"
+            customWorkspace "/home/ec2-user/workspace/${JOB_NAME}/${BUILD_NUMBER}"
         }
     } 
     
