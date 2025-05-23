@@ -45,6 +45,29 @@ pipeline{
             }
         }
 
+        stage('Clean server'){
+            steps{
+                sshPublisher(
+                    publishers: [
+                        sshPublisherDesc(
+                            configName: 'ACLA-server', 
+                            transfers: [
+                                sshTransfer(
+                                    execCommand: 
+                                        '''
+                                        sudo rm deployment.zip
+                                        sudo rm -r deployment/
+                                        ''', 
+                                    execTimeout: 600000, 
+                                )
+                            ], 
+                            usePromotionTimestamp: false, 
+                            useWorkspaceInPromotion: false, 
+                            verbose: false)]
+                    )
+            }
+        }
+
         stage('Package Deployment') {
             steps {
                 sh '''
@@ -71,7 +94,7 @@ pipeline{
                                     cleanRemote: false, 
                                     excludes: '', 
                                     execCommand: '', 
-                                    execTimeout: 120000, 
+                                    execTimeout: 600000, 
                                     flatten: false, 
                                     makeEmptyDirs: false, 
                                     noDefaultExcludes: false, 
