@@ -1,6 +1,8 @@
 services:
   frontend:
-    build: ./acla_front
+    build:
+      context: ./acla_front
+      dockerfile: prod.dockerfile
     container_name: acla_front_c
     env_file:
       - .prod.env
@@ -25,7 +27,9 @@ services:
       - frontend-network
 
   backend:
-    build: ./acla_backend
+    build:
+      context: ./acla_backend
+      dockerfile: prod.dockerfile
     container_name: acla_backend_c
     env_file:
       - .prod.env
