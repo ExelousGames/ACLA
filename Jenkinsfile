@@ -80,7 +80,7 @@ pipeline{
             }
         }
 
-        stage('Push artifacts to server'){
+        stage('Deploy to server'){
             steps{
 
                 echo "${env.WORKSPACE}/deployment.zip file will be pushed "
@@ -93,7 +93,13 @@ pipeline{
                                 sshTransfer(
                                     cleanRemote: false, 
                                     excludes: '', 
-                                    execCommand: '', 
+                                    execCommand: 
+                                    '''
+                                        unzip deployment.zip
+                                        cd deployment
+                                        sudo docker-compose -f docker-compose.prod.yaml --env-file .prod.env up -d
+                                    '''
+                                    , 
                                     execTimeout: 600000, 
                                     flatten: false, 
                                     makeEmptyDirs: false, 
@@ -103,52 +109,6 @@ pipeline{
                                     remoteDirectorySDF: false, 
                                     removePrefix: '', 
                                     sourceFiles: "deployment.zip"
-                                )
-                            ], 
-                            usePromotionTimestamp: false, 
-                            useWorkspaceInPromotion: false, 
-                            verbose: false)]
-                    )
-            }
-        }
-
-        stage('Unpack artifacts'){
-            steps{
-                sshPublisher(
-                    publishers: [
-                        sshPublisherDesc(
-                            configName: 'ACLA-server', 
-                            transfers: [
-                                sshTransfer(
-                                    execCommand: 
-                                        '''
-                                        cd deployment
-                                        unzip deployment.zip
-                                        ''', 
-                                    execTimeout: 600000, 
-                                )
-                            ], 
-                            usePromotionTimestamp: false, 
-                            useWorkspaceInPromotion: false, 
-                            verbose: false)]
-                    )
-            }
-        }
-
-        stage('Start server'){
-            steps{
-                sshPublisher(
-                    publishers: [
-                        sshPublisherDesc(
-                            configName: 'ACLA-server', 
-                            transfers: [
-                                sshTransfer(
-                                    execCommand: 
-                                        '''
-                                        cd deployment
-                                        sudo docker-compose -f docker-compose.prod.yaml --env-file .prod.env up -d
-                                        ''', 
-                                    execTimeout: 600000, 
                                 )
                             ], 
                             usePromotionTimestamp: false, 

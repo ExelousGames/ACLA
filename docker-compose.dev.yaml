@@ -1,6 +1,8 @@
 services:
   frontend:
-    build: ./acla_front
+    build:
+      context: ./acla_front
+      dockerfile: dev.dockerfile
     container_name: acla_front_c
     env_file:
       - .dev.env
@@ -30,7 +32,9 @@ services:
       - frontend-network
 
   backend:
-    build: ./acla_backend
+    build:
+      context: ./acla_backend
+      dockerfile: dev.dockerfile
     container_name: acla_backend_c
     env_file:
       - .dev.env
