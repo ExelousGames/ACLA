@@ -72,7 +72,6 @@ pipeline{
                                     execCommand: 
                                         '''
                                         cd deployment
-                                        sudo docker-compose -f docker-compose.prod.yaml down
                                         unzip deployment.zip
                                         sudo docker-compose -f docker-compose.prod.yaml --env-file .prod.env up -d
                                         ''', 

@@ -5,7 +5,7 @@ services:
     env_file:
       - .prod.env
     ports:
-      - '3000:3000'
+      - '${REACT_WEBSITE_PORT}:3000'
     tty: true
     stdin_open: true
     depends_on:
@@ -15,7 +15,7 @@ services:
     image: nginx:stable-perl
     container_name: backend_proxy_c
     ports:
-      - "80:80"
+      - "${REACT_APP_BACKEND_PROXY_PORT}:80"
     volumes:
       - ./backend_nginx/nginx.prod.conf:/etc/nginx/nginx.conf:ro
       - ./static:/usr/share/nginx/html
