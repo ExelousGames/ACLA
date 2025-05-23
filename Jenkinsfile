@@ -8,20 +8,20 @@ pipeline{
     
     stages{
 
-        stage('clean built docker image'){
+        stage('Clean docker built container'){
             steps{
                 sh 'sudo docker-compose -f docker-compose.prod.yaml down'
 
             }
         }
 
-        stage('build docker'){
+        stage('Build docker'){
             steps{
                 sh 'sudo docker-compose -f docker-compose.prod.yaml --env-file .prod.env build'
             }
         }
 
-        stage('stop server'){
+        stage('Stop server'){
             steps{
                 sshPublisher(
                     publishers: [
@@ -56,7 +56,7 @@ pipeline{
             }
         }
 
-        stage('deploy artifacts to server'){
+        stage('Deploy artifacts to server'){
             steps{
 
                 echo "${env.WORKSPACE}/deployment.zip file will be pushed "
@@ -90,13 +90,6 @@ pipeline{
                             useWorkspaceInPromotion: false, 
                             verbose: false)]
                     )
-            }
-        }
-
-
-        stage('start docker') { 
-            steps {
-                 echo 'Test --deliver'
             }
         }
     }
