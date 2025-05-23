@@ -31,8 +31,9 @@ pipeline{
                                 sshTransfer(
                                     execCommand: 
                                         '''
-                                        sudo docker stop $(sudo docker ps -a -q)
+                                        sudo docker-compose -f docker-compose.prod.yaml --env-file .prod.env build
                                         yes | sudo docker container prune
+                                        yes | sudo docker image prune
                                         ''', 
                                     execTimeout: 600000, 
                                 )
