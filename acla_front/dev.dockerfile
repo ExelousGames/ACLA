@@ -18,9 +18,8 @@ RUN npm run build
 # Stage  2
 FROM node:24-alpine
 
-WORKDIR /app
 
-COPY --from=build /app /app
+COPY --from=build /app/src /app/src
 
 # Define the command to run your app
 CMD [ "npm", "start" ]
