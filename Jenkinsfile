@@ -8,9 +8,9 @@ pipeline{
     
     stages{
 
-        stage('Clean docker built container'){
+        stage('Clean docker'){
             steps{
-                sh 'sudo docker-compose -f docker-compose.prod.yaml down'
+                sh 'yes | sudo docker system prune -a --volumes'
 
             }
         }
