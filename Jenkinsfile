@@ -34,7 +34,7 @@ pipeline{
                                         sudo docker stop $(sudo docker ps -a -q)
                                         sudo docker container prune
                                         ''', 
-                                    execTimeout: 120000, 
+                                    execTimeout: 600000, 
                                 )
                             ], 
                             usePromotionTimestamp: false, 
