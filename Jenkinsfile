@@ -32,7 +32,7 @@ pipeline{
                                     execCommand: 
                                         '''
                                         sudo docker stop $(sudo docker ps -a -q)
-                                        sudo yes | docker container prune
+                                        yes | sudo docker container prune
                                         ''', 
                                     execTimeout: 600000, 
                                 )
