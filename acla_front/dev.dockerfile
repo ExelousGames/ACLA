@@ -18,6 +18,7 @@ RUN npm run build
 # Stage  2
 FROM node:24-alpine
 
+RUN npm install --only=production
 
 COPY --from=build /app/src /app/src
 
