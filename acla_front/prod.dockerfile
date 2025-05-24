@@ -1,7 +1,5 @@
 FROM node:24-alpine
 
-RUN mkdir -p /app
-
 #set the work directory inside the container
 WORKDIR /app
 

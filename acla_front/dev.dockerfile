@@ -12,15 +12,7 @@ RUN npm install
 #Copy Source Code: Copy the remaining application code into the container.
 COPY . .
 
-#Build Application: Build the React application
 RUN npm run build
-
-# Stage  2
-FROM node:24-alpine
-
-RUN npm install --only=production
-
-COPY --from=build /app/src /app/src
 
 # Define the command to run your app
 CMD [ "npm", "start" ]
