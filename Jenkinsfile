@@ -27,11 +27,11 @@ pipeline{
             }
         }
 
-        stage('Package Deployment') {
+        stage('Package database deployment') {
             steps {
                 sh '''
                     mkdir -p deployment
-                    cp -R acla_backend/ acla_db/ acla_front/ backend_nginx/ deployment/
+                    cp -R acla_db/ deployment/
                     cp docker-compose.prod.yaml .prod.env deployment/
                     zip -r deployment.zip deployment/
                 '''
@@ -39,12 +39,91 @@ pipeline{
             }
         }
 
-        stage('Stop and clean server'){
+        stage('Stop and clean database'){
             steps{
                 sshPublisher(
                     publishers: [
                         sshPublisherDesc(
-                            configName: 'ACLA-server', 
+                            configName: 'ACLA-database', 
+                            transfers: [
+                                sshTransfer(
+                                    execCommand: 
+                                        '''
+                                        sudo docker-compose -f docker-compose.prod.yaml --env-file .prod.env down
+                                        yes | sudo docker container prune
+                                        yes | sudo docker image prune
+                                        yes | sudo docker volume prune
+                                        sudo rm deployment.zip
+                                        sudo rm -r deployment/
+                                        ''', 
+                                    execTimeout: 600000, 
+                                )
+                            ], 
+                            usePromotionTimestamp: false, 
+                            useWorkspaceInPromotion: false, 
+                            verbose: false)]
+                    )
+            }
+        }
+
+
+        stage('Deploy to database'){
+            steps{
+
+                echo "${env.WORKSPACE}/deployment.zip file will be pushed "
+
+                sshPublisher(
+                    publishers: [
+                        sshPublisherDesc(
+                            configName: 'ACLA-backend', 
+                            transfers: [
+                                sshTransfer(
+                                    cleanRemote: false, 
+                                    excludes: '', 
+                                    execCommand: 
+                                    '''
+                                        unzip deployment.zip
+                                        cd deployment
+                                        sudo docker-compose -f docker-compose.prod.yaml --env-file .prod.env up -d --build 'mongodb'
+                                    '''
+                                    , 
+                                    execTimeout: 7200000, 
+                                    flatten: false, 
+                                    makeEmptyDirs: false, 
+                                    noDefaultExcludes: false, 
+                                    patternSeparator: '[, ]+', 
+                                    remoteDirectory: '', 
+                                    remoteDirectorySDF: false, 
+                                    removePrefix: '', 
+                                    sourceFiles: "deployment.zip"
+                                )
+                            ], 
+                            usePromotionTimestamp: false, 
+                            useWorkspaceInPromotion: false, 
+                            verbose: false)]
+                    )
+            }
+        }
+
+
+        stage('Package frontend and backend deployment') {
+            steps {
+                sh '''
+                    mkdir -p deployment
+                    cp -R acla_backend/ acla_front/ backend_nginx/ deployment/
+                    cp docker-compose.prod.yaml .prod.env deployment/
+                    zip -r deployment.zip deployment/
+                '''
+                archiveArtifacts artifacts: 'deployment.zip', fingerprint: true
+            }
+        }
+
+        stage('Stop and clean backend server'){
+            steps{
+                sshPublisher(
+                    publishers: [
+                        sshPublisherDesc(
+                            configName: 'ACLA-backend', 
                             transfers: [
                                 sshTransfer(
                                     execCommand: 
@@ -68,7 +147,7 @@ pipeline{
         }
 
 
-        stage('Deploy to server'){
+        stage('Deploy to frontend and backend server'){
             steps{
 
                 echo "${env.WORKSPACE}/deployment.zip file will be pushed "
@@ -76,7 +155,7 @@ pipeline{
                 sshPublisher(
                     publishers: [
                         sshPublisherDesc(
-                            configName: 'ACLA-server', 
+                            configName: 'ACLA-backend', 
                             transfers: [
                                 sshTransfer(
                                     cleanRemote: false, 
@@ -85,7 +164,7 @@ pipeline{
                                     '''
                                         unzip deployment.zip
                                         cd deployment
-                                        sudo docker-compose -f docker-compose.prod.yaml --env-file .prod.env up -d
+                                        sudo docker-compose -f docker-compose.prod.yaml --env-file .prod.env up -d --build 'frontend' 'frontend' 'backend_proxy' 'backend'
                                     '''
                                     , 
                                     execTimeout: 7200000, 
