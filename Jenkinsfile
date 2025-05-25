@@ -21,31 +21,20 @@ pipeline{
             }
         }
 
-        stage('Stop server'){
-            steps{
-                sshPublisher(
-                    publishers: [
-                        sshPublisherDesc(
-                            configName: 'ACLA-server', 
-                            transfers: [
-                                sshTransfer(
-                                    execCommand: 
-                                        '''
-                                        sudo docker-compose -f docker-compose.prod.yaml --env-file .prod.env build
-                                        yes | sudo docker container prune
-                                        yes | sudo docker image prune
-                                        ''', 
-                                    execTimeout: 600000, 
-                                )
-                            ], 
-                            usePromotionTimestamp: false, 
-                            useWorkspaceInPromotion: false, 
-                            verbose: false)]
-                    )
+        stage('Package Deployment') {
+            steps {
+                sh '''
+                    mkdir -p deployment
+                    cp -R acla_backend/ acla_db/ acla_front/ backend_nginx/ deployment/
+                    cp docker-compose.prod.yaml .prod.env deployment/
+                    zip -r deployment.zip deployment/
+                '''
+                archiveArtifacts artifacts: 'deployment.zip', fingerprint: true
             }
         }
 
-        stage('Clean server'){
+
+        stage('Stop and clean server'){
             steps{
                 sshPublisher(
                     publishers: [
@@ -55,6 +44,11 @@ pipeline{
                                 sshTransfer(
                                     execCommand: 
                                         '''
+                                        set -x
+                                        sudo docker-compose -f docker-compose.prod.yaml --env-file .prod.env down
+                                        yes | sudo docker container prune
+                                        yes | sudo docker image prune
+                                        yes | sudo docker volume prune
                                         sudo rm deployment.zip
                                         sudo rm -r deployment/
                                         ''', 
@@ -68,17 +62,6 @@ pipeline{
             }
         }
 
-        stage('Package Deployment') {
-            steps {
-                sh '''
-                    mkdir -p deployment
-                    cp -R acla_backend/ acla_db/ acla_front/ backend_nginx/ deployment/
-                    cp docker-compose.prod.yaml .prod.env deployment/
-                    zip -r deployment.zip deployment/
-                '''
-                archiveArtifacts artifacts: 'deployment.zip', fingerprint: true
-            }
-        }
 
         stage('Deploy to server'){
             steps{
