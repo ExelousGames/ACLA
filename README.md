@@ -197,3 +197,7 @@ ___
 
 docker compose -f docker-compose.dev.yaml --env-file .dev.env up
 docker compose -f docker-compose.prod.yaml --env-file .prod.env up
+
+run in background
+docker compose -f docker-compose.dev.yaml --env-file .dev.env up -d
+docker compose -f docker-compose.prod.yaml --env-file .prod.env up -d
