@@ -2,12 +2,13 @@ services:
   frontend:
     build:
       context: ./acla_front
+      #production will use a nginx as a extra layer to serve the app. Check the docker file for more details.
       dockerfile: prod.dockerfile
     container_name: acla_front_c
     env_file:
       - .prod.env
     ports:
-      - '${REACT_WEBSITE_PORT}:3000'
+      - '${REACT_WEBSITE_PORT}:8080'
     tty: true
     stdin_open: true
     depends_on:
@@ -42,7 +43,9 @@ services:
       - frontend-network
 
   mongodb:
-    build: ./acla_db
+    build:
+      context: ./acla_db
+      dockerfile: Dockerfile
     container_name: mongodb_c
     restart: always
     environment:

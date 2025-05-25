@@ -7,7 +7,7 @@ services:
     env_file:
       - .dev.env
     ports:
-      - '8080:8080'
+      - '${REACT_WEBSITE_PORT}:3000'
     # Mounts the current directory and node_modules for hot-reloading.
     volumes:
       - ./acla_front:/app
