@@ -12,7 +12,7 @@ import { ThrottlerModule } from '@nestjs/throttler';
     ThrottlerModule.forRoot([{ limit: 10, ttl: 60 }]),
     //getting Environment variable from .env coming from docker-compose.yaml
     // address is 'mongodb_c' since we are connecting another docker. 'mongodb_c' is the name of the db docker
-    MongooseModule.forRoot('mongodb://' + process.env.MONGO_ADMINUSERNAME + ':' + process.env.MONGO_ADMINPASSWORD + '@mongodb_c:27017')],
+    MongooseModule.forRoot('mongodb://' + process.env.MONGO_ADMINUSERNAME + ':' + process.env.MONGO_ADMINPASSWORD + '@' + process.env.MONGO_URL + ':27017')],
   controllers: [AppController],
   providers: [AppService],
 })

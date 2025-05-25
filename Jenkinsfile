@@ -21,6 +21,12 @@ pipeline{
             }
         }
 
+        stage('Testing nothing'){
+            steps{
+                echo 'Tested'
+            }
+        }
+
         stage('Package Deployment') {
             steps {
                 sh '''
@@ -32,7 +38,6 @@ pipeline{
                 archiveArtifacts artifacts: 'deployment.zip', fingerprint: true
             }
         }
-
 
         stage('Stop and clean server'){
             steps{
@@ -83,7 +88,7 @@ pipeline{
                                         sudo docker-compose -f docker-compose.prod.yaml --env-file .prod.env up -d
                                     '''
                                     , 
-                                    execTimeout: 600000, 
+                                    execTimeout: 7200000, 
                                     flatten: false, 
                                     makeEmptyDirs: false, 
                                     noDefaultExcludes: false, 
