@@ -75,7 +75,7 @@ pipeline{
                 sshPublisher(
                     publishers: [
                         sshPublisherDesc(
-                            configName: 'ACLA-backend', 
+                            configName: 'ACLA-database', 
                             transfers: [
                                 sshTransfer(
                                     cleanRemote: false, 
