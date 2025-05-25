@@ -30,6 +30,8 @@ pipeline{
         stage('Package database deployment') {
             steps {
                 sh '''
+                    sudo rm deployment.zip
+                    sudo rm -r deployment/
                     mkdir -p deployment
                     cp -R acla_db/ deployment/
                     cp docker-compose.prod.yaml .prod.env deployment/
@@ -109,6 +111,8 @@ pipeline{
         stage('Package frontend and backend deployment') {
             steps {
                 sh '''
+                    sudo rm deployment.zip
+                    sudo rm -r deployment/
                     mkdir -p deployment
                     cp -R acla_backend/ acla_front/ backend_nginx/ deployment/
                     cp docker-compose.prod.yaml .prod.env deployment/
