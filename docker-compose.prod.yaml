@@ -39,7 +39,6 @@ services:
     ports:
       - '7001:7001'
     networks:
-      - db-network
       - frontend-network
 
   mongodb:
@@ -60,12 +59,7 @@ services:
       - .prod.env
     ports:
       - "27017:27017"
-    networks:
-      - db-network
 
 networks:
-  db-network:
-    driver: bridge
-
   frontend-network:
     driver: bridge
