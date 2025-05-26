@@ -20,7 +20,7 @@ exports.AppModule = AppModule = __decorate([
     (0, common_1.Module)({
         imports: [user_info_module_1.UserInfoModule,
             throttler_1.ThrottlerModule.forRoot([{ limit: 10, ttl: 60 }]),
-            mongoose_1.MongooseModule.forRoot('mongodb://' + process.env.MONGO_ADMINUSERNAME + ':' + process.env.MONGO_ADMINPASSWORD + '@mongodb_c:27017')],
+            mongoose_1.MongooseModule.forRoot('mongodb://' + process.env.MONGO_ADMINUSERNAME + ':' + process.env.MONGO_ADMINPASSWORD + '@' + process.env.MONGO_URL + ':27017')],
         controllers: [app_controller_1.AppController],
         providers: [app_service_1.AppService],
     })
