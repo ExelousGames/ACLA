@@ -30,8 +30,8 @@ pipeline{
         stage('Package database deployment') {
             steps {
                 sh '''
-                    sudo rm deployment.zip
-                    sudo rm -r deployment/
+                    sudo rm deployment.zip || true
+                    sudo rm -r deployment/ || true
                     mkdir -p deployment
                     cp -R acla_db/ deployment/
                     cp docker-compose.prod.yaml .prod.env deployment/
@@ -55,8 +55,8 @@ pipeline{
                                         yes | sudo docker container prune
                                         yes | sudo docker image prune
                                         yes | sudo docker volume prune
-                                        sudo rm deployment.zip
-                                        sudo rm -r deployment/
+                                        sudo rm deployment.zip || true
+                                        sudo rm -r deployment/ || true
                                         ''', 
                                     execTimeout: 600000, 
                                 )
@@ -111,8 +111,8 @@ pipeline{
         stage('Package frontend and backend deployment') {
             steps {
                 sh '''
-                    sudo rm deployment.zip
-                    sudo rm -r deployment/
+                    sudo rm deployment.zip || true
+                    sudo rm -r deployment/ || true
                     mkdir -p deployment
                     cp -R acla_backend/ acla_front/ backend_nginx/ deployment/
                     cp docker-compose.prod.yaml .prod.env deployment/
@@ -137,8 +137,8 @@ pipeline{
                                         yes | sudo docker container prune
                                         yes | sudo docker image prune
                                         yes | sudo docker volume prune
-                                        sudo rm deployment.zip
-                                        sudo rm -r deployment/
+                                        sudo rm deployment.zip || true
+                                        sudo rm -r deployment/ || true
                                         ''', 
                                     execTimeout: 600000, 
                                 )
