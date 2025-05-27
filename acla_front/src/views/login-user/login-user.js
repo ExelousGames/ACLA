@@ -29,24 +29,32 @@ const CreateUserInfo = ({ onTaskCreated }) => {
         password: "",
     });
 
+    //backend server api
     const serverIPandPort = process.env.REACT_APP_BACKEND_SERVER_IP + ":" + process.env.REACT_APP_BACKEND_PROXY_PORT
     const server_url_header = 'http://' + serverIPandPort
 
+    //when user tries to press login button
     const handleSubmit = (e) => {
         e.preventDefault();
-        e.preventDefault();
-        if (input.username !== "" && input.password !== "") {
-            axios.post(server_url_header + '/userinfo', { infoDto: { name: name } })
+        console.log(input);
+        if (input.username !== "" || input.password !== "") {
+            axios.post(server_url_header + '/userinfo', { infoDto: input })
                 .then(response => {
                 })
                 .catch(error => console.error('Error creating task:', error));
+
+            return
         }
         alert("please provide a valid input");
     };
 
+    //check changes in the input
     const handleInput = (e) => {
         const { name, value } = e.target;
-        setInput(values => ({ ...values, [name]: value }));
+        //if we only called setInput [name]: value, this would remove others from the state. oldValues is the old value of the state
+        setInput(oldValues => {
+            return { ...oldValues, [name]: value }
+        });
     };
 
     return (
@@ -59,27 +67,24 @@ const CreateUserInfo = ({ onTaskCreated }) => {
 
                     <Box mb="5">
                         <Flex mb="1">
-                            <Text as="label" htmlFor="example-email-field" size="2" weight="bold" name="email" onChange={handleInput}>
+                            <Text as="label" htmlFor="example-email-field" size="2" weight="bold" >
                                 Email address
                             </Text>
                         </Flex>
-                        <TextField.Root
-                            placeholder="Enter your email"
-                            id="example-email-field"
-                        />
+                        <TextField.Root placeholder="Enter your email" id="example-email-field" name="username" onChange={handleInput} />
                     </Box>
 
                     <Box mb="5" position="relative">
                         <Flex align="baseline" justify="between" mb="1">
-                            <Text as="label" size="2" weight="bold" htmlFor="example-password-field" name="password" onChange={handleInput}>
+                            <Text as="label" size="2" weight="bold" htmlFor="example-password-field" >
                                 Password
                             </Text>
                         </Flex>
-                        <TextField.Root placeholder="Enter your password" id="example-password-field" />
+                        <TextField.Root placeholder="Enter your password" id="example-password-field" name="password" onChange={handleInput} />
                     </Box>
 
                     <Flex mt="6" justify="end" gap="3">
-                        <Button variant="outline" type="submit">
+                        <Button variant="outline">
                             Create an account
                         </Button>
                         <Button>Sign in</Button>
