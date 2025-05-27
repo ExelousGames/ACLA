@@ -6,12 +6,16 @@ services:
     container_name: acla_front_c
     env_file:
       - .dev.env
+    environment:
+       - WATCHPACK_POLLING=true
+       - WDS_SOCKET_PORT=3000
+       - FAST_REFRESH=false
     ports:
       - '${REACT_WEBSITE_PORT}:3000'
     # Mounts the current directory and node_modules for hot-reloading.
     volumes:
       - ./acla_front:/app
-      - frontend-node-modules:/app/node_modules
+      - /app/node_modules
     # stdin_open and tty: Keep the container running and interactive.
     stdin_open: true
     tty: true
@@ -40,7 +44,7 @@ services:
       - .dev.env
     volumes:
       - ./acla_backend:/app
-      - backend-node-modules:/app/node_modules
+      - /app/node_modules
     depends_on:
       - mongodb
     ports:
@@ -86,13 +90,6 @@ services:
       - db-network
     depends_on:
       - mongodb
-
-volumes:
-  backend-node-modules:
-    name: backend-node-modules
-
-  frontend-node-modules:
-    name: frontend-node-modules
 
 networks:
   db-network:
