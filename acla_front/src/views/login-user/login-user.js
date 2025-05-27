@@ -76,11 +76,14 @@ const LoginUser = ({ onTaskCreated }) => {
                     </Box>
 
                     <Flex mt="6" justify="end" gap="3">
+                        {/*
                         <Button variant="outline">
                             Create an account
                         </Button>
-                        <Button>Sign in</Button>
+                        */}
+                        <Button type='submit'>Sign in</Button>
                     </Flex>
+
                 </Card>
             </Box>
         </form>
