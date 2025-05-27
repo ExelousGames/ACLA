@@ -27,7 +27,6 @@ const CreateUserInfo = ({ onTaskCreated }) => {
     const serverIPandPort = process.env.REACT_APP_BACKEND_SERVER_IP + ":" + process.env.REACT_APP_BACKEND_PROXY_PORT
     const server_url_header = 'http://' + serverIPandPort
 
-    console.log(server_url_header);
     const handleSubmit = (e) => {
         e.preventDefault();
         axios.post(server_url_header + '/userinfo', { infoDto: { name: name } })
