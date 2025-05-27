@@ -1,5 +1,25 @@
 import React, { useState } from 'react';
 import axios from 'axios';
+import {
+	Avatar,
+	Badge,
+	Box,
+	Button,
+	Card,
+	Checkbox,
+	DropdownMenu,
+	Flex,
+	Grid,
+	Heading,
+	IconButton,
+	Link,
+	Separator,
+	Strong,
+	Switch,
+	Text,
+	TextField,
+	Theme,
+} from "@radix-ui/themes";
 
 const CreateUserInfo = ({ onTaskCreated }) => {
     const [name, setName] = useState('');
@@ -19,21 +39,54 @@ const CreateUserInfo = ({ onTaskCreated }) => {
     };
 
     return (
-        <form onSubmit={handleSubmit}>
-            <input
-                type="text"
-                placeholder="Name"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                required
-            />
-            <textarea
-                placeholder="Description"
-                value={description}
-                onChange={(e) => setDescription(e.target.value)}
-            ></textarea>
-            <button type="submit">Add Task</button>
-        </form>
+        <Box maxWidth="350px">
+            <Card size="4">
+                        <Heading as="h3" size="6" trim="start" mb="5">
+                            Login
+                        </Heading>
+
+                        <Box mb="5">
+                            <Flex mb="1">
+                                <Text
+                                    as="label"
+                                    htmlFor="example-email-field" 
+                                    size="2"
+                                    weight="bold"
+                                >
+                                    Email address
+                                </Text>
+                            </Flex>
+                            <TextField.Root
+                                placeholder="Enter your email"
+                                id="example-email-field"
+                            />
+                        </Box>
+
+                        <Box mb="5" position="relative">
+                            <Flex align="baseline" justify="between" mb="1">
+                                <Text
+                                    as="label"
+                                    size="2"
+                                    weight="bold"
+                                    htmlFor="example-password-field"
+                                >
+                                    Password
+                                </Text>
+                            </Flex>
+                            <TextField.Root
+                                placeholder="Enter your password"
+                                id="example-password-field"
+                            />
+                        </Box>
+
+                        <Flex mt="6" justify="end" gap="3">
+                            <Button variant="outline">
+                                Create an account
+                            </Button>
+                            <Button>Sign in</Button>
+                        </Flex>
+            </Card>
+        </Box>
     );
 };
 
