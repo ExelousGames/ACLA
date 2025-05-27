@@ -1,22 +1,26 @@
-import logo from './logo.svg';
 import './App.css';
 import React, { useState } from 'react';
-import UserInfo from './views/user-info';
-import CreateUserInfo from './views/login-user/login-user';
-
-
-
+import LoginUser from 'views/login-user/login-user';
+import AuthProvider from "hooks/AuthProvider";
+import { BrowserRouter as Router, Route, Routes } from "react-router-dom"
+import PrivateRoute from "views/routers/PrivateRoute";
+import MainDashboard from 'views/dashboard/MainDashboard'
 function App() {
-  const [tasks, setTasks] = useState([]);
-
-  const handleTaskCreated = (newTask) => {
-    setTasks([...tasks, newTask]);
-  };
-
   return (
     <div className="App">
-      <UserInfo onTaskCreated={handleTaskCreated} />
-      <CreateUserInfo />
+      <Router>
+        <AuthProvider>
+          <Routes>
+            {/*the '/login' path is mapped to the Login component, rendering it when the URL matches*/}
+            <Route path="/login" element={<LoginUser />} />
+            {/*The <PrivateRoute /> component serves as a guard for protecting  */}
+            <Route element={<PrivateRoute />}>
+              <Route path="/" element={<MainDashboard />} />
+              <Route path="/dashboard" element={<MainDashboard />} />
+            </Route>
+          </Routes>
+        </AuthProvider>
+      </Router>
     </div>
   );
 }

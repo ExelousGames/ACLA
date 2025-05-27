@@ -1,7 +1,6 @@
 import React, { useState } from 'react';
-import axios from 'axios';
 import './login-user.css';
-
+import { useAuth } from "hooks/AuthProvider";
 import {
     Avatar,
     Badge,
@@ -23,26 +22,19 @@ import {
     Theme,
 } from "@radix-ui/themes";
 
-const CreateUserInfo = ({ onTaskCreated }) => {
+const LoginUser = ({ onTaskCreated }) => {
     const [input, setInput] = useState({
         username: "",
         password: "",
     });
-
-    //backend server api
-    const serverIPandPort = process.env.REACT_APP_BACKEND_SERVER_IP + ":" + process.env.REACT_APP_BACKEND_PROXY_PORT
-    const server_url_header = 'http://' + serverIPandPort
+    const auth = useAuth();
 
     //when user tries to press login button
     const handleSubmit = (e) => {
         e.preventDefault();
-        console.log(input);
         if (input.username !== "" || input.password !== "") {
-            axios.post(server_url_header + '/userinfo', { infoDto: input })
-                .then(response => {
-                })
-                .catch(error => console.error('Error creating task:', error));
 
+            auth.loginAction(input);
             return
         }
         alert("please provide a valid input");
@@ -95,4 +87,4 @@ const CreateUserInfo = ({ onTaskCreated }) => {
     );
 };
 
-export default CreateUserInfo;
+export default LoginUser;
