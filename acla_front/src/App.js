@@ -2,7 +2,7 @@ import logo from './logo.svg';
 import './App.css';
 import React, { useState } from 'react';
 import UserInfo from './views/user-info';
-import CreateUserInfo from './views/create-user-info';
+import CreateUserInfo from './views/login-user/login-user';
 
 
 
