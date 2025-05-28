@@ -12,7 +12,7 @@ export class AuthService {
 
     async validateUser(username: string, pass: string): Promise<any> {
         const user = await this.usersService.findOne(username);
-
+        console.log(user);
         //TODO: use hash to compare incoming password
         if (user && user.password === pass) {
             const { password, ...result } = user;
