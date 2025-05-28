@@ -14,7 +14,9 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       //delegates the responsibility of ensuring that a JWT has not expired to the Passport module
       ignoreExpiration: false,
 
-      //upplying a symmetric secret for signing the token. As cautioned earlier, do not expose this secret publicly.
+      //TODO: Use asymmetrical encryption
+
+      //Supplying a symmetric secret for signing the token. As cautioned earlier, do not expose this secret publicly.
       secretOrKey: jwtConstants.secret,
     });
   }
