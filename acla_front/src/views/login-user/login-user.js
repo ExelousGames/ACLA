@@ -33,7 +33,6 @@ const LoginUser = () => {
     const handleSubmit = (e) => {
         e.preventDefault();
         if (input.username !== "" || input.password !== "") {
-
             auth.loginAction({ username: input.username, password: input.password });
             return
         }

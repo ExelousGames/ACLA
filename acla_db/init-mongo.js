@@ -1,6 +1,8 @@
+db.createCollection("userinfos");
+
 db.createUser({
-    user: 'ddd',
-    pwd: 'ddd',
+    user: 'client',
+    pwd: 'clientpass',
     roles: [
         {
             role: 'readWrite',

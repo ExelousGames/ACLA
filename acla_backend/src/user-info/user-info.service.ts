@@ -12,6 +12,7 @@ export class UserInfoService {
     constructor(@InjectModel(UserInfo.name) private userInfoModel: Model<UserInfo>) { }
 
     async findOne(username: string): Promise<UserInfo | null>   {
+
         return this.userInfoModel.findOne({username: username}).exec();
     }
 
