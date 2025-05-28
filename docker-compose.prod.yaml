@@ -34,8 +34,6 @@ services:
     container_name: acla_backend_c
     env_file:
       - .prod.env
-    depends_on:
-      - mongodb
     ports:
       - '7001:7001'
     networks:
