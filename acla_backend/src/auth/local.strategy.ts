@@ -15,7 +15,7 @@ export class LocalStrategy extends PassportStrategy(Strategy) {
    *  (e.g., creating the user property on the Request object), and the request handling pipeline can continue. If it's not found, 
    * we throw an exception and let our exceptions layer handle it. */
   async validate(username: string, password: string): Promise<any> {
-    console.log(username);
+
     const user = await this.authService.validateUser(username, password);
     if (!user) {
       throw new UnauthorizedException();
