@@ -22,7 +22,7 @@ import {
     Theme,
 } from "@radix-ui/themes";
 
-const LoginUser = ({ onTaskCreated }) => {
+const LoginUser = () => {
     const [input, setInput] = useState({
         username: "",
         password: "",
@@ -34,7 +34,7 @@ const LoginUser = ({ onTaskCreated }) => {
         e.preventDefault();
         if (input.username !== "" || input.password !== "") {
 
-            auth.loginAction(input);
+            auth.loginAction({ username: input.username, password: input.password });
             return
         }
         alert("please provide a valid input");

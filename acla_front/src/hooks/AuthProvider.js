@@ -23,7 +23,7 @@ const AuthProvider = ({ children }) => {
     // updating the user and token state upon a successful response, and storing the token in local storage.
     const loginAction = async (data) => {
 
-        axios.post(server_url_header + '/userinfo/auth/login', { infoDto: data })
+        axios.post(server_url_header + '/userinfo/auth/login', data)
             .then(response => {
 
                 if (response) {

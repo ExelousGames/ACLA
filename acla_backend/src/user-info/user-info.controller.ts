@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get,Request, Param, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Request, Param, Post, UseGuards } from '@nestjs/common';
 import { UserInfoService } from './user-info.service';
 import { LoginInfoDto } from './dto/login-info.dto';
 import { CreateUserInfoDto } from './dto/create-user.dto';
@@ -9,14 +9,18 @@ import { AuthService } from 'src/auth/auth.service';
 @Controller('userinfo')
 export class UserInfoController {
 
-    constructor(private userinfoService: UserInfoService,private authService: AuthService) { }
-    //We are using LocalStrategy localed in auth folder
-    //Passport automatically creates a user object, based on the value we return from the validate() method, and assigns it to the Request object as req.user
+    constructor(private userinfoService: UserInfoService, private authService: AuthService) { }
+
+    //We are using LocalStrategy located in auth folder. our passport local strategy has a default name of 'local',
+    //we refers the name in 'AuthGuard'
+    //Passport automatically creates a user object (populated by passport during the passport-local authentication flow), 
+    // based on the value we return from the validate() method, 
+    // and assigns it to the Request object as req.user
     @UseGuards(AuthGuard('local'))
     @Post('auth/login')
     async login(@Request() req) {
         // return a JWT token for a later access
-        return this.authService.login(req.user);
+        return this.authService.giveJWTToken(req.user);
     }
 
     @UseGuards(AuthGuard('local'))
