@@ -1,6 +1,5 @@
 import { Body, Controller, Delete, Get, Request, Param, Post, UseGuards } from '@nestjs/common';
 import { UserInfoService } from './user-info.service';
-import { LoginInfoDto } from './dto/login-info.dto';
 import { CreateUserInfoDto } from './dto/create-user.dto';
 import { UserInfo } from './schemas/user-info.schema';
 import { AuthGuard } from '@nestjs/passport';

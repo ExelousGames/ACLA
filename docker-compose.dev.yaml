@@ -45,6 +45,7 @@ services:
     volumes:
       - ./acla_backend:/app
       - /app/node_modules
+      - /app/dist
     depends_on:
       - mongodb
     ports:
