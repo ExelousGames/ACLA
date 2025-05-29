@@ -51,10 +51,12 @@ pipeline{
                                 sshTransfer(
                                     execCommand: 
                                         '''
+                                        cd deployment
                                         sudo docker-compose -f docker-compose.prod.yaml --env-file .prod.env down
                                         yes | sudo docker container prune
                                         yes | sudo docker image prune
                                         yes | sudo docker volume prune
+                                        cd ..
                                         sudo rm deployment.zip || true
                                         sudo rm -r deployment/ || true
                                         ''', 
@@ -132,11 +134,12 @@ pipeline{
                                 sshTransfer(
                                     execCommand: 
                                         '''
-                                        set -x
+                                        cd deployment
                                         sudo docker-compose -f docker-compose.prod.yaml --env-file .prod.env down
                                         yes | sudo docker container prune
                                         yes | sudo docker image prune
                                         yes | sudo docker volume prune
+                                        cd..
                                         sudo rm deployment.zip || true
                                         sudo rm -r deployment/ || true
                                         ''', 
