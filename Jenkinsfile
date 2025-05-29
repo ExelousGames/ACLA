@@ -51,12 +51,9 @@ pipeline{
                                 sshTransfer(
                                     execCommand: 
                                         '''
-                                        cd deployment
-                                        sudo docker-compose -f docker-compose.prod.yaml --env-file .prod.env down
-                                        yes | sudo docker container prune
-                                        yes | sudo docker image prune
-                                        yes | sudo docker volume prune
-                                        cd ..
+                                        sudo docker rm -f $(sudo docker ps -a -q)
+                                        sudo docker image remove -f $(sudo docker images -a -q)
+                                        yes | sudo docker volume prune  
                                         sudo rm deployment.zip || true
                                         sudo rm -r deployment/ || true
                                         ''', 
@@ -134,13 +131,10 @@ pipeline{
                                 sshTransfer(
                                     execCommand: 
                                         '''
-                                        cd deployment
-                                        sudo docker-compose -f docker-compose.prod.yaml --env-file .prod.env down
-                                        yes | sudo docker container prune
-                                        yes | sudo docker image prune
-                                        yes | sudo docker volume prune
-                                        cd ..
-                                        sudo rm deployment.zip || true
+                                        sudo docker rm -f $(sudo docker ps -a -q);
+                                        sudo docker image remove -f $(sudo docker images -a -q);
+                                        yes | sudo docker volume prune;
+                                        sudo rm deployment.zip || true;
                                         sudo rm -r deployment/ || true
                                         ''', 
                                     execTimeout: 600000, 
