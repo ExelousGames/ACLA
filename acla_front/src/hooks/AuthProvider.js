@@ -18,7 +18,7 @@ const AuthProvider = ({ children }) => {
     //backend server api
     const serverIPandPort = process.env.REACT_APP_BACKEND_SERVER_IP + ":" + process.env.REACT_APP_BACKEND_PROXY_PORT
     const server_url_header = 'http://' + serverIPandPort
-
+    alert("server_url_header" + '/userinfo/auth/login');
     //handles user login by sending a POST request to an authentication endpoint, 
     // updating the user and token state upon a successful response, and storing the token in local storage.
     const loginAction = async (data) => {
