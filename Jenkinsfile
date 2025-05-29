@@ -171,7 +171,7 @@ pipeline{
                                     '''
                                         unzip deployment.zip
                                         cd deployment
-                                        sudo docker-compose -f docker-compose.prod.yaml --env-file .prod.env up -d --build 'frontend' 'frontend' 'backend_proxy' 'backend'
+                                        sudo docker-compose -f docker-compose.prod.yaml --env-file .prod.env up -d --build 'frontend' 'backend_proxy' 'backend'
                                     '''
                                     , 
                                     execTimeout: 7200000, 

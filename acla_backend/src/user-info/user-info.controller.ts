@@ -36,7 +36,7 @@ export class UserInfoController {
             (dto) => {
                 return dto;
             }).catch((error) => {
-                console.log(error);
+
             });
         return new UserInfo;
     }
