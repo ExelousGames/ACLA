@@ -34,8 +34,6 @@ services:
     container_name: acla_backend_c
     env_file:
       - .prod.env
-    depends_on:
-      - mongodb
     ports:
       - '7001:7001'
     networks:
@@ -51,6 +49,9 @@ services:
       #create a user for authticated database access
       MONGO_INITDB_ROOT_USERNAME: ${MONGO_ADMINUSERNAME}
       MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ADMINPASSWORD}
+      MONGO_ADMINPASSWORD: ${MONGO_ADMINUSERNAME}
+      MONGO_ADMINUSERNAME: ${MONGO_ADMINPASSWORD}
+      MONGO_INITDB_DATABASE: ${MONGO_DATEBASE}
     volumes:
       - ./acla_db/Init.js:/docker-entrypoint-initdb.d/Init.js:ro
       - ./acla_db/mongodb_data:/data/db
