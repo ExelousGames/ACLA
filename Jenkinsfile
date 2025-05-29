@@ -139,7 +139,7 @@ pipeline{
                                         yes | sudo docker container prune
                                         yes | sudo docker image prune
                                         yes | sudo docker volume prune
-                                        cd..
+                                        cd ..
                                         sudo rm deployment.zip || true
                                         sudo rm -r deployment/ || true
                                         ''', 
