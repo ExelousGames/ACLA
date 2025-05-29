@@ -53,7 +53,7 @@ services:
       MONGO_ADMINUSERNAME: ${MONGO_ADMINPASSWORD}
       MONGO_INITDB_DATABASE: ${MONGO_DATEBASE}
     volumes:
-      - ./acla_db/Init.js:/docker-entrypoint-initdb.d/Init.js:ro
+      - ./acla_db/init-mongo.js:/docker-entrypoint-initdb.d/init-mongo.js
       - ./acla_db/mongodb_data:/data/db
     env_file:
       - .prod.env
