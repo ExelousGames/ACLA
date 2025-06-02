@@ -22,18 +22,20 @@ import {
     TextField,
     Theme,
 } from "@radix-ui/themes";
+import SideMainMenu from 'views/side-main-menu/side-main-menu';
+import LiveAnalysis from 'views/live-analysis/live-analysis';
 
 const MainDashboard = ({ onTaskCreated }) => {
     const auth = useAuth();
     return (
         <div className="container">
             <div>
-                <h1>Welcome! {auth.user?.username}</h1>
-                <button onClick={() => auth.logOut()} className="btn-submit">
-                    logout
-                </button>
+                <Grid gap="3" rows="repeat(2, 64px)" width="auto">
+                    <SideMainMenu></SideMainMenu>
+                    <LiveAnalysis></LiveAnalysis>
+                </Grid>
             </div>
-        </div>
+        </div >
     );
 };
 

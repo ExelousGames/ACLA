@@ -6,7 +6,7 @@ const TAGS = Array.from({ length: 50 }).map(
     (_, i, a) => `v1.2.0-beta.${a.length - i}`,
 );
 
-const ScrollAreaDemo = () => (
+const SideMainMenu = () => (
     <ScrollArea.Root className="ScrollAreaRoot">
         <ScrollArea.Viewport className="ScrollAreaViewport">
             <div style={{ padding: "15px 20px" }}>
@@ -34,4 +34,4 @@ const ScrollAreaDemo = () => (
     </ScrollArea.Root>
 );
 
-export default ScrollAreaDemo;
+export default SideMainMenu;
