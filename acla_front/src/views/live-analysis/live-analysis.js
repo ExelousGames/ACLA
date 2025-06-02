@@ -22,7 +22,7 @@ import {
 } from "@radix-ui/themes";
 import MapList from './map-list/map-list';
 import SessionList from './session-list/session-list';
-
+import { Tabs } from "radix-ui";
 
 const LiveAnalysis = () => {
 

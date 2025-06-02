@@ -2,6 +2,7 @@ import { createContext, useContext } from 'react';
 import './session-list.css';
 
 import {
+    ScrollArea,
     Avatar,
     Badge,
     Box,
@@ -25,7 +26,7 @@ import {
 const SessionContext = createContext();
 
 const SessionList = () => {
-
+    const albumsFavorites = []
     return (
         <ScrollArea type="always" scrollbars="vertical" style={{ height: 180 }}>
 
