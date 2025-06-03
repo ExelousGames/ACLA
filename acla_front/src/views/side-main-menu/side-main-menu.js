@@ -1,37 +1,49 @@
 import * as React from "react";
-import { ScrollArea } from "radix-ui";
+import { ScrollArea, Tabs } from "radix-ui";
 import "./side-main-menu.css";
-
-const TAGS = Array.from({ length: 50 }).map(
-    (_, i, a) => `v1.2.0-beta.${a.length - i}`,
-);
+import { Box, Text, Flex, Container } from "@radix-ui/themes";
+import LiveAnalysis from "views/live-analysis/live-analysis";
 
 const SideMainMenu = () => (
-    <ScrollArea.Root className="ScrollAreaRoot">
-        <ScrollArea.Viewport className="ScrollAreaViewport">
-            <div style={{ padding: "15px 20px" }}>
-                <div className="Text">Tags</div>
-                {TAGS.map((tag) => (
-                    <div className="Tag" key={tag}>
-                        {tag}
-                    </div>
-                ))}
-            </div>
-        </ScrollArea.Viewport>
-        <ScrollArea.Scrollbar
-            className="ScrollAreaScrollbar"
-            orientation="vertical"
-        >
-            <ScrollArea.Thumb className="ScrollAreaThumb" />
-        </ScrollArea.Scrollbar>
-        <ScrollArea.Scrollbar
-            className="ScrollAreaScrollbar"
-            orientation="horizontal"
-        >
-            <ScrollArea.Thumb className="ScrollAreaThumb" />
-        </ScrollArea.Scrollbar>
-        <ScrollArea.Corner className="ScrollAreaCorner" />
-    </ScrollArea.Root>
+    <Tabs.Root className="TabsRoot" defaultValue="account">
+        <Flex columns="2" width="auto" align="start">
+            <ScrollArea.Root className="ScrollAreaRoot">
+
+                <ScrollArea.Viewport className="ScrollAreaViewport">
+
+                    <Tabs.List className="TabsList">
+                        <Tabs.Trigger className="TabsTrigger" value="analysis">Analysis</Tabs.Trigger>
+                        <Tabs.Trigger className="TabsTrigger" value="sessionList">Documents</Tabs.Trigger>
+                        <Tabs.Trigger className="TabsTrigger" value="session">Settings</Tabs.Trigger>
+                    </Tabs.List>
+                </ScrollArea.Viewport>
+                <ScrollArea.Scrollbar className="ScrollAreaScrollbar" orientation="vertical">
+                    <ScrollArea.Thumb className="ScrollAreaThumb" />
+                </ScrollArea.Scrollbar>
+                <ScrollArea.Scrollbar className="ScrollAreaScrollbar" orientation="horizontal">
+                    <ScrollArea.Thumb className="ScrollAreaThumb" />
+                </ScrollArea.Scrollbar>
+                <ScrollArea.Corner className="ScrollAreaCorner" />
+            </ScrollArea.Root>
+
+            <Container pt="3" align='left'>
+                <Tabs.Content className="TabsContent" value="analysis">
+                    <LiveAnalysis></LiveAnalysis>
+                </Tabs.Content>
+
+                <Tabs.Content className="TabsContent" value="sessionList">
+
+                </Tabs.Content>
+
+                <Tabs.Content className="TabsContent" value="session">
+                    <Text size="2">Edit your profile or update contact information.</Text>
+                </Tabs.Content>
+            </Container >
+        </Flex >
+    </Tabs.Root>
+
+
+
 );
 
 export default SideMainMenu;
