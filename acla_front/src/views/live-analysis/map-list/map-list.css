@@ -60,3 +60,22 @@
 .ScrollAreaCorner {
     background: var(--black-a5);
 }
+
+.Button {
+    border-radius: 4px;
+    padding: 0 15px;
+    font-size: 15px;
+    line-height: 1;
+    font-weight: 500;
+    height: 35px;
+    user-select: none;
+}
+
+.Button:focus:not(:focus-visible) {
+    outline: 0;
+}
+
+.Button:focus-visible {
+    outline: 2px solid var(--violet-6);
+    outline-offset: 1px;
+}
