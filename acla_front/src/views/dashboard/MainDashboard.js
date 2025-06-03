@@ -33,17 +33,14 @@ const MainDashboard = ({ onTaskCreated }) => {
 
     const [mainMenuOptionSelected, setMainMenuOption] = useState(MainMenuOptions.LIVE_ANALYSIS);
     return (
-        <div className="container">
-            <div>
-                <Grid gap="3" rows="repeat(2, 64px)" width="auto">
-                    <MainMenuOptionSelectionContext value={[mainMenuOptionSelected, setMainMenuOption]}>
-                        <SideMainMenu></SideMainMenu>
-                        <LiveAnalysis></LiveAnalysis>
-                    </MainMenuOptionSelectionContext>
 
-                </Grid>
-            </div>
-        </div >
+        <MainMenuOptionSelectionContext value={[mainMenuOptionSelected, setMainMenuOption]}>
+            <Flex gap="3" rows="2" width="auto" direction="column">
+                <Box className="Title" height="64px">Assetto Corsa Competizione Lap Analysis</Box>
+                <SideMainMenu></SideMainMenu>
+            </Flex>
+        </MainMenuOptionSelectionContext>
+
     );
 };
 

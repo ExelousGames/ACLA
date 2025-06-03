@@ -19,36 +19,42 @@ import {
     Text,
     TextField,
     Theme,
+    Container,
+    Tabs
 } from "@radix-ui/themes";
-import MapList from './map-list/map-list';
+
 import SessionList from './session-list/session-list';
-import { Tabs } from "radix-ui";
+import MapList from './map-list/map-list';
+import { useEffect, useState } from 'react';
 
 const LiveAnalysis = () => {
 
+    const [mapSelected, setMap] = useState("");
+    const [sessionSelected, setSession] = useState();
+
+
     return (
-        <Tabs.Root defaultValue="account">
-            <Tabs.List>
-                <Tabs.Trigger value="mapList">Account</Tabs.Trigger>
-                <Tabs.Trigger value="sessionList">Documents</Tabs.Trigger>
-                <Tabs.Trigger value="session">Settings</Tabs.Trigger>
+        <Tabs.Root defaultValue="mapLists">
+            <Tabs.List justify="start">
+                <Tabs.Trigger value="mapLists">Maps</Tabs.Trigger>
+                {mapSelected == "" ? "" : <Tabs.Trigger value="sessionLists">{mapSelected}</Tabs.Trigger>}
+                {mapSelected == "" ? "" : <Tabs.Trigger value="session">{sessionSelected}</Tabs.Trigger>}
             </Tabs.List>
 
-            <Box pt="3">
-                <Tabs.Content value="mapList">
-                    <MapList></MapList>
+            <Container pt="3" align='left'>
+                <Tabs.Content value="mapLists">
+                    <MapList setMap={setMap}></MapList>
                 </Tabs.Content>
 
-                <Tabs.Content value="sessionList">
+                <Tabs.Content value="sessionLists">
                     <SessionList></SessionList>
                 </Tabs.Content>
 
                 <Tabs.Content value="session">
                     <Text size="2">Edit your profile or update contact information.</Text>
                 </Tabs.Content>
-            </Box>
+            </Container >
         </Tabs.Root>
-
     )
 };
 
