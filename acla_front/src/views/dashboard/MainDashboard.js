@@ -24,7 +24,8 @@ import {
 } from "@radix-ui/themes";
 import SideMainMenu from 'views/side-main-menu/side-main-menu';
 import LiveAnalysis from 'views/live-analysis/live-analysis';
-import { MainMenuOptions } from 'contants/MainMenuOptions';
+import { MainMenuOptions } from 'data/MainMenuOptions';
+
 
 const MainMenuOptionSelectionContext = createContext();
 
