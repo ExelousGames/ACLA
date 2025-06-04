@@ -27,6 +27,7 @@ import SessionList from './session-list/session-list';
 import MapList from './map-list/map-list';
 import { useEffect, useState, createContext } from 'react';
 import { MapOption, SessionOption } from 'data/live-analysis/live-analysis-data';
+import SessionAnalysis from './sessionAnalysis/sessionAnalysis';
 
 //pass down the props to child, must have init value here, otherwise createContext and useContext don't like it
 export const AnalysisContext = createContext({
@@ -87,15 +88,15 @@ const LiveAnalysis = () => {
 
     return (
         <AnalysisContext.Provider value={{ mapContext: { mapSelected, setMap }, sessionContext: { sessionSelected, setSession } }}>
-            <Tabs.Root defaultValue="mapLists" value={activeTab} onValueChange={setActiveTab}>
+            <Tabs.Root className="LiveAnalysisTabsRoot" defaultValue="mapLists" value={activeTab} onValueChange={setActiveTab}>
                 <Tabs.List justify="start">
                     <Tabs.Trigger value="mapLists">Maps</Tabs.Trigger>
                     {mapSelected == null ? "" : <Tabs.Trigger value="sessionLists">{mapSelected?.name}</Tabs.Trigger>}
                     {sessionSelected == null ? "" : <Tabs.Trigger value="session">Session {sessionSelected?.name}</Tabs.Trigger>}
                 </Tabs.List>
 
-                <Container pt="3" align='left' height="auto">
-                    <Tabs.Content value="mapLists">
+                <Box className="live-analysis-container" >
+                    <Tabs.Content className="TabContent" value="mapLists">
                         <MapList setMap={setMap}></MapList>
                     </Tabs.Content>
 
@@ -104,9 +105,9 @@ const LiveAnalysis = () => {
                     </Tabs.Content>
 
                     <Tabs.Content value="session">
-                        <Text size="2">Edit your profile or update contact information.</Text>
+                        <SessionAnalysis></SessionAnalysis>
                     </Tabs.Content>
-                </Container >
+                </Box >
             </Tabs.Root>
         </AnalysisContext.Provider>
     )

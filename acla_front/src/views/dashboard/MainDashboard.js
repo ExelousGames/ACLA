@@ -1,7 +1,6 @@
 import React, { createContext, useState } from 'react';
-import axios from 'axios';
 import { useAuth } from "hooks/AuthProvider";
-
+import './MainDashboard.css';
 import {
     Avatar,
     Badge,
@@ -21,9 +20,9 @@ import {
     Text,
     TextField,
     Theme,
+    Section,
 } from "@radix-ui/themes";
 import SideMainMenu from 'views/side-main-menu/side-main-menu';
-import LiveAnalysis from 'views/live-analysis/live-analysis';
 import { MainMenuOptions } from 'data/MainMenuOptions';
 
 
@@ -36,10 +35,10 @@ const MainDashboard = ({ onTaskCreated }) => {
     return (
 
         <MainMenuOptionSelectionContext value={[mainMenuOptionSelected, setMainMenuOption]}>
-            <Flex gap="3" rows="2" width="auto" direction="column">
-                <Box className="Title" height="64px">Assetto Corsa Competizione Lap Analysis</Box>
-                <SideMainMenu></SideMainMenu>
-            </Flex>
+
+            <Box className="MainDashboardTitle Title">Assetto Corsa Competizione Lap Analysis</Box>
+            <SideMainMenu></SideMainMenu>
+
         </MainMenuOptionSelectionContext>
 
     );

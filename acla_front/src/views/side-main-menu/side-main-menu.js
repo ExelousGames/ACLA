@@ -6,40 +6,40 @@ import LiveAnalysis from "views/live-analysis/live-analysis";
 
 const SideMainMenu = () => (
     <Tabs.Root className="TabsRoot" defaultValue="account">
-        <Flex columns="2" width="auto" align="start">
-            <ScrollArea.Root className="ScrollAreaRoot">
 
-                <ScrollArea.Viewport className="ScrollAreaViewport">
+        <ScrollArea.Root className="ScrollAreaRoot">
 
-                    <Tabs.List className="TabsList">
-                        <Tabs.Trigger className="TabsTrigger" value="analysis">Analysis</Tabs.Trigger>
-                        <Tabs.Trigger className="TabsTrigger" value="sessionList">Documents</Tabs.Trigger>
-                        <Tabs.Trigger className="TabsTrigger" value="session">Settings</Tabs.Trigger>
-                    </Tabs.List>
-                </ScrollArea.Viewport>
-                <ScrollArea.Scrollbar className="ScrollAreaScrollbar" orientation="vertical">
-                    <ScrollArea.Thumb className="ScrollAreaThumb" />
-                </ScrollArea.Scrollbar>
-                <ScrollArea.Scrollbar className="ScrollAreaScrollbar" orientation="horizontal">
-                    <ScrollArea.Thumb className="ScrollAreaThumb" />
-                </ScrollArea.Scrollbar>
-                <ScrollArea.Corner className="ScrollAreaCorner" />
-            </ScrollArea.Root>
+            <ScrollArea.Viewport className="ScrollAreaViewport">
 
-            <Container pt="3" align='left'>
-                <Tabs.Content className="TabsContent" value="analysis">
-                    <LiveAnalysis></LiveAnalysis>
-                </Tabs.Content>
+                <Tabs.List className="TabsList">
+                    <Tabs.Trigger className="TabsTrigger" value="analysis">Analysis</Tabs.Trigger>
+                    <Tabs.Trigger className="TabsTrigger" value="sessionList">Documents</Tabs.Trigger>
+                    <Tabs.Trigger className="TabsTrigger" value="session">Settings</Tabs.Trigger>
+                </Tabs.List>
+            </ScrollArea.Viewport>
+            <ScrollArea.Scrollbar className="ScrollAreaScrollbar" orientation="vertical">
+                <ScrollArea.Thumb className="ScrollAreaThumb" />
+            </ScrollArea.Scrollbar>
+            <ScrollArea.Scrollbar className="ScrollAreaScrollbar" orientation="horizontal">
+                <ScrollArea.Thumb className="ScrollAreaThumb" />
+            </ScrollArea.Scrollbar>
+            <ScrollArea.Corner className="ScrollAreaCorner" />
+        </ScrollArea.Root>
 
-                <Tabs.Content className="TabsContent" value="sessionList">
+        <Box className="Container" align='left'>
+            <Tabs.Content className="TabsContent" value="analysis">
+                <LiveAnalysis></LiveAnalysis>
+            </Tabs.Content>
 
-                </Tabs.Content>
+            <Tabs.Content className="TabsContent" value="sessionList">
 
-                <Tabs.Content className="TabsContent" value="session">
-                    <Text size="2">Edit your profile or update contact information.</Text>
-                </Tabs.Content>
-            </Container >
-        </Flex >
+            </Tabs.Content>
+
+            <Tabs.Content className="TabsContent" value="session">
+                <Text size="2">Edit your profile or update contact information.</Text>
+            </Tabs.Content>
+        </Box >
+
     </Tabs.Root>
 
 
