@@ -1,4 +1,4 @@
-import { Point } from './index.js';
+import { Point } from './curve-to-bezier-helper.js';
 
 function clone(p: Point): Point {
   return [...p] as Point;
