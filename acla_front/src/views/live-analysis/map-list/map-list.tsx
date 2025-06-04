@@ -29,11 +29,14 @@ import { AnalysisContext } from '../live-analysis';
 const MapList = (setMapState: any) => {
     const options: MapOption[] = [{
         key: 1,
+        datakey: 1,
         name: "Track 1",
-        session_count: 2
+        session_count: 2,
+
     },
     {
         key: 2,
+        datakey: 2,
         name: "Track 2",
         session_count: 2
     }];
@@ -43,9 +46,7 @@ const MapList = (setMapState: any) => {
             <ScrollArea.Viewport className="ScrollAreaViewport">
                 <Flex flexShrink="0" direction="column" gap="9">
                     {options.map((option: MapOption) => (
-
-                        <MapCard {...option} />
-
+                        <MapCard key={option.key} datakey={option.datakey} name={option.name} session_count={option.session_count} />
                     ))}
                 </Flex>
             </ScrollArea.Viewport>
@@ -68,25 +69,25 @@ const MapList = (setMapState: any) => {
     )
 };
 
-function MapCard(mapinfo: MapOption) {
+function MapCard({ datakey, name, session_count }: MapOption) {
     const { mapContext } = useContext(AnalysisContext);
     function mapSelected() {
-        mapContext.setMap(mapinfo);
+        mapContext.setMap({ datakey, name, session_count });
     }
 
     return (
         <button className="Button" onClick={mapSelected}>
             <Card >
-                <Flex align="center" gap="3" key={mapinfo.key}>
+                <Flex align="center" gap="3">
                     <Box asChild width="60px" height="60px">
                         <img />
                     </Box>
                     <Box flexGrow="1" width="0">
                         <Text as="div" size="2" truncate>
-                            {mapinfo.name}
+                            {name}
                         </Text>
                         <Text as="div" size="1" color="gray" truncate>
-                            {mapinfo.session_count}
+                            {session_count}
                         </Text>
                     </Box>
                 </Flex>
