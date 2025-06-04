@@ -4,13 +4,13 @@ import { Stage, Layer, Arc, Circle, Rect } from 'react-konva';
 const SessionAnalysis = () => {
 
     // Define virtual size for our scene
-    const sceneWidth = 0;
-    const sceneHeight = 0;
+    let containerWidth = 500;
+    let containerHeight = 500;
 
     // State to track current scale and dimensions
     const [stageSize, setStageSize] = useState({
-        width: sceneWidth,
-        height: sceneHeight,
+        width: containerWidth,
+        height: containerHeight,
         scale: 1
     });
 
@@ -22,28 +22,27 @@ const SessionAnalysis = () => {
         if (!containerRef.current) return;
 
         // Get container width
-        const containerWidth = containerRef.current.offsetWidth;
-        const containerHeight = containerRef.current.offsetHeight;
-        console.log(containerWidth, containerHeight);
-        // Calculate scale
-        const widthScale = containerWidth / sceneWidth;
-        const heightScale = containerHeight / sceneWidth;
+        containerWidth = containerRef.current.offsetWidth;
+        containerHeight = containerRef.current.offsetHeight;
+
         // Update state with new dimensions
         setStageSize({
             width: containerWidth,
-            height: containerHeight,
+            height: containerWidth,
             scale: 1
         });
     };
 
     // Update on mount and when window resizes
     useEffect(() => {
+
         updateSize();
+
 
     }, []);
 
     return (
-        <div ref={containerRef} style={{ width: '100%', height: '100%' }}>
+        <div ref={containerRef} style={{ width: '100%', height: '90%' }}>
 
             <Stage width={stageSize.width}
                 height={stageSize.height}
@@ -54,13 +53,13 @@ const SessionAnalysis = () => {
                     <Circle
                         radius={50}
                         fill="red"
-                        x={sceneWidth / 2}
-                        y={sceneHeight / 2}
+                        x={containerWidth / 2}
+                        y={containerHeight / 2}
                     />
                     <Rect
                         fill="green"
-                        x={sceneWidth - 100}
-                        y={sceneHeight - 100}
+                        x={containerWidth - 100}
+                        y={containerHeight - 100}
                         width={100}
                         height={100}
                     />

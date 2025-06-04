@@ -34,6 +34,7 @@ export const AnalysisContext = createContext({
     mapContext: {
         mapSelected: {
             key: -1,
+            datakey: -1,
             name: "",
             session_count: 0
         } as MapOption | null,
@@ -42,6 +43,7 @@ export const AnalysisContext = createContext({
     sessionContext: {
         sessionSelected: {
             key: -1,
+            datakey: -1,
             name: "",
             total_time: 0
         } as SessionOption | null,
@@ -89,7 +91,7 @@ const LiveAnalysis = () => {
     return (
         <AnalysisContext.Provider value={{ mapContext: { mapSelected, setMap }, sessionContext: { sessionSelected, setSession } }}>
             <Tabs.Root className="LiveAnalysisTabsRoot" defaultValue="mapLists" value={activeTab} onValueChange={setActiveTab}>
-                <Tabs.List justify="start">
+                <Tabs.List className="live-analysis-tablists" justify="start">
                     <Tabs.Trigger value="mapLists">Maps</Tabs.Trigger>
                     {mapSelected == null ? "" : <Tabs.Trigger value="sessionLists">{mapSelected?.name}</Tabs.Trigger>}
                     {sessionSelected == null ? "" : <Tabs.Trigger value="session">Session {sessionSelected?.name}</Tabs.Trigger>}
@@ -100,11 +102,11 @@ const LiveAnalysis = () => {
                         <MapList setMap={setMap}></MapList>
                     </Tabs.Content>
 
-                    <Tabs.Content value="sessionLists">
+                    <Tabs.Content className="TabContent" value="sessionLists">
                         <SessionList></SessionList>
                     </Tabs.Content>
 
-                    <Tabs.Content value="session">
+                    <Tabs.Content className="TabContent" value="session">
                         <SessionAnalysis></SessionAnalysis>
                     </Tabs.Content>
                 </Box >
