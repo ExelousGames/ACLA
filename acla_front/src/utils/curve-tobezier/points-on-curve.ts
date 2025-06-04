@@ -123,6 +123,13 @@ export function simplifyPoints(points: readonly Point[], start: number, end: num
   return outPoints;
 }
 
+/**
+ * 
+ * @param points pass in the points representing a bezier curve. Each point is an array of two numbers.The points can also be a set of continuous curves where the last poing on the Nth curve acts as the first point of the next.
+ * @param tolerance Same can be rendered with more tolerance (default value is 0.15): The value of tolerance can be between 0 and 1. It is used to decide how many points are needed in a section of the curve. The algorithm determined the flatness of a section of the curve and compares it to the tolerance level, if less flat, the segment gets further divided into 2 segments.
+ * @param distance If a distance value is provided, the method uses the Ramer–Douglas–Peucker algorithm to reduce the points.
+ * @returns 
+ */
 export function pointsOnBezierCurves(points: readonly Point[], tolerance: number = 0.15, distance?: number): Point[] {
   const newPoints: Point[] = [];
   const numSegments = (points.length - 1) / 3;
