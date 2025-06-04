@@ -1,9 +1,15 @@
-import { Point } from './curve-to-bezier-helper.js';
+import { Point } from './points-on-curve.js';
 
 function clone(p: Point): Point {
   return [...p] as Point;
 }
 
+/**
+ * A Set of points to a set of points representing bezier curves These could be passed to pointsOnBezierCurves function to get the points on the curve
+ * @param pointsIn A set of points
+ * @param curveTightness Tightness 
+ * @returns  A set of points passing through the curve
+ */
 export function curveToBezier(pointsIn: readonly Point[], curveTightness = 0): Point[] {
   const len = pointsIn.length;
   if (len < 3) {
