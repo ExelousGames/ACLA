@@ -1,6 +1,9 @@
 import { createContext, Key, useContext, useEffect, useRef, useState } from 'react';
 import { Stage, Layer, Arc, Circle, Rect, Line, Group } from 'react-konva';
+import { curveToBezier } from 'utils/curve-tobezier/curve-to-bezier';
 import { Point } from 'utils/curve-tobezier/points-on-curve';
+
+type SplinePoint = { id: number, point: Point };
 
 const SessionAnalysis = () => {
 
@@ -12,7 +15,7 @@ const SessionAnalysis = () => {
         width: containerWidth,
         height: containerHeight,
     });
-    const [shapes, setShapes] = useState(createInitialShapes());
+    const [turningPoints, setTurningPoints] = useState<SplinePoint[]>(createInitialShapes());
     // Reference to parent container
     const containerRef = useRef<HTMLInputElement>(null);
 
@@ -25,7 +28,7 @@ const SessionAnalysis = () => {
         // Get container width
         containerWidth = containerRef.current.offsetWidth;
         containerHeight = containerRef.current.offsetHeight;
-        console.log(containerWidth, containerHeight);
+
         // Update state with new dimensions
         setStageSize({
             width: containerWidth,
@@ -42,45 +45,33 @@ const SessionAnalysis = () => {
         const target = e.target;
         const targetRect = target.getClientRect();
 
-        setShapes(shapes.map((shape: { id: any; }) => {
-            if (shape.id === id) {
-                return shape;
-            }
-            const shapeGroup = target.parent.parent.findOne(`#group-${shape.id}`);
-            if (!shapeGroup) return shape;
-        }));
+        setTurningPoints(turningPoints.map((turningPoint: { id: number, point: Point }) => {
+            if (turningPoint.id !== id) return turningPoint;
 
-        setShapes(shapes.map((shape: { id: any; }) => {
-            if (shape.id !== id) return;
+            let pointPosition: any[] = [e.target.x(), e.target.y()];
 
-            let point: any[] = [e.target.x(), e.target.y()];
-
-            console.log(e.target.x(), e.target.y());
             if (e.target.x() <= 0) {
-                point[0] = 0;
+                pointPosition[0] = 0;
             }
             if (e.target.x() as number >= stageSize.width) {
-                point[0] = stageSize.width;
+                pointPosition[0] = stageSize.width;
             }
 
             if (e.target.y() < 0) {
-                point[1] = 0;
+                pointPosition[1] = 0;
             }
             if (e.target.y() as number >= stageSize.height) {
-                point[1] = stageSize.height;
+                pointPosition[1] = stageSize.height;
             }
 
-            //set posisition
+            //set posisition. for some reason, point wont set again at boundary, this fix it temporaryily
             e.target.absolutePosition({
-                x: point[0],
-                y: point[1]
+                x: pointPosition[0],
+                y: pointPosition[1]
             });
 
-            //record position
-            if (shape.id === id) {
-                return { ...shape, x: point[0], y: point[1] }
-            }
-            return shape;
+            return { ...turningPoint, point: [pointPosition[0], pointPosition[1]] }
+
         }
 
         ));
@@ -90,9 +81,12 @@ const SessionAnalysis = () => {
 
     };
 
-    function createInitialShapes(): any {
+    function createInitialShapes(): SplinePoint[] {
         return [
-            { id: 0, x: 0, y: 0 }
+            { id: 0, point: [0, 0] },
+            { id: 1, point: [0, 20] },
+            { id: 2, point: [0, 40] },
+            { id: 3, point: [0, 60] }
         ]
     }
     return (
@@ -100,11 +94,20 @@ const SessionAnalysis = () => {
 
             <Stage width={stageSize.width} height={stageSize.height} >
                 <Layer>
-                    {shapes.map((shape: { id: Key; x: number | undefined; y: number | undefined; }) => (
-                        <Group key={shape.id} id={`group-${shape.id}`} x={shape.x} y={shape.y} draggable onDragMove={(e) => handleDragMove(e, shape.id)} onDragEnd={(e) => handleDragEnd(e, shape.id)}>
-                            <Circle key={shape.id} radius={20} fill={"red"} name={shape.id.toString()} />
+                    <Line
+                        points={conver_Points_to_1d_array(curveToBezier(turningPoints)))}
+                    stroke="red"
+                    strokeWidth={15}
+                    lineCap="round"
+                    lineJoin="round"
+                    />
+                    {turningPoints.map((turningPoint: { id: Key, point: Point }) => (
+                        <Group key={turningPoint.id} id={`group-${turningPoint.id}`} x={turningPoint.point[0]} y={turningPoint.point[1]} draggable onDragMove={(e) => handleDragMove(e, turningPoint.id)} onDragEnd={(e) => handleDragEnd(e, turningPoint.id)}>
+                            <Circle key={turningPoint.id} radius={20} fill={"red"} name={turningPoint.id.toString()} />
                         </Group>
                     ))}
+
+
                 </Layer>
             </Stage>
         </div>
@@ -115,12 +118,26 @@ function conver_1D_array_to_2d_array(points: number[]): Point[] {
     const result: Point[] = [];
     for (let i = 0; i < points.length; i += 2) {
         const point = points.slice(i, i + 2);
-        result.push({ x: point[0], y: point[1] });
+        result.push([point[0], point[1]]);
     }
     return result;
 }
 
+function extractSplinePointToPoint(points: SplinePoint[]): Point[] {
+    points.reduce((acc, curr) => [...acc, ...curr.point], []
+}
+function conver_Points_to_1d_array(points: Point[]): number[] {
+    if (points.length === 0) return [];
 
+    let result: number[] = [];
+    for (let i = 0; i < points.length; i += 1) {
+
+        result = result.concat(points[i]);
+
+    }
+
+    return result;
+}
 export default SessionAnalysis;
 
 
