@@ -95,11 +95,8 @@ const SessionAnalysis = () => {
             <Stage width={stageSize.width} height={stageSize.height} >
                 <Layer>
                     <Line
-                        points={conver_Points_to_1d_array(curveToBezier(turningPoints)))}
-                    stroke="red"
-                    strokeWidth={15}
-                    lineCap="round"
-                    lineJoin="round"
+                        points={convert_Points_to_1d_array(curveToBezier(extractSplinePointToPoint(turningPoints)))}
+                        stroke="red" strokeWidth={15} lineCap="round" lineJoin="round"
                     />
                     {turningPoints.map((turningPoint: { id: Key, point: Point }) => (
                         <Group key={turningPoint.id} id={`group-${turningPoint.id}`} x={turningPoint.point[0]} y={turningPoint.point[1]} draggable onDragMove={(e) => handleDragMove(e, turningPoint.id)} onDragEnd={(e) => handleDragEnd(e, turningPoint.id)}>
@@ -124,9 +121,11 @@ function conver_1D_array_to_2d_array(points: number[]): Point[] {
 }
 
 function extractSplinePointToPoint(points: SplinePoint[]): Point[] {
-    points.reduce((acc, curr) => [...acc, ...curr.point], []
+    return points.reduce((acc, curr): Point[] => {
+        return [...acc, curr.point];
+    }, [] as Point[]);
 }
-function conver_Points_to_1d_array(points: Point[]): number[] {
+function convert_Points_to_1d_array(points: Point[]): number[] {
     if (points.length === 0) return [];
 
     let result: number[] = [];
