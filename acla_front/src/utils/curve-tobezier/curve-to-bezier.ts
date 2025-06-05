@@ -3,8 +3,13 @@ import { Point } from './points-on-curve.js';
 function clone(p: Point): Point {
   return [...p] as Point;
 }
-
-export function curveToBezier(pointsIn: readonly Point[], curveTightness = 0): Point[] {
+/**
+ * this returns the 2 extra controlling points needed for each input points
+ * @param pointsIn 
+ * @param curveTightness 
+ * @returns 
+ */
+export function PointsToBezierPoints(pointsIn: readonly Point[], curveTightness = 0): Point[] {
   const len = pointsIn.length;
   if (len < 3) {
     throw new Error('A curve must have at least three points.');

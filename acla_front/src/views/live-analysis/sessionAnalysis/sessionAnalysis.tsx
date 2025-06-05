@@ -1,6 +1,6 @@
 import { createContext, Key, useContext, useEffect, useRef, useState } from 'react';
 import { Stage, Layer, Arc, Circle, Rect, Line, Group } from 'react-konva';
-import { curveToBezier } from 'utils/curve-tobezier/curve-to-bezier';
+import { PointsToBezierPoints } from 'utils/curve-tobezier/curve-to-bezier';
 import { Point, pointsOnBezierCurves } from 'utils/curve-tobezier/points-on-curve';
 
 type SplinePoint = { id: number, point: Point };
@@ -86,7 +86,7 @@ const SessionAnalysis = () => {
             { id: 0, point: [0, 0] },
             { id: 1, point: [0, 20] },
             { id: 2, point: [0, 40] },
-            { id: 3, point: [0, 60] }
+            { id: 3, point: [0, 60] },
         ]
     }
     return (
@@ -95,8 +95,8 @@ const SessionAnalysis = () => {
             <Stage width={stageSize.width} height={stageSize.height} >
                 <Layer>
                     <Line
-                        points={convert_Points_to_1d_array(pointsOnBezierCurves(extractSplinePointToPoint(turningPoints)))}
-                        stroke="red" strokeWidth={15} lineCap="round" lineJoin="round"
+                        points={convert_Points_to_1d_array(pointsOnBezierCurves(PointsToBezierPoints(extractSplinePointToPoint(turningPoints), 0.2)))}
+                        stroke="red" strokeWidth={15} closed={true}
                     />
                     {turningPoints.map((turningPoint: { id: Key, point: Point }) => (
                         <Group key={turningPoint.id} id={`group-${turningPoint.id}`} x={turningPoint.point[0]} y={turningPoint.point[1]} draggable onDragMove={(e) => handleDragMove(e, turningPoint.id)} onDragEnd={(e) => handleDragEnd(e, turningPoint.id)}>
@@ -127,7 +127,7 @@ function extractSplinePointToPoint(points: SplinePoint[]): Point[] {
 }
 function convert_Points_to_1d_array(points: Point[]): number[] {
     if (points.length === 0) return [];
-
+    //points.flat();
     let result: number[] = [];
     for (let i = 0; i < points.length; i += 1) {
 
