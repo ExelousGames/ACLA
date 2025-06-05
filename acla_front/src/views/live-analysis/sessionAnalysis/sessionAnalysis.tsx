@@ -1,7 +1,7 @@
 import { createContext, Key, useContext, useEffect, useRef, useState } from 'react';
 import { Stage, Layer, Arc, Circle, Rect, Line, Group } from 'react-konva';
 import { curveToBezier } from 'utils/curve-tobezier/curve-to-bezier';
-import { Point } from 'utils/curve-tobezier/points-on-curve';
+import { Point, pointsOnBezierCurves } from 'utils/curve-tobezier/points-on-curve';
 
 type SplinePoint = { id: number, point: Point };
 
@@ -95,7 +95,7 @@ const SessionAnalysis = () => {
             <Stage width={stageSize.width} height={stageSize.height} >
                 <Layer>
                     <Line
-                        points={convert_Points_to_1d_array(curveToBezier(extractSplinePointToPoint(turningPoints)))}
+                        points={convert_Points_to_1d_array(pointsOnBezierCurves(extractSplinePointToPoint(turningPoints)))}
                         stroke="red" strokeWidth={15} lineCap="round" lineJoin="round"
                     />
                     {turningPoints.map((turningPoint: { id: Key, point: Point }) => (
