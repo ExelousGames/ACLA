@@ -96,7 +96,7 @@ const SessionAnalysis = () => {
                 <Layer>
                     <Line
                         points={convert_Points_to_1d_array(pointsOnBezierCurves(PointsToBezierPoints(extractSplinePointToPoint(turningPoints), 0.2)))}
-                        stroke="red" strokeWidth={15} closed={true}
+                        stroke="red" strokeWidth={15}
                     />
                     {turningPoints.map((turningPoint: { id: Key, point: Point }) => (
                         <Group key={turningPoint.id} id={`group-${turningPoint.id}`} x={turningPoint.point[0]} y={turningPoint.point[1]} draggable onDragMove={(e) => handleDragMove(e, turningPoint.id)} onDragEnd={(e) => handleDragEnd(e, turningPoint.id)}>

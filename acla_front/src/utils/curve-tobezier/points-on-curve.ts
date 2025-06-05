@@ -123,6 +123,13 @@ export function simplifyPoints(points: readonly Point[], start: number, end: num
   return outPoints;
 }
 
+/**
+ * outputs a smooth curve
+ * @param points two controll points for each user input point must be provided, start and end of user input points only has one control point
+ * @param tolerance 
+ * @param distance 
+ * @returns 
+ */
 export function pointsOnBezierCurves(points: readonly Point[], tolerance: number = 0.15, distance?: number): Point[] {
   const newPoints: Point[] = [];
   const numSegments = (points.length - 1) / 3;
@@ -134,4 +141,25 @@ export function pointsOnBezierCurves(points: readonly Point[], tolerance: number
     return simplifyPoints(newPoints, 0, newPoints.length, distance);
   }
   return newPoints;
+}
+
+function getQuadraticTangent(t, P0, P1, P2) {
+  return {
+    x: 2 * (1 - t) * (P1.x - P0.x) + 2 * t * (P2.x - P1.x),
+    y: 2 * (1 - t) * (P1.y - P0.y) + 2 * t * (P2.y - P1.y)
+  };
+}
+
+function getNormal(tangent, direction = 'left') {
+  // Normalize tangent (convert to unit vector)
+  const length = Math.sqrt(tangent.x ** 2 + tangent.y ** 2);
+  if (length === 0) return { x: 0, y: 0 }; // Edge case: straight line
+
+  const tx = tangent.x / length;
+  const ty = tangent.y / length;
+
+  // Rotate 90° to get normal
+  return direction === 'left'
+    ? { x: -ty, y: tx }   // Left normal (counter-clockwise)
+    : { x: ty, y: -tx };  // Right normal (clockwise)
 }
