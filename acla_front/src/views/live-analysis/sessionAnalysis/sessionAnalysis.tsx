@@ -136,7 +136,7 @@ const SessionAnalysis = () => {
 
                     {bezierPoints.map((point: { id: Key, point: Point }) => (
 
-                        <Circle key={point.id} x={point.point[0]} y={point.point[1]} radius={10} fill={"red"} name={point.id.toString()} />
+                        <Circle key={point.id} x={point.point[0]} y={point.point[1]} radius={10} fill={"blue"} name={point.id.toString()} />
                     ))}
                 </Layer>
             </Stage>
