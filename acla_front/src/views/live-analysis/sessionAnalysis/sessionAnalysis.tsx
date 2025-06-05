@@ -17,7 +17,9 @@ const SessionAnalysis = () => {
     });
     const [turningPoints, setTurningPoints] = useState<RacingTurningPoint[]>(createInitialShapes());
     const [bezierPoints, setBezierPoints] = useState<BezierPoints[]>([]);
-    const [leftCrubBezierPoints, setLeftCrubBezierPoints] = useState<BezierPoints[]>([]);
+    const [leftCurbTurningPoints, setLeftCurbTurningPoints] = useState<RacingTurningPoint[]>([]);
+    const [leftCurbBezierPoints, setLeftCrubBezierPoints] = useState<BezierPoints[]>([]);
+    const [rightCurbTurningPoints, setRightCurbTurningPoints] = useState<RacingTurningPoint[]>([]);
     const [rightCurbBezierPoints, setRightCurbBezierPoints] = useState<BezierPoints[]>([]);
     // Reference to parent container
     const containerRef = useRef<HTMLInputElement>(null);
@@ -66,7 +68,16 @@ const SessionAnalysis = () => {
         })
         setBezierPoints(result);
 
-        points = AddControlPoints(createCurbBezierOffestPoints(turningPoints, 'left'), 0.4);
+        points = createCurbBezierOffsetPoints(turningPoints, 'left')
+        index = 0;
+        result = [];
+        points.forEach((point) => {
+            index++;
+            result.push({ id: index, point: point });
+        })
+        setLeftCurbTurningPoints(result);
+
+        points = AddControlPoints(points, 0.4);
         index = 0;
         result = [];
         points.forEach((point) => {
@@ -75,7 +86,16 @@ const SessionAnalysis = () => {
         })
         setLeftCrubBezierPoints(result);
 
-        points = AddControlPoints(createCurbBezierOffestPoints(turningPoints, 'right'), 0.4);
+        points = createCurbBezierOffsetPoints(turningPoints, 'right');
+        index = 0;
+        result = [];
+        points.forEach((point) => {
+            index++;
+            result.push({ id: index, point: point });
+        });
+        setRightCurbTurningPoints(result);
+
+        points = AddControlPoints(points, 0.4);
         index = 0;
         result = [];
         points.forEach((point) => {
@@ -110,7 +130,7 @@ const SessionAnalysis = () => {
                 pointPosition[1] = stageSize.height;
             }
 
-            //set posisition. for some reason, point wont set again at boundary, this fix it temporaryily
+            //set position. for some reason, point wont set again at boundary, this fix it temporarily
             e.target.absolutePosition({
                 x: pointPosition[0],
                 y: pointPosition[1]
@@ -133,7 +153,7 @@ const SessionAnalysis = () => {
                 <Layer>
 
                     <Line
-                        points={exportPointsForDrawing(extractBezierPointToPoint(leftCrubBezierPoints))}
+                        points={exportPointsForDrawing(extractBezierPointToPoint(leftCurbBezierPoints))}
                         stroke="red" strokeWidth={4}
                     />
 
@@ -210,7 +230,7 @@ function convert_Points_to_1d_array(points: Point[]): number[] {
  * @param direction 
  * @returns 
  */
-function createCurbBezierOffestPoints(points?: RacingTurningPoint[], direction: 'left' | 'right' = 'left'): Point[] {
+function createCurbBezierOffsetPoints(points?: RacingTurningPoint[], direction: 'left' | 'right' = 'left'): Point[] {
     if (!points || points.length === 0) return [];
     return offsetBezierPoints(extractRacingTurningPointToPoint(points), 30, direction);
 }
