@@ -3,7 +3,8 @@ import { Stage, Layer, Arc, Circle, Rect, Line, Group } from 'react-konva';
 import { AddControlPoints } from 'utils/curve-tobezier/curve-to-bezier';
 import { offsetBezierPoints, Point, ConstructAllPointsOnBezierCurves } from 'utils/curve-tobezier/points-on-curve';
 
-type RacingTurningPoint = { id: number, point: Point };
+type RacingTurningPoint = { id: number, point: Point, l_width: number, r_width: number };
+type CurbRacingTurningPoint = { id: number, point: Point };
 type BezierPoints = { id: number, point: Point };
 const SessionAnalysis = () => {
 
@@ -17,9 +18,9 @@ const SessionAnalysis = () => {
     });
     const [turningPoints, setTurningPoints] = useState<RacingTurningPoint[]>(createInitialShapes());
     const [bezierPoints, setBezierPoints] = useState<BezierPoints[]>([]);
-    const [leftCurbTurningPoints, setLeftCurbTurningPoints] = useState<RacingTurningPoint[]>([]);
+    const [leftCurbTurningPoints, setLeftCurbTurningPoints] = useState<CurbRacingTurningPoint[]>([]);
     const [leftCurbBezierPoints, setLeftCrubBezierPoints] = useState<BezierPoints[]>([]);
-    const [rightCurbTurningPoints, setRightCurbTurningPoints] = useState<RacingTurningPoint[]>([]);
+    const [rightCurbTurningPoints, setRightCurbTurningPoints] = useState<CurbRacingTurningPoint[]>([]);
     const [rightCurbBezierPoints, setRightCurbBezierPoints] = useState<BezierPoints[]>([]);
     // Reference to parent container
     const containerRef = useRef<HTMLInputElement>(null);
@@ -28,10 +29,26 @@ const SessionAnalysis = () => {
 
     function createInitialShapes(): RacingTurningPoint[] {
         return [
-            { id: 0, point: [0, 0] },
-            { id: 1, point: [0, 20] },
-            { id: 2, point: [0, 40] },
-            { id: 3, point: [0, 120] },
+            {
+                id: 0, point: [0, 0],
+                l_width: 5,
+                r_width: 5
+            },
+            {
+                id: 1, point: [0, 20],
+                l_width: 5,
+                r_width: 5
+            },
+            {
+                id: 2, point: [0, 40],
+                l_width: 5,
+                r_width: 5
+            },
+            {
+                id: 3, point: [0, 120],
+                l_width: 5,
+                r_width: 5
+            },
         ]
     }
 
@@ -111,7 +128,7 @@ const SessionAnalysis = () => {
         const target = e.target;
         const targetRect = target.getClientRect();
 
-        setTurningPoints(turningPoints.map((turningPoint: { id: number, point: Point }) => {
+        setTurningPoints(turningPoints.map((turningPoint: { id: number, point: Point, l_width: number, r_width: number }) => {
             if (turningPoint.id !== id) return turningPoint;
 
             let pointPosition: any[] = [e.target.x(), e.target.y()];
