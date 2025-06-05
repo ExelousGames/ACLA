@@ -1,7 +1,7 @@
 import { createContext, Key, useContext, useEffect, useRef, useState } from 'react';
 import { Stage, Layer, Arc, Circle, Rect, Line, Group } from 'react-konva';
 import { PointsToBezierPoints } from 'utils/curve-tobezier/curve-to-bezier';
-import { getBezierNormal, Point, pointsOnBezierCurves } from 'utils/curve-tobezier/points-on-curve';
+import { offsetPolyBezier, Point, pointsOnBezierCurves } from 'utils/curve-tobezier/points-on-curve';
 
 type RacingTurningPoint = { id: number, point: Point };
 
@@ -99,8 +99,10 @@ const SessionAnalysis = () => {
      * @param turningPoints 
      */
     function AddBezierControllingPoints(turningPoints: RacingTurningPoint[]): Point[] | undefined {
-        setBezierPoints(PointsToBezierPoints(extractRacingTurningPointToPoint(turningPoints)));
-        return bezierPoints;
+        const points = PointsToBezierPoints(extractRacingTurningPointToPoint(turningPoints))
+        setBezierPoints(points);
+        console.log(points);
+        return points;
     }
 
     return (
@@ -169,17 +171,15 @@ function convert_Points_to_1d_array(points: Point[]): number[] {
     return points.flat();;
 }
 
+/**
+ * give bezier points of turning points, return curbs point of these turning points
+ * @param points 
+ * @param direction 
+ * @returns 
+ */
 function exportCurbBezierPoints(points?: Point[], direction: 'left' | 'right' = 'left'): Point[] {
     if (!points) return [];
-    let result: Point[] = [];
-    for (let i = 0; i < points.length; i += 3) {
-        const selectedPoints = points.slice(i, i + 3);
-
-        const point = getBezierNormal(selectedPoints[0], selectedPoints[1], selectedPoints[2], selectedPoints[3], 0, direction)
-        result.push([selectedPoints[0][0] + 20 * point[0], selectedPoints[0][1] + 20 * point[1]]);
-    }
-
-    return PointsToBezierPoints(result);
+    return PointsToBezierPoints(offsetPolyBezier(points, 50, direction));
 }
 /**
  * input points which should contains controlling points, and convert them into Curves and convert the result into 1d array readable by the Line component
@@ -192,6 +192,6 @@ function exportPointsForDrawing(points?: Point[]): number[] {
     return convert_Points_to_1d_array(pointsOnBezierCurves(points));
 }
 
-export default SessionAnalysis;
 
+export default SessionAnalysis;
 

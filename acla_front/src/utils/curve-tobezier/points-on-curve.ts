@@ -154,10 +154,63 @@ export function getBezierTangent(p0: Point, p1: Point, p2: Point, p3: Point, t: 
     3 * t * t * (p3[1] - p2[1])
   ];
 }
+// Which control point (P₀–P₃)
+export function getControlPointTangent(P0: Point, P1: Point, P2: Point, P3: Point, index: 0 | 1 | 2 | 3): Point {
+  switch (index) {
+    case 0: return [3 * (P1[0] - P0[0]), 3 * (P1[1] - P0[1])]; // Tangent at P₀
+    case 1: return [3 * (P2[0] - P0[0]), 3 * (P2[1] - P0[1])]; // Tangent at P₁
+    case 2: return [3 * (P3[0] - P1[0]), 3 * (P3[1] - P1[1])]; // Tangent at P₂
+    case 3: return [3 * (P3[0] - P2[0]), 3 * (P3[1] - P2[1])]; // Tangent at P₃
+  }
+}
 
-export function getBezierNormal(p0: Point, p1: Point, p2: Point, p3: Point, t: number, direction: 'left' | 'right' = 'left'): Point {
-  const tangent = getBezierTangent(p0, p1, p2, p3, t);
+// Get the normal vector (perpendicular to tangent)
+export function getNormal(tangent: Point, direction: 'left' | 'right' = 'left'): Point {
   return direction === 'left'
     ? [-tangent[1], tangent[0]]  // Left normal
     : [tangent[1], -tangent[0]]; // Right normal
+}
+
+// Normalize a vector to unit length
+function normalize(v: Point): Point {
+  const length = Math.sqrt(v[0] * v[0] + v[1] * v[1]);
+  return length > 0 ? [v[0] / length, v[1] / length] : [0, 0];
+}
+
+function createOffsetBezier(P0: Point, P1: Point, P2: Point, P3: Point, offsetDistance: number, direction: 'left' | 'right' = 'left'): [Point, Point, Point, Point] {
+  // Calculate normals for each control point
+  const normals = [
+    normalize(getNormal(getControlPointTangent(P0, P1, P2, P3, 0), direction)), // P₀
+    normalize(getNormal(getControlPointTangent(P0, P1, P2, P3, 1), direction)), // P₁
+    normalize(getNormal(getControlPointTangent(P0, P1, P2, P3, 2), direction)), // P₂
+    normalize(getNormal(getControlPointTangent(P0, P1, P2, P3, 3), direction))  // P₃
+  ];
+
+  // Offset each control point
+  const Q0: Point = [P0[0] + normals[0][0] * offsetDistance, P0[1] + normals[0][1] * offsetDistance];
+  const Q1: Point = [P1[0] + normals[1][0] * offsetDistance, P1[1] + normals[1][1] * offsetDistance];
+  const Q2: Point = [P2[0] + normals[2][0] * offsetDistance, P2[1] + normals[2][1] * offsetDistance];
+  const Q3: Point = [P3[0] + normals[3][0] * offsetDistance, P3[1] + normals[3][1] * offsetDistance];
+
+  return [Q0, Q1, Q2, Q3];
+}
+
+// // Array of points (length = 3n + 1, e.g., 4, 7, 10...)
+export function offsetPolyBezier(points: Point[], offsetDistance: number, direction: 'left' | 'right' = 'left'): Point[] {
+  const offsetPoints: Point[] = [];
+
+  for (let i = 0; i < points.length - 1; i += 3) {
+    const P0 = points[i];
+    const P1 = points[i + 1];
+    const P2 = points[i + 2];
+    const P3 = points[i + 3];
+
+    const [Q0, Q1, Q2, Q3] = createOffsetBezier(P0, P1, P2, P3, offsetDistance, direction);
+
+    // Only push Q0 if it's the first segment to avoid duplicates
+    if (i === 0) offsetPoints.push(Q0);
+    offsetPoints.push(Q1, Q2, Q3);
+  }
+
+  return offsetPoints;
 }
