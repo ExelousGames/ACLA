@@ -130,7 +130,7 @@ export function simplifyPoints(points: readonly Point[], start: number, end: num
  * @param distance 
  * @returns 
  */
-export function pointsOnBezierCurves(points: readonly Point[], tolerance: number = 0.15, distance?: number): Point[] {
+export function ConstructAllPointsOnBezierCurves(points: readonly Point[], tolerance: number = 0.15, distance?: number): Point[] {
   const newPoints: Point[] = [];
   const numSegments = (points.length - 1) / 3;
   for (let i = 0; i < numSegments; i++) {
@@ -195,8 +195,8 @@ function createOffsetBezier(P0: Point, P1: Point, P2: Point, P3: Point, offsetDi
   return [Q0, Q1, Q2, Q3];
 }
 
-// // Array of points (length = 3n + 1, e.g., 4, 7, 10...)
-export function offsetPolyBezier(points: Point[], offsetDistance: number, direction: 'left' | 'right' = 'left'): Point[] {
+//Array of points (length = 3n + 1, e.g., 4, 7, 10...)
+export function offsetBezierPoints(points: Point[], offsetDistance: number, direction: 'left' | 'right' = 'left'): Point[] {
   const offsetPoints: Point[] = [];
 
   for (let i = 0; i < points.length - 1; i += 3) {
@@ -211,6 +211,5 @@ export function offsetPolyBezier(points: Point[], offsetDistance: number, direct
     if (i === 0) offsetPoints.push(Q0);
     offsetPoints.push(Q1, Q2, Q3);
   }
-
   return offsetPoints;
 }

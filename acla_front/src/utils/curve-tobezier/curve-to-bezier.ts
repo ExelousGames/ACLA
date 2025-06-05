@@ -6,10 +6,10 @@ function clone(p: Point): Point {
 /**
  * this returns the 2 extra controlling points needed for each input points
  * @param pointsIn 
- * @param curveTightness 
+ * @param curveTightness (0-1)scale
  * @returns 
  */
-export function PointsToBezierPoints(pointsIn: readonly Point[], curveTightness = 0): Point[] {
+export function AddControlPoints(pointsIn: readonly Point[], curveTightness = 0): Point[] {
   const len = pointsIn.length;
   if (len < 3) {
     throw new Error('A curve must have at least three points.');
