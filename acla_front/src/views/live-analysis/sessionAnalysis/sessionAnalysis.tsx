@@ -4,7 +4,7 @@ import { PointsToBezierPoints } from 'utils/curve-tobezier/curve-to-bezier';
 import { offsetPolyBezier, Point, pointsOnBezierCurves } from 'utils/curve-tobezier/points-on-curve';
 
 type RacingTurningPoint = { id: number, point: Point };
-
+type BezierPoints = { id: number, point: Point };
 const SessionAnalysis = () => {
 
     // Define virtual size for our scene
@@ -16,7 +16,7 @@ const SessionAnalysis = () => {
         height: containerHeight,
     });
     const [turningPoints, setTurningPoints] = useState<RacingTurningPoint[]>(createInitialShapes());
-    const [bezierPoints, setBezierPoints] = useState<Point[]>();
+    const [bezierPoints, setBezierPoints] = useState<BezierPoints[]>([]);
     // Reference to parent container
     const containerRef = useRef<HTMLInputElement>(null);
 
@@ -79,7 +79,6 @@ const SessionAnalysis = () => {
                 y: pointPosition[1]
             });
 
-
             return { ...turningPoint, point: [pointPosition[0], pointPosition[1]] }
 
         }));
@@ -99,8 +98,13 @@ const SessionAnalysis = () => {
      */
     function AddBezierControllingPoints(turningPoints: RacingTurningPoint[]): Point[] | undefined {
         const points = PointsToBezierPoints(extractRacingTurningPointToPoint(turningPoints))
-        setBezierPoints(points);
-        console.log(points);
+        let index = 0;
+        let result: BezierPoints[] = [];
+        points.forEach((point) => {
+            index++;
+            result.push({ id: index, point: point });
+        })
+        setBezierPoints(result);
         return points;
     }
 
@@ -111,23 +115,28 @@ const SessionAnalysis = () => {
                 <Layer>
 
                     <Line
-                        points={exportPointsForDrawing(exportCurbBezierPoints(bezierPoints, 'left'))}
-                        stroke="red" strokeWidth={15}
+                        points={exportPointsForDrawing(exportCurbBezierPoints(extractBezierPointToPoint(bezierPoints), 'left'))}
+                        stroke="red" strokeWidth={4}
                     />
 
                     <Line
-                        points={exportPointsForDrawing(bezierPoints)}
-                        stroke="red" strokeWidth={15}
+                        points={exportPointsForDrawing(extractBezierPointToPoint(bezierPoints))}
+                        stroke="red" strokeWidth={4}
                     />
 
                     <Line
-                        points={exportPointsForDrawing(exportCurbBezierPoints(bezierPoints, 'right'))}
-                        stroke="red" strokeWidth={15}
+                        points={exportPointsForDrawing(exportCurbBezierPoints(extractBezierPointToPoint(bezierPoints), 'right'))}
+                        stroke="red" strokeWidth={4}
                     />
                     {turningPoints.map((turningPoint: { id: Key, point: Point }) => (
                         <Group key={turningPoint.id} id={`group-${turningPoint.id}`} x={turningPoint.point[0]} y={turningPoint.point[1]} draggable onDragMove={(e) => handleDragMove(e, turningPoint.id)} onDragEnd={(e) => handleDragEnd(e, turningPoint.id)}>
                             <Circle key={turningPoint.id} radius={20} fill={"red"} name={turningPoint.id.toString()} />
                         </Group>
+                    ))}
+
+                    {bezierPoints.map((point: { id: Key, point: Point }) => (
+
+                        <Circle key={point.id} x={point.point[0]} y={point.point[1]} radius={10} fill={"red"} name={point.id.toString()} />
                     ))}
                 </Layer>
             </Stage>
@@ -147,6 +156,13 @@ function convert_1D_array_to_2d_array(points: number[]): Point[] {
 }
 
 function extractRacingTurningPointToPoint(points: RacingTurningPoint[]): Point[] {
+    return points.reduce((acc, curr): Point[] => {
+        return [...acc, curr.point];
+    }, [] as Point[]);
+}
+
+function extractBezierPointToPoint(points: BezierPoints[]): Point[] {
+    if (!points) return [];
     return points.reduce((acc, curr): Point[] => {
         return [...acc, curr.point];
     }, [] as Point[]);
