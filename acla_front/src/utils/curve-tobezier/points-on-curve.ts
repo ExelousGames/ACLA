@@ -125,7 +125,7 @@ export function simplifyPoints(points: readonly Point[], start: number, end: num
 
 /**
  * outputs a smooth curve
- * @param points two controll points for each user input point must be provided, start and end of user input points only has one control point
+ * @param points two control points for each user input point must be provided, start and end of user input points only has one control point
  * @param tolerance 
  * @param distance 
  * @returns 
@@ -143,28 +143,21 @@ export function pointsOnBezierCurves(points: readonly Point[], tolerance: number
   return newPoints;
 }
 
-function getBezierTangent(
-  p0: Point, p1: Point, p2: Point, p3: Point,
-  t: number
-): Point {
+export function getBezierTangent(p0: Point, p1: Point, p2: Point, p3: Point, t: number): Point {
   const mt = 1 - t;
-  return {
-    x: 3 * mt * mt * (p1.x - p0.x) +
-      6 * mt * t * (p2.x - p1.x) +
-      3 * t * t * (p3.x - p2.x),
-    y: 3 * mt * mt * (p1.y - p0.y) +
-      6 * mt * t * (p2.y - p1.y) +
-      3 * t * t * (p3.y - p2.y)
-  };
+  return [
+    3 * mt * mt * (p1[0] - p0[0]) +
+    6 * mt * t * (p2[0] - p1[0]) +
+    3 * t * t * (p3[0] - p2[0]),
+    3 * mt * mt * (p1[1] - p0[1]) +
+    6 * mt * t * (p2[1] - p1[1]) +
+    3 * t * t * (p3[1] - p2[1])
+  ];
 }
 
-function getBezierNormal(
-  p0: Point, p1: Point, p2: Point, p3: Point,
-  t: number,
-  direction: 'left' | 'right' = 'left'
-): Point {
+export function getBezierNormal(p0: Point, p1: Point, p2: Point, p3: Point, t: number, direction: 'left' | 'right' = 'left'): Point {
   const tangent = getBezierTangent(p0, p1, p2, p3, t);
   return direction === 'left'
-    ? { x: -tangent.y, y: tangent.x }  // Left normal
-    : { x: tangent.y, y: -tangent.x }; // Right normal
+    ? [-tangent[1], tangent[0]]  // Left normal
+    : [tangent[1], -tangent[0]]; // Right normal
 }
