@@ -193,7 +193,7 @@ function convert_Points_to_1d_array(points: Point[]): number[] {
  * @returns 
  */
 function exportCurbBezierPoints(points?: BezierPoints[], direction: 'left' | 'right' = 'left'): Point[] {
-    if (!points) return [];
+    if (!points || points.length === 0) return [];
     return PointsToBezierPoints(offsetPolyBezier(extractBezierPointToPoint(points), 50, direction));
 }
 /**
