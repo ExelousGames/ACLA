@@ -26,8 +26,6 @@ const SessionAnalysis = () => {
         return [
             { id: 0, point: [0, 0] },
             { id: 1, point: [0, 20] },
-            { id: 2, point: [0, 40] },
-            { id: 3, point: [0, 60] },
         ]
     }
 
