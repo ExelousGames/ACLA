@@ -115,7 +115,7 @@ const SessionAnalysis = () => {
                 <Layer>
 
                     <Line
-                        points={exportPointsForDrawing(exportCurbBezierPoints(extractBezierPointToPoint(bezierPoints), 'left'))}
+                        points={exportPointsForDrawing(exportCurbBezierPoints(bezierPoints, 'left'))}
                         stroke="red" strokeWidth={4}
                     />
 
@@ -125,7 +125,7 @@ const SessionAnalysis = () => {
                     />
 
                     <Line
-                        points={exportPointsForDrawing(exportCurbBezierPoints(extractBezierPointToPoint(bezierPoints), 'right'))}
+                        points={exportPointsForDrawing(exportCurbBezierPoints(bezierPoints, 'right'))}
                         stroke="red" strokeWidth={4}
                     />
                     {turningPoints.map((turningPoint: { id: Key, point: Point }) => (
@@ -192,9 +192,9 @@ function convert_Points_to_1d_array(points: Point[]): number[] {
  * @param direction 
  * @returns 
  */
-function exportCurbBezierPoints(points?: Point[], direction: 'left' | 'right' = 'left'): Point[] {
+function exportCurbBezierPoints(points?: BezierPoints[], direction: 'left' | 'right' = 'left'): Point[] {
     if (!points) return [];
-    return PointsToBezierPoints(offsetPolyBezier(points, 50, direction));
+    return PointsToBezierPoints(offsetPolyBezier(extractBezierPointToPoint(points), 50, direction));
 }
 /**
  * input points which should contains controlling points, and convert them into Curves and convert the result into 1d array readable by the Line component
