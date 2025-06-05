@@ -143,23 +143,28 @@ export function pointsOnBezierCurves(points: readonly Point[], tolerance: number
   return newPoints;
 }
 
-function getQuadraticTangent(t, P0, P1, P2) {
+function getBezierTangent(
+  p0: Point, p1: Point, p2: Point, p3: Point,
+  t: number
+): Point {
+  const mt = 1 - t;
   return {
-    x: 2 * (1 - t) * (P1.x - P0.x) + 2 * t * (P2.x - P1.x),
-    y: 2 * (1 - t) * (P1.y - P0.y) + 2 * t * (P2.y - P1.y)
+    x: 3 * mt * mt * (p1.x - p0.x) +
+      6 * mt * t * (p2.x - p1.x) +
+      3 * t * t * (p3.x - p2.x),
+    y: 3 * mt * mt * (p1.y - p0.y) +
+      6 * mt * t * (p2.y - p1.y) +
+      3 * t * t * (p3.y - p2.y)
   };
 }
 
-function getNormal(tangent, direction = 'left') {
-  // Normalize tangent (convert to unit vector)
-  const length = Math.sqrt(tangent.x ** 2 + tangent.y ** 2);
-  if (length === 0) return { x: 0, y: 0 }; // Edge case: straight line
-
-  const tx = tangent.x / length;
-  const ty = tangent.y / length;
-
-  // Rotate 90° to get normal
+function getBezierNormal(
+  p0: Point, p1: Point, p2: Point, p3: Point,
+  t: number,
+  direction: 'left' | 'right' = 'left'
+): Point {
+  const tangent = getBezierTangent(p0, p1, p2, p3, t);
   return direction === 'left'
-    ? { x: -ty, y: tx }   // Left normal (counter-clockwise)
-    : { x: ty, y: -tx };  // Right normal (clockwise)
+    ? { x: -tangent.y, y: tangent.x }  // Left normal
+    : { x: tangent.y, y: -tangent.x }; // Right normal
 }
