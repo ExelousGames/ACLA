@@ -97,8 +97,8 @@ const SessionAnalysis = () => {
      * @param turningPoints 
      */
     function AddBezierControllingPoints(turningPoints: RacingTurningPoint[]): Point[] | undefined {
-        const copyPoints = [...turningPoints] as RacingTurningPoint[];
-        const points = PointsToBezierPoints(extractRacingTurningPointToPoint(copyPoints))
+
+        const points = PointsToBezierPoints(extractRacingTurningPointToPoint(turningPoints))
         let index = 0;
         let result: BezierPoints[] = [];
         points.forEach((point) => {
@@ -157,7 +157,8 @@ function convert_1D_array_to_2d_array(points: number[]): Point[] {
 }
 
 function extractRacingTurningPointToPoint(points: RacingTurningPoint[]): Point[] {
-    return points.reduce((acc, curr): Point[] => {
+    const copyPoints = [...points] as RacingTurningPoint[];
+    return copyPoints.reduce((acc, curr): Point[] => {
         return [...acc, curr.point];
     }, [] as Point[]);
 }
