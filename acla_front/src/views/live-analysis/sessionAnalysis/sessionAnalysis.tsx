@@ -1,7 +1,7 @@
 import { createContext, Key, useContext, useEffect, useRef, useState } from 'react';
 import { Stage, Layer, Arc, Circle, Rect, Line, Group } from 'react-konva';
-import { PointsToBezierPoints } from 'utils/curve-tobezier/curve-to-bezier';
-import { offsetPolyBezier, Point, pointsOnBezierCurves } from 'utils/curve-tobezier/points-on-curve';
+import { AddControlPoints } from 'utils/curve-tobezier/curve-to-bezier';
+import { offsetBezierPoints, Point, ConstructAllPointsOnBezierCurves } from 'utils/curve-tobezier/points-on-curve';
 
 type RacingTurningPoint = { id: number, point: Point };
 type BezierPoints = { id: number, point: Point };
@@ -17,6 +17,8 @@ const SessionAnalysis = () => {
     });
     const [turningPoints, setTurningPoints] = useState<RacingTurningPoint[]>(createInitialShapes());
     const [bezierPoints, setBezierPoints] = useState<BezierPoints[]>([]);
+    const [leftCrubBezierPoints, setLeftCrubBezierPoints] = useState<BezierPoints[]>([]);
+    const [rightCurbBezierPoints, setRightCurbBezierPoints] = useState<BezierPoints[]>([]);
     // Reference to parent container
     const containerRef = useRef<HTMLInputElement>(null);
 
@@ -27,6 +29,7 @@ const SessionAnalysis = () => {
             { id: 0, point: [0, 0] },
             { id: 1, point: [0, 20] },
             { id: 2, point: [0, 40] },
+            { id: 3, point: [0, 120] },
         ]
     }
 
@@ -49,6 +52,40 @@ const SessionAnalysis = () => {
     useEffect(() => {
         updateSize();
     }, []);
+
+    //recalculate controlling point for bezier curve since the turning point moved
+    useEffect(() => {
+
+        //Add controlling points to turning points, also cached them together for later use
+        let points = AddControlPoints(extractRacingTurningPointToPoint(turningPoints), 0.6)
+        let index = 0;
+        let result: BezierPoints[] = [];
+        points.forEach((point) => {
+            index++;
+            result.push({ id: index, point: point });
+        })
+        setBezierPoints(result);
+
+        points = AddControlPoints(createCurbBezierOffestPoints(turningPoints, 'left'), 0.4);
+        index = 0;
+        result = [];
+        points.forEach((point) => {
+            index++;
+            result.push({ id: index, point: point });
+        })
+        setLeftCrubBezierPoints(result);
+
+        points = AddControlPoints(createCurbBezierOffestPoints(turningPoints, 'right'), 0.4);
+        index = 0;
+        result = [];
+        points.forEach((point) => {
+            index++;
+            result.push({ id: index, point: point });
+        })
+        setRightCurbBezierPoints(result);
+
+    }, [turningPoints]);
+
 
     function handleDragMove(e: any, id: any) {
         const target = e.target;
@@ -82,32 +119,12 @@ const SessionAnalysis = () => {
             return { ...turningPoint, point: [pointPosition[0], pointPosition[1]] }
 
         }));
-
-        //recalculate controlling point for bezier curve since the turning point moved
-        AddBezierControllingPoints(turningPoints);
     }
+
 
     const handleDragEnd = (e: any, id: any) => {
 
     };
-
-
-    /**
-     * Add controlling points to input points, also cached it for later use
-     * @param turningPoints 
-     */
-    function AddBezierControllingPoints(turningPoints: RacingTurningPoint[]): Point[] | undefined {
-
-        const points = PointsToBezierPoints(extractRacingTurningPointToPoint(turningPoints))
-        let index = 0;
-        let result: BezierPoints[] = [];
-        points.forEach((point) => {
-            index++;
-            result.push({ id: index, point: point });
-        })
-        setBezierPoints(result);
-        return points;
-    }
 
     return (
         <div ref={containerRef} style={{ width: '100%', height: '90%' }}>
@@ -116,7 +133,7 @@ const SessionAnalysis = () => {
                 <Layer>
 
                     <Line
-                        points={exportPointsForDrawing(exportCurbBezierPoints(bezierPoints, 'left'))}
+                        points={exportPointsForDrawing(extractBezierPointToPoint(leftCrubBezierPoints))}
                         stroke="red" strokeWidth={4}
                     />
 
@@ -126,9 +143,10 @@ const SessionAnalysis = () => {
                     />
 
                     <Line
-                        points={exportPointsForDrawing(exportCurbBezierPoints(bezierPoints, 'right'))}
+                        points={exportPointsForDrawing(extractBezierPointToPoint(rightCurbBezierPoints))}
                         stroke="red" strokeWidth={4}
                     />
+
                     {turningPoints.map((turningPoint: { id: Key, point: Point }) => (
                         <Group key={turningPoint.id} id={`group-${turningPoint.id}`} x={turningPoint.point[0]} y={turningPoint.point[1]} draggable onDragMove={(e) => handleDragMove(e, turningPoint.id)} onDragEnd={(e) => handleDragEnd(e, turningPoint.id)}>
                             <Circle key={turningPoint.id} radius={20} fill={"red"} name={turningPoint.id.toString()} />
@@ -136,7 +154,6 @@ const SessionAnalysis = () => {
                     ))}
 
                     {bezierPoints.map((point: { id: Key, point: Point }) => (
-
                         <Circle key={point.id} x={point.point[0]} y={point.point[1]} radius={10} fill={"blue"} name={point.id.toString()} />
                     ))}
                 </Layer>
@@ -157,8 +174,7 @@ function convert_1D_array_to_2d_array(points: number[]): Point[] {
 }
 
 function extractRacingTurningPointToPoint(points: RacingTurningPoint[]): Point[] {
-    const copyPoints = [...points] as RacingTurningPoint[];
-    return copyPoints.reduce((acc, curr): Point[] => {
+    return points.reduce((acc, curr): Point[] => {
         return [...acc, curr.point];
     }, [] as Point[]);
 }
@@ -194,9 +210,9 @@ function convert_Points_to_1d_array(points: Point[]): number[] {
  * @param direction 
  * @returns 
  */
-function exportCurbBezierPoints(points?: BezierPoints[], direction: 'left' | 'right' = 'left'): Point[] {
+function createCurbBezierOffestPoints(points?: RacingTurningPoint[], direction: 'left' | 'right' = 'left'): Point[] {
     if (!points || points.length === 0) return [];
-    return PointsToBezierPoints(offsetPolyBezier(extractBezierPointToPoint(points), 50, direction));
+    return offsetBezierPoints(extractRacingTurningPointToPoint(points), 30, direction);
 }
 /**
  * input points which should contains controlling points, and convert them into Curves and convert the result into 1d array readable by the Line component
@@ -206,9 +222,8 @@ function exportCurbBezierPoints(points?: BezierPoints[], direction: 'left' | 'ri
 function exportPointsForDrawing(points?: Point[]): number[] {
     if (!points) return [];
     //-> smooth the points to more points -> convert into 1d array
-    return convert_Points_to_1d_array(pointsOnBezierCurves(points));
+    return convert_Points_to_1d_array(ConstructAllPointsOnBezierCurves(points));
 }
-
 
 export default SessionAnalysis;
 
