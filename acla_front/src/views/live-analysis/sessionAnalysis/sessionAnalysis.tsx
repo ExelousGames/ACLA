@@ -6,6 +6,7 @@ import { offsetBezierPoints, Point, ConstructAllPointsOnBezierCurves } from 'uti
 type RacingTurningPoint = { id: number, point: Point, l_width: number, r_width: number };
 type CurbRacingTurningPoint = { id: number, point: Point };
 type BezierPoints = { id: number, point: Point };
+type RacingLinePoint = { id: number, point: Point };
 const SessionAnalysis = () => {
 
     // Define virtual size for our scene
@@ -22,6 +23,9 @@ const SessionAnalysis = () => {
     const [leftCurbBezierPoints, setLeftCrubBezierPoints] = useState<BezierPoints[]>([]);
     const [rightCurbTurningPoints, setRightCurbTurningPoints] = useState<CurbRacingTurningPoint[]>([]);
     const [rightCurbBezierPoints, setRightCurbBezierPoints] = useState<BezierPoints[]>([]);
+    const [racingLinePoints, setRacingLinePoints] = useState<RacingLinePoint[]>([]);
+    const [racingLineDisplacement, setRacingLineDisplacement] = useState<number[]>([]);
+    const [iteration, setIteration] = useState<number>(0);
     // Reference to parent container
     const containerRef = useRef<HTMLInputElement>(null);
 
@@ -49,6 +53,12 @@ const SessionAnalysis = () => {
                 l_width: 5,
                 r_width: 5
             },
+            {
+                id: 4, point: [0, 160],
+                l_width: 5,
+                r_width: 5
+            },
+
         ]
     }
 
@@ -85,7 +95,9 @@ const SessionAnalysis = () => {
         })
         setBezierPoints(result);
 
-        points = createCurbBezierOffsetPoints(turningPoints, 'left')
+
+        //create left curb
+        points = createRacingTurningPointOffset(turningPoints, 'left')
         index = 0;
         result = [];
         points.forEach((point) => {
@@ -94,6 +106,7 @@ const SessionAnalysis = () => {
         })
         setLeftCurbTurningPoints(result);
 
+        //add controll points for left curb Bezier 
         points = AddControlPoints(points, 0.4);
         index = 0;
         result = [];
@@ -103,7 +116,8 @@ const SessionAnalysis = () => {
         })
         setLeftCrubBezierPoints(result);
 
-        points = createCurbBezierOffsetPoints(turningPoints, 'right');
+        //create right curb
+        points = createRacingTurningPointOffset(turningPoints, 'right');
         index = 0;
         result = [];
         points.forEach((point) => {
@@ -112,6 +126,7 @@ const SessionAnalysis = () => {
         });
         setRightCurbTurningPoints(result);
 
+        //add controll points for right curb Bezier 
         points = AddControlPoints(points, 0.4);
         index = 0;
         result = [];
@@ -120,6 +135,9 @@ const SessionAnalysis = () => {
             result.push({ id: index, point: point });
         })
         setRightCurbBezierPoints(result);
+
+        //calculate racing line
+
 
     }, [turningPoints]);
 
@@ -185,13 +203,20 @@ const SessionAnalysis = () => {
                     />
 
                     {turningPoints.map((turningPoint: { id: Key, point: Point }) => (
-                        <Group key={turningPoint.id} id={`group-${turningPoint.id}`} x={turningPoint.point[0]} y={turningPoint.point[1]} draggable onDragMove={(e) => handleDragMove(e, turningPoint.id)} onDragEnd={(e) => handleDragEnd(e, turningPoint.id)}>
-                            <Circle key={turningPoint.id} radius={20} fill={"red"} name={turningPoint.id.toString()} />
+                        <Group
+                            key={turningPoint.id} id={`group-${turningPoint.id}`} x={turningPoint.point[0]} y={turningPoint.point[1]} draggable
+                            onDragMove={(e) => handleDragMove(e, turningPoint.id)}
+                            onDragEnd={(e) => handleDragEnd(e, turningPoint.id)}>
+                            <Circle
+                                key={turningPoint.id} radius={20} fill={"red"} name={turningPoint.id.toString()}
+                            />
                         </Group>
                     ))}
 
                     {bezierPoints.map((point: { id: Key, point: Point }) => (
-                        <Circle key={point.id} x={point.point[0]} y={point.point[1]} radius={10} fill={"blue"} name={point.id.toString()} />
+                        <Circle
+                            key={point.id} x={point.point[0]} y={point.point[1]} radius={10} fill={"blue"} name={point.id.toString()}
+                        />
                     ))}
                 </Layer>
             </Stage>
@@ -230,24 +255,16 @@ function extractBezierPointToPoint(points: BezierPoints[]): Point[] {
  */
 function convert_Points_to_1d_array(points: Point[]): number[] {
     if (points.length === 0) return [];
-
-    // let result: number[] = [];
-    // for (let i = 0; i < points.length; i += 1) {
-
-    //     result = result.concat(points[i]);
-
-    // }
-
     return points.flat();;
 }
 
 /**
- * give bezier points of turning points, return curbs point of these turning points
+ * give points of turning, return curbs point using Bezier 
  * @param points 
  * @param direction 
  * @returns 
  */
-function createCurbBezierOffsetPoints(points?: RacingTurningPoint[], direction: 'left' | 'right' = 'left'): Point[] {
+function createRacingTurningPointOffset(points?: RacingTurningPoint[], direction: 'left' | 'right' = 'left'): Point[] {
     if (!points || points.length === 0) return [];
     return offsetBezierPoints(extractRacingTurningPointToPoint(points), 30, direction);
 }
@@ -259,6 +276,7 @@ function createCurbBezierOffsetPoints(points?: RacingTurningPoint[], direction: 
 function exportPointsForDrawing(points?: Point[]): number[] {
     if (!points) return [];
     //-> smooth the points to more points -> convert into 1d array
+    console.log(ConstructAllPointsOnBezierCurves(points));
     return convert_Points_to_1d_array(ConstructAllPointsOnBezierCurves(points));
 }
 
