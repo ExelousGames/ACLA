@@ -206,14 +206,19 @@ const SessionAnalysis = () => {
         }
 
         //Add controlling points to turning points, also cached them together for later use
-        let points = AddControlPoints(extractRacingLinePointToPoint(racingLinePoints), 0.6)
-        let index = 0;
-        let result: BezierPoints[] = [];
-        points.forEach((point) => {
-            index++;
-            result.push({ id: index, point: point });
-        })
-        setRacingLineBezierPoints(result);
+        try {
+            let points = AddControlPoints(extractRacingLinePointToPoint(racingLinePoints), 0.6);
+            let index = 0;
+            let result: BezierPoints[] = [];
+            points.forEach((point) => {
+                index++;
+                result.push({ id: index, point: point });
+            })
+            setRacingLineBezierPoints(result);
+        }
+        catch (e) {
+            return;
+        }
     }
     function calculateTrack() {
         //Add controlling points to turning points, also cached them together for later use
