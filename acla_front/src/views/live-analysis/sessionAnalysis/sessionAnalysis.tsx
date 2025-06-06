@@ -86,7 +86,7 @@ const SessionAnalysis = () => {
     useEffect(() => {
         updateSize();
         setRacingLineDisplacement(Array(5).fill(0));
-        console.log(":dasdsds");
+        createInitialShapes();
     }, []);
 
     //recalculate controlling point for bezier curve since the turning point moved
