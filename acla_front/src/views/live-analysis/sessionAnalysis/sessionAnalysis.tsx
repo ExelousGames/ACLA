@@ -1,7 +1,7 @@
 import { createContext, Key, useContext, useEffect, useRef, useState } from 'react';
 import { Stage, Layer, Arc, Circle, Rect, Line, Group } from 'react-konva';
 import { AddControlPoints } from 'utils/curve-tobezier/curve-to-bezier';
-import { offsetBezierPoints, Point, ConstructAllPointsOnBezierCurves } from 'utils/curve-tobezier/points-on-curve';
+import { offsetBezierPoints, Point, ConstructAllPointsOnBezierCurves, getBezierTangent } from 'utils/curve-tobezier/points-on-curve';
 
 type RacingTurningPoint = { id: number, point: Point, l_width: number, r_width: number };
 type CurbTurningPoint = { id: number, point: Point };
@@ -24,6 +24,7 @@ const SessionAnalysis = () => {
     const [rightCurbTurningPoints, setRightCurbTurningPoints] = useState<CurbTurningPoint[]>([]);
     const [rightCurbBezierPoints, setRightCurbBezierPoints] = useState<BezierPoints[]>([]);
     const [racingLinePoints, setRacingLinePoints] = useState<RacingLinePoint[]>([]);
+    const [racingLineBezierPoints, setRacingLineBezierPoints] = useState<BezierPoints[]>([]);
     const [racingLineDisplacement, setRacingLineDisplacement] = useState<number[]>([]);
     const [iterations, setIterations] = useState<number>(0);
     // Reference to parent container
@@ -165,50 +166,54 @@ const SessionAnalysis = () => {
                 const len = Math.sqrt(vectorSum[0] * vectorSum[0] + vectorSum[1] * vectorSum[1]);
                 vectorSum[0] /= len; vectorSum[1] /= len;
 
-                // Get point gradient and normalise
-				sPoint2D g = path.GetSplineGradient(i);
-				float glen = sqrtf(g.x * g.x + g.y * g.y);
-                g.x /= glen; g.y /= glen;
 
-				// Project required correction onto point tangent to give displacment
-				float dp = -g.y * vectorSum.x + g.x * vectorSum.y;
+                // Get point gradient and normalise (TODO: ADD circular)
+                const P0 = bezierPoints[(3 * p)].point;
+                const P1 = bezierPoints[(3 * p + 1) % bezierPoints.length].point;
+                const P2 = bezierPoints[(3 * p + 2) % bezierPoints.length].point;
+                const P3 = bezierPoints[3 * p + 3 % bezierPoints.length].point;
+                const g = getBezierTangent(P0, P1, P2, P3, 0);
+                const glen = Math.sqrt(g[0] * g[0] + g[0] * g[0]);
+                g[0] /= glen; g[1] /= glen;
+                // Project required correction onto point tangent to give displacment (projection)
+                const dp = -g[1] * vectorSum[0] + g[0] * vectorSum[1];
 
                 // Shortest path
-                fDisplacement[i] += (dp * 0.3f);
+                racingLineDisplacement[p] += (dp * 0.3);
 
                 // Curvature
                 //fDisplacement[(i + 1) % racingLine.points.size()] += dp * -0.2f;
                 //fDisplacement[(i - 1 + racingLine.points.size()) % racingLine.points.size()] += dp * -0.2f;
-
-
-
-
-                //racing lines
-                for (let i = 0; i < bezierPoints.length - 1; i += 3) {
-                    //we only want the turning points
-                    const P0 = bezierPoints[(i + 1) % racingLine.points.size()];
-                    const P3 = bezierPoints[i + 3];
-
-                    // Only push Q0 if it's the first segment to avoid duplicates
-                    if (i === 0) result.push({ id: 0, point: P0 });
-
-                }
             }
 
             // Clamp displaced points to track width
-            for (int i = 0; i < racingLine.points.size(); i++)
-            {
-                if (fDisplacement[i] >= fTrackWidth) fDisplacement[i] = fTrackWidth;
-                if (fDisplacement[i] <= -fTrackWidth) fDisplacement[i] = -fTrackWidth;
+            for (let p = 0; p < racingLinePoints.length; p++) {
+                {
+                    if (racingLineDisplacement[p] >= 5) racingLineDisplacement[p] = 5;
+                    if (racingLineDisplacement[p] <= -5) racingLineDisplacement[p] = -5;
 
-				sPoint2D g = path.GetSplineGradient(i);
-				float glen = sqrtf(g.x * g.x + g.y * g.y);
-                g.x /= glen; g.y /= glen;
-
-                racingLine.points[i].x = path.points[i].x + -g.y * fDisplacement[i];
-                racingLine.points[i].y = path.points[i].y + g.x * fDisplacement[i];
+                    const P0 = bezierPoints[(3 * p)].point;
+                    const P1 = bezierPoints[(3 * p + 1) % bezierPoints.length].point;
+                    const P2 = bezierPoints[(3 * p + 2) % bezierPoints.length].point;
+                    const P3 = bezierPoints[3 * p + 3 % bezierPoints.length].point;
+                    const g = getBezierTangent(P0, P1, P2, P3, 0);
+                    const glen = Math.sqrt(g[0] * g[0] + g[0] * g[0]);
+                    g[0] /= glen; g[1] /= glen;
+                    racingLinePoints[p].point[0] = racingLinePoints[p].point[0] - g[1] * racingLineDisplacement[p]
+                    racingLinePoints[p].point[1] = racingLinePoints[p].point[1] - g[0] * racingLineDisplacement[p]
+                }
             }
         }
+
+        //Add controlling points to turning points, also cached them together for later use
+        let points = AddControlPoints(extractRacingLinePointToPoint(racingLinePoints), 0.6)
+        let index = 0;
+        let result: BezierPoints[] = [];
+        points.forEach((point) => {
+            index++;
+            result.push({ id: index, point: point });
+        })
+        setRacingLineBezierPoints(result);
     }
     function calculateTrack() {
         //Add controlling points to turning points, also cached them together for later use
@@ -274,6 +279,7 @@ const SessionAnalysis = () => {
             })
             setRightCurbBezierPoints(result);
 
+            calculateRacingLine();
 
         }
     }
@@ -333,6 +339,12 @@ function convert_1D_array_to_2d_array(points: number[]): Point[] {
 }
 
 function extractRacingTurningPointToPoint(points: RacingTurningPoint[]): Point[] {
+    return points.reduce((acc, curr): Point[] => {
+        return [...acc, curr.point];
+    }, [] as Point[]);
+}
+
+function extractRacingLinePointToPoint(points: RacingLinePoint[]): Point[] {
     return points.reduce((acc, curr): Point[] => {
         return [...acc, curr.point];
     }, [] as Point[]);
