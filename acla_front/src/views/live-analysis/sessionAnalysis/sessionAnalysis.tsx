@@ -4,7 +4,7 @@ import { AddControlPoints } from 'utils/curve-tobezier/curve-to-bezier';
 import { offsetBezierPoints, Point, ConstructAllPointsOnBezierCurves } from 'utils/curve-tobezier/points-on-curve';
 
 type RacingTurningPoint = { id: number, point: Point, l_width: number, r_width: number };
-type CurbRacingTurningPoint = { id: number, point: Point };
+type CurbTurningPoint = { id: number, point: Point };
 type BezierPoints = { id: number, point: Point };
 type RacingLinePoint = { id: number, point: Point };
 const SessionAnalysis = () => {
@@ -17,15 +17,15 @@ const SessionAnalysis = () => {
         width: containerWidth,
         height: containerHeight,
     });
-    const [turningPoints, setTurningPoints] = useState<RacingTurningPoint[]>(createInitialShapes());
+    const [turningPoints, setTurningPoints] = useState<RacingTurningPoint[]>([]);
     const [bezierPoints, setBezierPoints] = useState<BezierPoints[]>([]);
-    const [leftCurbTurningPoints, setLeftCurbTurningPoints] = useState<CurbRacingTurningPoint[]>([]);
+    const [leftCurbTurningPoints, setLeftCurbTurningPoints] = useState<CurbTurningPoint[]>([]);
     const [leftCurbBezierPoints, setLeftCrubBezierPoints] = useState<BezierPoints[]>([]);
-    const [rightCurbTurningPoints, setRightCurbTurningPoints] = useState<CurbRacingTurningPoint[]>([]);
+    const [rightCurbTurningPoints, setRightCurbTurningPoints] = useState<CurbTurningPoint[]>([]);
     const [rightCurbBezierPoints, setRightCurbBezierPoints] = useState<BezierPoints[]>([]);
     const [racingLinePoints, setRacingLinePoints] = useState<RacingLinePoint[]>([]);
     const [racingLineDisplacement, setRacingLineDisplacement] = useState<number[]>([]);
-    const [iteration, setIteration] = useState<number>(0);
+    const [iterations, setIterations] = useState<number>(0);
     // Reference to parent container
     const containerRef = useRef<HTMLInputElement>(null);
 
@@ -58,7 +58,11 @@ const SessionAnalysis = () => {
                 l_width: 5,
                 r_width: 5
             },
-
+            {
+                id: 5, point: [0, 180],
+                l_width: 5,
+                r_width: 5
+            },
         ]
     }
 
@@ -80,65 +84,13 @@ const SessionAnalysis = () => {
     // Update on mount and when window resizes
     useEffect(() => {
         updateSize();
+        setRacingLineDisplacement(Array(5).fill(0));
+        console.log(":dasdsds");
     }, []);
 
     //recalculate controlling point for bezier curve since the turning point moved
     useEffect(() => {
-
-        //Add controlling points to turning points, also cached them together for later use
-        let points = AddControlPoints(extractRacingTurningPointToPoint(turningPoints), 0.6)
-        let index = 0;
-        let result: BezierPoints[] = [];
-        points.forEach((point) => {
-            index++;
-            result.push({ id: index, point: point });
-        })
-        setBezierPoints(result);
-
-
-        //create left curb
-        points = createRacingTurningPointOffset(turningPoints, 'left')
-        index = 0;
-        result = [];
-        points.forEach((point) => {
-            index++;
-            result.push({ id: index, point: point });
-        })
-        setLeftCurbTurningPoints(result);
-
-        //add controll points for left curb Bezier 
-        points = AddControlPoints(points, 0.4);
-        index = 0;
-        result = [];
-        points.forEach((point) => {
-            index++;
-            result.push({ id: index, point: point });
-        })
-        setLeftCrubBezierPoints(result);
-
-        //create right curb
-        points = createRacingTurningPointOffset(turningPoints, 'right');
-        index = 0;
-        result = [];
-        points.forEach((point) => {
-            index++;
-            result.push({ id: index, point: point });
-        });
-        setRightCurbTurningPoints(result);
-
-        //add controll points for right curb Bezier 
-        points = AddControlPoints(points, 0.4);
-        index = 0;
-        result = [];
-        points.forEach((point) => {
-            index++;
-            result.push({ id: index, point: point });
-        })
-        setRightCurbBezierPoints(result);
-
-        //calculate racing line
-
-
+        calculateTrack();
     }, [turningPoints]);
 
 
@@ -181,6 +133,151 @@ const SessionAnalysis = () => {
 
     };
 
+    function calculateRacingLine() {
+
+        let racingLinePoints: RacingLinePoint[] = [];
+        // Reset racing line
+        for (let i = 0; i < turningPoints.length; i++) {
+            racingLinePoints.push(turningPoints[i]);
+            racingLineDisplacement[i] = 0;
+        }
+        for (let iteration = 0; iteration < iterations; iteration++) {
+            for (let p = 0; p < racingLinePoints.length; p++) {
+
+                // Get locations of neighbour nodes
+
+                const pointRight = racingLinePoints[(p + 1) % racingLinePoints.length];
+                const pointLeft = racingLinePoints[(p + racingLinePoints.length - 1) % racingLinePoints.length];
+                const pointMiddle = racingLinePoints[p];
+
+                // Create vectors to neighbours
+                const vectorLeft = [pointLeft.point[0] - pointMiddle.point[0], pointLeft.point[1] - pointMiddle.point[1]];
+                const vectorRight = [pointRight.point[0] - pointMiddle.point[0], pointRight.point[1] - pointMiddle.point[1]];
+
+                // Normalise neighbours
+                const lengthLeft = Math.sqrt(vectorLeft[0] * vectorLeft[0] + vectorLeft[1] * vectorLeft[1]);
+                const leftn = [vectorLeft[0] / lengthLeft, vectorLeft[1] / lengthLeft];
+                const lengthRight = Math.sqrt(vectorRight[0] * vectorRight[0] + vectorRight[1] * vectorRight[1]);
+                const rightn = [vectorRight[0] / lengthRight, vectorRight[1] / lengthRight];
+
+                // Add together to create bisector vector
+                const vectorSum = [rightn[0] + leftn[0], rightn[1] + leftn[1]];
+                const len = Math.sqrt(vectorSum[0] * vectorSum[0] + vectorSum[1] * vectorSum[1]);
+                vectorSum[0] /= len; vectorSum[1] /= len;
+
+                // Get point gradient and normalise
+				sPoint2D g = path.GetSplineGradient(i);
+				float glen = sqrtf(g.x * g.x + g.y * g.y);
+                g.x /= glen; g.y /= glen;
+
+				// Project required correction onto point tangent to give displacment
+				float dp = -g.y * vectorSum.x + g.x * vectorSum.y;
+
+                // Shortest path
+                fDisplacement[i] += (dp * 0.3f);
+
+                // Curvature
+                //fDisplacement[(i + 1) % racingLine.points.size()] += dp * -0.2f;
+                //fDisplacement[(i - 1 + racingLine.points.size()) % racingLine.points.size()] += dp * -0.2f;
+
+
+
+
+                //racing lines
+                for (let i = 0; i < bezierPoints.length - 1; i += 3) {
+                    //we only want the turning points
+                    const P0 = bezierPoints[(i + 1) % racingLine.points.size()];
+                    const P3 = bezierPoints[i + 3];
+
+                    // Only push Q0 if it's the first segment to avoid duplicates
+                    if (i === 0) result.push({ id: 0, point: P0 });
+
+                }
+            }
+
+            // Clamp displaced points to track width
+            for (int i = 0; i < racingLine.points.size(); i++)
+            {
+                if (fDisplacement[i] >= fTrackWidth) fDisplacement[i] = fTrackWidth;
+                if (fDisplacement[i] <= -fTrackWidth) fDisplacement[i] = -fTrackWidth;
+
+				sPoint2D g = path.GetSplineGradient(i);
+				float glen = sqrtf(g.x * g.x + g.y * g.y);
+                g.x /= glen; g.y /= glen;
+
+                racingLine.points[i].x = path.points[i].x + -g.y * fDisplacement[i];
+                racingLine.points[i].y = path.points[i].y + g.x * fDisplacement[i];
+            }
+        }
+    }
+    function calculateTrack() {
+        //Add controlling points to turning points, also cached them together for later use
+        let points = AddControlPoints(extractRacingTurningPointToPoint(turningPoints), 0.6)
+        let index = 0;
+        let result: BezierPoints[] = [];
+        points.forEach((point) => {
+            index++;
+            result.push({ id: index, point: point });
+        })
+        setBezierPoints(result);
+
+        if (bezierPoints.length > 3) {
+
+            //create left curb
+            points = createRacingTurningPointOffset(bezierPoints, 'left')
+            index = 0;
+            result = [];
+            for (let i = 0; i < points.length - 1; i += 3) {
+                //we only want the turning points
+                const P0 = points[i];
+                const P3 = points[i + 3];
+                index++;
+                // Only push Q0 if it's the first segment to avoid duplicates
+                if (i === 0) result.push({ id: 0, point: P0 });
+                result.push({ id: index, point: P3 })
+            }
+            setLeftCurbTurningPoints(result);
+
+            //add controll points for left curb Bezier 
+            points = AddControlPoints(extractCurbTurningPointToPoint(result), 0.4);
+            index = 0;
+            result = [];
+            points.forEach((point) => {
+                index++;
+                result.push({ id: index, point: point });
+            })
+            setLeftCrubBezierPoints(result);
+
+            //create right curb
+            points = createRacingTurningPointOffset(bezierPoints, 'right');
+            index = 0;
+            result = [];
+            //we only need the turning point
+            for (let i = 0; i < points.length - 1; i += 3) {
+                //we only want the turning points
+                const P0 = points[i];
+                const P3 = points[i + 3];
+                index++;
+                // Only push Q0 if it's the first segment to avoid duplicates
+                if (i === 0) result.push({ id: 0, point: P0 });
+                result.push({ id: index, point: P3 })
+            }
+            setRightCurbTurningPoints(result);
+
+            //add controll points for right curb Bezier 
+            points = AddControlPoints(extractCurbTurningPointToPoint(result), 0.4);
+            index = 0;
+            result = [];
+            points.forEach((point) => {
+                index++;
+                result.push({ id: index, point: point });
+            })
+            setRightCurbBezierPoints(result);
+
+
+        }
+    }
+
     return (
         <div ref={containerRef} style={{ width: '100%', height: '90%' }}>
 
@@ -213,7 +310,7 @@ const SessionAnalysis = () => {
                         </Group>
                     ))}
 
-                    {bezierPoints.map((point: { id: Key, point: Point }) => (
+                    {leftCurbTurningPoints.map((point: { id: Key, point: Point }) => (
                         <Circle
                             key={point.id} x={point.point[0]} y={point.point[1]} radius={10} fill={"blue"} name={point.id.toString()}
                         />
@@ -241,6 +338,12 @@ function extractRacingTurningPointToPoint(points: RacingTurningPoint[]): Point[]
     }, [] as Point[]);
 }
 
+function extractCurbTurningPointToPoint(points: CurbTurningPoint[]): Point[] {
+    return points.reduce((acc, curr): Point[] => {
+        return [...acc, curr.point];
+    }, [] as Point[]);
+}
+
 function extractBezierPointToPoint(points: BezierPoints[]): Point[] {
     if (!points) return [];
     return points.reduce((acc, curr): Point[] => {
@@ -259,14 +362,14 @@ function convert_Points_to_1d_array(points: Point[]): number[] {
 }
 
 /**
- * give points of turning, return curbs point using Bezier 
+ * give points of turning and the control points come with it, return offseted curbs point and the control points using Bezier 
  * @param points 
  * @param direction 
  * @returns 
  */
-function createRacingTurningPointOffset(points?: RacingTurningPoint[], direction: 'left' | 'right' = 'left'): Point[] {
+function createRacingTurningPointOffset(points?: BezierPoints[], direction: 'left' | 'right' = 'left'): Point[] {
     if (!points || points.length === 0) return [];
-    return offsetBezierPoints(extractRacingTurningPointToPoint(points), 30, direction);
+    return offsetBezierPoints(extractBezierPointToPoint(points), 30, direction);
 }
 /**
  * input points which should contains controlling points, and convert them into Curves and convert the result into 1d array readable by the Line component
@@ -276,7 +379,6 @@ function createRacingTurningPointOffset(points?: RacingTurningPoint[], direction
 function exportPointsForDrawing(points?: Point[]): number[] {
     if (!points) return [];
     //-> smooth the points to more points -> convert into 1d array
-    console.log(ConstructAllPointsOnBezierCurves(points));
     return convert_Points_to_1d_array(ConstructAllPointsOnBezierCurves(points));
 }
 
