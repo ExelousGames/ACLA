@@ -4,6 +4,7 @@ import { PassportStrategy } from '@nestjs/passport';
 import { Injectable } from '@nestjs/common';
 import { jwtConstants } from './constants';
 
+//jwt is used for further authentication after login. user will not require user name and password for further request.
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy) {
   constructor() {

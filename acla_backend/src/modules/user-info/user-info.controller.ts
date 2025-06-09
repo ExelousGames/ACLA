@@ -1,9 +1,9 @@
 import { Body, Controller, Delete, Get, Request, Param, Post, UseGuards } from '@nestjs/common';
-import { UserInfoService } from './user-info.service';
-import { CreateUserInfoDto } from './dto/create-user.dto';
-import { UserInfo } from './schemas/user-info.schema';
 import { AuthGuard } from '@nestjs/passport';
-import { AuthService } from 'src/auth/auth.service';
+import { AuthService } from 'src/shared/auth/auth.service';
+import { UserInfo } from '../../schemas/user-info.schema';
+import { UserInfoService } from './user-info.service';
+import { CreateUserInfoDto } from 'src/dto/user.dto';
 
 @Controller('userinfo')
 export class UserInfoController {
@@ -29,7 +29,7 @@ export class UserInfoController {
     }
 
     @Post()
-    createUser(@Body('infoDto') createUserInfoDto: CreateUserInfoDto): UserInfo {
+    createUser(@Body('infoDto') createUserInfoDto: CreateUserInfoDto): CreateUserInfoDto {
 
 
         this.userinfoService.createUser(createUserInfoDto).then(
@@ -38,7 +38,7 @@ export class UserInfoController {
             }).catch((error) => {
 
             });
-        return new UserInfo;
+        return new CreateUserInfoDto;
     }
 
     @Delete(':id')

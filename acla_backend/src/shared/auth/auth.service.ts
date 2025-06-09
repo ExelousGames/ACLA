@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
-import { UserInfoService } from '../user-info/user-info.service';
+import { UserInfoService } from '../../modules/user-info/user-info.service';
 import { JwtService } from '@nestjs/jwt';
-import { jwtConstants } from './constants';
+import { jwtConstants } from '../../common/constants';
 
 @Injectable()
 export class AuthService {
@@ -26,7 +26,7 @@ export class AuthService {
         const payload = { username: user.username, sub: user.userId };
         return {
             //generate our JWT from a subset of the user object properties,  //which we then return as a simple object with a single access_token property
-            access_token: this.jwtService.sign(payload,{secret:jwtConstants.secret}),
+            access_token: this.jwtService.sign(payload, { secret: jwtConstants.secret }),
         };
     }
 }

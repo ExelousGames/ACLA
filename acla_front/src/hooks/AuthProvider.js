@@ -44,7 +44,7 @@ const AuthProvider = ({ children }) => {
         navigate("/login");
     };
 
-    //use Context Provider to wrap the tree of components that need the state context
+    //use Context Provider to wrap the tree of components that need this context
     return <AuthContext.Provider value={{ token, user, loginAction, logOut }}>{children}</AuthContext.Provider>;
 };
 
