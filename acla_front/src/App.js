@@ -2,7 +2,7 @@ import './App.css';
 import React, { useState } from 'react';
 import LoginUser from 'views/login-user/login-user';
 import AuthProvider from "hooks/AuthProvider";
-import { BrowserRouter as Router, Route, Routes } from "react-router-dom"
+import { HashRouter as Router, Route, Routes } from "react-router-dom"
 import PrivateRoute from "views/routers/PrivateRoute";
 import MainDashboard from 'views/dashboard/MainDashboard'
 function App() {
