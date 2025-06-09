@@ -1,0 +1,17 @@
+.live-analysis-tablists {
+    max-width: 100%;
+    height: 5%;
+}
+
+.live-analysis-container {
+    max-width: 100%;
+    height: 90%;
+}
+
+.LiveAnalysisTabsRoot {
+    height: 100%;
+}
+
+.TabContent {
+    height: 100%;
+}
