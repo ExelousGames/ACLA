@@ -2,7 +2,7 @@ import React from "react";
 import { Navigate, Outlet } from "react-router-dom";
 import { useAuth } from "hooks/AuthProvider";
 
-//handling authentication
+//check authentication before continue further to the menu
 const PrivateRoute = () => {
 
     //use 'useAuth' hook from the AuthProvider to access user authentication data

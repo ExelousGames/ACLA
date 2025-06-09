@@ -27,6 +27,8 @@ const LoginUser = () => {
         username: "",
         password: "",
     });
+
+    //use Auth custom context
     const auth = useAuth();
 
     //when user tries to press login button
