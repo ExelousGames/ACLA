@@ -12,7 +12,7 @@ const AuthContext = createContext();
 const AuthProvider = ({ children }) => {
 
     const [user, setUser] = useState(null);
-    const [token, setToken] = useState(localStorage.getItem("site") || "");
+    const [token, setToken] = useState(localStorage.getItem("token") || "");
     const navigate = useNavigate();
 
     //backend server api
@@ -28,7 +28,7 @@ const AuthProvider = ({ children }) => {
                 if (response) {
                     setUser(response.data.user);
                     setToken(response.data.access_token);
-                    localStorage.setItem("site", response.data.token);
+                    localStorage.setItem("token", response.data.token);
                     navigate("/dashboard");
                     return;
                 }
@@ -40,7 +40,7 @@ const AuthProvider = ({ children }) => {
     const logOut = () => {
         setUser(null);
         setToken("");
-        localStorage.removeItem("site");
+        localStorage.removeItem("token");
         navigate("/login");
     };
 

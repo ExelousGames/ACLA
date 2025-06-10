@@ -13,3 +13,7 @@ export type SessionOption = {
     name: string;
     total_time: number;
 }
+
+export class AllMapsBasicInfoListDto {
+    list?: [{ name: string }]
+}

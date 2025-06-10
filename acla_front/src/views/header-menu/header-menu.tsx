@@ -22,19 +22,21 @@ import {
     Container,
     Tabs
 } from "@radix-ui/themes";
+import { useAuth } from 'hooks/AuthProvider';
 
 
 import { useEffect, useState, createContext } from 'react';
 
 
 const HeaderMenu = () => {
+    const auth = useAuth();
 
     return (
         <div className='menu-header'>
             <Box className="MainDashboardTitle Title">Assetto Corsa Competizione Lap Analysis</Box>
             <DropdownMenu.Root>
                 <DropdownMenu.Trigger>
-                    <button className='header-menu-button'>
+                    <button className='header-menu-button' onClick={auth.logOut()}>
                         <Avatar src="" fallback="A" />
                         <DropdownMenu.TriggerIcon className='header-menu-trigger-icon' />
                     </button>
