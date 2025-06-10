@@ -14,9 +14,6 @@ export class RacingMap {
     @Prop({ required: true, type: Buffer })
     data: Buffer; // Binary image data
 
-    @Prop({ default: Date.now })
-    createdAt: Date;
-
     @Prop()
     points: [{
         id: number,

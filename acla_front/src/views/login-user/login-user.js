@@ -24,7 +24,7 @@ import {
 
 const LoginUser = () => {
     const [input, setInput] = useState({
-        username: "",
+        email: "",
         password: "",
     });
 
@@ -34,8 +34,8 @@ const LoginUser = () => {
     //when user tries to press login button
     const handleSubmit = (e) => {
         e.preventDefault();
-        if (input.username !== "" || input.password !== "") {
-            auth.loginAction({ username: input.username, password: input.password });
+        if (input.email !== "" || input.password !== "") {
+            auth.loginAction({ email: input.email, password: input.password });
             return
         }
         alert("please provide a valid input");
@@ -64,7 +64,7 @@ const LoginUser = () => {
                                 Email address
                             </Text>
                         </Flex>
-                        <TextField.Root placeholder="Enter your email" id="example-email-field" name="username" onChange={handleInput} />
+                        <TextField.Root placeholder="Enter your email" id="example-email-field" name="email" onChange={handleInput} />
                     </Box>
 
                     <Box mb="5" position="relative">

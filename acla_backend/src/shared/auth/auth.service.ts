@@ -11,19 +11,19 @@ export class AuthService {
         private jwtService: JwtService,
     ) { }
 
-    async validateUser(username: string, pass: string): Promise<any> {
-        const user = await this.usersService.findOne(username);
+    async validateUser(email: string, pass: string): Promise<any> {
+        const user = await this.usersService.findOne(email);
         //TODO: use hash to compare incoming password
         if (user && user.password === pass) {
-            const { password, ...result } = user;
+            const { email, ...result } = user;
             return result;
         }
         return null;
     }
 
     //used by jwt authentication
-    async giveJWTToken(user: any) {
-        const payload = { username: user.username, sub: user.userId };
+    async giveJWTToken(userinfo: any) {
+        const payload = { username: userinfo.email, sub: userinfo.userId };
         return {
             //generate our JWT from a subset of the user object properties,  //which we then return as a simple object with a single access_token property
             access_token: this.jwtService.sign(payload, { secret: jwtConstants.secret }),

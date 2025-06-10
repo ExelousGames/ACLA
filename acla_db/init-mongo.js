@@ -1,4 +1,6 @@
 db.createCollection("userinfos");
+db.createCollection("racingmaps");
+db.createCollection("racingsessions");
 
 db.createUser({
     user: 'client',

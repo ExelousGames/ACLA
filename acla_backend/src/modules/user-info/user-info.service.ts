@@ -11,8 +11,8 @@ export class UserInfoService {
     //Once you've registered the schema in module, you can inject a model into the Service using the @InjectModel() decorator:
     constructor(@InjectModel(UserInfo.name) private userInfoModel: Model<UserInfo>) { }
 
-    async findOne(username: string): Promise<UserInfo | null> {
-        return this.userInfoModel.findOne({ username: username }).exec();
+    async findOne(email: string): Promise<UserInfo | null> {
+        return this.userInfoModel.findOne({ email: email }).exec();
     }
 
     async createUser(createUserInfoDto: CreateUserInfoDto): Promise<CreateUserInfoDto> {
@@ -20,7 +20,7 @@ export class UserInfoService {
         const newUserInfo: UserInfo = {
             id: uuid(),
             password: "",
-            username: createUserInfoDto.name
+            email: createUserInfoDto.email
         };
 
         const createdInfo = new this.userInfoModel(newUserInfo);
