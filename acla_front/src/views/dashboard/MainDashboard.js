@@ -24,6 +24,7 @@ import {
 } from "@radix-ui/themes";
 import SideMainMenu from 'views/side-main-menu/side-main-menu';
 import { MainMenuOptions } from 'data/MainMenuOptions';
+import HeaderMenu from 'views/header-menu/header-menu';
 
 
 const MainMenuOptionSelectionContext = createContext();
@@ -35,8 +36,7 @@ const MainDashboard = ({ onTaskCreated }) => {
     return (
 
         <MainMenuOptionSelectionContext value={[mainMenuOptionSelected, setMainMenuOption]}>
-
-            <Box className="MainDashboardTitle Title">Assetto Corsa Competizione Lap Analysis</Box>
+            <HeaderMenu></HeaderMenu>
             <SideMainMenu></SideMainMenu>
 
         </MainMenuOptionSelectionContext>
