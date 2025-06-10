@@ -19,7 +19,7 @@ export class UserInfoController {
     @Post('auth/login')
     async login(@Request() req) {
         // return a JWT token for a later access
-        return this.authService.giveJWTToken(req.user);
+        return this.authService.giveJWTToken(req.email);
     }
 
     @UseGuards(AuthGuard('local'))

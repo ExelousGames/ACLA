@@ -6,10 +6,13 @@ import { Prop, Schema, SchemaFactory } from "@nestjs/mongoose";
 export class RacingSession {
 
     @Prop({ required: true, unique: true })
-    name: string;
+    session_name: string;
 
     @Prop({ required: true })
     map: string;
+
+    @Prop({ required: true })
+    user_email: string;
 
     @Prop({ required: true })
     date: string;
@@ -26,3 +29,5 @@ export class RacingSession {
 }
 
 export const RacingSessionSchema = SchemaFactory.createForClass(RacingSession);
+// Creating a compound index
+RacingSessionSchema.index({ session_name: 1, map: 1, user_email: 1 }, { unique: true });

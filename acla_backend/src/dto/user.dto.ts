@@ -1,10 +1,10 @@
 export class LoginInfoDto {
-    name: string;
+    email: string;
     password: string;
 
 }
 
 export class CreateUserInfoDto {
-    name: string;
+    email: string;
 
 }
