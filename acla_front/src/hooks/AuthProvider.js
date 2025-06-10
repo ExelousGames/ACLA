@@ -11,7 +11,7 @@ const AuthContext = createContext();
 */
 const AuthProvider = ({ children }) => {
 
-    const [user, setUser] = useState(null);
+    const [userEmail, setUserEmail] = useState(null);
     const [token, setToken] = useState(localStorage.getItem("token") || "");
     const navigate = useNavigate();
 
@@ -24,9 +24,9 @@ const AuthProvider = ({ children }) => {
     const loginAction = async (data) => {
         axios.post(server_url_header + '/userinfo/auth/login', data)
             .then(response => {
-                alert(response.server_url_header);
+
                 if (response) {
-                    setUser(response.data.user);
+                    setUserEmail(data.email);
                     setToken(response.data.access_token);
                     localStorage.setItem("token", response.data.token);
                     navigate("/dashboard");
@@ -39,14 +39,14 @@ const AuthProvider = ({ children }) => {
     //clears user and token data, removing the token from local storage.
     const logOut = () => {
         console.log("log out");
-        setUser(null);
+        setUserEmail(null);
         setToken("");
         localStorage.removeItem("token");
         navigate("/login");
     };
 
     //use Context Provider to wrap the tree of components that need this context
-    return <AuthContext.Provider value={{ token, user, loginAction, logOut }}>{children}</AuthContext.Provider>;
+    return <AuthContext.Provider value={{ token, user: userEmail, loginAction, logOut }}>{children}</AuthContext.Provider>;
 };
 
 //makes the authentication state and related functions available to its child components, accessible via the useAuth hook, 
