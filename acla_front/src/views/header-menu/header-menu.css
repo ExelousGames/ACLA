@@ -7,5 +7,10 @@
 }
 
 .header-menu-button {
-    background-color: transparent;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 4px;
+    font-weight: 500;
+    user-select: none;
 }

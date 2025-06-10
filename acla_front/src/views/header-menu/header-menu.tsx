@@ -34,13 +34,13 @@ const HeaderMenu = () => {
             <Box className="MainDashboardTitle Title">Assetto Corsa Competizione Lap Analysis</Box>
             <DropdownMenu.Root>
                 <DropdownMenu.Trigger>
-                    <Button className='header-menu-button'>
+                    <button className='header-menu-button'>
                         <Avatar
                             src=""
                             fallback="A"
                         />
                         <DropdownMenu.TriggerIcon />
-                    </Button>
+                    </button>
                 </DropdownMenu.Trigger>
                 <DropdownMenu.Content>
                     <DropdownMenu.Item shortcut="⌘ E">Profile</DropdownMenu.Item>
