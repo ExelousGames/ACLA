@@ -10,7 +10,7 @@ export class RacingSessionService {
     }
 
     async getRacingMap(name: string): Promise<RacingSession | null> {
-        return this.racingMap.findOne({ name: name }).exec();
+        return this.racingMap.findOne({ session_name: name }).exec();
     }
 
     async retrieveAllRacingSessionsInfo(): Promise<SessionBasicInfoListDto | null> {
@@ -21,7 +21,7 @@ export class RacingSessionService {
 
                 data.forEach((element) => {
                     racingMap.list.push({
-                        name: element.name,
+                        name: element.session_name,
                         map: element.map
                     });
 
