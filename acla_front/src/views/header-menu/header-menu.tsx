@@ -34,12 +34,11 @@ const HeaderMenu = () => {
             <Box className="MainDashboardTitle Title">Assetto Corsa Competizione Lap Analysis</Box>
             <DropdownMenu.Root>
                 <DropdownMenu.Trigger>
-                    <Button variant="soft">
+                    <Button variant="soft" className='header-menu-button'>
                         <Avatar
                             src=""
                             fallback="A"
                         />
-                        <Avatar fallback="A" />
                         <DropdownMenu.TriggerIcon />
                     </Button>
                 </DropdownMenu.Trigger>
