@@ -30,7 +30,7 @@ import { useEffect, useState, createContext } from 'react';
 const HeaderMenu = () => {
 
     return (
-        <div>
+        <div className='menu-header'>
             <Box className="MainDashboardTitle Title">Assetto Corsa Competizione Lap Analysis</Box>
             <DropdownMenu.Root>
                 <DropdownMenu.Trigger>
