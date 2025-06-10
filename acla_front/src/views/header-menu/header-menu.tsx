@@ -31,12 +31,16 @@ import { useEffect, useState, createContext } from 'react';
 const HeaderMenu = () => {
     const auth = useAuth();
 
+    const handleClick = (event: any) => {
+        auth.logOut();
+    };
+
     return (
         <div className='menu-header'>
             <Box className="MainDashboardTitle Title">Assetto Corsa Competizione Lap Analysis</Box>
             <DropdownMenu.Root>
                 <DropdownMenu.Trigger>
-                    <button className='header-menu-button' onClick={auth.logOut()}>
+                    <button className='header-menu-button'>
                         <Avatar src="" fallback="A" />
                         <DropdownMenu.TriggerIcon className='header-menu-trigger-icon' />
                     </button>
@@ -44,7 +48,7 @@ const HeaderMenu = () => {
                 <DropdownMenu.Content>
                     <DropdownMenu.Item shortcut="⌘ E">Profile</DropdownMenu.Item>
                     <DropdownMenu.Separator />
-                    <DropdownMenu.Item shortcut="⌘ ⌫" color="red">
+                    <DropdownMenu.Item shortcut="⌘ ⌫" color="red" onClick={handleClick}>
                         Log out
                     </DropdownMenu.Item>
                 </DropdownMenu.Content>
