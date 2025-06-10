@@ -14,3 +14,7 @@
     font-weight: 500;
     user-select: none;
 }
+
+.header-menu-trigger-icon {
+    padding: 0px 10px 0px 10px;
+}

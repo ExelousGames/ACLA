@@ -35,11 +35,8 @@ const HeaderMenu = () => {
             <DropdownMenu.Root>
                 <DropdownMenu.Trigger>
                     <button className='header-menu-button'>
-                        <Avatar
-                            src=""
-                            fallback="A"
-                        />
-                        <DropdownMenu.TriggerIcon />
+                        <Avatar src="" fallback="A" />
+                        <DropdownMenu.TriggerIcon className='header-menu-trigger-icon' />
                     </button>
                 </DropdownMenu.Trigger>
                 <DropdownMenu.Content>
