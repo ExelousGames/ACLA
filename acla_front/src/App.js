@@ -5,6 +5,8 @@ import AuthProvider from "hooks/AuthProvider";
 import { HashRouter as Router, Route, Routes } from "react-router-dom"
 import PrivateRoute from "views/routers/PrivateRoute";
 import MainDashboard from 'views/dashboard/MainDashboard'
+
+
 function App() {
   return (
     <div className="App">
