@@ -46,6 +46,7 @@ const MapList = (setMapState: any) => {
 
         apiService.get('/racingmap/allmapbasicinfos')
             .then((data) => {
+                console.log(data);
                 return data;
             }).catch((e) => {
 
