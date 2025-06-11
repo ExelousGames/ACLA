@@ -9,9 +9,8 @@ export class RacingMapController {
     constructor(private racingMapService: RacingMapService) { }
 
     @UseGuards(AuthGuard('jwt'))
-    @Get('allmapbasicinfos')
+    @Get('map/infolists')
     async getAllMapsBasicInfos(@Body() body: any): Promise<AllMapsBasicInfoListDto | null> {
-        console.log("here");
         return this.racingMapService.retrieveAllMapBasicInfos();
     }
 }
