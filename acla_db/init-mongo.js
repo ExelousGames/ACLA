@@ -1,3 +1,5 @@
+//Only when the database is first created (empty data directory)
+
 db.createCollection("userinfos");
 db.createCollection("racingmaps");
 db.createCollection("racingsessions");
