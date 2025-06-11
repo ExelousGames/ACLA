@@ -1,5 +1,5 @@
 import axios, { AxiosError, AxiosInstance, AxiosResponse } from 'axios';
-import { useAuth } from 'hooks/AuthProvider';
+
 
 type ApiResponse<T> = {
     data: T;
@@ -15,7 +15,7 @@ type ApiError = {
 // API methods
 export class ApiService {
     private axiosInstance: AxiosInstance;
-    private userAuth: any;
+
     constructor() {
         this.axiosInstance = axios.create({
             baseURL: 'http://' + process.env.REACT_APP_BACKEND_SERVER_IP + ":" + process.env.REACT_APP_BACKEND_PROXY_PORT,
@@ -24,7 +24,7 @@ export class ApiService {
                 'Content-Type': 'application/json',
             },
         });
-        const userAuth = useAuth();
+
         this.setupInterceptors();
     }
 
@@ -35,6 +35,7 @@ export class ApiService {
                 // Add auth token if exists
                 const token = localStorage.getItem('token');
                 if (token) {
+                    //Authorization: <type> <credentials> pattern --  OAuth 2.0 Authorization Framework
                     config.headers.Authorization = `Bearer ${token}`;
                 }
                 return config;
@@ -96,3 +97,8 @@ export class ApiService {
 
     // Add other HTTP methods as needed (PUT, DELETE, etc.)
 };
+
+// Create an instance with your base URL
+const apiService = new ApiService();
+
+export default apiService;

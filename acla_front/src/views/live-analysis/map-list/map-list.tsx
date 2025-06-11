@@ -1,4 +1,4 @@
-import { createContext, useContext } from 'react';
+import { createContext, useContext, useEffect } from 'react';
 import './map-list.css';
 
 import {
@@ -25,6 +25,7 @@ import {
 import { ScrollArea } from "radix-ui";
 import { MapOption } from 'data/live-analysis/live-analysis-data';
 import { AnalysisContext } from '../live-analysis';
+import apiService from 'services/api.service';
 
 const MapList = (setMapState: any) => {
     const options: MapOption[] = [{
@@ -41,6 +42,16 @@ const MapList = (setMapState: any) => {
         session_count: 2
     }];
 
+    useEffect(() => {
+
+        apiService.get('/racingmap/allmapbasicinfos')
+            .then((data) => {
+                return data;
+            }).catch((e) => {
+
+            });
+
+    }, []);
     return (
         <ScrollArea.Root className="MapListScrollAreaRoot">
             <ScrollArea.Viewport className="ScrollAreaViewport">
