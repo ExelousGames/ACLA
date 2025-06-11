@@ -28,6 +28,7 @@ export class UserInfoController {
         return req.logout();
     }
 
+    @UseGuards(AuthGuard('jwt'))
     @Post()
     createUser(@Body('infoDto') createUserInfoDto: CreateUserInfoDto): CreateUserInfoDto {
 

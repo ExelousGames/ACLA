@@ -32,7 +32,7 @@ const HeaderMenu = () => {
     const auth = useAuth();
 
     const handleClick = (event: any) => {
-        auth.logOut();
+        auth?.logout();
     };
 
     return (
@@ -46,9 +46,9 @@ const HeaderMenu = () => {
                     </button>
                 </DropdownMenu.Trigger>
                 <DropdownMenu.Content>
-                    <DropdownMenu.Item shortcut="⌘ E">Profile</DropdownMenu.Item>
+                    <DropdownMenu.Item >Profile</DropdownMenu.Item>
                     <DropdownMenu.Separator />
-                    <DropdownMenu.Item shortcut="⌘ ⌫" color="red" onClick={handleClick}>
+                    <DropdownMenu.Item shortcut="ctrl c" color="red" onClick={handleClick}>
                         Log out
                     </DropdownMenu.Item>
                 </DropdownMenu.Content>
