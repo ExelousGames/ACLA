@@ -25,4 +25,10 @@ rm -rf $BACKUP_DIR
 # Delete backups older than 3 days
 find /backups -name "*.tar.gz" -mtime +3 -delete 2>> /var/log/backup.log
 
+# Keep only the 5 newest .tar.gz backups in /backups
+# 1. Finds all matching backup files in /backups (not subdirectories), Outputs: [timestamp] [fullpath] for each file - find /backups -maxdepth 1 -name "acla_*.tar.gz" -type f -printf "%T@ %p\n"
+# 2. Sorts by first column (timestamp) in reverse numerical order (newest first) - sort -k1 -rn
+# 3. Keeps first 5 lines (NR≤5) - awk 'NR>5 {system("rm -f " $2)}'
+find /backups -maxdepth 1 -name "acla_*.tar.gz" -type f -printf "%T@ %p\n" | sort -k1 -rn | awk 'NR>5 {system("rm -f " $2)}'
+
 echo "$(date) - Backup completed" >> /var/log/backup.log
