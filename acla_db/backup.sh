@@ -23,7 +23,7 @@ tar -zcvf "/backups/acla_$DATE.tar.gz" -C $BACKUP_DIR . 2>> /var/log/backup.log
 rm -rf $BACKUP_DIR
 
 # Delete backups older than 3 days
-find /backups -name "*.tar.gz" -mtime +3 -delete 2>> /var/log/backup.log
+#find /backups -name "*.tar.gz" -mtime +3 -delete 2>> /var/log/backup.log
 
 # Keep only the 5 newest .tar.gz backups in /backups
 # 1. Finds all matching backup files in /backups (not subdirectories), Outputs: [timestamp] [fullpath] for each file - find /backups -maxdepth 1 -name "acla_*.tar.gz" -type f -printf "%T@ %p\n"
