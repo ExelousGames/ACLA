@@ -2,7 +2,7 @@
 
 
 DATE=$(date +%Y-%m-%d_%H-%M-%S)
-BACKUP_DIR="/backups/$DATE"
+BACKUP_DIR="/backups/acla_$DATE"
 
 # logging
 echo "$(date) - Starting backup" >> /var/log/backup.log
@@ -18,8 +18,8 @@ mongodump \
   --db $MONGO_DATEBASE \
   --out $BACKUP_DIR 2>> /var/log/backup.log
 
-# Compress backup
-tar -zcvf "/backups/$DATE.tar.gz" $BACKUP_DIR 2>> /var/log/backup.log
+# Compress backup - tar [options] <archive_name> <files_or_directories> 
+tar -zcvf "/backups/acla_$DATE.tar.gz" -C $BACKUP_DIR . 2>> /var/log/backup.log
 rm -rf $BACKUP_DIR
 
 # Delete backups older than 3 days
