@@ -57,7 +57,8 @@ services:
       MONGO_INITDB_DATABASE: ${MONGO_DATEBASE}
     volumes:
       - ./acla_db/init-mongo.js:/docker-entrypoint-initdb.d/init-mongo.js
-      - ../mongodb_data:/data/db
+      - ./acla_db/mongodb_data:/data/db
+      - ../db_backups:/backups
     env_file:
       - .prod.env
     ports:

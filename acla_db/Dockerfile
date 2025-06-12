@@ -6,9 +6,6 @@ RUN apt-get update && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
-# Create backup directory
-RUN mkdir -p /backups
-
 # Copy backup script, chmod +x add executable permissions to a file
 COPY backup.sh /backup.sh
 RUN chmod +x /backup.sh
@@ -23,6 +20,5 @@ RUN chmod 0644 /etc/cron.d/mongo-cron
 
 # Create the log file
 RUN touch /var/log/cron.log
-
 
 #TODO add timed backup scrip
