@@ -48,7 +48,7 @@ const MapList = (setMapState: any) => {
 
                 const data = result.data as AllMapsBasicInfoListDto;
                 let count = 0;
-                console.log(data);
+                console.log(result);
                 setOptions(data.list.map((option): MapOption => {
                     count++;
                     return {
@@ -57,7 +57,7 @@ const MapList = (setMapState: any) => {
                         session_count: 0,
                     } as MapOption;
                 }))
-                console.log(options);
+
             }).catch((e) => {
             });
     }, []);

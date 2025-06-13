@@ -12,7 +12,7 @@ export class RacingMap {
     mimetype: string;
 
     @Prop({ required: true, type: Buffer })
-    data: Buffer; // Binary image data
+    ImageData: Buffer; // Binary image data
 
     @Prop()
     points: [{
