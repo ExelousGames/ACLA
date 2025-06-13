@@ -7,7 +7,7 @@ export type MapOption = {
 
 export type SessionOption = {
     //key is required for child component of MapList component
-    key: number,
+    dataKey: number,
     name: string;
     total_time: number;
 }
