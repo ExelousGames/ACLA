@@ -35,7 +35,7 @@ const SessionAnalysis = () => {
     const [racingLinePoints, setRacingLinePoints] = useState<RacingLinePoint[]>([]);
     const [racingLineBezierPoints, setRacingLineBezierPoints] = useState<BezierPoints[]>([]);
     const [iterations, setIterations] = useState<number>(10);
-    const [yodaImage] = useImage(image);
+    const [mapImage] = useImage(image);
     // Reference to parent container
     const containerRef = useRef<HTMLInputElement>(null);
 
@@ -45,13 +45,11 @@ const SessionAnalysis = () => {
         let points: RacingTurningPoint[] = [];
         myData.map((position) => {
             points.push({
-
                 type: 0,
                 index: position.id,
                 position: [position.point[0], position.point[1]],
             })
         })
-
         return points;
     }
 
@@ -315,7 +313,7 @@ const SessionAnalysis = () => {
                     <Image
                         x={0}
                         y={0}
-                        image={yodaImage}
+                        image={mapImage}
                         scaleX={3}
                         scaleY={3}
 
