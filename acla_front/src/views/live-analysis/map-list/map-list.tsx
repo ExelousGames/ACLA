@@ -30,13 +30,13 @@ import apiService from 'services/api.service';
 const MapList = (setMapState: any) => {
 
     const [options, setOptions] = useState([{
-        key: 1,
+        dataKey: 1,
         name: "Track 1",
         session_count: 0,
 
     },
     {
-        key: 2,
+        dataKey: 2,
         name: "Track 2",
         session_count: 0
     }] as MapOption[]);
@@ -52,17 +52,14 @@ const MapList = (setMapState: any) => {
                 setOptions(data.list.map((option): MapOption => {
                     count++;
                     return {
-                        key: count,
+                        dataKey: count,
                         name: option.name,
                         session_count: 0,
                     } as MapOption;
                 }))
                 console.log(options);
-                return result.data;
             }).catch((e) => {
-
             });
-
     }, []);
 
     return (
@@ -70,7 +67,8 @@ const MapList = (setMapState: any) => {
             <ScrollArea.Viewport className="ScrollAreaViewport">
                 <Flex flexShrink="0" direction="column" gap="9">
                     {options.map((option: MapOption) => (
-                        <MapCard key={option.key} name={option.name} session_count={option.session_count} />
+                        //each child is a list should have a unique "key" prop
+                        <MapCard key={option.dataKey} dataKey={option.dataKey} name={option.name} session_count={option.session_count} />
                     ))}
                 </Flex>
             </ScrollArea.Viewport>
@@ -93,10 +91,10 @@ const MapList = (setMapState: any) => {
     )
 };
 
-function MapCard({ key, name, session_count }: MapOption) {
+function MapCard({ dataKey, name, session_count }: MapOption) {
     const { mapContext } = useContext(AnalysisContext);
     function mapSelected() {
-        mapContext.setMap({ key, name, session_count });
+        mapContext.setMap({ dataKey, name, session_count });
     }
 
     return (

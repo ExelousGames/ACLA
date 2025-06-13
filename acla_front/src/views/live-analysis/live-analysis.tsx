@@ -33,7 +33,7 @@ import SessionAnalysis from './sessionAnalysis/sessionAnalysis';
 export const AnalysisContext = createContext({
     mapContext: {
         mapSelected: {
-            key: -1,
+            dataKey: -1,
             name: "",
             session_count: 0
         } as MapOption | null,

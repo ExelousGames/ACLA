@@ -1,6 +1,6 @@
 export type MapOption = {
     //key is required for child component of MapList component
-    key: number,
+    dataKey: number,
     name?: string;
     session_count?: number;
 }
