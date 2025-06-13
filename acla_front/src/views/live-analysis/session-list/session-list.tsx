@@ -27,14 +27,12 @@ import { AnalysisContext } from '../live-analysis';
 const SessionList = () => {
     const options: SessionOption[] = [{
         key: 1,
-        datakey: 1,
         name: "2025-30-20 10:30:20",
         total_time: 2,
 
     },
     {
         key: 2,
-        datakey: 2,
         name: "2022-30-20 10:30:20",
         total_time: 2
     }];
@@ -43,7 +41,7 @@ const SessionList = () => {
             <ScrollArea.Viewport className="ScrollAreaViewport">
                 <Flex flexShrink="0" direction="column" gap="9">
                     {options.map((option: SessionOption) => (
-                        <MapCard key={option.key} datakey={option.datakey} name={option.name} total_time={option.total_time} />
+                        <MapCard key={option.key} name={option.name} total_time={option.total_time} />
                     ))}
                 </Flex>
             </ScrollArea.Viewport>
@@ -66,10 +64,10 @@ const SessionList = () => {
     )
 };
 
-const MapCard = ({ datakey, name, total_time }: SessionOption) => {
+const MapCard = ({ key, name, total_time }: SessionOption) => {
     const { sessionContext } = useContext(AnalysisContext);
     function mapSelected() {
-        sessionContext.setSession({ datakey, name, total_time });
+        sessionContext.setSession({ key, name, total_time });
     }
 
     return (
