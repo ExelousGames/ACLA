@@ -1,4 +1,4 @@
-import { createContext, useContext } from 'react';
+import { createContext, useContext, useEffect } from 'react';
 import './session-list.css';
 import {
     Avatar,
@@ -23,6 +23,7 @@ import {
 import { ScrollArea } from "radix-ui";
 import { SessionOption } from 'data/live-analysis/live-analysis-data';
 import { AnalysisContext } from '../live-analysis';
+import apiService from 'services/api.service';
 
 const SessionList = () => {
     const options: SessionOption[] = [{
@@ -36,6 +37,10 @@ const SessionList = () => {
         name: "2022-30-20 10:30:20",
         total_time: 2
     }];
+
+    useEffect(() => {
+
+    }, []);
     return (
         <ScrollArea.Root className="MapListScrollAreaRoot">
             <ScrollArea.Viewport className="ScrollAreaViewport">
