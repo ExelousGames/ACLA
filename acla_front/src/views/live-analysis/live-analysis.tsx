@@ -34,7 +34,6 @@ export const AnalysisContext = createContext({
     mapContext: {
         mapSelected: {
             key: -1,
-            datakey: -1,
             name: "",
             session_count: 0
         } as MapOption | null,
@@ -43,7 +42,6 @@ export const AnalysisContext = createContext({
     sessionContext: {
         sessionSelected: {
             key: -1,
-            datakey: -1,
             name: "",
             total_time: 0
         } as SessionOption | null,
