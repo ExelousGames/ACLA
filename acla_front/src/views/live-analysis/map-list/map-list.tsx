@@ -23,7 +23,7 @@ import {
     Theme,
 } from "@radix-ui/themes";
 import { ScrollArea } from "radix-ui";
-import { MapOption } from 'data/live-analysis/live-analysis-data';
+import { AllMapsBasicInfoListDto, MapOption } from 'data/live-analysis/live-analysis-data';
 import { AnalysisContext } from '../live-analysis';
 import apiService from 'services/api.service';
 
@@ -43,9 +43,11 @@ const MapList = (setMapState: any) => {
     useEffect(() => {
 
         apiService.get('/racingmap/map/infolists')
-            .then((data) => {
-                console.log(data);
-                return data;
+            .then((result) => {
+
+                const options = result.data as AllMapsBasicInfoListDto;
+                console.log(options);
+                return result.data;
             }).catch((e) => {
 
             });
