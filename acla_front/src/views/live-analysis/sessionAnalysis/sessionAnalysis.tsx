@@ -43,13 +43,16 @@ const SessionAnalysis = () => {
 
     function createInitialShapes(): RacingTurningPoint[] {
         let points: RacingTurningPoint[] = [];
-        myData.map((position) => {
+        myData.map((point) => {
             points.push({
-                type: 0,
-                index: position.id,
-                position: [position.point[0], position.point[1]],
+                type: point.type,
+                index: point.index,
+                position: [point.position[0], point.position[1]],
+                description: "",
+                info: "",
             })
         })
+        console.log(points);
         return points;
     }
 
@@ -118,7 +121,7 @@ const SessionAnalysis = () => {
             return { ...turningPoint, position: [pointPosition[0], pointPosition[1]] }
 
         }));
-        console.log(turningPoints);
+
 
     }
 
