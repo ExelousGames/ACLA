@@ -17,6 +17,9 @@ export class RacingMapService {
     async retrieveAllMapBasicInfos(): Promise<AllMapsBasicInfoListDto | null> {
 
         let racingMap: AllMapsBasicInfoListDto = new AllMapsBasicInfoListDto;
+        this.racingMap.find().then((data) => {
+
+        })
         this.racingMap.find().select('name').then(
             (data) => {
 
