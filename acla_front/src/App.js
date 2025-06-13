@@ -11,17 +11,19 @@ function App() {
   return (
     <div className="App">
       <Router>
-        <AuthProvider>
-          <Routes>
-            {/*the '/login' path is mapped to the Login component, rendering it when the URL matches*/}
-            <Route path="/login" element={<LoginUser />} />
-            {/*The <PrivateRoute /> component serves as a guard for protecting  */}
-            <Route element={<PrivateRoute />}>
-              <Route path="/" element={<MainDashboard />} />
-              <Route path="/dashboard" element={<MainDashboard />} />
-            </Route>
-          </Routes>
-        </AuthProvider>
+        <EnvironmentProvider>
+          <AuthProvider>
+            <Routes>
+              {/*the '/login' path is mapped to the Login component, rendering it when the URL matches*/}
+              <Route path="/login" element={<LoginUser />} />
+              {/*The <PrivateRoute /> component serves as a guard for protecting  */}
+              <Route element={<PrivateRoute />}>
+                <Route path="/" element={<MainDashboard />} />
+                <Route path="/dashboard" element={<MainDashboard />} />
+              </Route>
+            </Routes>
+          </AuthProvider>
+        </EnvironmentProvider>
       </Router>
     </div>
   );
