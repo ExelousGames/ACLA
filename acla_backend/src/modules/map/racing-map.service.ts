@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
-import { AllMapsBasicInfoListDto } from 'src/dto/map.dto';
+import { AllMapsBasicInfoListDto, MapBasicInfo } from 'src/dto/map.dto';
 import { RacingMap } from 'src/schemas/map.schema';
 
 @Injectable()
@@ -16,24 +16,21 @@ export class RacingMapService {
 
     async retrieveAllMapBasicInfos(): Promise<AllMapsBasicInfoListDto | null> {
 
-        let racingMap: AllMapsBasicInfoListDto = new AllMapsBasicInfoListDto;
-        this.racingMap.find().then((data) => {
+        try {
+            let racingMap = new AllMapsBasicInfoListDto();
+            const rawData = await this.racingMap.find().exec();
+            racingMap.list = rawData.map((element) => {
 
-        })
-        this.racingMap.find().select('name').then(
-            (data) => {
-
-                data.forEach((element) => {
-                    racingMap.list.push({
-                        name: element.name
-                    });
-
-                });
-                return racingMap;
-            }).catch((error) => {
+                return { name: element.name };
 
             });
 
-        return racingMap;
+            return racingMap;
+        }
+        catch (error) {
+            // Handle errors appropriately
+            throw new Error(`Failed to process data: ${error.message}`);
+        }
+
     }
 }

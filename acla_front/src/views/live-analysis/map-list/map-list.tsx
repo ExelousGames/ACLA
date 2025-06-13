@@ -45,10 +45,10 @@ const MapList = (setMapState: any) => {
 
         apiService.get('/racingmap/map/infolists')
             .then((result) => {
-
+                console.log(result);
                 const data = result.data as AllMapsBasicInfoListDto;
                 let count = 0;
-                console.log(result);
+
                 setOptions(data.list.map((option): MapOption => {
                     count++;
                     return {
