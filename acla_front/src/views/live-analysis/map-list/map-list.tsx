@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect } from 'react';
+import { createContext, useContext, useEffect, useState } from 'react';
 import './map-list.css';
 
 import {
@@ -28,7 +28,8 @@ import { AnalysisContext } from '../live-analysis';
 import apiService from 'services/api.service';
 
 const MapList = (setMapState: any) => {
-    const options: MapOption[] = [{
+
+    const [options, setOptions] = useState([{
         key: 1,
         name: "Track 1",
         session_count: 0,
@@ -38,14 +39,24 @@ const MapList = (setMapState: any) => {
         key: 2,
         name: "Track 2",
         session_count: 0
-    }];
+    }] as MapOption[]);
 
     useEffect(() => {
 
         apiService.get('/racingmap/map/infolists')
             .then((result) => {
 
-                const options = result.data as AllMapsBasicInfoListDto;
+                const data = result.data as AllMapsBasicInfoListDto;
+                let count = 0;
+
+                setOptions(data.list.map((option): MapOption => {
+                    count++;
+                    return {
+                        key: count,
+                        name: option.name,
+                        session_count: 0,
+                    } as MapOption;
+                }))
                 console.log(options);
                 return result.data;
             }).catch((e) => {

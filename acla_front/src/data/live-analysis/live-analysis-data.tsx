@@ -12,6 +12,6 @@ export type SessionOption = {
     total_time: number;
 }
 
-export class AllMapsBasicInfoListDto {
-    list?: [{ name: string }]
+export type AllMapsBasicInfoListDto = {
+    list: [{ name: string; }];
 }
