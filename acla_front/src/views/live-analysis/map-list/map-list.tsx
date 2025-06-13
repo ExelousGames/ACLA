@@ -48,7 +48,7 @@ const MapList = (setMapState: any) => {
 
                 const data = result.data as AllMapsBasicInfoListDto;
                 let count = 0;
-
+                console.log(data);
                 setOptions(data.list.map((option): MapOption => {
                     count++;
                     return {
