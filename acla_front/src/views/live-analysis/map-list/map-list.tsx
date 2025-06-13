@@ -32,14 +32,14 @@ const MapList = (setMapState: any) => {
         key: 1,
         datakey: 1,
         name: "Track 1",
-        session_count: 2,
+        session_count: 0,
 
     },
     {
         key: 2,
         datakey: 2,
         name: "Track 2",
-        session_count: 2
+        session_count: 0
     }];
 
     useEffect(() => {
@@ -53,12 +53,13 @@ const MapList = (setMapState: any) => {
             });
 
     }, []);
+
     return (
         <ScrollArea.Root className="MapListScrollAreaRoot">
             <ScrollArea.Viewport className="ScrollAreaViewport">
                 <Flex flexShrink="0" direction="column" gap="9">
                     {options.map((option: MapOption) => (
-                        <MapCard key={option.key} datakey={option.datakey} name={option.name} session_count={option.session_count} />
+                        <MapCard datakey={option.datakey} name={option.name} session_count={option.session_count} />
                     ))}
                 </Flex>
             </ScrollArea.Viewport>
