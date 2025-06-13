@@ -41,7 +41,7 @@ export const AnalysisContext = createContext({
     },
     sessionContext: {
         sessionSelected: {
-            key: -1,
+            dataKey: -1,
             name: "",
             total_time: 0
         } as SessionOption | null,

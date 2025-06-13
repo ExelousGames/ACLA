@@ -1,9 +1,9 @@
-import React, { createContext, useContext } from 'react';
+import React, { createContext, ReactNode, useContext } from 'react';
 import { Environment, detectEnvironment } from '../utils/environment';
 
 const EnvironmentContext = createContext<Environment>(detectEnvironment());
 
-export const EnvironmentProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+const EnvironmentProvider = ({ children }: { children: ReactNode }) => {
     const environment = detectEnvironment();
     return (
         <EnvironmentContext.Provider value={environment}>
@@ -11,6 +11,8 @@ export const EnvironmentProvider: React.FC<{ children: React.ReactNode }> = ({ c
         </EnvironmentContext.Provider>
     );
 };
+
+export default EnvironmentProvider;
 
 export const useEnvironment = (): Environment => {
     return useContext(EnvironmentContext);
