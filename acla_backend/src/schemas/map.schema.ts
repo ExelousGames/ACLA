@@ -16,12 +16,12 @@ export class RacingMap {
 
     @Prop()
     points: [{
-        id: number,
-        position_x: number,
-        position_y: number,
-        description: string,
-        info: string,
-        variables: [{ key: string, value: string }] //any word match {key} in description or info will be replaced with the value
+        position: number[],
+        type: number,
+        index: number, //type and index are used together. some points are index sensitive
+        description?: string,
+        info?: string,
+        variables?: [{ key: string, value: string }] //any word match {key} in description or info will be replaced with the value
     }]
 }
 
