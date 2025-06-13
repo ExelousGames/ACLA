@@ -5,10 +5,19 @@ import { offsetBezierPoints, Point, ConstructAllPointsOnBezierCurves, getBezierT
 import useImage from 'use-image';
 import image from 'assets/map2.png'
 import myData from 'data/sessionAnalysis.json';
-type RacingTurningPoint = { id: number, point: Point, l_width: number, r_width: number };
-type CurbTurningPoint = { id: number, point: Point };
-type BezierPoints = { id: number, point: Point };
-type RacingLinePoint = { id: number, point: Point };
+import apiService from 'services/api.service';
+import { SessionInfo } from 'data/live-analysis/live-analysis-data';
+type RacingTurningPoint = {
+    position: Point,
+    type: number,
+    index: number, //type and index are used together. some points are index sensitive
+    description?: string,
+    info?: string,
+    variables?: [{ key: string, value: string }]
+};
+type CurbTurningPoint = { id: number, position: Point };
+type BezierPoints = { id: number, position: Point };
+type RacingLinePoint = { id: number, position: Point };
 const SessionAnalysis = () => {
 
     // Define virtual size for our scene
@@ -28,57 +37,33 @@ const SessionAnalysis = () => {
     const [racingLinePoints, setRacingLinePoints] = useState<RacingLinePoint[]>([]);
     const [racingLineBezierPoints, setRacingLineBezierPoints] = useState<BezierPoints[]>([]);
     const [iterations, setIterations] = useState<number>(10);
-    const [yodaImage] = useImage(image);
+    const [mapImage] = useImage(image);
     // Reference to parent container
     const containerRef = useRef<HTMLInputElement>(null);
 
     ///////////////functions////////////////////
 
-    function createInitialShapes(): RacingTurningPoint[] {
-        let points: RacingTurningPoint[] = [];
-        myData.map((point) => {
-            points.push({
-                id: point.id,
-                point: [point.point[0], point.point[1]],
-                l_width: point.l_width,
-                r_width: point.r_width
-            })
-        })
+    function createInitialShapes() {
 
-        return points;
 
-        // return [
-        //     {
-        //         id: 0, point: [0, 0],
-        //         l_width: 5,
-        //         r_width: 5
-        //     },
-        //     {
-        //         id: 1, point: [0, 20],
-        //         l_width: 5,
-        //         r_width: 5
-        //     },
-        //     {
-        //         id: 2, point: [0, 40],
-        //         l_width: 5,
-        //         r_width: 5
-        //     },
-        //     {
-        //         id: 3, point: [0, 120],
-        //         l_width: 5,
-        //         r_width: 5
-        //     },
-        //     {
-        //         id: 4, point: [0, 160],
-        //         l_width: 5,
-        //         r_width: 5
-        //     },
-        //     {
-        //         id: 5, point: [0, 180],
-        //         l_width: 5,
-        //         r_width: 5
-        //     },
-        // ]
+        apiService.post('/racingmap/map/infolists', { name: "Calabogie Motor Sports" }).then((result) => {
+            const data = result.data as SessionInfo;
+
+            setTurningPoints(data.points.map((point) => {
+                return {
+                    type: point.type,
+                    index: point.index,
+                    position: [point.position[0], point.position[1]],
+                    description: "",
+                    info: "",
+                };
+            }));
+        }).catch((e) => {
+        });
+
+
+
+
     }
 
     // Function to handle resize
@@ -99,10 +84,10 @@ const SessionAnalysis = () => {
     // Update on mount and when window resizes
     useEffect(() => {
         updateSize();
-        setTurningPoints(createInitialShapes());
+        createInitialShapes();
     }, []);
 
-    //recalculate controlling point for bezier curve since the turning point moved
+    //recalculate controlling position for bezier curve since the turning position moved
     useEffect(() => {
         calculateTrack();
     }, [turningPoints]);
@@ -111,8 +96,15 @@ const SessionAnalysis = () => {
     function handleDragMove(e: any, id: any) {
         const target = e.target;
 
-        setTurningPoints(turningPoints.map((turningPoint: { id: number, point: Point, l_width: number, r_width: number }) => {
-            if (turningPoint.id !== id) return turningPoint;
+        setTurningPoints(turningPoints.map((turningPoint: {
+            position: Point,
+            type: number,
+            index: number, //type and index are used together. some points are index sensitive
+            description?: string,
+            info?: string,
+            variables?: [{ key: string, value: string }]
+        }) => {
+            if (turningPoint.index !== id) return turningPoint;
 
             let pointPosition: any[] = [e.target.x(), e.target.y()];
 
@@ -130,16 +122,16 @@ const SessionAnalysis = () => {
                 pointPosition[1] = stageSize.height;
             }
 
-            //set position. for some reason, point wont set again at boundary, this fix it temporarily
+            //set position. for some reason, position wont set again at boundary, this fix it temporarily
             e.target.absolutePosition({
                 x: pointPosition[0],
                 y: pointPosition[1]
             });
 
-            return { ...turningPoint, point: [pointPosition[0], pointPosition[1]] }
+            return { ...turningPoint, position: [pointPosition[0], pointPosition[1]] }
 
         }));
-        console.log(turningPoints);
+
 
     }
 
@@ -157,8 +149,8 @@ const SessionAnalysis = () => {
         //deep copy, regular copy will have the reference on the old array. cause mutation when changing the new array
         turningPoints.map((point) => {
             tempRacingLinePoints.push({
-                id: point.id,
-                point: [point.point[0], point.point[1]]
+                id: point.index,
+                position: [point.position[0], point.position[1]]
             });
         });
         racingLineDisplacement = new Array(tempRacingLinePoints.length).fill(0);
@@ -172,8 +164,8 @@ const SessionAnalysis = () => {
                 const pointMiddle = tempRacingLinePoints[p];
 
                 // Create vectors to neighbours
-                const vectorLeft = [pointLeft.point[0] - pointMiddle.point[0], pointLeft.point[1] - pointMiddle.point[1]];
-                const vectorRight = [pointRight.point[0] - pointMiddle.point[0], pointRight.point[1] - pointMiddle.point[1]];
+                const vectorLeft = [pointLeft.position[0] - pointMiddle.position[0], pointLeft.position[1] - pointMiddle.position[1]];
+                const vectorRight = [pointRight.position[0] - pointMiddle.position[0], pointRight.position[1] - pointMiddle.position[1]];
 
                 // Normalise neighbours
                 const lengthLeft = Math.sqrt(vectorLeft[0] * vectorLeft[0] + vectorLeft[1] * vectorLeft[1]);
@@ -187,11 +179,11 @@ const SessionAnalysis = () => {
                 vectorSum[0] = (len === 0) ? vectorSum[0] : vectorSum[0] / len;
                 vectorSum[1] = (len === 0) ? vectorSum[1] : vectorSum[1] / len;
 
-                // Get point gradient and normalise (TODO: ADD circular)
-                const P0 = bezierPoints[(3 * p)].point;
-                const P1 = bezierPoints[(3 * p + 1) % bezierPoints.length].point;
-                const P2 = bezierPoints[(3 * p + 2) % bezierPoints.length].point;
-                const P3 = bezierPoints[(3 * p + 3) % bezierPoints.length].point;
+                // Get position gradient and normalise (TODO: ADD circular)
+                const P0 = bezierPoints[(3 * p)].position;
+                const P1 = bezierPoints[(3 * p + 1) % bezierPoints.length].position;
+                const P2 = bezierPoints[(3 * p + 2) % bezierPoints.length].position;
+                const P3 = bezierPoints[(3 * p + 3) % bezierPoints.length].position;
 
                 const g = getBezierTangent(P0, P1, P2, P3, 0);
 
@@ -199,7 +191,7 @@ const SessionAnalysis = () => {
                 g[0] = (glen === 0) ? g[0] : g[0] / glen;
                 g[1] = (glen === 0) ? g[1] : g[1] / glen;
 
-                // Project required correction onto point tangent to give displacment (projection)
+                // Project required correction onto position tangent to give displacment (projection)
                 const dp = -g[1] * vectorSum[0] + g[0] * vectorSum[1];
 
                 // Shortest path
@@ -219,18 +211,18 @@ const SessionAnalysis = () => {
                     if (racingLineDisplacement[p] >= 1) racingLineDisplacement[p] = 1;
                     if (racingLineDisplacement[p] <= -1) racingLineDisplacement[p] = -1;
 
-                    const P0 = bezierPoints[(3 * p)].point;
-                    const P1 = bezierPoints[(3 * p + 1) % bezierPoints.length].point;
-                    const P2 = bezierPoints[(3 * p + 2) % bezierPoints.length].point;
-                    const P3 = bezierPoints[(3 * p + 3) % bezierPoints.length].point;
+                    const P0 = bezierPoints[(3 * p)].position;
+                    const P1 = bezierPoints[(3 * p + 1) % bezierPoints.length].position;
+                    const P2 = bezierPoints[(3 * p + 2) % bezierPoints.length].position;
+                    const P3 = bezierPoints[(3 * p + 3) % bezierPoints.length].position;
 
                     const g = getBezierTangent(P0, P1, P2, P3, 0);
 
                     const glen = Math.sqrt(g[0] * g[0] + g[1] * g[1]);
                     g[0] /= glen; g[1] /= glen;
 
-                    tempRacingLinePoints[p].point[0] = tempRacingLinePoints[p].point[0] - g[1] * racingLineDisplacement[p];
-                    tempRacingLinePoints[p].point[1] = tempRacingLinePoints[p].point[1] - g[0] * racingLineDisplacement[p];
+                    tempRacingLinePoints[p].position[0] = tempRacingLinePoints[p].position[0] - g[1] * racingLineDisplacement[p];
+                    tempRacingLinePoints[p].position[1] = tempRacingLinePoints[p].position[1] - g[0] * racingLineDisplacement[p];
                 }
             }
 
@@ -243,9 +235,9 @@ const SessionAnalysis = () => {
             let points = AddControlPoints(extractRacingLinePointToPoint(tempRacingLinePoints), 0.6);
             let index = 0;
             let result: BezierPoints[] = [];
-            points.forEach((point) => {
+            points.forEach((position) => {
                 index++;
-                result.push({ id: index, point: point });
+                result.push({ id: index, position: position });
             })
             setRacingLineBezierPoints(result);
         }
@@ -261,9 +253,9 @@ const SessionAnalysis = () => {
         let points = AddControlPoints(extractRacingTurningPointToPoint(turningPoints), 0.6)
         let index = 0;
         let result: BezierPoints[] = [];
-        points.forEach((point) => {
+        points.forEach((position) => {
             index++;
-            result.push({ id: index, point: point });
+            result.push({ id: index, position: position });
         })
         setBezierPoints(result);
 
@@ -280,8 +272,8 @@ const SessionAnalysis = () => {
                 const P3 = points[i + 3];
                 index++;
                 // Only push Q0 if it's the first segment to avoid duplicates
-                if (i === 0) result.push({ id: 0, point: P0 });
-                result.push({ id: index, point: P3 })
+                if (i === 0) result.push({ id: 0, position: P0 });
+                result.push({ id: index, position: P3 })
             }
             setLeftCurbTurningPoints(result);
 
@@ -289,9 +281,9 @@ const SessionAnalysis = () => {
             points = AddControlPoints(extractCurbTurningPointToPoint(result), 0.4);
             index = 0;
             result = [];
-            points.forEach((point) => {
+            points.forEach((position) => {
                 index++;
-                result.push({ id: index, point: point });
+                result.push({ id: index, position: position });
             })
             setLeftCrubBezierPoints(result);
 
@@ -299,15 +291,15 @@ const SessionAnalysis = () => {
             points = createRacingTurningPointOffset(bezierPoints, 'right');
             index = 0;
             result = [];
-            //we only need the turning point
+            //we only need the turning position
             for (let i = 0; i < points.length - 1; i += 3) {
                 //we only want the turning points
                 const P0 = points[i];
                 const P3 = points[i + 3];
                 index++;
                 // Only push Q0 if it's the first segment to avoid duplicates
-                if (i === 0) result.push({ id: 0, point: P0 });
-                result.push({ id: index, point: P3 })
+                if (i === 0) result.push({ id: 0, position: P0 });
+                result.push({ id: index, position: P3 })
             }
             setRightCurbTurningPoints(result);
 
@@ -315,9 +307,9 @@ const SessionAnalysis = () => {
             points = AddControlPoints(extractCurbTurningPointToPoint(result), 0.4);
             index = 0;
             result = [];
-            points.forEach((point) => {
+            points.forEach((position) => {
                 index++;
-                result.push({ id: index, point: point });
+                result.push({ id: index, position: position });
             })
             setRightCurbBezierPoints(result);
 
@@ -334,7 +326,7 @@ const SessionAnalysis = () => {
                     <Image
                         x={0}
                         y={0}
-                        image={yodaImage}
+                        image={mapImage}
                         scaleX={3}
                         scaleY={3}
 
@@ -354,13 +346,20 @@ const SessionAnalysis = () => {
                         stroke="red" strokeWidth={2} bezier={true}
                     />
 
-                    {turningPoints.map((turningPoint: { id: Key, point: Point }) => (
+                    {turningPoints.map((turningPoint: {
+                        position: Point,
+                        type: number,
+                        index: number, //type and index are used together. some points are index sensitive
+                        description?: string,
+                        info?: string,
+                        variables?: [{ key: string, value: string }]
+                    }) => (
                         <Group
-                            key={turningPoint.id} id={`group-${turningPoint.id}`} x={turningPoint.point[0]} y={turningPoint.point[1]} draggable
-                            onDragMove={(e) => handleDragMove(e, turningPoint.id)}
-                            onDragEnd={(e) => handleDragEnd(e, turningPoint.id)}>
+                            key={turningPoint.index} id={`group-${turningPoint.index}`} x={turningPoint.position[0]} y={turningPoint.position[1]} draggable
+                            onDragMove={(e) => handleDragMove(e, turningPoint.index)}
+                            onDragEnd={(e) => handleDragEnd(e, turningPoint.index)}>
                             <Circle
-                                key={turningPoint.id} radius={10} fill={"red"} name={turningPoint.id.toString()}
+                                key={turningPoint.index} radius={10} fill={"red"} name={turningPoint.index.toString()}
                             />
                         </Group>
                     ))}
@@ -370,9 +369,9 @@ const SessionAnalysis = () => {
                         stroke="green" strokeWidth={2} bezier={true}
                     />
                     {/* 
-                    {racingLinePoints.map((point: { id: Key, point: Point }) => (
+                    {racingLinePoints.map((position: { id: Key, position: Point }) => (
                         <Circle
-                            key={point.id} x={point.point[0]} y={point.point[1]} radius={10} fill={"blue"} name={point.id.toString()}
+                            key={position.id} x={position.position[0]} y={position.position[1]} radius={10} fill={"blue"} name={position.id.toString()}
                         />
                     ))}
                     */}
@@ -387,39 +386,39 @@ const SessionAnalysis = () => {
 function convert_1D_array_to_2d_array(points: number[]): Point[] {
     const result: Point[] = [];
     for (let i = 0; i < points.length; i += 2) {
-        const point = points.slice(i, i + 2);
-        result.push([point[0], point[1]]);
+        const position = points.slice(i, i + 2);
+        result.push([position[0], position[1]]);
     }
     return result;
 }
 
 function extractRacingTurningPointToPoint(points: RacingTurningPoint[]): Point[] {
     return points.reduce((acc, curr): Point[] => {
-        return [...acc, curr.point];
+        return [...acc, curr.position];
     }, [] as Point[]);
 }
 
 function extractRacingLinePointToPoint(points: RacingLinePoint[]): Point[] {
     return points.reduce((acc, curr): Point[] => {
-        return [...acc, curr.point];
+        return [...acc, curr.position];
     }, [] as Point[]);
 }
 
 function extractCurbTurningPointToPoint(points: CurbTurningPoint[]): Point[] {
     return points.reduce((acc, curr): Point[] => {
-        return [...acc, curr.point];
+        return [...acc, curr.position];
     }, [] as Point[]);
 }
 
 function extractBezierPointToPoint(points: BezierPoints[]): Point[] {
     if (!points) return [];
     return points.reduce((acc, curr): Point[] => {
-        return [...acc, curr.point];
+        return [...acc, curr.position];
     }, [] as Point[]);
 }
 
 /**
- * flat point[] to 1d number[]
+ * flat position[] to 1d number[]
  * @param points 
  * @returns 
  */
@@ -429,7 +428,7 @@ function convert_Points_to_1d_array(points: Point[]): number[] {
 }
 
 /**
- * give points of turning and the control points come with it, return offseted curbs point and the control points using Bezier 
+ * give points of turning and the control points come with it, return offseted curbs position and the control points using Bezier 
  * @param points 
  * @param direction 
  * @returns 

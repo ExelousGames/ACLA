@@ -1,15 +1,32 @@
 export type MapOption = {
     //key is required for child component of MapList component
-    key?: number,
-    datakey: number,
+    dataKey: number,
     name?: string;
     session_count?: number;
 }
 
 export type SessionOption = {
     //key is required for child component of MapList component
-    key?: number,
-    datakey: number,
+    dataKey: number,
     name: string;
     total_time: number;
+}
+
+export type AllMapsBasicInfoListDto = {
+    list: [{ name: string; }];
+}
+
+export type SessionInfo = {
+
+    name: string,
+    mimetype: string,
+    ImageData: Buffer;
+    points: [{
+        position: number[],
+        type: number,
+        index: number, //type and index are used together. some points are index sensitive
+        description?: string,
+        info?: string,
+        variables?: [{ key: string, value: string }] //any word match {key} in description or info will be replaced with the value
+    }]
 }

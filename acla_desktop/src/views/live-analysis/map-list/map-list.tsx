@@ -1,4 +1,4 @@
-import { createContext, useContext } from 'react';
+import { createContext, useContext, useEffect, useState } from 'react';
 import './map-list.css';
 
 import {
@@ -23,30 +23,52 @@ import {
     Theme,
 } from "@radix-ui/themes";
 import { ScrollArea } from "radix-ui";
-import { MapOption } from 'data/live-analysis/live-analysis-data';
+import { AllMapsBasicInfoListDto, MapOption } from 'data/live-analysis/live-analysis-data';
 import { AnalysisContext } from '../live-analysis';
+import apiService from 'services/api.service';
 
 const MapList = (setMapState: any) => {
-    const options: MapOption[] = [{
-        key: 1,
-        datakey: 1,
+
+    const [options, setOptions] = useState([{
+        dataKey: 1,
         name: "Track 1",
-        session_count: 2,
+        session_count: 0,
 
     },
     {
-        key: 2,
-        datakey: 2,
+        dataKey: 2,
         name: "Track 2",
-        session_count: 2
-    }];
+        session_count: 0
+    }] as MapOption[]);
+
+    useEffect(() => {
+
+        apiService.get('/racingmap/map/infolists')
+            .then((result) => {
+                console.log(result);
+                const data = result.data as AllMapsBasicInfoListDto;
+                let count = 0;
+
+                setOptions(data.list.map((option): MapOption => {
+                    count++;
+                    return {
+                        dataKey: count,
+                        name: option.name,
+                        session_count: 0,
+                    } as MapOption;
+                }))
+
+            }).catch((e) => {
+            });
+    }, []);
 
     return (
         <ScrollArea.Root className="MapListScrollAreaRoot">
             <ScrollArea.Viewport className="ScrollAreaViewport">
                 <Flex flexShrink="0" direction="column" gap="9">
                     {options.map((option: MapOption) => (
-                        <MapCard key={option.key} datakey={option.datakey} name={option.name} session_count={option.session_count} />
+                        //each child is a list should have a unique "key" prop
+                        <MapCard key={option.dataKey} dataKey={option.dataKey} name={option.name} session_count={option.session_count} />
                     ))}
                 </Flex>
             </ScrollArea.Viewport>
@@ -69,10 +91,10 @@ const MapList = (setMapState: any) => {
     )
 };
 
-function MapCard({ datakey, name, session_count }: MapOption) {
+function MapCard({ dataKey, name, session_count }: MapOption) {
     const { mapContext } = useContext(AnalysisContext);
     function mapSelected() {
-        mapContext.setMap({ datakey, name, session_count });
+        mapContext.setMap({ dataKey, name, session_count });
     }
 
     return (
