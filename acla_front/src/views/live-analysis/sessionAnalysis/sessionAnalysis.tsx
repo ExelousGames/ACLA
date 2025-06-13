@@ -5,6 +5,8 @@ import { offsetBezierPoints, Point, ConstructAllPointsOnBezierCurves, getBezierT
 import useImage from 'use-image';
 import image from 'assets/map2.png'
 import myData from 'data/sessionAnalysis.json';
+import apiService from 'services/api.service';
+import { SessionInfo } from 'data/live-analysis/live-analysis-data';
 type RacingTurningPoint = {
     position: Point,
     type: number,
@@ -41,19 +43,27 @@ const SessionAnalysis = () => {
 
     ///////////////functions////////////////////
 
-    function createInitialShapes(): RacingTurningPoint[] {
-        let points: RacingTurningPoint[] = [];
-        myData.map((point) => {
-            points.push({
-                type: point.type,
-                index: point.index,
-                position: [point.position[0], point.position[1]],
-                description: "",
-                info: "",
-            })
-        })
-        console.log(points);
-        return points;
+    function createInitialShapes() {
+
+
+        apiService.post('/racingmap/map/infolists', { name: "Calabogie Motor Sports" }).then((result) => {
+            const data = result.data as SessionInfo;
+
+            setTurningPoints(data.points.map((point) => {
+                return {
+                    type: point.type,
+                    index: point.index,
+                    position: [point.position[0], point.position[1]],
+                    description: "",
+                    info: "",
+                };
+            }));
+        }).catch((e) => {
+        });
+
+
+
+
     }
 
     // Function to handle resize
@@ -74,7 +84,7 @@ const SessionAnalysis = () => {
     // Update on mount and when window resizes
     useEffect(() => {
         updateSize();
-        setTurningPoints(createInitialShapes());
+        createInitialShapes();
     }, []);
 
     //recalculate controlling position for bezier curve since the turning position moved
