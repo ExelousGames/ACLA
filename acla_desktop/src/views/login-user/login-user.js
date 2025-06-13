@@ -27,13 +27,15 @@ const LoginUser = () => {
         email: "",
         password: "",
     });
+
+    //use Auth custom context
     const auth = useAuth();
 
     //when user tries to press login button
     const handleSubmit = (e) => {
         e.preventDefault();
         if (input.email !== "" || input.password !== "") {
-            auth.loginAction({ email: input.email, password: input.password });
+            auth.login({ email: input.email, password: input.password });
             return
         }
         alert("please provide a valid input");

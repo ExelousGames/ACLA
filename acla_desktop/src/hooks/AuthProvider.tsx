@@ -1,34 +1,42 @@
-import { useContext, createContext, useState } from "react";
+import { useContext, createContext, useState, ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 import axios from 'axios';
 
+interface AuthContextType {
+    user: any;
+    token: string | null;
+    login: (email: string, password: string) => Promise<void>;
+    logout: () => void;
+}
+
 //now this AuthContext component can be accessed globally. name of the context doesn't have to match the name of the file
-const AuthContext = createContext();
+const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 /*Manages the user authentication state
 * Whoever accesses to the value of 'AuthContext' needs to be wrapped inside the 'Provider',
 *   this should be held by the highest parent component in the stack that requires access to the state
 */
-const AuthProvider = ({ children }) => {
+const AuthProvider = ({ children }: { children: ReactNode }) => {
 
-    const [user, setUser] = useState(null);
-    const [token, setToken] = useState(localStorage.getItem("site") || "");
+    const [userEmail, setUserEmail] = useState(null);
+    const [token, setToken] = useState(localStorage.getItem("token") || "");
     const navigate = useNavigate();
 
     //backend server api
     const serverIPandPort = process.env.REACT_APP_BACKEND_SERVER_IP + ":" + process.env.REACT_APP_BACKEND_PROXY_PORT
     const server_url_header = 'http://' + serverIPandPort
-    console.log(process.env.REACT_APP_BACKEND_SERVER_IP);
+
     //handles user login by sending a POST request to an authentication endpoint, 
     // updating the user and token state upon a successful response, and storing the token in local storage.
-    const loginAction = async (data) => {
+    const login = async (data: any) => {
         axios.post(server_url_header + '/userinfo/auth/login', data)
             .then(response => {
-                alert(response.server_url_header);
+
                 if (response) {
-                    setUser(response.data.user);
-                    setToken(response.data.access_token);
-                    localStorage.setItem("site", response.data.token);
+                    let tokentemp: string = response.data.access_token;
+                    setUserEmail(data.email);
+                    setToken(tokentemp);
+                    localStorage.setItem("token", tokentemp);
                     navigate("/dashboard");
                     return;
                 }
@@ -37,15 +45,15 @@ const AuthProvider = ({ children }) => {
     };
 
     //clears user and token data, removing the token from local storage.
-    const logOut = () => {
-        setUser(null);
+    const logout = () => {
+        setUserEmail(null);
         setToken("");
-        localStorage.removeItem("site");
+        localStorage.removeItem("token");
         navigate("/login");
     };
 
-    //use Context Provider to wrap the tree of components that need the state context
-    return <AuthContext.Provider value={{ token, user, loginAction, logOut }}>{children}</AuthContext.Provider>;
+    //use Context Provider to wrap the tree of components that need this context
+    return <AuthContext.Provider value={{ token, user: userEmail, login, logout }}>{children}</AuthContext.Provider>;
 };
 
 //makes the authentication state and related functions available to its child components, accessible via the useAuth hook, 

@@ -1,4 +1,4 @@
-import { createContext, useContext } from 'react';
+import { createContext, useContext, useEffect } from 'react';
 import './session-list.css';
 import {
     Avatar,
@@ -23,27 +23,32 @@ import {
 import { ScrollArea } from "radix-ui";
 import { SessionOption } from 'data/live-analysis/live-analysis-data';
 import { AnalysisContext } from '../live-analysis';
+import apiService from 'services/api.service';
+import { useEnvironment } from 'contexts/EnvironmentContext';
 
 const SessionList = () => {
     const options: SessionOption[] = [{
-        key: 1,
-        datakey: 1,
+        dataKey: 1,
         name: "2025-30-20 10:30:20",
         total_time: 2,
 
     },
     {
-        key: 2,
-        datakey: 2,
+        dataKey: 2,
         name: "2022-30-20 10:30:20",
         total_time: 2
     }];
+
+    const environment = useEnvironment();
+    useEffect(() => {
+        console.log(environment);
+    }, []);
     return (
         <ScrollArea.Root className="MapListScrollAreaRoot">
             <ScrollArea.Viewport className="ScrollAreaViewport">
                 <Flex flexShrink="0" direction="column" gap="9">
                     {options.map((option: SessionOption) => (
-                        <MapCard key={option.key} datakey={option.datakey} name={option.name} total_time={option.total_time} />
+                        <MapCard key={option.dataKey} dataKey={option.dataKey} name={option.name} total_time={option.total_time} />
                     ))}
                 </Flex>
             </ScrollArea.Viewport>
@@ -66,10 +71,10 @@ const SessionList = () => {
     )
 };
 
-const MapCard = ({ datakey, name, total_time }: SessionOption) => {
+const MapCard = ({ dataKey, name, total_time }: SessionOption) => {
     const { sessionContext } = useContext(AnalysisContext);
     function mapSelected() {
-        sessionContext.setSession({ datakey, name, total_time });
+        sessionContext.setSession({ dataKey, name, total_time });
     }
 
     return (
