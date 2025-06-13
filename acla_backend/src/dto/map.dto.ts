@@ -1,3 +1,10 @@
 export class AllMapsBasicInfoListDto {
-    list: [{ name: string }]
+    list: MapBasicInfo[]
+    constructor() {
+        this.list = [];
+    }
+}
+
+export type MapBasicInfo = {
+    name: string
 }

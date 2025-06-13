@@ -11,6 +11,10 @@ export class RacingMapController {
     @UseGuards(AuthGuard('jwt'))
     @Get('map/infolists')
     async getAllMapsBasicInfos(@Body() body: any): Promise<AllMapsBasicInfoListDto | null> {
+        this.racingMapService.retrieveAllMapBasicInfos().then((result) => {
+            console.log("result");
+            console.log(result);
+        });
         return this.racingMapService.retrieveAllMapBasicInfos();
     }
 }
