@@ -27,7 +27,7 @@ import { AllMapsBasicInfoListDto, MapOption } from 'data/live-analysis/live-anal
 import { AnalysisContext } from '../live-analysis';
 import apiService from 'services/api.service';
 
-const MapList = (setMapState: any) => {
+const MapList = () => {
 
     const [options, setOptions] = useState([{
         dataKey: 1,
@@ -92,9 +92,9 @@ const MapList = (setMapState: any) => {
 };
 
 function MapCard({ dataKey, name, session_count }: MapOption) {
-    const { mapContext } = useContext(AnalysisContext);
+    const { analysisContext } = useContext(AnalysisContext);
     function mapSelected() {
-        mapContext.setMap({ dataKey, name, session_count });
+        analysisContext.setMap(name);
     }
 
     return (

@@ -1,7 +1,7 @@
 export type MapOption = {
     //key is required for child component of MapList component
     dataKey: number,
-    name?: string;
+    name: string;
     session_count?: number;
 }
 
@@ -14,6 +14,11 @@ export type SessionOption = {
 
 export type AllMapsBasicInfoListDto = {
     list: [{ name: string; }];
+}
+
+export type OptionSelected = {
+    mapOption?: string | null,
+    sessionOption?: string | null,
 }
 
 export type SessionInfo = {
