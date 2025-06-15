@@ -8,6 +8,7 @@ import myData from 'data/sessionAnalysis.json';
 import apiService from 'services/api.service';
 import { SessionInfo } from 'data/live-analysis/live-analysis-data';
 import { AnalysisContext } from '../live-analysis';
+import LiveAnalysisSessionRecording from './liveAnalysisSessionRecording';
 type RacingTurningPoint = {
     position: Point,
     type: number,
@@ -19,7 +20,7 @@ type RacingTurningPoint = {
 type CurbTurningPoint = { id: number, position: Point };
 type BezierPoints = { id: number, position: Point };
 type RacingLinePoint = { id: number, position: Point };
-const SessionAnalysis = () => {
+const SessionAnalysisMap = () => {
 
     // Define virtual size for our scene
     let containerWidth = window.innerWidth;
@@ -376,6 +377,8 @@ const SessionAnalysis = () => {
                     */}
                 </Layer>
             </Stage>
+
+            <LiveAnalysisSessionRecording></LiveAnalysisSessionRecording>
         </div>
     );
 
@@ -447,5 +450,5 @@ function exportPointsForDrawing(points?: Point[]): number[] {
     return convert_Points_to_1d_array(points);
 }
 
-export default SessionAnalysis;
+export default SessionAnalysisMap;
 
