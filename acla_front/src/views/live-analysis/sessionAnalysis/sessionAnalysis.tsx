@@ -7,6 +7,7 @@ import image from 'assets/map2.png'
 import myData from 'data/sessionAnalysis.json';
 import apiService from 'services/api.service';
 import { SessionInfo } from 'data/live-analysis/live-analysis-data';
+import { AnalysisContext } from '../live-analysis';
 type RacingTurningPoint = {
     position: Point,
     type: number,
@@ -28,6 +29,7 @@ const SessionAnalysis = () => {
         width: containerWidth,
         height: containerHeight,
     });
+    const { analysisContext } = useContext(AnalysisContext);
     const [turningPoints, setTurningPoints] = useState<RacingTurningPoint[]>([]);
     const [bezierPoints, setBezierPoints] = useState<BezierPoints[]>([]);
     const [leftCurbTurningPoints, setLeftCurbTurningPoints] = useState<CurbTurningPoint[]>([]);
@@ -43,28 +45,11 @@ const SessionAnalysis = () => {
 
     ///////////////functions////////////////////
 
-    function createInitialShapes() {
-
-
-        apiService.post('/racingmap/map/infolists', { name: "Calabogie Motor Sports" }).then((result) => {
-            const data = result.data as SessionInfo;
-
-            setTurningPoints(data.points.map((point) => {
-                return {
-                    type: point.type,
-                    index: point.index,
-                    position: [point.position[0], point.position[1]],
-                    description: "",
-                    info: "",
-                };
-            }));
-        }).catch((e) => {
-        });
-
-
-
-
-    }
+    // Update on mount and when window resizes
+    useEffect(() => {
+        createInitialShapes();
+        updateSize();
+    }, []);
 
     // Function to handle resize
     const updateSize = () => {
@@ -81,16 +66,30 @@ const SessionAnalysis = () => {
         });
     };
 
-    // Update on mount and when window resizes
-    useEffect(() => {
-        updateSize();
-        createInitialShapes();
-    }, []);
-
     //recalculate controlling position for bezier curve since the turning position moved
     useEffect(() => {
         calculateTrack();
     }, [turningPoints]);
+
+
+    function createInitialShapes() {
+
+        apiService.post('/racingmap/map/infolists', { name: analysisContext.options?.mapOption }).then((result) => {
+            const data = result.data as SessionInfo;
+
+            setTurningPoints(data.points.map((point) => {
+                return {
+                    type: point.type,
+                    index: point.index,
+                    position: [point.position[0], point.position[1]],
+                    description: "",
+                    info: "",
+                };
+            }));
+        }).catch((e) => {
+        });
+    }
+
 
 
     function handleDragMove(e: any, id: any) {
