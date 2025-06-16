@@ -1,6 +1,6 @@
 import { Card, Flex, Box, TextField, IconButton, Heading, Grid, Text, Slider, Avatar } from '@radix-ui/themes';
 import { PythonShell } from 'python-shell';
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 
 import { Link } from 'react-router-dom';
 import { PythonShellOptions } from 'services/pythonService';
@@ -8,13 +8,8 @@ import { PythonShellOptions } from 'services/pythonService';
 
 const LiveAnalysisSessionRecording = () => {
 
-
-    let options = {
-        mode: 'text',
-        pythonOptions: ['-u'], // get print results in real-time
-        scriptPath: 'services/AI/',
-        args: []
-    } as PythonShellOptions;
+    const [output, setOutput] = useState<string[]>([]);
+    const [isRunning, setIsRunning] = useState(false);
 
     useEffect(() => {
         // Set up listener for Python messages
@@ -29,11 +24,18 @@ const LiveAnalysisSessionRecording = () => {
     }, []);
 
     const runScript = async () => {
+        let options = {
+            mode: 'text',
+            pythonOptions: ['-u'], // get print results in real-time
+            scriptPath: 'py-script',
+            args: []
+        } as PythonShellOptions;
+
         setIsRunning(true);
         setOutput([]);
         try {
-            const scriptPath = 'scripts/example.py'; // Adjust path as needed
-            await window.electronAPI.runPythonScript(scriptPath);
+            const scriptPath = 'AssettoCorsaCompetizionMemoryExector.py'; // Adjust path as needed
+            await window.electronAPI.runPythonScript(scriptPath, options);
         } catch (error) {
             setOutput(prev => [...prev, `Error: ${error}`]);
         } finally {

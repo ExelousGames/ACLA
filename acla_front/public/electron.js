@@ -26,18 +26,13 @@ function createWindow() {
 }
 
 // Handle running Python scripts
-ipcMain.handle('run-python-script', async (event, scriptPath) => {
+ipcMain.handle('run-python-script', async (event, scriptPath, options) => {
+
   return new Promise((resolve, reject) => {
-    const pyshell = new PythonShell(scriptPath, {
-      pythonOptions: ['-u'] // Unbuffered output
-    });
+
+    const pyshell = new PythonShell(scriptPath, options);
 
     let output = [];
-
-    PythonShell.run('AssettoCorsaCompetizionMemoryExector.py', options).then(messages => {
-      // results is an array consisting of messages collected during execution
-      console.log('results: %j', messages);
-    });
 
     // Receive messages from Python script
     pyshell.on('message', (message) => {

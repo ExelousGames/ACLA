@@ -2,9 +2,13 @@ import { PythonShell } from 'python-shell';
 import path from 'path';
 
 declare global {
+
+    //The interface Window extension you're seeing in the React component is a TypeScript feature 
+    // that allows you to safely extend the global window object with custom properties. 
     interface Window {
         electronAPI: {
-            runPythonScript: (scriptPath: string) => Promise<string[]>;
+            //preload.js runs in runtime. the renderer process has no Node.js or Electron module access. 
+            runPythonScript: (scriptPath: string, options: PythonShellOptions) => Promise<string[]>;
             onPythonMessage: (callback: (message: string) => void) => void;
         };
     }
@@ -15,6 +19,7 @@ export interface PythonResult {
     result?: number;
     error?: string;
 }
+
 export interface PythonShellOptions {
     mode?: 'text' | 'json' | 'binary';
     /**
@@ -30,9 +35,4 @@ export interface PythonShellOptions {
      *  Array of arguments to pass to the script
      */
     args?: any[];
-}
-export async function PythonRunner(scriptName: string, options: PythonShellOptions, b: number): Promise<PythonResult> {
-    return new Promise((resolve) => {
-        PythonShell.run(scriptName, options);
-    });
 }
