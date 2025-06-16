@@ -1,6 +1,15 @@
 import { PythonShell } from 'python-shell';
 import path from 'path';
 
+declare global {
+    interface Window {
+        electronAPI: {
+            runPythonScript: (scriptPath: string) => Promise<string[]>;
+            onPythonMessage: (callback: (message: string) => void) => void;
+        };
+    }
+}
+
 export interface PythonResult {
     success: boolean;
     result?: number;
