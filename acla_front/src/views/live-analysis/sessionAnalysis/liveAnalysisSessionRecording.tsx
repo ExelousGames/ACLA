@@ -1,5 +1,4 @@
 import { Card, Flex, Box, TextField, IconButton, Heading, Grid, Text, Slider, Avatar } from '@radix-ui/themes';
-import { PythonShell } from 'python-shell';
 import { useEffect, useState } from 'react';
 
 import { Link } from 'react-router-dom';
