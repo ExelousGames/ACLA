@@ -11,11 +11,11 @@ const LiveAnalysisSessionRecording = () => {
     let options = {
         mode: 'text',
         pythonOptions: ['-u'], // get print results in real-time
-        scriptPath: 'path/to/my/scripts',
-        args: ['value1', 'value2', 'value3']
+        scriptPath: 'services/AI/',
+        args: []
     } as PythonShellOptions;
 
-    PythonShell.run('my_script.py', options).then(messages => {
+    PythonShell.run('AssettoCorsaCompetizionMemoryExector.py', options).then(messages => {
         // results is an array consisting of messages collected during execution
         console.log('results: %j', messages);
     });
