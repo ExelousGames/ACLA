@@ -1,5 +1,6 @@
 import { Card, Flex, Box, TextField, IconButton, Heading, Grid, Text, Slider, Avatar } from '@radix-ui/themes';
 import { PythonShell } from 'python-shell';
+import { useEffect } from 'react';
 
 import { Link } from 'react-router-dom';
 import { PythonShellOptions } from 'services/pythonService';
@@ -11,14 +12,34 @@ const LiveAnalysisSessionRecording = () => {
     let options = {
         mode: 'text',
         pythonOptions: ['-u'], // get print results in real-time
-        scriptPath: 'path/to/my/scripts',
-        args: ['value1', 'value2', 'value3']
+        scriptPath: 'services/AI/',
+        args: []
     } as PythonShellOptions;
 
-    PythonShell.run('my_script.py', options).then(messages => {
-        // results is an array consisting of messages collected during execution
-        console.log('results: %j', messages);
-    });
+    useEffect(() => {
+        // Set up listener for Python messages
+        window.electronAPI.onPythonMessage((message: string) => {
+            setOutput(prev => [...prev, message]);
+        });
+
+        return () => {
+            // Clean up listeners when component unmounts
+            window.electronAPI.onPythonMessage(() => { });
+        };
+    }, []);
+
+    const runScript = async () => {
+        setIsRunning(true);
+        setOutput([]);
+        try {
+            const scriptPath = 'scripts/example.py'; // Adjust path as needed
+            await window.electronAPI.runPythonScript(scriptPath);
+        } catch (error) {
+            setOutput(prev => [...prev, `Error: ${error}`]);
+        } finally {
+            setIsRunning(false);
+        }
+    };
 
     return (
 
