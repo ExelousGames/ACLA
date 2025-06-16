@@ -27,7 +27,7 @@ import SessionList from './session-list/session-list';
 import MapList from './map-list/map-list';
 import { useEffect, useState, createContext } from 'react';
 import { MapOption, OptionSelected, SessionOption } from 'data/live-analysis/live-analysis-data';
-import SessionAnalysis from './sessionAnalysis/sessionAnalysis';
+import SessionAnalysisMap from './sessionAnalysis/sessionAnalysisMap';
 
 //defined the sturcture here, pass down the props to child, must have init value here, otherwise createContext and useContext don't like it
 export const AnalysisContext = createContext({
@@ -97,7 +97,7 @@ const LiveAnalysis = () => {
                     </Tabs.Content>
 
                     <Tabs.Content className="TabContent" value="session">
-                        <SessionAnalysis></SessionAnalysis>
+                        <SessionAnalysisMap></SessionAnalysisMap>
                     </Tabs.Content>
                 </Box >
             </Tabs.Root>
