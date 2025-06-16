@@ -1,9 +1,8 @@
-const electron = require('electron');
+import electron from 'electron';
 const app = electron.app;
 const BrowserWindow = electron.BrowserWindow;
 const ipcMain = electron.ipcMain;
-const PythonShell = require('python-shell');
-
+import { PythonShell } from 'python-shell';
 const path = require('path');
 const url = require('url');
 const isDev = app.isPackaged ? false : require('electron-is-dev');
@@ -18,9 +17,11 @@ function createWindow() {
       // By default, the renderer process has no Node.js or Electron module access. 
       // As an app developer, you need to choose which APIs to expose from your preload script using the contextBridge API.
       // !!!!!! We don't directly expose the whole ipcRenderer.send API for security reasons. Make sure to limit the renderer's access to Electron APIs as much as possible.
-      preload: path.join(nodePath, '/utils/preload.js')
+      preload: path.join(__dirname, '../src/common/preload.js'),
     }
   });
+
+  console.log(__dirname);
   mainWindow.loadURL(isDev ? 'http://localhost:3000' : `file://${path.join(__dirname, '../build/index.html')}`);
   mainWindow.on('closed', () => mainWindow = null);
 }
@@ -32,7 +33,7 @@ ipcMain.handle('run-python-script', async (event, scriptPath, options) => {
 
     const pyshell = new PythonShell(scriptPath, options);
 
-    let output = [];
+    let output: string[] = [];
 
     // Receive messages from Python script
     pyshell.on('message', (message) => {
