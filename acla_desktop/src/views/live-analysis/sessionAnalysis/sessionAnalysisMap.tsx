@@ -9,6 +9,7 @@ import apiService from 'services/api.service';
 import { SessionInfo } from 'data/live-analysis/live-analysis-data';
 import { AnalysisContext } from '../live-analysis';
 import LiveAnalysisSessionRecording from './liveAnalysisSessionRecording';
+import { useEnvironment } from 'contexts/EnvironmentContext';
 type RacingTurningPoint = {
     position: Point,
     type: number,
@@ -30,6 +31,7 @@ const SessionAnalysisMap = () => {
         width: containerWidth,
         height: containerHeight,
     });
+    const environment = useEnvironment();
     const { analysisContext } = useContext(AnalysisContext);
     const [turningPoints, setTurningPoints] = useState<RacingTurningPoint[]>([]);
     const [bezierPoints, setBezierPoints] = useState<BezierPoints[]>([]);
@@ -378,7 +380,7 @@ const SessionAnalysisMap = () => {
                 </Layer>
             </Stage>
 
-            <LiveAnalysisSessionRecording></LiveAnalysisSessionRecording>
+            {environment == 'electron' ? <LiveAnalysisSessionRecording></LiveAnalysisSessionRecording> : ''}
         </div>
     );
 

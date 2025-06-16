@@ -26,7 +26,7 @@ const SessionList = () => {
     }];
     const environment = useEnvironment();
     const { analysisContext } = useContext(AnalysisContext);
-
+    console.log(environment);
     function HandleStartNewSessionClick() {
 
         const now = new Date();
@@ -58,7 +58,7 @@ const SessionList = () => {
                 <ScrollArea.Corner className="ScrollAreaCorner" />
             </ScrollArea.Root>
             <Flex className='SessionListOptions' flexShrink='1' justify='end'>
-                {environment == 'web' ? <Button onClick={HandleStartNewSessionClick}> Start A New Session </Button> : ''}
+                {environment == 'electron' ? <Button onClick={HandleStartNewSessionClick}> Start A New Session </Button> : ''}
             </Flex>
         </div>
     )
