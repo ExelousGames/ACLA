@@ -1,8 +1,8 @@
-import electron from 'electron';
+const electron = require('electron');
 const app = electron.app;
 const BrowserWindow = electron.BrowserWindow;
 const ipcMain = electron.ipcMain;
-import { PythonShell } from 'python-shell';
+const PythonShell = require('python-shell');
 const path = require('path');
 const url = require('url');
 const isDev = app.isPackaged ? false : require('electron-is-dev');
@@ -33,7 +33,7 @@ ipcMain.handle('run-python-script', async (event, scriptPath, options) => {
 
     const pyshell = new PythonShell(scriptPath, options);
 
-    let output: string[] = [];
+    let output = [];
 
     // Receive messages from Python script
     pyshell.on('message', (message) => {
