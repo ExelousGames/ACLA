@@ -62,7 +62,7 @@ const LiveAnalysisSessionRecording = () => {
 
             <Flex height="100%" justify="between" position="relative">
                 <Flex gap="4" align="center" p="3">
-                    <IconButton radius="full" size="3">
+                    <IconButton radius="full" size="3" onClick={runScript}>
                         <svg
                             xmlns="http://www.w3.org/2000/svg"
                             fill="currentcolor"

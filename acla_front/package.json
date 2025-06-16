@@ -62,7 +62,7 @@
     "typescript": "^4.1.6",
     "wait-on": "^8.0.3"
   },
-  "main": "public/electron.js",
+  "main": "public/electron.ts",
   "build": {
     "appId": "com.example.myapp",
     "productName": "My Electron App",
