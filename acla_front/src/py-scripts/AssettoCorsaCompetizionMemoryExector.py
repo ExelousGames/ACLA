@@ -3,6 +3,7 @@ import sched, time
 import csv
 from typing import List, Any, Dict
 
+
 asm = accSharedMemory()
 recordedData = []
 
@@ -42,7 +43,7 @@ def flatten_object(self, obj: Any, prefix: str = '') -> Dict[str, Any]:
                 
         return flattened
 
-def objects_to_csv(self, objects: List[Any], filename: str = None, write_header: bool = True) -> None:
+def objects_to_csv(self, objects: List[Any], filename: str, write_header: bool = True) -> None:
         """
         Convert a list of objects with nested structures to CSV
         """
