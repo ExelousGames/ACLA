@@ -33,37 +33,40 @@ function createWindow() {
 
 // Handle running Python scripts
 ipcMain.handle('run-python-script', async (event, script, options) => {
-  return new Promise((resolve, reject) => {
-    const shellId = nextShellId++;
-    const pyshell = new PythonShell(script, options);
-    activeShells.set(shellId, pyshell);
+  return {
+    shellId: 1,
+    promise: new Promise((resolve, reject) => {
+      const shellId = nextShellId++;
+      const pyshell = new PythonShell(script, options);
+      activeShells.set(shellId, pyshell);
 
-    resolve({ shellId }); // Resolve with the shellId
+      resolve({ shellId }); // Resolve with the shellId
 
-    // Receive messages from Python script
-    pyshell.on('message', (message) => {
-      if (mainWindow) {
-        mainWindow.webContents.send('python-message', message);
-      }
-    });
+      // Receive messages from Python script
+      pyshell.on('message', (message) => {
+        if (mainWindow) {
+          mainWindow.webContents.send('python-message', message);
+        }
+      });
 
-    pyshell.on('close', () => {
-      activeShells.delete(shellId);
+      pyshell.on('close', () => {
+        activeShells.delete(shellId);
 
-    });
+      });
 
-    pyshell.on('error', (error) => {
-      console.log(error);
-      reject(error);
-    });
+      pyshell.on('error', (error) => {
+        console.log(error);
+        reject(error);
+      });
 
-    pyshell.end(function (err, code, signal) {
-      if (err) throw err;
-      console.log('The exit code was: ' + code);
-      console.log('The exit signal was: ' + signal);
-      console.log('finished');
-    });
-  });
+      pyshell.end(function (err, code, signal) {
+        if (err) throw err;
+        console.log('The exit code was: ' + code);
+        console.log('The exit signal was: ' + signal);
+        console.log('finished');
+      });
+    })
+  };
 });
 
 
