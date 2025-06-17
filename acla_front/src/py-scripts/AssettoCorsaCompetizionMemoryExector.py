@@ -44,7 +44,7 @@ def objects_to_csv(self, objects: List[Any], filename: str = None, write_header:
         """
         Convert a list of objects with nested structures to CSV
         """
-        filename = filename or self.filename
+        print(filename)
         if not filename:
             raise ValueError("No filename provided")
         
