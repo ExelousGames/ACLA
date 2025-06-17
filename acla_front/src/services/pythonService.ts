@@ -8,8 +8,9 @@ declare global {
     interface Window {
         electronAPI: {
             //preload.js runs in runtime. the renderer process has no Node.js or Electron module access. 
-            runPythonScript: (scriptPath: string, options: PythonShellOptions) => Promise<string[]>;
+            runPythonScript: (script: string, options: PythonShellOptions) => Promise<string[]>;
             onPythonMessage: (callback: (message: string) => void) => void;
+            sendMessageToPython: (message: string) => void;
         };
     }
 }
