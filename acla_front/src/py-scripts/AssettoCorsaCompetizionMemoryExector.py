@@ -12,6 +12,8 @@ def do_something(scheduler):
         # schedule the next call first
         scheduler.enter(1, 1, do_something, (scheduler,))
         recordedData.append(sm)
+    else:
+        objects_to_csv(recordedData,"acc_maps.csv")
 
 def flatten_object(self, obj: Any, prefix: str = '') -> Dict[str, Any]:
         """
@@ -78,8 +80,5 @@ def objects_to_csv(self, objects: List[Any], filename: str = None, write_header:
 my_scheduler = sched.scheduler(time.time, time.sleep)
 my_scheduler.enter(0.01, 1, do_something, (my_scheduler,))
 my_scheduler.run()
-
-
-objects_to_csv(recordedData,"acc_maps.csv")
 
 asm.close()
