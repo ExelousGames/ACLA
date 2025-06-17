@@ -37,7 +37,7 @@ const LiveAnalysisSessionRecording = () => {
 
         try {
             //running the script in the main process (electron.js) instead this renderer process
-            const { shellId } = window.electronAPI.runPythonScript(script, options);
+            const { shellId } = await window.electronAPI.runPythonScript(script, options);
             console.log("shellId is " + shellId);
 
         } catch (error) {
