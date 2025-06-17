@@ -31,45 +31,54 @@ function createWindow() {
   mainWindow.on('closed', () => mainWindow = null);
 }
 
-// Handle running Python scripts
+// start running Python scripts
 ipcMain.handle('run-python-script', (event, script, options) => {
+  const shellId = nextShellId++;
+  const newShell = new Promise((resolve, reject) => {
+
+    const pyshell = new PythonShell(script, options);
+
+    // Receive messages from Python script
+    pyshell.on('message', (message) => {
+      if (mainWindow) {
+        mainWindow.webContents.send('python-message', message);
+      }
+    });
+
+    pyshell.on('close', () => {
+      activeShells.delete(shellId);
+      resolve({ shellId }); // Resolve with the shellId
+
+    });
+
+    pyshell.on('error', (error) => {
+      console.log(error);
+      reject(error);
+    });
+
+    pyshell.end(function (err, code, signal) {
+      if (err) throw err;
+      console.log('The exit code was: ' + code);
+      console.log('The exit signal was: ' + signal);
+      console.log('finished');
+    });
+  })
+
+  activeShells.set(shellId, newShell);
+
   return {
-    shellId: 1,
-    promise: new Promise((resolve, reject) => {
-      const shellId = nextShellId++;
-      const pyshell = new PythonShell(script, options);
-      activeShells.set(shellId, pyshell);
-
-
-      // Receive messages from Python script
-      pyshell.on('message', (message) => {
-        if (mainWindow) {
-          mainWindow.webContents.send('python-message', message);
-        }
-      });
-
-      pyshell.on('close', () => {
-        activeShells.delete(shellId);
-        resolve({ shellId }); // Resolve with the shellId
-
-      });
-
-      pyshell.on('error', (error) => {
-        console.log(error);
-        reject(error);
-      });
-
-      pyshell.end(function (err, code, signal) {
-        if (err) throw err;
-        console.log('The exit code was: ' + code);
-        console.log('The exit signal was: ' + signal);
-        console.log('finished');
-      });
-    })
-  };
+    shellId: shellId
+  }
 });
 
+// Later, retrieve the promise using shellId
+ipcMain.handle('get-python-result', async (event, shellId) => {
+  const promise = activePromises.get(shellId);
+  if (!promise) throw new Error("Invalid shellId");
+  return await promise;
+});
 
+//send message to a python shell
 ipcMain.handle('send-message-to-python', async (event, shellId, message) => {
   const pyshell = activeShells.get(shellId);
   if (!pyshell) {
