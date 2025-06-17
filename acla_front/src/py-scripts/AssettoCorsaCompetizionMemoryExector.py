@@ -2,7 +2,7 @@ from pyaccsharedmemory import accSharedMemory
 import sched, time
 asm = accSharedMemory()
 
-print("start:")
+recordedData = []
 
 
 def do_something(scheduler): 
@@ -10,20 +10,75 @@ def do_something(scheduler):
     if  (sm is not None):
         # schedule the next call first
         scheduler.enter(1, 1, do_something, (scheduler,))
+        recordedData.append(sm)
+
+def flatten_object(self, obj: Any, prefix: str = '') -> Dict[str, Any]:
+        """
+        Recursively flatten an object's attributes, including nested objects
+        """
+        flattened = {}
         
-        print(f"Gas: {sm.Physics.gas} RPM: {sm.Physics.rpm} Gear: {sm.Physics.gear} carPosition: {sm.Graphics.normalized_car_position}")
+        # Skip non-object attributes or None values
+        if not hasattr(obj, '__dict__') or obj is None:
+            return flattened
+            
+        for key, value in vars(obj).items():
+            # Skip private attributes
+            if key.startswith('_'):
+                continue
+                
+            full_key = f"{prefix}{key}" if prefix else key
+            
+            # Handle nested objects recursively
+            if hasattr(value, '__dict__'):
+                nested_flattened = self.flatten_object(value, prefix=f"{full_key}_")
+                flattened.update(nested_flattened)
+            # Handle basic types
+            else:
+                flattened[full_key] = value
+                
+        return flattened
 
-        #print("Graphics:")
-        #print(f"Strategy tyre set: {sm.Graphics.penalty.name}")
+def objects_to_csv(self, objects: List[Any], filename: str = None, write_header: bool = True) -> None:
+        """
+        Convert a list of objects with nested structures to CSV
+        """
+        filename = filename or self.filename
+        if not filename:
+            raise ValueError("No filename provided")
+        
+        if not objects:
+            return
+            
+        # Get all possible fieldnames from all objects
+        all_fieldnames = set()
+        flattened_objects = []
+        
+        for obj in objects:
+            flattened = self.flatten_object(obj)
+            flattened_objects.append(flattened)
+            all_fieldnames.update(flattened.keys())
+        
+        # Convert to list and sort for consistent order
+        fieldnames = sorted(all_fieldnames)
+        
+        with open(filename, 'w', newline='', encoding='utf-8') as csvfile:
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            
+            if write_header:
+                writer.writeheader()
+            
+            for flattened in flattened_objects:
+                writer.writerow(flattened)
 
-        #print("Static: ")
-        #print(f"Max RPM: {sm.Static.max_rpm}")
+
+
 
 my_scheduler = sched.scheduler(time.time, time.sleep)
 my_scheduler.enter(0.01, 1, do_something, (my_scheduler,))
 my_scheduler.run()
 
 
-
+objects_to_csv(recordedData,"acc_maps.csv")
 
 asm.close()
