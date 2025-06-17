@@ -38,9 +38,9 @@ const LiveAnalysisSessionRecording = () => {
         try {
             //running the script in the main process (electron.js) instead this renderer process
             const { shellId, promise } = window.electronAPI.runPythonScript(script, options);
-
-            await promise;
             console.log("shellId is " + shellId);
+            await promise;
+
         } catch (error) {
             setOutput(prev => [...prev, `Error: ${error}`]);
         } finally {

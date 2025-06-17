@@ -32,7 +32,7 @@ function createWindow() {
 }
 
 // Handle running Python scripts
-ipcMain.handle('run-python-script', async (event, script, options) => {
+ipcMain.handle('run-python-script', (event, script, options) => {
   return {
     shellId: 1,
     promise: new Promise((resolve, reject) => {
@@ -51,6 +51,7 @@ ipcMain.handle('run-python-script', async (event, script, options) => {
       pyshell.on('close', () => {
         activeShells.delete(shellId);
         resolve({ shellId }); // Resolve with the shellId
+
       });
 
       pyshell.on('error', (error) => {
