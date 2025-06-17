@@ -3,10 +3,13 @@ import { PythonShell } from 'python-shell';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import isDev from 'electron-is-dev';
+
 const devMode = app.isPackaged ? false : isDev;
-
-
 let mainWindow;
+
+// Store active Python shells, Multiple concurrent Python processes
+const activeShells = new Map();
+let nextShellId = 0;
 
 function createWindow() {
 
@@ -29,26 +32,24 @@ function createWindow() {
 }
 
 // Handle running Python scripts
-ipcMain.handle('run-python-script', async (event, scriptPath, options) => {
-
+ipcMain.handle('run-python-script', async (event, script, options) => {
   return new Promise((resolve, reject) => {
-    console.log("options" + options);
-    const pyshell = new PythonShell(scriptPath, options);
+    const shellId = nextShellId++;
+    const pyshell = new PythonShell(script, options);
+    activeShells.set(shellId, pyshell);
 
-    let output = [];
+    resolve({ shellId }); // Resolve with the shellId
 
     // Receive messages from Python script
     pyshell.on('message', (message) => {
       if (mainWindow) {
         mainWindow.webContents.send('python-message', message);
       }
-      console.log("message" + message);
-      output.push(message);
     });
 
     pyshell.on('close', () => {
-      console.log('closed');
-      resolve(output);
+      activeShells.delete(shellId);
+
     });
 
     pyshell.on('error', (error) => {
@@ -65,6 +66,15 @@ ipcMain.handle('run-python-script', async (event, scriptPath, options) => {
   });
 });
 
+
+ipcMain.handle('send-message-to-python', async (event, shellId, message) => {
+  const pyshell = activeShells.get(shellId);
+  if (!pyshell) {
+    throw new Error(`Python shell ${shellId} not found`);
+  }
+  pyshell.send(message);
+  return { success: true };
+});
 
 app.on('ready', createWindow);
 
