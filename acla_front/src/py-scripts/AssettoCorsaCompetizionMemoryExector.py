@@ -1,9 +1,10 @@
 from pyaccsharedmemory import accSharedMemory
 import sched, time
+import csv
+from typing import List, Any, Dict
+
 asm = accSharedMemory()
-
 recordedData = []
-
 
 def do_something(scheduler): 
     sm = asm.read_shared_memory()
@@ -12,7 +13,7 @@ def do_something(scheduler):
         scheduler.enter(1, 1, do_something, (scheduler,))
         recordedData.append(sm)
 
-def flatten_object(self, obj: any, prefix: str = '') -> Dict[str, any]:
+def flatten_object(self, obj: Any, prefix: str = '') -> Dict[str, Any]:
         """
         Recursively flatten an object's attributes, including nested objects
         """
