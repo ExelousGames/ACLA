@@ -40,7 +40,6 @@ ipcMain.handle('run-python-script', async (event, script, options) => {
       const pyshell = new PythonShell(script, options);
       activeShells.set(shellId, pyshell);
 
-      resolve({ shellId }); // Resolve with the shellId
 
       // Receive messages from Python script
       pyshell.on('message', (message) => {
@@ -51,7 +50,7 @@ ipcMain.handle('run-python-script', async (event, script, options) => {
 
       pyshell.on('close', () => {
         activeShells.delete(shellId);
-
+        resolve({ shellId }); // Resolve with the shellId
       });
 
       pyshell.on('error', (error) => {
