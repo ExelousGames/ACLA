@@ -62,10 +62,10 @@ ipcMain.handle('run-python-script', (event, script, options) => {
       console.log('The exit signal was: ' + signal);
       console.log('finished');
     });
-  })
+  });
 
   activeShells.set(shellId, newShell);
-
+  console.log(shellId);
   return {
     shellId: shellId
   }
