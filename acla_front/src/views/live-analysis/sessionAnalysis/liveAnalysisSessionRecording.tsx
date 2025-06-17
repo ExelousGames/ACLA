@@ -20,13 +20,15 @@ const LiveAnalysisSessionRecording = () => {
             // Clean up listeners when component unmounts
             window.electronAPI.onPythonMessage(() => { });
         };
+
+
     }, []);
 
     const runScript = async () => {
         let options = {
             mode: 'text',
             pythonOptions: ['-u'], // get print results in real-time
-            scriptPath: 'py-script',
+            scriptPath: 'src/py-scripts',
             args: []
         } as PythonShellOptions;
 
@@ -34,6 +36,7 @@ const LiveAnalysisSessionRecording = () => {
         setOutput([]);
         try {
             const scriptPath = 'AssettoCorsaCompetizionMemoryExector.py'; // Adjust path as needed
+            console.log(options);
             await window.electronAPI.runPythonScript(scriptPath, options);
         } catch (error) {
             setOutput(prev => [...prev, `Error: ${error}`]);

@@ -1,15 +1,18 @@
-const electron = require('electron');
-const app = electron.app;
-const BrowserWindow = electron.BrowserWindow;
-const ipcMain = electron.ipcMain;
-const PythonShell = require('python-shell');
-const path = require('path');
-const url = require('url');
-const isDev = app.isPackaged ? false : require('electron-is-dev');
+import { app, BrowserWindow, ipcMain } from 'electron';
+import { PythonShell } from 'python-shell';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import isDev from 'electron-is-dev';
+const devMode = app.isPackaged ? false : isDev;
+
 
 let mainWindow;
 
 function createWindow() {
+
+  const __filename = fileURLToPath(import.meta.url); // get the resolved path to the file
+  const __dirname = path.dirname(__filename); // get the name of the directory
+
   mainWindow = new BrowserWindow({
     width: 900, height: 680,
     webPreferences: {
@@ -21,8 +24,7 @@ function createWindow() {
     }
   });
 
-  console.log(__dirname);
-  mainWindow.loadURL(isDev ? 'http://localhost:3000' : `file://${path.join(__dirname, '../build/index.html')}`);
+  mainWindow.loadURL(devMode ? 'http://localhost:3000' : `file://${path.join(__dirname, '../build/index.html')}`);
   mainWindow.on('closed', () => mainWindow = null);
 }
 
@@ -30,7 +32,7 @@ function createWindow() {
 ipcMain.handle('run-python-script', async (event, scriptPath, options) => {
 
   return new Promise((resolve, reject) => {
-
+    console.log("options" + options);
     const pyshell = new PythonShell(scriptPath, options);
 
     let output = [];
@@ -40,15 +42,25 @@ ipcMain.handle('run-python-script', async (event, scriptPath, options) => {
       if (mainWindow) {
         mainWindow.webContents.send('python-message', message);
       }
+      console.log("message" + message);
       output.push(message);
     });
 
     pyshell.on('close', () => {
+      console.log('closed');
       resolve(output);
     });
 
     pyshell.on('error', (error) => {
+      console.log(error);
       reject(error);
+    });
+
+    pyshell.end(function (err, code, signal) {
+      if (err) throw err;
+      console.log('The exit code was: ' + code);
+      console.log('The exit signal was: ' + signal);
+      console.log('finished');
     });
   });
 });

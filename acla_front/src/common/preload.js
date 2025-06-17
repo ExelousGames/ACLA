@@ -7,6 +7,6 @@ const { contextBridge, ipcRenderer } = require('electron');
  * To bridge Electron's different process types together, we will need to use a special script called a preload.
  */
 contextBridge.exposeInMainWorld('electronAPI', {
-    runPythonScript: (scriptPath) => ipcRenderer.invoke('run-python-script', scriptPath),
+    runPythonScript: (scriptPath, options) => ipcRenderer.invoke('run-python-script', scriptPath, options),
     onPythonMessage: (callback) => ipcRenderer.on('python-message', (event, message) => callback(message))
 });
