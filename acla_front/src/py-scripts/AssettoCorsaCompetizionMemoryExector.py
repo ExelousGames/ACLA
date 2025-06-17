@@ -12,7 +12,7 @@ def do_something(scheduler):
         scheduler.enter(1, 1, do_something, (scheduler,))
         recordedData.append(sm)
 
-def flatten_object(self, obj: Any, prefix: str = '') -> Dict[str, Any]:
+def flatten_object(self, obj: any, prefix: str = '') -> Dict[str, any]:
         """
         Recursively flatten an object's attributes, including nested objects
         """
