@@ -11,7 +11,7 @@ def do_something(scheduler):
         # schedule the next call first
         scheduler.enter(1, 1, do_something, (scheduler,))
         
-        print(f"Gas: {sm.Physics.gas} RPM: {sm.Physics.rpm} Gear: {sm.Physics.gear} g_force: {sm.Graphics.car_coordinates[0]}")
+        print(f"Gas: {sm.Physics.gas} RPM: {sm.Physics.rpm} Gear: {sm.Physics.gear} g_force: {sm.Graphics.normalized_car_position}")
 
         #print("Graphics:")
         #print(f"Strategy tyre set: {sm.Graphics.penalty.name}")
