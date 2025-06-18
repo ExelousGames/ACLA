@@ -13,8 +13,9 @@ const LiveAnalysisSessionRecording = () => {
     useEffect(() => {
         // Set up listener for Python messages
         window.electronAPI.onPythonMessage((shellId: number, message: string) => {
-            console.log(message);
-            setOutput(prev => [...prev, message]);
+            let obj = JSON.parse(message);
+            console.log(obj);
+            //setOutput(prev => [...prev, message]);
         });
 
         return () => {
