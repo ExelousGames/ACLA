@@ -53,6 +53,7 @@ ipcMain.handle('run-python-script', (event, script, options) => {
 
     pyshell.on('error', (error) => {
       console.log(error);
+      activeShells.delete(shellId);
       reject(error);
     });
 

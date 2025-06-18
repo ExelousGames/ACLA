@@ -3,7 +3,7 @@ import sched, time
 import csv
 from typing import List, Any, Dict
 import os
-import json
+from util.json_utils import DataclassJSONUtility
 
 
 recordedData = []
@@ -34,7 +34,9 @@ class ACCRecording:
             scheduler.enter(1, 1, self.recordOnce, (scheduler,))
 
             self.append_object_to_csv(sm,'acc_maps.csv')
-            print(json.dumps(sm.__dict__))
+            
+            #message for frontend
+            print(DataclassJSONUtility.to_json(sm, indent=2))
         else:
             self.asm.close()
             # self.objects_to_csv(recordedData,"acc_maps.csv")

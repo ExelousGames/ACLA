@@ -9,6 +9,6 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('electronAPI', {
     runPythonScript: (scriptPath, options) => ipcRenderer.invoke('run-python-script', scriptPath, options),
     getPythonScriptResult: (shellId) => ipcRenderer.invoke('get-python-result', shellId),
-    onPythonMessage: (callback) => ipcRenderer.on('python-message', (event, message) => callback(shellId, message)),
+    onPythonMessage: (callback) => ipcRenderer.on('python-message', (event, shellId, message) => callback(shellId, message)),
     sendMessageToPython: (shellId, message) => ipcRenderer.invoke('send-message-to-python', shellId, message),
 });
