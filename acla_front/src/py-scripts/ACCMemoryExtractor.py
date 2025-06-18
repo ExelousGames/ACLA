@@ -4,7 +4,7 @@ import csv
 from typing import List, Any, Dict
 import os
 from util.json_utils import DataclassJSONUtility
-
+from util.clean_encode import cleanEncoding
 
 recordedData = []
 
@@ -66,7 +66,7 @@ class ACCRecording:
                     flattened.update(nested_flattened)
                 # Handle basic types
                 else:
-                    valueFixed = self.cleanEncoding(value)
+                    valueFixed = cleanEncoding(value)
 
                     if not self.is_blank(valueFixed):
                         flattened[full_key] = valueFixed
@@ -181,10 +181,7 @@ class ACCRecording:
             return not bool(value)
         return False
     
-    def cleanEncoding(self,value):
-        if isinstance(value, (str, bytes)):
-            return value.encode('ascii', errors='ignore').decode('ascii')
-        return value
+
     
 if __name__ == "__main__":
     recorder = ACCRecording()
