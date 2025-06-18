@@ -3,6 +3,7 @@ import sched, time
 import csv
 from typing import List, Any, Dict
 import os
+import json
 
 
 recordedData = []
@@ -17,7 +18,7 @@ class ACCRecording:
         if  (sm is not None):
             #record once to clean or create the file
             self.write_object_to_csv(sm,'acc_maps.csv')
-            
+
             #start to record the session
             my_scheduler = sched.scheduler(time.time, time.sleep)
             my_scheduler.enter(0.1, 1, self.recordOnce, (my_scheduler,))
@@ -31,7 +32,9 @@ class ACCRecording:
         if  (sm is not None):
             # schedule the next call first
             scheduler.enter(1, 1, self.recordOnce, (scheduler,))
+
             self.append_object_to_csv(sm,'acc_maps.csv')
+            print(json.dumps(sm.__dict__))
         else:
             self.asm.close()
             # self.objects_to_csv(recordedData,"acc_maps.csv")
@@ -64,7 +67,6 @@ class ACCRecording:
                     valueFixed = self.cleanEncoding(value)
 
                     if not self.is_blank(valueFixed):
-                        print(f"{full_key}: '{valueFixed}' - {self.is_blank(valueFixed)}")
                         flattened[full_key] = valueFixed
                     
             return flattened
@@ -99,7 +101,6 @@ class ACCRecording:
                 
                 for flattened in flattened_objects:
                     writer.writerow(flattened)
-            print('done')
     
     def write_object_to_csv(self, objects: Any, filename: str, write_header: bool = True) -> None:
             """
@@ -133,7 +134,6 @@ class ACCRecording:
                 
                 for flattened in flattened_objects:
                     writer.writerow(flattened)
-            print('done')
                    
     def write_objects_to_csv(self, objects: List[Any], filename: str, write_header: bool = True) -> None:
             """
@@ -168,7 +168,6 @@ class ACCRecording:
                 
                 for flattened in flattened_objects:
                     writer.writerow(flattened)
-            print('done')
 
     def is_blank(self,value):
         """Check if value is None, empty, or whitespace-only for any type"""

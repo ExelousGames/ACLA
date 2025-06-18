@@ -10,7 +10,7 @@ declare global {
             //preload.js runs in runtime. the renderer process has no Node.js or Electron module access. 
             runPythonScript: (script: string, options: PythonShellOptions) => { shellId: number };
             getPythonScriptResult: (shellId: number) => Promise<string[]>;
-            onPythonMessage: (callback: (message: string) => void) => void;
+            onPythonMessage: (callback: (shellId: number, message: string) => void) => void;
             sendMessageToPython: (shellId: number, message: string) => void;
         };
     }
