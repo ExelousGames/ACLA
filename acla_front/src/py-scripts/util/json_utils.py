@@ -4,6 +4,7 @@ from datetime import datetime, date
 from enum import Enum
 from typing import Any
 from uuid import UUID
+from clean_encode import cleanEncoding
 
 class DataclassJSONEncoder(json.JSONEncoder):
     """
@@ -18,6 +19,8 @@ class DataclassJSONEncoder(json.JSONEncoder):
             return obj.isoformat()
         if isinstance(obj, UUID):
             return str(obj)
+        if isinstance(obj,(str, bytes)):
+            return obj.encode('ascii', errors='ignore').decode('ascii')
         return super().default(obj)
 
 class DataclassJSONUtility:
