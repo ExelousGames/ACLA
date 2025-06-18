@@ -4,7 +4,6 @@ from datetime import datetime, date
 from enum import Enum
 from typing import Any
 from uuid import UUID
-from clean_encode import cleanEncoding
 
 class DataclassJSONEncoder(json.JSONEncoder):
     """

@@ -59,3 +59,4 @@ report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 /acla_backend/dist
 
 /acla_db/backups
+/acla_front/src/py-scripts/util/__pycache__
