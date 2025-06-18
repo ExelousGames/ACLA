@@ -9,10 +9,10 @@ const LiveAnalysisSessionRecording = () => {
 
     const [output, setOutput] = useState<string[]>([]);
     const [isRunning, setIsRunning] = useState(false);
-    const [scriptShellId, setScriptShellId] = useState(0);
+
     useEffect(() => {
         // Set up listener for Python messages
-        window.electronAPI.onPythonMessage((shellId: number, message: string) => {
+        window.electronAPI.onPythonMessage((message: string) => {
             console.log(message);
             setOutput(prev => [...prev, message]);
         });
@@ -30,7 +30,7 @@ const LiveAnalysisSessionRecording = () => {
             scriptPath: 'src/py-scripts',
             args: []
         } as PythonShellOptions;
-        const script = 'ACCMemoryExtractor.py';
+        const script = 'AssettoCorsaCompetizionMemoryExector.py';
 
         setIsRunning(true);
         setOutput([]);
@@ -38,7 +38,7 @@ const LiveAnalysisSessionRecording = () => {
         try {
             //running the script in the main process (electron.js) instead this renderer process
             const { shellId } = await window.electronAPI.runPythonScript(script, options);
-            setScriptShellId(shellId);
+            console.log("shellId is " + shellId);
 
         } catch (error) {
             setOutput(prev => [...prev, `Error: ${error}`]);

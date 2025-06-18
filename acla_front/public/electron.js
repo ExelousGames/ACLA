@@ -41,7 +41,7 @@ ipcMain.handle('run-python-script', (event, script, options) => {
     // Receive messages from Python script
     pyshell.on('message', (message) => {
       if (mainWindow) {
-        mainWindow.webContents.send('python-message', message);
+        mainWindow.webContents.send('python-message', shellId, message);
       }
     });
 
