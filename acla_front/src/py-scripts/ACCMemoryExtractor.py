@@ -18,7 +18,6 @@ class ACCRecording:
         if  (sm is not None):
             #record once to clean or create the file
             self.write_object_to_csv(sm,'acc_maps.csv')
-
             #start to record the session
             my_scheduler = sched.scheduler(time.time, time.sleep)
             my_scheduler.enter(0.1, 1, self.recordOnce, (my_scheduler,))
@@ -34,9 +33,9 @@ class ACCRecording:
             scheduler.enter(1, 1, self.recordOnce, (scheduler,))
 
             self.append_object_to_csv(sm,'acc_maps.csv')
-            
-            #message for frontend
-            print(DataclassJSONUtility.to_json(sm, indent=2))
+
+            # !!!!!! must keep this to communicate with frontend
+            print(DataclassJSONUtility.to_json(sm, indent=2).rstrip())
         else:
             self.asm.close()
             # self.objects_to_csv(recordedData,"acc_maps.csv")

@@ -213,3 +213,57 @@ export function offsetBezierPoints(points: Point[], offsetDistance: number, dire
   }
   return offsetPoints;
 }
+
+/**
+ * Calculates a point on a cubic Bézier curve defined by 4 control points
+ * @param p0 First control point
+ * @param p1 Second control point
+ * @param p2 Third control point
+ * @param p3 Fourth control point
+ * @param t Parameter between 0 and 1
+ * @returns Point on the curve at parameter t
+ */
+function cubicBezierPoint(p0: Point, p1: Point, p2: Point, p3: Point, t: number): Point {
+  const mt = 1 - t;
+  const mt2 = mt * mt;
+  const mt3 = mt2 * mt;
+  const t2 = t * t;
+  const t3 = t2 * t;
+
+  return [
+    mt3 * p0[0] + 3 * mt2 * t * p1[0] + 3 * mt * t2 * p2[0] + t3 * p3[0],
+    mt3 * p0[1] + 3 * mt2 * t * p1[1] + 3 * mt * t2 * p2[1] + t3 * p3[1]
+  ];
+}
+
+/**
+ * Calculates a point on a cubic Bézier spline with multiple segments
+ * @param controlPoints Array of control points (must have at least 4 points)
+ * @param t Global parameter between 0 and 1
+ * @returns Point on the spline at parameter t
+ */
+export function cubicBezierSplinePoint(controlPoints: Point[], t: number): Point {
+  if (controlPoints.length < 4 || t === undefined) {
+    return [0, 0];
+  }
+
+  // Calculate the number of segments
+  const segmentCount = controlPoints.length - 3;
+
+  // Determine which segment t falls into
+  const segmentT = t * segmentCount;
+  const segmentIndex = Math.min(Math.floor(segmentT), segmentCount - 1);
+  const localT = segmentT - segmentIndex;
+
+  // Get the 4 control points for this segment
+
+  const p0 = controlPoints[segmentIndex];
+  const p1 = controlPoints[segmentIndex + 1];
+  const p2 = controlPoints[segmentIndex + 2];
+  const p3 = controlPoints[segmentIndex + 3];
+  console.log(controlPoints);
+  console.log(t);
+  console.log(segmentT);
+  console.log(segmentIndex);
+  return cubicBezierPoint(p0, p1, p2, p3, localT);
+}

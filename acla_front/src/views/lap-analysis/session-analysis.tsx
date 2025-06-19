@@ -1,4 +1,4 @@
-import './live-analysis.css';
+import './session-analysis.css';
 
 import {
     Avatar,
@@ -36,19 +36,21 @@ export const AnalysisContext = createContext({
             mapOption: '',
             sessionOption: '',
         } as OptionSelected | null,
+        liveSessionData: {} as any,
         setMap: (map: string) => { },
-        setSession: (session: string) => { }
+        setSession: (session: string) => { },
+        setLiveSessionData: (data: {}) => { }
     },
 
 });
 
-const LiveAnalysis = () => {
+const SessionAnalysis = () => {
 
     //must give state some init value otherwise createContext and useContext don't like it
     const [mapSelected, setMap] = useState<string | null>(null);
     const [sessionSelected, setSession] = useState<string | null>(null);
     const [activeTab, setActiveTab] = useState('mapLists');
-
+    const [liveSessionData, setLiveSessionData] = useState({});
     //switch tab when a map or a session is selected
     useEffect(() => {
         if (mapSelected != null) {
@@ -79,7 +81,7 @@ const LiveAnalysis = () => {
 
 
     return (
-        <AnalysisContext.Provider value={{ analysisContext: { options: { mapOption: mapSelected, sessionOption: sessionSelected }, setMap, setSession } }}>
+        <AnalysisContext.Provider value={{ analysisContext: { options: { mapOption: mapSelected, sessionOption: sessionSelected }, liveSessionData: liveSessionData, setMap, setSession, setLiveSessionData } }}>
             <Tabs.Root className="LiveAnalysisTabsRoot" defaultValue="mapLists" value={activeTab} onValueChange={setActiveTab}>
                 <Tabs.List className="live-analysis-tablists" justify="start">
                     <Tabs.Trigger value="mapLists">Maps</Tabs.Trigger>
@@ -105,4 +107,4 @@ const LiveAnalysis = () => {
     )
 };
 
-export default LiveAnalysis;
+export default SessionAnalysis;

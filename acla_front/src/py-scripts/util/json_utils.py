@@ -4,42 +4,79 @@ from datetime import datetime, date
 from enum import Enum
 from typing import Any
 from uuid import UUID
-
+import base64
 class DataclassJSONEncoder(json.JSONEncoder):
     """
     JSON encoder that handles dataclasses, Enums, dates, and other common types.
     """
     def default(self, obj: Any) -> Any:
+        
         if is_dataclass(obj):
-            return asdict(obj)
-        if isinstance(obj, Enum):
+            return self._process_dataclass(obj)
+        elif isinstance(obj, Enum):
             return obj.value  # or obj.name if you prefer enum names
-        if isinstance(obj, (datetime, date)):
+        elif isinstance(obj, (datetime, date)):
             return obj.isoformat()
-        if isinstance(obj, UUID):
-            return str(obj)
-        if isinstance(obj,(str, bytes)):
-            return obj.encode('ascii', errors='ignore').decode('ascii')
+        elif isinstance(obj, bytes):
+            return self._serialize_bytes(obj)
         return super().default(obj)
-
+    
+    def _process_dataclass(self, obj: Any) -> dict:
+        """Convert dataclass to dict with custom string handling"""
+        result = {}
+        for field_name, field_value in asdict(obj).items():
+            cleaned_value = self._process_value(field_value)
+            if cleaned_value is not None:  # Skip None values if desired
+                result[field_name] = cleaned_value
+        return result
+    
+    def _process_value(self, value: Any) -> Any:
+        """Recursively process values with special string handling"""
+        if isinstance(value, (str)):
+            return value.encode('ascii', errors='ignore').decode('ascii').replace('\u0000', '')
+        elif isinstance(value, dict):
+            return {k: self._process_value(v) for k, v in value.items()}
+        elif isinstance(value, (list, tuple, set)):
+            return [self._process_value(v) for v in value]
+        return value
+    
+    def _serialize_bytes(self, byte_data: bytes) -> str:
+        """Handle bytes serialization with multiple options"""
+        try:
+            # First try UTF-8 decoding if it's text
+            return byte_data.decode('utf-8')
+        except UnicodeDecodeError:
+            # Fall back to base64 for binary data
+            return f"base64:{base64.b64encode(byte_data).decode('utf-8')}"
+        
 class DataclassJSONUtility:
     """
     Utility class for converting between dataclasses and JSON.
     """
     @staticmethod
-    def to_json(obj: Any, indent: int = None, **kwargs) -> str:
+    def to_json(obj: Any, compact: bool = True, **kwargs) -> str:
         """
-        Convert a dataclass (or any supported object) to JSON string.
+        Convert object to JSON in compact format (no whitespace) by default
         
         Args:
-            obj: The object to serialize
-            indent: Pretty-printing indent level
+            obj: Object to serialize
+            compact: If True (default), removes all whitespace
             **kwargs: Additional arguments for json.dumps()
             
         Returns:
-            JSON string representation of the object
+            JSON string without line breaks or indentation
         """
-        return json.dumps(obj, cls=DataclassJSONEncoder, indent=indent, **kwargs)
+        encoder = DataclassJSONEncoder
+        
+        if compact:
+            # Force these settings for compact output
+            kwargs.update({
+                'indent': None,
+                'separators': (',', ':'),
+                'sort_keys': False
+            })
+            
+        return json.dumps(obj, cls=encoder, **kwargs)
     
     @staticmethod
     def to_dict(obj: Any) -> dict:
