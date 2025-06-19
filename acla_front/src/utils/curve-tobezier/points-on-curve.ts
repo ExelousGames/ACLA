@@ -214,16 +214,34 @@ export function offsetBezierPoints(points: Point[], offsetDistance: number, dire
   return offsetPoints;
 }
 
+
 /**
- * Calculates a point on a cubic Bézier curve defined by 4 control points
- * @param p0 First control point
- * @param p1 Second control point
- * @param p2 Third control point
- * @param p3 Fourth control point
- * @param t Parameter between 0 and 1
- * @returns Point on the curve at parameter t
+ * Gets the derivative (direction) at the end of the last Bézier segment
  */
-function cubicBezierPoint(p0: Point, p1: Point, p2: Point, p3: Point, t: number): Point {
+export function getEndDirection(controlPoints: Point[]): Point {
+  if (controlPoints.length < 4) {
+    throw new Error("Need at least 4 control points");
+  }
+
+  // Get last 4 control points
+  const n = controlPoints.length;
+  const p0 = controlPoints[n - 4];
+  const p1 = controlPoints[n - 3];
+  const p2 = controlPoints[n - 2];
+  const p3 = controlPoints[n - 1];
+
+  // Derivative at t=1 is 3*(p3 - p2)
+  return [
+    3 * (p3[0] - p2[0]),
+    3 * (p3[1] - p2[1])
+  ];
+}
+
+
+/**
+ * Calculates a point on a cubic Bézier curve
+ */
+function cubicBezierPoint(t: number, p0: Point, p1: Point, p2: Point, p3: Point): Point {
   const mt = 1 - t;
   const mt2 = mt * mt;
   const mt3 = mt2 * mt;
@@ -237,33 +255,82 @@ function cubicBezierPoint(p0: Point, p1: Point, p2: Point, p3: Point, t: number)
 }
 
 /**
- * Calculates a point on a cubic Bézier spline with multiple segments
- * @param controlPoints Array of control points (must have at least 4 points)
- * @param t Global parameter between 0 and 1
- * @returns Point on the spline at parameter t
+ * Estimates the length of a Bézier segment by sampling points
  */
-export function cubicBezierSplinePoint(controlPoints: Point[], t: number): Point {
-  if (controlPoints.length < 4 || t === undefined) {
-    return [0, 0];
+function estimateSegmentLength(p0: Point, p1: Point, p2: Point, p3: Point, samples = 20): number {
+  let length = 0;
+  let prev = p0;
+
+  for (let i = 1; i <= samples; i++) {
+    const t = i / samples;
+    const current = cubicBezierPoint(t, p0, p1, p2, p3);
+    length += Math.sqrt(
+      Math.pow(current[0] - prev[0], 2) +
+      Math.pow(current[1] - prev[1], 2)
+    );
+    prev = current;
   }
 
-  // Calculate the number of segments
-  const segmentCount = controlPoints.length - 3;
+  return length;
+}
 
-  // Determine which segment t falls into
-  const segmentT = t * segmentCount;
-  const segmentIndex = Math.min(Math.floor(segmentT), segmentCount - 1);
-  const localT = segmentT - segmentIndex;
+/**
+ * Calculates relative segment lengths for the entire spline
+ */
+export function calculateSegmentLengths(controlPoints: Point[]): number[] {
+  const segmentCount = (controlPoints.length - 1) / 3;
+  const lengths: number[] = [];
+  let totalLength = 0;
 
-  // Get the 4 control points for this segment
+  // Calculate raw lengths
+  for (let i = 0; i < segmentCount; i++) {
+    const p0 = controlPoints[i * 3];
+    const p1 = controlPoints[i * 3 + 1];
+    const p2 = controlPoints[i * 3 + 2];
+    const p3 = controlPoints[i * 3 + 3];
 
-  const p0 = controlPoints[segmentIndex];
-  const p1 = controlPoints[segmentIndex + 1];
-  const p2 = controlPoints[segmentIndex + 2];
-  const p3 = controlPoints[segmentIndex + 3];
-  console.log(controlPoints);
-  console.log(t);
-  console.log(segmentT);
-  console.log(segmentIndex);
-  return cubicBezierPoint(p0, p1, p2, p3, localT);
+    const length = estimateSegmentLength(p0, p1, p2, p3);
+    lengths.push(length);
+    totalLength += length;
+  }
+
+  // Normalize to relative lengths (summing to 1)
+  return lengths.map(l => l / totalLength);
+}
+
+/**
+ * Finds the segment and local t value for a global t value
+ */
+function findSegmentAndLocalT(t: number, segmentLengths: number[]): { segmentIndex: number, localT: number } {
+  let accumulated = 0;
+  for (let i = 0; i < segmentLengths.length; i++) {
+    const segmentLength = segmentLengths[i];
+    if (t <= accumulated + segmentLength) {
+      const localT = (t - accumulated) / segmentLength;
+      return { segmentIndex: i, localT };
+    }
+    accumulated += segmentLength;
+  }
+  return { segmentIndex: segmentLengths.length - 1, localT: 1 };
+}
+
+/**
+ * Calculates a point on a cubic Bézier spline without requiring pre-known lengths
+ * @param controlPoints 
+ * @param segmentLengths use calculateSegmentLengths to precalculate the length of each segment
+ * @param t 
+ * @returns 
+ */
+export function pointOnCubicBezierSpline(controlPoints: Point[], segmentLengths: number[], t: number): Point {
+  // Validate inputs
+  if (controlPoints.length < 4) return [0, 0];
+  if ((controlPoints.length - 1) % 3 !== 0) return [0, 0];
+
+  const { segmentIndex, localT } = findSegmentAndLocalT(t, segmentLengths);
+  const p0 = controlPoints[segmentIndex * 3];
+  const p1 = controlPoints[segmentIndex * 3 + 1];
+  const p2 = controlPoints[segmentIndex * 3 + 2];
+  const p3 = controlPoints[segmentIndex * 3 + 3];
+
+  return cubicBezierPoint(localT, p0, p1, p2, p3);
 }

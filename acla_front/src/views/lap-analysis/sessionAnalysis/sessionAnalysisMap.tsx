@@ -1,15 +1,18 @@
-import { createContext, Key, useContext, useEffect, useRef, useState } from 'react';
-import { Stage, Layer, Arc, Circle, Rect, Line, Group, Image } from 'react-konva';
+import { useContext, useEffect, useRef, useState } from 'react';
+import { Stage, Layer, Circle, Line, Group, Image } from 'react-konva';
 import { AddControlPoints } from 'utils/curve-tobezier/curve-to-bezier';
-import { offsetBezierPoints, Point, ConstructAllPointsOnBezierCurves, getBezierTangent, cubicBezierSplinePoint } from 'utils/curve-tobezier/points-on-curve';
+import { offsetBezierPoints, Point, getBezierTangent, getEndDirection, pointOnCubicBezierSpline, calculateSegmentLengths } from 'utils/curve-tobezier/points-on-curve';
 import useImage from 'use-image';
 import image from 'assets/map2.png'
-import myData from 'data/sessionAnalysis.json';
 import apiService from 'services/api.service';
 import { SessionInfo } from 'data/live-analysis/live-analysis-data';
 import { AnalysisContext } from '../session-analysis';
 import LiveAnalysisSessionRecording from './liveAnalysisSessionRecording';
 import { useEnvironment } from 'contexts/EnvironmentContext';
+import { ContextMenu, DropdownMenu, IconButton } from '@radix-ui/themes';
+import { Html } from 'react-konva-utils';
+import { PlusIcon } from '@radix-ui/react-icons';
+
 type RacingTurningPoint = {
     position: Point,
     type: number,
@@ -39,6 +42,7 @@ const SessionAnalysisMap = () => {
 
     //points which construct the curve (turningPoints + auto created controlling points)
     const [bezierPoints, setBezierPoints] = useState<BezierPoints[]>([]);
+    const [segmentLengths, setSegmentLengths] = useState<number[]>([]);
 
     const [leftCurbTurningPoints, setLeftCurbTurningPoints] = useState<CurbTurningPoint[]>([]);
     const [leftCurbBezierPoints, setLeftCrubBezierPoints] = useState<BezierPoints[]>([]);
@@ -55,9 +59,21 @@ const SessionAnalysisMap = () => {
 
     // Update on mount and when window resizes
     useEffect(() => {
-        createInitialShapes();
         updateSize();
+        createInitialShapes();
     }, []);
+
+    //recalculate controlling position for bezier curve since the turning position changed
+    useEffect(() => {
+        calculateAndDrawTrack();
+    }, [turningPoints]);
+
+
+    //after turning points updated, we can update the racing line in the next frame
+    useEffect(() => {
+        calculateAndDrawRacingLine();
+
+    }, [bezierPoints]);
 
     // Function to handle resize
     const updateSize = () => {
@@ -74,17 +90,10 @@ const SessionAnalysisMap = () => {
         });
     };
 
-    //recalculate controlling position for bezier curve since the turning position moved
-    useEffect(() => {
-        calculateTrack();
-    }, [turningPoints]);
-
-
     function createInitialShapes() {
 
         apiService.post('/racingmap/map/infolists', { name: analysisContext.options?.mapOption }).then((result) => {
             const data = result.data as SessionInfo;
-
             setTurningPoints(data.points.map((point) => {
                 return {
                     type: point.type,
@@ -138,16 +147,13 @@ const SessionAnalysisMap = () => {
             return { ...turningPoint, position: [pointPosition[0], pointPosition[1]] }
 
         }));
-
-
     }
-
 
     const handleDragEnd = (e: any, id: any) => {
 
     };
 
-    function calculateRacingLine() {
+    function calculateAndDrawRacingLine() {
 
         let tempRacingLinePoints: RacingLinePoint[] = [];
         let racingLineDisplacement = [];
@@ -252,7 +258,44 @@ const SessionAnalysisMap = () => {
             return;
         }
     }
-    function calculateTrack() {
+
+    /**
+    * Appends a new point continuing the spline's end direction
+    */
+    function AddPointInDirection() {
+        if (bezierPoints.length < 4) {
+            return;
+        }
+
+        const points = extractBezierPointToPoint(bezierPoints);
+        const lastPoint = points[points.length - 1];
+        const direction = getEndDirection(points);
+        const distance = 50
+        // Normalize direction vector
+        const dirLength = Math.sqrt(direction[0] ** 2 + direction[1] ** 2);
+        const normalizedDir: Point = [
+            direction[0] / dirLength,
+            direction[1] / dirLength
+        ];
+
+        const newP = {
+            position: [
+                lastPoint[0] + normalizedDir[0] * distance,
+                lastPoint[1] + normalizedDir[1] * distance
+            ],
+            type: 0,
+            index: turningPoints.length //type and index are used together. some points are index sensitive
+        } as RacingTurningPoint;
+
+        // Return new array with added points (maintaining cubic Bézier requirements)
+        return setTurningPoints([...turningPoints, newP]);
+    }
+
+    /**
+     * using the 'turningPoints' and calculate the left and right crub
+     * @returns 
+     */
+    function calculateAndDrawTrack() {
 
         if (turningPoints.length === 0) return;
 
@@ -264,9 +307,9 @@ const SessionAnalysisMap = () => {
             index++;
             result.push({ id: index, position: position });
         })
+
         setBezierPoints(result);
-
-
+        setSegmentLengths(calculateSegmentLengths(extractBezierPointToPoint(result)))
         if (bezierPoints.length > 3) {
 
             //create left curb
@@ -319,79 +362,107 @@ const SessionAnalysisMap = () => {
                 result.push({ id: index, position: position });
             })
             setRightCurbBezierPoints(result);
-
-            calculateRacingLine();
-
         }
     }
 
+    function deleteTurningPoint(index: number) {
+        if (turningPoints.length <= 4) return;
+        setTurningPoints(prevState => {
+            return prevState.filter(task => task.index !== index)
+        })
+    }
+
     return (
+
         <div ref={containerRef} style={{ width: '100%', height: '90%' }}>
+            <ContextMenu.Root>
+                <ContextMenu.Trigger>
+                    <div>
 
-            <Stage width={stageSize.width} height={stageSize.height} >
-                <Layer>
-                    <Image
-                        x={0}
-                        y={0}
-                        image={mapImage}
-                        scaleX={3}
-                        scaleY={3}
+                        <Stage width={stageSize.width} height={stageSize.height} >
+                            <Layer>
+                                <Image
+                                    x={0}
+                                    y={0}
+                                    image={mapImage}
+                                    scaleX={3}
+                                    scaleY={3}
+                                />
+                                {/* 
+                                <Line
+                                    points={exportPointsForDrawing(extractBezierPointToPoint(leftCurbBezierPoints))}
+                                    stroke="red" strokeWidth={2} bezier={true}
+                                />
+                                <Line
+                                    points={exportPointsForDrawing(extractBezierPointToPoint(rightCurbBezierPoints))}
+                                    stroke="red" strokeWidth={2} bezier={true}
+                                />
+                               
+                                <Line
+                                    points={exportPointsForDrawing(extractBezierPointToPoint(bezierPoints))}
+                                    stroke="red" strokeWidth={25} bezier={true}
+                                />
+                                 */}
+                                {turningPoints.map((
+                                    turningPoint: {
+                                        position: Point,
+                                        type: number,
+                                        index: number, //type and index are used together. some points are index sensitive
+                                        description?: string,
+                                        info?: string,
+                                        variables?: [{ key: string, value: string }]
+                                    }) => (
 
-                    />
-                    <Line
-                        points={exportPointsForDrawing(extractBezierPointToPoint(leftCurbBezierPoints))}
-                        stroke="red" strokeWidth={2} bezier={true}
-                    />
-                    {/* 
-                    <Line
-                        points={exportPointsForDrawing(extractBezierPointToPoint(bezierPoints))}
-                        stroke="red" strokeWidth={2} bezier={true}
-                    />
-                    */}
-                    <Line
-                        points={exportPointsForDrawing(extractBezierPointToPoint(rightCurbBezierPoints))}
-                        stroke="red" strokeWidth={2} bezier={true}
-                    />
+                                    <Group
+                                        key={turningPoint.index} id={`group-${turningPoint.index}`} x={turningPoint.position[0]} y={turningPoint.position[1]} draggable
+                                        onDragMove={(e) => handleDragMove(e, turningPoint.index)}
+                                        onDragEnd={(e) => handleDragEnd(e, turningPoint.index)}>
+                                        <Circle key={turningPoint.index} radius={10} fill={"red"} name={turningPoint.index.toString()} />
+                                        <Html>
+                                            <DropdownMenu.Root>
+                                                <DropdownMenu.Trigger>
+                                                    <IconButton>
+                                                        <PlusIcon />
+                                                    </IconButton>
+                                                </DropdownMenu.Trigger>
+                                                <DropdownMenu.Content>
+                                                    <DropdownMenu.Separator />
+                                                    <DropdownMenu.Item color="red" onSelect={() => deleteTurningPoint(turningPoint.index)}>
+                                                        Delete
+                                                    </DropdownMenu.Item>
+                                                </DropdownMenu.Content>
+                                            </DropdownMenu.Root>
 
-                    {turningPoints.map((turningPoint: {
-                        position: Point,
-                        type: number,
-                        index: number, //type and index are used together. some points are index sensitive
-                        description?: string,
-                        info?: string,
-                        variables?: [{ key: string, value: string }]
-                    }) => (
-                        <Group
-                            key={turningPoint.index} id={`group-${turningPoint.index}`} x={turningPoint.position[0]} y={turningPoint.position[1]} draggable
-                            onDragMove={(e) => handleDragMove(e, turningPoint.index)}
-                            onDragEnd={(e) => handleDragEnd(e, turningPoint.index)}>
-                            <Circle
-                                key={turningPoint.index} radius={10} fill={"red"} name={turningPoint.index.toString()}
-                            />
-                        </Group>
-                    ))}
+                                        </Html>
+                                    </Group>
+                                ))}
 
-                    <Line
-                        points={exportPointsForDrawing(extractBezierPointToPoint(racingLineBezierPoints))}
-                        stroke="green" strokeWidth={2} bezier={true}
-                    />
+                                <Line
+                                    points={exportPointsForDrawing(extractBezierPointToPoint(racingLineBezierPoints))}
+                                    stroke="green" strokeWidth={2} bezier={true}
+                                />
 
-                    <Circle
-                        x={cubicBezierSplinePoint(extractBezierPointToPoint(bezierPoints), analysisContext.liveSessionData?.Graphics?.normalized_car_position)[0]}
-                        y={cubicBezierSplinePoint(extractBezierPointToPoint(bezierPoints), analysisContext.liveSessionData?.Graphics?.normalized_car_position)[1]}
-                        radius={10}
-                        fill="green"
-                    />
-                    {/* 
+                                <Circle
+                                    x={pointOnCubicBezierSpline(extractBezierPointToPoint(bezierPoints), segmentLengths, analysisContext.liveSessionData?.Graphics?.normalized_car_position)[0]}
+                                    y={pointOnCubicBezierSpline(extractBezierPointToPoint(bezierPoints), segmentLengths, analysisContext.liveSessionData?.Graphics?.normalized_car_position)[1]}
+                                    radius={10}
+                                    fill="green"
+                                />
+                                {/* 
                     {racingLinePoints.map((position: { id: Key, position: Point }) => (
                         <Circle
                             key={position.id} x={position.position[0]} y={position.position[1]} radius={10} fill={"blue"} name={position.id.toString()}
                         />
                     ))}
                     */}
-                </Layer>
-            </Stage>
-
+                            </Layer>
+                        </Stage>
+                    </div>
+                </ContextMenu.Trigger>
+                <ContextMenu.Content size="1">
+                    <ContextMenu.Item onClick={AddPointInDirection}>Add a new turning point</ContextMenu.Item>
+                </ContextMenu.Content>
+            </ContextMenu.Root>
             {environment == 'electron' ? <LiveAnalysisSessionRecording></LiveAnalysisSessionRecording> : ''}
         </div>
     );
