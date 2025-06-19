@@ -2,7 +2,7 @@ import * as React from "react";
 import { ScrollArea, Tabs } from "radix-ui";
 import "./side-main-menu.css";
 import { Box, Text, Flex, Container } from "@radix-ui/themes";
-import LiveAnalysis from "views/live-analysis/live-analysis";
+import SessionAnalysis from "views/lap-analysis/session-analysis";
 
 const SideMainMenu = () => (
     <Tabs.Root className="TabsRoot" defaultValue="account">
@@ -28,7 +28,7 @@ const SideMainMenu = () => (
 
         <Box className="Container" align='left'>
             <Tabs.Content className="TabsContent" value="analysis">
-                <LiveAnalysis></LiveAnalysis>
+                <SessionAnalysis></SessionAnalysis>
             </Tabs.Content>
 
             <Tabs.Content className="TabsContent" value="sessionList">

@@ -1,13 +1,13 @@
 import { createContext, Key, useContext, useEffect, useRef, useState } from 'react';
 import { Stage, Layer, Arc, Circle, Rect, Line, Group, Image } from 'react-konva';
 import { AddControlPoints } from 'utils/curve-tobezier/curve-to-bezier';
-import { offsetBezierPoints, Point, ConstructAllPointsOnBezierCurves, getBezierTangent } from 'utils/curve-tobezier/points-on-curve';
+import { offsetBezierPoints, Point, ConstructAllPointsOnBezierCurves, getBezierTangent, cubicBezierSplinePoint } from 'utils/curve-tobezier/points-on-curve';
 import useImage from 'use-image';
 import image from 'assets/map2.png'
 import myData from 'data/sessionAnalysis.json';
 import apiService from 'services/api.service';
 import { SessionInfo } from 'data/live-analysis/live-analysis-data';
-import { AnalysisContext } from '../live-analysis';
+import { AnalysisContext } from '../session-analysis';
 import LiveAnalysisSessionRecording from './liveAnalysisSessionRecording';
 import { useEnvironment } from 'contexts/EnvironmentContext';
 type RacingTurningPoint = {
@@ -33,8 +33,13 @@ const SessionAnalysisMap = () => {
     });
     const environment = useEnvironment();
     const { analysisContext } = useContext(AnalysisContext);
+
+    //track turning points
     const [turningPoints, setTurningPoints] = useState<RacingTurningPoint[]>([]);
+
+    //points which construct the curve (turningPoints + auto created controlling points)
     const [bezierPoints, setBezierPoints] = useState<BezierPoints[]>([]);
+
     const [leftCurbTurningPoints, setLeftCurbTurningPoints] = useState<CurbTurningPoint[]>([]);
     const [leftCurbBezierPoints, setLeftCrubBezierPoints] = useState<BezierPoints[]>([]);
     const [rightCurbTurningPoints, setRightCurbTurningPoints] = useState<CurbTurningPoint[]>([]);
@@ -369,6 +374,13 @@ const SessionAnalysisMap = () => {
                     <Line
                         points={exportPointsForDrawing(extractBezierPointToPoint(racingLineBezierPoints))}
                         stroke="green" strokeWidth={2} bezier={true}
+                    />
+
+                    <Circle
+                        x={cubicBezierSplinePoint(extractBezierPointToPoint(bezierPoints), analysisContext.liveSessionData?.Graphics?.normalized_car_position)[0]}
+                        y={cubicBezierSplinePoint(extractBezierPointToPoint(bezierPoints), analysisContext.liveSessionData?.Graphics?.normalized_car_position)[1]}
+                        radius={10}
+                        fill="green"
                     />
                     {/* 
                     {racingLinePoints.map((position: { id: Key, position: Point }) => (

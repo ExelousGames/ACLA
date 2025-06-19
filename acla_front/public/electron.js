@@ -38,7 +38,7 @@ ipcMain.handle('run-python-script', (event, script, options) => {
 
     const pyshell = new PythonShell(script, options);
 
-    // Receive messages from Python script
+    // Receive messages from Python script -  line of text from stdout
     pyshell.on('message', (message) => {
       if (mainWindow) {
         mainWindow.webContents.send('python-message', shellId, message);

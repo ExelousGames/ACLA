@@ -1,20 +1,33 @@
 import { Card, Flex, Box, TextField, IconButton, Heading, Grid, Text, Slider, Avatar } from '@radix-ui/themes';
-import { useEffect, useState } from 'react';
+import { useContext, useEffect, useState } from 'react';
 
 import { Link } from 'react-router-dom';
 import { PythonShellOptions } from 'services/pythonService';
+import { AnalysisContext } from '../session-analysis';
 
 
 const LiveAnalysisSessionRecording = () => {
-
+    const { analysisContext } = useContext(AnalysisContext);
     const [output, setOutput] = useState<string[]>([]);
     const [isRunning, setIsRunning] = useState(false);
     const [scriptShellId, setScriptShellId] = useState(0);
     useEffect(() => {
         // Set up listener for Python messages
         window.electronAPI.onPythonMessage((shellId: number, message: string) => {
-            let obj = JSON.parse(message);
-            console.log(obj);
+
+            if (shellId == scriptShellId) {
+                try {
+                    const obj = JSON.parse(message);
+                    analysisContext.setLiveSessionData(obj);
+                    // Use parsedData here
+                } catch (error) {
+                    console.error("Failed to parse JSON:", error);
+                    // Handle the error appropriately
+                }
+
+            }
+
+
             //setOutput(prev => [...prev, message]);
         });
 

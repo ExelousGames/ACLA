@@ -24,7 +24,7 @@ import {
 } from "@radix-ui/themes";
 import { ScrollArea } from "radix-ui";
 import { AllMapsBasicInfoListDto, MapOption } from 'data/live-analysis/live-analysis-data';
-import { AnalysisContext } from '../live-analysis';
+import { AnalysisContext } from '../session-analysis';
 import apiService from 'services/api.service';
 
 const MapList = () => {
