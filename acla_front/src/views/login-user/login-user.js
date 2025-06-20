@@ -35,10 +35,17 @@ const LoginUser = () => {
     const handleSubmit = (e) => {
         e.preventDefault();
         if (input.email !== "" || input.password !== "") {
-            auth.login({ email: input.email, password: input.password });
-            return
+            auth.login({ email: input.email, password: input.password }).then(
+                () => {
+                    return;
+                }
+            ).catch(error => console.error('Error creating task:', error));
+
         }
-        alert("please provide a valid input");
+        else {
+            alert("please provide a valid input");
+        }
+
     };
 
     //check changes in the input

@@ -264,6 +264,8 @@ function estimateSegmentLength(p0: Point, p1: Point, p2: Point, p3: Point, sampl
   for (let i = 1; i <= samples; i++) {
     const t = i / samples;
     const current = cubicBezierPoint(t, p0, p1, p2, p3);
+
+    //Measures straight-line distances between consecutive points
     length += Math.sqrt(
       Math.pow(current[0] - prev[0], 2) +
       Math.pow(current[1] - prev[1], 2)
@@ -271,6 +273,7 @@ function estimateSegmentLength(p0: Point, p1: Point, p2: Point, p3: Point, sampl
     prev = current;
   }
 
+  //Sums these distances for total length estimate
   return length;
 }
 
@@ -299,7 +302,10 @@ export function calculateSegmentLengths(controlPoints: Point[]): number[] {
 }
 
 /**
- * Finds the segment and local t value for a global t value
+ *  Finds the segment and local t value for a global t value
+ * @param t 
+ * @param segmentLengths  An array of relative segment lengths (each between 0-1, all summing to 1)
+ * @returns segmentIndex: Which segment contains our position, localT: The normalized position (0-1) within that specific segment
  */
 function findSegmentAndLocalT(t: number, segmentLengths: number[]): { segmentIndex: number, localT: number } {
   let accumulated = 0;
