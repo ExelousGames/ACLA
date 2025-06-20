@@ -4,6 +4,8 @@ import { useContext, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { PythonShellOptions } from 'services/pythonService';
 import { AnalysisContext } from '../session-analysis';
+import { AllMapsBasicInfoListDto, MapOption } from 'data/live-analysis/live-analysis-data';
+import apiService from 'services/api.service';
 
 
 const LiveAnalysisSessionRecording = () => {
@@ -32,7 +34,13 @@ const LiveAnalysisSessionRecording = () => {
         });
         window.electronAPI.onPythonEnd((shellId: number, message: string) => {
             if (shellId == scriptShellId) {
+                apiService.get('/racingmap/map/infolists')
+                    .then((result) => {
+                        const data = result.data as AllMapsBasicInfoListDto;
+                        let count = 0;
 
+                    }).catch((e) => {
+                    });
             }
         })
         return () => {
