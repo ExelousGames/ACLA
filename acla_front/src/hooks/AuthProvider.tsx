@@ -38,8 +38,9 @@ const AuthProvider = ({ children }: { children: ReactNode }) => {
                     setToken(tokentemp);
                     localStorage.setItem("token", tokentemp);
                     navigate("/dashboard");
-                    return;
+
                 }
+
             })
             .catch(error => console.error('Error creating task:', error));
     };

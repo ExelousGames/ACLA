@@ -286,7 +286,7 @@ const SessionAnalysisMap = () => {
             type: 0,
             index: turningPoints.length //type and index are used together. some points are index sensitive
         } as RacingTurningPoint;
-
+        console.log(turningPoints);
         // Return new array with added points (maintaining cubic Bézier requirements)
         return setTurningPoints([...turningPoints, newP]);
     }
@@ -381,6 +381,8 @@ const SessionAnalysisMap = () => {
 
                         <Stage width={stageSize.width} height={stageSize.height} >
                             <Layer>
+
+                                {/* 
                                 <Image
                                     x={0}
                                     y={0}
@@ -388,7 +390,6 @@ const SessionAnalysisMap = () => {
                                     scaleX={3}
                                     scaleY={3}
                                 />
-                                {/* 
                                 <Line
                                     points={exportPointsForDrawing(extractBezierPointToPoint(leftCurbBezierPoints))}
                                     stroke="red" strokeWidth={2} bezier={true}
@@ -398,11 +399,13 @@ const SessionAnalysisMap = () => {
                                     stroke="red" strokeWidth={2} bezier={true}
                                 />
                                
+                               
+                                 */}
+
                                 <Line
                                     points={exportPointsForDrawing(extractBezierPointToPoint(bezierPoints))}
                                     stroke="red" strokeWidth={25} bezier={true}
                                 />
-                                 */}
                                 {turningPoints.map((
                                     turningPoint: {
                                         position: Point,
@@ -417,7 +420,7 @@ const SessionAnalysisMap = () => {
                                         key={turningPoint.index} id={`group-${turningPoint.index}`} x={turningPoint.position[0]} y={turningPoint.position[1]} draggable
                                         onDragMove={(e) => handleDragMove(e, turningPoint.index)}
                                         onDragEnd={(e) => handleDragEnd(e, turningPoint.index)}>
-                                        <Circle key={turningPoint.index} radius={10} fill={"red"} name={turningPoint.index.toString()} />
+                                        <Circle key={turningPoint.index} radius={10} fill={"green"} name={turningPoint.index.toString()} />
                                         <Html>
                                             <DropdownMenu.Root>
                                                 <DropdownMenu.Trigger>
@@ -439,14 +442,14 @@ const SessionAnalysisMap = () => {
 
                                 <Line
                                     points={exportPointsForDrawing(extractBezierPointToPoint(racingLineBezierPoints))}
-                                    stroke="green" strokeWidth={2} bezier={true}
+                                    stroke="green" strokeWidth={2} bezier={true} closed={true}
                                 />
 
                                 <Circle
                                     x={pointOnCubicBezierSpline(extractBezierPointToPoint(bezierPoints), segmentLengths, analysisContext.liveSessionData?.Graphics?.normalized_car_position)[0]}
                                     y={pointOnCubicBezierSpline(extractBezierPointToPoint(bezierPoints), segmentLengths, analysisContext.liveSessionData?.Graphics?.normalized_car_position)[1]}
-                                    radius={10}
-                                    fill="green"
+                                    radius={15}
+                                    fill="purple"
                                 />
                                 {/* 
                     {racingLinePoints.map((position: { id: Key, position: Point }) => (
