@@ -1,47 +1,35 @@
 import './session-analysis.css';
 
 import {
-    Avatar,
-    Badge,
     Box,
-    Button,
-    Card,
-    Checkbox,
-    DropdownMenu,
-    Flex,
-    Grid,
-    Heading,
-    IconButton,
-    Link,
-    Separator,
-    Strong,
-    Switch,
-    Text,
-    TextField,
-    Theme,
-    Container,
     Tabs
 } from "@radix-ui/themes";
 
 import SessionList from './session-list/session-list';
 import MapList from './map-list/map-list';
-import { useEffect, useState, createContext } from 'react';
-import { MapOption, OptionSelected, SessionOption } from 'data/live-analysis/live-analysis-data';
+import React, { useEffect, useState, createContext, Dispatch, SetStateAction } from 'react';
+import { OptionSelected } from 'data/live-analysis/live-analysis-data';
 import SessionAnalysisMap from './sessionAnalysis/sessionAnalysisMap';
 
-//defined the sturcture here, pass down the props to child, must have init value here, otherwise createContext and useContext don't like it
-export const AnalysisContext = createContext({
-    analysisContext: {
-        options: {
-            mapOption: '',
-            sessionOption: '',
-        } as OptionSelected | null,
-        liveSessionData: {} as any,
-        setMap: (map: string) => { },
-        setSession: (session: string) => { },
-        setLiveSessionData: (data: {}) => { }
-    },
+interface AnalysisContextType {
+    options: OptionSelected | null;
+    liveSessionData: any;
+    setMap: (map: string) => void;
+    setSession: (session: string) => void;
+    setLiveSessionData: (data: {}) => void;
+    setRecordedSessionData: Dispatch<SetStateAction<any[]>>;
+};
 
+//defined the sturcture here, pass down the props to child, must have init value here, otherwise createContext and useContext don't like it
+export const AnalysisContext = createContext<AnalysisContextType>({
+    options: null,
+    liveSessionData: {} as any,
+    setMap: (map: string) => { },
+    setSession: (session: string) => { },
+    setLiveSessionData: (data: {}) => { },
+    setRecordedSessionData: ((value: any[]) => {
+        console.warn('No provider for AnalysisContext');
+    }) as Dispatch<SetStateAction<any[]>>,
 });
 
 const SessionAnalysis = () => {
@@ -51,6 +39,7 @@ const SessionAnalysis = () => {
     const [sessionSelected, setSession] = useState<string | null>(null);
     const [activeTab, setActiveTab] = useState('mapLists');
     const [liveSessionData, setLiveSessionData] = useState({});
+    const [recordedSessionData, setRecordedSessionData] = useState<any[]>([]);
     //switch tab when a map or a session is selected
     useEffect(() => {
         if (mapSelected != null) {
@@ -81,7 +70,7 @@ const SessionAnalysis = () => {
 
 
     return (
-        <AnalysisContext.Provider value={{ analysisContext: { options: { mapOption: mapSelected, sessionOption: sessionSelected }, liveSessionData: liveSessionData, setMap, setSession, setLiveSessionData } }}>
+        <AnalysisContext.Provider value={{ options: { mapOption: mapSelected, sessionOption: sessionSelected }, liveSessionData: liveSessionData, setMap, setSession, setLiveSessionData, setRecordedSessionData }}>
             <Tabs.Root className="LiveAnalysisTabsRoot" defaultValue="mapLists" value={activeTab} onValueChange={setActiveTab}>
                 <Tabs.List className="live-analysis-tablists" justify="start">
                     <Tabs.Trigger value="mapLists">Maps</Tabs.Trigger>

@@ -25,8 +25,7 @@ const SessionList = () => {
         total_time: 2
     }];
     const environment = useEnvironment();
-    const { analysisContext } = useContext(AnalysisContext);
-    console.log(environment);
+    const analysisContext = useContext(AnalysisContext);
     function HandleStartNewSessionClick() {
 
         const now = new Date();
@@ -65,7 +64,7 @@ const SessionList = () => {
 };
 
 const MapCard = ({ dataKey, name, total_time }: SessionOption) => {
-    const { analysisContext } = useContext(AnalysisContext);
+    const analysisContext = useContext(AnalysisContext);
     function mapSelected() {
         analysisContext.setSession(name);
     }

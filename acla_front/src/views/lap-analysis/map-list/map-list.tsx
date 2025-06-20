@@ -45,7 +45,6 @@ const MapList = () => {
 
         apiService.get('/racingmap/map/infolists')
             .then((result) => {
-                console.log(result);
                 const data = result.data as AllMapsBasicInfoListDto;
                 let count = 0;
 
@@ -92,7 +91,7 @@ const MapList = () => {
 };
 
 function MapCard({ dataKey, name, session_count }: MapOption) {
-    const { analysisContext } = useContext(AnalysisContext);
+    const analysisContext = useContext(AnalysisContext);
     function mapSelected() {
         analysisContext.setMap(name);
     }

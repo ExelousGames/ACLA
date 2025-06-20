@@ -45,41 +45,37 @@ ipcMain.handle('run-python-script', (event, script, options) => {
       }
     });
 
-    pyshell.on('close', () => {
-      activeShells.delete(shellId);
-      resolve({ shellId }); // Resolve with the shellId
-
+    //Indicates that the stream has no more data to read, Used when you're reading from process output streams, Doesn't necessarily mean the process has terminated
+    pyshell.end(function (err, code, signal) {
+      if (err) throw err;
     });
 
+    //The process has definitely terminated, callback is invoked when the process is terminated.
+    pyshell.on('close', () => {
+      activeShells.delete(shellId);
+
+      if (mainWindow) {
+        mainWindow.webContents.send('python-message', shellId, message);
+      }
+      resolve({ shellId }); // Resolve with the shellId
+    });
+
+
     pyshell.on('error', (error) => {
-      console.log(error);
       activeShells.delete(shellId);
       reject(error);
     });
 
-    pyshell.end(function (err, code, signal) {
-      if (err) throw err;
-      console.log('The exit code was: ' + code);
-      console.log('The exit signal was: ' + signal);
-      console.log('finished');
-    });
+
   });
 
   activeShells.set(shellId, newShell);
-  console.log(shellId);
   return {
     shellId: shellId
   }
 });
 
-// Later, retrieve the promise using shellId
-ipcMain.handle('get-python-result', async (event, shellId) => {
-  const promise = activePromises.get(shellId);
-  if (!promise) throw new Error("Invalid shellId");
-  return await promise;
-});
-
-//send message to a python shell
+//renderer process send message to a python shell
 ipcMain.handle('send-message-to-python', async (event, shellId, message) => {
   const pyshell = activeShells.get(shellId);
   if (!pyshell) {
