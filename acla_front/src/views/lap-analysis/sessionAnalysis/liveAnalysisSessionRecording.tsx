@@ -7,7 +7,7 @@ import { AnalysisContext } from '../session-analysis';
 
 
 const LiveAnalysisSessionRecording = () => {
-    const { analysisContext } = useContext(AnalysisContext);
+    const analysisContext = useContext(AnalysisContext);
     const [output, setOutput] = useState<string[]>([]);
     const [isRunning, setIsRunning] = useState(false);
     const [scriptShellId, setScriptShellId] = useState(0);
@@ -19,21 +19,27 @@ const LiveAnalysisSessionRecording = () => {
                 try {
                     const obj = JSON.parse(message);
                     analysisContext.setLiveSessionData(obj);
-                    // Use parsedData here
+                    analysisContext.setRecordedSessionData((presState: any) => {
+                        return [...presState, obj];
+                    });
+
                 } catch (error) {
-                    console.error("Failed to parse JSON:", error);
                     // Handle the error appropriately
                 }
 
             }
 
-
-            //setOutput(prev => [...prev, message]);
         });
+        window.electronAPI.onPythonEnd((shellId: number, message: string) => {
+            if (shellId == scriptShellId) {
 
+            }
+
+        })
         return () => {
             // Clean up listeners when component unmounts
             window.electronAPI.onPythonMessage(() => { });
+            window.electronAPI.onPythonEnd(() => { });
         };
     }, []);
 

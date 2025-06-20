@@ -35,7 +35,7 @@ const SessionAnalysisMap = () => {
         height: containerHeight,
     });
     const environment = useEnvironment();
-    const { analysisContext } = useContext(AnalysisContext);
+    const analysisContext = useContext(AnalysisContext);
 
     //track turning points
     const [turningPoints, setTurningPoints] = useState<RacingTurningPoint[]>([]);
@@ -286,7 +286,6 @@ const SessionAnalysisMap = () => {
             type: 0,
             index: turningPoints.length //type and index are used together. some points are index sensitive
         } as RacingTurningPoint;
-        console.log(turningPoints);
         // Return new array with added points (maintaining cubic Bézier requirements)
         return setTurningPoints([...turningPoints, newP]);
     }
