@@ -34,7 +34,6 @@ const LiveAnalysisSessionRecording = () => {
             if (shellId == scriptShellId) {
 
             }
-
         })
         return () => {
             // Clean up listeners when component unmounts
