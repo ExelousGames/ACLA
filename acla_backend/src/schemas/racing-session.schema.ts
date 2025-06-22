@@ -5,17 +5,17 @@ import { Prop, Schema, SchemaFactory } from "@nestjs/mongoose";
 @Schema()
 export class RacingSession {
 
-    @Prop({ required: true, unique: true })
+    @Prop({ required: true })
     session_name: string;
+
+    @Prop({ required: true, unique: true })
+    id: string;
 
     @Prop({ required: true })
     map: string;
 
     @Prop({ required: true })
     user_email: string;
-
-    @Prop({ required: true })
-    date: string;
 
     @Prop()
     points: [{
@@ -26,6 +26,9 @@ export class RacingSession {
         info: string,
         variables: [{ key: string, value: string }] //any word match {key} in description or info will be replaced with the value
     }]
+
+    @Prop({ type: Array })
+    data: any[];
 }
 
 export const RacingSessionSchema = SchemaFactory.createForClass(RacingSession);

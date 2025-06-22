@@ -33,4 +33,24 @@ export class RacingSessionService {
 
         return racingMap;
     }
+
+    /**
+     * 
+     * @param session_name 
+     * @param id 
+     * @param map 
+     * @param user_email 
+     * @param data 
+     * @returns 
+     */
+    async createRacingSession(session_name: string, id: string, map: string, user_email: string, data: any[]) {
+        return this.racingMap.create({
+            session_name,
+            id,
+            map,
+            user_email,
+            data
+        });
+    }
+
 }
