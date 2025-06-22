@@ -13,10 +13,19 @@ import SessionAnalysisMap from './sessionAnalysis/sessionAnalysisMap';
 
 interface AnalysisContextType {
     options: OptionSelected | null;
+
+    /**
+     * live data at runtime
+     */
     liveSessionData: any;
+    recordedSessionData: any[];
     setMap: (map: string) => void;
     setSession: (session: string) => void;
     setLiveSessionData: (data: {}) => void;
+
+    /**
+     * all the recored data
+     */
     setRecordedSessionData: Dispatch<SetStateAction<any[]>>;
 };
 
@@ -24,6 +33,7 @@ interface AnalysisContextType {
 export const AnalysisContext = createContext<AnalysisContextType>({
     options: null,
     liveSessionData: {} as any,
+    recordedSessionData: [],
     setMap: (map: string) => { },
     setSession: (session: string) => { },
     setLiveSessionData: (data: {}) => { },
@@ -70,7 +80,7 @@ const SessionAnalysis = () => {
 
 
     return (
-        <AnalysisContext.Provider value={{ options: { mapOption: mapSelected, sessionOption: sessionSelected }, liveSessionData: liveSessionData, setMap, setSession, setLiveSessionData, setRecordedSessionData }}>
+        <AnalysisContext.Provider value={{ options: { mapOption: mapSelected, sessionOption: sessionSelected }, liveSessionData: liveSessionData, recordedSessionData: recordedSessionData, setMap, setSession, setLiveSessionData, setRecordedSessionData }}>
             <Tabs.Root className="LiveAnalysisTabsRoot" defaultValue="mapLists" value={activeTab} onValueChange={setActiveTab}>
                 <Tabs.List className="live-analysis-tablists" justify="start">
                     <Tabs.Trigger value="mapLists">Maps</Tabs.Trigger>

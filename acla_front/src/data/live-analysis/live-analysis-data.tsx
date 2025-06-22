@@ -35,3 +35,14 @@ export type SessionInfo = {
         variables?: [{ key: string, value: string }] //any word match {key} in description or info will be replaced with the value
     }]
 }
+
+export type UploadReacingSessionInitDto = {
+    sessionName: string;
+    mapName: string;
+    userEmail: string;
+}
+
+export type UploadReacingSessionInitReturnDto = {
+    uploadId: string;
+
+}

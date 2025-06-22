@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import axios from 'axios';
 
 interface AuthContextType {
-    user: any;
+    user: string;
     token: string | null;
     login: (email: string, password: string) => Promise<void>;
     logout: () => void;
@@ -18,7 +18,7 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 */
 const AuthProvider = ({ children }: { children: ReactNode }) => {
 
-    const [userEmail, setUserEmail] = useState(null);
+    const [userEmail, setUserEmail] = useState('');
     const [token, setToken] = useState(localStorage.getItem("token") || "");
     const navigate = useNavigate();
 
@@ -47,7 +47,7 @@ const AuthProvider = ({ children }: { children: ReactNode }) => {
 
     //clears user and token data, removing the token from local storage.
     const logout = () => {
-        setUserEmail(null);
+        setUserEmail('');
         setToken("");
         localStorage.removeItem("token");
         navigate("/login");

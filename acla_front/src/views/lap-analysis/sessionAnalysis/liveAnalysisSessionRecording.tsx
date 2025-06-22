@@ -4,13 +4,14 @@ import { useContext, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { PythonShellOptions } from 'services/pythonService';
 import { AnalysisContext } from '../session-analysis';
-import { AllMapsBasicInfoListDto, MapOption } from 'data/live-analysis/live-analysis-data';
+import { AllMapsBasicInfoListDto, MapOption, UploadReacingSessionInitDto, UploadReacingSessionInitReturnDto } from 'data/live-analysis/live-analysis-data';
 import apiService from 'services/api.service';
+import { useAuth } from 'hooks/AuthProvider';
 
 
 const LiveAnalysisSessionRecording = () => {
     const analysisContext = useContext(AnalysisContext);
-    const [output, setOutput] = useState<string[]>([]);
+    const auth = useAuth();
     const [isRunning, setIsRunning] = useState(false);
     const [scriptShellId, setScriptShellId] = useState(0);
     useEffect(() => {
@@ -34,13 +35,10 @@ const LiveAnalysisSessionRecording = () => {
         });
         window.electronAPI.onPythonEnd((shellId: number, message: string) => {
             if (shellId == scriptShellId) {
-                apiService.get('/racingmap/map/infolists')
-                    .then((result) => {
-                        const data = result.data as AllMapsBasicInfoListDto;
-                        let count = 0;
 
-                    }).catch((e) => {
-                    });
+
+
+
             }
         })
         return () => {
@@ -60,7 +58,7 @@ const LiveAnalysisSessionRecording = () => {
         const script = 'ACCMemoryExtractor.py';
 
         setIsRunning(true);
-        setOutput([]);
+
 
         try {
             //running the script in the main process (electron.js) instead this renderer process
@@ -68,12 +66,55 @@ const LiveAnalysisSessionRecording = () => {
             setScriptShellId(shellId);
 
         } catch (error) {
-            setOutput(prev => [...prev, `Error: ${error}`]);
+
         } finally {
             setIsRunning(false);
         }
     };
 
+
+    async function handleUpload() {
+
+        if (!analysisContext.options?.sessionOption || !analysisContext.options?.mapOption || !auth?.user) {
+            return;
+        }
+        const data = analysisContext.recordedSessionData;;
+        const chunks = [];
+        const chunkSize = 10;
+        const metadata = {
+            sessionName: analysisContext.options.sessionOption,
+            mapName: analysisContext.options.mapOption,
+            userEmail: auth?.user,
+        } as UploadReacingSessionInitDto;
+
+
+        //seperate recored data into chunks
+        for (let i = 0; i < data.length; i += chunkSize) {
+            chunks.push(data.slice(i, i + chunkSize));
+        }
+
+        // First send metadata
+        const initResponse = await apiService.post('/racing-session/upload/init', metadata);
+
+        if (!initResponse.data) {
+            throw new Error('First response missing required data');
+        }
+        const { uploadId } = initResponse.data as UploadReacingSessionInitReturnDto;
+
+        // Then send chunks
+        for (let i = 0; i < chunks.length; i++) {
+            const url = new URL('/racing-session/upload/chunk');
+            url.searchParams.append('uploadId', uploadId);
+            await apiService.post(url.toString(), { chunk: chunks[i], chunkIndex: i });
+        }
+
+        // Finalize
+        const url = new URL('/racing-session/upload/complete');
+        url.searchParams.append('uploadId', uploadId);
+        await apiService.post(url.toString(), {});
+
+        return true;
+    }
     return (
 
         <Box
