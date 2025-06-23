@@ -8,7 +8,7 @@ import {
     Text,
 } from "@radix-ui/themes";
 import { ScrollArea } from "radix-ui";
-import { SessionOption } from 'data/live-analysis/live-analysis-data';
+import { SessionOption } from 'data/live-analysis/live-analysis-type';
 import { AnalysisContext } from '../session-analysis';
 import { useEnvironment } from 'contexts/EnvironmentContext';
 import { Environment } from 'utils/environment';

@@ -5,6 +5,7 @@ from enum import Enum
 from typing import Any
 from uuid import UUID
 import base64
+import math
 class DataclassJSONEncoder(json.JSONEncoder):
     """
     JSON encoder that handles dataclasses, Enums, dates, and other common types.
@@ -38,6 +39,8 @@ class DataclassJSONEncoder(json.JSONEncoder):
             return {k: self._process_value(v) for k, v in value.items()}
         elif isinstance(value, (list, tuple, set)):
             return [self._process_value(v) for v in value]
+        elif isinstance(value, float) and math.isnan(value):
+            return 0.0  # or whatever you want to do with NaN values
         return value
     
     def _serialize_bytes(self, byte_data: bytes) -> str:

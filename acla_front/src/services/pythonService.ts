@@ -1,5 +1,14 @@
 import { PythonShell } from 'python-shell';
 import path from 'path';
+import { IpcRendererEvent } from 'electron';
+
+// Function with additional property
+export interface CallbackFunction {
+    (event: IpcRendererEvent, returnedShellId: number, message: any): void;
+    __listener?: any
+};
+
+
 
 declare global {
 
@@ -17,19 +26,21 @@ declare global {
             runPythonScript: (script: string, options: PythonShellOptions) => { shellId: number };
 
             /**
-             * listen to message from any python shell running in main process
-             * @param callback callback function - used when python shell print out a message
-             * @returns 
+             * 
+             * @param callback 
+             * @returns the function of removing this listener
              */
-            onPythonMessage: (callback: (shellId: number, message: string) => void) => void;
-            offPythonMessage: (callback: (shellId: number, message: string) => void) => void;
+            //onPythonMessage: (callback: ExtendedCallbackFunction) => void;
+            onPythonMessage: (callback: (shellId: number, message: string) => void) => () => {};
+            OnPythonMessageOnce: (callback: (shellId: number, message: string) => void) => void;
+
             /**
              * called when a script running in main process is terminated
              * @param callback function used for handling termination of a script 
              * @returns 
              */
             onPythonEnd: (callback: (shellId: number) => void) => void;
-            offPythonEnd: (callback: (shellId: number) => void) => void;
+
             /**
              * Send message to a script running in main process 
              * @param shellId 

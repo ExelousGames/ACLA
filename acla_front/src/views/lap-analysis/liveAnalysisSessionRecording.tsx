@@ -2,23 +2,24 @@ import { Card, Flex, Box, TextField, IconButton, Heading, Grid, Text, Slider, Av
 import { useContext, useEffect, useRef, useState } from 'react';
 
 import { Link } from 'react-router-dom';
-import { PythonShellOptions } from 'services/pythonService';
+import { CallbackFunction, PythonShellOptions } from 'services/pythonService';
 import { AnalysisContext } from './session-analysis';
-import { AllMapsBasicInfoListDto, MapOption, UploadReacingSessionInitDto, UploadReacingSessionInitReturnDto } from 'data/live-analysis/live-analysis-data';
+import { AllMapsBasicInfoListDto, MapOption, UploadReacingSessionInitDto, UploadReacingSessionInitReturnDto } from 'data/live-analysis/live-analysis-type';
 import apiService from 'services/api.service';
 import { useAuth } from 'hooks/AuthProvider';
-import { MpaOptions } from 'data/live-analysis/map-options';
+import { ACC_STATUS, ACCMemoeryTracks } from 'data/live-analysis/live-map-data';
 import { Cross2Icon } from '@radix-ui/react-icons';
+import { IpcRendererEvent } from 'electron';
 
 
 const LiveAnalysisSessionRecording = () => {
     const analysisContext = useContext(AnalysisContext);
     const auth = useAuth();
-    const [isCheckingLiveSession, setIsCheckingLiveSession] = useState(false);
+
+    let isCheckingLiveSession = false;
+    const [hasValidLiveSession, setValidLiveSession] = useState(false);
     const [isRecording, setIsRecording] = useState(false);
     const [isRecordEnded, setIsRecorEnded] = useState(false);
-    const [hasValidLiveSession, setValidLiveSession] = useState(false);
-    const [RecordingScriptShellId, setRecordingScriptShellId] = useState(-1);
     const [checkSessionScriptShellId, setCheckSessionScriptShellId] = useState(-1);
     const intervalRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -51,46 +52,48 @@ const LiveAnalysisSessionRecording = () => {
             //running the script in the main process (electron.js) instead this renderer process. we will wait for the result to comeback to onPythonMessage().
             const { shellId } = await window.electronAPI.runPythonScript(script, options);
 
-            const handleMessage = (returnedShellId: number, message: string) => {
+            return new Promise((resolve, reject) => {
+                let handleMessage = (returnedShellId: number, message: string) => {
 
-                console.log(shellId, returnedShellId);
-                if (shellId == returnedShellId) {//check valid session
-                    try {
-                        const obj = JSON.parse(message);
-                        console.log(obj.Statics.track);
-                        //if the script print out valid session map 
-                        if (MpaOptions.findIndex(obj.Statics.track) != -1) {
-                            //find a valid live session, stop the checking process
-                            stopCheckingLiveSessionInterval();
-                            setValidLiveSession(true);
-
-                            //set the static data too, so we can use it later.
-                            analysisContext.setRecordedSessionStaticsData(obj);
+                    if (shellId == returnedShellId) {//check valid session
+                        try {
+                            const obj = JSON.parse(message);
+                            console.log(obj.Graphics.status)
+                            //if the script print out valid session map 
+                            if (obj.Graphics.status == ACC_STATUS.ACC_LIVE) {
+                                //find a valid live session, stop the checking process
+                                stopCheckingLiveSessionInterval();
+                                setValidLiveSession(true);
+                                //set the static data too, so we can use it later.
+                                analysisContext.setRecordedSessionStaticsData(obj);
+                            }
+                        } catch (error) {
+                            // Handle the error appropriately
                         }
-                    } catch (error) {
-                        // Handle the error appropriately
                     }
+
                 }
 
-            }
 
-            const handleScriptEnd = (returnedShellId: number) => {
-                if (shellId == returnedShellId) {// session recording is terminated
-                    setIsCheckingLiveSession(false);
-                    console.log("try end");
-                    window.electronAPI.offPythonMessage(handleMessage);
-                    window.electronAPI.offPythonEnd(handleScriptEnd);
-                }
-            };
+                const handleScriptEnd = (returnedShellId: number) => {
+                    if (shellId == returnedShellId) {// session recording is terminated
+                        isCheckingLiveSession = false;
+                        resolve("good");
+                    }
+                };
 
-            setCheckSessionScriptShellId(shellId);
-            setIsCheckingLiveSession(true);
+                setCheckSessionScriptShellId(shellId);
 
-            // Set up listener for Python messages
-            window.electronAPI.onPythonMessage(handleMessage);
-            window.electronAPI.onPythonEnd(handleScriptEnd)
+
+                // Set up listener for Python messages
+                window.electronAPI.OnPythonMessageOnce(handleMessage);
+                window.electronAPI.onPythonEnd(handleScriptEnd)
+
+            })
+
 
         } catch (error) {
+            isCheckingLiveSession = false;
         }
     };
 
@@ -112,19 +115,21 @@ const LiveAnalysisSessionRecording = () => {
         const script = 'ACCMemoryExtractor.py';
 
         //find and set the track name by using the saved static data from the CheckSessionValid()
-        analysisContext.setMap(analysisContext.recordedSessioStaticsData.track);
+
+        if (!ACCMemoeryTracks.has(analysisContext.recordedSessioStaticsData.Static.track)) return;
+
+        const trackname: string = ACCMemoeryTracks.get(analysisContext.recordedSessioStaticsData.Static.track)!
+        analysisContext.setMap(trackname);
         analysisContext.setSession(new Date().toString());
 
-        setIsRecording(true);
 
         try {
             //running the script in the main process (electron.js) instead this renderer process
             const { shellId } = await window.electronAPI.runPythonScript(script, options);
-            setRecordingScriptShellId(shellId);
 
-            window.electronAPI.onPythonMessage((shellId: number, message: string) => {
+            const offPythonMessage = window.electronAPI.onPythonMessage((incomingScriptShellId: number, message: string) => {
 
-                if (shellId == RecordingScriptShellId) { //check return result of recording script
+                if (shellId == incomingScriptShellId) { //check return result of recording script
                     try {
                         const obj = JSON.parse(message);
                         analysisContext.setLiveSessionData(obj);
@@ -137,17 +142,21 @@ const LiveAnalysisSessionRecording = () => {
                     }
                 }
             });
-            window.electronAPI.onPythonEnd((shellId: number) => {
-                if (shellId == RecordingScriptShellId) {// session recording is terminated
+
+            window.electronAPI.onPythonEnd((incomingScriptShellId: number) => {
+                console.log("end here ", shellId, incomingScriptShellId);
+                if (shellId == incomingScriptShellId) {// session recording is terminated
+
                     setIsRecording(false);
                     setIsRecorEnded(true);
+                    offPythonMessage();
                 }
             })
 
+            setIsRecording(true);
+
         } catch (error) {
 
-        } finally {
-            setIsRecording(false);
         }
     };
 
@@ -156,11 +165,11 @@ const LiveAnalysisSessionRecording = () => {
      */
     const startCheckingLiveSessionInterval = () => {
 
-        //check every 1 sec by using a python script
-        intervalRef.current = setInterval(async () => {
-            await CheckSessionValid();
-        }, 1000);
 
+        if (!hasValidLiveSession && !isCheckingLiveSession) {
+            //check every 1 sec by using a python script
+            intervalRef.current = setInterval(CheckSessionValid, 2000);
+        }
     };
 
     // Stop the interval
@@ -172,7 +181,7 @@ const LiveAnalysisSessionRecording = () => {
     };
 
     async function handleUpload() {
-
+        console.log(analysisContext.options?.sessionOption, analysisContext.options?.mapOption, auth?.user);
         if (!analysisContext.options?.sessionOption || !analysisContext.options?.mapOption || !auth?.user) {
             return;
         }
@@ -193,7 +202,7 @@ const LiveAnalysisSessionRecording = () => {
 
         // First send metadata
         const initResponse = await apiService.post('/racing-session/upload/init', metadata);
-
+        console.log(initResponse);
         if (!initResponse.data) {
             throw new Error('First response missing required data');
         }
@@ -218,7 +227,6 @@ const LiveAnalysisSessionRecording = () => {
         setIsRecording(false);
         setIsRecorEnded(false);
         setValidLiveSession(false);
-        setRecordingScriptShellId(-1);
         setCheckSessionScriptShellId(-1);
         analysisContext.setSession(null);
     }
@@ -257,8 +265,8 @@ const LiveAnalysisSessionRecording = () => {
                         //record ended
                         <AlertDialog.Root>
                             <AlertDialog.Trigger>
-                                <IconButton radius="full" size="3" onClick={StartRecording}>
-                                    <svg width="15" height="15" viewBox="0 0 15 15" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M7.81825 1.18188C7.64251 1.00615 7.35759 1.00615 7.18185 1.18188L4.18185 4.18188C4.00611 4.35762 4.00611 4.64254 4.18185 4.81828C4.35759 4.99401 4.64251 4.99401 4.81825 4.81828L7.05005 2.58648V9.49996C7.05005 9.74849 7.25152 9.94996 7.50005 9.94996C7.74858 9.94996 7.95005 9.74849 7.95005 9.49996V2.58648L10.1819 4.81828C10.3576 4.99401 10.6425 4.99401 10.8182 4.81828C10.994 4.64254 10.994 4.35762 10.8182 4.18188L7.81825 1.18188ZM2.5 9.99997C2.77614 9.99997 3 10.2238 3 10.5V12C3 12.5538 3.44565 13 3.99635 13H11.0012C11.5529 13 12 12.5528 12 12V10.5C12 10.2238 12.2239 9.99997 12.5 9.99997C12.7761 9.99997 13 10.2238 13 10.5V12C13 13.104 12.1062 14 11.0012 14H3.99635C2.89019 14 2 13.103 2 12V10.5C2 10.2238 2.22386 9.99997 2.5 9.99997Z" fill="currentColor" fill-rule="evenodd" clip-rule="evenodd"></path></svg>
+                                <IconButton radius="full" size="3">
+                                    <svg width="15" height="15" viewBox="0 0 15 15" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M7.81825 1.18188C7.64251 1.00615 7.35759 1.00615 7.18185 1.18188L4.18185 4.18188C4.00611 4.35762 4.00611 4.64254 4.18185 4.81828C4.35759 4.99401 4.64251 4.99401 4.81825 4.81828L7.05005 2.58648V9.49996C7.05005 9.74849 7.25152 9.94996 7.50005 9.94996C7.74858 9.94996 7.95005 9.74849 7.95005 9.49996V2.58648L10.1819 4.81828C10.3576 4.99401 10.6425 4.99401 10.8182 4.81828C10.994 4.64254 10.994 4.35762 10.8182 4.18188L7.81825 1.18188ZM2.5 9.99997C2.77614 9.99997 3 10.2238 3 10.5V12C3 12.5538 3.44565 13 3.99635 13H11.0012C11.5529 13 12 12.5528 12 12V10.5C12 10.2238 12.2239 9.99997 12.5 9.99997C12.7761 9.99997 13 10.2238 13 10.5V12C13 13.104 12.1062 14 11.0012 14H3.99635C2.89019 14 2 13.103 2 12V10.5C2 10.2238 2.22386 9.99997 2.5 9.99997Z" fill="currentColor" fillRule="evenodd" clipRule="evenodd"></path></svg>
                                 </IconButton>
                             </AlertDialog.Trigger>
                             <AlertDialog.Content maxWidth="450px">

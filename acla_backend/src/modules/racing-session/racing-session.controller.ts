@@ -23,6 +23,7 @@ export class RacingSessionController {
     @UseGuards(AuthGuard('jwt'))
     @Post('upload/init')
     async initUpload(@Body() metadata: UploadReacingSessionInitDto) {
+        console.log("here");
         const uploadId = crypto.randomUUID();
         this.uploadStates.set(uploadId, {
             metadata,
