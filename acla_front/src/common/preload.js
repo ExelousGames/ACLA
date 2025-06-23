@@ -15,9 +15,30 @@ contextBridge.exposeInMainWorld('electronAPI', {
     runPythonScript: (scriptPath, options) => ipcRenderer.invoke('run-python-script', scriptPath, options),
 
     //listen to python end in main process by using ipcRenderer.on
-    onPythonEnd: (callback) => ipcRenderer.on('python-end', (event, shellId, message) => callback(shellId, message)),
+    onPythonEnd: (callback) => {
+        const wrappedCallback = (event, shellId) => callback(shellId);
+        ipcRenderer.on('python-end', wrappedCallback)
+    },
+    offPythonEnd: (callback) => {
+        const wrappedCallback = (event, shellId) => callback(shellId);
+        ipcRenderer.off('python-end', wrappedCallback)
+    },
 
-    onPythonMessage: (callback) => ipcRenderer.on('python-message', (event, shellId, message) => callback(shellId, message)),
+    onPythonMessage: (callback) => {
+        const listener = (event, shellId, message) => callback(shellId, message);
+        callback.__listener = listener;  // Attach the listener to the callback
+        ipcRenderer.on('python-message', listener)
+    },
+    offPythonMessage: (callback) => {
+        // Retrieve the stored listener
+        console.log(callback);
+        const listener = callback.__listener;
+        if (listener) {
+            ipcRenderer.off('python-message', listener)
+            delete callback.__listener;  // Clean up
+        }
+
+    },
 
     //This function allows the renderer to send messages to the main process via the ipcRenderer.send API.
     //The main process would then need to listen for these messages using ipcMain.on.

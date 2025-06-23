@@ -7,7 +7,7 @@ import image from 'assets/map2.png'
 import apiService from 'services/api.service';
 import { SessionInfo } from 'data/live-analysis/live-analysis-data';
 import { AnalysisContext } from '../session-analysis';
-import LiveAnalysisSessionRecording from './liveAnalysisSessionRecording';
+import LiveAnalysisSessionRecording from '../liveAnalysisSessionRecording';
 import { useEnvironment } from 'contexts/EnvironmentContext';
 import { ContextMenu, DropdownMenu, IconButton } from '@radix-ui/themes';
 import { Html } from 'react-konva-utils';
@@ -34,7 +34,7 @@ const SessionAnalysisMap = () => {
         width: containerWidth,
         height: containerHeight,
     });
-    const environment = useEnvironment();
+
     const analysisContext = useContext(AnalysisContext);
 
     //track turning points
@@ -445,8 +445,8 @@ const SessionAnalysisMap = () => {
                                 />
 
                                 <Circle
-                                    x={pointOnCubicBezierSpline(extractBezierPointToPoint(bezierPoints), segmentLengths, analysisContext.liveSessionData?.Graphics?.normalized_car_position)[0]}
-                                    y={pointOnCubicBezierSpline(extractBezierPointToPoint(bezierPoints), segmentLengths, analysisContext.liveSessionData?.Graphics?.normalized_car_position)[1]}
+                                    x={pointOnCubicBezierSpline(extractBezierPointToPoint(bezierPoints), segmentLengths, analysisContext.liveData?.Graphics?.normalized_car_position)[0]}
+                                    y={pointOnCubicBezierSpline(extractBezierPointToPoint(bezierPoints), segmentLengths, analysisContext.liveData?.Graphics?.normalized_car_position)[1]}
                                     radius={15}
                                     fill="purple"
                                 />
@@ -465,7 +465,6 @@ const SessionAnalysisMap = () => {
                     <ContextMenu.Item onClick={AddPointInDirection}>Add a new turning point</ContextMenu.Item>
                 </ContextMenu.Content>
             </ContextMenu.Root>
-            {environment == 'electron' ? <LiveAnalysisSessionRecording></LiveAnalysisSessionRecording> : ''}
         </div>
     );
 

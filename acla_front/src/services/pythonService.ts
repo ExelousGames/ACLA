@@ -22,14 +22,14 @@ declare global {
              * @returns 
              */
             onPythonMessage: (callback: (shellId: number, message: string) => void) => void;
-
+            offPythonMessage: (callback: (shellId: number, message: string) => void) => void;
             /**
              * called when a script running in main process is terminated
              * @param callback function used for handling termination of a script 
              * @returns 
              */
-            onPythonEnd: (callback: (shellId: number, message: string) => void) => void;
-
+            onPythonEnd: (callback: (shellId: number) => void) => void;
+            offPythonEnd: (callback: (shellId: number) => void) => void;
             /**
              * Send message to a script running in main process 
              * @param shellId 
