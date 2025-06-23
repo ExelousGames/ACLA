@@ -1,4 +1,4 @@
-import { useContext, createContext, useState, ReactNode } from "react";
+import { useContext, createContext, useState, ReactNode, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import axios from 'axios';
 
@@ -26,6 +26,16 @@ const AuthProvider = ({ children }: { children: ReactNode }) => {
     const serverIPandPort = process.env.REACT_APP_BACKEND_SERVER_IP + ":" + process.env.REACT_APP_BACKEND_PROXY_PORT
     const server_url_header = 'http://' + serverIPandPort
 
+    useEffect(() => {
+        const token = localStorage.getItem("token");
+        const username = localStorage.getItem("username");
+        if (!token || !username) {
+            logout();
+            return
+        }
+        setToken(token);
+
+    }, [])
     //handles user login by sending a POST request to an authentication endpoint, 
     // updating the user and token state upon a successful response, and storing the token in local storage.
     const login = async (data: any) => {
@@ -37,6 +47,7 @@ const AuthProvider = ({ children }: { children: ReactNode }) => {
                     setUserEmail(data.email);
                     setToken(tokentemp);
                     localStorage.setItem("token", tokentemp);
+                    localStorage.setItem("username", data.email);
                     navigate("/dashboard");
 
                 }

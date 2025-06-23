@@ -46,7 +46,7 @@ export class RacingSessionController {
         upload.session_data_chunks[body.chunkIndex] = body.chunk;
         upload.received++;
 
-        // Optional: send progress to client
+
         return { receivedChunks: upload.session_data_chunks.length };
     }
 
