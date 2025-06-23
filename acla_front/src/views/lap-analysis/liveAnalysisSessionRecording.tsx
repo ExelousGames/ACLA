@@ -212,7 +212,8 @@ const LiveAnalysisSessionRecording = () => {
         for (let i = 0; i < chunks.length; i++) {
             const url = new URL('/racing-session/upload/chunk');
             url.searchParams.append('uploadId', uploadId);
-            await apiService.post(url.toString(), { chunk: chunks[i], chunkIndex: i });
+            const progress = await apiService.post(url.toString(), { chunk: chunks[i], chunkIndex: i });
+            console.log(progress)
         }
 
         // Finalize
