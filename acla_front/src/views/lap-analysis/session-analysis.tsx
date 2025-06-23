@@ -10,6 +10,8 @@ import MapList from './map-list/map-list';
 import React, { useEffect, useState, createContext, Dispatch, SetStateAction } from 'react';
 import { OptionSelected } from 'data/live-analysis/live-analysis-data';
 import SessionAnalysisMap from './sessionAnalysis/sessionAnalysisMap';
+import { useEnvironment } from 'contexts/EnvironmentContext';
+import LiveAnalysisSessionRecording from './liveAnalysisSessionRecording';
 
 interface AnalysisContextType {
     options: OptionSelected | null;
@@ -17,11 +19,19 @@ interface AnalysisContextType {
     /**
      * live data at runtime
      */
-    liveSessionData: any;
+    liveData: any;
     recordedSessionData: any[];
-    setMap: (map: string) => void;
-    setSession: (session: string) => void;
+    recordedSessioStaticsData: any;
+    setMap: (map: string | null) => void;
+    setSession: (session: string | null) => void;
     setLiveSessionData: (data: {}) => void;
+
+    /**
+     * Data that are initialized when the instance starts and never changes until the instance is closed.
+     * @param data 
+     * @returns 
+     */
+    setRecordedSessionStaticsData: (data: {}) => void;
 
     /**
      * all the recored data
@@ -32,11 +42,13 @@ interface AnalysisContextType {
 //defined the sturcture here, pass down the props to child, must have init value here, otherwise createContext and useContext don't like it
 export const AnalysisContext = createContext<AnalysisContextType>({
     options: null,
-    liveSessionData: {} as any,
+    liveData: {} as any,
     recordedSessionData: [],
-    setMap: (map: string) => { },
-    setSession: (session: string) => { },
+    recordedSessioStaticsData: {} as any,
+    setMap: (map: string | null) => { },
+    setSession: (session: string | null) => { },
     setLiveSessionData: (data: {}) => { },
+    setRecordedSessionStaticsData: (data: {}) => { },
     setRecordedSessionData: ((value: any[]) => {
         console.warn('No provider for AnalysisContext');
     }) as Dispatch<SetStateAction<any[]>>,
@@ -48,8 +60,10 @@ const SessionAnalysis = () => {
     const [mapSelected, setMap] = useState<string | null>(null);
     const [sessionSelected, setSession] = useState<string | null>(null);
     const [activeTab, setActiveTab] = useState('mapLists');
-    const [liveSessionData, setLiveSessionData] = useState({});
+    const [liveData, setLiveData] = useState({});
+    const [recordedSessioStaticsData, setRecordedSessionStaticsData] = useState({});
     const [recordedSessionData, setRecordedSessionData] = useState<any[]>([]);
+    const environment = useEnvironment();
     //switch tab when a map or a session is selected
     useEffect(() => {
         if (mapSelected != null) {
@@ -80,7 +94,7 @@ const SessionAnalysis = () => {
 
 
     return (
-        <AnalysisContext.Provider value={{ options: { mapOption: mapSelected, sessionOption: sessionSelected }, liveSessionData: liveSessionData, recordedSessionData: recordedSessionData, setMap, setSession, setLiveSessionData, setRecordedSessionData }}>
+        <AnalysisContext.Provider value={{ options: { mapOption: mapSelected, sessionOption: sessionSelected }, liveData: liveData, recordedSessionData: recordedSessionData, recordedSessioStaticsData: recordedSessioStaticsData, setMap, setSession, setLiveSessionData: setLiveData, setRecordedSessionStaticsData, setRecordedSessionData }}>
             <Tabs.Root className="LiveAnalysisTabsRoot" defaultValue="mapLists" value={activeTab} onValueChange={setActiveTab}>
                 <Tabs.List className="live-analysis-tablists" justify="start">
                     <Tabs.Trigger value="mapLists">Maps</Tabs.Trigger>
@@ -102,6 +116,7 @@ const SessionAnalysis = () => {
                     </Tabs.Content>
                 </Box >
             </Tabs.Root>
+            {environment == 'electron' ? <LiveAnalysisSessionRecording></LiveAnalysisSessionRecording> : ''}
         </AnalysisContext.Provider>
     )
 };
