@@ -5,7 +5,7 @@ import { offsetBezierPoints, Point, getBezierTangent, getEndDirection, pointOnCu
 import useImage from 'use-image';
 import image from 'assets/map2.png'
 import apiService from 'services/api.service';
-import { SessionInfo } from 'data/live-analysis/live-analysis-data';
+import { SessionInfo } from 'data/live-analysis/live-analysis-type';
 import { AnalysisContext } from '../session-analysis';
 import LiveAnalysisSessionRecording from '../liveAnalysisSessionRecording';
 import { useEnvironment } from 'contexts/EnvironmentContext';

@@ -8,7 +8,7 @@ import {
 import SessionList from './session-list/session-list';
 import MapList from './map-list/map-list';
 import React, { useEffect, useState, createContext, Dispatch, SetStateAction } from 'react';
-import { OptionSelected } from 'data/live-analysis/live-analysis-data';
+import { OptionSelected } from 'data/live-analysis/live-analysis-type';
 import SessionAnalysisMap from './sessionAnalysis/sessionAnalysisMap';
 import { useEnvironment } from 'contexts/EnvironmentContext';
 import LiveAnalysisSessionRecording from './liveAnalysisSessionRecording';

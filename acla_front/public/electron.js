@@ -53,6 +53,7 @@ ipcMain.handle('run-python-script', (event, script, options) => {
 
     //The process has definitely terminated, callback is invoked when the process is terminated.
     pyshell.on('close', () => {
+
       activeShells.delete(shellId);
       if (mainWindow) {
         mainWindow.webContents.send('python-end', shellId);

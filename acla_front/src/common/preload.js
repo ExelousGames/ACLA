@@ -14,30 +14,22 @@ contextBridge.exposeInMainWorld('electronAPI', {
     //run script in main process using async
     runPythonScript: (scriptPath, options) => ipcRenderer.invoke('run-python-script', scriptPath, options),
 
-    //listen to python end in main process by using ipcRenderer.on
+    //
     onPythonEnd: (callback) => {
-        const wrappedCallback = (event, shellId) => callback(shellId);
-        ipcRenderer.on('python-end', wrappedCallback)
-    },
-    offPythonEnd: (callback) => {
-        const wrappedCallback = (event, shellId) => callback(shellId);
-        ipcRenderer.off('python-end', wrappedCallback)
+        ipcRenderer.once('python-end', (event, ...args) => callback(...args))
     },
 
     onPythonMessage: (callback) => {
-        const listener = (event, shellId, message) => callback(shellId, message);
-        callback.__listener = listener;  // Attach the listener to the callback
-        ipcRenderer.on('python-message', listener)
-    },
-    offPythonMessage: (callback) => {
-        // Retrieve the stored listener
-        console.log(callback);
-        const listener = callback.__listener;
-        if (listener) {
-            ipcRenderer.off('python-message', listener)
-            delete callback.__listener;  // Clean up
+        const subscription = (event, ...args) => callback(...args);
+        ipcRenderer.on('python-message', subscription)
+        return () => {
+            ipcRenderer.off('python-message', subscription);
         }
+    },
 
+    OnPythonMessageOnce: (callback) => {
+        // Deliberately strip event as it includes `sender` 
+        ipcRenderer.once('python-message', (event, ...args) => callback(...args))
     },
 
     //This function allows the renderer to send messages to the main process via the ipcRenderer.send API.
