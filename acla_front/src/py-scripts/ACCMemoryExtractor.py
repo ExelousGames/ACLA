@@ -185,4 +185,10 @@ class ACCRecording:
     
 if __name__ == "__main__":
     recorder = ACCRecording()
-    recorder.startRecording()
+    folder = sys.argv[1]
+    filename = sys.argv[2]
+
+    full_path = os.path.join(folder,filename)
+    os.makedirs(folder,exist_ok=True)
+    
+    recorder.startRecording(full_path)

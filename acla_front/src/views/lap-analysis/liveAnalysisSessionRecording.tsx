@@ -107,12 +107,14 @@ const LiveAnalysisSessionRecording = () => {
         if (!hasValidLiveSession) return;
 
         const currentDate = new Date();
-        const dateString: string = `acc_${currentDate.getFullYear()}_${currentDate.getMonth()}_${currentDate.getDate()}_${currentDate.getHours()}_${currentDate.getMinutes()}_${currentDate.getSeconds()}.csv`;
+        const filename: string = `acc_${currentDate.getFullYear()}_${currentDate.getMonth()}_${currentDate.getDate()}_${currentDate.getHours()}_${currentDate.getMinutes()}_${currentDate.getSeconds()}.csv`;
+        const folder: string = 'sessionRecording';
+
         let options = {
             mode: 'text',
             pythonOptions: ['-u'], // get print results in real-time
             scriptPath: 'src/py-scripts',
-            args: [dateString]
+            args: [folder, filename]
         } as PythonShellOptions;
         const script = 'ACCMemoryExtractor.py';
 
