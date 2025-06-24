@@ -1,7 +1,6 @@
 export class SessionBasicInfoListDto {
     list: [{
         name: string,
-        map: string,
     }]
 }
 
@@ -15,4 +14,8 @@ export class UploadReacingSessionProgressDto {
     sessionName: string;
     maoName: string;
     userEmail;
+}
+
+export class RacingSessionDetailedInfoDto {
+
 }

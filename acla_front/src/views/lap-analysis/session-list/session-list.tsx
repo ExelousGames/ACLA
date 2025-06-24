@@ -27,6 +27,24 @@ const SessionList = () => {
 
     const analysisContext = useContext(AnalysisContext);
 
+    useEffect(() => {
+        apiService.get('racing-session/sessionbasiclist')
+            .then((result) => {
+                const data = result.data as AllMapsBasicInfoListDto;
+                let count = 0;
+
+                setOptions(data.list.map((option): MapOption => {
+                    count++;
+                    return {
+                        dataKey: count,
+                        name: option.name,
+                        session_count: 0,
+                    } as MapOption;
+                }))
+
+            }).catch((e) => {
+            });
+    }, []);
     return (
         <div className='SessionList'>
             <ScrollArea.Root className="SessionListScrollAreaRoot">

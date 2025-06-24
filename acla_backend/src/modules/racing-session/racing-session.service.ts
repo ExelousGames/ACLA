@@ -1,28 +1,23 @@
 import { Injectable } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
-import { SessionBasicInfoListDto } from 'src/dto/racing-session.dto';
+import { RacingSessionDetailedInfoDto, SessionBasicInfoListDto } from 'src/dto/racing-session.dto';
 import { RacingSession } from 'src/schemas/racing-session.schema';
 
 @Injectable()
 export class RacingSessionService {
-    constructor(@InjectModel(RacingSession.name) private racingMap: Model<RacingSession>) {
+    constructor(@InjectModel(RacingSession.name) private racingSession: Model<RacingSession>) {
     }
 
-    async getRacingMap(name: string): Promise<RacingSession | null> {
-        return this.racingMap.findOne({ session_name: name }).exec();
-    }
-
-    async retrieveAllRacingSessionsInfo(): Promise<SessionBasicInfoListDto | null> {
+    async retrieveAllRacingSessionsInfo(mapName: string, username: string): Promise<SessionBasicInfoListDto | null> {
 
         let racingMap: SessionBasicInfoListDto = new SessionBasicInfoListDto;
-        this.racingMap.find().select('name').then(
+        this.racingSession.find().select({ 'map': mapName, 'user_email': username }).then(
             (data) => {
 
                 data.forEach((element) => {
                     racingMap.list.push({
                         name: element.session_name,
-                        map: element.map
                     });
 
                 });
@@ -34,6 +29,27 @@ export class RacingSessionService {
         return racingMap;
     }
 
+    async retrieveSessionDetailedInfo(mapName: string, session_name: string, username: string): Promise<RacingSessionDetailedInfoDto | null> {
+
+        let racingMap: RacingSessionDetailedInfoDto = new RacingSessionDetailedInfoDto;
+        this.racingSession.find().select({ 'map': mapName, 'session_name': session_name, 'user_email': username }).then(
+            (data) => {
+
+                data.forEach((element) => {
+                    racingMap.list.push({
+                        name: element.session_name,
+                    });
+
+                });
+                return racingMap;
+            }).catch((error) => {
+
+            });
+
+        return racingMap;
+    }
+
+
     /**
      * 
      * @param session_name 
@@ -44,7 +60,7 @@ export class RacingSessionService {
      * @returns 
      */
     async createRacingSession(session_name: string, id: string, map: string, user_email: string, data: any[]) {
-        return this.racingMap.create({
+        return this.racingSession.create({
             session_name,
             id,
             map,
