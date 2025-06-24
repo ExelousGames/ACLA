@@ -108,7 +108,7 @@ const LiveAnalysisSessionRecording = () => {
 
         const currentDate = new Date();
         const filename: string = `acc_${currentDate.getFullYear()}_${currentDate.getMonth()}_${currentDate.getDate()}_${currentDate.getHours()}_${currentDate.getMinutes()}_${currentDate.getSeconds()}.csv`;
-        const folder: string = 'sessionRecording';
+        const folder: string = '../session_recording';
 
         let options = {
             mode: 'text',
