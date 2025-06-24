@@ -4,7 +4,7 @@ import { JSX, useContext, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { CallbackFunction, PythonShellOptions } from 'services/pythonService';
 import { AnalysisContext } from './session-analysis';
-import { AllMapsBasicInfoListDto, MapOption, UploadReacingSessionInitDto, UploadReacingSessionInitReturnDto } from 'data/live-analysis/live-analysis-type';
+import { AllMapsBasicInfoListDto, MapOption, RacingSessionDetailedInfoDto, UploadReacingSessionInitDto, UploadReacingSessionInitReturnDto } from 'data/live-analysis/live-analysis-type';
 import apiService from 'services/api.service';
 import { useAuth } from 'hooks/AuthProvider';
 import { ACC_STATUS, ACCMemoeryTracks } from 'data/live-analysis/live-map-data';
@@ -50,7 +50,7 @@ const LiveAnalysisSessionRecording = () => {
             args: []
         } as PythonShellOptions;
         const script = 'ACCOneTimeMemoryExtractor.py';
-        console.log("checking");
+
         try {
             //running the script in the main process (electron.js) instead this renderer process. we will wait for the result to comeback to onPythonMessage().
             const { shellId } = await window.electronAPI.runPythonScript(script, options);
@@ -136,7 +136,21 @@ const LiveAnalysisSessionRecording = () => {
 
         const trackname: string = ACCMemoeryTracks.get(analysisContext.recordedSessioStaticsData.Static.track)!
         analysisContext.setMap(trackname);
-        analysisContext.setSession(new Date().toString());
+        analysisContext.setSession((prev) => {
+            if (!prev) {
+                const newSession: RacingSessionDetailedInfoDto = {
+                    session_name: new Date().toString(),
+                    id: '',
+                    map: trackname,
+                    user_email: '',
+                    points: [],
+                    data: []
+                };
+                return newSession
+            }
+            prev.session_name = new Date().toString()
+            return prev;
+        });
         setPrimaryButton(<svg width="15" height="15" viewBox="0 0 15 15" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M7.5 11C4.80285 11 2.52952 9.62184 1.09622 7.50001C2.52952 5.37816 4.80285 4 7.5 4C10.1971 4 12.4705 5.37816 13.9038 7.50001C12.4705 9.62183 10.1971 11 7.5 11ZM7.5 3C4.30786 3 1.65639 4.70638 0.0760002 7.23501C-0.0253338 7.39715 -0.0253334 7.60288 0.0760014 7.76501C1.65639 10.2936 4.30786 12 7.5 12C10.6921 12 13.3436 10.2936 14.924 7.76501C15.0253 7.60288 15.0253 7.39715 14.924 7.23501C13.3436 4.70638 10.6921 3 7.5 3ZM7.5 9.5C8.60457 9.5 9.5 8.60457 9.5 7.5C9.5 6.39543 8.60457 5.5 7.5 5.5C6.39543 5.5 5.5 6.39543 5.5 7.5C5.5 8.60457 6.39543 9.5 7.5 9.5Z" fill="currentColor" fillRule="evenodd" clipRule="evenodd"></path></svg>);
 
         try {
@@ -162,7 +176,6 @@ const LiveAnalysisSessionRecording = () => {
             window.electronAPI.onPythonEnd((incomingScriptShellId: number) => {
 
                 if (shellId == incomingScriptShellId) {// session recording is terminated
-
                     setIsRecording(false);
                     setIsRecorEnded(true);
                     offPythonMessage();
@@ -197,15 +210,15 @@ const LiveAnalysisSessionRecording = () => {
 
     async function handleUpload() {
 
-        if (!analysisContext.options?.sessionOption || !analysisContext.options?.mapOption || !auth?.user) {
+        if (!analysisContext.sessionSelected?.session_name || !analysisContext.mapSelected || !auth?.user) {
             return;
         }
         const data = analysisContext.recordedSessionData;;
         const chunks = [];
         const chunkSize = 10;
         const metadata = {
-            sessionName: analysisContext.options.sessionOption,
-            mapName: analysisContext.options.mapOption,
+            sessionName: analysisContext.sessionSelected?.session_name,
+            mapName: analysisContext.mapSelected,
             userEmail: auth?.user,
         } as UploadReacingSessionInitDto;
 

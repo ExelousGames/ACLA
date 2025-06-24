@@ -14,17 +14,16 @@ export class RacingSessionController {
     constructor(private racingSessionService: RacingSessionService) { }
 
     @UseGuards(AuthGuard('jwt'))
-    @Get('sessionbasiclist')
-    retrieveAllRacingBasicSessionsInfo(@Request() req): SessionBasicInfoListDto {
-        this.racingSessionService.retrieveAllRacingSessionsInfo(req.name, req.username);
-        return req.user;
+    @Post('sessionbasiclist')
+    retrieveAllRacingBasicSessionsInfo(@Request() req, @Body() body): Promise<SessionBasicInfoListDto | null> {
+        return this.racingSessionService.retrieveAllRacingSessionsInfo(body.map_name, body.username);
     }
 
     @UseGuards(AuthGuard('jwt'))
-    @Get('detailedSessionInfo')
-    retrieveSessionDetailedInfo(@Request() req): RacingSessionDetailedInfoDto {
-        this.racingSessionService.retrieveSessionDetailedInfo(req.name, req.session_name, req.username);
-        return req.user;
+    @Post('detailedSessionInfo')
+    retrieveSessionDetailedInfo(@Request() req, @Body() body): Promise<RacingSessionDetailedInfoDto | null> {
+
+        return this.racingSessionService.retrieveSessionDetailedInfo(body.id);
     }
 
     @UseGuards(AuthGuard('jwt'))

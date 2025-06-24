@@ -8,14 +8,14 @@ import {
 import SessionList from './session-list/session-list';
 import MapList from './map-list/map-list';
 import React, { useEffect, useState, createContext, Dispatch, SetStateAction } from 'react';
-import { OptionSelected } from 'data/live-analysis/live-analysis-type';
+import { RacingSessionDetailedInfoDto } from 'data/live-analysis/live-analysis-type';
 import SessionAnalysisMap from './sessionAnalysis/sessionAnalysisMap';
 import { useEnvironment } from 'contexts/EnvironmentContext';
 import LiveAnalysisSessionRecording from './liveAnalysisSessionRecording';
 
 interface AnalysisContextType {
-    options: OptionSelected | null;
-
+    mapSelected: string | null,
+    sessionSelected: RacingSessionDetailedInfoDto | null,
     /**
      * live data at runtime
      */
@@ -23,7 +23,7 @@ interface AnalysisContextType {
     recordedSessionData: any[];
     recordedSessioStaticsData: any;
     setMap: (map: string | null) => void;
-    setSession: (session: string | null) => void;
+    setSession: Dispatch<SetStateAction<RacingSessionDetailedInfoDto | null>>;
     setLiveSessionData: (data: {}) => void;
 
     /**
@@ -41,12 +41,15 @@ interface AnalysisContextType {
 
 //defined the sturcture here, pass down the props to child, must have init value here, otherwise createContext and useContext don't like it
 export const AnalysisContext = createContext<AnalysisContextType>({
-    options: null,
+    mapSelected: '',
+    sessionSelected: {} as RacingSessionDetailedInfoDto,
     liveData: {} as any,
     recordedSessionData: [],
     recordedSessioStaticsData: {} as any,
     setMap: (map: string | null) => { },
-    setSession: (session: string | null) => { },
+    setSession: ((value: RacingSessionDetailedInfoDto | null) => {
+        console.warn('No provider for AnalysisContext');
+    }) as Dispatch<SetStateAction<RacingSessionDetailedInfoDto | null>>,
     setLiveSessionData: (data: {}) => { },
     setRecordedSessionStaticsData: (data: {}) => { },
     setRecordedSessionData: ((value: any[]) => {
@@ -58,7 +61,7 @@ const SessionAnalysis = () => {
 
     //must give state some init value otherwise createContext and useContext don't like it
     const [mapSelected, setMap] = useState<string | null>(null);
-    const [sessionSelected, setSession] = useState<string | null>(null);
+    const [sessionSelected, setSession] = useState<RacingSessionDetailedInfoDto | null>(null);
     const [activeTab, setActiveTab] = useState('mapLists');
     const [liveData, setLiveData] = useState({});
     const [recordedSessioStaticsData, setRecordedSessionStaticsData] = useState({});
@@ -94,12 +97,12 @@ const SessionAnalysis = () => {
 
 
     return (
-        <AnalysisContext.Provider value={{ options: { mapOption: mapSelected, sessionOption: sessionSelected }, liveData: liveData, recordedSessionData: recordedSessionData, recordedSessioStaticsData: recordedSessioStaticsData, setMap, setSession, setLiveSessionData: setLiveData, setRecordedSessionStaticsData, setRecordedSessionData }}>
+        <AnalysisContext.Provider value={{ mapSelected: mapSelected, sessionSelected: sessionSelected, liveData: liveData, recordedSessionData: recordedSessionData, recordedSessioStaticsData: recordedSessioStaticsData, setMap, setSession, setLiveSessionData: setLiveData, setRecordedSessionStaticsData, setRecordedSessionData }}>
             <Tabs.Root className="LiveAnalysisTabsRoot" defaultValue="mapLists" value={activeTab} onValueChange={setActiveTab}>
                 <Tabs.List className="live-analysis-tablists" justify="start">
                     <Tabs.Trigger value="mapLists">Maps</Tabs.Trigger>
                     {mapSelected == null ? "" : <Tabs.Trigger value="sessionLists">{mapSelected}</Tabs.Trigger>}
-                    {sessionSelected == null ? "" : <Tabs.Trigger value="session">Session {sessionSelected}</Tabs.Trigger>}
+                    {sessionSelected == null ? "" : <Tabs.Trigger value="session">Session {sessionSelected.session_name}</Tabs.Trigger>}
                 </Tabs.List>
 
                 <Box className="live-analysis-container" >

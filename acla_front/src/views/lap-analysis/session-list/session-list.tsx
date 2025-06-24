@@ -1,4 +1,4 @@
-import { useContext, useEffect } from 'react';
+import { useContext, useEffect, useState } from 'react';
 import './session-list.css';
 import {
     Box,
@@ -8,38 +8,30 @@ import {
     Text,
 } from "@radix-ui/themes";
 import { ScrollArea } from "radix-ui";
-import { SessionOption } from 'data/live-analysis/live-analysis-type';
+import { MapOption, RacingSessionDetailedInfoDto, SessionBasicInfoListDto, SessionOption } from 'data/live-analysis/live-analysis-type';
 import { AnalysisContext } from '../session-analysis';
 import { useEnvironment } from 'contexts/EnvironmentContext';
 import { Environment } from 'utils/environment';
+import apiService from 'services/api.service';
+import { useAuth } from 'hooks/AuthProvider';
 
 const SessionList = () => {
-    const options: SessionOption[] = [{
-        dataKey: 1,
-        name: "2025-30-20 10:30:20",
-        total_time: 2,
-    },
-    {
-        dataKey: 2,
-        name: "2022-30-20 10:30:20",
-        total_time: 2
-    }];
+    const [seesionList, setSessionList] = useState([] as SessionOption[]);
 
     const analysisContext = useContext(AnalysisContext);
-
+    const auth = useAuth();
     useEffect(() => {
-        apiService.get('racing-session/sessionbasiclist')
+        apiService.post('racing-session/sessionbasiclist', { map_name: analysisContext.mapSelected, username: auth?.user })
             .then((result) => {
-                const data = result.data as AllMapsBasicInfoListDto;
+                const data = result.data as SessionBasicInfoListDto;
                 let count = 0;
-
-                setOptions(data.list.map((option): MapOption => {
+                setSessionList(data.list.map((seesion): SessionOption => {
                     count++;
                     return {
                         dataKey: count,
-                        name: option.name,
-                        session_count: 0,
-                    } as MapOption;
+                        name: seesion.name,
+                        id: seesion.id
+                    } as SessionOption;
                 }))
 
             }).catch((e) => {
@@ -50,8 +42,8 @@ const SessionList = () => {
             <ScrollArea.Root className="SessionListScrollAreaRoot">
                 <ScrollArea.Viewport className="ScrollAreaViewport">
                     <Flex flexShrink="0" direction="column" gap="9">
-                        {options.map((option: SessionOption) => (
-                            <MapCard key={option.dataKey} dataKey={option.dataKey} name={option.name} total_time={option.total_time} />
+                        {seesionList.map((option: SessionOption) => (
+                            <MapCard key={option.dataKey} dataKey={option.dataKey} name={option.name} total_time={option.total_time} id={option.id} />
                         ))}
                     </Flex>
                 </ScrollArea.Viewport>
@@ -74,10 +66,19 @@ const SessionList = () => {
     )
 };
 
-const MapCard = ({ dataKey, name, total_time }: SessionOption) => {
+const MapCard = ({ dataKey, name, total_time, id }: SessionOption) => {
     const analysisContext = useContext(AnalysisContext);
     function mapSelected() {
-        analysisContext.setSession(name);
+        //if no previous session, create a new one.
+        const newSession: RacingSessionDetailedInfoDto = {
+            session_name: name,
+            id: id,
+            map: '',
+            user_email: '',
+            points: [],
+            data: []
+        };
+        analysisContext.setSession(newSession);
     }
 
     return (

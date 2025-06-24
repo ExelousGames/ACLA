@@ -11,42 +11,46 @@ export class RacingSessionService {
 
     async retrieveAllRacingSessionsInfo(mapName: string, username: string): Promise<SessionBasicInfoListDto | null> {
 
-        let racingMap: SessionBasicInfoListDto = new SessionBasicInfoListDto;
-        this.racingSession.find().select({ 'map': mapName, 'user_email': username }).then(
-            (data) => {
+        try {
+            let racingMap: SessionBasicInfoListDto = new SessionBasicInfoListDto();
 
-                data.forEach((element) => {
-                    racingMap.list.push({
-                        name: element.session_name,
-                    });
-
+            const data = await this.racingSession.find({ 'map': mapName, 'user_email': username }).select('session_name id').exec();
+            data.forEach((element) => {
+                racingMap.list.push({
+                    name: element.session_name,
+                    id: element.id
                 });
-                return racingMap;
-            }).catch((error) => {
-
             });
+            return racingMap;
 
-        return racingMap;
+        }
+        catch (e) {
+            // Handle errors appropriately
+            throw new Error(`Failed to process data: ${e.message}`);
+        }
+
     }
 
-    async retrieveSessionDetailedInfo(mapName: string, session_name: string, username: string): Promise<RacingSessionDetailedInfoDto | null> {
+    async retrieveSessionDetailedInfo(id: string): Promise<RacingSessionDetailedInfoDto | null> {
+        try {
+            let session: RacingSessionDetailedInfoDto = new RacingSessionDetailedInfoDto;
+            const data = await this.racingSession.findOne({ 'id': id }).exec();
 
-        let racingMap: RacingSessionDetailedInfoDto = new RacingSessionDetailedInfoDto;
-        this.racingSession.find().select({ 'map': mapName, 'session_name': session_name, 'user_email': username }).then(
-            (data) => {
+            if (data) {
+                session.session_name = data.session_name;
+                session.id = data.id;
+                session.map = data.map;
+                session.user_email = data.user_email;
+                session.points = data.points;
+                session.data = data.data;
 
-                data.forEach((element) => {
-                    racingMap.list.push({
-                        name: element.session_name,
-                    });
+            }
 
-                });
-                return racingMap;
-            }).catch((error) => {
-
-            });
-
-        return racingMap;
+            return session;
+        } catch (error) {
+            // Handle errors appropriately
+            throw new Error(`Failed to process data: ${error.message}`);
+        };
     }
 
 
