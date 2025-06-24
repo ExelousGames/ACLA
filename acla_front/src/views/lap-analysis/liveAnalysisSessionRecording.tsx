@@ -58,7 +58,7 @@ const LiveAnalysisSessionRecording = () => {
                     if (shellId == returnedShellId) {//check valid session
                         try {
                             const obj = JSON.parse(message);
-                            console.log(obj.Graphics.status)
+
                             //if the script print out valid session map 
                             if (obj.Graphics.status == ACC_STATUS.ACC_LIVE) {
                                 //find a valid live session, stop the checking process
@@ -110,7 +110,7 @@ const LiveAnalysisSessionRecording = () => {
             mode: 'text',
             pythonOptions: ['-u'], // get print results in real-time
             scriptPath: 'src/py-scripts',
-            args: []
+            args: ['dssds']
         } as PythonShellOptions;
         const script = 'ACCMemoryExtractor.py';
 
@@ -144,7 +144,7 @@ const LiveAnalysisSessionRecording = () => {
             });
 
             window.electronAPI.onPythonEnd((incomingScriptShellId: number) => {
-                console.log("end here ", shellId, incomingScriptShellId);
+
                 if (shellId == incomingScriptShellId) {// session recording is terminated
 
                     setIsRecording(false);
@@ -181,7 +181,7 @@ const LiveAnalysisSessionRecording = () => {
     };
 
     async function handleUpload() {
-        console.log(analysisContext.options?.sessionOption, analysisContext.options?.mapOption, auth?.user);
+
         if (!analysisContext.options?.sessionOption || !analysisContext.options?.mapOption || !auth?.user) {
             return;
         }
@@ -202,7 +202,7 @@ const LiveAnalysisSessionRecording = () => {
 
         // First send metadata
         const initResponse = await apiService.post('/racing-session/upload/init', metadata);
-        console.log(initResponse);
+
         if (!initResponse.data) {
             throw new Error('First response missing required data');
         }
@@ -214,7 +214,6 @@ const LiveAnalysisSessionRecording = () => {
             const params = new URLSearchParams();
             params.append('uploadId', uploadId);
             const progress = await apiService.post(`${url}?${params.toString()}`, { chunk: chunks[i], chunkIndex: i });
-            console.log(progress)
         }
 
         // Finalize
