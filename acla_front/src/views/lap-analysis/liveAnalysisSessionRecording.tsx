@@ -1,5 +1,5 @@
 import { Card, Flex, Box, TextField, IconButton, Heading, Grid, Text, Slider, Avatar, Spinner, AlertDialog, Button } from '@radix-ui/themes';
-import { useContext, useEffect, useRef, useState } from 'react';
+import { JSX, useContext, useEffect, useRef, useState } from 'react';
 
 import { Link } from 'react-router-dom';
 import { CallbackFunction, PythonShellOptions } from 'services/pythonService';
@@ -22,6 +22,8 @@ const LiveAnalysisSessionRecording = () => {
     const [isRecordEnded, setIsRecorEnded] = useState(false);
     const [checkSessionScriptShellId, setCheckSessionScriptShellId] = useState(-1);
     const intervalRef = useRef<NodeJS.Timeout | null>(null);
+    const [PrimaryButton, setPrimaryButton] = useState<JSX.Element>(< Spinner size="3" />);
+
 
     useEffect(() => {
 
@@ -64,6 +66,14 @@ const LiveAnalysisSessionRecording = () => {
                                 //find a valid live session, stop the checking process
                                 stopCheckingLiveSessionInterval();
                                 setValidLiveSession(true);
+
+                                //set primary button to start button
+                                setPrimaryButton(
+                                    <svg xmlns="http://www.w3.org/2000/svg" fill="currentcolor" viewBox="0 0 30 30" width="20" height="20" style={{ marginRight: -2 }}>
+                                        <path d="M 6 3 A 1 1 0 0 0 5 4 A 1 1 0 0 0 5 4.0039062 L 5 15 L 5 25.996094 A 1 1 0 0 0 5 26 A 1 1 0 0 0 6 27 A 1 1 0 0 0 6.5800781 26.8125 L 6.5820312 26.814453 L 26.416016 15.908203 A 1 1 0 0 0 27 15 A 1 1 0 0 0 26.388672 14.078125 L 6.5820312 3.1855469 L 6.5800781 3.1855469 A 1 1 0 0 0 6 3 z" />
+                                    </svg>
+                                );
+
                                 //set the static data too, so we can use it later.
                                 analysisContext.setRecordedSessionStaticsData(obj);
                             }
@@ -77,13 +87,20 @@ const LiveAnalysisSessionRecording = () => {
 
                 const handleScriptEnd = (returnedShellId: number) => {
                     if (shellId == returnedShellId) {// session recording is terminated
+
+                        //notify live session is found
                         isCheckingLiveSession = false;
+
+                        //stop checking process
+                        if (intervalRef.current) {
+                            stopCheckingLiveSessionInterval();
+                        }
+
                         resolve("good");
                     }
                 };
 
                 setCheckSessionScriptShellId(shellId);
-
 
                 // Set up listener for Python messages
                 window.electronAPI.OnPythonMessageOnce(handleMessage);
@@ -125,7 +142,7 @@ const LiveAnalysisSessionRecording = () => {
         const trackname: string = ACCMemoeryTracks.get(analysisContext.recordedSessioStaticsData.Static.track)!
         analysisContext.setMap(trackname);
         analysisContext.setSession(new Date().toString());
-
+        setPrimaryButton(<svg width="15" height="15" viewBox="0 0 15 15" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M7.5 11C4.80285 11 2.52952 9.62184 1.09622 7.50001C2.52952 5.37816 4.80285 4 7.5 4C10.1971 4 12.4705 5.37816 13.9038 7.50001C12.4705 9.62183 10.1971 11 7.5 11ZM7.5 3C4.30786 3 1.65639 4.70638 0.0760002 7.23501C-0.0253338 7.39715 -0.0253334 7.60288 0.0760014 7.76501C1.65639 10.2936 4.30786 12 7.5 12C10.6921 12 13.3436 10.2936 14.924 7.76501C15.0253 7.60288 15.0253 7.39715 14.924 7.23501C13.3436 4.70638 10.6921 3 7.5 3ZM7.5 9.5C8.60457 9.5 9.5 8.60457 9.5 7.5C9.5 6.39543 8.60457 5.5 7.5 5.5C6.39543 5.5 5.5 6.39543 5.5 7.5C5.5 8.60457 6.39543 9.5 7.5 9.5Z" fill="currentColor" fill-rule="evenodd" clip-rule="evenodd"></path></svg>);
 
         try {
             //running the script in the main process (electron.js) instead this renderer process
@@ -236,6 +253,8 @@ const LiveAnalysisSessionRecording = () => {
         setValidLiveSession(false);
         setCheckSessionScriptShellId(-1);
         analysisContext.setSession(null);
+        stopCheckingLiveSessionInterval();
+        startCheckingLiveSessionInterval();
     }
 
     return (
@@ -260,13 +279,7 @@ const LiveAnalysisSessionRecording = () => {
                     {!isRecordEnded ?
                         //if record hasnt been initilized or stil recording
                         <IconButton radius="full" size="3" onClick={StartRecording}>
-                            {hasValidLiveSession ?
-                                (<svg xmlns="http://www.w3.org/2000/svg" fill="currentcolor" viewBox="0 0 30 30" width="20" height="20" style={{ marginRight: -2 }}>
-                                    <path d="M 6 3 A 1 1 0 0 0 5 4 A 1 1 0 0 0 5 4.0039062 L 5 15 L 5 25.996094 A 1 1 0 0 0 5 26 A 1 1 0 0 0 6 27 A 1 1 0 0 0 6.5800781 26.8125 L 6.5820312 26.814453 L 26.416016 15.908203 A 1 1 0 0 0 27 15 A 1 1 0 0 0 26.388672 14.078125 L 6.5820312 3.1855469 L 6.5800781 3.1855469 A 1 1 0 0 0 6 3 z" />
-                                </svg>
-                                ) : (
-                                    < Spinner size="3" />
-                                )}
+                            {PrimaryButton}
                         </IconButton> :
 
                         //record ended
