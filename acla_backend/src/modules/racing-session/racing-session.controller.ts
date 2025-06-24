@@ -1,6 +1,6 @@
 import { Controller, Get, UseGuards, Request, Post, Body, Query, BadRequestException } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
-import { SessionBasicInfoListDto, UploadReacingSessionInitDto } from 'src/dto/racing-session.dto';
+import { RacingSessionDetailedInfoDto, SessionBasicInfoListDto, UploadReacingSessionInitDto } from 'src/dto/racing-session.dto';
 import { RacingSessionService } from './racing-session.service';
 
 @Controller('racing-session')
@@ -14,16 +14,22 @@ export class RacingSessionController {
     constructor(private racingSessionService: RacingSessionService) { }
 
     @UseGuards(AuthGuard('jwt'))
-    @Get('allmapbasicinfos')
+    @Get('sessionbasiclist')
     retrieveAllRacingBasicSessionsInfo(@Request() req): SessionBasicInfoListDto {
-        this.racingSessionService.retrieveAllRacingSessionsInfo();
+        this.racingSessionService.retrieveAllRacingSessionsInfo(req.name, req.username);
+        return req.user;
+    }
+
+    @UseGuards(AuthGuard('jwt'))
+    @Get('detailedSessionInfo')
+    retrieveSessionDetailedInfo(@Request() req): RacingSessionDetailedInfoDto {
+        this.racingSessionService.retrieveSessionDetailedInfo(req.name, req.session_name, req.username);
         return req.user;
     }
 
     @UseGuards(AuthGuard('jwt'))
     @Post('upload/init')
     async initUpload(@Body() metadata: UploadReacingSessionInitDto) {
-        console.log("here");
         const uploadId = crypto.randomUUID();
         this.uploadStates.set(uploadId, {
             metadata,

@@ -18,7 +18,6 @@ export class RacingMapController {
     @UseGuards(AuthGuard('jwt'))
     @Post('map/infolists')
     async getMap(@Body() body: any): Promise<RacingMap | null> {
-        console.log(body.name)
         return this.racingMapService.getRacingMap(body.name);
     }
 }
