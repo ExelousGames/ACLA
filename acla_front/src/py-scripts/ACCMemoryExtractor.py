@@ -31,7 +31,7 @@ class ACCRecording:
         sm = self.asm.read_shared_memory()
         if  (sm is not None):
             # schedule the next call first
-            scheduler.enter(1, 1, self.recordOnce, (scheduler,))
+            scheduler.enter(1, 1, self.recordOnce, (scheduler,full_path))
 
             self.append_object_to_csv(sm,full_path)
 
