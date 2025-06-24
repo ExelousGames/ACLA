@@ -24,13 +24,8 @@ const SessionList = () => {
         name: "2022-30-20 10:30:20",
         total_time: 2
     }];
-    const environment = useEnvironment();
-    const analysisContext = useContext(AnalysisContext);
-    function HandleStartNewSessionClick() {
 
-        const now = new Date();
-        analysisContext.setSession(`${now.getFullYear()}-${now.getMonth()}-${now.getDate()} ${now.getHours()}:${now.getMinutes()}:${now.getSeconds()}`);
-    }
+    const analysisContext = useContext(AnalysisContext);
 
     return (
         <div className='SessionList'>
@@ -56,9 +51,7 @@ const SessionList = () => {
                 </ScrollArea.Scrollbar>
                 <ScrollArea.Corner className="ScrollAreaCorner" />
             </ScrollArea.Root>
-            <Flex className='SessionListOptions' flexShrink='1' justify='end'>
-                {environment == 'electron' ? <Button onClick={HandleStartNewSessionClick}> Start A New Session </Button> : ''}
-            </Flex>
+
         </div>
     )
 };
