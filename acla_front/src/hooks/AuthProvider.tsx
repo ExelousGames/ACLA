@@ -34,7 +34,7 @@ const AuthProvider = ({ children }: { children: ReactNode }) => {
             return
         }
         setToken(token);
-
+        setUserEmail(username);
     }, [])
     //handles user login by sending a POST request to an authentication endpoint, 
     // updating the user and token state upon a successful response, and storing the token in local storage.
@@ -43,6 +43,7 @@ const AuthProvider = ({ children }: { children: ReactNode }) => {
             .then(response => {
 
                 if (response) {
+                    console.log(data.email);
                     let tokentemp: string = response.data.access_token;
                     setUserEmail(data.email);
                     setToken(tokentemp);

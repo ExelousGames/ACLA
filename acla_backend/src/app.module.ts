@@ -6,6 +6,7 @@ import { MongooseModule } from '@nestjs/mongoose';
 import { ThrottlerModule } from '@nestjs/throttler';
 import { AuthModule } from './shared/auth/auth.module';
 import { RacingMapModule } from './modules/map/racing-map.module';
+import { RacingSessionModule } from './modules/racing-session/racing-session.module';
 
 @Module({
 
@@ -17,7 +18,9 @@ import { RacingMapModule } from './modules/map/racing-map.module';
     MongooseModule.forRoot('mongodb://' + process.env.MONGO_CLIENTNAME + ':' + process.env.MONGO_CLIENTPASSWORD + '@' + process.env.MONGO_URL + ':27017/ACLA'),
     AuthModule,
     RacingMapModule,
-    UserInfoModule,],
+    UserInfoModule,
+    RacingSessionModule
+  ],
   controllers: [AppController],
   providers: [AppService],
 })
