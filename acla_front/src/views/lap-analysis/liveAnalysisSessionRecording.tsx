@@ -210,16 +210,19 @@ const LiveAnalysisSessionRecording = () => {
 
         // Then send chunks
         for (let i = 0; i < chunks.length; i++) {
-            const url = new URL('/racing-session/upload/chunk');
-            url.searchParams.append('uploadId', uploadId);
-            const progress = await apiService.post(url.toString(), { chunk: chunks[i], chunkIndex: i });
+            const url = '/racing-session/upload/chunk';
+            const params = new URLSearchParams();
+            params.append('uploadId', uploadId);
+            const progress = await apiService.post(`${url}?${params.toString()}`, { chunk: chunks[i], chunkIndex: i });
             console.log(progress)
         }
 
         // Finalize
-        const url = new URL('/racing-session/upload/complete');
-        url.searchParams.append('uploadId', uploadId);
-        await apiService.post(url.toString(), {});
+        const url = '/racing-session/upload/complete';
+        const params = new URLSearchParams();
+        params.append('uploadId', uploadId);
+
+        await apiService.post(`${url}?${params.toString()}`, {});
         reset();
         return true;
     }
