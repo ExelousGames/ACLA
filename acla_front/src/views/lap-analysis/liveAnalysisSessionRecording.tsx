@@ -106,11 +106,13 @@ const LiveAnalysisSessionRecording = () => {
         //if no valid live sesssion, we dont do anything
         if (!hasValidLiveSession) return;
 
+        const currentDate = new Date();
+        const dateString = `acc_${currentDate.getFullYear()}_${currentDate.getMonth}_${currentDate.getDate()}_${currentDate.getHours}_${currentDate.getMinutes}_${currentDate.getSeconds}.csv`;
         let options = {
             mode: 'text',
             pythonOptions: ['-u'], // get print results in real-time
             scriptPath: 'src/py-scripts',
-            args: ['dssds']
+            args: [dateString]
         } as PythonShellOptions;
         const script = 'ACCMemoryExtractor.py';
 

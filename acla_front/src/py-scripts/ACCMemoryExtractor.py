@@ -18,7 +18,7 @@ class ACCRecording:
         sm = self.asm.read_shared_memory()
         if  (sm is not None):
             #record once to clean or create the file
-            self.write_object_to_csv(sm,'acc_maps.csv')
+            self.write_object_to_csv(sm,sys.argv[1])
             #start to record the session
             my_scheduler = sched.scheduler(time.time, time.sleep)
             my_scheduler.enter(0.1, 1, self.recordOnce, (my_scheduler,))
@@ -33,13 +33,13 @@ class ACCRecording:
             # schedule the next call first
             scheduler.enter(1, 1, self.recordOnce, (scheduler,))
 
-            self.append_object_to_csv(sm,'acc_maps.csv')
+            self.append_object_to_csv(sm,sys.argv[1])
 
             # !!!!!! must keep this to communicate with frontend
             print(DataclassJSONUtility.to_json(sm, indent=2).rstrip())
         else:
             self.asm.close()
-            # self.objects_to_csv(recordedData,"acc_maps.csv")
+
             return
             
 
