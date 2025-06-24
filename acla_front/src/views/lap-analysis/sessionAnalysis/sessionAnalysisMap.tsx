@@ -5,7 +5,7 @@ import { offsetBezierPoints, Point, getBezierTangent, getEndDirection, pointOnCu
 import useImage from 'use-image';
 import image from 'assets/map2.png'
 import apiService from 'services/api.service';
-import { SessionInfo } from 'data/live-analysis/live-analysis-type';
+import { MapInfo, RacingSessionDetailedInfoDto } from 'data/live-analysis/live-analysis-type';
 import { AnalysisContext } from '../session-analysis';
 import LiveAnalysisSessionRecording from '../liveAnalysisSessionRecording';
 import { useEnvironment } from 'contexts/EnvironmentContext';
@@ -92,8 +92,8 @@ const SessionAnalysisMap = () => {
 
     function createInitialShapes() {
 
-        apiService.post('/racingmap/map/infolists', { name: analysisContext.options?.mapOption }).then((result) => {
-            const data = result.data as SessionInfo;
+        apiService.post('/racingmap/map/infolists', { name: analysisContext.mapSelected }).then((result) => {
+            const data = result.data as MapInfo;
             setTurningPoints(data.points.map((point) => {
                 return {
                     type: point.type,
@@ -105,6 +105,16 @@ const SessionAnalysisMap = () => {
             }));
         }).catch((e) => {
         });
+
+        if (analysisContext.sessionSelected?.id) {
+            apiService.post('/racing-session/detailedSessionInfo', { id: analysisContext.sessionSelected?.id }).then((result) => {
+                const data = result.data as RacingSessionDetailedInfoDto;
+                analysisContext.setSession(data);
+            }).catch((e) => {
+            });
+        }
+
+
     }
 
 

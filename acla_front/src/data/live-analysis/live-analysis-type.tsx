@@ -9,19 +9,17 @@ export type SessionOption = {
     //key is required for child component of MapList component
     dataKey: number,
     name: string;
-    total_time: number;
+    id: string;
+    total_time?: number;
 }
 
 export type AllMapsBasicInfoListDto = {
     list: [{ name: string; }];
 }
 
-export type OptionSelected = {
-    mapOption?: string | null,
-    sessionOption?: string | null,
-}
 
-export type SessionInfo = {
+
+export type MapInfo = {
 
     name: string,
     mimetype: string,
@@ -45,4 +43,28 @@ export type UploadReacingSessionInitDto = {
 export type UploadReacingSessionInitReturnDto = {
     uploadId: string;
 
+}
+
+
+export type SessionBasicInfoListDto = {
+    list: {
+        name: string,
+        id: string
+    }[]
+}
+
+export type RacingSessionDetailedInfoDto = {
+    session_name: string;
+    id: string;
+    map: string;
+    user_email: string;
+    points: {
+        id: number,
+        position_x: number,
+        position_y: number,
+        description: string,
+        info: string,
+        variables: [{ key: string, value: string }] //any word match {key} in description or info will be replaced with the value
+    }[];
+    data: any[];
 }
