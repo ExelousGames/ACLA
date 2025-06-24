@@ -107,7 +107,7 @@ const LiveAnalysisSessionRecording = () => {
         if (!hasValidLiveSession) return;
 
         const currentDate = new Date();
-        const dateString = `acc_${currentDate.getFullYear()}_${currentDate.getMonth}_${currentDate.getDate()}_${currentDate.getHours}_${currentDate.getMinutes}_${currentDate.getSeconds}.csv`;
+        const dateString: string = `acc_${currentDate.getFullYear()}_${currentDate.getMonth()}_${currentDate.getDate()}_${currentDate.getHours()}_${currentDate.getMinutes()}_${currentDate.getSeconds()}.csv`;
         let options = {
             mode: 'text',
             pythonOptions: ['-u'], // get print results in real-time
