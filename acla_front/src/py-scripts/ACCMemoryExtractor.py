@@ -5,6 +5,7 @@ from typing import List, Any, Dict
 import os
 from util.json_utils import DataclassJSONUtility
 from util.clean_encode import cleanEncoding
+import sys
 
 recordedData = []
 
