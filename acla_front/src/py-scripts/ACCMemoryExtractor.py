@@ -14,26 +14,26 @@ class ACCRecording:
         self.asm = accSharedMemory()
         return
 
-    def startRecording(self):
+    def startRecording(self,full_path):
         sm = self.asm.read_shared_memory()
         if  (sm is not None):
             #record once to clean or create the file
-            self.write_object_to_csv(sm,sys.argv[1])
+            self.write_object_to_csv(sm,full_path)
             #start to record the session
             my_scheduler = sched.scheduler(time.time, time.sleep)
-            my_scheduler.enter(0.1, 1, self.recordOnce, (my_scheduler,))
+            my_scheduler.enter(0.1, 1, self.recordOnce, (my_scheduler,full_path))
             my_scheduler.run()
             
         else:
             self.asm.close()
 
-    def recordOnce(self,scheduler): 
+    def recordOnce(self,scheduler,full_path): 
         sm = self.asm.read_shared_memory()
         if  (sm is not None):
             # schedule the next call first
             scheduler.enter(1, 1, self.recordOnce, (scheduler,))
 
-            self.append_object_to_csv(sm,sys.argv[1])
+            self.append_object_to_csv(sm,full_path)
 
             # !!!!!! must keep this to communicate with frontend
             print(DataclassJSONUtility.to_json(sm, indent=2).rstrip())
