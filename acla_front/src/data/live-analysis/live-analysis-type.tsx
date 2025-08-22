@@ -40,7 +40,7 @@ export type UploadReacingSessionInitDto = {
     userEmail: string;
 }
 
-export type UploadReacingSessionInitReturnDto = {
+export type UploadRacingSessionInitReturnDto = {
     uploadId: string;
 
 }
