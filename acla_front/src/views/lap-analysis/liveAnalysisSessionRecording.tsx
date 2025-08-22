@@ -4,7 +4,7 @@ import { JSX, useContext, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { CallbackFunction, PythonShellOptions } from 'services/pythonService';
 import { AnalysisContext } from './session-analysis';
-import { AllMapsBasicInfoListDto, MapOption, RacingSessionDetailedInfoDto, UploadReacingSessionInitDto, UploadReacingSessionInitReturnDto } from 'data/live-analysis/live-analysis-type';
+import { AllMapsBasicInfoListDto, MapOption, RacingSessionDetailedInfoDto, UploadReacingSessionInitDto, UploadRacingSessionInitReturnDto } from 'data/live-analysis/live-analysis-type';
 import apiService from 'services/api.service';
 import { useAuth } from 'hooks/AuthProvider';
 import { ACC_STATUS, ACCMemoeryTracks } from 'data/live-analysis/live-map-data';
@@ -16,10 +16,19 @@ const LiveAnalysisSessionRecording = () => {
     const analysisContext = useContext(AnalysisContext);
     const auth = useAuth();
 
+    //check if program is constantly checking a valid game session
     let isCheckingLiveSession = false;
-    const [hasValidLiveSession, setValidLiveSession] = useState(false);
+
+    //stores the state of a game session
+    const [hasValidLiveSession, setValidLiveSession] = useState(ACC_STATUS.ACC_OFF);
+
+    //store the recording state of a game recording
     const [isRecording, setIsRecording] = useState(false);
+
+    //store the ending state of the game recording
     const [isRecordEnded, setIsRecorEnded] = useState(false);
+
+    //store the shell id of the script for checking game live session
     const [checkSessionScriptShellId, setCheckSessionScriptShellId] = useState(-1);
     const intervalRef = useRef<NodeJS.Timeout | null>(null);
     const [primaryButton, setPrimaryButton] = useState<JSX.Element>();
@@ -28,7 +37,7 @@ const LiveAnalysisSessionRecording = () => {
     useEffect(() => {
 
         //start checking a valid live session at start
-        if (!hasValidLiveSession && !isCheckingLiveSession) {
+        if (hasValidLiveSession != ACC_STATUS.ACC_LIVE && !isCheckingLiveSession) {
             startCheckingLiveSessionInterval();
         }
         return () => {
@@ -43,12 +52,16 @@ const LiveAnalysisSessionRecording = () => {
      * check acc memory once and see if there is a valid session running
      */
     const CheckSessionValid = async () => {
+
+        //setup for running a new python in main process
         let options = {
             mode: 'text',
             pythonOptions: ['-u'], // get print results in real-time
             scriptPath: 'src/py-scripts',
             args: []
         } as PythonShellOptions;
+
+        //script to run
         const script = 'ACCOneTimeMemoryExtractor.py';
 
         try {
@@ -56,17 +69,20 @@ const LiveAnalysisSessionRecording = () => {
             const { shellId } = await window.electronAPI.runPythonScript(script, options);
 
             return new Promise((resolve, reject) => {
+
+                //create a function to handle the return of the python script
                 let handleMessage = (returnedShellId: number, message: string) => {
 
-                    if (shellId == returnedShellId) {//check valid session
+                    //all scripts will call this function, we must identify the right id 
+                    if (shellId == returnedShellId) {
                         try {
                             const obj = JSON.parse(message);
 
                             //if the script print out valid session map 
                             if (obj.Graphics.status == ACC_STATUS.ACC_LIVE) {
-                                //find a valid live session, stop the checking process
+                                //found a valid live session, stop the checking process
                                 stopCheckingLiveSessionInterval();
-                                setValidLiveSession(true);
+                                setValidLiveSession(obj.Graphics.status);
 
                                 //set primary button to start button
                                 setPrimaryButton(
@@ -85,9 +101,9 @@ const LiveAnalysisSessionRecording = () => {
 
                 }
 
-
+                // handle the event when python script for session recording is terminated
                 const handleScriptEnd = (returnedShellId: number) => {
-                    if (shellId == returnedShellId) {// session recording is terminated
+                    if (shellId == returnedShellId) {
 
                         //notify live session is found
                         isCheckingLiveSession = false;
@@ -116,7 +132,7 @@ const LiveAnalysisSessionRecording = () => {
     const StartRecording = async () => {
 
         //if no valid live sesssion, we dont do anything
-        if (!hasValidLiveSession) return;
+        if (hasValidLiveSession != ACC_STATUS.ACC_LIVE) return;
 
         const currentDate = new Date();
         const filename: string = `acc_${currentDate.getFullYear()}_${currentDate.getMonth()}_${currentDate.getDate()}_${currentDate.getHours()}_${currentDate.getMinutes()}_${currentDate.getSeconds()}.csv`;
@@ -208,14 +224,18 @@ const LiveAnalysisSessionRecording = () => {
         }
     };
 
+    //after a session is determined as terminated, and user selected to upload the data, we do it here
     async function handleUpload() {
 
         if (!analysisContext.sessionSelected?.session_name || !analysisContext.mapSelected || !auth?.user) {
             return;
         }
         const data = analysisContext.recordedSessionData;;
+
+        //send by chunks
         const chunks = [];
         const chunkSize = 10;
+
         const metadata = {
             sessionName: analysisContext.sessionSelected?.session_name,
             mapName: analysisContext.mapSelected,
@@ -223,7 +243,7 @@ const LiveAnalysisSessionRecording = () => {
         } as UploadReacingSessionInitDto;
 
 
-        //seperate recored data into chunks
+        //separate recorded data into chunks
         for (let i = 0; i < data.length; i += chunkSize) {
             chunks.push(data.slice(i, i + chunkSize));
         }
@@ -234,7 +254,7 @@ const LiveAnalysisSessionRecording = () => {
         if (!initResponse.data) {
             throw new Error('First response missing required data');
         }
-        const { uploadId } = initResponse.data as UploadReacingSessionInitReturnDto;
+        const { uploadId } = initResponse.data as UploadRacingSessionInitReturnDto;
 
         // Then send chunks
         for (let i = 0; i < chunks.length; i++) {
@@ -258,7 +278,7 @@ const LiveAnalysisSessionRecording = () => {
         isCheckingLiveSession = false;
         setIsRecording(false);
         setIsRecorEnded(false);
-        setValidLiveSession(false);
+        setValidLiveSession(ACC_STATUS.ACC_OFF);
         setCheckSessionScriptShellId(-1);
         analysisContext.setSession(null);
         stopCheckingLiveSessionInterval();

@@ -301,7 +301,7 @@ const SessionAnalysisMap = () => {
     }
 
     /**
-     * using the 'turningPoints' and calculate the left and right crub
+     * using the 'turningPoints' and calculate the left and right curbs
      * @returns 
      */
     function calculateAndDrawTrack() {
@@ -415,39 +415,41 @@ const SessionAnalysisMap = () => {
                                     points={exportPointsForDrawing(extractBezierPointToPoint(bezierPoints))}
                                     stroke="red" strokeWidth={25} bezier={true}
                                 />
-                                {turningPoints.map((
-                                    turningPoint: {
-                                        position: Point,
-                                        type: number,
-                                        index: number, //type and index are used together. some points are index sensitive
-                                        description?: string,
-                                        info?: string,
-                                        variables?: [{ key: string, value: string }]
-                                    }) => (
+                                {
 
-                                    <Group
-                                        key={turningPoint.index} id={`group-${turningPoint.index}`} x={turningPoint.position[0]} y={turningPoint.position[1]} draggable
-                                        onDragMove={(e) => handleDragMove(e, turningPoint.index)}
-                                        onDragEnd={(e) => handleDragEnd(e, turningPoint.index)}>
-                                        <Circle key={turningPoint.index} radius={10} fill={"green"} name={turningPoint.index.toString()} />
-                                        <Html>
-                                            <DropdownMenu.Root>
-                                                <DropdownMenu.Trigger>
-                                                    <IconButton>
-                                                        <PlusIcon />
-                                                    </IconButton>
-                                                </DropdownMenu.Trigger>
-                                                <DropdownMenu.Content>
-                                                    <DropdownMenu.Separator />
-                                                    <DropdownMenu.Item color="red" onSelect={() => deleteTurningPoint(turningPoint.index)}>
-                                                        Delete
-                                                    </DropdownMenu.Item>
-                                                </DropdownMenu.Content>
-                                            </DropdownMenu.Root>
+                                    turningPoints.map((
+                                        turningPoint: {
+                                            position: Point,
+                                            type: number,
+                                            index: number, //type and index are used together. some points are index sensitive
+                                            description?: string,
+                                            info?: string,
+                                            variables?: [{ key: string, value: string }]
+                                        }) => (
 
-                                        </Html>
-                                    </Group>
-                                ))}
+                                        <Group
+                                            key={turningPoint.index} id={`group-${turningPoint.index}`} x={turningPoint.position[0]} y={turningPoint.position[1]} draggable
+                                            onDragMove={(e) => handleDragMove(e, turningPoint.index)}
+                                            onDragEnd={(e) => handleDragEnd(e, turningPoint.index)}>
+                                            <Circle key={turningPoint.index} radius={10} fill={"green"} name={turningPoint.index.toString()} />
+                                            <Html>
+                                                <DropdownMenu.Root>
+                                                    <DropdownMenu.Trigger>
+                                                        <IconButton>
+                                                            <PlusIcon />
+                                                        </IconButton>
+                                                    </DropdownMenu.Trigger>
+                                                    <DropdownMenu.Content>
+                                                        <DropdownMenu.Separator />
+                                                        <DropdownMenu.Item color="red" onSelect={() => deleteTurningPoint(turningPoint.index)}>
+                                                            Delete
+                                                        </DropdownMenu.Item>
+                                                    </DropdownMenu.Content>
+                                                </DropdownMenu.Root>
+
+                                            </Html>
+                                        </Group>
+                                    ))}
 
                                 <Line
                                     points={exportPointsForDrawing(extractBezierPointToPoint(racingLineBezierPoints))}
