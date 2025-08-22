@@ -13,6 +13,7 @@ import SessionAnalysisMap from './sessionAnalysis/sessionAnalysisMap';
 import { useEnvironment } from 'contexts/EnvironmentContext';
 import LiveAnalysisSessionRecording from './liveAnalysisSessionRecording';
 
+//use interface when create a context, help prevent runtime error and type safe
 interface AnalysisContextType {
     mapSelected: string | null,
     sessionSelected: RacingSessionDetailedInfoDto | null,
@@ -39,7 +40,8 @@ interface AnalysisContextType {
     setRecordedSessionData: Dispatch<SetStateAction<any[]>>;
 };
 
-//defined the sturcture here, pass down the props to child, must have init value here, otherwise createContext and useContext don't like it
+
+//defined the structure here, pass down the props to child, must have init value here, otherwise createContext and useContext don't like it
 export const AnalysisContext = createContext<AnalysisContextType>({
     mapSelected: '',
     sessionSelected: {} as RacingSessionDetailedInfoDto,
