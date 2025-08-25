@@ -7,10 +7,11 @@ import image from 'assets/map2.png'
 import apiService from 'services/api.service';
 import { MapInfo, RacingSessionDetailedInfoDto } from 'data/live-analysis/live-analysis-type';
 import { useEnvironment } from 'contexts/EnvironmentContext';
-import { ContextMenu, DropdownMenu, IconButton } from '@radix-ui/themes';
+import { ContextMenu, IconButton } from '@radix-ui/themes';
 import { Html } from 'react-konva-utils';
 import { PlusIcon } from '@radix-ui/react-icons';
 import { MapEditorContext } from '../map-editor-view';
+import { DropdownMenu } from 'radix-ui';
 
 type RacingTurningPoint = {
     position: Point,
