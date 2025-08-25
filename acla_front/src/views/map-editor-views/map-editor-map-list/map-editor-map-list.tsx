@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useState } from 'react';
-import './map-list.css';
+import './map-editor-map-list.css';
 
 import {
     AspectRatio,
@@ -25,8 +25,9 @@ import {
 import { ScrollArea } from "radix-ui";
 import { AllMapsBasicInfoListDto, MapOption } from 'data/live-analysis/live-analysis-type';
 import apiService from 'services/api.service';
+import { MapEditorContext } from '../map-editor-view';
 
-const MapList = () => {
+const MapEditorMapList = () => {
 
     const [options, setOptions] = useState([{
         dataKey: 1,
@@ -90,9 +91,9 @@ const MapList = () => {
 };
 
 function MapCard({ dataKey, name, session_count }: MapOption) {
-    const analysisContext = useContext(AnalysisContext);
+    const mapEditorContext = useContext(MapEditorContext);
     function mapSelected() {
-        analysisContext.setMap(name);
+        mapEditorContext.setMap(name);
     }
 
     return (
@@ -117,5 +118,5 @@ function MapCard({ dataKey, name, session_count }: MapOption) {
     )
 };
 
-export default MapList;
+export default MapEditorMapList;
 

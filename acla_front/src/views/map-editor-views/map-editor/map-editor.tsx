@@ -10,6 +10,7 @@ import { useEnvironment } from 'contexts/EnvironmentContext';
 import { ContextMenu, DropdownMenu, IconButton } from '@radix-ui/themes';
 import { Html } from 'react-konva-utils';
 import { PlusIcon } from '@radix-ui/react-icons';
+import { MapEditorContext } from '../map-editor-view';
 
 type RacingTurningPoint = {
     position: Point,
@@ -33,7 +34,7 @@ const SessionAnalysisMap = () => {
         height: containerHeight,
     });
 
-    const analysisContext = useContext(AnalysisContext);
+    const mapEditorContext = useContext(MapEditorContext);
 
     //track turning points
     const [turningPoints, setTurningPoints] = useState<RacingTurningPoint[]>([]);
@@ -90,7 +91,7 @@ const SessionAnalysisMap = () => {
 
     function createInitialShapes() {
 
-        apiService.post('/racingmap/map/infolists', { name: analysisContext.mapSelected }).then((result) => {
+        apiService.post('/racingmap/map/infolists', { name: mapEditorContext.mapSelected }).then((result) => {
             const data = result.data as MapInfo;
             setTurningPoints(data.points.map((point) => {
                 return {
@@ -103,16 +104,6 @@ const SessionAnalysisMap = () => {
             }));
         }).catch((e) => {
         });
-
-        if (analysisContext.sessionSelected?.id) {
-            apiService.post('/racing-session/detailedSessionInfo', { id: analysisContext.sessionSelected?.id }).then((result) => {
-                const data = result.data as RacingSessionDetailedInfoDto;
-                analysisContext.setSession(data);
-            }).catch((e) => {
-            });
-        }
-
-
     }
 
 
@@ -452,13 +443,6 @@ const SessionAnalysisMap = () => {
                                 <Line
                                     points={exportPointsForDrawing(extractBezierPointToPoint(racingLineBezierPoints))}
                                     stroke="green" strokeWidth={2} bezier={true} closed={true}
-                                />
-
-                                <Circle
-                                    x={pointOnCubicBezierSpline(extractBezierPointToPoint(bezierPoints), segmentLengths, analysisContext.liveData?.Graphics?.normalized_car_position)[0]}
-                                    y={pointOnCubicBezierSpline(extractBezierPointToPoint(bezierPoints), segmentLengths, analysisContext.liveData?.Graphics?.normalized_car_position)[1]}
-                                    radius={15}
-                                    fill="purple"
                                 />
                                 {/* 
                     {racingLinePoints.map((position: { id: Key, position: Point }) => (
