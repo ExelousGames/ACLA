@@ -27,7 +27,7 @@ import { AllMapsBasicInfoListDto, MapOption } from 'data/live-analysis/live-anal
 import apiService from 'services/api.service';
 import { MapEditorContext } from '../map-editor-view';
 
-const MapEditorMapList = () => {
+const MapEditorMapList = (props: any) => {
 
     const [options, setOptions] = useState([{
         dataKey: 1,
