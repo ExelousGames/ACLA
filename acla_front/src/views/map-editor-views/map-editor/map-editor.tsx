@@ -23,7 +23,7 @@ type RacingTurningPoint = {
 type CurbTurningPoint = { id: number, position: Point };
 type BezierPoints = { id: number, position: Point };
 type RacingLinePoint = { id: number, position: Point };
-const SessionAnalysisMap = () => {
+const MapEditor = () => {
 
     // Define virtual size for our scene
     let containerWidth = window.innerWidth;
@@ -530,5 +530,5 @@ function exportPointsForDrawing(points?: Point[]): number[] {
     return convert_Points_to_1d_array(points);
 }
 
-export default SessionAnalysisMap;
+export default MapEditor;
 
