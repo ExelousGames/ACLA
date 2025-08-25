@@ -440,7 +440,6 @@ const MapEditor = () => {
                                             onDragEnd={(e) => handleDragEnd(e, turningPoint.index)}>
 
                                             <Html>
-
                                                 <HoverCard.Root>
                                                     <HoverCard.Trigger asChild>
                                                         <a
