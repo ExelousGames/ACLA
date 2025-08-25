@@ -12,7 +12,7 @@ import { Html } from 'react-konva-utils';
 import { PlusIcon } from '@radix-ui/react-icons';
 import { MapEditorContext } from '../map-editor-view';
 import { DropdownMenu } from 'radix-ui';
-
+import "./map-editor.css";
 type RacingTurningPoint = {
     position: Point,
     type: number,
