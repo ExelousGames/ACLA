@@ -438,7 +438,7 @@ const MapEditor = () => {
                                             draggable
                                             onDragMove={(e) => handleDragMove(e, turningPoint.index)}
                                             onDragEnd={(e) => handleDragEnd(e, turningPoint.index)}>
-
+                                            <Circle key={turningPoint.index} radius={10} fill={"green"} name={turningPoint.index.toString()} />
                                             <Html>
                                                 <HoverCard.Root>
                                                     <HoverCard.Trigger asChild>
@@ -458,6 +458,9 @@ const MapEditor = () => {
 
                                                     <HoverCard.Portal>
                                                         <HoverCard.Content className="HoverCardContent" sideOffset={5}>
+                                                            <div className="DropdownMenuItem" color="red" onSelect={() => deleteTurningPoint(turningPoint.index)}>
+                                                                Delete
+                                                            </div>
                                                         </HoverCard.Content>
                                                     </HoverCard.Portal>
                                                 </HoverCard.Root>
@@ -471,9 +474,7 @@ const MapEditor = () => {
                                                     <DropdownMenu.Portal>
                                                         <DropdownMenu.Content className="DropdownMenuContent" >
                                                             <DropdownMenu.Separator />
-                                                            <DropdownMenu.Item className="DropdownMenuItem" color="red" onSelect={() => deleteTurningPoint(turningPoint.index)}>
-                                                                Delete
-                                                            </DropdownMenu.Item>
+
                                                         </DropdownMenu.Content>
                                                     </DropdownMenu.Portal>
                                                 </DropdownMenu.Root>
