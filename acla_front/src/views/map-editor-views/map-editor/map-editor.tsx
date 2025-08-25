@@ -9,7 +9,7 @@ import { MapInfo, RacingSessionDetailedInfoDto } from 'data/live-analysis/live-a
 import { useEnvironment } from 'contexts/EnvironmentContext';
 import { ContextMenu, IconButton } from '@radix-ui/themes';
 import { Html } from 'react-konva-utils';
-import { PlusIcon } from '@radix-ui/react-icons';
+import { HamburgerMenuIcon, PlusIcon } from '@radix-ui/react-icons';
 import { MapEditorContext } from '../map-editor-view';
 import { DropdownMenu } from 'radix-ui';
 import "./map-editor.css";
@@ -173,8 +173,7 @@ const MapEditor = () => {
                 isMenuOpen: boolean
             }) => {
                 if (turningPoint.index !== id) return turningPoint;
-                console.log("open");
-                return { ...turningPoint, isMenuOpen: true }
+                return { ...turningPoint, isMenuOpen: value }
             }
         ));
     };
@@ -439,17 +438,26 @@ const MapEditor = () => {
                                             draggable
                                             onDragMove={(e) => handleDragMove(e, turningPoint.index)}
                                             onDragEnd={(e) => handleDragEnd(e, turningPoint.index)}
-                                            onDblClick={(e) => handleDoubleClick(true, turningPoint.index)}>
+                                            onMouseEnter={(e) => handleDoubleClick(true, turningPoint.index)}>
                                             <Circle key={turningPoint.index} radius={10} fill={"green"} name={turningPoint.index.toString()} />
                                             <Html>
-                                                <DropdownMenu.Root open={turningPoint.isMenuOpen} onOpenChange={(value) => handleDoubleClick(value, turningPoint.index)}>
-                                                    <DropdownMenu.Content className="DropdownMenuContent" >
-                                                        <DropdownMenu.Separator />
-                                                        <DropdownMenu.Item className="DropdownMenuItem" color="red" onSelect={() => deleteTurningPoint(turningPoint.index)}>
-                                                            Delete
-                                                        </DropdownMenu.Item>
-                                                    </DropdownMenu.Content>
+                                                {turningPoint.isMenuOpen ? < DropdownMenu.Root>
+                                                    <DropdownMenu.Trigger asChild>
+                                                        <button className="IconButton" aria-label="Customise options">
+                                                            <HamburgerMenuIcon />
+                                                        </button>
+                                                    </DropdownMenu.Trigger>
+                                                    <DropdownMenu.Portal>
+                                                        <DropdownMenu.Content className="DropdownMenuContent" >
+                                                            <DropdownMenu.Separator />
+                                                            <DropdownMenu.Item className="DropdownMenuItem" color="red" onSelect={() => deleteTurningPoint(turningPoint.index)}>
+                                                                Delete
+                                                            </DropdownMenu.Item>
+                                                        </DropdownMenu.Content>
+                                                    </DropdownMenu.Portal>
                                                 </DropdownMenu.Root>
+                                                    : ""
+                                                }
                                             </Html>
                                         </Group>
                                     ))}
