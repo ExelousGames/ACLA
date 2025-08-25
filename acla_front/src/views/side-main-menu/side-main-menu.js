@@ -14,8 +14,8 @@ const SideMainMenu = () => (
 
                 <Tabs.List className="TabsList">
                     <Tabs.Trigger className="TabsTrigger" value="analysis">Analysis</Tabs.Trigger>
-                    <Tabs.Trigger className="TabsTrigger" value="sessionList">Documents</Tabs.Trigger>
-                    <Tabs.Trigger className="TabsTrigger" value="session">Settings</Tabs.Trigger>
+                    <Tabs.Trigger className="TabsTrigger" value="mapEditor">Map Editor</Tabs.Trigger>
+                    <Tabs.Trigger className="TabsTrigger" value="settings">Settings</Tabs.Trigger>
                 </Tabs.List>
             </ScrollArea.Viewport>
             <ScrollArea.Scrollbar className="ScrollAreaScrollbar" orientation="vertical">
@@ -36,7 +36,7 @@ const SideMainMenu = () => (
                 <MapEditorView></MapEditorView>
             </Tabs.Content>
 
-            <Tabs.Content className="TabsContent" value="session">
+            <Tabs.Content className="TabsContent" value="settings">
                 <Text size="2">Edit your profile or update contact information.</Text>
             </Tabs.Content>
         </Box >
