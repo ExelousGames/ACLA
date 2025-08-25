@@ -423,12 +423,14 @@ const MapEditor = () => {
                                             onDoubleClick={(e: any) => handleDoubleClick(e, turningPoint.index)}>
                                             <Circle key={turningPoint.index} radius={10} fill={"green"} name={turningPoint.index.toString()} />
                                             <Html>
-                                                <DropdownMenu.Content>
-                                                    <DropdownMenu.Separator />
-                                                    <DropdownMenu.Item color="red" onSelect={() => deleteTurningPoint(turningPoint.index)}>
-                                                        Delete
-                                                    </DropdownMenu.Item>
-                                                </DropdownMenu.Content>
+                                                <DropdownMenu.Root>
+                                                    <DropdownMenu.Content>
+                                                        <DropdownMenu.Separator />
+                                                        <DropdownMenu.Item color="red" onSelect={() => deleteTurningPoint(turningPoint.index)}>
+                                                            Delete
+                                                        </DropdownMenu.Item>
+                                                    </DropdownMenu.Content>
+                                                </DropdownMenu.Root>
                                             </Html>
                                         </Group>
                                     ))}
