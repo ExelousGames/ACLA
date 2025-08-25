@@ -11,7 +11,7 @@ import { ContextMenu, IconButton } from '@radix-ui/themes';
 import { Html } from 'react-konva-utils';
 import { HamburgerMenuIcon, PlusIcon } from '@radix-ui/react-icons';
 import { MapEditorContext } from '../map-editor-view';
-import { DropdownMenu } from 'radix-ui';
+import { DropdownMenu, HoverCard } from 'radix-ui';
 import "./map-editor.css";
 type RacingTurningPoint = {
     position: Point,
@@ -160,7 +160,7 @@ const MapEditor = () => {
 
     };
 
-    const handleDoubleClick = (value: boolean, id: any) => {
+    const handleDisplayMenu = (value: boolean, id: any) => {
         //use setTurningPoints, it triggers ui refresh
         setTurningPoints(turningPoints.map(
             (turningPoint: {
@@ -437,12 +437,33 @@ const MapEditor = () => {
                                             x={turningPoint.position[0]} y={turningPoint.position[1]}
                                             draggable
                                             onDragMove={(e) => handleDragMove(e, turningPoint.index)}
-                                            onDragEnd={(e) => handleDragEnd(e, turningPoint.index)}
-                                            onMouseEnter={(e) => handleDoubleClick(true, turningPoint.index)}
-                                            onMouseLeave={(e) => handleDoubleClick(false, turningPoint.index)}>
-                                            <Circle key={turningPoint.index} radius={10} fill={"green"} name={turningPoint.index.toString()} />
+                                            onDragEnd={(e) => handleDragEnd(e, turningPoint.index)}>
+
                                             <Html>
-                                                {turningPoint.isMenuOpen ? < DropdownMenu.Root>
+
+                                                <HoverCard.Root>
+                                                    <HoverCard.Trigger asChild>
+                                                        <a
+                                                            className="ImageTrigger"
+                                                            href="https://twitter.com/radix_ui"
+                                                            target="_blank"
+                                                            rel="noreferrer noopener"
+                                                        >
+                                                            <img
+                                                                className="Image normal"
+                                                                src="https://pbs.twimg.com/profile_images/1337055608613253126/r_eiMp2H_400x400.png"
+                                                                alt="Radix UI"
+                                                            />
+                                                        </a>
+                                                    </HoverCard.Trigger>
+
+                                                    <HoverCard.Portal>
+                                                        <HoverCard.Content className="HoverCardContent" sideOffset={5}>
+                                                        </HoverCard.Content>
+                                                    </HoverCard.Portal>
+                                                </HoverCard.Root>
+
+                                                < DropdownMenu.Root>
                                                     <DropdownMenu.Trigger asChild>
                                                         <button className="IconButton" aria-label="Customise options">
                                                             <HamburgerMenuIcon />
@@ -457,8 +478,8 @@ const MapEditor = () => {
                                                         </DropdownMenu.Content>
                                                     </DropdownMenu.Portal>
                                                 </DropdownMenu.Root>
-                                                    : ""
-                                                }
+
+
                                             </Html>
                                         </Group>
                                     ))}
