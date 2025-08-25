@@ -1,6 +1,7 @@
 import { createContext, useState } from "react";
 import MapEditorMapList from "./map-editor-map-list/map-editor-map-list";
 
+
 interface MapEditorViewSharedData {
     mapSelected: string | null,
     setMap: (map: string | null) => void;
@@ -17,9 +18,12 @@ const MapEditorView = () => {
 
     return (
         <MapEditorContext.Provider value={{ mapSelected: mapSelected, setMap: setMap }}>
-            <MapEditorMapList>
-            </MapEditorMapList>
-            <button> Add new Map</button>
+            <div>
+                <MapEditorMapList>
+                </MapEditorMapList>
+                <button> Add new Map</button>
+            </div>
+
         </MapEditorContext.Provider>
     );
 
