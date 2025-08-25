@@ -23,7 +23,7 @@ type RacingTurningPoint = {
     variables?: [{ key: string, value: string }],
 
     //variables will not be saved
-    isDoubleClicked: boolean
+    isMenuOpen: boolean
 };
 type CurbTurningPoint = { id: number, position: Point };
 type BezierPoints = { id: number, position: Point };
@@ -105,7 +105,7 @@ const MapEditor = () => {
                     position: [point.position[0], point.position[1]],
                     description: "",
                     info: "",
-                    isDoubleClicked: false
+                    isMenuOpen: false
                 };
             }));
         }).catch((e) => {
@@ -122,7 +122,7 @@ const MapEditor = () => {
             description?: string,
             info?: string,
             variables?: [{ key: string, value: string }],
-            isDoubleClicked: boolean
+            isMenuOpen: boolean
         }) => {
             if (turningPoint.index !== id) return turningPoint;
 
@@ -160,7 +160,6 @@ const MapEditor = () => {
     };
 
     const handleDoubleClick = (e: any, id: any) => {
-        console.log("changed");
         //use setTurningPoints, it triggers ui refresh
         setTurningPoints(turningPoints.map(
             (turningPoint: {
@@ -170,11 +169,11 @@ const MapEditor = () => {
                 description?: string,
                 info?: string,
                 variables?: [{ key: string, value: string }],
-                isDoubleClicked: boolean
+                isMenuOpen: boolean
             }) => {
                 if (turningPoint.index !== id) return turningPoint;
 
-                return { ...turningPoint, isHovered: true }
+                return { ...turningPoint, isMenuOpen: true }
             }
         ));
     };
@@ -430,7 +429,7 @@ const MapEditor = () => {
                                             description?: string,
                                             info?: string,
                                             variables?: [{ key: string, value: string }],
-                                            isDoubleClicked: boolean
+                                            isMenuOpen: boolean
                                         }) => (
 
                                         <Group
@@ -442,7 +441,7 @@ const MapEditor = () => {
                                             onDblClick={(e) => handleDoubleClick(e, turningPoint.index)}>
                                             <Circle key={turningPoint.index} radius={10} fill={"green"} name={turningPoint.index.toString()} />
                                             <Html>
-                                                <DropdownMenu.Root open={turningPoint.isDoubleClicked}>
+                                                <DropdownMenu.Root open={turningPoint.isMenuOpen}>
                                                     <DropdownMenu.Content>
                                                         <DropdownMenu.Separator />
                                                         <DropdownMenu.Item color="red" onSelect={() => deleteTurningPoint(turningPoint.index)}>
