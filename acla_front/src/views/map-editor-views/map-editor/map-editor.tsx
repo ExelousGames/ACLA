@@ -18,7 +18,12 @@ type RacingTurningPoint = {
     index: number, //type and index are used together. some points are index sensitive
     description?: string,
     info?: string,
-    variables?: [{ key: string, value: string }]
+
+    //variables will be saved online
+    variables?: [{ key: string, value: string }],
+
+    //variables will not be saved
+    tempVariables?: [{ key: string, value: string }],
 };
 type CurbTurningPoint = { id: number, position: Point };
 type BezierPoints = { id: number, position: Point };
