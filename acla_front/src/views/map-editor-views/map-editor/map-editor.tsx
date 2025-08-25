@@ -172,7 +172,7 @@ const MapEditor = () => {
                 isDoubleClicked: boolean
             }) => {
                 if (turningPoint.index !== id) return turningPoint;
-
+                console.log("changed");
                 return { ...turningPoint, isHovered: true }
             }
         ));
