@@ -438,7 +438,8 @@ const MapEditor = () => {
                                             draggable
                                             onDragMove={(e) => handleDragMove(e, turningPoint.index)}
                                             onDragEnd={(e) => handleDragEnd(e, turningPoint.index)}
-                                            onMouseEnter={(e) => handleDoubleClick(true, turningPoint.index)}>
+                                            onMouseEnter={(e) => handleDoubleClick(true, turningPoint.index)}
+                                            onMouseLeave={(e) => handleDoubleClick(false, turningPoint.index)}>
                                             <Circle key={turningPoint.index} radius={10} fill={"green"} name={turningPoint.index.toString()} />
                                             <Html>
                                                 {turningPoint.isMenuOpen ? < DropdownMenu.Root>
