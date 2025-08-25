@@ -159,7 +159,7 @@ const MapEditor = () => {
 
     };
 
-    const handleDoubleClick = (e: any, id: any) => {
+    const handleDoubleClick = (value: boolean, id: any) => {
         //use setTurningPoints, it triggers ui refresh
         setTurningPoints(turningPoints.map(
             (turningPoint: {
@@ -438,10 +438,10 @@ const MapEditor = () => {
                                             draggable
                                             onDragMove={(e) => handleDragMove(e, turningPoint.index)}
                                             onDragEnd={(e) => handleDragEnd(e, turningPoint.index)}
-                                            onDblClick={(e) => handleDoubleClick(e, turningPoint.index)}>
+                                            onDblClick={(e) => handleDoubleClick(true, turningPoint.index)}>
                                             <Circle key={turningPoint.index} radius={10} fill={"green"} name={turningPoint.index.toString()} />
                                             <Html>
-                                                <DropdownMenu.Root open={turningPoint.isMenuOpen}>
+                                                <DropdownMenu.Root open={turningPoint.isMenuOpen} onOpenChange={(value) => handleDoubleClick(value, turningPoint.index)}>
                                                     <DropdownMenu.Content>
                                                         <DropdownMenu.Separator />
                                                         <DropdownMenu.Item color="red" onSelect={() => deleteTurningPoint(turningPoint.index)}>
