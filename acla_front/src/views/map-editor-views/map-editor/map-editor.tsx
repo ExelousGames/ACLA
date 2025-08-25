@@ -106,11 +106,9 @@ const MapEditor = () => {
         });
     }
 
-
-
     function handleDragMove(e: any, id: any) {
-        const target = e.target;
 
+        //use setTurningPoints, it triggers ui refresh
         setTurningPoints(turningPoints.map((turningPoint: {
             position: Point,
             type: number,
@@ -121,8 +119,10 @@ const MapEditor = () => {
         }) => {
             if (turningPoint.index !== id) return turningPoint;
 
+            //assign the targeted position
             let pointPosition: any[] = [e.target.x(), e.target.y()];
 
+            //check boundary
             if (e.target.x() <= 0) {
                 pointPosition[0] = 0;
             }
@@ -149,6 +149,10 @@ const MapEditor = () => {
     }
 
     const handleDragEnd = (e: any, id: any) => {
+
+    };
+
+    const handleDoubleClick = (e: any, id: any) => {
 
     };
 
@@ -376,7 +380,6 @@ const MapEditor = () => {
             <ContextMenu.Root>
                 <ContextMenu.Trigger>
                     <div>
-
                         <Stage width={stageSize.width} height={stageSize.height} >
                             <Layer>
 
@@ -388,16 +391,6 @@ const MapEditor = () => {
                                     scaleX={3}
                                     scaleY={3}
                                 />
-                                <Line
-                                    points={exportPointsForDrawing(extractBezierPointToPoint(leftCurbBezierPoints))}
-                                    stroke="red" strokeWidth={2} bezier={true}
-                                />
-                                <Line
-                                    points={exportPointsForDrawing(extractBezierPointToPoint(rightCurbBezierPoints))}
-                                    stroke="red" strokeWidth={2} bezier={true}
-                                />
-                               
-                               
                                  */}
 
                                 <Line
@@ -417,40 +410,23 @@ const MapEditor = () => {
                                         }) => (
 
                                         <Group
-                                            key={turningPoint.index} id={`group-${turningPoint.index}`} x={turningPoint.position[0]} y={turningPoint.position[1]} draggable
+                                            key={turningPoint.index} id={`group-${turningPoint.index}`}
+                                            x={turningPoint.position[0]} y={turningPoint.position[1]}
+                                            draggable
                                             onDragMove={(e) => handleDragMove(e, turningPoint.index)}
-                                            onDragEnd={(e) => handleDragEnd(e, turningPoint.index)}>
+                                            onDragEnd={(e) => handleDragEnd(e, turningPoint.index)}
+                                            onDoubleClick={(e: any) => handleDoubleClick(e, turningPoint.index)}>
                                             <Circle key={turningPoint.index} radius={10} fill={"green"} name={turningPoint.index.toString()} />
                                             <Html>
-                                                <DropdownMenu.Root>
-                                                    <DropdownMenu.Trigger>
-                                                        <IconButton>
-                                                            <PlusIcon />
-                                                        </IconButton>
-                                                    </DropdownMenu.Trigger>
-                                                    <DropdownMenu.Content>
-                                                        <DropdownMenu.Separator />
-                                                        <DropdownMenu.Item color="red" onSelect={() => deleteTurningPoint(turningPoint.index)}>
-                                                            Delete
-                                                        </DropdownMenu.Item>
-                                                    </DropdownMenu.Content>
-                                                </DropdownMenu.Root>
-
+                                                <DropdownMenu.Content>
+                                                    <DropdownMenu.Separator />
+                                                    <DropdownMenu.Item color="red" onSelect={() => deleteTurningPoint(turningPoint.index)}>
+                                                        Delete
+                                                    </DropdownMenu.Item>
+                                                </DropdownMenu.Content>
                                             </Html>
                                         </Group>
                                     ))}
-
-                                <Line
-                                    points={exportPointsForDrawing(extractBezierPointToPoint(racingLineBezierPoints))}
-                                    stroke="green" strokeWidth={2} bezier={true} closed={true}
-                                />
-                                {/* 
-                    {racingLinePoints.map((position: { id: Key, position: Point }) => (
-                        <Circle
-                            key={position.id} x={position.position[0]} y={position.position[1]} radius={10} fill={"blue"} name={position.id.toString()}
-                        />
-                    ))}
-                    */}
                             </Layer>
                         </Stage>
                     </div>
