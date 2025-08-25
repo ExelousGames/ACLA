@@ -23,7 +23,7 @@ type RacingTurningPoint = {
     variables?: [{ key: string, value: string }],
 
     //variables will not be saved
-    tempVariables?: [{ key: string, value: string }],
+    isDoubleClicked: boolean
 };
 type CurbTurningPoint = { id: number, position: Point };
 type BezierPoints = { id: number, position: Point };
@@ -105,6 +105,7 @@ const MapEditor = () => {
                     position: [point.position[0], point.position[1]],
                     description: "",
                     info: "",
+                    isDoubleClicked: false
                 };
             }));
         }).catch((e) => {
@@ -120,7 +121,8 @@ const MapEditor = () => {
             index: number, //type and index are used together. some points are index sensitive
             description?: string,
             info?: string,
-            variables?: [{ key: string, value: string }]
+            variables?: [{ key: string, value: string }],
+            isDoubleClicked: boolean
         }) => {
             if (turningPoint.index !== id) return turningPoint;
 
@@ -158,7 +160,22 @@ const MapEditor = () => {
     };
 
     const handleDoubleClick = (e: any, id: any) => {
+        //use setTurningPoints, it triggers ui refresh
+        setTurningPoints(turningPoints.map(
+            (turningPoint: {
+                position: Point,
+                type: number,
+                index: number, //type and index are used together. some points are index sensitive
+                description?: string,
+                info?: string,
+                variables?: [{ key: string, value: string }],
+                isDoubleClicked: boolean
+            }) => {
+                if (turningPoint.index !== id) return turningPoint;
 
+                return { ...turningPoint, isHovered: true }
+            }
+        ));
     };
 
     function calculateAndDrawRacingLine() {
@@ -411,7 +428,8 @@ const MapEditor = () => {
                                             index: number, //type and index are used together. some points are index sensitive
                                             description?: string,
                                             info?: string,
-                                            variables?: [{ key: string, value: string }]
+                                            variables?: [{ key: string, value: string }],
+                                            isDoubleClicked: boolean
                                         }) => (
 
                                         <Group
@@ -423,7 +441,7 @@ const MapEditor = () => {
                                             onDoubleClick={(e: any) => handleDoubleClick(e, turningPoint.index)}>
                                             <Circle key={turningPoint.index} radius={10} fill={"green"} name={turningPoint.index.toString()} />
                                             <Html>
-                                                <DropdownMenu.Root>
+                                                <DropdownMenu.Root open={turningPoint.isDoubleClicked}>
                                                     <DropdownMenu.Content>
                                                         <DropdownMenu.Separator />
                                                         <DropdownMenu.Item color="red" onSelect={() => deleteTurningPoint(turningPoint.index)}>
