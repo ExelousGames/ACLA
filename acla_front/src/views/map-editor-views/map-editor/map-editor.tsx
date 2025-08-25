@@ -443,9 +443,9 @@ const MapEditor = () => {
                                             <Circle key={turningPoint.index} radius={10} fill={"green"} name={turningPoint.index.toString()} />
                                             <Html>
                                                 <DropdownMenu.Root open={turningPoint.isMenuOpen} onOpenChange={(value) => handleDoubleClick(value, turningPoint.index)}>
-                                                    <DropdownMenu.Content>
+                                                    <DropdownMenu.Content className="DropdownMenuContent" >
                                                         <DropdownMenu.Separator />
-                                                        <DropdownMenu.Item color="red" onSelect={() => deleteTurningPoint(turningPoint.index)}>
+                                                        <DropdownMenu.Item className="DropdownMenuItem" color="red" onSelect={() => deleteTurningPoint(turningPoint.index)}>
                                                             Delete
                                                         </DropdownMenu.Item>
                                                     </DropdownMenu.Content>
