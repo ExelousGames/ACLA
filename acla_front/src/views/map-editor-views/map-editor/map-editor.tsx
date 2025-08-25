@@ -160,6 +160,7 @@ const MapEditor = () => {
     };
 
     const handleDoubleClick = (e: any, id: any) => {
+        console.log("changed");
         //use setTurningPoints, it triggers ui refresh
         setTurningPoints(turningPoints.map(
             (turningPoint: {
@@ -172,7 +173,7 @@ const MapEditor = () => {
                 isDoubleClicked: boolean
             }) => {
                 if (turningPoint.index !== id) return turningPoint;
-                console.log("changed");
+
                 return { ...turningPoint, isHovered: true }
             }
         ));
