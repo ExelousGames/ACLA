@@ -3,6 +3,7 @@ import { ScrollArea, Tabs } from "radix-ui";
 import "./side-main-menu.css";
 import { Box, Text, Flex, Container } from "@radix-ui/themes";
 import SessionAnalysis from "views/lap-analysis/session-analysis";
+import MapEditorView from "views/map-editor-views/map-editor-view";
 
 const SideMainMenu = () => (
     <Tabs.Root className="TabsRoot" defaultValue="account">
@@ -31,8 +32,8 @@ const SideMainMenu = () => (
                 <SessionAnalysis></SessionAnalysis>
             </Tabs.Content>
 
-            <Tabs.Content className="TabsContent" value="sessionList">
-
+            <Tabs.Content className="TabsContent" value="mapEditor">
+                <MapEditorView></MapEditorView>
             </Tabs.Content>
 
             <Tabs.Content className="TabsContent" value="session">
