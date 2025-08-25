@@ -172,7 +172,7 @@ const MapEditor = () => {
                 isMenuOpen: boolean
             }) => {
                 if (turningPoint.index !== id) return turningPoint;
-
+                console.log("open");
                 return { ...turningPoint, isMenuOpen: true }
             }
         ));
