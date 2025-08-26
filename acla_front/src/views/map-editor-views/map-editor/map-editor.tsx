@@ -205,6 +205,7 @@ const MapEditor = () => {
             clearTimeout(timeoutRef.current);
             timeoutRef.current = null;
         }
+        console.log("open menu", id);
         setActiveMenu(id);
     };
 
