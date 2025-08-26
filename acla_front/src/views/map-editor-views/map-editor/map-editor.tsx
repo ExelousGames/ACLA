@@ -124,6 +124,7 @@ const MapEditor = () => {
 
         console.log("menuRect", menuRect);
         console.log("menuRect", menuCenter);
+        console.log("coords", coords);
 
         if (isMovingTowardMenu) {
             console.log("moving toward menu");
