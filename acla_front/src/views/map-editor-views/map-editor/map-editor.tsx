@@ -202,12 +202,14 @@ const MapEditor = () => {
 
     const handleEnterMenu = (id: any) => {
 
-
+        // Clear any existing timeout to close menu
         if (timeoutRef.current) {
             clearTimeout(timeoutRef.current);
             timeoutRef.current = null;
         }
+
         setActiveMenu(id);
+
         //use setTurningPoints, it triggers ui refresh
         setTurningPoints(turningPoints.map(
             (turningPoint) => {
@@ -497,7 +499,7 @@ const MapEditor = () => {
                                             onMouseEnter={() => handleEnterMenu(turningPoint.index)}
                                             onMouseLeave={() => handleLeaveMenu(turningPoint.index)}>
                                             <Circle key={turningPoint.index} radius={10} fill={"green"} name={turningPoint.index.toString()} />
-                                            {turningPoint.isMenuOpen &&
+                                            {turningPoint.index === activeMenu &&
                                                 <Html >
                                                     <div
                                                         ref={activeMenu === turningPoint.index ? menuRef : undefined}
