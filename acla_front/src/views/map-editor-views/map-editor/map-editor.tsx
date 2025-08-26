@@ -131,11 +131,12 @@ const MapEditor = () => {
         const isMovingTowardMenu = dot >= 0;
 
         if (isMovingTowardMenu) {
-            // If moving toward menu, clear any existing timeout for closing menu
+            // If moving toward menu, give more time before closing
             if (timeoutRef.current) {
-                console.log("clear timeout on moving toward menu");
-                //clearTimeout(timeoutRef.current);
-                //timeoutRef.current = null;
+                clearTimeout(timeoutRef.current);
+                timeoutRef.current = setTimeout(() => {
+                    setActiveMenu(null);
+                }, 500); // Reduced delay for better UX
             }
         }
     }, [mouseMovement, activeMenu]);
