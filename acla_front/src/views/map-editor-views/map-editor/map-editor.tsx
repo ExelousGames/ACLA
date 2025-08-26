@@ -508,30 +508,16 @@ const MapEditor = () => {
                                                         ref={activeMenu === turningPoint.index ? menuRef : undefined}
                                                         onMouseEnter={() => handleEnterMenu(turningPoint.index)}
                                                         onMouseLeave={() => handleLeaveMenu(turningPoint.index)}>
+                                                        <div className="context-menu">
+                                                            <div className="context-menu-item" onClick={() => deleteTurningPoint(turningPoint.index)}>
+                                                                <IconButton variant="ghost" size="2" >
+                                                                    <PlusIcon style={{ transform: 'rotate(45deg)' }} />
+                                                                </IconButton>
+                                                                Delete this turning point
+                                                            </div>
+                                                        </div>
                                                     </div>
-                                                    <HoverCard.Root >
-                                                        <HoverCard.Trigger asChild>
-                                                            <a
-                                                                className="ImageTrigger"
-                                                                target="_blank"
-                                                                rel="noreferrer noopener"
-                                                            >
-                                                                <img
-                                                                    className="Image normal"
-                                                                    src="https://pbs.twimg.com/profile_images/1337055608613253126/r_eiMp2H_400x400.png"
-                                                                    alt="Radix UI"
-                                                                />
-                                                            </a>
-                                                        </HoverCard.Trigger>
 
-                                                        <HoverCard.Portal>
-                                                            <HoverCard.Content className="HoverCardContent" sideOffset={5}>
-                                                                <div className="DropdownMenuItem" color="red" onSelect={() => deleteTurningPoint(turningPoint.index)}>
-                                                                    Delete
-                                                                </div>
-                                                            </HoverCard.Content>
-                                                        </HoverCard.Portal>
-                                                    </HoverCard.Root>
                                                 </Html>
                                             }
 
