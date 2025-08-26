@@ -518,7 +518,7 @@ const MapEditor = () => {
 
                                             <Html>
                                                 {turningPoint.index === activeMenu &&
-                                                    <div className="DropdownMenuContent"
+                                                    <div className="HoverCardContent"
                                                         ref={activeMenu === turningPoint.index ? menuRef : undefined}
                                                         onMouseEnter={() => handleEnterMenu(turningPoint.index)}
                                                         onMouseLeave={() => handleLeaveMenu(turningPoint.index)}>
