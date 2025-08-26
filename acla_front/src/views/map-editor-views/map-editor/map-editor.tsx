@@ -212,14 +212,9 @@ const MapEditor = () => {
     };
 
     const handleLeaveMenu = (id: any) => {
-
-        // Always start timeout to close menu after delay
-        if (timeoutRef.current) {
-            clearTimeout(timeoutRef.current);
-            timeoutRef.current = null;
-        }
-        console.log("close menu", id);
+        // Start a timeout to close the menu after a short delay
         timeoutRef.current = setTimeout(() => {
+            console.log("close menu", id);
             setActiveMenu(null);
         }, 300); // Reduced delay for better UX
     };
