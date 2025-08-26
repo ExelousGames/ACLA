@@ -112,6 +112,7 @@ const MapEditor = () => {
 
         if (isMovingTowardMenu) {
             if (timeoutRef.current) {
+                console.log("moving toward menu, clear timeout");
                 clearTimeout(timeoutRef.current);
                 timeoutRef.current = null;
             }
