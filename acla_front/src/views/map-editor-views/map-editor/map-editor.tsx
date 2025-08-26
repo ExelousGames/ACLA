@@ -103,8 +103,11 @@ const MapEditor = () => {
     }, [bezierPoints]);
 
     useEffect(() => {
-        prvCoords.current = coords;
-        console.log("coords", coords, "prvCoords", prvCoords.current);
+        if (prvCoords.current !== coords) {
+            // console.log("coords changed", coords);
+            prvCoords.current = coords;
+            console.log("coords", coords, "prvCoords", prvCoords.current);
+        }
     }, [coords]);
 
     // Check if mouse is moving toward menu
