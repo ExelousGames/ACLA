@@ -214,6 +214,7 @@ const MapEditor = () => {
     };
 
     const handleLeaveMenu = (id: any) => {
+        console.log("leave menu", id);
         // Start a timeout to close the menu after a short delay
         timeoutRef.current = setTimeout(() => {
             console.log("close menu", id);
