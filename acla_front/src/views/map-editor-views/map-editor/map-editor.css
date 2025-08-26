@@ -9,6 +9,9 @@ button {
 
 .DropdownMenuContent,
 .DropdownMenuSubContent {
+    position: absolute;
+    /* Or relative, fixed */
+    right: 20px;
     min-width: 220px;
     background-color: white;
     border-radius: 6px;

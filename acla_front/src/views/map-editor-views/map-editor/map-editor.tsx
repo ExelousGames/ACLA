@@ -512,8 +512,8 @@ const MapEditor = () => {
                                             draggable
                                             onDragMove={(e) => handleDragMove(e, turningPoint.index)}
                                             onDragEnd={(e) => handleDragEnd(e, turningPoint.index)}
-                                            onMouseEnter={() => handleEnterPoint(turningPoint.index)}
-                                            onMouseLeave={() => handleLeavePoint(turningPoint.index)}>
+                                            onMouseEnter={() => handleEnterMenu(turningPoint.index)}
+                                            onMouseLeave={() => handleLeaveMenu(turningPoint.index)}>
                                             <Circle key={turningPoint.index} radius={10} fill={"green"} name={turningPoint.index.toString()} />
 
                                             <Html>
@@ -524,9 +524,6 @@ const MapEditor = () => {
                                                         onMouseLeave={() => handleLeaveMenu(turningPoint.index)}>
 
                                                         <div onClick={() => deleteTurningPoint(turningPoint.index)}>
-                                                            <IconButton variant="ghost" size="2" >
-                                                                <PlusIcon style={{ transform: 'rotate(45deg)' }} />
-                                                            </IconButton>
                                                             Delete this turning point
                                                         </div>
 
