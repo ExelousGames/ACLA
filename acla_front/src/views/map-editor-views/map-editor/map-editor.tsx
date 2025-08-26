@@ -516,9 +516,9 @@ const MapEditor = () => {
                                             onMouseLeave={() => handleLeavePoint(turningPoint.index)}>
                                             <Circle key={turningPoint.index} radius={10} fill={"green"} name={turningPoint.index.toString()} />
 
-                                            <Html >
+                                            <Html>
                                                 {turningPoint.index === activeMenu &&
-                                                    <div
+                                                    <div className="DropdownMenuContent"
                                                         ref={activeMenu === turningPoint.index ? menuRef : undefined}
                                                         onMouseEnter={() => handleEnterMenu(turningPoint.index)}
                                                         onMouseLeave={() => handleLeaveMenu(turningPoint.index)}>
