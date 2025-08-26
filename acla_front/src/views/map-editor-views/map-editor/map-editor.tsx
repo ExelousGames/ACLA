@@ -241,14 +241,11 @@ const MapEditor = () => {
         }
 
         setActiveMenu(id);
-        console.log("menu entered", id);
     };
 
     const handleLeaveMenu = (id: any) => {
-        console.log("leave menu", id);
         // Start a timeout to close the menu after a short delay
         timeoutRef.current = setTimeout(() => {
-            console.log("close menu", id);
             setActiveMenu(null);
         }, 300); // Reduced delay for better UX
     };
