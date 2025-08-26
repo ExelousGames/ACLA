@@ -221,25 +221,12 @@ const MapEditor = () => {
 
     };
 
-    const handleEnterPoint = (id: any) => {
-        if (timeoutRef.current) {
-            clearTimeout(timeoutRef.current);
-            timeoutRef.current = null;
-        }
-        setActiveMenu(id);
-    }
-
-    const handleLeavePoint = (id: any) => {
-    }
-
     const handleEnterMenu = (id: any) => {
         // Clear any existing timeout to close menu
         if (timeoutRef.current) {
             clearTimeout(timeoutRef.current);
             timeoutRef.current = null;
-            console.log("clear timeout on enter menu");
         }
-
         setActiveMenu(id);
     };
 
