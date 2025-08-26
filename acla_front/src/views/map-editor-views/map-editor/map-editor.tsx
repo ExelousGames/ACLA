@@ -82,8 +82,6 @@ const MapEditor = () => {
         createInitialShapes();
         const handleMouseMove = (e: { clientX: any; clientY: any; }) => {
             setCoords({ x: e.clientX, y: e.clientY });
-
-
         };
         window.addEventListener('mousemove', handleMouseMove);
         return () => window.removeEventListener('mousemove', handleMouseMove);
@@ -105,6 +103,8 @@ const MapEditor = () => {
     useEffect(() => {
         if (prvCoords.current.x !== coords.x || prvCoords.current.y !== coords.y) {
             prvCoords.current = { ...coords };
+            console.log("mouse move", coords);
+            console.log("prv mouse move", prvCoords.current);
         }
     }, [coords]);
 
