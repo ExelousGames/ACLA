@@ -106,7 +106,7 @@ const MapEditor = () => {
         if (prvCoords.current.x !== coords.x || prvCoords.current.y !== coords.y) {
             prvCoords.current = { ...coords };
             console.log("mouse moved", coords);
-            console.log("pre")
+            console.log("prev mouse", prvCoords.current);
         }
     }, [coords]);
 
