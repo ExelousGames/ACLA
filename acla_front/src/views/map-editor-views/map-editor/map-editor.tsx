@@ -101,14 +101,6 @@ const MapEditor = () => {
         calculateAndDrawTrack();
     }, [turningPoints]);
 
-
-    //after turning points updated, we can update the racing line in the next frame
-    useEffect(() => {
-        /*
-        calculateAndDrawRacingLine();
-        */
-    }, [bezierPoints]);
-
     // Check if mouse is moving toward menu
     useEffect(() => {
         if (activeMenu === null || !menuRef.current) return;
@@ -236,112 +228,6 @@ const MapEditor = () => {
             setActiveMenu(null);
         }, 300); // Reduced delay for better UX
     };
-
-    function calculateAndDrawRacingLine() {
-
-        let tempRacingLinePoints: RacingLinePoint[] = [];
-        let racingLineDisplacement = [];
-
-        // Reset racing line
-        //deep copy, regular copy will have the reference on the old array. cause mutation when changing the new array
-        turningPoints.map((point) => {
-            tempRacingLinePoints.push({
-                id: point.index,
-                position: [point.position[0], point.position[1]]
-            });
-        });
-        racingLineDisplacement = new Array(tempRacingLinePoints.length).fill(0);
-
-        for (let iteration = 0; iteration < iterations; iteration++) {
-            for (let p = 0; p < tempRacingLinePoints.length; p++) {
-
-                // Get locations of neighbour nodes
-                const pointRight = tempRacingLinePoints[(p + 1) % tempRacingLinePoints.length];
-                const pointLeft = tempRacingLinePoints[(p + tempRacingLinePoints.length - 1) % tempRacingLinePoints.length];
-                const pointMiddle = tempRacingLinePoints[p];
-
-                // Create vectors to neighbours
-                const vectorLeft = [pointLeft.position[0] - pointMiddle.position[0], pointLeft.position[1] - pointMiddle.position[1]];
-                const vectorRight = [pointRight.position[0] - pointMiddle.position[0], pointRight.position[1] - pointMiddle.position[1]];
-
-                // Normalise neighbours
-                const lengthLeft = Math.sqrt(vectorLeft[0] * vectorLeft[0] + vectorLeft[1] * vectorLeft[1]);
-                const leftn = [vectorLeft[0] / lengthLeft, vectorLeft[1] / lengthLeft];
-                const lengthRight = Math.sqrt(vectorRight[0] * vectorRight[0] + vectorRight[1] * vectorRight[1]);
-                const rightn = [vectorRight[0] / lengthRight, vectorRight[1] / lengthRight];
-
-                // Add together to create bisector vector
-                const vectorSum = [rightn[0] + leftn[0], rightn[1] + leftn[1]];
-                const len = Math.sqrt(vectorSum[0] * vectorSum[0] + vectorSum[1] * vectorSum[1]);
-                vectorSum[0] = (len === 0) ? vectorSum[0] : vectorSum[0] / len;
-                vectorSum[1] = (len === 0) ? vectorSum[1] : vectorSum[1] / len;
-
-                // Get position gradient and normalise (TODO: ADD circular)
-                const P0 = bezierPoints[(3 * p)].position;
-                const P1 = bezierPoints[(3 * p + 1) % bezierPoints.length].position;
-                const P2 = bezierPoints[(3 * p + 2) % bezierPoints.length].position;
-                const P3 = bezierPoints[(3 * p + 3) % bezierPoints.length].position;
-
-                const g = getBezierTangent(P0, P1, P2, P3, 0);
-
-                const glen = Math.sqrt(g[0] * g[0] + g[1] * g[1]);
-                g[0] = (glen === 0) ? g[0] : g[0] / glen;
-                g[1] = (glen === 0) ? g[1] : g[1] / glen;
-
-                // Project required correction onto position tangent to give displacment (projection)
-                const dp = -g[1] * vectorSum[0] + g[0] * vectorSum[1];
-
-                // Shortest path
-                //racingLineDisplacement[p] += (dp * 4);
-
-                // Curvature
-                //fDisplacement[(i + 1) % racingLine.points.size()] += dp * -0.2f;
-                //fDisplacement[(i - 1 + racingLine.points.size()) % racingLine.points.size()] += dp * -0.2f;
-
-                racingLineDisplacement[(p + 1) % tempRacingLinePoints.length] += dp * -10;
-                racingLineDisplacement[(p - 1 + tempRacingLinePoints.length) % tempRacingLinePoints.length] += dp * -10;
-            }
-
-            // Clamp displaced points to track width
-            for (let p = 0; p < tempRacingLinePoints.length; p++) {
-                {
-                    if (racingLineDisplacement[p] >= 1) racingLineDisplacement[p] = 1;
-                    if (racingLineDisplacement[p] <= -1) racingLineDisplacement[p] = -1;
-
-                    const P0 = bezierPoints[(3 * p)].position;
-                    const P1 = bezierPoints[(3 * p + 1) % bezierPoints.length].position;
-                    const P2 = bezierPoints[(3 * p + 2) % bezierPoints.length].position;
-                    const P3 = bezierPoints[(3 * p + 3) % bezierPoints.length].position;
-
-                    const g = getBezierTangent(P0, P1, P2, P3, 0);
-
-                    const glen = Math.sqrt(g[0] * g[0] + g[1] * g[1]);
-                    g[0] /= glen; g[1] /= glen;
-
-                    tempRacingLinePoints[p].position[0] = tempRacingLinePoints[p].position[0] - g[1] * racingLineDisplacement[p];
-                    tempRacingLinePoints[p].position[1] = tempRacingLinePoints[p].position[1] - g[0] * racingLineDisplacement[p];
-                }
-            }
-
-        }
-
-        setRacingLinePoints(tempRacingLinePoints);
-
-        //Add controlling points to turning points, also cached them together for later use
-        try {
-            let points = AddControlPoints(extractRacingLinePointToPoint(tempRacingLinePoints), 0.6);
-            let index = 0;
-            let result: BezierPoints[] = [];
-            points.forEach((position) => {
-                index++;
-                result.push({ id: index, position: position });
-            })
-            setRacingLineBezierPoints(result);
-        }
-        catch (e) {
-            return;
-        }
-    }
 
     /**
     * Appends a new point continuing the spline's end direction
@@ -507,7 +393,7 @@ const MapEditor = () => {
                                                         onMouseEnter={() => handleEnterMenu(turningPoint.index)}
                                                         onMouseLeave={() => handleLeaveMenu(turningPoint.index)}>
 
-                                                        <div onClick={() => deleteTurningPoint(turningPoint.index)}>
+                                                        <div className="DropdownMenuItem" onClick={() => deleteTurningPoint(turningPoint.index)}>
                                                             Delete this turning point
                                                         </div>
 
@@ -529,23 +415,6 @@ const MapEditor = () => {
         </div>
     );
 
-
-    /*
-      < DropdownMenu.Root>
-                                                    <DropdownMenu.Trigger asChild>
-                                                        <button className="IconButton" aria-label="Customise options">
-                                                            <HamburgerMenuIcon />
-                                                        </button>
-                                                    </DropdownMenu.Trigger>
-                                                    <DropdownMenu.Portal>
-                                                        <DropdownMenu.Content className="DropdownMenuContent" >
-                                                            <DropdownMenu.Separator />
-
-                                                        </DropdownMenu.Content>
-                                                    </DropdownMenu.Portal>
-                                                </DropdownMenu.Root>
-
-*/
 
 };
 

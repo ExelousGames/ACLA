@@ -2,8 +2,9 @@ import { Injectable } from '@nestjs/common';
 import { v4 as uuid } from 'uuid';
 import { UserInfo } from '../../schemas/user-info.schema';
 import { InjectModel } from '@nestjs/mongoose';
-import { Model } from 'mongoose';
-import { CreateUserInfoDto } from 'src/dto/user.dto';
+import { Model, Types } from 'mongoose';
+import { CreateUserInfoDto, UpdateUserPermissionsDto, UpdateUserRolesDto } from 'src/dto/user.dto';
+import { permission } from 'process';
 
 @Injectable()
 export class UserInfoService {
@@ -15,12 +16,39 @@ export class UserInfoService {
         return this.userInfoModel.findOne({ email: email }).exec();
     }
 
+    async findOneWithPermissions(email: string): Promise<UserInfo | null> {
+
+        //path is the field name in UserInfo schema
+        //model is the name of the model we are referencing to
+        //populate is a mongoose method to populate the referenced documents
+        return this.userInfoModel
+            .findOne({ email: email })
+            .populate({
+                path: 'permissions',
+                model: 'Permission'
+            })
+            .populate({
+                path: 'roles',
+                model: 'Role',
+                populate: {
+                    path: 'permissions',
+                    model: 'Permission'
+                }
+            })
+            .exec();
+    }
+
     async createUser(createUserInfoDto: CreateUserInfoDto): Promise<CreateUserInfoDto> {
 
         const newUserInfo: UserInfo = {
             id: uuid(),
             password: "",
-            email: createUserInfoDto.email
+            email: createUserInfoDto.email,
+            roles: [],
+            permissions: [],
+            isActive: true,
+            createdAt: new Date(),
+            lastLogin: new Date()
         };
 
         const createdInfo = new this.userInfoModel(newUserInfo);
@@ -31,5 +59,27 @@ export class UserInfoService {
     }
 
     deleteTask(id: string): void {
+    }
+
+    async updateUserPermissions(updatePermissionsDto: UpdateUserPermissionsDto): Promise<UserInfo | null> {
+        // Convert string IDs to ObjectId
+        const permissionObjectIds = updatePermissionsDto.permissions.map(permissionId => new Types.ObjectId(permissionId));
+
+        return this.userInfoModel.findOneAndUpdate(
+            { id: updatePermissionsDto.userId },
+            { permissions: permissionObjectIds },
+            { new: true }
+        ).exec();
+    }
+
+    async updateUserRoles(updateRolesDto: UpdateUserRolesDto): Promise<UserInfo | null> {
+        // Convert string IDs to ObjectId
+        const roleObjectIds = updateRolesDto.roles.map(roleId => new Types.ObjectId(roleId));
+
+        return this.userInfoModel.findOneAndUpdate(
+            { id: updateRolesDto.userId },
+            { roles: roleObjectIds },
+            { new: true }
+        ).exec();
     }
 }
