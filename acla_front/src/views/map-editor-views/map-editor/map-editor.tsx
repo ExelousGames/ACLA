@@ -103,7 +103,7 @@ const MapEditor = () => {
     }, [bezierPoints]);
 
     useEffect(() => {
-        if (prvCoords.current !== coords) {
+        if (prvCoords.current != coords) {
             // console.log("coords changed", coords);
             prvCoords.current = coords;
             console.log("coords", coords, "prvCoords", prvCoords.current);
