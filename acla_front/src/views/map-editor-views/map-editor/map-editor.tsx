@@ -437,35 +437,38 @@ const MapEditor = () => {
                                             x={turningPoint.position[0]} y={turningPoint.position[1]}
                                             draggable
                                             onDragMove={(e) => handleDragMove(e, turningPoint.index)}
-                                            onDragEnd={(e) => handleDragEnd(e, turningPoint.index)}>
+                                            onDragEnd={(e) => handleDragEnd(e, turningPoint.index)}
+                                            onMouseEnter={() => handleDisplayMenu(true, turningPoint.index)}
+                                            onMouseLeave={() => handleDisplayMenu(false, turningPoint.index)}>
+                                            {turningPoint.isMenuOpen &&
+                                                <Html>
+                                                    <Circle key={turningPoint.index} radius={10} fill={"green"} name={turningPoint.index.toString()} />
+                                                    <HoverCard.Root>
+                                                        <HoverCard.Trigger asChild>
+                                                            <a
+                                                                className="ImageTrigger"
+                                                                target="_blank"
+                                                                rel="noreferrer noopener"
+                                                            >
+                                                                <img
+                                                                    className="Image normal"
+                                                                    src="https://pbs.twimg.com/profile_images/1337055608613253126/r_eiMp2H_400x400.png"
+                                                                    alt="Radix UI"
+                                                                />
+                                                            </a>
+                                                        </HoverCard.Trigger>
 
-                                            <Html>
-                                                <HoverCard.Root>
-                                                    <HoverCard.Trigger asChild>
-                                                        <a
-                                                            className="ImageTrigger"
-                                                            target="_blank"
-                                                            rel="noreferrer noopener"
-                                                        >
-                                                            <img
-                                                                className="Image normal"
-                                                                src="https://pbs.twimg.com/profile_images/1337055608613253126/r_eiMp2H_400x400.png"
-                                                                alt="Radix UI"
-                                                            />
-                                                        </a>
-                                                    </HoverCard.Trigger>
+                                                        <HoverCard.Portal>
+                                                            <HoverCard.Content className="HoverCardContent" sideOffset={5}>
+                                                                <div className="DropdownMenuItem" color="red" onSelect={() => deleteTurningPoint(turningPoint.index)}>
+                                                                    Delete
+                                                                </div>
+                                                            </HoverCard.Content>
+                                                        </HoverCard.Portal>
+                                                    </HoverCard.Root>
+                                                </Html>
+                                            }
 
-                                                    <HoverCard.Portal>
-                                                        <HoverCard.Content className="HoverCardContent" sideOffset={5}>
-                                                            <div className="DropdownMenuItem" color="red" onSelect={() => deleteTurningPoint(turningPoint.index)}>
-                                                                Delete
-                                                            </div>
-                                                        </HoverCard.Content>
-                                                    </HoverCard.Portal>
-                                                </HoverCard.Root>
-                                            </Html>
-
-                                            <Circle key={turningPoint.index} radius={10} fill={"green"} name={turningPoint.index.toString()} />
                                         </Group>
                                     ))}
                             </Layer>
