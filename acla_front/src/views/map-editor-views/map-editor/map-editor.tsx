@@ -221,6 +221,17 @@ const MapEditor = () => {
 
     };
 
+    const handleEnterPoint = (id: any) => {
+        if (timeoutRef.current) {
+            clearTimeout(timeoutRef.current);
+            timeoutRef.current = null;
+        }
+        setActiveMenu(id);
+    }
+
+    const handleLeavePoint = (id: any) => {
+    }
+
     const handleEnterMenu = (id: any) => {
         // Clear any existing timeout to close menu
         if (timeoutRef.current) {
@@ -501,8 +512,8 @@ const MapEditor = () => {
                                             draggable
                                             onDragMove={(e) => handleDragMove(e, turningPoint.index)}
                                             onDragEnd={(e) => handleDragEnd(e, turningPoint.index)}
-                                            onMouseEnter={() => handleEnterMenu(turningPoint.index)}
-                                            onMouseLeave={() => handleLeaveMenu(turningPoint.index)}>
+                                            onMouseEnter={() => handleEnterPoint(turningPoint.index)}
+                                            onMouseLeave={() => handleLeavePoint(turningPoint.index)}>
                                             <Circle key={turningPoint.index} radius={10} fill={"green"} name={turningPoint.index.toString()} />
 
                                             <Html >
