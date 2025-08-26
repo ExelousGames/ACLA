@@ -105,6 +105,8 @@ const MapEditor = () => {
     useEffect(() => {
         if (prvCoords.current.x !== coords.x || prvCoords.current.y !== coords.y) {
             prvCoords.current = { ...coords };
+            console.log("mouse moved", coords);
+            console.log("pre")
         }
     }, [coords]);
 
