@@ -432,19 +432,18 @@ const MapEditor = () => {
                                             isMenuOpen: boolean
                                         }) => (
 
-                                        <Group
+                                        <Group class
                                             key={turningPoint.index} id={`group-${turningPoint.index}`}
                                             x={turningPoint.position[0]} y={turningPoint.position[1]}
                                             draggable
                                             onDragMove={(e) => handleDragMove(e, turningPoint.index)}
                                             onDragEnd={(e) => handleDragEnd(e, turningPoint.index)}>
-                                            <Circle key={turningPoint.index} radius={10} fill={"green"} name={turningPoint.index.toString()} />
+
                                             <Html>
                                                 <HoverCard.Root>
                                                     <HoverCard.Trigger asChild>
                                                         <a
                                                             className="ImageTrigger"
-                                                            href="https://twitter.com/radix_ui"
                                                             target="_blank"
                                                             rel="noreferrer noopener"
                                                         >
@@ -464,23 +463,9 @@ const MapEditor = () => {
                                                         </HoverCard.Content>
                                                     </HoverCard.Portal>
                                                 </HoverCard.Root>
-
-                                                < DropdownMenu.Root>
-                                                    <DropdownMenu.Trigger asChild>
-                                                        <button className="IconButton" aria-label="Customise options">
-                                                            <HamburgerMenuIcon />
-                                                        </button>
-                                                    </DropdownMenu.Trigger>
-                                                    <DropdownMenu.Portal>
-                                                        <DropdownMenu.Content className="DropdownMenuContent" >
-                                                            <DropdownMenu.Separator />
-
-                                                        </DropdownMenu.Content>
-                                                    </DropdownMenu.Portal>
-                                                </DropdownMenu.Root>
-
-
                                             </Html>
+
+                                            <Circle key={turningPoint.index} radius={10} fill={"green"} name={turningPoint.index.toString()} />
                                         </Group>
                                     ))}
                             </Layer>
@@ -494,6 +479,23 @@ const MapEditor = () => {
         </div>
     );
 
+
+    /*
+      < DropdownMenu.Root>
+                                                    <DropdownMenu.Trigger asChild>
+                                                        <button className="IconButton" aria-label="Customise options">
+                                                            <HamburgerMenuIcon />
+                                                        </button>
+                                                    </DropdownMenu.Trigger>
+                                                    <DropdownMenu.Portal>
+                                                        <DropdownMenu.Content className="DropdownMenuContent" >
+                                                            <DropdownMenu.Separator />
+
+                                                        </DropdownMenu.Content>
+                                                    </DropdownMenu.Portal>
+                                                </DropdownMenu.Root>
+
+*/
 
 };
 
