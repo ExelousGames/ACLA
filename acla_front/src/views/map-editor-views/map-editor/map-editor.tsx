@@ -115,7 +115,7 @@ const MapEditor = () => {
         const isMovingTowardMenu = (dx * mouseDx + dy * mouseDy) > 0;
 
         if (isMovingTowardMenu) {
-
+            console.log("moving toward menu");
             // If moving toward menu, clear any existing timeout for closing menu
             if (timeoutRef.current) {
                 clearTimeout(timeoutRef.current);
