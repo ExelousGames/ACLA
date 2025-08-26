@@ -128,10 +128,9 @@ const MapEditor = () => {
 
         // Calculate dot product to check if mouse is moving toward menu
         const dot = dx * toMenuX + dy * toMenuY;
-        const isMovingTowardMenu = dot > 0;
+        const isMovingTowardMenu = dot >= 0;
 
         if (isMovingTowardMenu) {
-            console.log("moving toward menu");
             // If moving toward menu, clear any existing timeout for closing menu
             if (timeoutRef.current) {
                 clearTimeout(timeoutRef.current);
@@ -221,9 +220,6 @@ const MapEditor = () => {
     };
 
     const handleEnterMenu = (id: any) => {
-        // Prevent opening menu for the same id again
-        //if (activeMenu === id) return;
-
         // Clear any existing timeout to close menu
         if (timeoutRef.current) {
             clearTimeout(timeoutRef.current);
