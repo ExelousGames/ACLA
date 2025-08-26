@@ -440,9 +440,10 @@ const MapEditor = () => {
                                             onDragEnd={(e) => handleDragEnd(e, turningPoint.index)}
                                             onMouseEnter={() => handleDisplayMenu(true, turningPoint.index)}
                                             onMouseLeave={() => handleDisplayMenu(false, turningPoint.index)}>
-                                            {turningPoint.isMenuOpen &&
-                                                <Html>
-                                                    <Circle key={turningPoint.index} radius={10} fill={"green"} name={turningPoint.index.toString()} />
+
+                                            <Html>
+                                                <Circle key={turningPoint.index} radius={10} fill={"green"} name={turningPoint.index.toString()} />
+                                                {turningPoint.isMenuOpen &&
                                                     <HoverCard.Root>
                                                         <HoverCard.Trigger asChild>
                                                             <a
@@ -466,8 +467,9 @@ const MapEditor = () => {
                                                             </HoverCard.Content>
                                                         </HoverCard.Portal>
                                                     </HoverCard.Root>
-                                                </Html>
-                                            }
+                                                }
+                                            </Html>
+
 
                                         </Group>
                                     ))}
