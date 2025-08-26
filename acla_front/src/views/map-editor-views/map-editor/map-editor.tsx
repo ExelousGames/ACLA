@@ -57,15 +57,33 @@ const MapEditor = () => {
     const [racingLineBezierPoints, setRacingLineBezierPoints] = useState<BezierPoints[]>([]);
     const [iterations, setIterations] = useState<number>(10);
     const [mapImage] = useImage(image);
+
+    //record mouse coord
+    const [coords, setCoords] = useState({ x: 0, y: 0 });
+
+    // Reference to the menu element
+    const menuRef = useRef<HTMLDivElement | null>(null);
+
+    // Track which menu is active (by point index), null if none
+    const [activeMenu, setActiveMenu] = useState<number | null>(null);
+
+    // Timeout reference for delaying menu close
+    const timeoutRef = useRef<NodeJS.Timeout | null>(null);
+
     // Reference to parent container
     const containerRef = useRef<HTMLInputElement>(null);
 
     ///////////////functions////////////////////
 
-    // Update on mount and when window resizes
+    // Update on mount and when window resizes, track mouse movement
     useEffect(() => {
         updateSize();
         createInitialShapes();
+        const handleMouseMove = (e: { clientX: any; clientY: any; }) => {
+            setCoords({ x: e.clientX, y: e.clientY });
+        };
+        window.addEventListener('mousemove', handleMouseMove);
+        return () => window.removeEventListener('mousemove', handleMouseMove);
     }, []);
 
     //recalculate controlling position for bezier curve since the turning position changed
@@ -76,9 +94,31 @@ const MapEditor = () => {
 
     //after turning points updated, we can update the racing line in the next frame
     useEffect(() => {
+        /*
         calculateAndDrawRacingLine();
-
+        */
     }, [bezierPoints]);
+
+
+    // Check if mouse is moving toward menu
+    useEffect(() => {
+        if (activeMenu === null || !menuRef.current) return;
+
+        const menuRect = menuRef.current.getBoundingClientRect();
+        const isMovingTowardMenu =
+            (coords.x < menuRect.left && coords.x > menuRect.left - 100) ||
+            (coords.x > menuRect.right && coords.x < menuRect.right + 100) ||
+            (coords.y < menuRect.top && coords.y > menuRect.top - 100) ||
+            (coords.y > menuRect.bottom && coords.y < menuRect.bottom + 100);
+
+        if (isMovingTowardMenu) {
+            if (timeoutRef.current) {
+                clearTimeout(timeoutRef.current);
+                timeoutRef.current = null;
+            }
+        }
+    }, [coords, activeMenu]);
+
 
     // Function to handle resize
     const updateSize = () => {
@@ -160,7 +200,13 @@ const MapEditor = () => {
 
     };
 
-    const handleDisplayMenu = (value: boolean, id: any) => {
+    const handleEnterMenu = (id: any) => {
+
+        if (timeoutRef.current) {
+            clearTimeout(timeoutRef.current);
+            timeoutRef.current = null;
+        }
+
         //use setTurningPoints, it triggers ui refresh
         setTurningPoints(turningPoints.map(
             (turningPoint: {
@@ -173,9 +219,24 @@ const MapEditor = () => {
                 isMenuOpen: boolean
             }) => {
                 if (turningPoint.index !== id) return turningPoint;
-                return { ...turningPoint, isMenuOpen: value }
+                return { ...turningPoint, isMenuOpen: true }
             }
         ));
+    };
+
+    const handleLeaveMenu = (id: any) => {
+        timeoutRef.current = setTimeout(() => {
+            //use setTurningPoints, it triggers ui refresh
+            setTurningPoints(turningPoints.map(
+                (tp) => {
+                    return tp.index === id
+                        ? { ...tp, isMenuOpen: false }
+                        : tp
+                }
+            ));
+        }, 300); // Reduced delay for better UX
+
+
     };
 
     function calculateAndDrawRacingLine() {
@@ -432,19 +493,23 @@ const MapEditor = () => {
                                             isMenuOpen: boolean
                                         }) => (
 
-                                        <Group class
+                                        <Group
                                             key={turningPoint.index} id={`group-${turningPoint.index}`}
                                             x={turningPoint.position[0]} y={turningPoint.position[1]}
                                             draggable
                                             onDragMove={(e) => handleDragMove(e, turningPoint.index)}
                                             onDragEnd={(e) => handleDragEnd(e, turningPoint.index)}
-                                            onMouseEnter={() => handleDisplayMenu(true, turningPoint.index)}
-                                            onMouseLeave={() => handleDisplayMenu(false, turningPoint.index)}>
+                                            onMouseEnter={() => handleEnterMenu(turningPoint.index)}
+                                            onMouseLeave={() => handleLeaveMenu(turningPoint.index)}>
                                             <Circle key={turningPoint.index} radius={10} fill={"green"} name={turningPoint.index.toString()} />
                                             {turningPoint.isMenuOpen &&
-                                                <Html>
-
-                                                    <HoverCard.Root>
+                                                <Html >
+                                                    <div
+                                                        ref={activeMenu === turningPoint.index ? menuRef : undefined}
+                                                        onMouseEnter={() => handleEnterMenu(turningPoint.index)}
+                                                        onMouseLeave={() => handleLeaveMenu(turningPoint.index)}>
+                                                    </div>
+                                                    <HoverCard.Root >
                                                         <HoverCard.Trigger asChild>
                                                             <a
                                                                 className="ImageTrigger"
