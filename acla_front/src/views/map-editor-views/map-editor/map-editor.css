@@ -200,6 +200,7 @@ a {
 }
 
 .HoverCardContent {
+    margin-left: 3px;
     border-radius: 6px;
     padding: 20px;
     width: 300px;
