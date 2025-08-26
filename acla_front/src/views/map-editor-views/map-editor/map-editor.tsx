@@ -57,11 +57,15 @@ const MapEditor = () => {
     const [iterations, setIterations] = useState<number>(10);
     const [mapImage] = useImage(image);
 
-    //record mouse coord
-    const coords = useRef({ x: 0, y: 0 });
+    // trigger useeffect when mouse move, used to detect mouse movement direction
+    const [mouseMovement, setMouseMovement] = useState({ x: 0, y: 0 });
+
+    //record mouse coord, need the coordinate immediately when mouse move, useRef is used to persist value without causing re-render
+    const currCoords = useRef({ x: 0, y: 0 });
 
     // reference to previous mouse coords, useRef is used to persist value without causing re-render
     const prvCoords = useRef({ x: 0, y: 0 });
+
     // Reference to the menu element
     const menuRef = useRef<HTMLDivElement | null>(null);
 
@@ -81,8 +85,10 @@ const MapEditor = () => {
         updateSize();
         createInitialShapes();
         const handleMouseMove = (e: any) => {
-            prvCoords.current = { x: coords.current.x, y: coords.current.y };
-            coords.current = { x: e.clientX, y: e.clientY };
+            prvCoords.current = { x: currCoords.current.x, y: currCoords.current.y };
+            currCoords.current = { x: e.clientX, y: e.clientY };
+            setMouseMovement({ x: e.clientX, y: e.clientY });
+
         };
         window.addEventListener('mousemove', handleMouseMove);
         return () => window.removeEventListener('mousemove', handleMouseMove);
@@ -107,8 +113,8 @@ const MapEditor = () => {
 
         const menuRect = menuRef.current.getBoundingClientRect();
         // Calculate mouse movement vector  
-        const dx = coords.current.x - prvCoords.current.x;
-        const dy = coords.current.y - prvCoords.current.y;
+        const dx = currCoords.current.x - prvCoords.current.x;
+        const dy = currCoords.current.y - prvCoords.current.y;
 
         // Calculate vector from previous mouse position to menu center
         const menuCenter = {
@@ -134,7 +140,7 @@ const MapEditor = () => {
                 timeoutRef.current = null;
             }
         }
-    }, [coords, activeMenu]);
+    }, [mouseMovement, activeMenu]);
 
 
     // Function to handle resize
