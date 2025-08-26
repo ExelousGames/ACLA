@@ -112,8 +112,8 @@ const MapEditor = () => {
 
         // Calculate vector from previous mouse position to menu center
         const menuCenter = {
-            x: menuRect.left + menuRect.width / 2,
-            y: menuRect.top + menuRect.height / 2,
+            x: menuRect.x + menuRect.width / 2,
+            y: menuRect.y + menuRect.height / 2,
         };
         const toMenuX = menuCenter.x - prvCoords.x;
         const toMenuY = menuCenter.y - prvCoords.y;
@@ -124,7 +124,7 @@ const MapEditor = () => {
 
         console.log("menuRect", menuRect);
         console.log("menuRect", menuCenter);
-        console.log("coords", coords);
+        console.log("dx", dx, "dy", dy);
 
         if (isMovingTowardMenu) {
             console.log("moving toward menu");
