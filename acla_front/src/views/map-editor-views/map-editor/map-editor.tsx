@@ -105,8 +105,6 @@ const MapEditor = () => {
     useEffect(() => {
         if (prvCoords.current.x !== coords.x || prvCoords.current.y !== coords.y) {
             prvCoords.current = { ...coords };
-            console.log("mouse moved", coords);
-            console.log("prev mouse", prvCoords.current);
         }
     }, [coords]);
 
@@ -133,10 +131,10 @@ const MapEditor = () => {
 
         // console.log("menuRect", menuRect);
         // console.log("menuRect", menuCenter);
-
+        console.log("mouse move vector", { dx, dy });
 
         if (isMovingTowardMenu) {
-            // console.log("moving toward menu");
+            console.log("moving toward menu");
             // If moving toward menu, clear any existing timeout for closing menu
             if (timeoutRef.current) {
                 clearTimeout(timeoutRef.current);
