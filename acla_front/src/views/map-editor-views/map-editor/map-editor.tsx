@@ -199,6 +199,8 @@ const MapEditor = () => {
     };
 
     const handleEnterMenu = (id: any) => {
+        // Prevent opening menu for the same id again
+        if (activeMenu === id) return;
 
         // Clear any existing timeout to close menu
         if (timeoutRef.current) {
