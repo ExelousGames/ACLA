@@ -218,7 +218,7 @@ const MapEditor = () => {
             clearTimeout(timeoutRef.current);
             timeoutRef.current = null;
         }
-
+        console.log("close menu", id);
         timeoutRef.current = setTimeout(() => {
             setActiveMenu(null);
         }, 300); // Reduced delay for better UX
