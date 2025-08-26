@@ -106,7 +106,7 @@ const MapEditor = () => {
         if (activeMenu === null || !menuRef.current) return;
 
         const menuRect = menuRef.current.getBoundingClientRect();
-        console.log("menuRect", menuRect);
+        // Calculate mouse movement vector  
         const dx = coords.x - prvCoords.x;
         const dy = coords.y - prvCoords.y;
 
@@ -121,6 +121,9 @@ const MapEditor = () => {
         // Calculate dot product to check if mouse is moving toward menu
         const dot = dx * toMenuX + dy * toMenuY;
         const isMovingTowardMenu = dot > 0;
+
+        console.log("menuRect", menuRect);
+        console.log("menuRect", menuCenter);
 
         if (isMovingTowardMenu) {
             console.log("moving toward menu");
