@@ -80,7 +80,7 @@ const MapEditor = () => {
     useEffect(() => {
         updateSize();
         createInitialShapes();
-        const handleMouseMove = (e: { clientX: any; clientY: any; }) => {
+        const handleMouseMove = (e: any) => {
             prvCoords.current = { x: coords.x, y: coords.y };
 
 
@@ -88,6 +88,7 @@ const MapEditor = () => {
 
             console.log("prvCoords", prvCoords.current);
             console.log("coords", coords);
+            console.log(e);
         };
         window.addEventListener('mousemove', handleMouseMove);
         return () => window.removeEventListener('mousemove', handleMouseMove);
