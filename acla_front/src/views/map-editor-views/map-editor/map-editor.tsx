@@ -57,10 +57,10 @@ const MapEditor = () => {
     const [iterations, setIterations] = useState<number>(10);
     const [mapImage] = useImage(image);
 
-    // trigger useeffect when mouse move, used to detect mouse movement direction
+    // trigger useffect when mouse move, used to detect mouse movement direction
     const [mouseMovement, setMouseMovement] = useState({ x: 0, y: 0 });
 
-    //record mouse coord, need the coordinate immediately when mouse move, useRef is used to persist value without causing re-render
+    //record mouse coord, used for calculating mouse movement direction. we must store current and previous data at the same time
     const currCoords = useRef({ x: 0, y: 0 });
 
     // reference to previous mouse coords, useRef is used to persist value without causing re-render
@@ -87,6 +87,8 @@ const MapEditor = () => {
         const handleMouseMove = (e: any) => {
             prvCoords.current = { x: currCoords.current.x, y: currCoords.current.y };
             currCoords.current = { x: e.clientX, y: e.clientY };
+
+            //trigger a re-render
             setMouseMovement({ x: e.clientX, y: e.clientY });
 
         };
@@ -127,10 +129,6 @@ const MapEditor = () => {
         // Calculate dot product to check if mouse is moving toward menu
         const dot = dx * toMenuX + dy * toMenuY;
         const isMovingTowardMenu = dot > 0;
-
-        // console.log("menuRect", menuRect);
-        // console.log("menuRect", menuCenter);
-        console.log("mouse move vector", { dx, dy });
 
         if (isMovingTowardMenu) {
             console.log("moving toward menu");
