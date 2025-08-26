@@ -24,7 +24,6 @@ type RacingTurningPoint = {
     variables?: [{ key: string, value: string }],
 
     //variables will not be saved
-    isMenuOpen: boolean
 };
 type CurbTurningPoint = { id: number, position: Point };
 type BezierPoints = { id: number, position: Point };
@@ -163,7 +162,6 @@ const MapEditor = () => {
             description?: string,
             info?: string,
             variables?: [{ key: string, value: string }],
-            isMenuOpen: boolean
         }) => {
             if (turningPoint.index !== id) return turningPoint;
 
@@ -207,15 +205,7 @@ const MapEditor = () => {
             clearTimeout(timeoutRef.current);
             timeoutRef.current = null;
         }
-
         setActiveMenu(id);
-
-        //use setTurningPoints, it triggers ui refresh
-        setTurningPoints(turningPoints.map(
-            (turningPoint) => {
-                return (turningPoint.index !== id) ? turningPoint : { ...turningPoint, isMenuOpen: true }
-            }
-        ));
     };
 
     const handleLeaveMenu = (id: any) => {
@@ -223,17 +213,7 @@ const MapEditor = () => {
         // Start timeout to close menu after delay
         timeoutRef.current = setTimeout(() => {
             setActiveMenu(null);
-            //use setTurningPoints, it triggers ui refresh
-            setTurningPoints(turningPoints.map(
-                (tp) => {
-                    return tp.index === id
-                        ? { ...tp, isMenuOpen: false }
-                        : tp
-                }
-            ));
         }, 300); // Reduced delay for better UX
-
-
     };
 
     function calculateAndDrawRacingLine() {
@@ -487,7 +467,6 @@ const MapEditor = () => {
                                             description?: string,
                                             info?: string,
                                             variables?: [{ key: string, value: string }],
-                                            isMenuOpen: boolean
                                         }) => (
 
                                         <Group
