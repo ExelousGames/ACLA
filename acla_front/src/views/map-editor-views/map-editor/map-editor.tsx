@@ -81,7 +81,13 @@ const MapEditor = () => {
         updateSize();
         createInitialShapes();
         const handleMouseMove = (e: { clientX: any; clientY: any; }) => {
+            prvCoords.current = { x: coords.x, y: coords.y };
+
+
             setCoords({ x: e.clientX, y: e.clientY });
+
+            console.log("prvCoords", prvCoords.current);
+            console.log("coords", coords);
         };
         window.addEventListener('mousemove', handleMouseMove);
         return () => window.removeEventListener('mousemove', handleMouseMove);
@@ -99,14 +105,6 @@ const MapEditor = () => {
         calculateAndDrawRacingLine();
         */
     }, [bezierPoints]);
-
-    useEffect(() => {
-        if (prvCoords.current.x !== coords.x || prvCoords.current.y !== coords.y) {
-            prvCoords.current = { ...coords };
-            console.log("mouse move", coords);
-            console.log("prv mouse move", prvCoords.current);
-        }
-    }, [coords]);
 
     // Check if mouse is moving toward menu
     useEffect(() => {
