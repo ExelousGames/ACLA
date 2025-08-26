@@ -106,7 +106,7 @@ const MapEditor = () => {
         if (activeMenu === null || !menuRef.current) return;
 
         const menuRect = menuRef.current.getBoundingClientRect();
-        console
+        console.log("menuRect", menuRect);
         const dx = coords.x - prvCoords.x;
         const dy = coords.y - prvCoords.y;
 
