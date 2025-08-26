@@ -59,8 +59,9 @@ const MapEditor = () => {
 
     //record mouse coord
     const [coords, setCoords] = useState({ x: 0, y: 0 });
-    const [prvCoords, setPrvCoords] = useState({ x: 0, y: 0 });
 
+    // reference to previous mouse coords, useRef is used to persist value without causing re-render
+    const prvCoords = useRef({ x: 0, y: 0 });
     // Reference to the menu element
     const menuRef = useRef<HTMLDivElement | null>(null);
 
@@ -80,11 +81,8 @@ const MapEditor = () => {
         updateSize();
         createInitialShapes();
         const handleMouseMove = (e: { clientX: any; clientY: any; }) => {
-            setPrvCoords(coords);
+            prvCoords.current = { x: coords.x, y: coords.y };
             setCoords({ x: e.clientX, y: e.clientY });
-            const dx = coords.x - prvCoords.x;
-            const dy = coords.y - prvCoords.y;
-            console.log("dx", dx, "dy", dy);
         };
         window.addEventListener('mousemove', handleMouseMove);
         return () => window.removeEventListener('mousemove', handleMouseMove);
@@ -110,16 +108,16 @@ const MapEditor = () => {
 
         const menuRect = menuRef.current.getBoundingClientRect();
         // Calculate mouse movement vector  
-        const dx = coords.x - prvCoords.x;
-        const dy = coords.y - prvCoords.y;
+        const dx = coords.x - prvCoords.current.x;
+        const dy = coords.y - prvCoords.current.y;
 
         // Calculate vector from previous mouse position to menu center
         const menuCenter = {
             x: menuRect.x + menuRect.width / 2,
             y: menuRect.y + menuRect.height / 2,
         };
-        const toMenuX = menuCenter.x - prvCoords.x;
-        const toMenuY = menuCenter.y - prvCoords.y;
+        const toMenuX = menuCenter.x - prvCoords.current.x;
+        const toMenuY = menuCenter.y - prvCoords.current.y;
 
         // Calculate dot product to check if mouse is moving toward menu
         const dot = dx * toMenuX + dy * toMenuY;
