@@ -59,6 +59,7 @@ const MapEditor = () => {
 
     //record mouse coord
     const [coords, setCoords] = useState({ x: 0, y: 0 });
+    const [prvCoords, setPrvCoords] = useState({ x: 0, y: 0 });
 
     // Reference to the menu element
     const menuRef = useRef<HTMLDivElement | null>(null);
@@ -79,6 +80,7 @@ const MapEditor = () => {
         updateSize();
         createInitialShapes();
         const handleMouseMove = (e: { clientX: any; clientY: any; }) => {
+            setPrvCoords(coords);
             setCoords({ x: e.clientX, y: e.clientY });
         };
         window.addEventListener('mousemove', handleMouseMove);
@@ -104,15 +106,18 @@ const MapEditor = () => {
         if (activeMenu === null || !menuRef.current) return;
 
         const menuRect = menuRef.current.getBoundingClientRect();
-        const isMovingTowardMenu =
-            (coords.x < menuRect.left && coords.x > menuRect.left - 100) ||
-            (coords.x > menuRect.right && coords.x < menuRect.right + 100) ||
-            (coords.y < menuRect.top && coords.y > menuRect.top - 100) ||
-            (coords.y > menuRect.bottom && coords.y < menuRect.bottom + 100);
+        // Calculate if the mouse is moving toward the menu
+        const dx = menuRect.left + menuRect.width / 2 - prvCoords.x;
+        const dy = menuRect.top + menuRect.height / 2 - prvCoords.y;
+        const mouseDx = coords.x - prvCoords.x;
+        const mouseDy = coords.y - prvCoords.y;
+        // Dot product to check if mouse movement is toward the menu center
+        const isMovingTowardMenu = (dx * mouseDx + dy * mouseDy) > 0;
 
         if (isMovingTowardMenu) {
+
+            // If moving toward menu, clear any existing timeout for closing menu
             if (timeoutRef.current) {
-                console.log("moving toward menu, clear timeout");
                 clearTimeout(timeoutRef.current);
                 timeoutRef.current = null;
             }
