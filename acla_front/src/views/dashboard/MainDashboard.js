@@ -1,5 +1,6 @@
 import React, { createContext, useState } from 'react';
 import { useAuth } from "hooks/AuthProvider";
+import ProtectedComponent from '../../components/ProtectedComponent';
 import './MainDashboard.css';
 import {
     Avatar,
@@ -33,14 +34,32 @@ const MainDashboard = ({ onTaskCreated }) => {
     const auth = useAuth();
 
     const [mainMenuOptionSelected, setMainMenuOption] = useState(MainMenuOptions.LIVE_ANALYSIS);
+    
     return (
-
         <MainMenuOptionSelectionContext value={[mainMenuOptionSelected, setMainMenuOption]}>
             <HeaderMenu></HeaderMenu>
             <SideMainMenu></SideMainMenu>
-
+            
+            {/* Example of using ProtectedComponent for conditional rendering */}
+            <ProtectedComponent 
+                requiredPermission={{ action: 'create', resource: 'user' }}
+                fallback={<Text>You don't have permission to create users</Text>}
+            >
+                <Box p="4">
+                    <Text>Admin Panel - Create Users</Text>
+                    <Button>Create New User</Button>
+                </Box>
+            </ProtectedComponent>
+            
+            <ProtectedComponent 
+                requiredRole="admin"
+                fallback={<Text>Admin access required</Text>}
+            >
+                <Box p="4">
+                    <Text>Admin Only Section</Text>
+                </Box>
+            </ProtectedComponent>
         </MainMenuOptionSelectionContext>
-
     );
 };
 

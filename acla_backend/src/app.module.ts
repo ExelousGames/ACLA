@@ -5,6 +5,7 @@ import { UserInfoModule } from './modules/user-info/user-info.module';
 import { MongooseModule } from '@nestjs/mongoose';
 import { ThrottlerModule } from '@nestjs/throttler';
 import { AuthModule } from './shared/auth/auth.module';
+import { AuthorizationModule } from './shared/authorization/authorization.module';
 import { RacingMapModule } from './modules/map/racing-map.module';
 import { RacingSessionModule } from './modules/racing-session/racing-session.module';
 
@@ -17,6 +18,7 @@ import { RacingSessionModule } from './modules/racing-session/racing-session.mod
     // address is 'mongodb_c' since we are connecting another docker. 'mongodb_c' is the name of the db docker
     MongooseModule.forRoot('mongodb://' + process.env.MONGO_CLIENTNAME + ':' + process.env.MONGO_CLIENTPASSWORD + '@' + process.env.MONGO_URL + ':27017/ACLA'),
     AuthModule,
+    AuthorizationModule,
     RacingMapModule,
     UserInfoModule,
     RacingSessionModule

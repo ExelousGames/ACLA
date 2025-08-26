@@ -8,3 +8,13 @@ export class CreateUserInfoDto {
     email: string;
 
 }
+
+export class UpdateUserPermissionsDto {
+    userId: string;
+    permissions: string[]; // Array of permission IDs
+}
+
+export class UpdateUserRolesDto {
+    userId: string;
+    roles: string[]; // Array of role IDs
+}
