@@ -106,9 +106,12 @@ const MapEditor = () => {
         if (activeMenu === null || !menuRef.current) return;
 
         const menuRect = menuRef.current.getBoundingClientRect();
-        // Calculate if the mouse is moving toward the menu
+
+        // Vector from previous mouse position to menu center
         const dx = menuRect.left + menuRect.width / 2 - prvCoords.x;
         const dy = menuRect.top + menuRect.height / 2 - prvCoords.y;
+
+        // Vector from previous mouse position to current mouse position
         const mouseDx = coords.x - prvCoords.x;
         const mouseDy = coords.y - prvCoords.y;
         // Dot product to check if mouse movement is toward the menu center
@@ -492,19 +495,20 @@ const MapEditor = () => {
                                             <Circle key={turningPoint.index} radius={10} fill={"green"} name={turningPoint.index.toString()} />
 
                                             <Html >
-                                                {turningPoint.index === activeMenu && <div
-                                                    ref={activeMenu === turningPoint.index ? menuRef : undefined}
-                                                    onMouseEnter={() => handleEnterMenu(turningPoint.index)}
-                                                    onMouseLeave={() => handleLeaveMenu(turningPoint.index)}>
+                                                {turningPoint.index === activeMenu &&
+                                                    <div
+                                                        ref={activeMenu === turningPoint.index ? menuRef : undefined}
+                                                        onMouseEnter={() => handleEnterMenu(turningPoint.index)}
+                                                        onMouseLeave={() => handleLeaveMenu(turningPoint.index)}>
 
-                                                    <div onClick={() => deleteTurningPoint(turningPoint.index)}>
-                                                        <IconButton variant="ghost" size="2" >
-                                                            <PlusIcon style={{ transform: 'rotate(45deg)' }} />
-                                                        </IconButton>
-                                                        Delete this turning point
+                                                        <div onClick={() => deleteTurningPoint(turningPoint.index)}>
+                                                            <IconButton variant="ghost" size="2" >
+                                                                <PlusIcon style={{ transform: 'rotate(45deg)' }} />
+                                                            </IconButton>
+                                                            Delete this turning point
+                                                        </div>
+
                                                     </div>
-
-                                                </div>
                                                 }
                                             </Html>
 
