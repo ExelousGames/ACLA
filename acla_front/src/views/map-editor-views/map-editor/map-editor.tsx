@@ -478,24 +478,24 @@ const MapEditor = () => {
                                             onMouseEnter={() => handleEnterMenu(turningPoint.index)}
                                             onMouseLeave={() => handleLeaveMenu(turningPoint.index)}>
                                             <Circle key={turningPoint.index} radius={10} fill={"green"} name={turningPoint.index.toString()} />
-                                            {turningPoint.index === activeMenu &&
-                                                <Html >
-                                                    <div
-                                                        ref={activeMenu === turningPoint.index ? menuRef : undefined}
-                                                        onMouseEnter={() => handleEnterMenu(turningPoint.index)}
-                                                        onMouseLeave={() => handleLeaveMenu(turningPoint.index)}>
 
-                                                        <div onClick={() => deleteTurningPoint(turningPoint.index)}>
-                                                            <IconButton variant="ghost" size="2" >
-                                                                <PlusIcon style={{ transform: 'rotate(45deg)' }} />
-                                                            </IconButton>
-                                                            Delete this turning point
-                                                        </div>
+                                            <Html >
+                                                {turningPoint.index === activeMenu && <div
+                                                    ref={activeMenu === turningPoint.index ? menuRef : undefined}
+                                                    onMouseEnter={() => handleEnterMenu(turningPoint.index)}
+                                                    onMouseLeave={() => handleLeaveMenu(turningPoint.index)}>
 
+                                                    <div onClick={() => deleteTurningPoint(turningPoint.index)}>
+                                                        <IconButton variant="ghost" size="2" >
+                                                            <PlusIcon style={{ transform: 'rotate(45deg)' }} />
+                                                        </IconButton>
+                                                        Delete this turning point
                                                     </div>
 
-                                                </Html>
-                                            }
+                                                </div>
+                                                }
+                                            </Html>
+
 
                                         </Group>
                                     ))}
