@@ -134,8 +134,8 @@ const MapEditor = () => {
             // If moving toward menu, clear any existing timeout for closing menu
             if (timeoutRef.current) {
                 console.log("clear timeout on moving toward menu");
-                clearTimeout(timeoutRef.current);
-                timeoutRef.current = null;
+                //clearTimeout(timeoutRef.current);
+                //timeoutRef.current = null;
             }
         }
     }, [mouseMovement, activeMenu]);
