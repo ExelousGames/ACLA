@@ -508,8 +508,8 @@ const MapEditor = () => {
                                                         ref={activeMenu === turningPoint.index ? menuRef : undefined}
                                                         onMouseEnter={() => handleEnterMenu(turningPoint.index)}
                                                         onMouseLeave={() => handleLeaveMenu(turningPoint.index)}>
-                                                        <div className="context-menu">
-                                                            <div className="context-menu-item" onClick={() => deleteTurningPoint(turningPoint.index)}>
+                                                        <div >
+                                                            <div onClick={() => deleteTurningPoint(turningPoint.index)}>
                                                                 <IconButton variant="ghost" size="2" >
                                                                     <PlusIcon style={{ transform: 'rotate(45deg)' }} />
                                                                 </IconButton>
