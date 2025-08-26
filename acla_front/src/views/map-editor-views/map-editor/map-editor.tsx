@@ -82,12 +82,7 @@ const MapEditor = () => {
         createInitialShapes();
         const handleMouseMove = (e: any) => {
             prvCoords.current = { x: coords.current.x, y: coords.current.y };
-
             coords.current = { x: e.clientX, y: e.clientY };
-
-            console.log("prvCoords", prvCoords.current);
-            console.log("coords", coords.current);
-            console.log(e);
         };
         window.addEventListener('mousemove', handleMouseMove);
         return () => window.removeEventListener('mousemove', handleMouseMove);
