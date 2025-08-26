@@ -82,6 +82,9 @@ const MapEditor = () => {
         const handleMouseMove = (e: { clientX: any; clientY: any; }) => {
             setPrvCoords(coords);
             setCoords({ x: e.clientX, y: e.clientY });
+            const dx = coords.x - prvCoords.x;
+            const dy = coords.y - prvCoords.y;
+            console.log("dx", dx, "dy", dy);
         };
         window.addEventListener('mousemove', handleMouseMove);
         return () => window.removeEventListener('mousemove', handleMouseMove);
@@ -124,7 +127,7 @@ const MapEditor = () => {
 
         console.log("menuRect", menuRect);
         console.log("menuRect", menuCenter);
-        console.log("dx", dx, "dy", dy);
+
 
         if (isMovingTowardMenu) {
             console.log("moving toward menu");
