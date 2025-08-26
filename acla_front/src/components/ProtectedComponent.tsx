@@ -11,6 +11,7 @@ interface ProtectedComponentProps {
     fallback?: React.ReactNode;
 }
 
+//this component checks for user permissions and roles, and renders the children if the user has the required permissions/roles
 const ProtectedComponent: React.FC<ProtectedComponentProps> = ({
     children,
     requiredPermission,
