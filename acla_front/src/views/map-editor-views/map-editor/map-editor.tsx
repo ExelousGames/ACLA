@@ -58,7 +58,7 @@ const MapEditor = () => {
     const [mapImage] = useImage(image);
 
     //record mouse coord
-    const [coords, setCoords] = useState({ x: 0, y: 0 });
+    const coords = useRef({ x: 0, y: 0 });
 
     // reference to previous mouse coords, useRef is used to persist value without causing re-render
     const prvCoords = useRef({ x: 0, y: 0 });
@@ -81,13 +81,12 @@ const MapEditor = () => {
         updateSize();
         createInitialShapes();
         const handleMouseMove = (e: any) => {
-            prvCoords.current = { x: coords.x, y: coords.y };
+            prvCoords.current = { x: coords.current.x, y: coords.current.y };
 
-
-            setCoords({ x: e.clientX, y: e.clientY });
+            coords.current = { x: e.clientX, y: e.clientY };
 
             console.log("prvCoords", prvCoords.current);
-            console.log("coords", coords);
+            console.log("coords", coords.current);
             console.log(e);
         };
         window.addEventListener('mousemove', handleMouseMove);
@@ -113,8 +112,8 @@ const MapEditor = () => {
 
         const menuRect = menuRef.current.getBoundingClientRect();
         // Calculate mouse movement vector  
-        const dx = coords.x - prvCoords.current.x;
-        const dy = coords.y - prvCoords.current.y;
+        const dx = coords.current.x - prvCoords.current.x;
+        const dy = coords.current.y - prvCoords.current.y;
 
         // Calculate vector from previous mouse position to menu center
         const menuCenter = {
