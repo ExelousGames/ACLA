@@ -35,10 +35,6 @@ const SideMainMenu = () => (
             <Tabs.Content className="TabsContent" value="mapEditor">
                 <MapEditorView></MapEditorView>
             </Tabs.Content>
-
-            <Tabs.Content className="TabsContent" value="settings">
-                <Text size="2">Edit your profile or update contact information.</Text>
-            </Tabs.Content>
         </Box >
 
     </Tabs.Root>
