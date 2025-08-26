@@ -202,30 +202,25 @@ const MapEditor = () => {
 
     const handleEnterMenu = (id: any) => {
 
+
         if (timeoutRef.current) {
             clearTimeout(timeoutRef.current);
             timeoutRef.current = null;
         }
-
+        setActiveMenu(id);
         //use setTurningPoints, it triggers ui refresh
         setTurningPoints(turningPoints.map(
-            (turningPoint: {
-                position: Point,
-                type: number,
-                index: number, //type and index are used together. some points are index sensitive
-                description?: string,
-                info?: string,
-                variables?: [{ key: string, value: string }],
-                isMenuOpen: boolean
-            }) => {
-                if (turningPoint.index !== id) return turningPoint;
-                return { ...turningPoint, isMenuOpen: true }
+            (turningPoint) => {
+                return (turningPoint.index !== id) ? turningPoint : { ...turningPoint, isMenuOpen: true }
             }
         ));
     };
 
     const handleLeaveMenu = (id: any) => {
+
+        // Start timeout to close menu after delay
         timeoutRef.current = setTimeout(() => {
+            setActiveMenu(null);
             //use setTurningPoints, it triggers ui refresh
             setTurningPoints(turningPoints.map(
                 (tp) => {
@@ -508,14 +503,14 @@ const MapEditor = () => {
                                                         ref={activeMenu === turningPoint.index ? menuRef : undefined}
                                                         onMouseEnter={() => handleEnterMenu(turningPoint.index)}
                                                         onMouseLeave={() => handleLeaveMenu(turningPoint.index)}>
-                                                        <div >
-                                                            <div onClick={() => deleteTurningPoint(turningPoint.index)}>
-                                                                <IconButton variant="ghost" size="2" >
-                                                                    <PlusIcon style={{ transform: 'rotate(45deg)' }} />
-                                                                </IconButton>
-                                                                Delete this turning point
-                                                            </div>
+
+                                                        <div onClick={() => deleteTurningPoint(turningPoint.index)}>
+                                                            <IconButton variant="ghost" size="2" >
+                                                                <PlusIcon style={{ transform: 'rotate(45deg)' }} />
+                                                            </IconButton>
+                                                            Delete this turning point
                                                         </div>
+
                                                     </div>
 
                                                 </Html>
