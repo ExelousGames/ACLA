@@ -1,0 +1,39 @@
+.user-profile-container {
+    padding: 2rem;
+    margin: 0 auto;
+}
+
+.user-profile-card {
+    padding: 2rem;
+    margin: 0 auto;
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+    border-radius: 12px;
+    background: var(--color-panel-solid);
+}
+
+.user-profile-card .rt-Flex {
+    width: 100%;
+}
+
+.user-profile-card .rt-Avatar {
+    border: 3px solid var(--accent-9);
+}
+
+.user-profile-card .rt-TextField {
+    width: 100%;
+}
+
+.user-profile-card .rt-Box {
+    width: 100%;
+}
+
+/* Responsive design */
+@media (max-width: 768px) {
+    .user-profile-container {
+        padding: 1rem;
+    }
+
+    .user-profile-card {
+        padding: 1.5rem;
+    }
+}

@@ -94,6 +94,19 @@ export class ApiService {
         }
     }
 
+    // File upload method
+    public async uploadFile<T>(url: string, formData: FormData): Promise<AxiosResponse<T>> {
+        try {
+            return await this.axiosInstance.post<T>(url, formData, {
+                headers: {
+                    'Content-Type': 'multipart/form-data',
+                }
+            });
+        } catch (error) {
+            throw error as ApiError;
+        }
+    }
+
 
     // Add other HTTP methods as needed (PUT, DELETE, etc.)
 };

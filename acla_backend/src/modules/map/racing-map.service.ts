@@ -33,4 +33,58 @@ export class RacingMapService {
         }
 
     }
+
+    async uploadMapImage(mapName: string, file: any): Promise<{ success: boolean; message: string }> {
+        try {
+
+            // Validate the uploaded file
+            if (!file) {
+                return { success: false, message: 'No file provided' };
+            }
+
+            // Find the existing map by name
+            const existingMap = await this.racingMap.findOne({ name: mapName }).exec();
+
+            if (!existingMap) {
+                return { success: false, message: 'Map not found' };
+            }
+
+            // Update the map with the new image data
+            existingMap.ImageData = file.buffer;
+            existingMap.mimetype = file.mimetype;
+            await existingMap.save();
+
+            return { success: true, message: 'Image uploaded successfully' };
+        } catch (error) {
+            return { success: false, message: `Failed to upload image: ${error.message}` };
+        }
+    }
+
+    /**
+     * Get the image data and mimetype for a specific map
+     * @param mapName The name of the map
+     * @returns The image data and mimetype, or null if not found
+     */
+    async getMapImage(mapName: string): Promise<{ imageData: string; mimetype: string } | null> {
+        try {
+
+            // Find the map by name
+            const map = await this.racingMap.findOne({ name: mapName }).exec();
+
+            // Check if map exists and has image data
+            if (!map || !map.ImageData) {
+                return null;
+            }
+
+            // Convert buffer to base64
+            const base64 = map.ImageData.toString('base64');
+
+            return {
+                imageData: base64,
+                mimetype: map.mimetype
+            };
+        } catch (error) {
+            throw new Error(`Failed to retrieve image: ${error.message}`);
+        }
+    }
 }
