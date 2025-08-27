@@ -155,16 +155,59 @@ const MapEditor = () => {
 
         apiService.post('/racingmap/map/infolists', { name: mapEditorContext.mapSelected }).then((result) => {
             const data = result.data as MapInfo;
-            setTurningPoints(data.points.map((point) => {
-                return {
-                    type: point.type,
-                    index: point.index,
-                    position: [point.position[0], point.position[1]],
-                    description: "",
-                    info: "",
-                    isMenuOpen: false
-                };
-            }));
+
+            // Check if we have at least 4 points
+            if (!data.points || (data.points as any).length < 4) {
+                // Create 4 points forming a circle, ensuring they stay within canvas bounds
+                const padding = 50; // Minimum distance from canvas edges
+                const centerX = stageSize.width / 2;
+                const centerY = stageSize.height / 2;
+                const maxRadius = Math.min(stageSize.width, stageSize.height) / 2 - padding;
+                const radius = Math.min(maxRadius, Math.min(stageSize.width, stageSize.height) / 4);
+
+                const circlePoints: RacingTurningPoint[] = [
+                    {
+                        type: 0,
+                        index: 0,
+                        position: [centerX, centerY - radius], // Top
+                        description: "",
+                        info: ""
+                    },
+                    {
+                        type: 0,
+                        index: 1,
+                        position: [centerX + radius, centerY], // Right
+                        description: "",
+                        info: ""
+                    },
+                    {
+                        type: 0,
+                        index: 2,
+                        position: [centerX, centerY + radius], // Bottom
+                        description: "",
+                        info: ""
+                    },
+                    {
+                        type: 0,
+                        index: 3,
+                        position: [centerX - radius, centerY], // Left
+                        description: "",
+                        info: ""
+                    }
+                ];
+
+                setTurningPoints(circlePoints);
+            } else {
+                setTurningPoints(data.points.map((point) => {
+                    return {
+                        type: point.type,
+                        index: point.index,
+                        position: [point.position[0], point.position[1]],
+                        description: "",
+                        info: ""
+                    };
+                }));
+            }
 
             // Load uploaded map image if available
             loadUploadedMapImage();
