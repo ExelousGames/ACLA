@@ -86,7 +86,7 @@ const LoginUser = () => {
                     </Box>
 
                     <Flex mt="6" justify="end" gap="3">
-                        <Button 
+                        <Button
                             variant="outline"
                             onClick={() => navigate('/register')}
                             type="button"

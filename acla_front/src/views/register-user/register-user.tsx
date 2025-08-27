@@ -12,6 +12,7 @@ import {
 import axios from 'axios';
 import { useNavigate } from 'react-router-dom';
 
+// Register user component
 const RegisterUser = () => {
     const [input, setInput] = useState({
         email: "",
@@ -29,7 +30,7 @@ const RegisterUser = () => {
     // Handle form submission
     const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
         e.preventDefault();
-        
+
         if (!input.email || !input.password) {
             setMessage("Please provide email and password");
             return;
@@ -46,7 +47,7 @@ const RegisterUser = () => {
                 email: input.email,
                 password: input.password
             });
-            
+
             setMessage("User registered successfully! Redirecting to login...");
             setTimeout(() => {
                 navigate("/login");
@@ -89,13 +90,13 @@ const RegisterUser = () => {
                                 Email address
                             </Text>
                         </Flex>
-                        <TextField.Root 
-                            placeholder="Enter your email" 
-                            id="register-email-field" 
-                            name="email" 
+                        <TextField.Root
+                            placeholder="Enter your email"
+                            id="register-email-field"
+                            name="email"
                             type="email"
                             value={input.email}
-                            onChange={handleInput} 
+                            onChange={handleInput}
                             required
                         />
                     </Box>
@@ -106,10 +107,10 @@ const RegisterUser = () => {
                                 Password
                             </Text>
                         </Flex>
-                        <TextField.Root 
-                            placeholder="Enter your password" 
-                            id="register-password-field" 
-                            name="password" 
+                        <TextField.Root
+                            placeholder="Enter your password"
+                            id="register-password-field"
+                            name="password"
                             type="password"
                             value={input.password}
                             onChange={handleInput}
@@ -123,10 +124,10 @@ const RegisterUser = () => {
                                 Confirm Password
                             </Text>
                         </Flex>
-                        <TextField.Root 
-                            placeholder="Confirm your password" 
-                            id="register-confirm-password-field" 
-                            name="confirmPassword" 
+                        <TextField.Root
+                            placeholder="Confirm your password"
+                            id="register-confirm-password-field"
+                            name="confirmPassword"
                             type="password"
                             value={input.confirmPassword}
                             onChange={handleInput}
@@ -135,8 +136,8 @@ const RegisterUser = () => {
                     </Box>
 
                     <Flex mt="6" justify="end" gap="3">
-                        <Button 
-                            variant="outline" 
+                        <Button
+                            variant="outline"
                             onClick={() => navigate("/login")}
                             type="button"
                         >

@@ -14,6 +14,8 @@ export interface AuthOptions {
  * @param options - Object containing permissions and/or roles requirements
  */
 export const Auth = (options: AuthOptions = {}) => {
+
+    // default decorators
     const decorators = [
         UseGuards(AuthGuard('jwt'))
     ];
@@ -21,7 +23,11 @@ export const Auth = (options: AuthOptions = {}) => {
     // Add permissions guard and decorator if permissions are specified
     if (options.permissions && options.permissions.length > 0) {
         decorators.push(
+
+            // apply permission checking mechanic
             UseGuards(PermissionsGuard),
+
+            // add permission requirements, what kind of permission are required for this operation
             RequirePermissions(...options.permissions)
         );
     }
@@ -29,7 +35,11 @@ export const Auth = (options: AuthOptions = {}) => {
     // Add roles guard and decorator if roles are specified
     if (options.roles && options.roles.roles && options.roles.roles.length > 0) {
         decorators.push(
+
+            //apply role checking mechanic
             UseGuards(RolesGuard),
+
+            // add role requirements, what kind of roles are required for this operation
             RequireRoles(options.roles)
         );
     }
