@@ -1,6 +1,5 @@
 import React, { createContext, useState } from 'react';
 import { useAuth } from "hooks/AuthProvider";
-import ProtectedComponent from '../../components/ProtectedComponent';
 import './MainDashboard.css';
 import {
     Avatar,
@@ -36,34 +35,17 @@ const MainDashboard = ({ onTaskCreated }) => {
     const [mainMenuOptionSelected, setMainMenuOption] = useState(MainMenuOptions.LIVE_ANALYSIS);
 
     return (
-        <MainMenuOptionSelectionContext value={[mainMenuOptionSelected, setMainMenuOption]}>
+        <MainMenuOptionSelectionContext.Provider value={[mainMenuOptionSelected, setMainMenuOption]}>
+            <div className="main-dashboard-container">
+                <div className="main-dashboard-header">
+                    <HeaderMenu />
+                </div>
 
-            {/* Example of using ProtectedComponent for conditional rendering */}
-
-            <HeaderMenu></HeaderMenu>
-            <SideMainMenu></SideMainMenu>
-
-
-            {/* Example of using ProtectedComponent for conditional rendering */}
-            <ProtectedComponent
-                requiredPermission={{ action: 'create', resource: 'user' }}
-                fallback={<Text>Admin access required</Text>}
-            >
-                <Box p="4">
-                    <Text>Admin Panel - Create Users</Text>
-                    <Button>Create New User</Button>
-                </Box>
-            </ProtectedComponent>
-
-            <ProtectedComponent
-                requiredRole="admin"
-                fallback={<Text>Admin access required</Text>}
-            >
-                <Box p="4">
-                    <Text>Admin Only Section</Text>
-                </Box>
-            </ProtectedComponent>
-        </MainMenuOptionSelectionContext>
+                <div className="main-dashboard-content">
+                    <SideMainMenu />
+                </div>
+            </div>
+        </MainMenuOptionSelectionContext.Provider>
     );
 };
 

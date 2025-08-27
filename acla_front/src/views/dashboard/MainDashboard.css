@@ -1,5 +1,40 @@
+/* Ensure no global overflow */
+html,
+body {
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+}
+
+#root {
+    height: 100%;
+}
+
+.main-dashboard-container {
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.main-dashboard-header {
+    flex-shrink: 0;
+    height: 80px;
+    /* Fixed height for header */
+}
+
+.main-dashboard-content {
+    flex: 1;
+    display: flex;
+    min-height: 0;
+    /* Important for flex children to shrink */
+    overflow: hidden;
+}
+
 .SideMainMenu {
-    height: 70%;
+    height: 100%;
+    flex: 1;
 }
 
 .MainDashboardTitle {

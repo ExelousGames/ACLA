@@ -4,6 +4,9 @@
     justify-content: space-between;
     align-items: center;
     padding: 0px 50px 0px 10px;
+    height: 80px;
+    /* Fixed height to match dashboard header */
+    box-sizing: border-box;
 }
 
 .header-menu-button {
