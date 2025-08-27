@@ -12,6 +12,7 @@ import { Html } from 'react-konva-utils';
 import { HamburgerMenuIcon, PlusIcon } from '@radix-ui/react-icons';
 import { MapEditorContext } from '../map-editor-view';
 import { DropdownMenu, HoverCard } from 'radix-ui';
+import SettingsMenu from './components/SettingsMenu';
 import "./map-editor.css";
 type RacingTurningPoint = {
     position: Point,
@@ -56,6 +57,7 @@ const MapEditor = () => {
     const [racingLineBezierPoints, setRacingLineBezierPoints] = useState<BezierPoints[]>([]);
     const [iterations, setIterations] = useState<number>(10);
     const [mapImage] = useImage(image);
+    const [uploadedMapImage, setUploadedMapImage] = useState<HTMLImageElement | null>(null);
 
     // trigger useffect when mouse move, used to detect mouse movement direction
     const [mouseMovement, setMouseMovement] = useState({ x: 0, y: 0 });
@@ -163,9 +165,35 @@ const MapEditor = () => {
                     isMenuOpen: false
                 };
             }));
+
+            // Load uploaded map image if available
+            loadUploadedMapImage();
         }).catch((e) => {
         });
     }
+
+    function loadUploadedMapImage() {
+        apiService.post('/racingmap/map/image', { name: mapEditorContext.mapSelected }).then((result) => {
+            const data = result.data as { imageData: string; mimetype: string };
+            if (data && data.imageData && data.mimetype) {
+                // Create image from base64 data
+                const imageSrc = `data:${data.mimetype};base64,${data.imageData}`;
+
+                const img = new window.Image();
+                img.onload = () => {
+                    setUploadedMapImage(img);
+                };
+                img.src = imageSrc;
+            }
+        }).catch((e) => {
+            console.error('Failed to load uploaded image:', e);
+        });
+    }
+
+    const handleImageUploaded = () => {
+        // Reload the uploaded image after successful upload
+        loadUploadedMapImage();
+    };
 
     function handleDragMove(e: any, id: any) {
 
@@ -343,22 +371,37 @@ const MapEditor = () => {
 
     return (
 
-        <div ref={containerRef} style={{ width: '100%', height: '90%' }}>
+        <div ref={containerRef} style={{ width: '100%', height: '90%', position: 'relative' }}>
+            {mapEditorContext.mapSelected && (
+                <SettingsMenu
+                    mapName={mapEditorContext.mapSelected}
+                    onImageUploaded={handleImageUploaded}
+                />
+            )}
             <ContextMenu.Root>
                 <ContextMenu.Trigger>
                     <div>
                         <Stage width={stageSize.width} height={stageSize.height} >
                             <Layer>
 
-                                {/* 
-                                <Image
-                                    x={0}
-                                    y={0}
-                                    image={mapImage}
-                                    scaleX={3}
-                                    scaleY={3}
-                                />
-                                 */}
+                                {/* Display uploaded map image if available, otherwise use default */}
+                                {uploadedMapImage ? (
+                                    <Image
+                                        x={0}
+                                        y={0}
+                                        image={uploadedMapImage}
+                                        width={stageSize.width}
+                                        height={stageSize.height}
+                                    />
+                                ) : mapImage && (
+                                    <Image
+                                        x={0}
+                                        y={0}
+                                        image={mapImage}
+                                        scaleX={3}
+                                        scaleY={3}
+                                    />
+                                )}
 
                                 <Line
                                     points={exportPointsForDrawing(extractBezierPointToPoint(bezierPoints))}

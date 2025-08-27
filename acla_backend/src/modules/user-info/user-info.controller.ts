@@ -3,7 +3,14 @@ import { AuthService } from 'src/shared/auth/auth.service';
 import { UserInfo } from '../../schemas/user-info.schema';
 import { UserInfoService } from './user-info.service';
 import { CreateUserInfoDto, UpdateUserPermissionsDto, UpdateUserRolesDto } from 'src/dto/user.dto';
-import { Auth, LocalAuth, JwtAuth } from '../../common/decorators/auth.decorator';
+import {
+    Auth,
+    LocalAuth,
+    JwtAuth,
+    AdminOnly,
+    AdminOrModerator,
+    RequireAllRoles
+} from '../../common/decorators/auth.decorator';
 import { PermissionAction, PermissionResource } from '../../schemas/permission.schema';
 
 @Controller('userinfo')
@@ -29,7 +36,7 @@ export class UserInfoController {
         return req.logout();
     }
 
-    @Auth({ action: PermissionAction.CREATE, resource: PermissionResource.USER })
+    @Auth({ permissions: [{ action: PermissionAction.CREATE, resource: PermissionResource.USER }] })
     @Post()
     createUser(@Body('infoDto') createUserInfoDto: CreateUserInfoDto): CreateUserInfoDto {
 
@@ -43,13 +50,13 @@ export class UserInfoController {
         return new CreateUserInfoDto;
     }
 
-    @Auth({ action: PermissionAction.DELETE, resource: PermissionResource.USER })
+    @Auth({ permissions: [{ action: PermissionAction.DELETE, resource: PermissionResource.USER }] })
     @Delete(':id')
     deleteUser(@Param('id') id: string): void {
         this.userinfoService.deleteTask(id);
     }
 
-    @Auth({ action: PermissionAction.UPDATE, resource: PermissionResource.USER })
+    @Auth({ permissions: [{ action: PermissionAction.UPDATE, resource: PermissionResource.USER }] })
     @Put(':id/permissions')
     async updateUserPermissions(
         @Param('id') userId: string,
@@ -66,7 +73,7 @@ export class UserInfoController {
         }
     }
 
-    @Auth({ action: PermissionAction.UPDATE, resource: PermissionResource.USER })
+    @Auth({ permissions: [{ action: PermissionAction.UPDATE, resource: PermissionResource.USER }] })
     @Put(':id/roles')
     async updateUserRoles(
         @Param('id') userId: string,
@@ -87,5 +94,40 @@ export class UserInfoController {
     @Get('profile')
     getProfile(@Request() req) {
         return req.user;
+    }
+
+    // Example: Only users with 'admin' role can access this endpoint
+    @AdminOnly()
+    @Get('admin/users')
+    async getAllUsers(): Promise<UserInfo[]> {
+        // Implementation would go here
+        return [];
+    }
+
+    // Example: Users need either 'admin' OR 'moderator' role
+    @AdminOrModerator()
+    @Get('moderation/dashboard')
+    async getModerationDashboard() {
+        // Implementation would go here
+        return { message: 'Moderation dashboard' };
+    }
+
+    // Example: Users need BOTH 'admin' AND 'super-admin' roles
+    @RequireAllRoles('admin', 'super-admin')
+    @Get('super-admin/settings')
+    async getSuperAdminSettings() {
+        // Implementation would go here
+        return { message: 'Super admin settings' };
+    }
+
+    // Example: Combine both permissions and roles
+    @Auth({
+        permissions: [{ action: PermissionAction.READ, resource: PermissionResource.USER }],
+        roles: { roles: ['admin'] }
+    })
+    @Get('admin/user-management')
+    async getUserManagement() {
+        // User needs both the READ USER permission AND admin role
+        return { message: 'User management interface' };
     }
 }

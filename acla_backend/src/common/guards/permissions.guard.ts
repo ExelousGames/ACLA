@@ -1,6 +1,6 @@
 import { Injectable, CanActivate, ExecutionContext } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
-import { PERMISSIONS_KEY, RequiredPermission } from '../decorators/permissions.decorator';
+import { PERMISSIONS_KEY, ROLES_KEY, RequiredPermission, RequiredRole } from '../decorators/permissions.decorator';
 import { UserInfoService } from '../../modules/user-info/user-info.service';
 import { AuthorizationService } from '../../shared/authorization/authorization.service';
 
@@ -22,7 +22,14 @@ export class PermissionsGuard implements CanActivate {
             [context.getHandler(), context.getClass()]
         );
 
-        if (!requiredPermissions) {
+        // Get required roles from metadata set by the @RequireRoles decorator
+        const requiredRoles = this.reflector.getAllAndOverride<RequiredRole>(
+            ROLES_KEY,
+            [context.getHandler(), context.getClass()]
+        );
+
+        // If no permissions or roles are required, allow access
+        if (!requiredPermissions && !requiredRoles) {
             return true;
         }
 
@@ -41,7 +48,28 @@ export class PermissionsGuard implements CanActivate {
             return false;
         }
 
-        // Check if user has required permissions
-        return this.authorizationService.hasPermissions(userWithPermissions, requiredPermissions);
+        // Check permissions if required
+        if (requiredPermissions && requiredPermissions.length > 0) {
+            const hasPermissions = this.authorizationService.hasPermissions(userWithPermissions, requiredPermissions);
+            if (!hasPermissions) {
+                return false;
+            }
+        }
+
+        // Check roles if required
+        if (requiredRoles) {
+            const { roles, requireAll = false } = requiredRoles;
+            if (roles && roles.length > 0) {
+                const hasRoles = requireAll
+                    ? this.authorizationService.hasAllRoles(userWithPermissions, roles)
+                    : this.authorizationService.hasAnyRole(userWithPermissions, roles);
+                
+                if (!hasRoles) {
+                    return false;
+                }
+            }
+        }
+
+        return true;
     }
 }

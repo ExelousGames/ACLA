@@ -5,6 +5,7 @@ import AuthProvider from "hooks/AuthProvider";
 import { HashRouter as Router, Route, Routes } from "react-router-dom"
 import PrivateRoute from "views/routers/PrivateRoute";
 import MainDashboard from 'views/dashboard/MainDashboard'
+import UserProfile from 'views/user-profile/user-profile'
 import EnvironmentProvider from 'contexts/EnvironmentContext'
 
 function App() {
@@ -20,6 +21,7 @@ function App() {
               <Route element={<PrivateRoute />}>
                 <Route path="/" element={<MainDashboard />} />
                 <Route path="/dashboard" element={<MainDashboard />} />
+                <Route path="/profile" element={<UserProfile />} />
               </Route>
             </Routes>
           </AuthProvider>

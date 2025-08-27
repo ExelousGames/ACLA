@@ -15,7 +15,6 @@ const SideMainMenu = () => (
                 <Tabs.List className="TabsList">
                     <Tabs.Trigger className="TabsTrigger" value="analysis">Analysis</Tabs.Trigger>
                     <Tabs.Trigger className="TabsTrigger" value="mapEditor">Map Editor</Tabs.Trigger>
-                    <Tabs.Trigger className="TabsTrigger" value="settings">Settings</Tabs.Trigger>
                 </Tabs.List>
             </ScrollArea.Viewport>
             <ScrollArea.Scrollbar className="ScrollAreaScrollbar" orientation="vertical">
