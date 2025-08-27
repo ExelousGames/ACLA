@@ -9,7 +9,7 @@ import { MapInfo, RacingSessionDetailedInfoDto } from 'data/live-analysis/live-a
 import { useEnvironment } from 'contexts/EnvironmentContext';
 import { ContextMenu, IconButton } from '@radix-ui/themes';
 import { Html } from 'react-konva-utils';
-import { HamburgerMenuIcon, PlusIcon } from '@radix-ui/react-icons';
+import { HamburgerMenuIcon, PlusIcon, ZoomInIcon, ZoomOutIcon } from '@radix-ui/react-icons';
 import { MapEditorContext } from '../map-editor-view';
 import { DropdownMenu, HoverCard } from 'radix-ui';
 import SettingsMenu from './components/SettingsMenu';
@@ -58,6 +58,12 @@ const MapEditor = () => {
     const [iterations, setIterations] = useState<number>(10);
     const [mapImage] = useImage(image);
     const [uploadedMapImage, setUploadedMapImage] = useState<HTMLImageElement | null>(null);
+
+    // Camera/viewport control state
+    const [stagePos, setStagePos] = useState({ x: 0, y: 0 });
+    const [stageScale, setStageScale] = useState(1);
+    const stageRef = useRef<any>(null);
+    const [isDraggingPoint, setIsDraggingPoint] = useState(false);
 
     // trigger useffect when mouse move, used to detect mouse movement direction
     const [mouseMovement, setMouseMovement] = useState({ x: 0, y: 0 });
@@ -151,6 +157,90 @@ const MapEditor = () => {
         });
     };
 
+    // Zoom and camera control functions
+    const handleZoomIn = () => {
+        const newScale = Math.min(stageScale * 1.2, 3); // Max zoom 3x
+        setStageScale(newScale);
+    };
+
+    const handleZoomOut = () => {
+        const newScale = Math.max(stageScale / 1.2, 0.1); // Min zoom 0.1x
+        setStageScale(newScale);
+    };
+
+    const handleStageDrag = (e: any) => {
+        // Only update stage position if we're not dragging a point
+        if (!isDraggingPoint) {
+            setStagePos({
+                x: e.target.x(),
+                y: e.target.y(),
+            });
+        } else {
+            // If we're dragging a point, prevent stage movement by resetting position
+            e.target.position({ x: stagePos.x, y: stagePos.y });
+        }
+    };
+
+    const handleStageDoubleClick = (e: any) => {
+        // Failsafe: double-click on empty space always enables stage dragging
+        setIsDraggingPoint(false);
+    };
+
+    const handleStageMouseDown = (e: any) => {
+        // Check if we clicked on interactive elements (points) vs draggable areas (background, empty space)
+        const targetClassName = e.target.getClassName();
+        const targetName = e.target.name ? e.target.name() : '';
+
+        // Interactive elements that should NOT allow canvas dragging
+        const isInteractiveElement = targetClassName === 'Group' ||
+            targetClassName === 'Circle' ||
+            (targetName !== '' && targetName !== undefined);
+
+        if (!isInteractiveElement) {
+            // We clicked on draggable area (empty space, background image, or racing line), allow stage dragging
+            setIsDraggingPoint(false);
+        } else {
+            // We clicked on an interactive element (point), disable stage dragging
+            setIsDraggingPoint(true);
+        }
+    };
+
+    const handleStageMouseUp = (e: any) => {
+        // Always reset isDraggingPoint on mouse up if we clicked on draggable areas
+        const targetClassName = e.target.getClassName();
+        const targetName = e.target.name ? e.target.name() : '';
+
+        // Interactive elements that should NOT allow canvas dragging
+        const isInteractiveElement = targetClassName === 'Group' ||
+            targetClassName === 'Circle' ||
+            (targetName !== '' && targetName !== undefined);
+
+        if (!isInteractiveElement) {
+            setIsDraggingPoint(false);
+        }
+    };
+
+    const handleWheel = (e: any) => {
+        e.evt.preventDefault();
+
+        const scaleBy = 1.05;
+        const stage = e.target.getStage();
+        const oldScale = stage.scaleX();
+        const mousePointTo = {
+            x: stage.getPointerPosition().x / oldScale - stage.x() / oldScale,
+            y: stage.getPointerPosition().y / oldScale - stage.y() / oldScale,
+        };
+
+        const newScale = e.evt.deltaY > 0 ? oldScale / scaleBy : oldScale * scaleBy;
+        const clampedScale = Math.max(0.1, Math.min(3, newScale));
+
+        setStageScale(clampedScale);
+        setStagePos({
+            x: -(mousePointTo.x - stage.getPointerPosition().x / clampedScale) * clampedScale,
+            y: -(mousePointTo.y - stage.getPointerPosition().y / clampedScale) * clampedScale,
+        });
+    };
+
     function createInitialShapes() {
 
         apiService.post('/racingmap/map/infolists', { name: mapEditorContext.mapSelected }).then((result) => {
@@ -239,49 +329,51 @@ const MapEditor = () => {
     };
 
     function handleDragMove(e: any, id: any) {
+        // Prevent event bubbling to stage during point dragging
+        e.cancelBubble = true;
 
-        //use setTurningPoints, it triggers ui refresh
-        setTurningPoints(turningPoints.map((turningPoint: {
-            position: Point,
-            type: number,
-            index: number, //type and index are used together. some points are index sensitive
-            description?: string,
-            info?: string,
-            variables?: [{ key: string, value: string }],
-        }) => {
-            if (turningPoint.index !== id) return turningPoint;
-
-            //assign the targeted position
-            let pointPosition: any[] = [e.target.x(), e.target.y()];
-
-            //check boundary
-            if (e.target.x() <= 0) {
-                pointPosition[0] = 0;
-            }
-            if (e.target.x() as number >= stageSize.width) {
-                pointPosition[0] = stageSize.width;
-            }
-
-            if (e.target.y() < 0) {
-                pointPosition[1] = 0;
-            }
-            if (e.target.y() as number >= stageSize.height) {
-                pointPosition[1] = stageSize.height;
-            }
-
-            //set position. for some reason, position wont set again at boundary, this fix it temporarily
-            e.target.absolutePosition({
-                x: pointPosition[0],
-                y: pointPosition[1]
-            });
-
-            return { ...turningPoint, position: [pointPosition[0], pointPosition[1]] }
-
-        }));
+        // Let Konva handle the visual dragging naturally
+        // We'll update the state only on drag end for better performance
     }
 
     const handleDragEnd = (e: any, id: any) => {
+        // Prevent event bubbling to stage
+        e.cancelBubble = true;
 
+        // Update the state with the final position after drag ends
+        const newX = e.target.x();
+        const newY = e.target.y();
+
+        setTurningPoints(turningPoints.map((turningPoint) => {
+            if (turningPoint.index !== id) return turningPoint;
+
+            // Apply boundary constraints
+            let constrainedX = newX;
+            let constrainedY = newY;
+
+            if (constrainedX < 0) constrainedX = 0;
+            if (constrainedX > stageSize.width) constrainedX = stageSize.width;
+            if (constrainedY < 0) constrainedY = 0;
+            if (constrainedY > stageSize.height) constrainedY = stageSize.height;
+
+            // Update the target position if it was constrained
+            if (constrainedX !== newX || constrainedY !== newY) {
+                e.target.position({ x: constrainedX, y: constrainedY });
+            }
+
+            return { ...turningPoint, position: [constrainedX, constrainedY] };
+        }));
+
+        // Re-enable stage dragging when point drag ends
+        setIsDraggingPoint(false);
+    };
+
+    const handleDragStart = (e: any, id: any) => {
+        // Prevent event bubbling to stage
+        e.cancelBubble = true;
+
+        // Disable stage dragging when point drag starts
+        setIsDraggingPoint(true);
     };
 
     const handleEnterMenu = (id: any) => {
@@ -421,10 +513,61 @@ const MapEditor = () => {
                     onImageUploaded={handleImageUploaded}
                 />
             )}
+
+            {/* Zoom Controls */}
+            <div style={{
+                position: 'absolute',
+                top: '10px',
+                right: '10px',
+                zIndex: 1000,
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '5px'
+            }}>
+                <IconButton
+                    onClick={handleZoomIn}
+                    size="3"
+                    variant="outline"
+                    style={{
+                        backgroundColor: 'white',
+                        cursor: 'pointer'
+                    }}
+                    title="Zoom In"
+                >
+                    <ZoomInIcon />
+                </IconButton>
+                <IconButton
+                    onClick={handleZoomOut}
+                    size="3"
+                    variant="outline"
+                    style={{
+                        backgroundColor: 'white',
+                        cursor: 'pointer'
+                    }}
+                    title="Zoom Out"
+                >
+                    <ZoomOutIcon />
+                </IconButton>
+            </div>
+
             <ContextMenu.Root>
                 <ContextMenu.Trigger>
                     <div>
-                        <Stage width={stageSize.width} height={stageSize.height} >
+                        <Stage
+                            width={stageSize.width}
+                            height={stageSize.height}
+                            ref={stageRef}
+                            scaleX={stageScale}
+                            scaleY={stageScale}
+                            x={stagePos.x}
+                            y={stagePos.y}
+                            draggable={!isDraggingPoint}
+                            onDragEnd={handleStageDrag}
+                            onWheel={handleWheel}
+                            onMouseDown={handleStageMouseDown}
+                            onMouseUp={handleStageMouseUp}
+                            onDblClick={handleStageDoubleClick}
+                        >
                             <Layer>
 
                                 {/* Display uploaded map image if available, otherwise use default */}
@@ -466,6 +609,7 @@ const MapEditor = () => {
                                             key={turningPoint.index} id={`group-${turningPoint.index}`}
                                             x={turningPoint.position[0]} y={turningPoint.position[1]}
                                             draggable
+                                            onDragStart={(e) => handleDragStart(e, turningPoint.index)}
                                             onDragMove={(e) => handleDragMove(e, turningPoint.index)}
                                             onDragEnd={(e) => handleDragEnd(e, turningPoint.index)}
                                             onMouseEnter={() => handleEnterMenu(turningPoint.index)}
