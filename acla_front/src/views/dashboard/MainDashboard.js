@@ -39,18 +39,15 @@ const MainDashboard = ({ onTaskCreated }) => {
         <MainMenuOptionSelectionContext value={[mainMenuOptionSelected, setMainMenuOption]}>
 
             {/* Example of using ProtectedComponent for conditional rendering */}
-            <ProtectedComponent
-                requiredPermission={{ action: 'read', resource: 'menu' }}
-                fallbackNavigation={"/login"}
-            >
-                <HeaderMenu></HeaderMenu>
-                <SideMainMenu></SideMainMenu>
-            </ProtectedComponent>
+
+            <HeaderMenu></HeaderMenu>
+            <SideMainMenu></SideMainMenu>
+
 
             {/* Example of using ProtectedComponent for conditional rendering */}
             <ProtectedComponent
                 requiredPermission={{ action: 'create', resource: 'user' }}
-                fallbackNavigation={"/login"}
+                fallback={<Text>Admin access required</Text>}
             >
                 <Box p="4">
                     <Text>Admin Panel - Create Users</Text>
@@ -60,7 +57,7 @@ const MainDashboard = ({ onTaskCreated }) => {
 
             <ProtectedComponent
                 requiredRole="admin"
-                fallbackNavigation={<Text>Admin access required</Text>}
+                fallback={<Text>Admin access required</Text>}
             >
                 <Box p="4">
                     <Text>Admin Only Section</Text>

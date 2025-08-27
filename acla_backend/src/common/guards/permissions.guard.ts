@@ -1,14 +1,12 @@
 import { Injectable, CanActivate, ExecutionContext } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { PERMISSIONS_KEY, ROLES_KEY, RequiredPermission, RequiredRole } from '../decorators/permissions.decorator';
-import { UserInfoService } from '../../modules/user-info/user-info.service';
 import { AuthorizationService } from '../../shared/authorization/authorization.service';
 
 @Injectable()
 export class PermissionsGuard implements CanActivate {
     constructor(
         private reflector: Reflector,
-        private userInfoService: UserInfoService,
         private authorizationService: AuthorizationService
     ) { }
 
@@ -50,6 +48,7 @@ export class PermissionsGuard implements CanActivate {
 
         // Check permissions if required
         if (requiredPermissions && requiredPermissions.length > 0) {
+
             const hasPermissions = this.authorizationService.hasPermissions(userWithPermissions, requiredPermissions);
             if (!hasPermissions) {
                 return false;
@@ -63,7 +62,7 @@ export class PermissionsGuard implements CanActivate {
                 const hasRoles = requireAll
                     ? this.authorizationService.hasAllRoles(userWithPermissions, roles)
                     : this.authorizationService.hasAnyRole(userWithPermissions, roles);
-                
+
                 if (!hasRoles) {
                     return false;
                 }

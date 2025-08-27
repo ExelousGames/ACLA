@@ -28,11 +28,12 @@ export class ApiService {
         this.setupInterceptors();
     }
 
+    //interceptors are used to modify requests or responses before they are handled by component who called the API
     private setupInterceptors() {
         // Request interceptor
         this.axiosInstance.interceptors.request.use(
             (config) => {
-                // Add auth token if exists
+                // Add auth token if exists, token is used for verifying user identity in subsequent requests
                 const token = localStorage.getItem('token');
                 if (token) {
                     //Authorization: <type> <credentials> pattern --  OAuth 2.0 Authorization Framework

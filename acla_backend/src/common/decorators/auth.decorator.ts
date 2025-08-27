@@ -86,14 +86,14 @@ export const RequireAllRoles = (...roles: string[]) => AuthWithRoles(roles, true
 export const RequireAnyRole = (...roles: string[]) => AuthWithRoles(roles, false);
 
 /**
- * JWT authentication only (no permission or role checking)
+ * JWT authentication only (no permission or role checking), more info check jwt.strategy.ts
  */
 export const JwtAuth = () => applyDecorators(
     UseGuards(AuthGuard('jwt'))
 );
 
 /**
- * Local authentication (for login endpoints)
+ * Local authentication (for login endpoints), more info check local.strategy.ts
  */
 export const LocalAuth = () => applyDecorators(
     UseGuards(AuthGuard('local'))

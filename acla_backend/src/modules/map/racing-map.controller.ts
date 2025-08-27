@@ -17,6 +17,12 @@ export class RacingMapController {
         return this.racingMapService.retrieveAllMapBasicInfos();
     }
 
+    @Auth({ permissions: [{ action: PermissionAction.CREATE, resource: PermissionResource.RACING_MAP }] })
+    @Post('map/create')
+    async createNewMap(@Body() body: { name: string }): Promise<{ success: boolean; message: string; map?: RacingMap }> {
+        return this.racingMapService.createNewMap(body.name);
+    }
+
     @Auth({ permissions: [{ action: PermissionAction.READ, resource: PermissionResource.RACING_MAP }] })
     @Post('map/infolists')
     async getMap(@Body() body: any): Promise<RacingMap | null> {

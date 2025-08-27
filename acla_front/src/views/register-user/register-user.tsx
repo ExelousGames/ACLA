@@ -9,7 +9,7 @@ import {
     Text,
     TextField,
 } from "@radix-ui/themes";
-import axios from 'axios';
+import apiService from '../../services/api.service';
 import { useNavigate } from 'react-router-dom';
 
 // Register user component
@@ -22,10 +22,6 @@ const RegisterUser = () => {
     const [isLoading, setIsLoading] = useState(false);
     const [message, setMessage] = useState("");
     const navigate = useNavigate();
-
-    // Backend server API
-    const serverIPandPort = process.env.REACT_APP_BACKEND_SERVER_IP + ":" + process.env.REACT_APP_BACKEND_PROXY_PORT;
-    const server_url_header = 'http://' + serverIPandPort;
 
     // Handle form submission
     const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
@@ -43,7 +39,7 @@ const RegisterUser = () => {
 
         setIsLoading(true);
         try {
-            const response = await axios.post(server_url_header + '/userinfo/register', {
+            const response = await apiService.post('/userinfo/register', {
                 email: input.email,
                 password: input.password
             });
