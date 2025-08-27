@@ -50,7 +50,7 @@ const MainDashboard = ({ onTaskCreated }) => {
             {/* Example of using ProtectedComponent for conditional rendering */}
             <ProtectedComponent
                 requiredPermission={{ action: 'create', resource: 'user' }}
-                fallbackNavigation={<Text>You don't have permission to create users</Text>}
+                fallbackNavigation={"/login"}
             >
                 <Box p="4">
                     <Text>Admin Panel - Create Users</Text>

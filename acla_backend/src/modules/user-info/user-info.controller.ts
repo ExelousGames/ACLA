@@ -47,6 +47,7 @@ export class UserInfoController {
         }
     }
 
+    // create user with permissions checking
     @Auth({ permissions: [{ action: PermissionAction.CREATE, resource: PermissionResource.USER }] })
     @Post()
     async createUser(@Body() createUserInfoDto: CreateUserInfoDto): Promise<CreateUserInfoDto> {
