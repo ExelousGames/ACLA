@@ -9,29 +9,45 @@ interface ProtectedComponentProps {
         resource: string;
     };
     requiredRole?: string;
-    fallbackNavigation?: string;
+    fallback?: string;
+    redirectTo?: string;
 }
 
-//this component checks for user permissions and roles, and renders the children if the user has the required permissions/roles
+
+/**
+ * this component checks for user permissions and roles, and renders the children if the user has the required permissions/roles
+ * @param requiredPermission required permission in order to access the children
+ * @param requiredRole required role in order to access the children
+ * @param fallback fallback content to display if access is denied
+ * @param redirectTo optional redirect path if access is denied
+ * @returns
+ */
 const ProtectedComponent: React.FC<ProtectedComponentProps> = ({
     children,
     requiredPermission,
     requiredRole,
-    fallbackNavigation = "/login"
+    fallback = "",
+    redirectTo
 }) => {
     const { hasPermission, hasRole } = useAuth();
     const navigate = useNavigate();
 
     // Check role if required
     if (requiredRole && !hasRole(requiredRole)) {
-        navigate(fallbackNavigation);
-        return <div>You don't have role to view this menu</div>;
+        if (redirectTo) {
+            navigate(redirectTo);
+            return null;
+        }
+        return <div>{fallback}</div>;
     }
 
     // Check permission if required
     if (requiredPermission && !hasPermission(requiredPermission.action, requiredPermission.resource)) {
-        navigate(fallbackNavigation);
-        return <div>You don't have permission to view this menu</div>;
+        if (redirectTo) {
+            navigate(redirectTo);
+            return null;
+        }
+        return <div>{fallback}</div>;
     }
 
     return <>{children}</>;

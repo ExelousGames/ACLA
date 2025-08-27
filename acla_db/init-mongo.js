@@ -209,6 +209,7 @@ const roles = [
         permissions: [
             userReadPerm,
             userUpdatePerm,
+            racingMapCreatePerm,
             racingSessionManagePerm,
             racingMapUpdatePerm,
             racingMapReadPerm

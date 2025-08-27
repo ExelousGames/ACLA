@@ -73,6 +73,7 @@ export class AuthorizationService {
 
         // Add permissions from roles
         if (user.roles) {
+
             user.roles.forEach(role => {
                 // Roles should be populated when fetching user
                 const roleObj = role as any;

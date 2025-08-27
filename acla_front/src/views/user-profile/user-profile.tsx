@@ -49,7 +49,6 @@ const UserProfile = () => {
 
     const handleSave = () => {
         // TODO: Implement save functionality with API call
-        console.log('Saving profile:', formData);
         setIsEditing(false);
         // You can add API call here to save the profile data
     };

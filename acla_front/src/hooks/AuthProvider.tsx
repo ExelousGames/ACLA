@@ -1,6 +1,6 @@
 import { useContext, createContext, useState, ReactNode, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import axios from 'axios';
+import apiService from 'services/api.service';
 
 interface AuthContextType {
     user: string;
@@ -24,22 +24,13 @@ const AuthProvider = ({ children }: { children: ReactNode }) => {
     const [userEmail, setUserEmail] = useState('');
     const [token, setToken] = useState(localStorage.getItem("token") || "");
 
-    // Store user profile with permissions and roles
     const [userProfile, setUserProfile] = useState<any>(null);
     const navigate = useNavigate();
 
-    //backend server api
-    const serverIPandPort = process.env.REACT_APP_BACKEND_SERVER_IP + ":" + process.env.REACT_APP_BACKEND_PROXY_PORT
-    const server_url_header = 'http://' + serverIPandPort
-
     // Fetch user profile with permissions and roles
-    const fetchUserProfile = async (authToken: string) => {
+    const fetchUserProfile = async () => {
         try {
-            const response = await axios.get(server_url_header + '/userinfo/profile', {
-                headers: {
-                    'Authorization': `Bearer ${authToken}`
-                }
-            });
+            const response = await apiService.get<any>('/userinfo/profile');
             setUserProfile(response.data);
         } catch (error) {
             console.error('Error fetching user profile:', error);
@@ -57,17 +48,16 @@ const AuthProvider = ({ children }: { children: ReactNode }) => {
         setUserEmail(username);
 
         // Fetch user profile with permissions
-        fetchUserProfile(token);
+        fetchUserProfile();
     }, []);
 
     //handles user login by sending a POST request to an authentication endpoint, 
     // updating the user and token state upon a successful response, and storing the token in local storage.
     const login = async (data: any) => {
         try {
-            const response = await axios.post(server_url_header + '/userinfo/auth/login', data);
+            const response = await apiService.post<{ access_token: string }>('/userinfo/auth/login', data);
 
             if (response) {
-                console.log(data.email);
                 let tokentemp: string = response.data.access_token;
                 setUserEmail(data.email);
                 setToken(tokentemp);
@@ -75,7 +65,7 @@ const AuthProvider = ({ children }: { children: ReactNode }) => {
                 localStorage.setItem("username", data.email);
 
                 // Fetch user profile after successful login
-                await fetchUserProfile(tokentemp);
+                await fetchUserProfile();
 
                 navigate("/dashboard");
             }
