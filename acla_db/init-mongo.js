@@ -242,6 +242,23 @@ const roles = [
 
 db.roles.insertMany(roles);
 
+// Create a test user with hashed password
+// Note: In a real application, you would use the proper password hashing from your backend
+// For testing purposes, we'll create a user with a plaintext password that will be updated through the API
+const superAdminRole = db.roles.findOne({ id: "role_super_admin" })._id;
+
+// Create test admin user
+db.userinfos.insertOne({
+    id: "test_admin_user",
+    email: "admin@test.com",
+    password: "$2b$10$placeholder", // This will be replaced when user changes password through API
+    roles: [superAdminRole],
+    permissions: [],
+    isActive: true,
+    createdAt: new Date(),
+    lastLogin: new Date()
+});
+
 db.createUser({
     user: 'client',
     pwd: 'clientpass',

@@ -1,5 +1,6 @@
 import React from 'react';
 import { useAuth } from '../hooks/AuthProvider';
+import { useNavigate } from 'react-router-dom';
 
 interface ProtectedComponentProps {
     children: React.ReactNode;
@@ -8,7 +9,7 @@ interface ProtectedComponentProps {
         resource: string;
     };
     requiredRole?: string;
-    fallback?: React.ReactNode;
+    fallbackNavigation?: string;
 }
 
 //this component checks for user permissions and roles, and renders the children if the user has the required permissions/roles
@@ -16,18 +17,21 @@ const ProtectedComponent: React.FC<ProtectedComponentProps> = ({
     children,
     requiredPermission,
     requiredRole,
-    fallback = null
+    fallbackNavigation = "/login"
 }) => {
     const { hasPermission, hasRole } = useAuth();
+    const navigate = useNavigate();
 
     // Check role if required
     if (requiredRole && !hasRole(requiredRole)) {
-        return <>{fallback}</>;
+        navigate(fallbackNavigation);
+        return <div>You don't have role to view this menu</div>;
     }
 
     // Check permission if required
     if (requiredPermission && !hasPermission(requiredPermission.action, requiredPermission.resource)) {
-        return <>{fallback}</>;
+        navigate(fallbackNavigation);
+        return <div>You don't have permission to view this menu</div>;
     }
 
     return <>{children}</>;
