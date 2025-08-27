@@ -3,14 +3,17 @@ import { v4 as uuid } from 'uuid';
 import { UserInfo } from '../../schemas/user-info.schema';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
-import { CreateUserInfoDto, UpdateUserPermissionsDto, UpdateUserRolesDto } from 'src/dto/user.dto';
-import { permission } from 'process';
+import { CreateUserInfoDto, UpdateUserPermissionsDto, UpdateUserRolesDto, UpdateUserPasswordDto } from 'src/dto/user.dto';
+import { PasswordService } from 'src/shared/utils/password.service';
 
 @Injectable()
 export class UserInfoService {
 
     //Once you've registered the schema in module, you can inject a model into the Service using the @InjectModel() decorator:
-    constructor(@InjectModel(UserInfo.name) private userInfoModel: Model<UserInfo>) { }
+    constructor(
+        @InjectModel(UserInfo.name) private userInfoModel: Model<UserInfo>,
+        private passwordService: PasswordService
+    ) { }
 
     async findOne(email: string): Promise<UserInfo | null> {
         return this.userInfoModel.findOne({ email: email }).exec();
@@ -39,10 +42,12 @@ export class UserInfoService {
     }
 
     async createUser(createUserInfoDto: CreateUserInfoDto): Promise<CreateUserInfoDto> {
+        // Hash the password before saving
+        const hashedPassword = await this.passwordService.hashPassword(createUserInfoDto.password);
 
         const newUserInfo: UserInfo = {
             id: uuid(),
-            password: "",
+            password: hashedPassword,
             email: createUserInfoDto.email,
             roles: [],
             permissions: [],
@@ -53,9 +58,8 @@ export class UserInfoService {
 
         const createdInfo = new this.userInfoModel(newUserInfo);
 
-        createdInfo.save();
+        await createdInfo.save();
         return new CreateUserInfoDto();
-
     }
 
     deleteTask(id: string): void {
@@ -79,6 +83,17 @@ export class UserInfoService {
         return this.userInfoModel.findOneAndUpdate(
             { id: updateRolesDto.userId },
             { roles: roleObjectIds },
+            { new: true }
+        ).exec();
+    }
+
+    async updateUserPassword(updatePasswordDto: UpdateUserPasswordDto): Promise<UserInfo | null> {
+        // Hash the new password
+        const hashedPassword = await this.passwordService.hashPassword(updatePasswordDto.newPassword);
+
+        return this.userInfoModel.findOneAndUpdate(
+            { id: updatePasswordDto.userId },
+            { password: hashedPassword },
             { new: true }
         ).exec();
     }

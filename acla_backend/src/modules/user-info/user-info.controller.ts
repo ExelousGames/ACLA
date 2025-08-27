@@ -2,7 +2,7 @@ import { Body, Controller, Delete, Get, Request, Param, Post, Put } from '@nestj
 import { AuthService } from 'src/shared/auth/auth.service';
 import { UserInfo } from '../../schemas/user-info.schema';
 import { UserInfoService } from './user-info.service';
-import { CreateUserInfoDto, UpdateUserPermissionsDto, UpdateUserRolesDto } from 'src/dto/user.dto';
+import { CreateUserInfoDto, UpdateUserPermissionsDto, UpdateUserRolesDto, UpdateUserPasswordDto } from 'src/dto/user.dto';
 import {
     Auth,
     LocalAuth,
@@ -36,18 +36,26 @@ export class UserInfoController {
         return req.logout();
     }
 
+    // Public registration endpoint (for testing password hashing)
+    @Post('register')
+    async registerUser(@Body() createUserInfoDto: CreateUserInfoDto): Promise<{ message: string }> {
+        try {
+            await this.userinfoService.createUser(createUserInfoDto);
+            return { message: 'User registered successfully' };
+        } catch (error) {
+            throw error;
+        }
+    }
+
     @Auth({ permissions: [{ action: PermissionAction.CREATE, resource: PermissionResource.USER }] })
     @Post()
-    createUser(@Body('infoDto') createUserInfoDto: CreateUserInfoDto): CreateUserInfoDto {
-
-
-        this.userinfoService.createUser(createUserInfoDto).then(
-            (dto) => {
-                return dto;
-            }).catch((error) => {
-
-            });
-        return new CreateUserInfoDto;
+    async createUser(@Body() createUserInfoDto: CreateUserInfoDto): Promise<CreateUserInfoDto> {
+        try {
+            const result = await this.userinfoService.createUser(createUserInfoDto);
+            return result;
+        } catch (error) {
+            throw error;
+        }
     }
 
     @Auth({ permissions: [{ action: PermissionAction.DELETE, resource: PermissionResource.USER }] })
@@ -85,6 +93,23 @@ export class UserInfoController {
         try {
             const updatedUser = await this.userinfoService.updateUserRoles(updateRolesDto);
             return updatedUser;
+        } catch (error) {
+            throw error;
+        }
+    }
+
+    @Auth({ permissions: [{ action: PermissionAction.UPDATE, resource: PermissionResource.USER }] })
+    @Put(':id/password')
+    async updateUserPassword(
+        @Param('id') userId: string,
+        @Body() updatePasswordDto: UpdateUserPasswordDto
+    ): Promise<{ message: string }> {
+        // Set the userId from the URL parameter
+        updatePasswordDto.userId = userId;
+
+        try {
+            await this.userinfoService.updateUserPassword(updatePasswordDto);
+            return { message: 'Password updated successfully' };
         } catch (error) {
             throw error;
         }

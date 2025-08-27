@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import './login-user.css';
 import { useAuth } from "hooks/AuthProvider";
+import { useNavigate } from 'react-router-dom';
 import {
     Avatar,
     Badge,
@@ -30,16 +31,17 @@ const LoginUser = () => {
 
     //use Auth custom context
     const auth = useAuth();
+    const navigate = useNavigate();
 
     //when user tries to press login button
     const handleSubmit = (e: React.FormEvent<HTMLFormElement>) => {
         e.preventDefault();
-        if (input.email !== "" || input.password !== "") {
-            auth.login(input.email, input.password).then(
+        if (input.email !== "" && input.password !== "") {
+            auth.login(input).then(
                 () => {
                     return;
                 }
-            ).catch(error => console.error('Error creating task:', error));
+            ).catch(error => console.error('Error during login:', error));
 
         }
         else {
@@ -80,15 +82,17 @@ const LoginUser = () => {
                                 Password
                             </Text>
                         </Flex>
-                        <TextField.Root placeholder="Enter your password" id="example-password-field" name="password" onChange={handleInput} />
+                        <TextField.Root placeholder="Enter your password" id="example-password-field" name="password" type="password" onChange={handleInput} />
                     </Box>
 
                     <Flex mt="6" justify="end" gap="3">
-                        {/*
-                        <Button variant="outline">
+                        <Button 
+                            variant="outline"
+                            onClick={() => navigate('/register')}
+                            type="button"
+                        >
                             Create an account
                         </Button>
-                        */}
                         <Button type='submit'>Sign in</Button>
                     </Flex>
 

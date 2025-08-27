@@ -7,6 +7,7 @@ import { AuthService } from 'src/shared/auth/auth.service';
 import { JwtService } from '@nestjs/jwt';
 import { AuthorizationModule } from '../../shared/authorization/authorization.module';
 import { PermissionsGuard } from '../../common/guards/permissions.guard';
+import { PasswordService } from 'src/shared/utils/password.service';
 
 @Module({
 
@@ -17,7 +18,7 @@ import { PermissionsGuard } from '../../common/guards/permissions.guard';
     AuthorizationModule
   ],
   controllers: [UserInfoController],
-  providers: [UserInfoService, AuthService, JwtService, PermissionsGuard],
+  providers: [UserInfoService, AuthService, JwtService, PermissionsGuard, PasswordService],
 
   //(services, repositories, etc.) that the current module wants to share
   exports: [UserInfoService]

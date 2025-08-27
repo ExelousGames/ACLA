@@ -6,7 +6,7 @@ interface AuthContextType {
     user: string;
     token: string | null;
     userProfile: any | null;
-    login: (email: string, password: string) => Promise<void>;
+    login: (data: { email: string; password: string }) => Promise<void>;
     logout: () => void;
     hasPermission: (action: string, resource: string) => boolean;
     hasRole: (roleName: string) => boolean;

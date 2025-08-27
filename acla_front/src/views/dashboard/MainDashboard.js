@@ -41,7 +41,7 @@ const MainDashboard = ({ onTaskCreated }) => {
             {/* Example of using ProtectedComponent for conditional rendering */}
             <ProtectedComponent
                 requiredPermission={{ action: 'read', resource: 'menu' }}
-                fallback={<Text>You don't have permission to view this menu</Text>}
+                fallbackNavigation={"/login"}
             >
                 <HeaderMenu></HeaderMenu>
                 <SideMainMenu></SideMainMenu>
@@ -50,7 +50,7 @@ const MainDashboard = ({ onTaskCreated }) => {
             {/* Example of using ProtectedComponent for conditional rendering */}
             <ProtectedComponent
                 requiredPermission={{ action: 'create', resource: 'user' }}
-                fallback={<Text>You don't have permission to create users</Text>}
+                fallbackNavigation={<Text>You don't have permission to create users</Text>}
             >
                 <Box p="4">
                     <Text>Admin Panel - Create Users</Text>
@@ -60,7 +60,7 @@ const MainDashboard = ({ onTaskCreated }) => {
 
             <ProtectedComponent
                 requiredRole="admin"
-                fallback={<Text>Admin access required</Text>}
+                fallbackNavigation={<Text>Admin access required</Text>}
             >
                 <Box p="4">
                     <Text>Admin Only Section</Text>
