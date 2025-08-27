@@ -32,10 +32,10 @@ const LoginUser = () => {
     const auth = useAuth();
 
     //when user tries to press login button
-    const handleSubmit = (e) => {
+    const handleSubmit = (e: React.FormEvent<HTMLFormElement>) => {
         e.preventDefault();
         if (input.email !== "" || input.password !== "") {
-            auth.login({ email: input.email, password: input.password }).then(
+            auth.login(input.email, input.password).then(
                 () => {
                     return;
                 }
@@ -49,7 +49,7 @@ const LoginUser = () => {
     };
 
     //check changes in the input
-    const handleInput = (e) => {
+    const handleInput = (e: React.ChangeEvent<HTMLInputElement>) => {
         const { name, value } = e.target;
         //if we only called setInput [name]: value, this would remove others from the state. oldValues is the old value of the state
         setInput(oldValues => {
