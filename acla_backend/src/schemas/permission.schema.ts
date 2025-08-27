@@ -11,6 +11,7 @@ export enum PermissionAction {
 // Define resources in the systems
 export enum PermissionResource {
     USER = 'user',
+    MENU = 'menu',
     RACING_SESSION = 'racing_session',
     RACING_MAP = 'racing_map',
     ALL = 'all'
