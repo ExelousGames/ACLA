@@ -17,16 +17,19 @@ input {
     background-color: white;
     --scrollbar-size: 10px;
     height: 100%;
+    overflow: hidden;
 }
 
 .ScrollAreaViewport {
     width: 100%;
     height: 100%;
     border-radius: inherit;
+    overflow: hidden;
 }
 
 .ScrollAreaScrollbar {
-    display: flex;
+    display: none;
+    /* Hide all scrollbars */
     /* ensures no selection */
     user-select: none;
     /* disable browser handling of all panning and zooming gestures on touch devices */
@@ -86,6 +89,7 @@ input {
     display: flex;
     width: 100%;
     height: 100%;
+    overflow: hidden;
 }
 
 .TabsList {
@@ -93,6 +97,8 @@ input {
     display: flex;
     border-bottom: 1px solid var(--mauve-6);
     flex-direction: column;
+    overflow: hidden;
+    max-height: 100%;
 }
 
 .TabsTrigger {
@@ -141,12 +147,15 @@ input {
     border-bottom-left-radius: 6px;
     border-bottom-right-radius: 6px;
     outline: none;
-    height: 100%;
-    overflow: auto;
-    /* Allow scrolling within tab content if needed */
+    height: calc(100% - 45px);
+    max-height: calc(100% - 45px);
+    overflow: hidden;
+    /* Prevent scrolling within tab content */
+    box-sizing: border-box;
 }
 
 .Container {
     height: 100%;
     width: 80%;
+    overflow: hidden;
 }
