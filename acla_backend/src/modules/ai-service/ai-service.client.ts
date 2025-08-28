@@ -155,4 +155,66 @@ export class AiServiceClient {
             );
         }
     }
+
+    async performIncrementalTraining(trainingRequest: any): Promise<any> {
+        try {
+            const response = await axios.post(`${this.aiServiceUrl}/model/incremental-training`, trainingRequest);
+            return response.data;
+        } catch (error) {
+            throw new HttpException(
+                `AI Service incremental training failed: ${error.message}`,
+                HttpStatus.SERVICE_UNAVAILABLE
+            );
+        }
+    }
+
+    async makePredictionWithModel(predictionRequest: any): Promise<any> {
+        try {
+            const response = await axios.post(`${this.aiServiceUrl}/model/predict`, predictionRequest);
+            return response.data;
+        } catch (error) {
+            throw new HttpException(
+                `AI Service model prediction failed: ${error.message}`,
+                HttpStatus.SERVICE_UNAVAILABLE
+            );
+        }
+    }
+
+    async trainModelFromScratch(trainingRequest: any): Promise<any> {
+        try {
+            const response = await axios.post(`${this.aiServiceUrl}/model/train`, trainingRequest);
+            return response.data;
+        } catch (error) {
+            throw new HttpException(
+                `AI Service model training failed: ${error.message}`,
+                HttpStatus.SERVICE_UNAVAILABLE
+            );
+        }
+    }
+
+    // test the model against unseen data, calculate performance metrics, determine if the model is performing well or overfitting
+    async validateModel(validationRequest: any): Promise<any> {
+        try {
+            const response = await axios.post(`${this.aiServiceUrl}/model/validate`, validationRequest);
+            return response.data;
+        } catch (error) {
+            throw new HttpException(
+                `AI Service model validation failed: ${error.message}`,
+                HttpStatus.SERVICE_UNAVAILABLE
+            );
+        }
+    }
+
+    //how well a model is performing
+    async getModelMetrics(modelId: string): Promise<any> {
+        try {
+            const response = await axios.get(`${this.aiServiceUrl}/model/metrics/${modelId}`);
+            return response.data;
+        } catch (error) {
+            throw new HttpException(
+                `AI Service get model metrics failed: ${error.message}`,
+                HttpStatus.SERVICE_UNAVAILABLE
+            );
+        }
+    }
 }

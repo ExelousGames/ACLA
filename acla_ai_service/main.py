@@ -125,15 +125,27 @@ class DatasetAnalyzer:
         
         numeric_columns = self.df.select_dtypes(include=[np.number]).columns
         for col in numeric_columns:
-            stats["numeric_stats"][col] = {
-                "mean": float(self.df[col].mean()),
-                "std": float(self.df[col].std()),
-                "min": float(self.df[col].min()),
-                "max": float(self.df[col].max()),
-                "median": float(self.df[col].median())
-            }
+            col_data = self.df[col].dropna()  # Remove NaN values
+            if len(col_data) > 0:
+                stats["numeric_stats"][col] = {
+                    "mean": self._safe_float(col_data.mean()),
+                    "std": self._safe_float(col_data.std()),
+                    "min": self._safe_float(col_data.min()),
+                    "max": self._safe_float(col_data.max()),
+                    "median": self._safe_float(col_data.median())
+                }
+            else:
+                stats["numeric_stats"][col] = {
+                    "mean": 0.0, "std": 0.0, "min": 0.0, "max": 0.0, "median": 0.0
+                }
         
         return stats
+    
+    def _safe_float(self, value):
+        """Convert value to JSON-safe float"""
+        if pd.isna(value) or np.isinf(value):
+            return 0.0
+        return float(value)
     
     def correlation_analysis(self):
         """Generate correlation matrix for numeric columns"""
@@ -153,31 +165,37 @@ class DatasetAnalyzer:
         
         # Basic performance metrics (legacy support)
         if 'speed' in self.df.columns:
-            analysis['speed_stats'] = {
-                "avg_speed": float(self.df['speed'].mean()),
-                "max_speed": float(self.df['speed'].max()),
-                "min_speed": float(self.df['speed'].min())
-            }
+            speed_data = self.df['speed'].dropna()
+            if len(speed_data) > 0:
+                analysis['speed_stats'] = {
+                    "avg_speed": self._safe_float(speed_data.mean()),
+                    "max_speed": self._safe_float(speed_data.max()),
+                    "min_speed": self._safe_float(speed_data.min())
+                }
         elif 'Physics_speed_kmh' in self.df.columns:
-            analysis['speed_stats'] = {
-                "avg_speed": float(self.df['Physics_speed_kmh'].mean()),
-                "max_speed": float(self.df['Physics_speed_kmh'].max()),
-                "min_speed": float(self.df['Physics_speed_kmh'].min())
-            }
+            speed_data = self.df['Physics_speed_kmh'].dropna()
+            if len(speed_data) > 0:
+                analysis['speed_stats'] = {
+                    "avg_speed": self._safe_float(speed_data.mean()),
+                    "max_speed": self._safe_float(speed_data.max()),
+                    "min_speed": self._safe_float(speed_data.min())
+                }
         
         if 'lap_time' in self.df.columns:
-            analysis['lap_time_stats'] = {
-                "avg_lap_time": float(self.df['lap_time'].mean()),
-                "best_lap_time": float(self.df['lap_time'].min()),
-                "worst_lap_time": float(self.df['lap_time'].max())
-            }
+            lap_data = self.df['lap_time'].dropna()
+            if len(lap_data) > 0:
+                analysis['lap_time_stats'] = {
+                    "avg_lap_time": self._safe_float(lap_data.mean()),
+                    "best_lap_time": self._safe_float(lap_data.min()),
+                    "worst_lap_time": self._safe_float(lap_data.max())
+                }
         elif 'Graphics_last_time' in self.df.columns:
-            valid_times = self.df[self.df['Graphics_last_time'] > 0]['Graphics_last_time']
+            valid_times = self.df[self.df['Graphics_last_time'] > 0]['Graphics_last_time'].dropna()
             if not valid_times.empty:
                 analysis['lap_time_stats'] = {
-                    "avg_lap_time": float(valid_times.mean()),
-                    "best_lap_time": float(valid_times.min()),
-                    "worst_lap_time": float(valid_times.max())
+                    "avg_lap_time": self._safe_float(valid_times.mean()),
+                    "best_lap_time": self._safe_float(valid_times.min()),
+                    "worst_lap_time": self._safe_float(valid_times.max())
                 }
         
         # Advanced telemetry analysis
@@ -691,6 +709,243 @@ async def validate_telemetry_data(telemetry_data: Dict[str, Any]):
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Telemetry validation failed: {str(e)}")
+
+# Model Management Endpoints
+@app.post("/model/train")
+async def train_model_from_scratch(training_request: Dict[str, Any]):
+    """Train a new AI model from scratch using racing session data"""
+    try:
+        print(f"[DEBUG] Starting model training with request: {training_request.keys()}")
+        
+        # Extract training data
+        session_data = training_request.get("session_data", [])
+        model_type = training_request.get("model_type", "lap_time_prediction")
+        training_params = training_request.get("training_parameters", {})
+        
+        print(f"[DEBUG] Model type: {model_type}")
+        print(f"[DEBUG] Session data length: {len(session_data)}")
+        print(f"[DEBUG] Training params: {training_params}")
+        
+        if not session_data:
+            raise HTTPException(status_code=400, detail="No training data provided")
+
+        # Convert to DataFrame, dataframe organizes into tabular format
+        print("[DEBUG] Converting session data to DataFrame...")
+        df = pd.DataFrame(session_data)
+        print(f"[DEBUG] DataFrame shape: {df.shape}")
+        print(f"[DEBUG] DataFrame columns: {list(df.columns)}")
+        print(f"[DEBUG] DataFrame column types: {[type(col) for col in df.columns]}")
+        
+        # Check for non-string column names and fix them
+        if any(not isinstance(col, str) for col in df.columns):
+            print("[DEBUG] Found non-string column names, converting to strings...")
+            df.columns = [str(col) for col in df.columns]
+            print(f"[DEBUG] Updated DataFrame columns: {list(df.columns)}")
+        
+        # Initialize advanced analyzer
+        print("[DEBUG] Initializing AdvancedRacingAnalyzer...")
+        analyzer = AdvancedRacingAnalyzer(df)
+        print("[DEBUG] Analyzer initialized successfully")
+        
+        # Check if training methods exist
+        available_methods = [method for method in dir(analyzer) if method.startswith('train_')]
+        print(f"[DEBUG] Available training methods: {available_methods}")
+        
+        # Train model based on type
+        print(f"[DEBUG] Training model of type: {model_type}")
+        if model_type == "lap_time_prediction":
+            if hasattr(analyzer, 'train_lap_time_predictor'):
+                model_result = analyzer.train_lap_time_predictor(training_params)
+            else:
+                print("[DEBUG] train_lap_time_predictor method not found, using fallback")
+                model_result = analyzer._train_fallback_model("lap_time_prediction", training_params)
+        elif model_type == "sector_analysis":
+            if hasattr(analyzer, 'train_sector_analyzer'):
+                model_result = analyzer.train_sector_analyzer(training_params)
+            else:
+                print("[DEBUG] train_sector_analyzer method not found, using fallback")
+                model_result = analyzer._train_fallback_model("sector_analysis", training_params)
+        elif model_type == "setup_optimization":
+            if hasattr(analyzer, 'train_setup_optimizer'):
+                model_result = analyzer.train_setup_optimizer(training_params)
+            else:
+                print("[DEBUG] train_setup_optimizer method not found, using fallback")
+                model_result = analyzer._train_fallback_model("setup_optimization", training_params)
+        else:
+            raise HTTPException(status_code=400, detail=f"Unsupported model type: {model_type}")
+        
+        print(f"[DEBUG] Model training completed. Result keys: {model_result.keys()}")
+        
+        return {
+            "status": "success",
+            "model_data": model_result["model_data"],
+            "performance_metrics": model_result["performance_metrics"],
+            "feature_importance": model_result["feature_importance"],
+            "validation_results": model_result["validation_results"],
+            "training_duration": model_result["training_duration"],
+            "model_metadata": {
+                "model_type": model_type,
+                "features": model_result["features"],
+                "accuracy": model_result.get("accuracy"),
+                "mse": model_result.get("mse"),
+                "training_sessions_count": len(session_data)
+            }
+        }
+        
+    except HTTPException as http_exc:
+        print(f"[DEBUG] HTTP Exception: {http_exc.detail}")
+        raise http_exc
+    except Exception as e:
+        import traceback
+        error_details = traceback.format_exc()
+        print(f"[DEBUG] Exception occurred: {str(e)}")
+        print(f"[DEBUG] Full traceback: {error_details}")
+        raise HTTPException(status_code=500, detail=f"Model training failed: {str(e)} | Traceback: {error_details}")
+
+@app.post("/model/incremental-training")
+async def perform_incremental_training(training_request: Dict[str, Any]):
+    """Perform incremental training on an existing model"""
+    try:
+        # Extract data
+        existing_model_data = training_request.get("existingModelData")
+        new_training_data = training_request.get("newTrainingData", [])
+        model_metadata = training_request.get("modelMetadata", {})
+        training_params = training_request.get("trainingParameters", {})
+        
+        if not existing_model_data or not new_training_data:
+            raise HTTPException(status_code=400, detail="Missing model data or training data")
+        
+        # Convert new training data to DataFrame
+        new_df = pd.DataFrame(new_training_data)
+        
+        # Initialize analyzer with existing model
+        analyzer = AdvancedRacingAnalyzer(new_df)
+        
+        # Perform incremental training
+        model_type = model_metadata.get("modelType", "lap_time_prediction")
+        
+        if model_type == "lap_time_prediction":
+            updated_model = analyzer.incremental_lap_time_training(existing_model_data, training_params)
+        elif model_type == "sector_analysis":
+            updated_model = analyzer.incremental_sector_training(existing_model_data, training_params)
+        elif model_type == "setup_optimization":
+            updated_model = analyzer.incremental_setup_training(existing_model_data, training_params)
+        else:
+            raise HTTPException(status_code=400, detail=f"Unsupported model type: {model_type}")
+        
+        return {
+            "status": "success",
+            "updatedModelData": updated_model["model_data"],
+            "performanceMetrics": updated_model["performance_metrics"],
+            "featureImportance": updated_model["feature_importance"],
+            "validationResults": updated_model["validation_results"],
+            "trainingDuration": updated_model["training_duration"],
+            "accuracy": updated_model.get("accuracy"),
+            "mse": updated_model.get("mse")
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Incremental training failed: {str(e)}")
+
+@app.post("/model/predict")
+async def make_model_prediction(prediction_request: Dict[str, Any]):
+    """Make predictions using a trained model"""
+    try:
+        model_data = prediction_request.get("modelData")
+        model_metadata = prediction_request.get("modelMetadata", {})
+        input_data = prediction_request.get("inputData")
+        prediction_options = prediction_request.get("predictionOptions", {})
+        
+        if not model_data or not input_data:
+            raise HTTPException(status_code=400, detail="Missing model data or input data")
+        
+        # Convert input data to appropriate format
+        if isinstance(input_data, list):
+            input_df = pd.DataFrame(input_data)
+        elif isinstance(input_data, dict):
+            input_df = pd.DataFrame([input_data])
+        else:
+            raise HTTPException(status_code=400, detail="Invalid input data format")
+        
+        # Initialize analyzer for prediction
+        analyzer = AdvancedRacingAnalyzer(input_df)
+        
+        # Make prediction based on model type
+        model_type = model_metadata.get("modelType", "lap_time_prediction")
+        
+        if model_type == "lap_time_prediction":
+            prediction = analyzer.predict_lap_time(model_data, input_df, prediction_options)
+        elif model_type == "sector_analysis":
+            prediction = analyzer.predict_sector_performance(model_data, input_df, prediction_options)
+        elif model_type == "setup_optimization":
+            prediction = analyzer.predict_optimal_setup(model_data, input_df, prediction_options)
+        else:
+            raise HTTPException(status_code=400, detail=f"Unsupported model type: {model_type}")
+        
+        return {
+            "status": "success",
+            "predictions": prediction["predictions"],
+            "confidence": prediction.get("confidence"),
+            "feature_contributions": prediction.get("feature_contributions"),
+            "model_type": model_type
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Model prediction failed: {str(e)}")
+
+@app.post("/model/validate")
+async def validate_model(validation_request: Dict[str, Any]):
+    """Validate a trained model using test data"""
+    try:
+        model_data = validation_request.get("modelData")
+        test_data = validation_request.get("testData")
+        model_metadata = validation_request.get("modelMetadata", {})
+        
+        if not model_data or not test_data:
+            raise HTTPException(status_code=400, detail="Missing model data or test data")
+        
+        # Convert test data to DataFrame
+        test_df = pd.DataFrame(test_data)
+        
+        # Initialize analyzer
+        analyzer = AdvancedRacingAnalyzer(test_df)
+        
+        # Validate model
+        model_type = model_metadata.get("modelType", "lap_time_prediction")
+        validation_result = analyzer.validate_model(model_data, test_df, model_type)
+        
+        return {
+            "status": "success",
+            "validation_metrics": validation_result["metrics"],
+            "model_performance": validation_result["performance"],
+            "recommendations": validation_result.get("recommendations", [])
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Model validation failed: {str(e)}")
+
+@app.get("/model/metrics/{model_id}")
+async def get_model_metrics(model_id: str):
+    """Get comprehensive metrics for a specific model"""
+    try:
+        # In a real implementation, you would retrieve the model from storage
+        # For now, return a placeholder response
+        return {
+            "status": "success",
+            "model_id": model_id,
+            "metrics": {
+                "accuracy": 0.85,
+                "mse": 0.12,
+                "mae": 0.08,
+                "r2_score": 0.92,
+                "feature_importance": {},
+                "training_history": []
+            },
+            "last_updated": datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get model metrics: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn

@@ -1,0 +1,57 @@
+/* Session Analysis Split Layout Styles */
+.session-analysis-split-container {
+    width: 100%;
+    height: 90vh;
+    overflow: hidden;
+    padding: 16px;
+    box-sizing: border-box;
+}
+
+.map-section {
+    height: 100%;
+    overflow: hidden;
+}
+
+.chat-section {
+    height: 100%;
+    overflow: hidden;
+}
+
+/* Ensure the map takes full available space */
+.map-section .rt-Card {
+    height: 100%;
+    padding: 0;
+}
+
+/* Responsive design */
+@media (max-width: 1200px) {
+    .session-analysis-split-container .rt-Flex {
+        flex-direction: column !important;
+        height: auto;
+    }
+
+    .map-section {
+        flex: none !important;
+        height: 50vh;
+        margin-bottom: 16px;
+    }
+
+    .chat-section {
+        flex: none !important;
+        height: 40vh;
+    }
+}
+
+@media (max-width: 768px) {
+    .session-analysis-split-container {
+        padding: 8px;
+    }
+
+    .map-section {
+        height: 40vh;
+    }
+
+    .chat-section {
+        height: 35vh;
+    }
+}

@@ -9,7 +9,7 @@ import SessionList from './session-list/session-list';
 import MapList from './map-list/map-list';
 import React, { useEffect, useState, createContext, Dispatch, SetStateAction } from 'react';
 import { RacingSessionDetailedInfoDto } from 'data/live-analysis/live-analysis-type';
-import SessionAnalysisMap from './sessionAnalysis/sessionAnalysisMap';
+import SessionAnalysisSplit from './sessionAnalysis/session-analysis-split';
 import { useEnvironment } from 'contexts/EnvironmentContext';
 import LiveAnalysisSessionRecording from './liveAnalysisSessionRecording';
 
@@ -117,7 +117,7 @@ const SessionAnalysis = () => {
                     </Tabs.Content>
 
                     <Tabs.Content className="TabContent" value="session">
-                        <SessionAnalysisMap></SessionAnalysisMap>
+                        <SessionAnalysisSplit></SessionAnalysisSplit>
                     </Tabs.Content>
                 </Box >
             </Tabs.Root>

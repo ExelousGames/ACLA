@@ -1,0 +1,74 @@
+/* AI Chat Component Styles */
+.ai-chat-container {
+    height: 100%;
+    min-height: 500px;
+    display: flex;
+    flex-direction: column;
+    background: var(--color-background);
+    border: 1px solid var(--gray-6);
+}
+
+.ai-chat-messages {
+    flex: 1;
+    overflow-y: auto;
+    max-height: calc(100vh - 200px);
+}
+
+.ai-chat-message {
+    word-wrap: break-word;
+    word-break: break-word;
+}
+
+.ai-chat-message.user {
+    margin-left: auto;
+}
+
+.ai-chat-message.ai {
+    margin-right: auto;
+}
+
+/* ScrollArea overrides for chat */
+.ai-chat-messages .ScrollAreaViewport {
+    height: 100%;
+}
+
+.ai-chat-messages .ScrollAreaScrollbar {
+    width: 6px;
+}
+
+.ai-chat-messages .ScrollAreaThumb {
+    background: var(--gray-8);
+    border-radius: 3px;
+}
+
+.ai-chat-messages .ScrollAreaThumb:hover {
+    background: var(--gray-9);
+}
+
+/* Animation for loading messages */
+@keyframes pulse {
+
+    0%,
+    100% {
+        opacity: 1;
+    }
+
+    50% {
+        opacity: 0.5;
+    }
+}
+
+.ai-chat-message .rt-Spinner {
+    animation: pulse 1.5s ease-in-out infinite;
+}
+
+/* Responsive design */
+@media (max-width: 768px) {
+    .ai-chat-container {
+        min-height: 400px;
+    }
+
+    .ai-chat-messages {
+        max-height: calc(100vh - 150px);
+    }
+}
