@@ -390,27 +390,6 @@ const SessionAnalysisMap = () => {
 
                         <Stage width={stageSize.width} height={stageSize.height} >
                             <Layer>
-
-                                {/* 
-                                <Image
-                                    x={0}
-                                    y={0}
-                                    image={mapImage}
-                                    scaleX={3}
-                                    scaleY={3}
-                                />
-                                <Line
-                                    points={exportPointsForDrawing(extractBezierPointToPoint(leftCurbBezierPoints))}
-                                    stroke="red" strokeWidth={2} bezier={true}
-                                />
-                                <Line
-                                    points={exportPointsForDrawing(extractBezierPointToPoint(rightCurbBezierPoints))}
-                                    stroke="red" strokeWidth={2} bezier={true}
-                                />
-                               
-                               
-                                 */}
-
                                 <Line
                                     points={exportPointsForDrawing(extractBezierPointToPoint(bezierPoints))}
                                     stroke="red" strokeWidth={25} bezier={true}
@@ -451,24 +430,6 @@ const SessionAnalysisMap = () => {
                                         </Group>
                                     ))}
 
-                                <Line
-                                    points={exportPointsForDrawing(extractBezierPointToPoint(racingLineBezierPoints))}
-                                    stroke="green" strokeWidth={2} bezier={true} closed={true}
-                                />
-
-                                <Circle
-                                    x={pointOnCubicBezierSpline(extractBezierPointToPoint(bezierPoints), segmentLengths, analysisContext.liveData?.Graphics?.normalized_car_position)[0]}
-                                    y={pointOnCubicBezierSpline(extractBezierPointToPoint(bezierPoints), segmentLengths, analysisContext.liveData?.Graphics?.normalized_car_position)[1]}
-                                    radius={15}
-                                    fill="purple"
-                                />
-                                {/* 
-                    {racingLinePoints.map((position: { id: Key, position: Point }) => (
-                        <Circle
-                            key={position.id} x={position.position[0]} y={position.position[1]} radius={10} fill={"blue"} name={position.id.toString()}
-                        />
-                    ))}
-                    */}
                             </Layer>
                         </Stage>
                     </div>

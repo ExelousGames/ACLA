@@ -8,6 +8,7 @@ import { AuthModule } from './shared/auth/auth.module';
 import { AuthorizationModule } from './shared/authorization/authorization.module';
 import { RacingMapModule } from './modules/map/racing-map.module';
 import { RacingSessionModule } from './modules/racing-session/racing-session.module';
+import { AiServiceModule } from './modules/ai-service/ai-service.module';
 
 @Module({
 
@@ -21,7 +22,8 @@ import { RacingSessionModule } from './modules/racing-session/racing-session.mod
     AuthorizationModule,
     RacingMapModule,
     UserInfoModule,
-    RacingSessionModule
+    RacingSessionModule,
+    AiServiceModule
   ],
   controllers: [AppController],
   providers: [AppService],

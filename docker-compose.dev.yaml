@@ -50,11 +50,29 @@ services:
       - /app/node_modules
     depends_on:
       - mongodb
+      - ai_service
     ports:
       - '7001:7001'
     networks:
       - db-network
       - frontend-network
+      - ai-network
+
+  ai_service:
+    build:
+      context: ./acla_ai_service
+      dockerfile: dev.dockerfile
+    container_name: acla_ai_service_c
+    env_file:
+      - .dev.env
+    environment:
+      - BACKEND_URL=http://acla_backend_c:7001
+    volumes:
+      - ./acla_ai_service:/app
+    ports:
+      - '8000:8000'
+    networks:
+      - ai-network
 
   mongodb:
     build: ./acla_db
@@ -64,8 +82,8 @@ services:
       #create a user for authticated database access
       MONGO_INITDB_ROOT_USERNAME: ${MONGO_ADMINUSERNAME}
       MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ADMINPASSWORD}
-      MONGO_ADMINPASSWORD: ${MONGO_ADMINUSERNAME}
-      MONGO_ADMINUSERNAME: ${MONGO_ADMINPASSWORD}
+      MONGO_ADMINPASSWORD: ${MONGO_ADMINPASSWORD}
+      MONGO_ADMINUSERNAME: ${MONGO_ADMINUSERNAME}
       MONGO_INITDB_DATABASE: ${MONGO_DATEBASE}
     volumes:
       - ./acla_db/init-mongo.js:/docker-entrypoint-initdb.d/init-mongo.js
@@ -104,4 +122,7 @@ networks:
     driver: bridge
 
   frontend-network:
+    driver: bridge
+
+  ai-network:
     driver: bridge

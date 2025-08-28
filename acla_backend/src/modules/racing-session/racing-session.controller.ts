@@ -2,6 +2,7 @@ import { Controller, Get, UseGuards, Request, Post, Body, Query, BadRequestExcep
 import { AuthGuard } from '@nestjs/passport';
 import { RacingSessionDetailedInfoDto, SessionBasicInfoListDto, UploadReacingSessionInitDto } from 'src/dto/racing-session.dto';
 import { RacingSessionService } from './racing-session.service';
+import { AiService } from '../ai-service/ai-service.service';
 
 @Controller('racing-session')
 export class RacingSessionController {
@@ -11,7 +12,7 @@ export class RacingSessionController {
         received: number;
     }>();
 
-    constructor(private racingSessionService: RacingSessionService) { }
+    constructor(private racingSessionService: RacingSessionService, private aiService: AiService) { }
 
     @UseGuards(AuthGuard('jwt'))
     @Post('sessionbasiclist')
@@ -67,9 +68,40 @@ export class RacingSessionController {
 
         const fullDataset = upload.session_data_chunks.flat();
 
-        this.racingSessionService.createRacingSession(upload.metadata.sessionName, uploadId, upload.metadata.mapName, upload.metadata.userEmail, fullDataset);
+        // Create racing session in database
+        const createdSession = await this.racingSessionService.createRacingSession(
+            upload.metadata.sessionName,
+            uploadId,
+            upload.metadata.mapName,
+            upload.metadata.userEmail,
+            fullDataset
+        );
+
+        // Send data to AI service for analysis
+        try {
+            const aiAnalysis = await this.aiService.processRacingSessionForAI(
+                uploadId,
+                fullDataset,
+                {
+                    sessionName: upload.metadata.sessionName,
+                    mapName: upload.metadata.mapName,
+                    userEmail: upload.metadata.userEmail,
+                    uploadId: uploadId
+                }
+            );
+
+            console.log('AI Analysis completed for session:', uploadId);
+        } catch (error) {
+            console.error('AI Analysis failed for session:', uploadId, error);
+            // Don't fail the upload if AI analysis fails
+        }
 
         this.uploadStates.delete(uploadId);
 
+        return {
+            message: 'Upload completed successfully',
+            sessionId: uploadId,
+            aiAnalysisAvailable: true
+        };
     }
 }
