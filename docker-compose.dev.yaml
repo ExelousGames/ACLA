@@ -65,8 +65,10 @@ services:
     container_name: acla_ai_service_c
     env_file:
       - .dev.env
+      - .env.secrets
     environment:
       - BACKEND_URL=http://acla_backend_c:7001
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
     volumes:
       - ./acla_ai_service:/app
     ports:

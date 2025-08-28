@@ -8,7 +8,7 @@ import plotly.graph_objects as go
 import plotly.express as px
 import json
 import math
-from telemetry_models import TelemetryFeatures, FeatureProcessor
+from app.models.telemetry_models import TelemetryFeatures, FeatureProcessor
 
 def _safe_float(value):
     """Convert value to float, handling NaN and infinity"""

@@ -1,17 +1,14 @@
 import { useContext, useEffect, useRef, useState } from 'react';
-import { Stage, Layer, Circle, Line, Group, Image } from 'react-konva';
+import { Stage, Layer, Line } from 'react-konva';
 import { AddControlPoints } from 'utils/curve-tobezier/curve-to-bezier';
 import { offsetBezierPoints, Point, getBezierTangent, getEndDirection, pointOnCubicBezierSpline, calculateSegmentLengths } from 'utils/curve-tobezier/points-on-curve';
-import useImage from 'use-image';
-import image from 'assets/map2.png'
 import apiService from 'services/api.service';
 import { MapInfo, RacingSessionDetailedInfoDto } from 'data/live-analysis/live-analysis-type';
 import { AnalysisContext } from '../session-analysis';
 import LiveAnalysisSessionRecording from '../liveAnalysisSessionRecording';
 import { useEnvironment } from 'contexts/EnvironmentContext';
 import { IconButton } from '@radix-ui/themes';
-import { Html } from 'react-konva-utils';
-import { ZoomInIcon, ZoomOutIcon, DotFilledIcon, TriangleRightIcon, CursorArrowIcon, PlayIcon, StopIcon } from '@radix-ui/react-icons';
+import { ZoomInIcon, ZoomOutIcon } from '@radix-ui/react-icons';
 
 type RacingTurningPoint = {
     position: Point,
@@ -51,7 +48,6 @@ const SessionAnalysisMap = () => {
     const [racingLinePoints, setRacingLinePoints] = useState<RacingLinePoint[]>([]);
     const [racingLineBezierPoints, setRacingLineBezierPoints] = useState<BezierPoints[]>([]);
     const [iterations, setIterations] = useState<number>(10);
-    const [mapImage] = useImage(image);
 
     // Camera/viewport control state
     const [stagePos, setStagePos] = useState({ x: 0, y: 0 });
@@ -90,8 +86,58 @@ const SessionAnalysisMap = () => {
     //after turning points updated, we can update the racing line in the next frame
     useEffect(() => {
         calculateAndDrawRacingLine();
-
     }, [bezierPoints]);
+
+    // Center the track when bezier points are first calculated
+    useEffect(() => {
+        if (bezierPoints.length > 3) {
+            centerTrack();
+        }
+    }, [bezierPoints, stageSize]);
+
+    // Function to center the track in the viewport
+    const centerTrack = () => {
+        if (bezierPoints.length === 0 || !stageRef.current) return;
+
+        // Calculate bounding box of all track points
+        const points = extractBezierPointToPoint(bezierPoints);
+        if (points.length === 0) return;
+
+        let minX = points[0][0];
+        let maxX = points[0][0];
+        let minY = points[0][1];
+        let maxY = points[0][1];
+
+        points.forEach(point => {
+            minX = Math.min(minX, point[0]);
+            maxX = Math.max(maxX, point[0]);
+            minY = Math.min(minY, point[1]);
+            maxY = Math.max(maxY, point[1]);
+        });
+
+        // Calculate track center and dimensions
+        const trackCenterX = (minX + maxX) / 2;
+        const trackCenterY = (minY + maxY) / 2;
+        const trackWidth = maxX - minX;
+        const trackHeight = maxY - minY;
+
+        // Calculate scale to fit track in viewport with some padding
+        const padding = 0.1; // 10% padding
+        const availableWidth = stageSize.width * (1 - padding);
+        const availableHeight = stageSize.height * (1 - padding);
+        const scaleX = availableWidth / trackWidth;
+        const scaleY = availableHeight / trackHeight;
+        const scale = Math.min(scaleX, scaleY, 2); // Max scale of 2x
+
+        // Calculate position to center the track
+        const viewportCenterX = stageSize.width / 2;
+        const viewportCenterY = stageSize.height / 2;
+        const offsetX = viewportCenterX - (trackCenterX * scale);
+        const offsetY = viewportCenterY - (trackCenterY * scale);
+
+        setStageScale(scale);
+        setStagePos({ x: offsetX, y: offsetY });
+    };
 
     // Function to handle resize
     const updateSize = () => {
@@ -146,48 +192,6 @@ const SessionAnalysisMap = () => {
             y: -(mousePointTo.y - stage.getPointerPosition().y / clampedScale) * clampedScale,
         });
     }
-
-    // Function to get point styling based on type
-    function getPointStyling(type: number) {
-        switch (type) {
-            case 0: // Default
-                return {
-                    fill: '#00ff0dff', // Green
-                    icon: DotFilledIcon,
-                    label: 'Standard Turn'
-                };
-            case 1: // Corner Start
-                return {
-                    fill: '#f31c1cff', // Red
-                    icon: TriangleRightIcon,
-                    label: 'Corner Start'
-                };
-            case 2: // Cornering
-                return {
-                    fill: '#e2f10aff', // Yellowish green
-                    icon: CursorArrowIcon,
-                    label: 'Cornering'
-                };
-            case 3: // Corner End
-                return {
-                    fill: '#9ce22bff', // Purple
-                    icon: PlayIcon,
-                    label: 'Corner End'
-                };
-            case 4: // Start/Finish
-                return {
-                    fill: '#3b12f3ff', // Blue
-                    icon: StopIcon,
-                    label: 'Start/Finish'
-                };
-            default:
-                return {
-                    fill: '#6b7280', // Gray
-                    icon: DotFilledIcon,
-                    label: 'Unknown'
-                };
-        }
-    };
 
     function createInitialShapes() {
 
@@ -447,36 +451,6 @@ const SessionAnalysisMap = () => {
                 onWheel={handleWheel}
             >
                 <Layer>
-                    {/* Display default map image */}
-                    {mapImage && (
-                        (() => {
-                            const imageAspectRatio = mapImage.width / mapImage.height;
-                            const stageAspectRatio = stageSize.width / stageSize.height;
-
-                            let displayWidth, displayHeight;
-
-                            if (imageAspectRatio > stageAspectRatio) {
-                                // Image is wider than stage - fit by width
-                                displayWidth = stageSize.width;
-                                displayHeight = stageSize.width / imageAspectRatio;
-                            } else {
-                                // Image is taller than stage - fit by height
-                                displayHeight = stageSize.height;
-                                displayWidth = stageSize.height * imageAspectRatio;
-                            }
-
-                            return (
-                                <Image
-                                    x={0}
-                                    y={0}
-                                    image={mapImage}
-                                    width={displayWidth}
-                                    height={displayHeight}
-                                />
-                            );
-                        })()
-                    )}
-
                     {/* Racing Track Lines */}
                     {bezierPoints.length > 3 && (
                         <>
@@ -517,52 +491,6 @@ const SessionAnalysisMap = () => {
                             />
                         </>
                     )}
-
-                    {/* Turning Points - Display Only */}
-                    {turningPoints.map((turningPoint) => {
-                        const pointStyle = getPointStyling(turningPoint.type);
-                        const IconComponent = pointStyle.icon;
-
-                        return (
-                            <Group
-                                key={turningPoint.index}
-                                x={turningPoint.position[0]}
-                                y={turningPoint.position[1]}
-                            >
-                                {/* Main circle with type-specific color */}
-                                <Circle
-                                    radius={14}
-                                    fill={pointStyle.fill}
-                                    stroke="#ffffff"
-                                    strokeWidth={2}
-                                />
-
-                                {/* Icon overlay */}
-                                <Html>
-                                    <div style={{
-                                        position: 'absolute',
-                                        top: '-12px',
-                                        left: '-12px',
-                                        width: '24px',
-                                        height: '24px',
-                                        display: 'flex',
-                                        alignItems: 'center',
-                                        justifyContent: 'center',
-                                        pointerEvents: 'none'
-                                    }}>
-                                        <IconComponent
-                                            style={{
-                                                width: '14px',
-                                                height: '14px',
-                                                color: 'white',
-                                                filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.3))'
-                                            }}
-                                        />
-                                    </div>
-                                </Html>
-                            </Group>
-                        );
-                    })}
                 </Layer>
             </Stage>
         </div>

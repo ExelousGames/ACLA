@@ -115,4 +115,80 @@ export class AiModelController {
         // For now, we'll create the model entry and let the AI service populate it
         return this.aiModelService.createModel(createDto);
     }
+
+    @UseGuards(AuthGuard('jwt'))
+    @Post('ai-query')
+    async processAIQuery(
+        @Body() body: {
+            query: string;
+            sessionId?: string;
+            context?: any;
+        },
+        @Request() req: any
+    ) {
+        // Forward natural language queries to the AI service
+        const queryRequest = {
+            question: body.query,
+            dataset_id: body.sessionId,
+            user_id: req?.user?.id,
+            context: {
+                ...body.context,
+                user_id: req?.user?.id,
+                type: 'ai_model_operation'
+            }
+        };
+
+        return this.aiModelService.processAIQuery(queryRequest);
+    }
+
+    @UseGuards(AuthGuard('jwt'))
+    @Post('intelligent-training')
+    async intelligentTraining(
+        @Body() body: {
+            naturalLanguageRequest: string;
+            context?: any;
+        },
+        @Request() req: any
+    ) {
+        // Allow users to request model training using natural language
+        // e.g., "Train a lap time prediction model for Spa using my last 5 sessions"
+        const queryRequest = {
+            question: body.naturalLanguageRequest,
+            user_id: req?.user?.id,
+            context: {
+                ...body.context,
+                user_id: req?.user?.id,
+                type: 'model_training',
+                operation: 'train'
+            }
+        };
+
+        return this.aiModelService.processAIQuery(queryRequest);
+    }
+
+    @UseGuards(AuthGuard('jwt'))
+    @Post('ask-about-models')
+    async askAboutModels(
+        @Body() body: {
+            question: string;
+            trackName?: string;
+            modelType?: string;
+        },
+        @Request() req: any
+    ) {
+        // Allow users to ask questions about their models
+        // e.g., "Which of my models performs best for Monza?"
+        const queryRequest = {
+            question: body.question,
+            user_id: req?.user?.id,
+            context: {
+                user_id: req?.user?.id,
+                track_name: body.trackName,
+                model_type: body.modelType,
+                type: 'model_query'
+            }
+        };
+
+        return this.aiModelService.processAIQuery(queryRequest);
+    }
 }

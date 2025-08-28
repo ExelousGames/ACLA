@@ -334,4 +334,80 @@ export class AiModelService {
             updatedAt: (model as any).updatedAt,
         };
     }
+
+    async processAIQuery(queryRequest: any): Promise<any> {
+        try {
+            // Forward the AI query to the AI service
+            const result = await this.aiService.processQuery(queryRequest);
+            return {
+                success: true,
+                query: queryRequest.question,
+                answer: result.answer,
+                function_calls: result.function_calls || [],
+                context: result.context,
+                ai_processing: true
+            };
+        } catch (error) {
+            throw new BadRequestException(`AI query processing failed: ${error.message}`);
+        }
+    }
+
+    async askQuestionAboutUserModels(userId: string, question: string, context?: any): Promise<any> {
+        try {
+            // Get user's models for context
+            const userObjectId = await this.getUserObjectId(userId);
+            if (!userObjectId) {
+                throw new BadRequestException('User not found');
+            }
+
+            const userModels = await this.aiModelModel.find({
+                userId: userObjectId
+            }).select('modelName trackName modelMetadata isActive createdAt').sort({ createdAt: -1 });
+
+            // Prepare context with model information
+            const modelContext = {
+                user_id: userId,
+                user_models: userModels.map(model => ({
+                    id: (model._id as any).toString(),
+                    name: model.modelName,
+                    track: model.trackName,
+                    type: model.modelMetadata.modelType,
+                    active: model.isActive,
+                    created: (model as any).createdAt,
+                    accuracy: model.modelMetadata.accuracy,
+                    sessions_count: model.modelMetadata.trainingSessionsCount
+                })),
+                ...context
+            };
+
+            const queryRequest = {
+                question: question,
+                user_id: userId,
+                context: modelContext
+            };
+
+            return await this.processAIQuery(queryRequest);
+        } catch (error) {
+            throw new BadRequestException(`Model query failed: ${error.message}`);
+        }
+    }
+
+    async trainModelFromNaturalLanguage(userId: string, request: string, context?: any): Promise<any> {
+        try {
+            // Process natural language training request
+            const queryRequest = {
+                question: request,
+                user_id: userId,
+                context: {
+                    ...context,
+                    operation_type: 'model_training',
+                    available_functions: ['train_ai_model', 'call_backend_function']
+                }
+            };
+
+            return await this.processAIQuery(queryRequest);
+        } catch (error) {
+            throw new BadRequestException(`Natural language training failed: ${error.message}`);
+        }
+    }
 }
