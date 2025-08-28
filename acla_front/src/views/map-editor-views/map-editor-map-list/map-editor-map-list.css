@@ -1,0 +1,85 @@
+/* Enhanced Radix Component Styles */
+.map-editor-map-list-container {
+    display: flex;
+    flex-direction: column;
+    gap: 24px;
+}
+
+/* Card hover effects */
+.map-editor-map-list-container [data-radix-collection-item] {
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.map-editor-map-list-container [data-radix-collection-item]:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 8px 25px rgba(0, 0, 0, 0.1);
+    border-color: var(--blue-7) !important;
+}
+
+.map-editor-map-list-container [data-radix-collection-item]:active {
+    transform: translateY(0);
+}
+
+/* Button focus states */
+.map-editor-map-list-container button:focus-visible {
+    outline: 2px solid var(--blue-8);
+    outline-offset: 2px;
+}
+
+/* Custom scrollbar styling */
+.map-editor-map-list-container [data-radix-scroll-area-scrollbar] {
+    background: var(--gray-3);
+    width: 8px;
+    border-radius: 4px;
+    padding: 1px;
+}
+
+.map-editor-map-list-container [data-radix-scroll-area-thumb] {
+    background: var(--gray-8);
+    border-radius: 4px;
+    transition: background 0.2s ease;
+}
+
+.map-editor-map-list-container [data-radix-scroll-area-thumb]:hover {
+    background: var(--gray-9);
+}
+
+/* Icon container hover effects */
+.map-editor-map-list-container [data-radix-collection-item]:hover svg {
+    transform: scale(1.05);
+    transition: transform 0.2s ease;
+}
+
+/* Badge animations */
+.map-editor-map-list-container [data-radix-collection-item]:hover [data-accent-color] {
+    transform: scale(1.05);
+    transition: transform 0.2s ease;
+}
+
+/* Empty state styling */
+.map-editor-map-list-container .empty-state {
+    animation: fadeIn 0.5s ease-in-out;
+}
+
+@keyframes fadeIn {
+    from {
+        opacity: 0;
+        transform: translateY(10px);
+    }
+
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+    .map-editor-map-list-container {
+        gap: 16px;
+    }
+
+    .map-editor-map-list-container [data-radix-collection-item] {
+        padding: 12px !important;
+    }
+}

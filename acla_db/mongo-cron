@@ -1,0 +1,2 @@
+# Run daily at 2 AM
+0 2 * * * root /backup.sh >> /var/log/cron.log 2>&1
