@@ -12,11 +12,11 @@ fi
 
 # Stop any existing containers
 echo "🧹 Cleaning up existing containers..."
-docker-compose -f docker-compose.dev.yaml down
+docker-compose --env-file .dev.env --env-file .env.secrets -f docker-compose.dev.yaml down
 
 # Build and start all services
 echo "🔨 Building and starting services..."
-docker-compose -f docker-compose.dev.yaml up --build -d
+docker-compose --env-file .dev.env --env-file .env.secrets -f docker-compose.dev.yaml up --build -d
 
 # Wait for services to start
 echo "⏳ Waiting for services to initialize..."

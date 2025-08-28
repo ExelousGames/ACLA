@@ -103,4 +103,40 @@ export class AiService {
     async getModelMetrics(modelId: string) {
         return await this.aiServiceClient.getModelMetrics(modelId);
     }
+
+    async processIntelligentQuery(question: string, context?: any, userId?: string) {
+        const query: QueryRequest = {
+            question: question,
+            dataset_id: context?.session_id || context?.dataset_id,
+            user_id: userId,
+            context: context
+        };
+
+        return await this.processQuery(query);
+    }
+
+    async askAboutUserData(userId: string, question: string, sessionId?: string) {
+        const context = {
+            user_id: userId,
+            type: 'user_data_query'
+        };
+
+        if (sessionId) {
+            context['session_id'] = sessionId;
+        }
+
+        return await this.processIntelligentQuery(question, context, userId);
+    }
+
+    async requestModelOperation(userId: string, operation: string, context?: any) {
+        const query = `${operation}. User context: ${JSON.stringify(context)}`;
+
+        const queryContext = {
+            user_id: userId,
+            operation_type: 'model_operation',
+            ...context
+        };
+
+        return await this.processIntelligentQuery(query, queryContext, userId);
+    }
 }
