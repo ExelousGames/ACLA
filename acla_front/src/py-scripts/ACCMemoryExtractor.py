@@ -33,10 +33,12 @@ class ACCRecording:
             # schedule the next call first
             scheduler.enter(1, 1, self.recordOnce, (scheduler,full_path))
 
-            self.append_object_to_csv(sm,full_path)
+            flattened = self.flatten_object(sm)
+            
+            self.append_object_to_csv(flattened,full_path)
 
             # !!!!!! must keep this to communicate with frontend
-            print(DataclassJSONUtility.to_json(sm, indent=2).rstrip())
+            print(DataclassJSONUtility.to_json(flattened, indent=2).rstrip())
         else:
             self.asm.close()
 
@@ -87,9 +89,8 @@ class ACCRecording:
             flattened_objects = []
             
    
-            flattened = self.flatten_object(object)
-            flattened_objects.append(flattened)
-            all_fieldnames.update(flattened.keys())
+            flattened_objects.append(object)
+            all_fieldnames.update(object.keys())
             
             
             with open(filename, 'a', newline='', encoding='utf-8') as csvfile:
@@ -101,8 +102,8 @@ class ACCRecording:
                 )
                 
                 
-                for flattened in flattened_objects:
-                    writer.writerow(flattened)
+                for object in flattened_objects:
+                    writer.writerow(object)
     
     def write_object_to_csv(self, objects: Any, filename: str, write_header: bool = True) -> None:
             """

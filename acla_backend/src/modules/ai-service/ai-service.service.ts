@@ -83,4 +83,24 @@ export class AiService {
     async healthCheck() {
         return await this.aiServiceClient.checkHealth();
     }
+
+    async performIncrementalTraining(trainingRequest: any) {
+        return await this.aiServiceClient.performIncrementalTraining(trainingRequest);
+    }
+
+    async makePredictionWithModel(predictionRequest: any) {
+        return await this.aiServiceClient.makePredictionWithModel(predictionRequest);
+    }
+
+    async trainModelFromScratch(trainingRequest: any) {
+        return await this.aiServiceClient.trainModelFromScratch(trainingRequest);
+    }
+
+    async validateModel(validationRequest: any) {
+        return await this.aiServiceClient.validateModel(validationRequest);
+    }
+
+    async getModelMetrics(modelId: string) {
+        return await this.aiServiceClient.getModelMetrics(modelId);
+    }
 }

@@ -11,6 +11,14 @@ import { ACC_STATUS, ACCMemoeryTracks } from 'data/live-analysis/live-map-data';
 import { Cross2Icon } from '@radix-ui/react-icons';
 import { IpcRendererEvent } from 'electron';
 
+// Button states enum
+enum ButtonState {
+    CHECKING = 'checking',
+    READY_TO_START = 'ready_to_start',
+    RECORDING = 'recording',
+    UPLOAD_READY = 'upload_ready'
+}
+
 
 const LiveAnalysisSessionRecording = () => {
     const analysisContext = useContext(AnalysisContext);
@@ -33,6 +41,46 @@ const LiveAnalysisSessionRecording = () => {
     const intervalRef = useRef<NodeJS.Timeout | null>(null);
     const [primaryButton, setPrimaryButton] = useState<JSX.Element>();
 
+    // Button state management
+    const [buttonState, setButtonState] = useState<ButtonState>(ButtonState.CHECKING);
+
+    // Centralized button component generator
+    const getPrimaryButtonComponent = (state: ButtonState): JSX.Element => {
+        switch (state) {
+            case ButtonState.CHECKING:
+                return <Spinner size="3" />;
+
+            case ButtonState.READY_TO_START:
+                return (
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="currentcolor" viewBox="0 0 30 30" width="20" height="20" style={{ marginRight: -2 }}>
+                        <path d="M 6 3 A 1 1 0 0 0 5 4 A 1 1 0 0 0 5 4.0039062 L 5 15 L 5 25.996094 A 1 1 0 0 0 5 26 A 1 1 0 0 0 6 27 A 1 1 0 0 0 6.5800781 26.8125 L 6.5820312 26.814453 L 26.416016 15.908203 A 1 1 0 0 0 27 15 A 1 1 0 0 0 26.388672 14.078125 L 6.5820312 3.1855469 L 6.5800781 3.1855469 A 1 1 0 0 0 6 3 z" />
+                    </svg>
+                );
+
+            case ButtonState.RECORDING:
+                return (
+                    <svg width="15" height="15" viewBox="0 0 15 15" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M7.5 11C4.80285 11 2.52952 9.62184 1.09622 7.50001C2.52952 5.37816 4.80285 4 7.5 4C10.1971 4 12.4705 5.37816 13.9038 7.50001C12.4705 9.62183 10.1971 11 7.5 11ZM7.5 3C4.30786 3 1.65639 4.70638 0.0760002 7.23501C-0.0253338 7.39715 -0.0253334 7.60288 0.0760014 7.76501C1.65639 10.2936 4.30786 12 7.5 12C10.6921 12 13.3436 10.2936 14.924 7.76501C15.0253 7.60288 15.0253 7.39715 14.924 7.23501C13.3436 4.70638 10.6921 3 7.5 3ZM7.5 9.5C8.60457 9.5 9.5 8.60457 9.5 7.5C9.5 6.39543 8.60457 5.5 7.5 5.5C6.39543 5.5 5.5 6.39543 5.5 7.5C5.5 8.60457 6.39543 9.5 7.5 9.5Z" fill="currentColor" fillRule="evenodd" clipRule="evenodd"></path>
+                    </svg>
+                );
+
+            case ButtonState.UPLOAD_READY:
+                return (
+                    <svg width="15" height="15" viewBox="0 0 15 15" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M7.81825 1.18188C7.64251 1.00615 7.35759 1.00615 7.18185 1.18188L4.18185 4.18188C4.00611 4.35762 4.00611 4.64254 4.18185 4.81828C4.35759 4.99401 4.64251 4.99401 4.81825 4.81828L7.05005 2.58648V9.49996C7.05005 9.74849 7.25152 9.94996 7.50005 9.94996C7.74858 9.94996 7.95005 9.74849 7.95005 9.49996V2.58648L10.1819 4.81828C10.3576 4.99401 10.6425 4.99401 10.8182 4.81828C10.994 4.64254 10.994 4.35762 10.8182 4.18188L7.81825 1.18188ZM2.5 9.99997C2.77614 9.99997 3 10.2238 3 10.5V12C3 12.5538 3.44565 13 3.99635 13H11.0012C11.5529 13 12 12.5528 12 12V10.5C12 10.2238 12.2239 9.99997 12.5 9.99997C12.7761 9.99997 13 10.2238 13 10.5V12C13 13.104 12.1062 14 11.0012 14H3.99635C2.89019 14 2 13.103 2 12V10.5C2 10.2238 2.22386 9.99997 2.5 9.99997Z" fill="currentColor" fillRule="evenodd" clipRule="evenodd"></path>
+                    </svg>
+                );
+
+            default:
+                return <Spinner size="3" />;
+        }
+    };
+
+    // Update button whenever buttonState changes
+    useEffect(() => {
+        setPrimaryButton(getPrimaryButtonComponent(buttonState));
+    }, [buttonState]);
+
 
     useEffect(() => {
 
@@ -52,6 +100,14 @@ const LiveAnalysisSessionRecording = () => {
      * check acc memory once and see if there is a valid session running
      */
     const CheckSessionValid = async () => {
+        console.log("Checking session validity...");
+
+        if (isCheckingLiveSession) {
+            console.log("Already checking session, skipping...");
+            return;
+        }
+
+        isCheckingLiveSession = true;
 
         //setup for running a new python in main process
         let options = {
@@ -68,46 +124,69 @@ const LiveAnalysisSessionRecording = () => {
             //running the script in the main process (electron.js) instead this renderer process. we will wait for the result to comeback to onPythonMessage().
             const { shellId } = await window.electronAPI.runPythonScript(script, options);
 
-            return new Promise((resolve, reject) => {
+            return new Promise<void>((resolve, reject) => {
+
+                // Track if the promise has been resolved
+                let isResolved = false;
+
+                // Timeout to prevent hanging promises
+                const timeout = setTimeout(() => {
+                    if (!isResolved) {
+                        isResolved = true;
+                        isCheckingLiveSession = false;
+                        reject(new Error('Session check timeout'));
+                    }
+                }, 10000); // 10 second timeout
+
+                const cleanup = () => {
+                    clearTimeout(timeout);
+                };
 
                 //create a function to handle the return of the python script
-                let handleMessage = (returnedShellId: number, message: string) => {
-
+                const handleMessage = (returnedShellId: number, message: string) => {
                     //all scripts will call this function, we must identify the right id 
-                    if (shellId == returnedShellId) {
+                    if (shellId === returnedShellId) {
                         try {
                             const obj = JSON.parse(message);
 
                             //if the script print out valid session map 
-                            if (obj.Graphics.status == ACC_STATUS.ACC_LIVE) {
+                            if (obj.Graphics && obj.Graphics.status === ACC_STATUS.ACC_LIVE) {
+                                console.log("Found valid live session!");
                                 //found a valid live session, stop the checking process
                                 stopCheckingLiveSessionInterval();
                                 setValidLiveSession(obj.Graphics.status);
 
                                 //set primary button to start button
-                                setPrimaryButton(
-                                    <svg xmlns="http://www.w3.org/2000/svg" fill="currentcolor" viewBox="0 0 30 30" width="20" height="20" style={{ marginRight: -2 }}>
-                                        <path d="M 6 3 A 1 1 0 0 0 5 4 A 1 1 0 0 0 5 4.0039062 L 5 15 L 5 25.996094 A 1 1 0 0 0 5 26 A 1 1 0 0 0 6 27 A 1 1 0 0 0 6.5800781 26.8125 L 6.5820312 26.814453 L 26.416016 15.908203 A 1 1 0 0 0 27 15 A 1 1 0 0 0 26.388672 14.078125 L 6.5820312 3.1855469 L 6.5800781 3.1855469 A 1 1 0 0 0 6 3 z" />
-                                    </svg>
-                                );
+                                setButtonState(ButtonState.READY_TO_START);
 
                                 //set the static data too, so we can use it later.
+                                console.log("Setting static data:", obj);
                                 analysisContext.setRecordedSessionStaticsData(obj);
+                            } else {
+                                console.log("Session status is not live:", obj.Graphics?.status);
                             }
                         } catch (error) {
-                            // Handle the error appropriately
+                            console.error('Error parsing session data:', error);
+                            console.error('Raw message that failed to parse:', message);
+
+                            // If we couldn't parse the session data, we should reject the promise
+                            if (!isResolved) {
+                                isResolved = true;
+                                cleanup();
+                                isCheckingLiveSession = false;
+                                reject(error);
+                            }
                         }
                     }
-
-                }
+                };
 
                 // handle the event when python script for session recording is terminated
                 const handleScriptEnd = (returnedShellId: number) => {
-                    if (shellId == returnedShellId) {
-
-                        //notify live session is found
+                    if (shellId === returnedShellId && !isResolved) {
+                        isResolved = true;
+                        cleanup();
                         isCheckingLiveSession = false;
-                        resolve("good");
+                        resolve();
                     }
                 };
 
@@ -115,13 +194,13 @@ const LiveAnalysisSessionRecording = () => {
 
                 // Set up listener for Python messages
                 window.electronAPI.OnPythonMessageOnce(handleMessage);
-                window.electronAPI.onPythonEnd(handleScriptEnd)
-
-            })
-
+                window.electronAPI.onPythonEnd(handleScriptEnd);
+            });
 
         } catch (error) {
+            console.error('Error running Python script:', error);
             isCheckingLiveSession = false;
+            throw error;
         }
     };
 
@@ -130,9 +209,37 @@ const LiveAnalysisSessionRecording = () => {
      * @returns 
      */
     const StartRecording = async () => {
+        console.log("StartRecording called");
 
         //if no valid live sesssion, we dont do anything
-        if (hasValidLiveSession != ACC_STATUS.ACC_LIVE) return;
+        if (hasValidLiveSession != ACC_STATUS.ACC_LIVE) {
+            console.log("No valid live session, current status:", hasValidLiveSession);
+            return;
+        }
+
+        console.log("Checking static data:", analysisContext.recordedSessioStaticsData);
+
+        // Check if we have valid static data
+        if (!analysisContext.recordedSessioStaticsData || !analysisContext.recordedSessioStaticsData.Static) {
+            console.error("No static data available from session check");
+            return;
+        }
+
+        const trackId = analysisContext.recordedSessioStaticsData.Static.track;
+        console.log("Track ID from static data:", trackId);
+
+        //find and set the track name by using the saved static data from the CheckSessionValid()
+        if (!ACCMemoeryTracks.has(trackId)) {
+            console.error("Track not found in ACCMemoeryTracks. Available tracks:", Array.from(ACCMemoeryTracks.keys()));
+            console.error("Requested track ID:", trackId);
+            // For now, let's use a default track name or continue anyway
+            const defaultTrackName = "Unknown Track";
+            analysisContext.setMap(defaultTrackName);
+        } else {
+            const trackname: string = ACCMemoeryTracks.get(trackId)!;
+            console.log("Found track name:", trackname);
+            analysisContext.setMap(trackname);
+        }
 
         const currentDate = new Date();
         const filename: string = `acc_${currentDate.getFullYear()}_${currentDate.getMonth()}_${currentDate.getDate()}_${currentDate.getHours()}_${currentDate.getMinutes()}_${currentDate.getSeconds()}.csv`;
@@ -146,18 +253,14 @@ const LiveAnalysisSessionRecording = () => {
         } as PythonShellOptions;
         const script = 'ACCMemoryExtractor.py';
 
-        //find and set the track name by using the saved static data from the CheckSessionValid()
+        console.log("Setting up session with track:", analysisContext.mapSelected);
 
-        if (!ACCMemoeryTracks.has(analysisContext.recordedSessioStaticsData.Static.track)) return;
-
-        const trackname: string = ACCMemoeryTracks.get(analysisContext.recordedSessioStaticsData.Static.track)!
-        analysisContext.setMap(trackname);
         analysisContext.setSession((prev) => {
             if (!prev) {
                 const newSession: RacingSessionDetailedInfoDto = {
                     session_name: new Date().toString(),
                     id: '',
-                    map: trackname,
+                    map: analysisContext.mapSelected || "Unknown Track",
                     user_email: '',
                     points: [],
                     data: []
@@ -167,24 +270,30 @@ const LiveAnalysisSessionRecording = () => {
             prev.session_name = new Date().toString()
             return prev;
         });
-        setPrimaryButton(<svg width="15" height="15" viewBox="0 0 15 15" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M7.5 11C4.80285 11 2.52952 9.62184 1.09622 7.50001C2.52952 5.37816 4.80285 4 7.5 4C10.1971 4 12.4705 5.37816 13.9038 7.50001C12.4705 9.62183 10.1971 11 7.5 11ZM7.5 3C4.30786 3 1.65639 4.70638 0.0760002 7.23501C-0.0253338 7.39715 -0.0253334 7.60288 0.0760014 7.76501C1.65639 10.2936 4.30786 12 7.5 12C10.6921 12 13.3436 10.2936 14.924 7.76501C15.0253 7.60288 15.0253 7.39715 14.924 7.23501C13.3436 4.70638 10.6921 3 7.5 3ZM7.5 9.5C8.60457 9.5 9.5 8.60457 9.5 7.5C9.5 6.39543 8.60457 5.5 7.5 5.5C6.39543 5.5 5.5 6.39543 5.5 7.5C5.5 8.60457 6.39543 9.5 7.5 9.5Z" fill="currentColor" fillRule="evenodd" clipRule="evenodd"></path></svg>);
+
+        // Set the primary button to the recording icon
+        setButtonState(ButtonState.RECORDING);
 
         try {
+            console.log("Starting Python script:", script, "with options:", options);
             //running the script in the main process (electron.js) instead this renderer process
             const { shellId } = await window.electronAPI.runPythonScript(script, options);
+            console.log("Python script started with shell ID:", shellId);
 
             const offPythonMessage = window.electronAPI.onPythonMessage((incomingScriptShellId: number, message: string) => {
 
                 if (shellId == incomingScriptShellId) { //check return result of recording script
                     try {
                         const obj = JSON.parse(message);
+                        console.log("Received recording message:", obj);
                         analysisContext.setLiveSessionData(obj);
                         analysisContext.setRecordedSessionData((presState: any) => {
                             return [...presState, obj];
                         });
 
                     } catch (error) {
-                        // Handle the error appropriately
+                        console.error("Error parsing Python message:", error);
+                        console.error("Raw message:", message);
                     }
                 }
             });
@@ -192,16 +301,20 @@ const LiveAnalysisSessionRecording = () => {
             window.electronAPI.onPythonEnd((incomingScriptShellId: number) => {
 
                 if (shellId == incomingScriptShellId) {// session recording is terminated
+                    console.log("Python script ended, shell ID:", incomingScriptShellId);
                     setIsRecording(false);
                     setIsRecorEnded(true);
+                    setButtonState(ButtonState.UPLOAD_READY);
                     offPythonMessage();
                 }
             })
 
             setIsRecording(true);
+            console.log("Recording state set to true");
 
         } catch (error) {
-
+            console.error("Error starting recording:", error);
+            setButtonState(ButtonState.READY_TO_START); // Reset button state on error
         }
     };
 
@@ -209,11 +322,26 @@ const LiveAnalysisSessionRecording = () => {
      * start checking the valid live session in a interval
      */
     const startCheckingLiveSessionInterval = () => {
+        setButtonState(ButtonState.CHECKING);
 
-        setPrimaryButton(< Spinner size="3" />);
-        //check every 1 sec by using a python script
-        intervalRef.current = setInterval(CheckSessionValid, 2000);
+        //check every 2 sec by using a python script
+        intervalRef.current = setInterval(async () => {
+            // Prevent overlapping checks
+            if (isCheckingLiveSession) {
+                console.log("Previous check still in progress, skipping this interval");
+                return;
+            }
 
+            try {
+                console.log("Interval tick - calling CheckSessionValid");
+                await CheckSessionValid();
+                console.log("CheckSessionValid completed");
+            } catch (error) {
+                console.error("Error in CheckSessionValid:", error);
+                // Don't stop the interval on error, just log it and continue
+                isCheckingLiveSession = false; // Reset the flag in case of error
+            }
+        }, 2000);
     };
 
     // Stop the interval
@@ -234,7 +362,7 @@ const LiveAnalysisSessionRecording = () => {
 
         //send by chunks
         const chunks = [];
-        const chunkSize = 10;
+        const chunkSize = 5;
 
         const metadata = {
             sessionName: analysisContext.sessionSelected?.session_name,
@@ -275,13 +403,19 @@ const LiveAnalysisSessionRecording = () => {
     }
 
     function reEnterCheckingValidSession() {
+        // Reset all relevant state
         isCheckingLiveSession = false;
         setIsRecording(false);
         setIsRecorEnded(false);
         setValidLiveSession(ACC_STATUS.ACC_OFF);
         setCheckSessionScriptShellId(-1);
+        setButtonState(ButtonState.CHECKING);
         analysisContext.setSession(null);
+
+        // Stop any existing interval before starting a new one
         stopCheckingLiveSessionInterval();
+
+        // Start checking again
         startCheckingLiveSessionInterval();
     }
 

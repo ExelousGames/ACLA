@@ -5,6 +5,17 @@ Telemetry data models for Assetto Corsa Competizione telemetry features
 from pydantic import BaseModel
 from typing import Dict, List, Any, Optional
 import pandas as pd
+import math
+
+def _safe_float(value):
+    """Convert value to float, handling NaN and infinity"""
+    try:
+        float_val = float(value)
+        if math.isnan(float_val) or math.isinf(float_val):
+            return 0.0
+        return float_val
+    except (ValueError, TypeError):
+        return 0.0
 
 class TelemetryFeatures:
     """
@@ -337,6 +348,12 @@ class FeatureProcessor:
     """Process and prepare telemetry features for AI analysis"""
     
     def __init__(self, df: pd.DataFrame):
+        # Ensure all column names are strings to prevent AttributeError
+        if any(not isinstance(col, str) for col in df.columns):
+            print("[DEBUG] FeatureProcessor: Converting non-string column names to strings")
+            df = df.copy()
+            df.columns = [str(col) for col in df.columns]
+            
         self.df = df
         self.features = TelemetryFeatures()
     
@@ -372,13 +389,21 @@ class FeatureProcessor:
         """Prepare the DataFrame for AI analysis by cleaning and preprocessing"""
         processed_df = self.df.copy()
         
+        # Ensure all column names are strings to prevent AttributeError on .lower()
+        if any(not isinstance(col, str) for col in processed_df.columns):
+            print("[DEBUG] Converting non-string column names to strings")
+            processed_df.columns = [str(col) for col in processed_df.columns]
+        
+        # Handle complex nested structures from AC Competizione telemetry
+        self._handle_complex_fields(processed_df)
+        
         # Handle missing values
         numeric_columns = processed_df.select_dtypes(include=['number']).columns
         processed_df[numeric_columns] = processed_df[numeric_columns].fillna(0)
         
         # Convert string boolean values to actual booleans
         boolean_features = [col for col in processed_df.columns if 
-                          any(keyword in col.lower() for keyword in ['on', 'enabled', 'valid', 'running', 'controlled'])]
+                          isinstance(col, str) and any(keyword in col.lower() for keyword in ['on', 'enabled', 'valid', 'running', 'controlled'])]
         
         for col in boolean_features:
             if col in processed_df.columns:
@@ -390,40 +415,148 @@ class FeatureProcessor:
         
         return processed_df
     
+    def _handle_complex_fields(self, df: pd.DataFrame) -> None:
+        """Handle complex nested fields from AC Competizione telemetry"""
+        
+        # Handle Graphics_car_coordinates array - extract player car position
+        if 'Graphics_car_coordinates' in df.columns:
+            try:
+                # Extract first car coordinates (player car) if it's a list
+                for idx in df.index:
+                    car_coords = df.loc[idx, 'Graphics_car_coordinates']
+                    if isinstance(car_coords, list) and len(car_coords) > 0:
+                        player_coord = car_coords[0]
+                        if isinstance(player_coord, dict):
+                            df.loc[idx, 'Graphics_player_pos_x'] = player_coord.get('x', 0)
+                            df.loc[idx, 'Graphics_player_pos_y'] = player_coord.get('y', 0)
+                            df.loc[idx, 'Graphics_player_pos_z'] = player_coord.get('z', 0)
+                
+                # Remove the complex column after extraction
+                df.drop('Graphics_car_coordinates', axis=1, inplace=True)
+                print("[DEBUG] Processed Graphics_car_coordinates array")
+                
+            except Exception as e:
+                print(f"[DEBUG] Error processing Graphics_car_coordinates: {str(e)}")
+                # If there's an error, just drop the problematic column
+                if 'Graphics_car_coordinates' in df.columns:
+                    df.drop('Graphics_car_coordinates', axis=1, inplace=True)
+        
+        # Handle Graphics_car_id array - convert to count of active cars
+        if 'Graphics_car_id' in df.columns:
+            try:
+                for idx in df.index:
+                    car_ids = df.loc[idx, 'Graphics_car_id']
+                    if isinstance(car_ids, list):
+                        # Count non-zero car IDs
+                        active_cars = sum(1 for car_id in car_ids if car_id != 0)
+                        df.loc[idx, 'Graphics_active_cars_count'] = active_cars
+                
+                # Remove the complex column after extraction
+                df.drop('Graphics_car_id', axis=1, inplace=True)
+                print("[DEBUG] Processed Graphics_car_id array")
+                
+            except Exception as e:
+                print(f"[DEBUG] Error processing Graphics_car_id: {str(e)}")
+                if 'Graphics_car_id' in df.columns:
+                    df.drop('Graphics_car_id', axis=1, inplace=True)
+        
+        # Handle string time fields - convert to numeric milliseconds
+        time_string_fields = [
+            'Graphics_current_time_str', 'Graphics_last_time_str', 
+            'Graphics_best_time_str', 'Graphics_delta_lap_time_str',
+            'Graphics_estimated_lap_time_str'
+        ]
+        
+        for field in time_string_fields:
+            if field in df.columns:
+                try:
+                    # Convert time strings to numeric values where possible
+                    df[field + '_numeric'] = df[field].apply(self._parse_time_string)
+                    print(f"[DEBUG] Converted {field} to numeric")
+                except Exception as e:
+                    print(f"[DEBUG] Error converting {field}: {str(e)}")
+        
+        # Handle boolean fields that might be strings
+        boolean_fields = [
+            'Physics_pit_limiter_on', 'Physics_autoshifter_on', 'Physics_is_ai_controlled',
+            'Physics_ignition_on', 'Physics_starter_engine_on', 'Physics_is_engine_running',
+            'Graphics_is_in_pit', 'Graphics_ideal_line_on', 'Graphics_is_in_pit_lane',
+            'Graphics_mandatory_pit_done', 'Graphics_is_setup_menu_visible',
+            'Graphics_rain_light', 'Graphics_flashing_light', 'Graphics_is_delta_positive',
+            'Graphics_is_valid_lap', 'Graphics_direction_light_left', 'Graphics_direction_light_right',
+            'Graphics_global_yellow', 'Graphics_global_yellow_s1', 'Graphics_global_yellow_s2',
+            'Graphics_global_yellow_s3', 'Graphics_global_white', 'Graphics_global_green',
+            'Graphics_global_chequered', 'Graphics_global_red', 'Static_penalty_enabled',
+            'Static_aid_auto_clutch', 'Static_is_online'
+        ]
+        
+        for field in boolean_fields:
+            if field in df.columns:
+                try:
+                    # Convert boolean fields to numeric (0/1)
+                    df[field] = df[field].astype(bool).astype(int)
+                except Exception as e:
+                    print(f"[DEBUG] Error converting boolean field {field}: {str(e)}")
+    
+    def _parse_time_string(self, time_str: str) -> float:
+        """Parse time string to numeric milliseconds"""
+        try:
+            if pd.isna(time_str) or time_str in ['-:--:---', '35791:23:647']:
+                return 0.0
+            
+            # Handle format like "9:17:920" (minutes:seconds:milliseconds)
+            if ':' in str(time_str):
+                parts = str(time_str).split(':')
+                if len(parts) == 3:
+                    minutes = float(parts[0])
+                    seconds = float(parts[1])
+                    milliseconds = float(parts[2])
+                    return (minutes * 60 + seconds) * 1000 + milliseconds
+            
+            # If it's already a number, return as is
+            return float(time_str)
+            
+        except:
+            return 0.0
+    
     def extract_performance_metrics(self) -> Dict[str, Any]:
         """Extract key performance metrics from telemetry data"""
         metrics = {}
         
         # Speed analysis
         if 'Physics_speed_kmh' in self.df.columns:
-            metrics['speed'] = {
-                'max_speed': float(self.df['Physics_speed_kmh'].max()),
-                'avg_speed': float(self.df['Physics_speed_kmh'].mean()),
-                'min_speed': float(self.df['Physics_speed_kmh'].min()),
-                'speed_consistency': float(self.df['Physics_speed_kmh'].std())
-            }
+            speed_data = self.df['Physics_speed_kmh'].dropna()
+            if len(speed_data) > 0:
+                metrics['speed'] = {
+                    'max_speed': _safe_float(speed_data.max()),
+                    'avg_speed': _safe_float(speed_data.mean()),
+                    'min_speed': _safe_float(speed_data.min()),
+                    'speed_consistency': _safe_float(speed_data.std())
+                }
         
         # Lap time analysis (if available)
         if 'Graphics_last_time' in self.df.columns:
-            valid_times = self.df[self.df['Graphics_last_time'] > 0]['Graphics_last_time']
+            valid_times = self.df[self.df['Graphics_last_time'] > 0]['Graphics_last_time'].dropna()
             if not valid_times.empty:
                 metrics['lap_times'] = {
-                    'best_lap': float(valid_times.min()),
-                    'worst_lap': float(valid_times.max()),
-                    'avg_lap': float(valid_times.mean()),
+                    'best_lap': _safe_float(valid_times.min()),
+                    'worst_lap': _safe_float(valid_times.max()),
+                    'avg_lap': _safe_float(valid_times.mean()),
                     'total_laps': len(valid_times)
                 }
         
         # Temperature analysis
-        temp_features = [col for col in self.df.columns if 'temp' in col.lower()]
+        temp_features = [col for col in self.df.columns if isinstance(col, str) and 'temp' in col.lower()]
         if temp_features:
             metrics['temperatures'] = {}
             for feature in temp_features:
-                metrics['temperatures'][feature] = {
-                    'max': float(self.df[feature].max()),
-                    'avg': float(self.df[feature].mean()),
-                    'min': float(self.df[feature].min())
-                }
+                temp_data = self.df[feature].dropna()
+                if len(temp_data) > 0:
+                    metrics['temperatures'][feature] = {
+                        'max': _safe_float(temp_data.max()),
+                        'avg': _safe_float(temp_data.mean()),
+                        'min': _safe_float(temp_data.min())
+                    }
         
         # G-Force analysis
         g_features = ['Physics_g_force_x', 'Physics_g_force_y', 'Physics_g_force_z']
@@ -431,10 +564,12 @@ class FeatureProcessor:
         if available_g:
             metrics['g_forces'] = {}
             for feature in available_g:
-                metrics['g_forces'][feature] = {
-                    'max': float(self.df[feature].max()),
-                    'min': float(self.df[feature].min()),
-                    'avg': float(self.df[feature].mean())
-                }
+                g_data = self.df[feature].dropna()
+                if len(g_data) > 0:
+                    metrics['g_forces'][feature] = {
+                        'max': _safe_float(g_data.max()),
+                        'min': _safe_float(g_data.min()),
+                        'avg': _safe_float(g_data.mean())
+                    }
         
         return metrics

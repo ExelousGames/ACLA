@@ -22,6 +22,7 @@ export class RacingSessionDetailedInfoDto {
     id: string;
     map: string;
     user_email: string;
+
     points: {
         id: number,
         position_x: number,
@@ -30,5 +31,7 @@ export class RacingSessionDetailedInfoDto {
         info: string,
         variables: { key: string, value: string }[] //any word match {key} in description or info will be replaced with the value
     }[];
+
+    //recorded telemetry data
     data: any[];
 }
