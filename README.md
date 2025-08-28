@@ -191,3 +191,28 @@ ___
 
 <a id="using-cli"></a>
 
+
+
+
+
+docker compose -f docker-compose.dev.yaml --env-file .dev.env up
+docker compose -f docker-compose.prod.yaml --env-file .prod.env up
+
+run in background
+docker compose -f docker-compose.dev.yaml --env-file .dev.env up -d
+docker compose -f docker-compose.prod.yaml --env-file .prod.env up -d
+
+docker exec -it mongodb_c /bin/bash /backup.sh
+docker exec -it mongodb_c /bin/bash /restore.sh
+
+install docker: 
+
+sudo yum update -y  
+sudo yum install -y docker
+sudo systemctl enable docker
+sudo systemctl start docker
+
+. Install docker-compose:
+sudo curl -L https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m) -o /usr/bin/docker-compose
+
+sudo chmod +x /usr/bin/docker-compose

@@ -1,0 +1,68 @@
+/* Ensure no global overflow */
+html,
+body {
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+}
+
+#root {
+    height: 100%;
+}
+
+/* Global rule to prevent any scrolling */
+* {
+    scrollbar-width: none;
+    /* Firefox */
+    -ms-overflow-style: none;
+    /* Internet Explorer/Edge */
+}
+
+*::-webkit-scrollbar {
+    display: none;
+    /* Chrome, Safari, Opera */
+}
+
+.main-dashboard-container {
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.main-dashboard-header {
+    flex-shrink: 0;
+    height: 80px;
+    /* Fixed height for header */
+    overflow: hidden;
+}
+
+.main-dashboard-content {
+    flex: 1;
+    display: flex;
+    min-height: 0;
+    /* Important for flex children to shrink */
+    overflow: hidden;
+    height: calc(100vh - 80px);
+}
+
+.SideMainMenu {
+    height: 100%;
+    flex: 1;
+    overflow: hidden;
+}
+
+.MainDashboardTitle {
+    height: 8%;
+}
+
+/* Ensure all child components respect the height constraint */
+* {
+    box-sizing: border-box;
+}
+
+/* Additional constraint for any child components */
+.main-dashboard-content * {
+    max-height: 100%;
+}

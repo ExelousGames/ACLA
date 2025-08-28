@@ -1,0 +1,393 @@
+@import "@radix-ui/colors/black-alpha.css";
+@import "@radix-ui/colors/mauve.css";
+@import "@radix-ui/colors/violet.css";
+
+/* reset */
+button {
+    all: unset;
+}
+
+/* Settings Menu Styles */
+.settings-menu-button {
+    position: absolute;
+    top: 10px;
+    left: 10px;
+    z-index: 1000;
+    background-color: white;
+    border: 1px solid #e1e5e9;
+    border-radius: 6px;
+    padding: 8px 12px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+    transition: background-color 0.2s;
+}
+
+.settings-menu-button:hover {
+    background-color: #f8f9fa;
+}
+
+.upload-dialog-content {
+    background-color: white;
+    border-radius: 8px;
+    padding: 24px;
+    box-shadow: 0 10px 38px -10px rgba(22, 23, 24, 0.35);
+    max-width: 450px;
+}
+
+.upload-button {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 10px 16px;
+    border: 2px dashed #d1d5db;
+    border-radius: 6px;
+    background-color: #f9fafb;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.upload-button:hover {
+    border-color: #9ca3af;
+    background-color: #f3f4f6;
+}
+
+.upload-button:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+.upload-message {
+    padding: 8px 12px;
+    border-radius: 4px;
+    text-align: center;
+    font-size: 14px;
+}
+
+.upload-message.success {
+    background-color: #dcfce7;
+    color: #166534;
+    border: 1px solid #bbf7d0;
+}
+
+.upload-message.error {
+    background-color: #fef2f2;
+    color: #991b1b;
+    border: 1px solid #fecaca;
+}
+
+.DropdownMenuContent,
+.DropdownMenuSubContent {
+    position: absolute;
+    /* Or relative, fixed */
+    right: 20px;
+    min-width: 220px;
+    background-color: white;
+    border-radius: 6px;
+    padding: 5px;
+    box-shadow:
+        0px 10px 38px -10px rgba(22, 23, 24, 0.35),
+        0px 10px 20px -15px rgba(22, 23, 24, 0.2);
+    animation-duration: 400ms;
+    animation-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
+    will-change: transform, opacity;
+}
+
+.DropdownMenuContent[data-side="top"],
+.DropdownMenuSubContent[data-side="top"] {
+    animation-name: slideDownAndFade;
+}
+
+.DropdownMenuContent[data-side="right"],
+.DropdownMenuSubContent[data-side="right"] {
+    animation-name: slideLeftAndFade;
+}
+
+.DropdownMenuContent[data-side="bottom"],
+.DropdownMenuSubContent[data-side="bottom"] {
+    animation-name: slideUpAndFade;
+}
+
+.DropdownMenuContent[data-side="left"],
+.DropdownMenuSubContent[data-side="left"] {
+    animation-name: slideRightAndFade;
+}
+
+.DropdownMenuItem,
+.DropdownMenuCheckboxItem,
+.DropdownMenuRadioItem,
+.DropdownMenuSubTrigger {
+    font-size: 13px;
+    line-height: 1;
+    color: var(--violet-11);
+    border-radius: 3px;
+    display: flex;
+    align-items: center;
+    height: 25px;
+    padding: 0 5px;
+    position: relative;
+    padding-left: 25px;
+    user-select: none;
+    outline: none;
+}
+
+.DropdownMenuSubTrigger[data-state="open"] {
+    background-color: var(--violet-4);
+    color: var(--violet-11);
+}
+
+.DropdownMenuItem[data-disabled],
+.DropdownMenuCheckboxItem[data-disabled],
+.DropdownMenuRadioItem[data-disabled],
+.DropdownMenuSubTrigger[data-disabled] {
+    color: var(--mauve-8);
+    pointer-events: none;
+}
+
+.DropdownMenuItem[data-highlighted],
+.DropdownMenuCheckboxItem[data-highlighted],
+.DropdownMenuRadioItem[data-highlighted],
+.DropdownMenuSubTrigger[data-highlighted] {
+    background-color: var(--violet-9);
+    color: var(--violet-1);
+}
+
+.DropdownMenuLabel {
+    padding-left: 25px;
+    font-size: 12px;
+    line-height: 25px;
+    color: var(--mauve-11);
+}
+
+.DropdownMenuSeparator {
+    height: 1px;
+    background-color: var(--violet-6);
+    margin: 5px;
+}
+
+.DropdownMenuItemIndicator {
+    position: absolute;
+    left: 0;
+    width: 25px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.DropdownMenuArrow {
+    fill: white;
+}
+
+.IconButton {
+    font-family: inherit;
+    border-radius: 100%;
+    height: 35px;
+    width: 35px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--violet-11);
+    background-color: white;
+    box-shadow: 0 2px 10px var(--black-a7);
+}
+
+.IconButton:hover {
+    background-color: var(--violet-3);
+}
+
+.IconButton:focus {
+    box-shadow: 0 0 0 2px black;
+}
+
+.RightSlot {
+    margin-left: auto;
+    padding-left: 20px;
+    color: var(--mauve-11);
+}
+
+[data-highlighted]>.RightSlot {
+    color: white;
+}
+
+[data-disabled] .RightSlot {
+    color: var(--mauve-8);
+}
+
+@keyframes slideUpAndFade {
+    from {
+        opacity: 0;
+        transform: translateY(2px);
+    }
+
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+@keyframes slideRightAndFade {
+    from {
+        opacity: 0;
+        transform: translateX(-2px);
+    }
+
+    to {
+        opacity: 1;
+        transform: translateX(0);
+    }
+}
+
+@keyframes slideDownAndFade {
+    from {
+        opacity: 0;
+        transform: translateY(-2px);
+    }
+
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+@keyframes slideLeftAndFade {
+    from {
+        opacity: 0;
+        transform: translateX(2px);
+    }
+
+    to {
+        opacity: 1;
+        transform: translateX(0);
+    }
+}
+
+@import "@radix-ui/colors/mauve.css";
+
+/* reset */
+a {
+    all: unset;
+}
+
+.HoverCardContent {
+    margin-left: 15px;
+    border-radius: 6px;
+    padding: 20px;
+    background-color: white;
+    box-shadow:
+        hsl(206 22% 7% / 35%) 0px 10px 38px -10px,
+        hsl(206 22% 7% / 20%) 0px 10px 20px -15px;
+    animation-duration: 400ms;
+    animation-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
+    will-change: transform, opacity;
+}
+
+.HoverCardContent[data-side="top"] {
+    animation-name: slideDownAndFade;
+}
+
+.HoverCardContent[data-side="right"] {
+    animation-name: slideLeftAndFade;
+}
+
+.HoverCardContent[data-side="bottom"] {
+    animation-name: slideUpAndFade;
+}
+
+.HoverCardContent[data-side="left"] {
+    animation-name: slideRightAndFade;
+}
+
+.HoverCardArrow {
+    fill: white;
+}
+
+.ImageTrigger {
+    cursor: pointer;
+    border-radius: 100%;
+    display: inline-block;
+}
+
+.ImageTrigger:focus {
+    box-shadow: 0 0 0 2px white;
+}
+
+.Image {
+    display: block;
+    border-radius: 100%;
+}
+
+.Image.normal {
+    width: 45px;
+    height: 45px;
+}
+
+.Image.large {
+    width: 60px;
+    height: 60px;
+}
+
+.Text {
+    margin: 0;
+    color: var(--mauve-12);
+    font-size: 15px;
+    line-height: 1.5;
+}
+
+.Text.faded {
+    color: var(--mauve-10);
+}
+
+.Text.bold {
+    font-weight: 500;
+}
+
+@keyframes slideUpAndFade {
+    0% {
+        opacity: 0;
+        transform: translateY(2px);
+    }
+
+    100% {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+@keyframes slideRightAndFade {
+    0% {
+        opacity: 0;
+        transform: translateX(-2px);
+    }
+
+    100% {
+        opacity: 1;
+        transform: translateX(0);
+    }
+}
+
+@keyframes slideDownAndFade {
+    0% {
+        opacity: 0;
+        transform: translateY(-2px);
+    }
+
+    100% {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+@keyframes slideLeftAndFade {
+    0% {
+        opacity: 0;
+        transform: translateX(2px);
+    }
+
+    100% {
+        opacity: 1;
+        transform: translateX(0);
+    }
+}

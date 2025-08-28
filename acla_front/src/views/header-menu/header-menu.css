@@ -1,0 +1,23 @@
+.menu-header {
+    display: flex;
+    flex-direction: row;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0px 50px 0px 10px;
+    height: 80px;
+    /* Fixed height to match dashboard header */
+    box-sizing: border-box;
+}
+
+.header-menu-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 4px;
+    font-weight: 500;
+    user-select: none;
+}
+
+.header-menu-trigger-icon {
+    padding: 0px 10px 0px 10px;
+}
