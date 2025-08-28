@@ -7,9 +7,9 @@ import image from 'assets/map2.png'
 import apiService from 'services/api.service';
 import { MapInfo, RacingSessionDetailedInfoDto } from 'data/live-analysis/live-analysis-type';
 import { useEnvironment } from 'contexts/EnvironmentContext';
-import { ContextMenu, IconButton } from '@radix-ui/themes';
+import { ContextMenu, IconButton, Dialog, Button, TextField, Text, Flex, Select } from '@radix-ui/themes';
 import { Html } from 'react-konva-utils';
-import { HamburgerMenuIcon, PlusIcon, ZoomInIcon, ZoomOutIcon } from '@radix-ui/react-icons';
+import { HamburgerMenuIcon, PlusIcon, ZoomInIcon, ZoomOutIcon, Pencil1Icon, TrashIcon, DotFilledIcon, TriangleRightIcon, CursorArrowIcon, PlayIcon, StopIcon } from '@radix-ui/react-icons';
 import { MapEditorContext } from '../map-editor-view';
 import { DropdownMenu, HoverCard } from 'radix-ui';
 import SettingsMenu from './components/SettingsMenu';
@@ -85,6 +85,16 @@ const MapEditor = () => {
 
     // Reference to parent container
     const containerRef = useRef<HTMLInputElement>(null);
+
+    // Point editing state
+    const [editingPoint, setEditingPoint] = useState<RacingTurningPoint | null>(null);
+    const [editDialogOpen, setEditDialogOpen] = useState(false);
+    const [editFormData, setEditFormData] = useState({
+        type: 0,
+        description: '',
+        info: '',
+        variables: [] as { key: string, value: string }[]
+    });
 
     ///////////////functions////////////////////
 
@@ -261,28 +271,32 @@ const MapEditor = () => {
                         index: 0,
                         position: [centerX, centerY - radius], // Top
                         description: "",
-                        info: ""
+                        info: "",
+                        variables: undefined
                     },
                     {
                         type: 0,
                         index: 1,
                         position: [centerX + radius, centerY], // Right
                         description: "",
-                        info: ""
+                        info: "",
+                        variables: undefined
                     },
                     {
                         type: 0,
                         index: 2,
                         position: [centerX, centerY + radius], // Bottom
                         description: "",
-                        info: ""
+                        info: "",
+                        variables: undefined
                     },
                     {
                         type: 0,
                         index: 3,
                         position: [centerX - radius, centerY], // Left
                         description: "",
-                        info: ""
+                        info: "",
+                        variables: undefined
                     }
                 ];
 
@@ -293,8 +307,9 @@ const MapEditor = () => {
                         type: point.type,
                         index: point.index,
                         position: [point.position[0], point.position[1]],
-                        description: "",
-                        info: ""
+                        description: point.description || "",
+                        info: point.info || "",
+                        variables: point.variables as [{ key: string, value: string }] | undefined
                     };
                 }));
             }
@@ -504,6 +519,103 @@ const MapEditor = () => {
         })
     }
 
+    function openEditDialog(point: RacingTurningPoint) {
+        setEditingPoint(point);
+        setEditFormData({
+            type: point.type,
+            description: point.description || '',
+            info: point.info || '',
+            variables: point.variables || []
+        });
+        setEditDialogOpen(true);
+    }
+
+    function savePointEdits() {
+        if (!editingPoint) return;
+
+        setTurningPoints(prevState =>
+            prevState.map(point =>
+                point.index === editingPoint.index
+                    ? {
+                        ...point,
+                        type: editFormData.type,
+                        description: editFormData.description,
+                        info: editFormData.info,
+                        variables: editFormData.variables as [{ key: string, value: string }]
+                    }
+                    : point
+            )
+        );
+
+        setEditDialogOpen(false);
+        setEditingPoint(null);
+    }
+
+    function addVariable() {
+        setEditFormData(prev => ({
+            ...prev,
+            variables: [...prev.variables, { key: '', value: '' }]
+        }));
+    }
+
+    function updateVariable(index: number, field: 'key' | 'value', value: string) {
+        setEditFormData(prev => ({
+            ...prev,
+            variables: prev.variables.map((variable, i) =>
+                i === index ? { ...variable, [field]: value } : variable
+            )
+        }));
+    }
+
+    function removeVariable(index: number) {
+        setEditFormData(prev => ({
+            ...prev,
+            variables: prev.variables.filter((_, i) => i !== index)
+        }));
+    }
+
+    // Function to get point styling based on type
+    function getPointStyling(type: number) {
+        switch (type) {
+            case 0: // Default
+                return {
+                    fill: '#00ff0dff', // Amber
+                    icon: DotFilledIcon,
+                    label: 'Standard Turn'
+                };
+            case 1: // Corner Start
+                return {
+                    fill: '#f31c1cff', // Red
+                    icon: TriangleRightIcon,
+                    label: 'Corner Start'
+                };
+            case 2: // Cornering
+                return {
+                    fill: '#e2f10aff', // Yellowish green
+                    icon: CursorArrowIcon,
+                    label: 'Cornering'
+                };
+            case 3: // Corner End
+                return {
+                    fill: '#9ce22bff', // Purple
+                    icon: PlayIcon,
+                    label: 'Corner End'
+                };
+            case 4: // Start/Finish
+                return {
+                    fill: '#3b12f3ff', // Dark Red
+                    icon: StopIcon,
+                    label: 'Start/Finish'
+                };
+            default:
+                return {
+                    fill: '#6b7280', // Gray
+                    icon: DotFilledIcon,
+                    label: 'Unknown'
+                };
+        }
+    }
+
     return (
 
         <div ref={containerRef} style={{ width: '100%', height: '90%', position: 'relative' }}>
@@ -511,6 +623,11 @@ const MapEditor = () => {
                 <SettingsMenu
                     mapName={mapEditorContext.mapSelected}
                     onImageUploaded={handleImageUploaded}
+                    turningPoints={turningPoints}
+                    onSaveSuccess={() => {
+                        // Optional: Add any callback logic after successful save
+                        console.log('Map data saved successfully');
+                    }}
                 />
             )}
 
@@ -572,27 +689,101 @@ const MapEditor = () => {
 
                                 {/* Display uploaded map image if available, otherwise use default */}
                                 {uploadedMapImage ? (
-                                    <Image
-                                        x={0}
-                                        y={0}
-                                        image={uploadedMapImage}
-                                        width={stageSize.width}
-                                        height={stageSize.height}
-                                    />
+                                    (() => {
+                                        const imageAspectRatio = uploadedMapImage.width / uploadedMapImage.height;
+                                        const stageAspectRatio = stageSize.width / stageSize.height;
+
+                                        let displayWidth, displayHeight;
+
+                                        if (imageAspectRatio > stageAspectRatio) {
+                                            // Image is wider than stage - fit by width
+                                            displayWidth = stageSize.width;
+                                            displayHeight = stageSize.width / imageAspectRatio;
+                                        } else {
+                                            // Image is taller than stage - fit by height
+                                            displayHeight = stageSize.height;
+                                            displayWidth = stageSize.height * imageAspectRatio;
+                                        }
+
+                                        return (
+                                            <Image
+                                                x={0}
+                                                y={0}
+                                                image={uploadedMapImage}
+                                                width={displayWidth}
+                                                height={displayHeight}
+                                            />
+                                        );
+                                    })()
                                 ) : mapImage && (
-                                    <Image
-                                        x={0}
-                                        y={0}
-                                        image={mapImage}
-                                        scaleX={3}
-                                        scaleY={3}
-                                    />
+                                    (() => {
+                                        const imageAspectRatio = mapImage.width / mapImage.height;
+                                        const stageAspectRatio = stageSize.width / stageSize.height;
+
+                                        let displayWidth, displayHeight;
+
+                                        if (imageAspectRatio > stageAspectRatio) {
+                                            // Image is wider than stage - fit by width
+                                            displayWidth = stageSize.width;
+                                            displayHeight = stageSize.width / imageAspectRatio;
+                                        } else {
+                                            // Image is taller than stage - fit by height
+                                            displayHeight = stageSize.height;
+                                            displayWidth = stageSize.height * imageAspectRatio;
+                                        }
+
+                                        return (
+                                            <Image
+                                                x={0}
+                                                y={0}
+                                                image={mapImage}
+                                                width={displayWidth}
+                                                height={displayHeight}
+                                            />
+                                        );
+                                    })()
                                 )}
 
-                                <Line
-                                    points={exportPointsForDrawing(extractBezierPointToPoint(bezierPoints))}
-                                    stroke="red" strokeWidth={25} bezier={true}
-                                />
+                                {/* Racing Track Lines */}
+                                {bezierPoints.length > 3 && (
+                                    <>
+                                        {/* Track Shadow/Border for depth */}
+                                        <Line
+                                            points={exportPointsForDrawing(extractBezierPointToPoint(bezierPoints))}
+                                            stroke="#1a1a1a"
+                                            strokeWidth={32}
+                                            bezier={true}
+                                            lineCap="round"
+                                            lineJoin="round"
+                                            shadowColor="#000000"
+                                            shadowBlur={8}
+                                            shadowOffset={{ x: 2, y: 2 }}
+                                            shadowOpacity={0.3}
+                                        />
+
+                                        {/* Main Track Surface */}
+                                        <Line
+                                            points={exportPointsForDrawing(extractBezierPointToPoint(bezierPoints))}
+                                            stroke="#404040"
+                                            strokeWidth={28}
+                                            bezier={true}
+                                            lineCap="round"
+                                            lineJoin="round"
+                                        />
+
+                                        {/* Center Line Dashes */}
+                                        <Line
+                                            points={exportPointsForDrawing(extractBezierPointToPoint(bezierPoints))}
+                                            stroke="#ffffff"
+                                            strokeWidth={2}
+                                            bezier={true}
+                                            lineCap="round"
+                                            lineJoin="round"
+                                            dash={[8, 12]}
+                                            opacity={0.8}
+                                        />
+                                    </>
+                                )}
                                 {
 
                                     turningPoints.map((
@@ -614,19 +805,145 @@ const MapEditor = () => {
                                             onDragEnd={(e) => handleDragEnd(e, turningPoint.index)}
                                             onMouseEnter={() => handleEnterMenu(turningPoint.index)}
                                             onMouseLeave={() => handleLeaveMenu(turningPoint.index)}>
-                                            <Circle key={turningPoint.index} radius={10} fill={"green"} name={turningPoint.index.toString()} />
+
+                                            {(() => {
+                                                const pointStyle = getPointStyling(turningPoint.type);
+                                                const IconComponent = pointStyle.icon;
+
+                                                return (
+                                                    <>
+                                                        {/* Main circle with type-specific color */}
+                                                        <Circle
+                                                            key={turningPoint.index}
+                                                            radius={14}
+                                                            fill={pointStyle.fill}
+                                                            stroke="#ffffff"
+                                                            strokeWidth={2}
+                                                            name={turningPoint.index.toString()}
+                                                        />
+
+                                                        {/* Icon overlay */}
+                                                        <Html>
+                                                            <div style={{
+                                                                position: 'absolute',
+                                                                top: '-12px',
+                                                                left: '-12px',
+                                                                width: '24px',
+                                                                height: '24px',
+                                                                display: 'flex',
+                                                                alignItems: 'center',
+                                                                justifyContent: 'center',
+                                                                pointerEvents: 'none'
+                                                            }}>
+                                                                <IconComponent
+                                                                    style={{
+                                                                        width: '14px',
+                                                                        height: '14px',
+                                                                        color: 'white',
+                                                                        filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.3))'
+                                                                    }}
+                                                                />
+                                                            </div>
+                                                        </Html>
+                                                    </>
+                                                );
+                                            })()}
 
                                             <Html>
-                                                {turningPoint.index === activeMenu &&
-                                                    <div className="HoverCardContent"
+                                                {turningPoint.index === activeMenu && !isDraggingPoint &&
+                                                    <div
                                                         ref={activeMenu === turningPoint.index ? menuRef : undefined}
                                                         onMouseEnter={() => handleEnterMenu(turningPoint.index)}
-                                                        onMouseLeave={() => handleLeaveMenu(turningPoint.index)}>
-
-                                                        <div className="DropdownMenuItem" onClick={() => deleteTurningPoint(turningPoint.index)}>
-                                                            Delete this turning point
+                                                        onMouseLeave={() => handleLeaveMenu(turningPoint.index)}
+                                                        style={{
+                                                            backgroundColor: 'white',
+                                                            border: '1px solid #e2e8f0',
+                                                            borderRadius: '8px',
+                                                            boxShadow: '0 10px 38px -10px rgba(22, 23, 24, 0.35), 0 10px 20px -15px rgba(22, 23, 24, 0.2)',
+                                                            padding: '4px',
+                                                            minWidth: '180px',
+                                                            zIndex: 1000,
+                                                            position: 'relative'
+                                                        }}
+                                                    >
+                                                        <div
+                                                            onClick={() => openEditDialog(turningPoint)}
+                                                            style={{
+                                                                display: 'flex',
+                                                                alignItems: 'center',
+                                                                padding: '8px 12px',
+                                                                borderRadius: '4px',
+                                                                cursor: 'pointer',
+                                                                fontSize: '14px',
+                                                                fontWeight: '500',
+                                                                color: '#374151',
+                                                                transition: 'background-color 0.2s ease',
+                                                                backgroundColor: 'transparent'
+                                                            }}
+                                                            onMouseEnter={(e) => {
+                                                                e.currentTarget.style.backgroundColor = '#f8fafc';
+                                                            }}
+                                                            onMouseLeave={(e) => {
+                                                                e.currentTarget.style.backgroundColor = 'transparent';
+                                                            }}
+                                                        >
+                                                            <Pencil1Icon style={{ marginRight: '8px', width: '16px', height: '16px', color: '#6366f1' }} />
+                                                            Edit Properties
                                                         </div>
 
+                                                        <div
+                                                            onClick={() => deleteTurningPoint(turningPoint.index)}
+                                                            style={{
+                                                                display: 'flex',
+                                                                alignItems: 'center',
+                                                                padding: '8px 12px',
+                                                                borderRadius: '4px',
+                                                                cursor: 'pointer',
+                                                                fontSize: '14px',
+                                                                fontWeight: '500',
+                                                                color: '#374151',
+                                                                transition: 'background-color 0.2s ease',
+                                                                backgroundColor: 'transparent'
+                                                            }}
+                                                            onMouseEnter={(e) => {
+                                                                e.currentTarget.style.backgroundColor = '#fef2f2';
+                                                                e.currentTarget.style.color = '#dc2626';
+                                                            }}
+                                                            onMouseLeave={(e) => {
+                                                                e.currentTarget.style.backgroundColor = 'transparent';
+                                                                e.currentTarget.style.color = '#374151';
+                                                            }}
+                                                        >
+                                                            <TrashIcon style={{ marginRight: '8px', width: '16px', height: '16px', color: '#ef4444' }} />
+                                                            Delete Point
+                                                        </div>
+
+                                                        {/* Point info display */}
+                                                        {(turningPoint.description || turningPoint.info) && (
+                                                            <>
+                                                                <div style={{
+                                                                    height: '1px',
+                                                                    backgroundColor: '#e2e8f0',
+                                                                    margin: '4px 8px'
+                                                                }} />
+                                                                <div style={{
+                                                                    padding: '8px 12px',
+                                                                    fontSize: '12px',
+                                                                    color: '#6b7280'
+                                                                }}>
+                                                                    {turningPoint.description && (
+                                                                        <div style={{ marginBottom: '2px', fontWeight: '500' }}>
+                                                                            {turningPoint.description}
+                                                                        </div>
+                                                                    )}
+                                                                    {turningPoint.info && (
+                                                                        <div style={{ fontSize: '11px', color: '#9ca3af' }}>
+                                                                            {turningPoint.info}
+                                                                        </div>
+                                                                    )}
+                                                                </div>
+                                                            </>
+                                                        )}
                                                     </div>
                                                 }
                                             </Html>
@@ -642,6 +959,101 @@ const MapEditor = () => {
                     <ContextMenu.Item onClick={AddPointInDirection}>Add a new turning point</ContextMenu.Item>
                 </ContextMenu.Content>
             </ContextMenu.Root>
+
+            {/* Point Edit Dialog */}
+            <Dialog.Root open={editDialogOpen} onOpenChange={setEditDialogOpen}>
+                <Dialog.Content style={{ maxWidth: 500 }}>
+                    <Dialog.Title>Edit Point Properties</Dialog.Title>
+                    <Dialog.Description size="2" mb="4">
+                        Configure the properties for turning point #{editingPoint?.index}
+                    </Dialog.Description>
+
+                    <Flex direction="column" gap="4">
+                        {/* Point Type */}
+                        <div>
+                            <Text size="2" weight="medium" mb="2" as="div">Point Type</Text>
+                            <Select.Root
+                                value={editFormData.type.toString()}
+                                onValueChange={(value) => setEditFormData(prev => ({ ...prev, type: parseInt(value) }))}
+                            >
+                                <Select.Trigger style={{ width: '100%' }} />
+                                <Select.Content>
+                                    <Select.Item value="0">Default (0)</Select.Item>
+                                    <Select.Item value="1">Corner Start (1)</Select.Item>
+                                    <Select.Item value="2">Cornering (2)</Select.Item>
+                                    <Select.Item value="3">Corner End (3)</Select.Item>
+                                    <Select.Item value="4">Start/Finish (4)</Select.Item>
+                                </Select.Content>
+                            </Select.Root>
+                        </div>
+
+                        {/* Description */}
+                        <div>
+                            <Text size="2" weight="medium" mb="2" as="div">Description</Text>
+                            <TextField.Root
+                                value={editFormData.description}
+                                onChange={(e) => setEditFormData(prev => ({ ...prev, description: e.target.value }))}
+                                placeholder="e.g., Turn 1 - Fast right hander"
+                            />
+                        </div>
+
+                        {/* Info */}
+                        <div>
+                            <Text size="2" weight="medium" mb="2" as="div">Additional Info</Text>
+                            <TextField.Root
+                                value={editFormData.info}
+                                onChange={(e) => setEditFormData(prev => ({ ...prev, info: e.target.value }))}
+                                placeholder="e.g., Watch for late braking here"
+                            />
+                        </div>
+
+                        {/* Variables */}
+                        <div>
+                            <Flex justify="between" align="center" mb="2">
+                                <Text size="2" weight="medium">Variables</Text>
+                                <Button size="1" variant="soft" onClick={addVariable}>
+                                    Add Variable
+                                </Button>
+                            </Flex>
+                            {editFormData.variables.map((variable, index) => (
+                                <Flex key={index} gap="2" mb="2" align="center">
+                                    <TextField.Root
+                                        placeholder="Key"
+                                        value={variable.key}
+                                        onChange={(e) => updateVariable(index, 'key', e.target.value)}
+                                        style={{ flex: 1 }}
+                                    />
+                                    <TextField.Root
+                                        placeholder="Value"
+                                        value={variable.value}
+                                        onChange={(e) => updateVariable(index, 'value', e.target.value)}
+                                        style={{ flex: 1 }}
+                                    />
+                                    <Button
+                                        size="1"
+                                        variant="soft"
+                                        color="red"
+                                        onClick={() => removeVariable(index)}
+                                    >
+                                        Remove
+                                    </Button>
+                                </Flex>
+                            ))}
+                        </div>
+                    </Flex>
+
+                    <Flex gap="3" mt="4" justify="end">
+                        <Dialog.Close>
+                            <Button variant="soft" color="gray">
+                                Cancel
+                            </Button>
+                        </Dialog.Close>
+                        <Button onClick={savePointEdits}>
+                            Save Changes
+                        </Button>
+                    </Flex>
+                </Dialog.Content>
+            </Dialog.Root>
         </div>
     );
 
