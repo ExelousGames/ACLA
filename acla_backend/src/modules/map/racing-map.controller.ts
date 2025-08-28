@@ -44,4 +44,10 @@ export class RacingMapController {
     async getMapImage(@Body() body: { name: string }): Promise<{ imageData: string; mimetype: string } | null> {
         return this.racingMapService.getMapImage(body.name);
     }
+
+    @Auth({ permissions: [{ action: PermissionAction.UPDATE, resource: PermissionResource.RACING_MAP }] })
+    @Post('map/save-points')
+    async saveMapPoints(@Body() body: { name: string; points: any[] }): Promise<{ success: boolean; message: string }> {
+        return this.racingMapService.updateMapPoints(body.name, body.points);
+    }
 }

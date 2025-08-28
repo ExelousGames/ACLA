@@ -1,17 +1,22 @@
 import React, { useRef, useState } from 'react';
 import { DropdownMenu, Button, Dialog, Flex, Text } from '@radix-ui/themes';
-import { GearIcon, UploadIcon } from '@radix-ui/react-icons';
+import { GearIcon, UploadIcon, DownloadIcon } from '@radix-ui/react-icons';
 import apiService from 'services/api.service';
+import { MapInfo } from 'data/live-analysis/live-analysis-type';
 
 interface SettingsMenuProps {
     mapName: string;
     onImageUploaded?: () => void;
+    turningPoints?: any[];
+    onSaveSuccess?: () => void;
 }
 
-const SettingsMenu: React.FC<SettingsMenuProps> = ({ mapName, onImageUploaded }) => {
+const SettingsMenu: React.FC<SettingsMenuProps> = ({ mapName, onImageUploaded, turningPoints, onSaveSuccess }) => {
     const [isUploadDialogOpen, setIsUploadDialogOpen] = useState(false);
     const [isUploading, setIsUploading] = useState(false);
     const [uploadMessage, setUploadMessage] = useState('');
+    const [isSaving, setIsSaving] = useState(false);
+    const [saveMessage, setSaveMessage] = useState('');
     const fileInputRef = useRef<HTMLInputElement>(null);
 
     const handleFileSelect = () => {
@@ -71,8 +76,75 @@ const SettingsMenu: React.FC<SettingsMenuProps> = ({ mapName, onImageUploaded })
         }
     };
 
+    // Handle saving map data
+    const handleSaveMapData = async () => {
+        if (!turningPoints || turningPoints.length === 0) {
+            setSaveMessage('No turning points to save');
+            return;
+        }
+
+        setIsSaving(true);
+        setSaveMessage('');
+
+        try {
+            // Convert turning points to the format expected by the backend
+            const pointsToSave = turningPoints.map(point => ({
+                position: point.position,
+                type: point.type,
+                index: point.index,
+                description: point.description || '',
+                info: point.info || '',
+                variables: point.variables || []
+            }));
+
+            const response = await apiService.post<{ success: boolean; message: string }>('/racingmap/map/save-points', {
+                name: mapName,
+                points: pointsToSave
+            });
+
+            if (response.data.success) {
+                setSaveMessage('Map data saved successfully!');
+                onSaveSuccess?.();
+                setTimeout(() => {
+                    setSaveMessage('');
+                }, 3000);
+            } else {
+                setSaveMessage(response.data.message || 'Save failed');
+            }
+        } catch (error: any) {
+            console.error('Save error:', error);
+            if (error.response?.status === 401) {
+                setSaveMessage('Authentication failed. Please log in again.');
+            } else if (error.response?.status === 404) {
+                setSaveMessage('Map not found');
+            } else {
+                setSaveMessage(error.response?.data?.message || error.message || 'Save failed');
+            }
+        } finally {
+            setIsSaving(false);
+        }
+    };
+
     return (
         <>
+            {/* Save Status Message */}
+            {saveMessage && (
+                <div style={{
+                    position: 'absolute',
+                    top: '60px',
+                    left: '10px',
+                    zIndex: 1000,
+                    padding: '8px 12px',
+                    backgroundColor: saveMessage.includes('successfully') ? '#10b981' : '#ef4444',
+                    color: 'white',
+                    borderRadius: '6px',
+                    fontSize: '14px',
+                    maxWidth: '300px'
+                }}>
+                    {saveMessage}
+                </div>
+            )}
+
             <DropdownMenu.Root>
                 <DropdownMenu.Trigger>
                     <Button
@@ -93,6 +165,10 @@ const SettingsMenu: React.FC<SettingsMenuProps> = ({ mapName, onImageUploaded })
                     <DropdownMenu.Item onClick={() => setIsUploadDialogOpen(true)}>
                         <UploadIcon />
                         Upload Map Image
+                    </DropdownMenu.Item>
+                    <DropdownMenu.Item onClick={handleSaveMapData} disabled={isSaving}>
+                        <DownloadIcon />
+                        {isSaving ? 'Saving...' : 'Save Map Data'}
                     </DropdownMenu.Item>
                 </DropdownMenu.Content>
             </DropdownMenu.Root>

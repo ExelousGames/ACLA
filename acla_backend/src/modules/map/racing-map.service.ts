@@ -123,4 +123,29 @@ export class RacingMapService {
             throw new Error(`Failed to retrieve image: ${error.message}`);
         }
     }
+
+    /**
+     * Update the racing map points data
+     * @param mapName The name of the map
+     * @param points The array of points to save
+     * @returns Success response
+     */
+    async updateMapPoints(mapName: string, points: any[]): Promise<{ success: boolean; message: string }> {
+        try {
+            // Find the existing map by name
+            const existingMap = await this.racingMap.findOne({ name: mapName }).exec();
+
+            if (!existingMap) {
+                return { success: false, message: 'Map not found' };
+            }
+
+            // Update the map with the new points data
+            existingMap.points = points as any;
+            await existingMap.save();
+
+            return { success: true, message: 'Map data saved successfully' };
+        } catch (error) {
+            return { success: false, message: `Failed to save map data: ${error.message}` };
+        }
+    }
 }
