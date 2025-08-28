@@ -626,7 +626,6 @@ const MapEditor = () => {
                     turningPoints={turningPoints}
                     onSaveSuccess={() => {
                         // Optional: Add any callback logic after successful save
-                        console.log('Map data saved successfully');
                     }}
                 />
             )}

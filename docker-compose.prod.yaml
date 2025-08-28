@@ -37,10 +37,27 @@ services:
     container_name: acla_backend_c
     env_file:
       - .prod.env
+    depends_on:
+      - ai_service
     ports:
       - '7001:7001'
     networks:
       - frontend-network
+      - ai-network
+
+  ai_service:
+    build:
+      context: ./acla_ai_service
+      dockerfile: prod.dockerfile
+    container_name: acla_ai_service_c
+    env_file:
+      - .prod.env
+    environment:
+      - BACKEND_URL=http://acla_backend_c:7001
+    ports:
+      - '8000:8000'
+    networks:
+      - ai-network
 
   mongodb:
     build:
@@ -66,4 +83,6 @@ services:
 
 networks:
   frontend-network:
+    driver: bridge
+  ai-network:
     driver: bridge
