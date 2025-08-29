@@ -4,7 +4,7 @@ import { Model, Types } from 'mongoose';
 import { AiModel, AiModelDocument } from 'src/schemas/ai-model.schema';
 import { UserInfo } from 'src/schemas/user-info.schema';
 import { CreateAiModelDto, UpdateAiModelDto, GetAiModelDto, IncrementalTrainingDto, ModelPredictionDto, AiModelResponseDto } from 'src/dto/ai-model.dto';
-import { AiService } from '../ai-service/ai-service.service';
+import { AiServiceClient, QueryRequest, AnalysisRequest, DatasetUploadRequest } from './ai-service.client';
 import { RacingSessionService } from '../racing-session/racing-session.service';
 
 @Injectable()
@@ -12,7 +12,7 @@ export class AiModelService {
     constructor(
         @InjectModel(AiModel.name) private aiModelModel: Model<AiModelDocument>,
         @InjectModel(UserInfo.name) private userInfoModel: Model<UserInfo>,
-        private aiService: AiService,
+        private aiServiceClient: AiServiceClient,
         @Inject(forwardRef(() => RacingSessionService))
         private racingSessionService: RacingSessionService,
     ) { }
@@ -133,7 +133,7 @@ export class AiModelService {
                 trainingParameters: incrementalTrainingDto.trainingParameters || {},
             };
 
-            const trainingResult = await this.aiService.performIncrementalTraining(trainingRequest);
+            const trainingResult = await this.aiServiceClient.performIncrementalTraining(trainingRequest);
 
             // Update model with new data
             const updatedModelData = {
@@ -213,7 +213,7 @@ export class AiModelService {
                 training_parameters: trainingDto.hyperparameters || {}
             };
 
-            const trainingResult = await this.aiService.trainModelFromScratch(trainingRequest);
+            const trainingResult = await this.aiServiceClient.trainModelFromScratch(trainingRequest);
 
             // Create model in database
             const createModelDto: CreateAiModelDto = {
@@ -264,7 +264,7 @@ export class AiModelService {
                 predictionOptions: modelPredictionDto.predictionOptions || {},
             };
 
-            return await this.aiService.makePredictionWithModel(predictionRequest);
+            return await this.aiServiceClient.makePredictionWithModel(predictionRequest);
         } catch (error) {
             throw new BadRequestException(`Prediction failed: ${error.message}`);
         }
@@ -338,7 +338,7 @@ export class AiModelService {
     async processAIQuery(queryRequest: any): Promise<any> {
         try {
             // Forward the AI query to the AI service
-            const result = await this.aiService.processQuery(queryRequest);
+            const result = await this.aiServiceClient.processQuery(queryRequest);
             return {
                 success: true,
                 query: queryRequest.question,
@@ -409,5 +409,126 @@ export class AiModelService {
         } catch (error) {
             throw new BadRequestException(`Natural language training failed: ${error.message}`);
         }
+    }
+
+    // === AI Service Methods (Previously in AiService) ===
+
+    async uploadDataset(dataset: DatasetUploadRequest) {
+        return await this.aiServiceClient.uploadDataset(dataset);
+    }
+
+    async analyzeDataset(analysis: AnalysisRequest) {
+        return await this.aiServiceClient.analyzeDataset(analysis);
+    }
+
+    async analyzeRacingSession(sessionData: any) {
+        return await this.aiServiceClient.analyzeRacingSession(sessionData);
+    }
+
+    async listDatasets() {
+        return await this.aiServiceClient.listDatasets();
+    }
+
+    async processRacingSessionForAI(sessionId: string, sessionData: any[], metadata: any) {
+        // Transform racing session data for AI analysis
+        const aiDataset = {
+            session_id: sessionId,
+            session_name: metadata.sessionName || 'Racing Session',
+            session_data: sessionData,
+            metadata: metadata
+        };
+
+        return await this.analyzeRacingSession(aiDataset);
+    }
+
+    async askQuestionAboutSession(sessionId: string, question: string, userId?: string) {
+        const query: QueryRequest = {
+            question: question,
+            dataset_id: sessionId,
+            user_id: userId,
+            context: {
+                type: 'racing_session',
+                session_id: sessionId
+            }
+        };
+
+        return await this.aiServiceClient.processQuery(query);
+    }
+
+    async getSessionInsights(sessionId: string) {
+        const analysis: AnalysisRequest = {
+            dataset_id: sessionId,
+            analysis_type: 'performance',
+            parameters: {
+                include_trends: true,
+                include_recommendations: true
+            }
+        };
+
+        return await this.analyzeDataset(analysis);
+    }
+
+    async detectRacingPatterns(sessionId: string) {
+        return await this.aiServiceClient.detectRacingPatterns(sessionId);
+    }
+
+    async getPerformanceScore(sessionId: string) {
+        return await this.aiServiceClient.getPerformanceScore(sessionId);
+    }
+
+    async getSectorAnalysis(sessionId: string) {
+        return await this.aiServiceClient.getSectorAnalysis(sessionId);
+    }
+
+    async predictOptimalLapTime(sessionId: string) {
+        return await this.aiServiceClient.predictOptimalLapTime(sessionId);
+    }
+
+    async healthCheck() {
+        return await this.aiServiceClient.checkHealth();
+    }
+
+    async validateModel(validationRequest: any) {
+        return await this.aiServiceClient.validateModel(validationRequest);
+    }
+
+    async getModelMetrics(modelId: string) {
+        return await this.aiServiceClient.getModelMetrics(modelId);
+    }
+
+    async processIntelligentQuery(question: string, context?: any, userId?: string) {
+        const query: QueryRequest = {
+            question: question,
+            dataset_id: context?.session_id || context?.dataset_id,
+            user_id: userId,
+            context: context
+        };
+
+        return await this.aiServiceClient.processQuery(query);
+    }
+
+    async askAboutUserData(userId: string, question: string, sessionId?: string) {
+        const context = {
+            user_id: userId,
+            type: 'user_data_query'
+        };
+
+        if (sessionId) {
+            context['session_id'] = sessionId;
+        }
+
+        return await this.processIntelligentQuery(question, context, userId);
+    }
+
+    async requestModelOperation(userId: string, operation: string, context?: any) {
+        const query = `${operation}. User context: ${JSON.stringify(context)}`;
+
+        const queryContext = {
+            user_id: userId,
+            operation_type: 'model_operation',
+            ...context
+        };
+
+        return await this.processIntelligentQuery(query, queryContext, userId);
     }
 }

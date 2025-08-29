@@ -3,7 +3,6 @@ import { AuthGuard } from '@nestjs/passport';
 import { RacingSessionDetailedInfoDto, SessionBasicInfoListDto, UploadReacingSessionInitDto } from 'src/dto/racing-session.dto';
 import { AiModelResponseDto } from 'src/dto/ai-model.dto';
 import { RacingSessionService } from './racing-session.service';
-import { AiService } from '../ai-service/ai-service.service';
 import { AiModelService } from '../ai-model/ai-model.service';
 import { UserInfoService } from '../user-info/user-info.service';
 
@@ -17,7 +16,6 @@ export class RacingSessionController {
 
     constructor(
         private racingSessionService: RacingSessionService,
-        private aiService: AiService,
         @Inject(forwardRef(() => AiModelService))
         private aiModelService: AiModelService,
         private userInfoService: UserInfoService

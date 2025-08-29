@@ -20,7 +20,8 @@ class AIService:
         self.backend_service = BackendService()
     
     def get_available_functions(self) -> List[Dict[str, Any]]:
-        """Define available functions for OpenAI function calling"""
+        """Define available functions for OpenAI function calling,
+        if OpenAI decides to call a function, it executes it"""
         return [
             {
                 "name": "analyze_racing_performance",
@@ -173,11 +174,13 @@ class AIService:
             
             # Handle function calls
             function_results = []
+            
+            #If OpenAI decides to call a function, it executes it:
             if message.function_call:
                 function_name = message.function_call.name
                 function_args = json.loads(message.function_call.arguments)
                 
-                # Execute the function
+                # Execute the function - ends function results back to OpenAI for final response.
                 result = await self._execute_function(function_name, function_args, context)
                 function_results.append({
                     "function": function_name,

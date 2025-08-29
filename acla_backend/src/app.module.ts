@@ -8,7 +8,6 @@ import { AuthModule } from './shared/auth/auth.module';
 import { AuthorizationModule } from './shared/authorization/authorization.module';
 import { RacingMapModule } from './modules/map/racing-map.module';
 import { RacingSessionModule } from './modules/racing-session/racing-session.module';
-import { AiServiceModule } from './modules/ai-service/ai-service.module';
 import { AiModelModule } from './modules/ai-model/ai-model.module';
 
 @Module({
@@ -24,7 +23,6 @@ import { AiModelModule } from './modules/ai-model/ai-model.module';
     RacingMapModule,
     UserInfoModule,
     RacingSessionModule,
-    AiServiceModule,
     AiModelModule
   ],
   controllers: [AppController],
