@@ -133,7 +133,7 @@ export class AiModelService {
                 trainingParameters: incrementalTrainingDto.trainingParameters || {},
             };
 
-            const trainingResult = await this.aiServiceClient.performIncrementalTraining(trainingRequest);
+            const trainingResult = await this.aiServiceClient.incrementalTraining(trainingRequest);
 
             // Update model with new data
             const updatedModelData = {
@@ -250,50 +250,6 @@ export class AiModelService {
         }
     }
 
-    async makePrediction(modelPredictionDto: ModelPredictionDto): Promise<any> {
-        const model = await this.aiModelModel.findById(modelPredictionDto.modelId);
-        if (!model) {
-            throw new NotFoundException('AI Model not found');
-        }
-
-        try {
-            const predictionRequest = {
-                modelData: model.modelData,
-                modelMetadata: model.modelMetadata,
-                inputData: modelPredictionDto.inputData,
-                predictionOptions: modelPredictionDto.predictionOptions || {},
-            };
-
-            return await this.aiServiceClient.makePredictionWithModel(predictionRequest);
-        } catch (error) {
-            throw new BadRequestException(`Prediction failed: ${error.message}`);
-        }
-    }
-
-    async getModelPerformanceHistory(userId: string, trackName: string, modelType: string): Promise<any[]> {
-        const userObjectId = await this.getUserObjectId(userId);
-        if (!userObjectId) {
-            throw new NotFoundException('User not found');
-        }
-
-        const models = await this.aiModelModel
-            .find({
-                userId: userObjectId,
-                trackName,
-                'modelMetadata.modelType': modelType,
-            })
-            .sort({ createdAt: 1 });
-
-        return models.map(model => ({
-            version: model.modelVersion,
-            createdAt: (model as any).createdAt,
-            accuracy: model.modelMetadata.accuracy,
-            mse: model.modelMetadata.mse,
-            trainingSessionsCount: model.modelMetadata.trainingSessionsCount,
-            performanceMetrics: model.modelMetadata.performanceMetrics,
-        }));
-    }
-
     async deactivateModels(userId: Types.ObjectId, trackName: string, modelType: string): Promise<void> {
         await this.aiModelModel.updateMany(
             {
@@ -352,183 +308,11 @@ export class AiModelService {
         }
     }
 
-    async askQuestionAboutUserModels(userId: string, question: string, context?: any): Promise<any> {
-        try {
-            // Get user's models for context
-            const userObjectId = await this.getUserObjectId(userId);
-            if (!userObjectId) {
-                throw new BadRequestException('User not found');
-            }
-
-            const userModels = await this.aiModelModel.find({
-                userId: userObjectId
-            }).select('modelName trackName modelMetadata isActive createdAt').sort({ createdAt: -1 });
-
-            // Prepare context with model information
-            const modelContext = {
-                user_id: userId,
-                user_models: userModels.map(model => ({
-                    id: (model._id as any).toString(),
-                    name: model.modelName,
-                    track: model.trackName,
-                    type: model.modelMetadata.modelType,
-                    active: model.isActive,
-                    created: (model as any).createdAt,
-                    accuracy: model.modelMetadata.accuracy,
-                    sessions_count: model.modelMetadata.trainingSessionsCount
-                })),
-                ...context
-            };
-
-            const queryRequest = {
-                question: question,
-                user_id: userId,
-                context: modelContext
-            };
-
-            return await this.processAIQuery(queryRequest);
-        } catch (error) {
-            throw new BadRequestException(`Model query failed: ${error.message}`);
-        }
-    }
-
-    async trainModelFromNaturalLanguage(userId: string, request: string, context?: any): Promise<any> {
-        try {
-            // Process natural language training request
-            const queryRequest = {
-                question: request,
-                user_id: userId,
-                context: {
-                    ...context,
-                    operation_type: 'model_training',
-                    available_functions: ['train_ai_model', 'call_backend_function']
-                }
-            };
-
-            return await this.processAIQuery(queryRequest);
-        } catch (error) {
-            throw new BadRequestException(`Natural language training failed: ${error.message}`);
-        }
-    }
-
-    // === AI Service Methods (Previously in AiService) ===
-
-    async uploadDataset(dataset: DatasetUploadRequest) {
-        return await this.aiServiceClient.uploadDataset(dataset);
-    }
-
-    async analyzeDataset(analysis: AnalysisRequest) {
-        return await this.aiServiceClient.analyzeDataset(analysis);
-    }
-
     async analyzeRacingSession(sessionData: any) {
         return await this.aiServiceClient.analyzeRacingSession(sessionData);
-    }
-
-    async listDatasets() {
-        return await this.aiServiceClient.listDatasets();
-    }
-
-    async processRacingSessionForAI(sessionId: string, sessionData: any[], metadata: any) {
-        // Transform racing session data for AI analysis
-        const aiDataset = {
-            session_id: sessionId,
-            session_name: metadata.sessionName || 'Racing Session',
-            session_data: sessionData,
-            metadata: metadata
-        };
-
-        return await this.analyzeRacingSession(aiDataset);
-    }
-
-    async askQuestionAboutSession(sessionId: string, question: string, userId?: string) {
-        const query: QueryRequest = {
-            question: question,
-            dataset_id: sessionId,
-            user_id: userId,
-            context: {
-                type: 'racing_session',
-                session_id: sessionId
-            }
-        };
-
-        return await this.aiServiceClient.processQuery(query);
-    }
-
-    async getSessionInsights(sessionId: string) {
-        const analysis: AnalysisRequest = {
-            dataset_id: sessionId,
-            analysis_type: 'performance',
-            parameters: {
-                include_trends: true,
-                include_recommendations: true
-            }
-        };
-
-        return await this.analyzeDataset(analysis);
-    }
-
-    async detectRacingPatterns(sessionId: string) {
-        return await this.aiServiceClient.detectRacingPatterns(sessionId);
-    }
-
-    async getPerformanceScore(sessionId: string) {
-        return await this.aiServiceClient.getPerformanceScore(sessionId);
-    }
-
-    async getSectorAnalysis(sessionId: string) {
-        return await this.aiServiceClient.getSectorAnalysis(sessionId);
-    }
-
-    async predictOptimalLapTime(sessionId: string) {
-        return await this.aiServiceClient.predictOptimalLapTime(sessionId);
     }
 
     async healthCheck() {
         return await this.aiServiceClient.checkHealth();
     }
 
-    async validateModel(validationRequest: any) {
-        return await this.aiServiceClient.validateModel(validationRequest);
-    }
-
-    async getModelMetrics(modelId: string) {
-        return await this.aiServiceClient.getModelMetrics(modelId);
-    }
-
-    async processIntelligentQuery(question: string, context?: any, userId?: string) {
-        const query: QueryRequest = {
-            question: question,
-            dataset_id: context?.session_id || context?.dataset_id,
-            user_id: userId,
-            context: context
-        };
-
-        return await this.aiServiceClient.processQuery(query);
-    }
-
-    async askAboutUserData(userId: string, question: string, sessionId?: string) {
-        const context = {
-            user_id: userId,
-            type: 'user_data_query'
-        };
-
-        if (sessionId) {
-            context['session_id'] = sessionId;
-        }
-
-        return await this.processIntelligentQuery(question, context, userId);
-    }
-
-    async requestModelOperation(userId: string, operation: string, context?: any) {
-        const query = `${operation}. User context: ${JSON.stringify(context)}`;
-
-        const queryContext = {
-            user_id: userId,
-            operation_type: 'model_operation',
-            ...context
-        };
-
-        return await this.processIntelligentQuery(query, queryContext, userId);
-    }
-}

@@ -1,39 +1,322 @@
 """
-Racing session analysis endpoints
+Racing session analysis endpoints for AI model training and analysis
 """
 
-from fastapi import APIRouter, HTTPException
-from typing import Dict, Any
-from app.models import AnalysisRequest
+from fastapi import APIRouter, HTTPException, Body
+from typing import Dict, Any, List, Optional
+from pydantic import BaseModel
+from app.services.telemetry_service import TelemetryService
 
 router = APIRouter(prefix="/racing-session", tags=["racing-session"])
 
-@router.post("/analyze")
-async def analyze_racing_session(request: AnalysisRequest):
-    """Analyze racing session data"""
-    # Implementation would go here
-    return {"message": "Racing session analysis endpoint - to be implemented"}
+# Pydantic models for request/response validation
+class TrainingRequest(BaseModel):
+    session_id: str
+    telemetry_data: List[Dict[str, Any]]
+    target_variable: str = "lap_time"
+    model_type: str = "lap_time_prediction"
+    user_id: Optional[str] = None
+    existing_model_data: Optional[str] = None
+    session_metadata: Optional[Dict[str, Any]] = None
 
-@router.post("/patterns")
-async def analyze_patterns(request: AnalysisRequest):
-    """Analyze racing patterns in session data"""
-    # Implementation would go here
-    return {"message": "Racing patterns analysis endpoint - to be implemented"}
+class BatchTrainingRequest(BaseModel):
+    training_sessions: List[Dict[str, Any]]
+    target_variable: str = "lap_time"
+    model_type: str = "lap_time_prediction"
+    existing_model_data: Optional[str] = None
 
-@router.post("/performance-score")
-async def performance_score(request: AnalysisRequest):
-    """Calculate performance score for racing session"""
-    # Implementation would go here
-    return {"message": "Performance score endpoint - to be implemented"}
+class PredictionRequest(BaseModel):
+    telemetry_data: Dict[str, Any]
+    model_data: str
+    model_type: str = "lap_time_prediction"
 
-@router.post("/sector-analysis")
-async def sector_analysis(request: AnalysisRequest):
-    """Analyze sector performance in racing session"""
-    # Implementation would go here
-    return {"message": "Sector analysis endpoint - to be implemented"}
+class ModelEvaluationRequest(BaseModel):
+    model_data: str
+    test_telemetry_data: List[Dict[str, Any]]
+    target_variable: str = "lap_time"
+    model_type: str = "lap_time_prediction"
 
-@router.post("/optimal-prediction")
-async def optimal_prediction(request: AnalysisRequest):
-    """Predict optimal racing line and performance"""
-    # Implementation would go here
-    return {"message": "Optimal prediction endpoint - to be implemented"}
+class AnalysisRequest(BaseModel):
+    session_id: str
+    analysis_type: str = "overall"
+    focus_areas: Optional[List[str]] = None
+    telemetry_data: Optional[List[Dict[str, Any]]] = None
+    use_ai_model: bool = False
+    model_data: Optional[str] = None
+
+class ImprovementSuggestionsRequest(BaseModel):
+    session_id: str
+    skill_level: str = "intermediate"
+    focus_area: Optional[str] = None
+    telemetry_data: Optional[List[Dict[str, Any]]] = None
+    model_data: Optional[str] = None
+
+# Initialize telemetry service
+telemetry_service = TelemetryService()
+
+@router.post("/train-model")
+async def train_ai_model(request: TrainingRequest) -> Dict[str, Any]:
+    """
+    Train AI model on telemetry data for performance prediction
+    Returns trained model data for backend storage - no persistent data in AI service
+    """
+    try:
+        result = await telemetry_service.train_ai_model(
+            telemetry_data=request.telemetry_data,
+            target_variable=request.target_variable,
+            model_type=request.model_type,
+            existing_model_data=request.existing_model_data,
+            user_id=request.user_id,
+            session_metadata=request.session_metadata
+        )
+        
+        if not result.get("success", False):
+            raise HTTPException(status_code=400, detail=result.get("error", "Training failed"))
+        
+        return {
+            "message": "Model training completed successfully",
+            "trained_model": result,
+            "instructions": "Save the model_data field to your database for future use"
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Training failed: {str(e)}")
+
+@router.post("/batch-train-model")
+async def batch_train_ai_model(request: BatchTrainingRequest) -> Dict[str, Any]:
+    """
+    Train AI model on multiple telemetry sessions in batch
+    Supports incremental learning if existing model provided
+    """
+    try:
+        result = await telemetry_service.batch_train_model(
+            training_sessions=request.training_sessions,
+            target_variable=request.target_variable,
+            model_type=request.model_type,
+            existing_model_data=request.existing_model_data
+        )
+        
+        if not result.get("success", False):
+            raise HTTPException(status_code=400, detail=result.get("error", "Batch training failed"))
+        
+        return {
+            "message": "Batch model training completed successfully",
+            "trained_model": result,
+            "sessions_processed": len(request.training_sessions),
+            "instructions": "Save the model_data field to your database for future use"
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Batch training failed: {str(e)}")
+
+@router.post("/predict")
+async def predict_performance(request: PredictionRequest) -> Dict[str, Any]:
+    """
+    Make performance predictions using a trained AI model
+    """
+    try:
+        result = await telemetry_service.predict_with_model(
+            telemetry_data=request.telemetry_data,
+            model_data=request.model_data,
+            model_type=request.model_type
+        )
+        
+        if not result.get("success", False):
+            raise HTTPException(status_code=400, detail=result.get("error", "Prediction failed"))
+        
+        return {
+            "message": "Prediction completed successfully",
+            "prediction_result": result
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Prediction failed: {str(e)}")
+
+@router.post("/evaluate-model")
+async def evaluate_model(request: ModelEvaluationRequest) -> Dict[str, Any]:
+    """
+    Evaluate trained model performance on test data
+    """
+    try:
+        result = await telemetry_service.evaluate_model_performance(
+            model_data=request.model_data,
+            test_telemetry_data=request.test_telemetry_data,
+            target_variable=request.target_variable,
+            model_type=request.model_type
+        )
+        
+        if not result.get("success", False):
+            raise HTTPException(status_code=400, detail=result.get("error", "Evaluation failed"))
+        
+        return {
+            "message": "Model evaluation completed successfully",
+            "evaluation_result": result
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Model evaluation failed: {str(e)}")
+
+@router.post("/model-insights")
+async def get_model_insights(model_data: str = Body(...), feature_importance_top_n: int = Body(default=10)) -> Dict[str, Any]:
+    """
+    Get insights about a trained model including feature importance
+    """
+    try:
+        result = await telemetry_service.get_model_insights(
+            model_data=model_data,
+            feature_importance_top_n=feature_importance_top_n
+        )
+        
+        if not result.get("success", False):
+            raise HTTPException(status_code=400, detail=result.get("error", "Model insights failed"))
+        
+        return {
+            "message": "Model insights retrieved successfully",
+            "insights": result["insights"]
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Model insights failed: {str(e)}")
+
+@router.post("/analyze-performance")
+async def analyze_racing_performance(request: AnalysisRequest) -> Dict[str, Any]:
+    """
+    Analyze racing performance with optional AI model predictions
+    """
+    try:
+        result = await telemetry_service.analyze_racing_performance(
+            session_id=request.session_id,
+            analysis_type=request.analysis_type,
+            focus_areas=request.focus_areas,
+            telemetry_data=request.telemetry_data,
+            use_ai_model=request.use_ai_model,
+            model_data=request.model_data
+        )
+        
+        return {
+            "message": "Performance analysis completed successfully",
+            "analysis_result": result
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Performance analysis failed: {str(e)}")
+
+@router.get("/available-features")
+async def get_available_features() -> Dict[str, Any]:
+    """
+    Get all available telemetry features by category for training
+    """
+    try:
+        features = telemetry_service.get_available_features()
+        return {
+            "message": "Available features retrieved successfully",
+            "features": features,
+            "total_features": sum(len(feature_list) for feature_list in features.values())
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get features: {str(e)}")
+
+@router.post("/validate-telemetry")
+async def validate_telemetry_data(telemetry_data: List[Dict[str, Any]] = Body(...)) -> Dict[str, Any]:
+    """
+    Validate telemetry data quality and completeness for training
+    """
+    try:
+        # Convert to dict format expected by validation method
+        data_dict = {}
+        if telemetry_data:
+            # Combine all telemetry records into columns
+            for record in telemetry_data:
+                for key, value in record.items():
+                    if key not in data_dict:
+                        data_dict[key] = []
+                    data_dict[key].append(value)
+        
+        result = telemetry_service.validate_telemetry_data(data_dict)
+        
+        return {
+            "message": "Telemetry data validation completed",
+            "validation_result": result
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Validation failed: {str(e)}")
+
+@router.post("/improvement-suggestions")
+async def get_improvement_suggestions(request: ImprovementSuggestionsRequest) -> Dict[str, Any]:
+    """
+    Get personalized improvement suggestions based on racing performance
+    Can include AI-powered recommendations if model data provided
+    """
+    try:
+        result = await telemetry_service.get_improvement_suggestions(
+            session_id=request.session_id,
+            skill_level=request.skill_level,
+            focus_area=request.focus_area,
+            telemetry_data=request.telemetry_data,
+            model_data=request.model_data
+        )
+        
+        return {
+            "message": "Improvement suggestions generated successfully",
+            "suggestions": result
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Improvement suggestions failed: {str(e)}")
+
+@router.post("/compare-sessions")
+async def compare_racing_sessions(
+    session_ids: List[str] = Body(...),
+    comparison_metrics: List[str] = Body(default=["lap_times"])
+) -> Dict[str, Any]:
+    """
+    Compare multiple racing sessions
+    """
+    try:
+        result = await telemetry_service.compare_sessions(
+            session_ids=session_ids,
+            comparison_metrics=comparison_metrics
+        )
+        
+        return {
+            "message": "Session comparison completed successfully",
+            "comparison_result": result
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Session comparison failed: {str(e)}")
+
+@router.post("/telemetry-insights")
+async def get_telemetry_insights(
+    session_id: str = Body(...),
+    data_types: List[str] = Body(default=["speed", "acceleration"])
+) -> Dict[str, Any]:
+    """
+    Get detailed telemetry insights for a session
+    """
+    try:
+        result = await telemetry_service.get_telemetry_insights(
+            session_id=session_id,
+            data_types=data_types
+        )
+        
+        return {
+            "message": "Telemetry insights retrieved successfully",
+            "insights": result
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Telemetry insights failed: {str(e)}")
+
+# Health check endpoint
+@router.get("/health")
+async def health_check() -> Dict[str, str]:
+    """Health check for the racing session API"""
+    return {
+        "status": "healthy",
+        "service": "racing-session-api",
+        "ai_training": "enabled",
+        "persistent_storage": "disabled - stateless service"
+    }
