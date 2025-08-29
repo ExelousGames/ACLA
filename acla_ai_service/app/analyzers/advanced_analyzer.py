@@ -34,6 +34,7 @@ class AdvancedRacingAnalyzer:
         self.processed_df = self.feature_processor.prepare_for_analysis()
     def get_telemetry_summary(self) -> Dict[str, Any]:
         """Get comprehensive telemetry data summary"""
+        
         return {
             "feature_validation": self.feature_validation,
             "data_quality": self._assess_data_quality(),
@@ -82,6 +83,7 @@ class AdvancedRacingAnalyzer:
         
         coverage = self.feature_validation["coverage_percentage"]
         
+        
         if coverage < 50:
             recommendations.append("Low telemetry coverage detected. Ensure all telemetry systems are active.")
         elif coverage < 80:
@@ -100,6 +102,7 @@ class AdvancedRacingAnalyzer:
     
     def advanced_performance_analysis(self) -> Dict[str, Any]:
         """Perform advanced performance analysis using all available telemetry"""
+
         analysis = {}
         
         # Speed and acceleration analysis

@@ -344,9 +344,31 @@ class TelemetryDataModel(BaseModel):
     class Config:
         extra = "allow"  # Allow additional fields
 
+"""Process and prepare telemetry features for AI analysis
+    1. Data Initialization & Validation
+        Takes a pandas DataFrame of telemetry data as input
+        Ensures all column names are strings to prevent errors
+        Validates which expected telemetry features are present vs missing
+    2. Data Preprocessing (prepare_for_analysis)
+        Handles complex nested structures from AC Competizione telemetry (arrays, dictionaries)
+        Fills missing values with appropriate defaults (numeric columns get 0)
+        Converts string boolean values to actual boolean/numeric format
+        Cleans problematic data that could cause AI model issues
+    3. Complex Field Processing (_handle_complex_fields)
+        Car coordinates: Extracts player car position (x, y, z) from complex array data
+        Car IDs: Converts car ID arrays into active car counts
+        Time strings: Parses time formats like "9:17:920" into numeric milliseconds
+        Boolean fields: Standardizes boolean data across different formats
+    4. Performance Metrics Extraction
+        Generates key racing performance metrics including:
+        Speed analysis: max, average, min speeds and consistency
+        Lap time analysis: best lap, worst lap, average lap times
+        Temperature monitoring: tire and brake temperature ranges
+    G-force analysis: lateral, longitudinal, and vertical G-forces
+"""
 class FeatureProcessor:
-    """Process and prepare telemetry features for AI analysis"""
-    
+
+
     def __init__(self, df: pd.DataFrame):
         # Ensure all column names are strings to prevent AttributeError
         if any(not isinstance(col, str) for col in df.columns):
@@ -359,6 +381,7 @@ class FeatureProcessor:
     
     def validate_features(self) -> Dict[str, Any]:
         """Validate which expected features are present in the data"""
+        
         all_features = self.features.get_all_features()
         available_features = list(self.df.columns)
         
@@ -387,6 +410,7 @@ class FeatureProcessor:
     
     def prepare_for_analysis(self) -> pd.DataFrame:
         """Prepare the DataFrame for AI analysis by cleaning and preprocessing"""
+        
         processed_df = self.df.copy()
         
         # Ensure all column names are strings to prevent AttributeError on .lower()
