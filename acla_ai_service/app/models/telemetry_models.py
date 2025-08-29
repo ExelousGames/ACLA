@@ -549,6 +549,8 @@ class FeatureProcessor:
         
         # Speed analysis
         if 'Physics_speed_kmh' in self.df.columns:
+
+            # Drop NA values
             speed_data = self.df['Physics_speed_kmh'].dropna()
             if len(speed_data) > 0:
                 metrics['speed'] = {

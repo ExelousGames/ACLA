@@ -153,110 +153,14 @@ export class AiModelController {
         return this.aiModelService.processAIQuery(queryRequest);
     }
 
-    // === AI Service Endpoints (Previously in AiController) ===
-
     @UseGuards(AuthGuard('jwt'))
     @Post('datasets/upload')
     async uploadDataset(@Body() dataset: any) {
         return await this.aiModelService.uploadDataset(dataset);
     }
 
-    @UseGuards(AuthGuard('jwt'))
-    @Post('analyze')
-    async analyzeDataset(@Body() analysis: { dataset_id: string; analysis_type: string; parameters?: any }) {
-        return await this.aiModelService.analyzeDataset(analysis);
-    }
-
-    @UseGuards(AuthGuard('jwt'))
-    @Post('racing-session/ask')
-    async askAboutRacingSession(
-        @Body() body: { session_id: string; question: string },
-        @Request() req: any
-    ) {
-        return await this.aiModelService.askQuestionAboutSession(
-            body.session_id,
-            body.question,
-            req.user?.email || req.user?.username
-        );
-    }
-
-    @UseGuards(AuthGuard('jwt'))
-    @Post('racing-session/insights')
-    async getRacingSessionInsights(@Body() body: { session_id: string }) {
-        return await this.aiModelService.getSessionInsights(body.session_id);
-    }
-
-    @UseGuards(AuthGuard('jwt'))
-    @Post('racing-session/patterns')
-    async detectRacingPatterns(@Body() body: { session_id: string }) {
-        return await this.aiModelService.detectRacingPatterns(body.session_id);
-    }
-
-    @UseGuards(AuthGuard('jwt'))
-    @Post('racing-session/performance-score')
-    async getPerformanceScore(@Body() body: { session_id: string }) {
-        return await this.aiModelService.getPerformanceScore(body.session_id);
-    }
-
-    @UseGuards(AuthGuard('jwt'))
-    @Post('racing-session/sector-analysis')
-    async getSectorAnalysis(@Body() body: { session_id: string }) {
-        return await this.aiModelService.getSectorAnalysis(body.session_id);
-    }
-
-    @UseGuards(AuthGuard('jwt'))
-    @Post('racing-session/optimal-prediction')
-    async predictOptimalLapTime(@Body() body: { session_id: string }) {
-        return await this.aiModelService.predictOptimalLapTime(body.session_id);
-    }
-
-    @UseGuards(AuthGuard('jwt'))
-    @Get('datasets')
-    async listDatasets() {
-        return await this.aiModelService.listDatasets();
-    }
-
     @Get('health')
     async healthCheck() {
         return await this.aiModelService.healthCheck();
-    }
-
-    @UseGuards(AuthGuard('jwt'))
-    @Post('intelligent-query')
-    async processIntelligentQuery(
-        @Body() body: { question: string; context?: any },
-        @Request() req: any
-    ) {
-        return await this.aiModelService.processIntelligentQuery(
-            body.question,
-            body.context,
-            req.user?.id
-        );
-    }
-
-    @UseGuards(AuthGuard('jwt'))
-    @Post('user-data-query')
-    async askAboutUserData(
-        @Body() body: { question: string; session_id?: string },
-        @Request() req: any
-    ) {
-        return await this.aiModelService.askAboutUserData(
-            req.user?.id,
-            body.question,
-            body.session_id
-        );
-    }
-
-    @UseGuards(AuthGuard('jwt'))
-    @Post('model-operation')
-    async requestModelOperation(
-        @Body() body: { operation: string; context?: any },
-        @Request() req: any
-    ) {
-        return await this.aiModelService.requestModelOperation(
-            req.user?.id,
-            body.operation,
-            body.context
-        );
     }
 }
