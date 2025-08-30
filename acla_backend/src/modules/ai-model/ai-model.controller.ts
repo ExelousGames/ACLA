@@ -65,22 +65,6 @@ export class AiModelController {
     }
 
     @UseGuards(AuthGuard('jwt'))
-    @Post('predict')
-    async makePrediction(@Body() modelPredictionDto: ModelPredictionDto) {
-        return this.aiModelService.makePrediction(modelPredictionDto);
-    }
-
-    @UseGuards(AuthGuard('jwt'))
-    @Get('performance-history/:trackName/:modelType')
-    async getPerformanceHistory(
-        @Param('trackName') trackName: string,
-        @Param('modelType') modelType: string,
-        @Request() req: any
-    ) {
-        return this.aiModelService.getModelPerformanceHistory(req?.user?.id || '', trackName, modelType);
-    }
-
-    @UseGuards(AuthGuard('jwt'))
     @Post('train-new')
     async trainNewModel(
         @Body() body: {
@@ -151,12 +135,6 @@ export class AiModelController {
         };
 
         return this.aiModelService.processAIQuery(queryRequest);
-    }
-
-    @UseGuards(AuthGuard('jwt'))
-    @Post('datasets/upload')
-    async uploadDataset(@Body() dataset: any) {
-        return await this.aiModelService.uploadDataset(dataset);
     }
 
     @Get('health')

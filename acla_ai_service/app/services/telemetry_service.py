@@ -63,7 +63,7 @@ class TelemetryService:
             feature_processor = FeatureProcessor(df)
             processed_df = feature_processor.prepare_for_analysis()
             
-            # Prepare features and target
+            # Prepare valid features and target
             X, y, feature_names = self._prepare_features_and_target(processed_df, target_variable)
             
             if X is None or y is None:
@@ -170,7 +170,10 @@ class TelemetryService:
             }
     
     def _prepare_features_and_target(self, df: pd.DataFrame, target_variable: str) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], List[str]]:
-        """Prepare features and target variable for training"""
+        """Prepare features and target variable for training
+        return: X: valid feature matrix, y: valid target vector, feature_names: list of feature names
+        """
+        
         try:
             # Check if target variable exists
             if target_variable not in df.columns:
@@ -190,7 +193,7 @@ class TelemetryService:
             if not np.any(valid_mask):
                 return None, None, []
             
-            # Get performance-critical features for training
+            # Get possible needed performance-critical features for training
             feature_names = self.telemetry_features.get_performance_critical_features()
             
             # Filter features that exist in the data
@@ -208,6 +211,7 @@ class TelemetryService:
             X = df[available_features].values
             
             # Apply valid mask to both X and y
+            # valid_mask is a NumPy boolean array used to filter out invalid rows from your features (X) and target (y) arrays.
             X = X[valid_mask]
             y = y[valid_mask]
             
@@ -242,11 +246,14 @@ class TelemetryService:
             
             # Choose and train model
             if existing_model is not None and hasattr(existing_model, 'partial_fit'):
-                # Incremental learning
+                # if there is a existing model, Incremental learning
+                
                 model = existing_model
                 model.partial_fit(X_train_scaled, y_train)
+                
             else:
-                # New model or full retrain
+                # else, New model or full retrain
+                
                 if self.model_types.get(model_type) == "regression":
                     if model_type == "lap_time_prediction":
                         # Use SGD for incremental learning capability
@@ -263,16 +270,16 @@ class TelemetryService:
             y_pred_train = model.predict(X_train_scaled)
             y_pred_test = model.predict(X_test_scaled)
             
-            # Calculate metrics
+            # Calculate metrics,  a Python dictionary that summarizes how well your model performed during training and testing.
             metrics = {
-                "train_mse": float(mean_squared_error(y_train, y_pred_train)),
-                "test_mse": float(mean_squared_error(y_test, y_pred_test)),
-                "train_r2": float(r2_score(y_train, y_pred_train)),
-                "test_r2": float(r2_score(y_test, y_pred_test)),
-                "train_mae": float(mean_absolute_error(y_train, y_pred_train)),
-                "test_mae": float(mean_absolute_error(y_test, y_pred_test)),
-                "training_samples": len(X_train),
-                "test_samples": len(X_test)
+                "train_mse": float(mean_squared_error(y_train, y_pred_train)), # Training Mean Squared Error
+                "test_mse": float(mean_squared_error(y_test, y_pred_test)), # Test Mean Squared Error
+                "train_r2": float(r2_score(y_train, y_pred_train)), # Training R^2 Score (goodness of fit)
+                "test_r2": float(r2_score(y_test, y_pred_test)), # Test R^2 Score
+                "train_mae": float(mean_absolute_error(y_train, y_pred_train)), # Training Mean Absolute Error
+                "test_mae": float(mean_absolute_error(y_test, y_pred_test)),# Test Mean Absolute Error
+                "training_samples": len(X_train),# Number of training samples
+                "test_samples": len(X_test)  # Number of test samples
             }
             
             return {
