@@ -344,7 +344,9 @@ class TelemetryDataModel(BaseModel):
     class Config:
         extra = "allow"  # Allow additional fields
 
-"""Process and prepare telemetry features for AI analysis
+
+class FeatureProcessor:
+    """Process and prepare telemetry features for AI analysis
     1. Data Initialization & Validation
         Takes a pandas DataFrame of telemetry data as input
         Ensures all column names are strings to prevent errors
@@ -365,9 +367,7 @@ class TelemetryDataModel(BaseModel):
         Lap time analysis: best lap, worst lap, average lap times
         Temperature monitoring: tire and brake temperature ranges
     G-force analysis: lateral, longitudinal, and vertical G-forces
-"""
-class FeatureProcessor:
-
+    """
 
     def __init__(self, df: pd.DataFrame):
         # Ensure all column names are strings to prevent AttributeError
