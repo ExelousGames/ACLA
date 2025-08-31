@@ -9,16 +9,17 @@ export class RacingSessionService {
     constructor(@InjectModel(RacingSession.name) private racingSession: Model<RacingSession>) {
     }
 
-    async retrieveAllRacingSessionsInfo(mapName: string, username: string): Promise<SessionBasicInfoListDto | null> {
+    //
+    async retrieveAllRacingSessionsBasicInfo(mapName: string, userId: string): Promise<SessionBasicInfoListDto | null> {
 
         try {
             let racingMap: SessionBasicInfoListDto = new SessionBasicInfoListDto();
 
-            const data = await this.racingSession.find({ 'map': mapName, 'user_email': username }).select('session_name id').exec();
+            const data = await this.racingSession.find({ 'map': mapName, 'user_id': userId }).select('session_name user_id').exec();
             data.forEach((element) => {
                 racingMap.list.push({
                     name: element.session_name,
-                    id: element.id
+                    sessionId: element._id.toString()
                 });
             });
             return racingMap;
@@ -34,16 +35,14 @@ export class RacingSessionService {
     async retrieveSessionDetailedInfo(id: string): Promise<RacingSessionDetailedInfoDto | null> {
         try {
             let session: RacingSessionDetailedInfoDto = new RacingSessionDetailedInfoDto;
-            const data = await this.racingSession.findOne({ 'id': id }).exec();
+            const data = await this.racingSession.findOne({ 'user_id': id }).exec();
 
             if (data) {
                 session.session_name = data.session_name;
-                session.id = data.id;
                 session.map = data.map;
-                session.user_email = data.user_email;
+                session.userId = data.user_id.toString();
                 session.points = data.points;
                 session.data = data.data;
-
             }
 
             return session;
@@ -55,21 +54,21 @@ export class RacingSessionService {
 
 
     /**
-     * 
+     * Creates a new racing session.
      * @param session_name 
-     * @param id 
      * @param map 
-     * @param user_email 
+     * @param car_name 
+     * @param userId 
      * @param data 
      * @returns 
      */
-    async createRacingSession(session_name: string, id: string, map: string, user_email: string, data: any[]) {
+    async createRacingSession(session_name: string, map: string, car_name: string, userId: string, data: any[]) {
         return this.racingSession.create({
-            session_name,
-            id,
-            map,
-            user_email,
-            data
+            session_name: session_name,
+            map: map,
+            car_name: car_name,
+            user_id: userId,
+            data: data
         });
     }
 

@@ -4,7 +4,6 @@ Models module initialization
 
 from .api_models import (
     DatasetInfo,
-    AnalysisRequest,
     QueryRequest,
     AnalysisResult,
     BackendCallRequest,
@@ -14,7 +13,6 @@ from .telemetry_models import TelemetryFeatures, FeatureProcessor, TelemetryData
 
 __all__ = [
     "DatasetInfo",
-    "AnalysisRequest", 
     "QueryRequest",
     "AnalysisResult",
     "BackendCallRequest",

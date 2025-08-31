@@ -5,9 +5,9 @@ import { AiModelResponseDto } from 'src/dto/ai-model.dto';
 import { RacingSessionService } from './racing-session.service';
 import { AiModelService } from '../ai-model/ai-model.service';
 import { UserInfoService } from '../user-info/user-info.service';
-import { SessionAIModel } from 'src/schemas/session-ai-model.schema';
-import { AiServiceClient, ModelsConfig } from '../ai-model/ai-service.client';
-import { model } from 'mongoose';
+import { UserTrackAIModel } from 'src/schemas/session-ai-model.schema';
+import { AiServiceClient, ModelsConfig, TrainModelsResponse } from '../ai-model/ai-service.client';
+import { model, Types } from 'mongoose';
 
 @Controller('racing-session')
 export class RacingSessionController {
@@ -28,7 +28,7 @@ export class RacingSessionController {
     @UseGuards(AuthGuard('jwt'))
     @Post('sessionbasiclist')
     retrieveAllRacingBasicSessionsInfo(@Request() req, @Body() body): Promise<SessionBasicInfoListDto | null> {
-        return this.racingSessionService.retrieveAllRacingSessionsInfo(body.map_name, body.username);
+        return this.racingSessionService.retrieveAllRacingSessionsBasicInfo(body.map_name, body.username);
     }
 
     @UseGuards(AuthGuard('jwt'))
@@ -42,6 +42,7 @@ export class RacingSessionController {
     @Post('upload/init')
     async initUpload(@Body() metadata: UploadReacingSessionInitDto) {
         const uploadId = crypto.randomUUID();
+
         this.uploadStates.set(uploadId, {
             metadata,
             session_data_chunks: [],
@@ -84,60 +85,127 @@ export class RacingSessionController {
         console.log(`Upload complete for ID: ${uploadId}, total chunks: ${upload.session_data_chunks.length}, total records: ${fullDataset.length}`);
 
         // Create racing session in database
-        const createdSession = await this.racingSessionService.createRacingSession(
-            upload.metadata.sessionName,
-            uploadId,
-            upload.metadata.mapName,
-            upload.metadata.userEmail,
-            fullDataset
-        );
-
-        let modelReady = false;
         try {
-            // First, find the user by email to get their ObjectId
-            const userInfo = await this.userInfoService.findOne(upload.metadata.userEmail);
+            const createdSession = await this.racingSessionService.createRacingSession(
+                upload.metadata.sessionName,
+                upload.metadata.mapName,
+                upload.metadata.carName,
+                upload.metadata.userId,
+                fullDataset
+            );
 
-            if (!userInfo) {
-                console.log('User not found for email:', upload.metadata.userEmail);
-            } else {
+            // ai training
+            try {
+                // First, find the user by email to get their ObjectId
+                const userInfo = await this.userInfoService.findOne(upload.metadata.userId);
 
-                const userId = (userInfo as any).id.toString();
-                // Check for active AI model first, before processing the session
+                if (!userInfo) {
+                    console.log('User not found for email:', upload.metadata.userId);
+                } else {
 
-                const modelsConfig: ModelsConfig[] = [
-                    { config_id: "lap_prediction", target_variable: "lap_time", model_type: "lap_time_prediction", preferred_algorithm: "random_forest" }
-                ];
+                    const userId = upload.metadata.userId;
+                    // Check for active AI model first, before processing the session
 
-                let activeModel: SessionAIModel | null = null;
+                    //list of ai models will be trained
+                    const modelsConfig: ModelsConfig[] = [
+                        { config_id: "lap_prediction", target_variable: "lap_time", model_type: "lap_time_prediction", preferred_algorithm: "random_forest" }
+                    ];
 
-                for (const modelConfig of modelsConfig) {
+                    let activeModel: UserTrackAIModel & { _id: Types.ObjectId; } | null = null;
 
-                    // Check if user has an active model for this track
-                    activeModel = await this.aiModelService.findActiveModel(
-                        userId,
-                        upload.metadata.mapName,
-                        modelConfig.model_type
-                    );
+                    // Check for existing active models for each config
+                    for (const modelConfig of modelsConfig) {
 
-                    // add active model if any
-                    modelConfig.existing_model_data = activeModel ? activeModel : null;
+                        // Check if user has an active model for this track
+                        activeModel = await this.aiModelService.findActiveUserSessionAIModel(
+                            userId,
+                            upload.metadata.mapName,
+                            upload.metadata.carName,
+                            modelConfig.model_type,
+                            modelConfig.target_variable
+                        );
+
+                        // add active model if any
+                        modelConfig.existing_model_data = activeModel ? activeModel : null;
+                    }
+
+                    // Train the models using the AI service client
+                    const trainedModelsResponse: TrainModelsResponse = await this.aiServiceClient.trainModels({
+                        session_id: createdSession.id,
+                        telemetry_data: fullDataset,
+                        models_config: modelsConfig,
+                        user_id: userId,
+                        parallel_training: false
+                    });
+
+                    //save the training result to database
+                    if (trainedModelsResponse) {
+                        // Process and save the training result as needed
+                        for (const [configId, response] of Object.entries(trainedModelsResponse.training_results)) {
+
+                            //find the matching config
+                            const modelConfig = modelsConfig.find(config => config.config_id === configId);
+
+                            //if there is an active model, update the model in database
+                            if (modelConfig && modelConfig.existing_model_data && response.success) {
+                                console.log("Updating existing model:", modelConfig.existing_model_data._id);
+                                await this.aiModelService.updateModel(modelConfig.existing_model_data._id.toString(), {
+                                    modelData: response.model_data,
+                                    modelType: response.model_type,
+                                    algorithmUsed: response.algorithm_used,
+                                    algorithmType: response.algorithm_type,
+                                    targetVariable: response.target_variable,
+                                    trainingMetrics: response.training_metrics,
+                                    featureNames: response.feature_names,
+                                    featureCount: response.feature_count,
+                                    trainingSamples: response.training_samples,
+                                    modelVersion: response.model_version, // Version number for incremental training
+                                    telemetrySummary: response.telemetry_summary, // Summary of telemetry data used
+                                    recommendations: response.recommendations, // Training recommendations
+                                    algorithmDescription: response.algorithm_description, // Description of the algorithm used
+                                    supportsIncremental: response.supports_incremental, // Whether model supports incremental learning
+                                    featureImportance: response.feature_importance, // Feature importance scores
+                                    alternativeAlgorithms: response.alternative_algorithms, // Alternative algorithms for this model type
+                                    trainedAt: response.trained_at, // When the model was trained
+                                    isActive: true // Whether this model version is active
+                                });
+                            } else {
+                                //else create a new model
+                                await this.aiModelService.createModel({
+                                    userId: userId,
+                                    trackName: upload.metadata.mapName,
+                                    carName: upload.metadata.carName,
+                                    modelData: response.model_data,
+                                    modelType: response.model_type,
+                                    algorithmUsed: response.algorithm_used,
+                                    algorithmType: response.algorithm_type,
+                                    targetVariable: response.target_variable,
+                                    trainingMetrics: response.training_metrics,
+                                    featureNames: response.feature_names,
+                                    featureCount: response.feature_count,
+                                    trainingSamples: response.training_samples,
+                                    modelVersion: response.model_version, // Version number for incremental training
+                                    telemetrySummary: response.telemetry_summary, // Summary of telemetry data used
+                                    recommendations: response.recommendations, // Training recommendations
+                                    algorithmDescription: response.algorithm_description, // Description of the algorithm used
+                                    supportsIncremental: response.supports_incremental, // Whether model supports incremental learning
+                                    featureImportance: response.feature_importance, // Feature importance scores
+                                    alternativeAlgorithms: response.alternative_algorithms, // Alternative algorithms for this model type
+                                    trainedAt: response.trained_at, // When the model was trained
+                                    isActive: true // Whether this model version is active
+                                });
+                            }
+                        }
+                    }
+
                 }
-
-                // Train the models using the AI service client
-                await this.aiServiceClient.trainModels({
-                    session_id: createdSession.id,
-                    telemetry_data: fullDataset,
-                    models_config: modelsConfig,
-                    user_id: userId,
-                    parallel_training: false
-                });
-
+            } catch (modelError) {
+                console.error('Model setup failed:', modelError);
             }
-        } catch (modelError) {
-            console.error('Model setup failed:', modelError);
-            modelReady = false;
-        }
 
+        } catch (error) {
+            console.error('Error creating Racing Session:', error);
+        }
         return {
             message: 'Upload completed successfully',
             sessionId: uploadId,

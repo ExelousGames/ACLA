@@ -21,7 +21,7 @@ const SessionList = () => {
     const analysisContext = useContext(AnalysisContext);
     const auth = useAuth();
     useEffect(() => {
-        apiService.post('racing-session/sessionbasiclist', { map_name: analysisContext.mapSelected, username: auth?.user })
+        apiService.post('racing-session/sessionbasiclist', { map_name: analysisContext.mapSelected, username: auth?.userEmail })
             .then((result) => {
                 const data = result.data as SessionBasicInfoListDto;
                 let count = 0;
@@ -30,10 +30,9 @@ const SessionList = () => {
                     return {
                         dataKey: count,
                         name: seesion.name,
-                        id: seesion.id
+                        SessionId: seesion.sessionId
                     } as SessionOption;
                 }))
-
             }).catch((e) => {
             });
     }, []);
@@ -43,7 +42,7 @@ const SessionList = () => {
                 <ScrollArea.Viewport className="ScrollAreaViewport">
                     <Flex flexShrink="0" direction="column" gap="9">
                         {seesionList.map((option: SessionOption) => (
-                            <MapCard key={option.dataKey} dataKey={option.dataKey} name={option.name} total_time={option.total_time} id={option.id} />
+                            <MapCard key={option.dataKey} dataKey={option.dataKey} name={option.name} total_time={option.total_time} SessionId={option.SessionId} />
                         ))}
                     </Flex>
                 </ScrollArea.Viewport>
@@ -66,15 +65,16 @@ const SessionList = () => {
     )
 };
 
-const MapCard = ({ dataKey, name, total_time, id }: SessionOption) => {
+const MapCard = ({ dataKey, name, total_time, SessionId: id }: SessionOption) => {
     const analysisContext = useContext(AnalysisContext);
     function mapSelected() {
         //if no previous session, create a new one.
         const newSession: RacingSessionDetailedInfoDto = {
             session_name: name,
-            id: id,
+            SessionId: id,
             map: '',
-            user_email: '',
+            car: '',
+            user_id: '',
             points: [],
             data: []
         };

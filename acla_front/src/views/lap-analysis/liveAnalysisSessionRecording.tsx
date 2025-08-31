@@ -100,10 +100,8 @@ const LiveAnalysisSessionRecording = () => {
      * check acc memory once and see if there is a valid session running
      */
     const CheckSessionValid = async () => {
-        console.log("Checking session validity...");
 
         if (isCheckingLiveSession) {
-            console.log("Already checking session, skipping...");
             return;
         }
 
@@ -161,7 +159,7 @@ const LiveAnalysisSessionRecording = () => {
 
                                 //set the static data too, so we can use it later.
                                 console.log("Setting static data:", obj);
-                                analysisContext.setRecordedSessionStaticsData(obj);
+                                analysisContext.setRecordedSessionStaticsData(obj.Static);
                             } else {
                                 console.log("Session status is not live:", obj.Graphics?.status);
                             }
@@ -217,15 +215,13 @@ const LiveAnalysisSessionRecording = () => {
             return;
         }
 
-        console.log("Checking static data:", analysisContext.recordedSessioStaticsData);
-
         // Check if we have valid static data
-        if (!analysisContext.recordedSessioStaticsData || !analysisContext.recordedSessioStaticsData.Static) {
+        if (!analysisContext.recordedSessioStaticsData) {
             console.error("No static data available from session check");
             return;
         }
 
-        const trackId = analysisContext.recordedSessioStaticsData.Static.track;
+        const trackId = analysisContext.recordedSessioStaticsData.track;
         console.log("Track ID from static data:", trackId);
 
         //find and set the track name by using the saved static data from the CheckSessionValid()
@@ -259,11 +255,12 @@ const LiveAnalysisSessionRecording = () => {
             if (!prev) {
                 const newSession: RacingSessionDetailedInfoDto = {
                     session_name: new Date().toString(),
-                    id: '',
+                    SessionId: '',
                     map: analysisContext.mapSelected || "Unknown Track",
-                    user_email: '',
+                    user_id: '',
                     points: [],
-                    data: []
+                    data: [],
+                    car: analysisContext.recordedSessioStaticsData.car_model || "Unknown Car"
                 };
                 return newSession
             }
@@ -328,14 +325,11 @@ const LiveAnalysisSessionRecording = () => {
         intervalRef.current = setInterval(async () => {
             // Prevent overlapping checks
             if (isCheckingLiveSession) {
-                console.log("Previous check still in progress, skipping this interval");
                 return;
             }
 
             try {
-                console.log("Interval tick - calling CheckSessionValid");
                 await CheckSessionValid();
-                console.log("CheckSessionValid completed");
             } catch (error) {
                 console.error("Error in CheckSessionValid:", error);
                 // Don't stop the interval on error, just log it and continue
@@ -355,7 +349,7 @@ const LiveAnalysisSessionRecording = () => {
     //after a session is determined as terminated, and user selected to upload the data, we do it here
     async function handleUpload() {
 
-        if (!analysisContext.sessionSelected?.session_name || !analysisContext.mapSelected || !auth?.user) {
+        if (!analysisContext.sessionSelected?.session_name || !analysisContext.mapSelected || !auth?.userEmail) {
             return;
         }
         const data = analysisContext.recordedSessionData;;
@@ -367,9 +361,9 @@ const LiveAnalysisSessionRecording = () => {
         const metadata = {
             sessionName: analysisContext.sessionSelected?.session_name,
             mapName: analysisContext.mapSelected,
-            userEmail: auth?.user,
+            carName: analysisContext.recordedSessioStaticsData.car_model || "Unknown Car",
+            userId: auth?.userId,
         } as UploadReacingSessionInitDto;
-
 
         //separate recorded data into chunks
         for (let i = 0; i < data.length; i += chunkSize) {

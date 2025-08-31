@@ -1,4 +1,5 @@
 import { Prop, Schema, SchemaFactory } from "@nestjs/mongoose";
+import { ObjectId, Types } from "mongoose";
 
 //Each schema maps to a MongoDB collection and defines the shape of the documents within that collection
 //The @Schema() decorator marks a class as a schema definition. It maps our Cat class to a MongoDB collection of the same name, but with an additional “s” at the end - so the final mongo collection name will be cats
@@ -8,14 +9,14 @@ export class RacingSession {
     @Prop({ required: true })
     session_name: string;
 
-    @Prop({ required: true, unique: true })
-    id: string;
-
     @Prop({ required: true })
     map: string;
 
     @Prop({ required: true })
-    user_email: string;
+    car_name: string;
+
+    @Prop({ type: String, ref: 'UserInfo', required: true })
+    user_id: string;
 
     @Prop()
     points: [{
@@ -33,4 +34,4 @@ export class RacingSession {
 
 export const RacingSessionSchema = SchemaFactory.createForClass(RacingSession);
 // Creating a compound index
-RacingSessionSchema.index({ session_name: 1, map: 1, user_email: 1 }, { unique: true });
+RacingSessionSchema.index({ session_name: 1, map: 1, car_name: 1, user_id: 1 }, { unique: true });

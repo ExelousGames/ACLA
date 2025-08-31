@@ -19,7 +19,6 @@ class Settings(BaseSettings):
     debug: bool = False
     
     # API Configuration
-    api_prefix: str = "/api/v1"
     backend_url: str = "http://backend:7001"
     
     # OpenAI Configuration

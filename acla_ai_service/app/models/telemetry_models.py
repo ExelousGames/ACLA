@@ -582,23 +582,6 @@ class TelemetryFeatures:
         return feature_map.get(model_type, cls.get_performance_critical_features())
     
     @classmethod
-    def get_feature_categories(cls) -> Dict[str, List[str]]:
-        """Get all feature categories organized by type"""
-        return {
-            "performance_critical": cls.get_performance_critical_features(),
-            "setup": cls.get_setup_features(),
-            "damage": cls.get_damage_features(),
-            "fuel_consumption": cls.get_fuel_consumption_features(),
-            "brake_performance": cls.get_brake_performance_features(),
-            "tire_strategy": cls.get_tire_strategy_features(),
-            "overtaking_opportunity": cls.get_overtaking_opportunity_features(),
-            "racing_line_optimization": cls.get_racing_line_optimization_features(),
-            "weather_adaptation": cls.get_weather_adaptation_features(),
-            "consistency_analysis": cls.get_consistency_analysis_features(),
-            "sector_time": cls.get_sector_time_features()
-        }
-    
-    @classmethod
     def filter_available_features(cls, feature_list: List[str], available_columns: List[str]) -> List[str]:
         """
         Filter feature list to only include features that are available in the data

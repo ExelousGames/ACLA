@@ -23,6 +23,7 @@ import numpy as np
 class AlgorithmConfiguration:
     """
     Configuration class for different ML algorithms optimized for racing telemetry predictions
+    Only these scikit-learn algorithms have partial_fit() method for incremental updates:
     """
     
     def __init__(self):

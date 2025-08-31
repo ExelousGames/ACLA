@@ -3,12 +3,16 @@ import { Types } from 'mongoose';
 
 
 @Schema({ timestamps: true })
-export class SessionAIModel {
-    @Prop({ type: Types.ObjectId, ref: 'UserInfo', required: true })
-    userId: Types.ObjectId;
+export class UserTrackAIModel {
+
+    @Prop({ type: String, ref: 'UserInfo', required: true })
+    userId: string;
 
     @Prop({ required: true })
     trackName: string;
+
+    @Prop({ required: true })
+    carName: string;
 
     @Prop({ required: true })
     modelType: string; // lap_time_prediction, sector_time_optimization, etc.
@@ -37,11 +41,8 @@ export class SessionAIModel {
     @Prop({ required: true })
     trainingSamples: number; // Number of training samples
 
-    @Prop({ type: Object, default: {} })
-    sessionMetadata: Record<string, any>; // Additional session information
-
-    @Prop({ required: true, default: 1 })
-    modelVersion: number; // Version number for incremental training
+    @Prop({ required: true, default: "1" })
+    modelVersion: string; // Version number for incremental training
 
     @Prop({ type: Object, default: {} })
     telemetrySummary: Record<string, any>; // Summary of telemetry data used
@@ -52,7 +53,7 @@ export class SessionAIModel {
     @Prop({ default: '' })
     algorithmDescription: string; // Description of the algorithm used
 
-    @Prop({ required: true, default: false })
+    @Prop({ required: true, default: true })
     supportsIncremental: boolean; // Whether model supports incremental learning
 
     @Prop({ type: Object, default: {} })
@@ -62,14 +63,14 @@ export class SessionAIModel {
     alternativeAlgorithms: string[]; // Alternative algorithms for this model type
 
     @Prop({ required: true })
-    trainedAt: Date; // When the model was trained
+    trainedAt: string; // When the model was trained
 
     @Prop({ required: true, default: true })
     isActive: boolean; // Whether this model version is active
 
 }
 
-export const SessionAIModelSchema = SchemaFactory.createForClass(SessionAIModel);
+export const SessionAIModelSchema = SchemaFactory.createForClass(UserTrackAIModel);
 
 // Create compound indexes for efficient queries
 SessionAIModelSchema.index({ userId: 1, trackName: 1, modelType: 1, isActive: 1 });

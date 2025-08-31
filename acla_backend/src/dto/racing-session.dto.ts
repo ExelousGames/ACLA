@@ -1,25 +1,27 @@
 export class SessionBasicInfoListDto {
     list: {
         name: string,
-        id: string
+        sessionId: string
     }[] = []
 }
 
 export class UploadReacingSessionInitDto {
     sessionName: string;
     mapName: string;
-    userEmail: string;
+    carName: string;
+    userId: string;
 }
 
 export class UploadReacingSessionProgressDto {
     sessionName: string;
-    maoName: string;
-    userEmail;
+    mapName: string;
+    carName: string;
+    userId: string;
 }
 
 export class RacingSessionDetailedInfoDto {
     session_name: string;
-    id: string;
+    userId: string;
     map: string;
     user_email: string;
 
