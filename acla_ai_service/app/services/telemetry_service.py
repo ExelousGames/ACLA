@@ -7,67 +7,92 @@ import pandas as pd
 import numpy as np
 import pickle
 import base64
+from datetime import datetime, timezone
 from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
 from sklearn.preprocessing import StandardScaler, LabelEncoder
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import mean_squared_error, r2_score, mean_absolute_error
+from sklearn.metrics import mean_squared_error, r2_score, mean_absolute_error, accuracy_score, classification_report
 from sklearn.linear_model import SGDRegressor
 import joblib
 import io
 from app.models.telemetry_models import TelemetryFeatures, FeatureProcessor
+from app.models.ml_algorithms import AlgorithmConfiguration
 from app.analyzers import AdvancedRacingAnalyzer
 
 
 class TelemetryService:
-    """Service for telemetry data processing and analysis with AI model training capabilities"""
+    """Service for telemetry data processing and analysis with multi-algorithm AI model training capabilities"""
     
     def __init__(self):
         self.telemetry_features = TelemetryFeatures()
+        self.algorithm_config = AlgorithmConfiguration()
+        
         # Model types supported for different prediction tasks
         self.model_types = {
             "lap_time_prediction": "regression",
+            "sector_time_prediction": "regression", 
             "performance_classification": "classification", 
-            "sector_optimization": "regression",
-            "setup_recommendation": "classification"
+            "setup_recommendation": "classification",
+            "tire_strategy": "classification",
+            "fuel_consumption": "regression",
+            "brake_performance": "regression",
+            "overtaking_opportunity": "classification",
+            "racing_line_optimization": "regression",
+            "weather_adaptation": "regression",
+            "consistency_analysis": "regression",
+            "damage_prediction": "classification"
         }
     
     async def train_ai_model(self, 
                            telemetry_data: List[Dict[str, Any]], 
                            target_variable: str,
                            model_type: str = "lap_time_prediction",
+                           preferred_algorithm: Optional[str] = None,
                            existing_model_data: Optional[str] = None,
-                           user_id: Optional[str] = None,
-                           session_metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+                           user_id: Optional[str] = None) -> Dict[str, Any]:
         """
-        Train AI model on telemetry data with support for incremental learning
+        Train AI model on telemetry data with support for multiple algorithms and incremental learning
         
         Args:
             telemetry_data: List of telemetry data dictionaries
             target_variable: The variable to predict (e.g., 'lap_time', 'sector_time')
             model_type: Type of model to train
+            preferred_algorithm: Override the default algorithm for this task
             existing_model_data: Base64 encoded existing model for incremental training
             user_id: User identifier for tracking
-            session_metadata: Additional session information
-        
+         
         Returns:
             Dict containing trained model data and metrics for backend storage
         """
         try:
+            # Get optimal algorithm configuration for this task
+            algorithm_config = self.algorithm_config.get_algorithm_for_task(model_type, preferred_algorithm)
+            
             # Convert telemetry data to DataFrame
             df = pd.DataFrame(telemetry_data)
             
             if df.empty:
-                return {"error": "No telemetry data provided"}
+                return {
+                    "success": False,
+                    "error": "No telemetry data provided",
+                    "model_type": model_type,
+                    "algorithm_used": algorithm_config["name"]
+                }
             
             # Process and clean the data
             feature_processor = FeatureProcessor(df)
             processed_df = feature_processor.prepare_for_analysis()
             
             # Prepare valid features and target
-            X, y, feature_names = self._prepare_features_and_target(processed_df, target_variable)
+            X, y, feature_names = self._prepare_features_and_target(processed_df, target_variable, model_type)
             
             if X is None or y is None:
-                return {"error": f"Could not prepare features or target variable '{target_variable}' not found"}
+                return {
+                    "success": False,
+                    "error": f"Could not prepare features for target '{target_variable}'",
+                    "model_type": model_type,
+                    "algorithm_used": algorithm_config["name"]
+                }
             
             # Load existing model if provided (for incremental training)
             existing_model = None
@@ -78,29 +103,35 @@ class TelemetryService:
                 except Exception as e:
                     print(f"Warning: Could not load existing model: {str(e)}")
             
-            # Train or update model
-            model_result = self._train_model(
-                X, y, feature_names, model_type, existing_model, existing_scaler
+            # Train or update model using the selected algorithm
+            model_result = self._train_model_with_algorithm(
+                X, y, feature_names, model_type, algorithm_config, existing_model, existing_scaler
             )
             
             # Serialize model for backend storage
-            serialized_model = self._serialize_model(model_result["model"], model_result["scaler"])
+            serialized_model = self._serialize_model(model_result["model"], model_result["scaler"], algorithm_config["name"])
             
             # Prepare response for backend
             training_result = {
                 "success": True,
                 "model_data": serialized_model,
                 "model_type": model_type,
+                "algorithm_used": algorithm_config["name"],
+                "algorithm_type": algorithm_config["type"],
                 "target_variable": target_variable,
                 "user_id": user_id,
                 "training_metrics": model_result["metrics"],
                 "feature_names": feature_names,
                 "feature_count": len(feature_names),
                 "training_samples": len(X),
-                "session_metadata": session_metadata or {},
                 "model_version": self._get_model_version(existing_model_data),
                 "telemetry_summary": self._get_training_summary(processed_df),
-                "recommendations": self._generate_training_recommendations(model_result["metrics"])
+                "recommendations": self._generate_training_recommendations(model_result["metrics"], algorithm_config),
+                "algorithm_description": algorithm_config.get("task_description", ""),
+                "supports_incremental": algorithm_config.get("incremental", False),
+                "feature_importance": model_result.get("feature_importance", {}),
+                "alternative_algorithms": self.algorithm_config.get_algorithm_alternatives(model_type),
+                "trained_at": datetime.now(timezone.utc).isoformat()
             }
             
             return training_result
@@ -110,6 +141,7 @@ class TelemetryService:
                 "success": False,
                 "error": f"Model training failed: {str(e)}",
                 "model_type": model_type,
+                "algorithm_used": algorithm_config.get("name", "unknown") if 'algorithm_config' in locals() else "unknown",
                 "user_id": user_id
             }
     
@@ -169,9 +201,14 @@ class TelemetryService:
                 "error": f"Prediction failed: {str(e)}"
             }
     
-    def _prepare_features_and_target(self, df: pd.DataFrame, target_variable: str) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], List[str]]:
+    def _prepare_features_and_target(self, df: pd.DataFrame, target_variable: str, model_type: str = "lap_time_prediction") -> Tuple[Optional[np.ndarray], Optional[np.ndarray], List[str]]:
         """Prepare features and target variable for training
-        return: X: valid feature matrix, y: valid target vector, feature_names: list of feature names
+        Args:
+            df: DataFrame with telemetry data
+            target_variable: Target variable name
+            model_type: Type of prediction task for feature selection
+        Returns: 
+            X: valid feature matrix, y: valid target vector, feature_names: list of feature names
         """
         
         try:
@@ -193,16 +230,15 @@ class TelemetryService:
             if not np.any(valid_mask):
                 return None, None, []
             
-            # Get possible needed performance-critical features for training
-            feature_names = self.telemetry_features.get_performance_critical_features()
+            # Get performance-critical features based on task using centralized feature selection
+            feature_names = self.telemetry_features.get_features_for_model_type(model_type)
             
             # Filter features that exist in the data
-            available_features = [f for f in feature_names if f in df.columns]
+            available_features = self.telemetry_features.filter_available_features(feature_names, df.columns.tolist())
             
             if not available_features:
-                # Fall back to all numeric columns except target
-                available_features = [col for col in df.select_dtypes(include=[np.number]).columns 
-                                    if col != target_variable]
+                # Fall back to automatic feature detection
+                available_features = self.telemetry_features.get_fallback_features(df.columns.tolist(), target_variable)
             
             if not available_features:
                 return None, None, []
@@ -211,7 +247,6 @@ class TelemetryService:
             X = df[available_features].values
             
             # Apply valid mask to both X and y
-            # valid_mask is a NumPy boolean array used to filter out invalid rows from your features (X) and target (y) arrays.
             X = X[valid_mask]
             y = y[valid_mask]
             
@@ -224,9 +259,9 @@ class TelemetryService:
             print(f"Error preparing features: {str(e)}")
             return None, None, []
     
-    def _train_model(self, X: np.ndarray, y: np.ndarray, feature_names: List[str], 
-                    model_type: str, existing_model=None, existing_scaler=None) -> Dict[str, Any]:
-        """Train or update the AI model"""
+    def _train_model_with_algorithm(self, X: np.ndarray, y: np.ndarray, feature_names: List[str], 
+                    model_type: str, algorithm_config: Dict[str, Any], existing_model=None, existing_scaler=None) -> Dict[str, Any]:
+        """Train or update the AI model using specified algorithm"""
         try:
             # Split data for validation
             X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
@@ -244,60 +279,88 @@ class TelemetryService:
                 X_train_scaled = scaler.fit_transform(X_train)
                 X_test_scaled = scaler.transform(X_test)
             
-            # Choose and train model
-            if existing_model is not None and hasattr(existing_model, 'partial_fit'):
-                # if there is a existing model, Incremental learning
-                
+            # Create algorithm instance
+            algorithm_name = algorithm_config["name"]
+            
+            # Handle incremental learning
+            if existing_model is not None and algorithm_config.get("incremental", False):
                 model = existing_model
-                model.partial_fit(X_train_scaled, y_train)
-                
-            else:
-                # else, New model or full retrain
-                
-                if self.model_types.get(model_type) == "regression":
-                    if model_type == "lap_time_prediction":
-                        # Use SGD for incremental learning capability
-                        model = SGDRegressor(random_state=42, max_iter=1000)
-                    else:
-                        model = RandomForestRegressor(n_estimators=100, random_state=42)
+                if hasattr(model, 'partial_fit'):
+                    model.partial_fit(X_train_scaled, y_train)
                 else:
-                    # Classification model
-                    model = RandomForestRegressor(n_estimators=100, random_state=42)  # Simplified for now
-                
+                    # If model doesn't support partial_fit, retrain fully
+                    optimized_params = self.algorithm_config.optimize_hyperparameters(algorithm_name, X_train, y_train)
+                    algorithm_config["params"] = optimized_params
+                    model = self.algorithm_config.create_algorithm_instance(algorithm_config)
+                    model.fit(X_train_scaled, y_train)
+            else:
+                # Create new model with optimized parameters
+                optimized_params = self.algorithm_config.optimize_hyperparameters(algorithm_name, X_train, y_train)
+                algorithm_config["params"] = optimized_params
+                model = self.algorithm_config.create_algorithm_instance(algorithm_config)
                 model.fit(X_train_scaled, y_train)
             
             # Evaluate model
             y_pred_train = model.predict(X_train_scaled)
             y_pred_test = model.predict(X_test_scaled)
             
-            # Calculate metrics,  a Python dictionary that summarizes how well your model performed during training and testing.
-            metrics = {
-                "train_mse": float(mean_squared_error(y_train, y_pred_train)), # Training Mean Squared Error
-                "test_mse": float(mean_squared_error(y_test, y_pred_test)), # Test Mean Squared Error
-                "train_r2": float(r2_score(y_train, y_pred_train)), # Training R^2 Score (goodness of fit)
-                "test_r2": float(r2_score(y_test, y_pred_test)), # Test R^2 Score
-                "train_mae": float(mean_absolute_error(y_train, y_pred_train)), # Training Mean Absolute Error
-                "test_mae": float(mean_absolute_error(y_test, y_pred_test)),# Test Mean Absolute Error
-                "training_samples": len(X_train),# Number of training samples
-                "test_samples": len(X_test)  # Number of test samples
-            }
+            # Calculate metrics based on algorithm type
+            if algorithm_config["type"] == "classification":
+                # Classification metrics
+                metrics = {
+                    "train_accuracy": float(accuracy_score(y_train, np.round(y_pred_train))),
+                    "test_accuracy": float(accuracy_score(y_test, np.round(y_pred_test))),
+                    "train_mse": float(mean_squared_error(y_train, y_pred_train)),
+                    "test_mse": float(mean_squared_error(y_test, y_pred_test)),
+                    "training_samples": len(X_train),
+                    "test_samples": len(X_test),
+                    "algorithm_type": "classification"
+                }
+            else:
+                # Regression metrics
+                metrics = {
+                    "train_mse": float(mean_squared_error(y_train, y_pred_train)),
+                    "test_mse": float(mean_squared_error(y_test, y_pred_test)),
+                    "train_r2": float(r2_score(y_train, y_pred_train)),
+                    "test_r2": float(r2_score(y_test, y_pred_test)),
+                    "train_mae": float(mean_absolute_error(y_train, y_pred_train)),
+                    "test_mae": float(mean_absolute_error(y_test, y_pred_test)),
+                    "training_samples": len(X_train),
+                    "test_samples": len(X_test),
+                    "algorithm_type": "regression"
+                }
+            
+            # Get feature importance if available
+            feature_importance = {}
+            importance_method = self.algorithm_config.get_feature_importance_method(algorithm_name)
+            if importance_method and hasattr(model, importance_method):
+                importances = getattr(model, importance_method)
+                feature_importance = dict(zip(feature_names, [float(imp) for imp in importances]))
+                
+                # Sort by importance
+                feature_importance = dict(sorted(feature_importance.items(), key=lambda x: x[1], reverse=True))
             
             return {
                 "model": model,
                 "scaler": scaler,
                 "metrics": metrics,
-                "feature_names": feature_names
+                "feature_names": feature_names,
+                "feature_importance": feature_importance,
+                "algorithm_name": algorithm_name,
+                "algorithm_type": algorithm_config["type"]
             }
             
         except Exception as e:
-            raise Exception(f"Model training failed: {str(e)}")
+            raise Exception(f"Model training with {algorithm_config.get('name', 'unknown')} failed: {str(e)}")
     
-    def _serialize_model(self, model, scaler) -> str:
+    def _serialize_model(self, model, scaler, algorithm_name: str = "unknown") -> str:
         """Serialize model and scaler to base64 string for storage"""
         try:
             model_data = {
                 "model": model,
-                "scaler": scaler
+                "scaler": scaler,
+                "algorithm_name": algorithm_name,
+                "serialization_version": "2.0"
             }
             
             # Serialize to bytes
@@ -324,17 +387,29 @@ class TelemetryService:
             buffer = io.BytesIO(model_bytes)
             loaded_data = joblib.load(buffer)
             
-            return loaded_data["model"], loaded_data["scaler"]
+            # Handle both old and new serialization formats
+            if isinstance(loaded_data, dict):
+                model = loaded_data.get("model")
+                scaler = loaded_data.get("scaler")
+                algorithm_name = loaded_data.get("algorithm_name", "unknown")
+                return model, scaler
+            else:
+                # Old format compatibility
+                return loaded_data, None
             
         except Exception as e:
             raise Exception(f"Model deserialization failed: {str(e)}")
     
     def _prepare_prediction_features(self, df: pd.DataFrame, model_type: str) -> Optional[np.ndarray]:
-        """Prepare features for prediction"""
+        """Prepare features for prediction using the same feature selection as training"""
         try:
-            # Get the same features used in training
-            feature_names = self.telemetry_features.get_performance_critical_features()
-            available_features = [f for f in feature_names if f in df.columns]
+            # Get the same features used in training for this model type
+            feature_names = self.telemetry_features.get_features_for_model_type(model_type)
+            available_features = self.telemetry_features.filter_available_features(feature_names, df.columns.tolist())
+            
+            if not available_features:
+                # Fallback to any available numeric features
+                available_features = self.telemetry_features.get_fallback_features(df.columns.tolist(), "")
             
             if not available_features:
                 return None
@@ -389,18 +464,47 @@ class TelemetryService:
         except:
             return None
     
-    def _generate_training_recommendations(self, metrics: Dict[str, Any]) -> List[str]:
-        """Generate recommendations based on training metrics"""
+    def _generate_training_recommendations(self, metrics: Dict[str, Any], algorithm_config: Dict[str, Any]) -> List[str]:
+        """Generate recommendations based on training metrics and algorithm"""
         recommendations = []
+        algorithm_name = algorithm_config.get("name", "unknown")
+        algorithm_type = algorithm_config.get("type", "regression")
         
-        if metrics.get("test_r2", 0) < 0.7:
-            recommendations.append("Model performance could be improved with more training data")
+        # Performance-based recommendations
+        if algorithm_type == "regression":
+            test_r2 = metrics.get("test_r2", 0)
+            if test_r2 < 0.7:
+                recommendations.append("Model performance could be improved with more training data")
+            if test_r2 < 0.5:
+                recommendations.append(f"Poor performance with {algorithm_name} - consider trying alternative algorithms")
+        else:
+            test_accuracy = metrics.get("test_accuracy", 0)
+            if test_accuracy < 0.8:
+                recommendations.append("Classification accuracy could be improved with more diverse training data")
         
+        # Overfitting detection
         if metrics.get("test_mse", float('inf')) > metrics.get("train_mse", 0) * 2:
-            recommendations.append("Model may be overfitting - consider regularization")
+            if algorithm_name in ["random_forest", "gradient_boosting"]:
+                recommendations.append("Model may be overfitting - consider reducing n_estimators or max_depth")
+            elif algorithm_name == "neural_network":
+                recommendations.append("Model may be overfitting - consider adding dropout or reducing hidden layer size")
+            else:
+                recommendations.append("Model may be overfitting - consider regularization")
         
-        if metrics.get("training_samples", 0) < 100:
+        # Data size recommendations
+        training_samples = metrics.get("training_samples", 0)
+        if training_samples < 100:
             recommendations.append("Small training dataset - collect more data for better performance")
+        elif training_samples < 50 and algorithm_name in ["neural_network", "svr"]:
+            recommendations.append(f"{algorithm_name} typically requires more data - consider using simpler algorithms")
+        
+        # Algorithm-specific recommendations
+        if algorithm_name == "linear_regression" and metrics.get("test_r2", 0) < 0.6:
+            recommendations.append("Linear model may be too simple - consider non-linear algorithms like Random Forest")
+        elif algorithm_name == "neural_network" and training_samples < 500:
+            recommendations.append("Neural networks work best with larger datasets - consider ensemble methods")
+        elif algorithm_name == "knn" and training_samples > 10000:
+            recommendations.append("KNN can be slow with large datasets - consider faster algorithms")
         
         return recommendations
     
@@ -408,6 +512,7 @@ class TelemetryService:
                                training_sessions: List[Dict[str, Any]],
                                target_variable: str,
                                model_type: str = "lap_time_prediction",
+                               preferred_algorithm: Optional[str] = None,
                                existing_model_data: Optional[str] = None) -> Dict[str, Any]:
         """
         Train AI model on multiple telemetry sessions in batch
@@ -424,16 +529,11 @@ class TelemetryService:
         try:
             # Combine all session data
             all_telemetry_data = []
-            session_metadata = {
-                "session_count": len(training_sessions),
-                "session_ids": []
-            }
             
             for session in training_sessions:
                 if "telemetry_data" in session:
                     all_telemetry_data.extend(session["telemetry_data"])
-                    if "session_id" in session:
-                        session_metadata["session_ids"].append(session["session_id"])
+
             
             if not all_telemetry_data:
                 return {"error": "No telemetry data found in training sessions"}
@@ -443,8 +543,8 @@ class TelemetryService:
                 telemetry_data=all_telemetry_data,
                 target_variable=target_variable,
                 model_type=model_type,
+                preferred_algorithm=preferred_algorithm,
                 existing_model_data=existing_model_data,
-                session_metadata=session_metadata
             )
             
         except Exception as e:

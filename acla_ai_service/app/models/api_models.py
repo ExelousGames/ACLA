@@ -15,13 +15,6 @@ class DatasetInfo(BaseModel):
     upload_time: str
 
 
-class AnalysisRequest(BaseModel):
-    """Analysis request model"""
-    dataset_id: str
-    analysis_type: str
-    parameters: Optional[Dict[str, Any]] = None
-
-
 class QueryRequest(BaseModel):
     """Natural language query request model"""
     query: str
