@@ -86,10 +86,10 @@ class TelemetryService:
             # Prepare valid features and target
             X, y, feature_names = self._prepare_features_and_target(processed_df, target_variable, model_type)
             
-            if X is None or y is None:
+            if X is None or y is None or len(feature_names) == 0:
                 return {
                     "success": False,
-                    "error": f"Could not prepare features for target '{target_variable}'",
+                    "error":  f"Could not prepare features for target '{target_variable}'" if len(feature_names) > 0 else "Zero valid features found",
                     "model_type": model_type,
                     "algorithm_used": algorithm_config["name"]
                 }
@@ -214,18 +214,12 @@ class TelemetryService:
         try:
             # Check if target variable exists
             if target_variable not in df.columns:
-                # Try to derive target variable
-                if target_variable == "lap_time" and "Graphics_last_time" in df.columns:
-                    df["lap_time"] = df["Graphics_last_time"]
-                elif target_variable == "sector_time" and "Graphics_last_sector_time" in df.columns:
-                    df["sector_time"] = df["Graphics_last_sector_time"]
-                else:
-                    return None, None, []
+                return None, None, []
             
             # Get target values
             y = df[target_variable].values
-            
-            # Remove rows with invalid target values
+
+            # mask identifying invalid target values: NaN and inf, less than or equal to 0
             valid_mask = ~(np.isnan(y) | np.isinf(y) | (y <= 0))
             if not np.any(valid_mask):
                 return None, None, []
@@ -233,12 +227,11 @@ class TelemetryService:
             # Get performance-critical features based on task using centralized feature selection
             feature_names = self.telemetry_features.get_features_for_model_type(model_type)
             
-            # Filter features that exist in the data
+            # Filter and get features that exist in the data
             available_features = self.telemetry_features.filter_available_features(feature_names, df.columns.tolist())
             
             if not available_features:
-                # Fall back to automatic feature detection
-                available_features = self.telemetry_features.get_fallback_features(df.columns.tolist(), target_variable)
+                return None, None, []
             
             if not available_features:
                 return None, None, []
@@ -298,6 +291,8 @@ class TelemetryService:
                 optimized_params = self.algorithm_config.optimize_hyperparameters(algorithm_name, X_train, y_train)
                 algorithm_config["params"] = optimized_params
                 model = self.algorithm_config.create_algorithm_instance(algorithm_config)
+
+                # Fit the model
                 model.fit(X_train_scaled, y_train)
             
             # Evaluate model

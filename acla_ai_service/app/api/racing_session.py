@@ -32,8 +32,6 @@ class ModelEvaluationRequest(BaseModel):
     target_variable: str = "lap_time"
     model_type: str = "lap_time_prediction"
 
-
-
 class MultipleTrainingRequest(BaseModel):
     session_id: str
     telemetry_data: List[Dict[str, Any]]
@@ -150,13 +148,14 @@ async def train_multiple_ai_models(request: MultipleTrainingRequest) -> Dict[str
             config_id, training_result, error = result
             
             if error:
+
                 failed_trainings[config_id] = error
 
+
+            else:
                 # Save the model_data field from each successful training to your database
                 training_results[config_id] = training_result
                 successful_count += 1
-            else:
-                failed_trainings[config_id] = training_result.get("error", "Training failed for unknown reason")
         
         # Prepare response
         response = {

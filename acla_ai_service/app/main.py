@@ -9,12 +9,7 @@ from dotenv import load_dotenv
 from app.core import settings
 from app.api import (
     health_router,
-    datasets_router,
-    ai_router,
     racing_session_router,
-    telemetry_router,
-    backend_router,
-    models_router
 )
 from app.api.query import router as query_router
 
@@ -41,12 +36,7 @@ app.add_middleware(
 # Include API routers
 app.include_router(health_router)
 app.include_router(query_router)  # Main query endpoint
-app.include_router(datasets_router, prefix=settings.api_prefix)
-app.include_router(ai_router, prefix=settings.api_prefix)
-app.include_router(racing_session_router, prefix=settings.api_prefix)
-app.include_router(telemetry_router, prefix=settings.api_prefix)
-app.include_router(backend_router, prefix=settings.api_prefix)
-app.include_router(models_router, prefix=settings.api_prefix)
+app.include_router(racing_session_router)
 
 
 @app.on_event("startup")

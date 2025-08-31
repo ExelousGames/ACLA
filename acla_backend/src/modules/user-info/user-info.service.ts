@@ -15,17 +15,17 @@ export class UserInfoService {
         private passwordService: PasswordService
     ) { }
 
-    async findOne(email: string): Promise<UserInfo | null> {
-        return this.userInfoModel.findOne({ email: email }).exec();
+    async findOne(userid: string): Promise<UserInfo | null> {
+        return this.userInfoModel.findOne({ id: userid }).exec();
     }
 
-    async findOneWithPermissions(email: string): Promise<UserInfo | null> {
+    async findOneWithPermissions(id: string): Promise<UserInfo | null> {
 
         //path is the field name in UserInfo schema
         //model is the name of the model we are referencing to
         //populate is a mongoose method to populate the referenced documents
         return this.userInfoModel
-            .findOne({ email: email })
+            .findOne({ id: id })
             .populate({
                 path: 'permissions',
                 model: 'Permission'

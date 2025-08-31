@@ -209,8 +209,8 @@ const SessionAnalysisMap = () => {
         }).catch((e) => {
         });
 
-        if (analysisContext.sessionSelected?.id) {
-            apiService.post('/racing-session/detailedSessionInfo', { id: analysisContext.sessionSelected?.id }).then((result) => {
+        if (analysisContext.sessionSelected?.SessionId) {
+            apiService.post('/racing-session/detailedSessionInfo', { id: analysisContext.sessionSelected?.SessionId }).then((result) => {
                 const data = result.data as RacingSessionDetailedInfoDto;
                 analysisContext.setSession(data);
             }).catch((e) => {

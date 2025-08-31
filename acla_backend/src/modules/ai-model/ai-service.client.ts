@@ -1,5 +1,6 @@
 import { Injectable, HttpException, HttpStatus } from '@nestjs/common';
 import axios from 'axios';
+import { UserTrackAIModel } from 'src/schemas/session-ai-model.schema';
 
 export interface QueryRequest {
     question: string;
@@ -39,10 +40,12 @@ export interface MultipleTrainingRequest {
 
 export interface ModelsConfig {
     config_id: string;
-    target_variable: string;
-    model_type: string;
+    target_variable: string; //what do you want to predict in the telemetry data
+    model_type: string; // find the model type in app/models/telemetry_models.py
     preferred_algorithm?: string;
-    existing_model_data?: any;
+
+    // Optional existing model data from database SessionAIModel schema for incremental training
+    existing_model_data?: any | null;
 }
 
 export interface TrainModelResponse {
@@ -59,7 +62,7 @@ export interface TrainModelResponse {
     training_samples: number,
     model_version: string,
     telemetry_summary: any,
-    recommendations: string,
+    recommendations: string[],
     algorithm_description: string,
     supports_incremental: boolean,
     feature_importance: any,
@@ -74,7 +77,7 @@ export interface TrainModelsResponse {
     successful_trainings: number;
     failed_trainings: number;
     // Mapping of model IDs to their training results, contains same as TrainModelResponse
-    training_result: { [key: string]: TrainModelResponse };
+    training_results: { [key: string]: TrainModelResponse };
     instructions: string;
 }
 
@@ -106,7 +109,7 @@ export class AiServiceClient {
             return response.data;
         } catch (error) {
             throw new HttpException(
-                `AI Service model training failed: ${error.message}`,
+                `request for AI Service model training failed: ${error.message}`,
                 HttpStatus.SERVICE_UNAVAILABLE
             );
         }

@@ -1,16 +1,16 @@
 import { Injectable, NotFoundException, BadRequestException, Inject, forwardRef } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
-import { SessionAIModel, SessionAIModelSchema } from 'src/schemas/session-ai-model.schema';
+import { UserTrackAIModel, SessionAIModelSchema } from 'src/schemas/session-ai-model.schema';
 import { UserInfo } from 'src/schemas/user-info.schema';
-import { CreateAiModelDto, UpdateAiModelDto, GetAiModelDto, IncrementalTrainingDto, ModelPredictionDto, AiModelResponseDto } from 'src/dto/ai-model.dto';
+import { CreateSeesionAIModelDto, UpdateAiModelDto, GetAiModelDto, IncrementalTrainingDto, ModelPredictionDto, AiModelResponseDto } from 'src/dto/ai-model.dto';
 import { AiServiceClient, QueryRequest } from './ai-service.client';
 import { RacingSessionService } from '../racing-session/racing-session.service';
 
 @Injectable()
 export class AiModelService {
     constructor(
-        @InjectModel(SessionAIModel.name) private sessionAIModelModel: Model<SessionAIModel>,
+        @InjectModel(UserTrackAIModel.name) private userTrackAIModel: Model<UserTrackAIModel>,
         @InjectModel(UserInfo.name) private userInfoModel: Model<UserInfo>,
         private aiServiceClient: AiServiceClient,
         @Inject(forwardRef(() => RacingSessionService))
@@ -25,23 +25,28 @@ export class AiModelService {
         return user ? (user as any)._id : null;
     }
 
-    async createModel(createAiModelDto: CreateAiModelDto): Promise<SessionAIModel> {
+    async createModel(createAiModelDto: CreateSeesionAIModelDto): Promise<any> {
         // If setting as active, deactivate other models for the same user/track/type
+
         if (createAiModelDto.isActive) {
-            await this.deactivateModels(
-                createAiModelDto.userId,
-                createAiModelDto.trackName,
-                createAiModelDto.modelType
-            );
+            try {
+                await this.deactivateModels(
+                    createAiModelDto.userId,
+                    createAiModelDto.trackName,
+                    createAiModelDto.modelType
+                );
+            } catch (error) {
+                console.error('Error deactivating models:', error);
+            }
         }
 
-        const newModel = new this.sessionAIModelModel(createAiModelDto);
+        const newModel = new this.userTrackAIModel(createAiModelDto);
         const savedModel = await newModel.save();
 
         return savedModel;
     }
 
-    async findModelsByUser(getUserDto: GetAiModelDto): Promise<SessionAIModel[]> {
+    async findModelsByUser(getUserDto: GetAiModelDto): Promise<UserTrackAIModel[]> {
         const query: any = {
             userId: getUserDto.userId,
             trackName: getUserDto.trackName,
@@ -52,28 +57,39 @@ export class AiModelService {
             query.isActive = true;
         }
 
-        return await this.sessionAIModelModel.find(query).sort({ createdAt: -1 });
+        return await this.userTrackAIModel.find(query).sort({ trainedAt: -1 });
     }
 
-    async findActiveModel(userId: string, trackName: string, modelType: string): Promise<SessionAIModel | null> {
+    /**
+     * 
+     * @param userId 
+     * @param trackName 
+     * @param carName 
+     * @param modelType 
+     * @param target_variable 
+     * @returns 
+     */
+    async findActiveUserSessionAIModel(userId: string, trackName: string, carName: string, modelType: string, target_variable: string): Promise<any | null> {
         const userObjectId = await this.getUserObjectId(userId);
         if (!userObjectId) {
             console.log('User not found with id:', userId);
             return null;
         }
 
-        const model = await this.sessionAIModelModel.findOne({
-            userId: userObjectId,
-            trackName,
+        const data = await this.userTrackAIModel.findOne({
+            userId: userId,
+            carName: carName,
+            trackName: trackName,
             modelType: modelType,
+            targetVariable: target_variable,
             isActive: true,
         });
 
-        return model ? model : null;
+        return data;
     }
 
-    async updateModel(modelId: string, updateAiModelDto: UpdateAiModelDto): Promise<SessionAIModel> {
-        const model = await this.sessionAIModelModel.findById(modelId);
+    async updateModel(modelId: string, updateAiModelDto: UpdateAiModelDto): Promise<UserTrackAIModel> {
+        const model = await this.userTrackAIModel.findById(modelId);
         if (!model) {
             throw new NotFoundException('AI Model not found');
         }
@@ -100,12 +116,14 @@ export class AiModelService {
             }
         }
 
+        // Update the model with new values
         Object.assign(model, updateAiModelDto);
+
         return await model.save();
     }
 
     async getModelPerformanceMetrics(modelId: string): Promise<any> {
-        const model = await this.sessionAIModelModel.findById(modelId);
+        const model = await this.userTrackAIModel.findById(modelId);
         if (!model) {
             throw new NotFoundException('AI Model not found');
         }
@@ -130,14 +148,14 @@ export class AiModelService {
     }
 
     async deleteModel(modelId: string): Promise<void> {
-        const result = await this.sessionAIModelModel.findByIdAndDelete(modelId);
+        const result = await this.userTrackAIModel.findByIdAndDelete(modelId);
         if (!result) {
             throw new NotFoundException('AI Model not found');
         }
     }
 
-    async deactivateModels(userId: Types.ObjectId, trackName: string, modelType: string): Promise<void> {
-        await this.sessionAIModelModel.updateMany(
+    async deactivateModels(userId: string, trackName: string, modelType: string): Promise<void> {
+        await this.userTrackAIModel.updateMany(
             {
                 userId,
                 trackName,

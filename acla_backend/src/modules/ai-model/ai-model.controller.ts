@@ -2,7 +2,7 @@ import { Controller, Get, Post, Put, Delete, Body, Param, Query, UseGuards, Requ
 import { AuthGuard } from '@nestjs/passport';
 import { Types } from 'mongoose';
 import { AiModelService } from './ai-model.service';
-import { CreateAiModelDto, UpdateAiModelDto, GetAiModelDto, IncrementalTrainingDto, ModelPredictionDto } from 'src/dto/ai-model.dto';
+import { CreateSeesionAIModelDto, UpdateAiModelDto, GetAiModelDto, IncrementalTrainingDto, ModelPredictionDto } from 'src/dto/ai-model.dto';
 
 @Controller('ai-model')
 export class AiModelController {
@@ -10,9 +10,9 @@ export class AiModelController {
 
     @UseGuards(AuthGuard('jwt'))
     @Post()
-    async createModel(@Body() createAiModelDto: CreateAiModelDto, @Request() req: any) {
+    async createModel(@Body() createAiModelDto: CreateSeesionAIModelDto, @Request() req: any) {
         // Ensure the user can only create models for themselves
-        createAiModelDto.userId = new Types.ObjectId(req?.user?.id || '');
+        createAiModelDto.userId = req?.user?.id || '';
         return this.aiModelService.createModel(createAiModelDto);
     }
 
@@ -25,7 +25,7 @@ export class AiModelController {
         @Request() req?: any
     ) {
         const getUserDto: GetAiModelDto = {
-            userId: new Types.ObjectId(req?.user?.id || ''),
+            userId: req?.user?.id || '',
             trackName: trackName,
             modelType: modelType,
             activeOnly: activeOnly === 'true',
@@ -37,10 +37,12 @@ export class AiModelController {
     @Get('active/:trackName/:modelType')
     async getActiveModel(
         @Param('trackName') trackName: string,
+        @Param('carName') carName: string,
         @Param('modelType') modelType: string,
+        @Param('target_variable') target_variable: string,
         @Request() req: any
     ) {
-        return this.aiModelService.findActiveModel(req?.user?.id || '', trackName, modelType);
+        return this.aiModelService.findActiveUserSessionAIModel(req?.user?.id || '', trackName, carName, modelType, target_variable);
     }
 
     @UseGuards(AuthGuard('jwt'))
@@ -56,48 +58,6 @@ export class AiModelController {
     @Delete(':id')
     async deleteModel(@Param('id') id: string) {
         return this.aiModelService.deleteModel(id);
-    }
-
-    @UseGuards(AuthGuard('jwt'))
-    @Post('incremental-training')
-    async performIncrementalTraining(@Body() incrementalTrainingDto: IncrementalTrainingDto) {
-        return this.aiModelService.incrementalTraining(incrementalTrainingDto);
-    }
-
-    @UseGuards(AuthGuard('jwt'))
-    @Post('train-new')
-    async trainNewModel(
-        @Body() body: {
-            trackName: string;
-            modelType: string;
-            modelName: string;
-            sessionIds: string[];
-            trainingParameters?: any;
-        },
-        @Request() req: any
-    ) {
-        // This endpoint will create a new model from scratch using specified racing sessions
-        const createDto: CreateAiModelDto = {
-            userId: new Types.ObjectId(req?.user?.id || ''),
-            trackName: body.trackName,
-            modelName: body.modelName,
-            modelVersion: '1.0.0',
-            modelData: {}, // Will be populated by AI service
-            modelMetadata: {
-                trainingSessionsCount: body.sessionIds.length,
-                lastTrainingDate: new Date(),
-                performanceMetrics: {},
-                modelType: body.modelType,
-                features: [],
-            },
-            trainingSessionIds: body.sessionIds,
-            isActive: true,
-            description: `Initial model trained on ${body.sessionIds.length} sessions`,
-        };
-
-        // Here you would call the AI service to actually train the model
-        // For now, we'll create the model entry and let the AI service populate it
-        return this.aiModelService.createModel(createDto);
     }
 
     @UseGuards(AuthGuard('jwt'))

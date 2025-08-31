@@ -38,6 +38,7 @@ export class AuthService {
         return {
             //generate our JWT from a subset of the user object properties,  //which we then return as a simple object with a single access_token property
             access_token: this.jwtService.sign(payload, { secret: jwtConstants.secret }),
+            userId: userinfo.id
         };
     }
 
