@@ -332,6 +332,317 @@ class TelemetryFeatures:
             "Physics_suspension_damage_rear_left",
             "Physics_suspension_damage_rear_right"
         ]
+    
+    @classmethod
+    def get_fuel_consumption_features(cls) -> List[str]:
+        """Get features related to fuel consumption and engine performance"""
+        return [
+            "Physics_fuel",
+            "Physics_gas",
+            "Physics_rpm",
+            "Physics_speed_kmh",
+            "Physics_gear",
+            "Physics_turbo_boost",
+            "Physics_water_temp",
+            "Graphics_fuel_per_lap",
+            "Graphics_fuel_estimated_laps",
+            "Graphics_used_fuel",
+            "Graphics_engine_map",
+            "Graphics_tc_level",
+            "Graphics_exhaust_temp"
+        ]
+    
+    @classmethod
+    def get_brake_performance_features(cls) -> List[str]:
+        """Get features related to brake performance and analysis"""
+        return [
+            "Physics_brake",
+            "Physics_brake_pressure_front_left",
+            "Physics_brake_pressure_front_right",
+            "Physics_brake_pressure_rear_left",
+            "Physics_brake_pressure_rear_right",
+            "Physics_brake_temp_front_left",
+            "Physics_brake_temp_front_right",
+            "Physics_brake_temp_rear_left",
+            "Physics_brake_temp_rear_right",
+            "Physics_disc_life_front_left",
+            "Physics_disc_life_front_right",
+            "Physics_disc_life_rear_left",
+            "Physics_disc_life_rear_right",
+            "Physics_pad_life_front_left",
+            "Physics_pad_life_front_right",
+            "Physics_pad_life_rear_left",
+            "Physics_pad_life_rear_right",
+            "Physics_brake_bias",
+            "Physics_abs",
+            "Physics_abs_vibration",
+            "Graphics_abs_level",
+            "Physics_speed_kmh",
+            "Physics_g_force_x",
+            "Physics_g_force_y",
+            "Physics_g_force_z"
+        ]
+    
+    @classmethod
+    def get_tire_strategy_features(cls) -> List[str]:
+        """Get features related to tire strategy and performance"""
+        return [
+            "Physics_tyre_core_temp_front_left",
+            "Physics_tyre_core_temp_front_right",
+            "Physics_tyre_core_temp_rear_left",
+            "Physics_tyre_core_temp_rear_right",
+            "Physics_wheel_pressure_front_left",
+            "Physics_wheel_pressure_front_right",
+            "Physics_wheel_pressure_rear_left",
+            "Physics_wheel_pressure_rear_right",
+            "Physics_slip_angle_front_left",
+            "Physics_slip_angle_front_right",
+            "Physics_slip_angle_rear_left",
+            "Physics_slip_angle_rear_right",
+            "Physics_slip_ratio_front_left",
+            "Physics_slip_ratio_front_right",
+            "Physics_slip_ratio_rear_left",
+            "Physics_slip_ratio_rear_right",
+            "Physics_wheel_slip_front_left",
+            "Physics_wheel_slip_front_right",
+            "Physics_wheel_slip_rear_left",
+            "Physics_wheel_slip_rear_right",
+            "Graphics_tyre_compound",
+            "Graphics_current_tyre_set",
+            "Graphics_mfd_tyre_set",
+            "Graphics_strategy_tyre_set",
+            "Graphics_mfd_tyre_pressure_front_left",
+            "Graphics_mfd_tyre_pressure_front_right",
+            "Graphics_mfd_tyre_pressure_rear_left",
+            "Graphics_mfd_tyre_pressure_rear_right",
+            "Graphics_rain_tyres",
+            "Physics_road_temp",
+            "Physics_air_temp"
+        ]
+    
+    @classmethod
+    def get_overtaking_opportunity_features(cls) -> List[str]:
+        """Get features related to overtaking opportunities"""
+        return [
+            "Physics_speed_kmh",
+            "Physics_gas",
+            "Physics_brake",
+            "Physics_steer_angle",
+            "Physics_g_force_x",
+            "Physics_g_force_y",
+            "Graphics_position",
+            "Graphics_gap_ahead",
+            "Graphics_gap_behind",
+            "Graphics_normalized_car_position",
+            "Graphics_current_sector_index",
+            "Graphics_distance_traveled",
+            "Graphics_track_status",
+            "Graphics_global_yellow",
+            "Graphics_global_yellow_s1",
+            "Graphics_global_yellow_s2",
+            "Graphics_global_yellow_s3",
+            "Graphics_is_in_pit_lane",
+            "Physics_tc",
+            "Physics_abs"
+        ]
+    
+    @classmethod
+    def get_racing_line_optimization_features(cls) -> List[str]:
+        """Get features for racing line optimization"""
+        return [
+            "Physics_speed_kmh",
+            "Physics_steer_angle",
+            "Physics_gas",
+            "Physics_brake",
+            "Physics_g_force_x",
+            "Physics_g_force_y",
+            "Physics_slip_angle_front_left",
+            "Physics_slip_angle_front_right",
+            "Physics_heading",
+            "Physics_pitch",
+            "Physics_roll",
+            "Graphics_normalized_car_position",
+            "Graphics_current_sector_index",
+            "Graphics_distance_traveled",
+            "Graphics_delta_lap_time",
+            "Graphics_last_sector_time",
+            "Physics_local_velocity_x",
+            "Physics_local_velocity_y",
+            "Physics_local_velocity_z",
+            "Physics_velocity_x",
+            "Physics_velocity_y",
+            "Physics_velocity_z"
+        ]
+    
+    @classmethod
+    def get_weather_adaptation_features(cls) -> List[str]:
+        """Get features for weather adaptation analysis"""
+        return [
+            "Physics_road_temp",
+            "Physics_air_temp",
+            "Graphics_wind_speed",
+            "Graphics_wind_direction",
+            "Graphics_rain_tyres",
+            "Graphics_rain_light",
+            "Graphics_wiper_stage",
+            "Physics_tyre_core_temp_front_left",
+            "Physics_tyre_core_temp_front_right",
+            "Physics_tyre_core_temp_rear_left",
+            "Physics_tyre_core_temp_rear_right",
+            "Physics_wheel_slip_front_left",
+            "Physics_wheel_slip_front_right",
+            "Physics_wheel_slip_rear_left",
+            "Physics_wheel_slip_rear_right",
+            "Physics_slip_angle_front_left",
+            "Physics_slip_angle_front_right",
+            "Physics_slip_angle_rear_left",
+            "Physics_slip_angle_rear_right",
+            "Physics_speed_kmh",
+            "Physics_gas",
+            "Physics_brake",
+            "Physics_tc",
+            "Graphics_tc_level"
+        ]
+    
+    @classmethod
+    def get_consistency_analysis_features(cls) -> List[str]:
+        """Get features for driving consistency analysis"""
+        return [
+            "Graphics_last_time",
+            "Graphics_best_time",
+            "Graphics_delta_lap_time",
+            "Graphics_last_sector_time",
+            "Graphics_current_sector_index",
+            "Physics_speed_kmh",
+            "Physics_gas",
+            "Physics_brake",
+            "Physics_steer_angle",
+            "Physics_g_force_x",
+            "Physics_g_force_y",
+            "Physics_slip_angle_front_left",
+            "Physics_slip_angle_front_right",
+            "Physics_slip_angle_rear_left",
+            "Physics_slip_angle_rear_right",
+            "Physics_brake_temp_front_left",
+            "Physics_brake_temp_front_right",
+            "Physics_tyre_core_temp_front_left",
+            "Physics_tyre_core_temp_front_right"
+        ]
+    
+    @classmethod
+    def get_sector_time_features(cls) -> List[str]:
+        """Get features specific to sector time prediction"""
+        return [
+            "Graphics_last_sector_time",
+            "Graphics_current_sector_index",
+            "Physics_speed_kmh",
+            "Physics_gas",
+            "Physics_brake",
+            "Physics_steer_angle",
+            "Physics_gear",
+            "Physics_rpm",
+            "Physics_g_force_x",
+            "Physics_g_force_y",
+            "Physics_slip_angle_front_left",
+            "Physics_slip_angle_front_right",
+            "Graphics_normalized_car_position",
+            "Graphics_distance_traveled",
+            "Physics_tyre_core_temp_front_left",
+            "Physics_tyre_core_temp_front_right",
+            "Physics_brake_temp_front_left",
+            "Physics_brake_temp_front_right"
+        ]
+    
+    @classmethod
+    def get_features_for_model_type(cls, model_type: str) -> List[str]:
+        """
+        Get recommended features for a specific model type
+        
+        Args:
+            model_type: The type of prediction task
+            
+        Returns:
+            List of recommended feature names for the task
+        """
+        feature_map = {
+            "lap_time_prediction": cls.get_performance_critical_features(),
+            "sector_time_prediction": cls.get_sector_time_features(),
+            "performance_classification": cls.get_performance_critical_features(),
+            "setup_recommendation": cls.get_setup_features(),
+            "tire_strategy": cls.get_tire_strategy_features(),
+            "fuel_consumption": cls.get_fuel_consumption_features(),
+            "brake_performance": cls.get_brake_performance_features(),
+            "overtaking_opportunity": cls.get_overtaking_opportunity_features(),
+            "racing_line_optimization": cls.get_racing_line_optimization_features(),
+            "weather_adaptation": cls.get_weather_adaptation_features(),
+            "consistency_analysis": cls.get_consistency_analysis_features(),
+            "damage_prediction": cls.get_damage_features()
+        }
+        
+        return feature_map.get(model_type, cls.get_performance_critical_features())
+    
+    @classmethod
+    def get_feature_categories(cls) -> Dict[str, List[str]]:
+        """Get all feature categories organized by type"""
+        return {
+            "performance_critical": cls.get_performance_critical_features(),
+            "setup": cls.get_setup_features(),
+            "damage": cls.get_damage_features(),
+            "fuel_consumption": cls.get_fuel_consumption_features(),
+            "brake_performance": cls.get_brake_performance_features(),
+            "tire_strategy": cls.get_tire_strategy_features(),
+            "overtaking_opportunity": cls.get_overtaking_opportunity_features(),
+            "racing_line_optimization": cls.get_racing_line_optimization_features(),
+            "weather_adaptation": cls.get_weather_adaptation_features(),
+            "consistency_analysis": cls.get_consistency_analysis_features(),
+            "sector_time": cls.get_sector_time_features()
+        }
+    
+    @classmethod
+    def filter_available_features(cls, feature_list: List[str], available_columns: List[str]) -> List[str]:
+        """
+        Filter feature list to only include features that are available in the data
+        
+        Args:
+            feature_list: List of desired features
+            available_columns: List of columns available in the dataset
+            
+        Returns:
+            List of features that are both desired and available
+        """
+        return [feature for feature in feature_list if feature in available_columns]
+    
+    @classmethod
+    def get_fallback_features(cls, available_columns: List[str], target_variable: str) -> List[str]:
+        """
+        Get fallback numeric features when specific features aren't available
+        
+        Args:
+            available_columns: List of available column names
+            target_variable: Target variable to exclude
+            
+        Returns:
+            List of numeric column names excluding the target
+        """
+        # Priority order for fallback features
+        priority_features = [
+            "Physics_speed_kmh", "Physics_gas", "Physics_brake", "Physics_steer_angle",
+            "Physics_gear", "Physics_rpm", "Physics_g_force_x", "Physics_g_force_y",
+            "Graphics_last_time", "Graphics_position", "Graphics_delta_lap_time"
+        ]
+        
+        # Get priority features that are available
+        fallback_features = [f for f in priority_features if f in available_columns and f != target_variable]
+        
+        # If we still don't have enough features, add any numeric columns
+        if len(fallback_features) < 5:
+            numeric_features = [col for col in available_columns 
+                              if col not in fallback_features and col != target_variable
+                              and any(keyword in col for keyword in ['Physics_', 'Graphics_'])
+                              and not any(skip in col.lower() for skip in ['str', 'text', 'name', 'id'])]
+            fallback_features.extend(numeric_features[:10])  # Add up to 10 more
+        
+        return fallback_features
 
 class TelemetryDataModel(BaseModel):
     """Pydantic model for telemetry data validation"""

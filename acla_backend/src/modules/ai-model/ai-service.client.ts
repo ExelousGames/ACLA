@@ -16,12 +16,65 @@ export interface TrainModelRequest {
     model_type?: string;
     user_id?: string;
     existing_model_data?: string;
-    session_metadata?: Record<string, any>;
+}
+
+export interface MultipleTrainingRequest {
+    session_id: string
+    telemetry_data: any[];
+
+    /**
+     * example of models_config
+        {
+        "config_id": "rf_model",
+        "target_variable": "lap_time", 
+        "model_type": "lap_time_prediction",
+        "preferred_algorithm": "random_forest",
+        "existing_model_data": data
+        }
+    */
+    models_config: ModelsConfig[];  // List of model configurations to train
+    user_id?: string
+    parallel_training: boolean;  // Whether to train models in parallel or sequentially
+}
+
+export interface ModelsConfig {
+    config_id: string;
+    target_variable: string;
+    model_type: string;
+    preferred_algorithm?: string;
+    existing_model_data?: any;
 }
 
 export interface TrainModelResponse {
+    success: boolean,
+    model_data: any,
+    model_type: string,
+    algorithm_used: string,
+    algorithm_type: string,
+    target_variable: string,
+    user_id: string,
+    training_metrics: any,
+    feature_names: string[],
+    feature_count: number,
+    training_samples: number,
+    model_version: string,
+    telemetry_summary: any,
+    recommendations: string,
+    algorithm_description: string,
+    supports_incremental: boolean,
+    feature_importance: any,
+    alternative_algorithms: any,
+    trained_at: string
+}
+
+export interface TrainModelsResponse {
     message: string;
-    trained_model: any;
+    session_id: string;
+    total_models_requested: number;
+    successful_trainings: number;
+    failed_trainings: number;
+    // Mapping of model IDs to their training results, contains same as TrainModelResponse
+    training_result: { [key: string]: TrainModelResponse };
     instructions: string;
 }
 
@@ -45,6 +98,21 @@ export class AiServiceClient {
             );
         }
     }
+
+    //ask ai service to train ai model, and return the trained model back
+    async trainModels(request: MultipleTrainingRequest): Promise<TrainModelsResponse> {
+        try {
+            const response = await axios.post(`${this.aiServiceUrl}/racing-session/train-multiple-models`, request);
+            return response.data;
+        } catch (error) {
+            throw new HttpException(
+                `AI Service model training failed: ${error.message}`,
+                HttpStatus.SERVICE_UNAVAILABLE
+            );
+        }
+    }
+
+
     async processQuery(query: QueryRequest): Promise<any> {
         try {
             const response = await axios.post(`${this.aiServiceUrl}/query`, query);

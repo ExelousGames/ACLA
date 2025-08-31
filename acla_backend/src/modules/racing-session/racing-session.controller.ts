@@ -5,6 +5,9 @@ import { AiModelResponseDto } from 'src/dto/ai-model.dto';
 import { RacingSessionService } from './racing-session.service';
 import { AiModelService } from '../ai-model/ai-model.service';
 import { UserInfoService } from '../user-info/user-info.service';
+import { SessionAIModel } from 'src/schemas/session-ai-model.schema';
+import { AiServiceClient, ModelsConfig } from '../ai-model/ai-service.client';
+import { model } from 'mongoose';
 
 @Controller('racing-session')
 export class RacingSessionController {
@@ -18,6 +21,7 @@ export class RacingSessionController {
         private racingSessionService: RacingSessionService,
         @Inject(forwardRef(() => AiModelService))
         private aiModelService: AiModelService,
+        private aiServiceClient: AiServiceClient,
         private userInfoService: UserInfoService
     ) { }
 
@@ -68,6 +72,8 @@ export class RacingSessionController {
         @Body() completionData: any,
         @Query('uploadId') uploadId: string //Extracts values from the URL query string (the part after ? in a URL)
     ) {
+
+        //get the data about the session upload
         const upload = this.uploadStates.get(uploadId);
         if (!upload) {
             throw new BadRequestException('Upload doesnt exist');
@@ -86,156 +92,51 @@ export class RacingSessionController {
             fullDataset
         );
 
-        // Check for active AI model first, before processing the session
-        let activeModel: AiModelResponseDto | null = null;
         let modelReady = false;
-
         try {
             // First, find the user by email to get their ObjectId
             const userInfo = await this.userInfoService.findOne(upload.metadata.userEmail);
+
             if (!userInfo) {
                 console.log('User not found for email:', upload.metadata.userEmail);
             } else {
+
                 const userId = (userInfo as any).id.toString();
+                // Check for active AI model first, before processing the session
 
-                // Check if user has an active model for this track
-                activeModel = await this.aiModelService.findActiveModel(
-                    userId,
-                    upload.metadata.mapName,
-                    'lap_time_prediction'
-                );
+                const modelsConfig: ModelsConfig[] = [
+                    { config_id: "lap_prediction", target_variable: "lap_time", model_type: "lap_time_prediction", preferred_algorithm: "random_forest" }
+                ];
 
-                if (activeModel) {
-                    console.log('Found active model for user:', userId, 'track:', upload.metadata.mapName);
-                    modelReady = true;
-                } else {
-                    console.log('No active model found, training new model from scratch...');
+                let activeModel: SessionAIModel | null = null;
 
-                    // Train a new model from scratch
-                    const trainingResult = await this.aiModelService.trainFromScratch({
-                        userId: userId,
-                        trackName: upload.metadata.mapName,
-                        modelType: 'lap_time_prediction',
-                        sessionIds: [uploadId],
-                        modelName: `${upload.metadata.mapName}_lap_prediction_${new Date().toISOString().split('T')[0]}`,
-                        description: `Lap time prediction model for ${upload.metadata.mapName}`,
-                        hyperparameters: {
-                            // Add default hyperparameters for training
-                            learning_rate: 0.001,
-                            batch_size: 32,
-                            epochs: 100,
-                            validation_split: 0.2
-                        }
-                    });
+                for (const modelConfig of modelsConfig) {
 
-                    if (trainingResult && trainingResult.id) {
-                        // Get the newly trained model
-                        activeModel = trainingResult;
-                        modelReady = true;
-                        console.log('New model trained successfully:', trainingResult.id);
-                    } else {
-                        console.error('Failed to train new model');
-                        modelReady = false;
-                    }
+                    // Check if user has an active model for this track
+                    activeModel = await this.aiModelService.findActiveModel(
+                        userId,
+                        upload.metadata.mapName,
+                        modelConfig.model_type
+                    );
+
+                    // add active model if any
+                    modelConfig.existing_model_data = activeModel ? activeModel : null;
                 }
+
+                // Train the models using the AI service client
+                await this.aiServiceClient.trainModels({
+                    session_id: createdSession.id,
+                    telemetry_data: fullDataset,
+                    models_config: modelsConfig,
+                    user_id: userId,
+                    parallel_training: false
+                });
+
             }
         } catch (modelError) {
             console.error('Model setup failed:', modelError);
             modelReady = false;
         }
-
-        // Process the session with AI - either train/update model or do general analysis
-        try {
-            if (activeModel && modelReady) {
-                // If we have an active model, update it with incremental training
-                console.log('Updating existing model with new session data:', uploadId);
-                try {
-                    const incrementalResult = await this.aiModelService.incrementalTraining({
-                        modelId: activeModel.id,
-                        newSessionIds: [uploadId],
-                        validateModel: true
-                    });
-
-                    console.log('Model updated with new session data:', incrementalResult.modelVersion);
-                } catch (incrementalError) {
-                    console.error('Incremental training failed:', incrementalError);
-                    // If incremental training fails, create a new model from scratch
-                    console.log('Creating new model due to incremental training failure...');
-                    try {
-                        const userInfo = await this.userInfoService.findOne(upload.metadata.userEmail);
-                        if (userInfo) {
-                            const userId = (userInfo as any).id.toString();
-
-                            const newTrainingResult = await this.aiModelService.trainFromScratch({
-                                userId: userId,
-                                trackName: upload.metadata.mapName,
-                                modelType: 'lap_time_prediction',
-                                sessionIds: [uploadId],
-                                modelName: `${upload.metadata.mapName}_lap_prediction_${new Date().toISOString().split('T')[0]}_recovery`,
-                                description: `Recovery model for ${upload.metadata.mapName} after incremental training failure`,
-                                hyperparameters: {
-                                    learning_rate: 0.001,
-                                    batch_size: 32,
-                                    epochs: 100,
-                                    validation_split: 0.2
-                                }
-                            });
-
-                            if (newTrainingResult && newTrainingResult.id) {
-                                console.log('Recovery model created successfully:', newTrainingResult.id);
-                                activeModel = newTrainingResult;
-                                modelReady = true;
-                            } else {
-                                console.error('Failed to create recovery model');
-                            }
-                        }
-                    } catch (recoveryError) {
-                        console.error('Recovery model creation failed:', recoveryError);
-                        console.error('All AI model operations failed for session:', uploadId);
-                    }
-                }
-            } else {
-                // No model available, train a new model from scratch
-                console.log('No active model found, training new model from scratch for session:', uploadId);
-                try {
-                    const userInfo = await this.userInfoService.findOne(upload.metadata.userEmail);
-                    if (userInfo) {
-                        const userId = (userInfo as any).id.toString();
-
-                        const newTrainingResult = await this.aiModelService.trainFromScratch({
-                            userId: userId,
-                            trackName: upload.metadata.mapName,
-                            modelType: 'lap_time_prediction',
-                            sessionIds: [uploadId],
-                            modelName: `${upload.metadata.mapName}_lap_prediction_${new Date().toISOString().split('T')[0]}`,
-                            description: `Lap time prediction model for ${upload.metadata.mapName}`,
-                            hyperparameters: {
-                                learning_rate: 0.001,
-                                batch_size: 32,
-                                epochs: 100,
-                                validation_split: 0.2
-                            }
-                        });
-
-                        if (newTrainingResult && newTrainingResult.id) {
-                            console.log('New model trained successfully:', newTrainingResult.id);
-                        } else {
-                            console.error('Failed to train new model');
-                        }
-                    } else {
-                        console.error('User not found for email:', upload.metadata.userEmail);
-                    }
-                } catch (trainingError) {
-                    console.error('Training new model failed:', trainingError);
-                }
-            }
-
-        } catch (error) {
-            console.error('AI processing failed for session:', uploadId, error);
-            // Don't fail the upload if AI processing fails
-        }
-
-        this.uploadStates.delete(uploadId);
 
         return {
             message: 'Upload completed successfully',
