@@ -58,16 +58,15 @@ export interface TrainModelResponse {
     user_id: string,
     training_metrics: any,
     feature_names: string[],
-    feature_count: number,
-    training_samples: number,
+    features_count: number,
+    samples_processed: number,
     model_version: string,
-    telemetry_summary: any,
     recommendations: string[],
     algorithm_description: string,
-    supports_incremental: boolean,
-    feature_importance: any,
-    alternative_algorithms: any,
-    trained_at: string
+    algorithm_strengths: string[],
+    training_time: string,
+    data_quality_score: number,
+    timestamp: string,
 }
 
 export interface TrainModelsResponse {

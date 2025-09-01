@@ -1,238 +1,175 @@
 """
 Multi-Algorithm Machine Learning Configuration for Racing Telemetry
-Defines different algorithms optimized for specific prediction tasks
+Defines different algorithms optimized for specific prediction tasks using River for online learning
 """
 
 from typing import Dict, Any, List, Optional, Union
-from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor, ExtraTreesRegressor
-from sklearn.linear_model import LinearRegression, Ridge, Lasso, ElasticNet, SGDRegressor
-from sklearn.svm import SVR
-from sklearn.neural_network import MLPRegressor
-from sklearn.neighbors import KNeighborsRegressor
-from sklearn.tree import DecisionTreeRegressor
-from sklearn.ensemble import AdaBoostRegressor, BaggingRegressor
-from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
-from sklearn.linear_model import LogisticRegression
-from sklearn.svm import SVC
-from sklearn.neural_network import MLPClassifier
-from sklearn.neighbors import KNeighborsClassifier
-from sklearn.naive_bayes import GaussianNB
-from sklearn.discriminant_analysis import QuadraticDiscriminantAnalysis
 import numpy as np
+
+# River imports for online learning
+from river import linear_model, tree, ensemble, neighbors, naive_bayes, neural_net
+from river import preprocessing, compose, metrics
+from river.base import Regressor, Classifier
 
 class AlgorithmConfiguration:
     """
-    Configuration class for different ML algorithms optimized for racing telemetry predictions
-    Only these scikit-learn algorithms have partial_fit() method for incremental updates:
+    Configuration class for different ML algorithms optimized for racing telemetry predictions using River
+    River provides online learning algorithms that are perfect for streaming telemetry data
     """
     
     def __init__(self):
         # Define algorithm configurations for different prediction types
         self.algorithm_configs = {
             "lap_time_prediction": {
-                "primary": "gradient_boosting",
-                "alternatives": ["random_forest", "neural_network", "svr"],
+                "primary": "adaptive_random_forest",
+                "alternatives": ["hoeffding_tree", "linear_regression", "sgd_regressor"],
                 "description": "Predicts lap times based on telemetry data"
             },
             "sector_time_prediction": {
-                "primary": "random_forest", 
-                "alternatives": ["gradient_boosting", "extra_trees"],
+                "primary": "hoeffding_tree", 
+                "alternatives": ["adaptive_random_forest", "linear_regression"],
                 "description": "Predicts sector times for track analysis"
             },
             "performance_classification": {
-                "primary": "random_forest_classifier",
-                "alternatives": ["gradient_boosting_classifier", "neural_network_classifier"],
+                "primary": "adaptive_random_forest_classifier",
+                "alternatives": ["hoeffding_tree_classifier", "naive_bayes_classifier"],
                 "description": "Classifies performance levels (fast/medium/slow)"
             },
             "setup_recommendation": {
-                "primary": "gradient_boosting_classifier",
-                "alternatives": ["random_forest_classifier", "svm_classifier"],
+                "primary": "hoeffding_tree_classifier",
+                "alternatives": ["adaptive_random_forest_classifier", "naive_bayes_classifier"],
                 "description": "Recommends car setup configurations"
             },
             "tire_strategy": {
-                "primary": "decision_tree_classifier",
-                "alternatives": ["random_forest_classifier", "naive_bayes"],
+                "primary": "hoeffding_tree_classifier",
+                "alternatives": ["adaptive_random_forest_classifier", "naive_bayes_classifier"],
                 "description": "Optimal tire strategy recommendations"
             },
             "fuel_consumption": {
                 "primary": "linear_regression",
-                "alternatives": ["ridge", "gradient_boosting"],
+                "alternatives": ["sgd_regressor", "hoeffding_tree"],
                 "description": "Predicts fuel consumption patterns"
             },
             "brake_performance": {
-                "primary": "svr",
-                "alternatives": ["neural_network", "gradient_boosting"],
+                "primary": "sgd_regressor",
+                "alternatives": ["linear_regression", "hoeffding_tree"],
                 "description": "Predicts brake performance and wear"
             },
             "overtaking_opportunity": {
-                "primary": "gradient_boosting_classifier",
-                "alternatives": ["random_forest_classifier", "neural_network_classifier"],
+                "primary": "adaptive_random_forest_classifier",
+                "alternatives": ["hoeffding_tree_classifier", "naive_bayes_classifier"],
                 "description": "Identifies overtaking opportunities"
             },
             "racing_line_optimization": {
-                "primary": "neural_network",
-                "alternatives": ["svr", "gradient_boosting"],
+                "primary": "sgd_regressor",
+                "alternatives": ["linear_regression", "hoeffding_tree"],
                 "description": "Optimizes racing line for track sections"
             },
             "weather_adaptation": {
-                "primary": "random_forest",
-                "alternatives": ["gradient_boosting", "neural_network"],
+                "primary": "adaptive_random_forest",
+                "alternatives": ["hoeffding_tree", "sgd_regressor"],
                 "description": "Adapts driving style for weather conditions"
             },
             "consistency_analysis": {
-                "primary": "ridge",
-                "alternatives": ["linear_regression", "elastic_net"],
+                "primary": "linear_regression",
+                "alternatives": ["sgd_regressor", "hoeffding_tree"],
                 "description": "Analyzes driving consistency patterns"
             },
             "damage_prediction": {
-                "primary": "gradient_boosting_classifier",
-                "alternatives": ["random_forest_classifier", "svm_classifier"],
+                "primary": "adaptive_random_forest_classifier",
+                "alternatives": ["hoeffding_tree_classifier", "naive_bayes_classifier"],
                 "description": "Predicts potential car damage"
             }
         }
         
-        # Algorithm implementations
+        # Algorithm implementations using River
         self.algorithms = {
             # Regression algorithms
             "linear_regression": {
-                "class": LinearRegression,
+                "class": linear_model.LinearRegression,
                 "params": {},
                 "type": "regression",
-                "incremental": False
+                "incremental": True,
+                "preprocessing": True
             },
-            "ridge": {
-                "class": Ridge,
-                "params": {"alpha": 1.0, "random_state": 42},
-                "type": "regression", 
-                "incremental": False
-            },
-            "lasso": {
-                "class": Lasso,
-                "params": {"alpha": 1.0, "random_state": 42},
+            "sgd_regressor": {
+                "class": linear_model.PARegressor,
+                "params": {"C": 0.01},
                 "type": "regression",
-                "incremental": False
+                "incremental": True,
+                "preprocessing": True
             },
-            "elastic_net": {
-                "class": ElasticNet,
-                "params": {"alpha": 1.0, "l1_ratio": 0.5, "random_state": 42},
+            "pa_regressor": {
+                "class": linear_model.PARegressor,
+                "params": {"C": 1.0},
                 "type": "regression",
-                "incremental": False
+                "incremental": True,
+                "preprocessing": True
             },
-            "random_forest": {
-                "class": RandomForestRegressor,
-                "params": {"n_estimators": 100, "random_state": 42, "n_jobs": -1},
+            "hoeffding_tree": {
+                "class": tree.HoeffdingTreeRegressor,
+                "params": {"max_depth": 10, "min_samples_leaf": 5},
                 "type": "regression",
-                "incremental": False
+                "incremental": True,
+                "preprocessing": False
             },
-            "gradient_boosting": {
-                "class": GradientBoostingRegressor,
-                "params": {"n_estimators": 100, "learning_rate": 0.1, "random_state": 42},
+            "adaptive_random_forest": {
+                "class": ensemble.BaggingRegressor,
+                "params": {"n_models": 10},
                 "type": "regression",
-                "incremental": False
+                "incremental": True,
+                "preprocessing": False
             },
-            "extra_trees": {
-                "class": ExtraTreesRegressor,
-                "params": {"n_estimators": 100, "random_state": 42, "n_jobs": -1},
+            "knn_regressor": {
+                "class": neighbors.KNNRegressor,
+                "params": {"n_neighbors": 5, "window_size": 1000},
                 "type": "regression",
-                "incremental": False
-            },
-            "svr": {
-                "class": SVR,
-                "params": {"kernel": "rbf", "C": 1.0, "gamma": "scale"},
-                "type": "regression",
-                "incremental": False
-            },
-            "neural_network": {
-                "class": MLPRegressor,
-                "params": {
-                    "hidden_layer_sizes": (100, 50),
-                    "activation": "relu",
-                    "solver": "adam",
-                    "random_state": 42,
-                    "max_iter": 500
-                },
-                "type": "regression",
-                "incremental": False
-            },
-            "knn": {
-                "class": KNeighborsRegressor,
-                "params": {"n_neighbors": 5},
-                "type": "regression",
-                "incremental": False
-            },
-            "decision_tree": {
-                "class": DecisionTreeRegressor,
-                "params": {"random_state": 42},
-                "type": "regression",
-                "incremental": False
-            },
-            "ada_boost": {
-                "class": AdaBoostRegressor,
-                "params": {"n_estimators": 50, "random_state": 42},
-                "type": "regression",
-                "incremental": False
-            },
-            "sgd": {
-                "class": SGDRegressor,
-                "params": {"random_state": 42, "max_iter": 1000},
-                "type": "regression",
-                "incremental": True
+                "incremental": True,
+                "preprocessing": True
             },
             
             # Classification algorithms
-            "random_forest_classifier": {
-                "class": RandomForestClassifier,
-                "params": {"n_estimators": 100, "random_state": 42, "n_jobs": -1},
-                "type": "classification",
-                "incremental": False
-            },
-            "gradient_boosting_classifier": {
-                "class": GradientBoostingClassifier,
-                "params": {"n_estimators": 100, "learning_rate": 0.1, "random_state": 42},
-                "type": "classification",
-                "incremental": False
-            },
             "logistic_regression": {
-                "class": LogisticRegression,
-                "params": {"random_state": 42, "max_iter": 1000},
-                "type": "classification",
-                "incremental": False
-            },
-            "svm_classifier": {
-                "class": SVC,
-                "params": {"kernel": "rbf", "random_state": 42, "probability": True},
-                "type": "classification",
-                "incremental": False
-            },
-            "neural_network_classifier": {
-                "class": MLPClassifier,
-                "params": {
-                    "hidden_layer_sizes": (100, 50),
-                    "activation": "relu",
-                    "solver": "adam",
-                    "random_state": 42,
-                    "max_iter": 500
-                },
-                "type": "classification",
-                "incremental": False
-            },
-            "knn_classifier": {
-                "class": KNeighborsClassifier,
-                "params": {"n_neighbors": 5},
-                "type": "classification",
-                "incremental": False
-            },
-            "naive_bayes": {
-                "class": GaussianNB,
+                "class": linear_model.LogisticRegression,
                 "params": {},
                 "type": "classification",
-                "incremental": False
+                "incremental": True,
+                "preprocessing": True
             },
-            "decision_tree_classifier": {
-                "class": DecisionTreeRegressor,
-                "params": {"random_state": 42},
+            "pa_classifier": {
+                "class": linear_model.PAClassifier,
+                "params": {"C": 1.0},
                 "type": "classification",
-                "incremental": False
+                "incremental": True,
+                "preprocessing": True
+            },
+            "naive_bayes_classifier": {
+                "class": naive_bayes.GaussianNB,
+                "params": {},
+                "type": "classification",
+                "incremental": True,
+                "preprocessing": False
+            },
+            "hoeffding_tree_classifier": {
+                "class": tree.HoeffdingTreeClassifier,
+                "params": {"max_depth": 10, "min_samples_leaf": 5},
+                "type": "classification",
+                "incremental": True,
+                "preprocessing": False
+            },
+            "adaptive_random_forest_classifier": {
+                "class": ensemble.BaggingClassifier,
+                "params": {"n_models": 10},
+                "type": "classification",
+                "incremental": True,
+                "preprocessing": False
+            },
+            "knn_classifier": {
+                "class": neighbors.KNNClassifier,
+                "params": {"n_neighbors": 5, "window_size": 1000},
+                "type": "classification",
+                "incremental": True,
+                "preprocessing": True
             }
         }
     
@@ -268,18 +205,58 @@ class AlgorithmConfiguration:
     
     def create_algorithm_instance(self, algorithm_config: Dict[str, Any]) -> Any:
         """
-        Create an instance of the specified algorithm
+        Create an instance of the specified algorithm with optional preprocessing pipeline
         
         Args:
             algorithm_config: Algorithm configuration from get_algorithm_for_task
         
         Returns:
-            Instantiated algorithm
+            Instantiated algorithm, potentially wrapped in a preprocessing pipeline
         """
         algorithm_class = algorithm_config["class"]
         params = algorithm_config["params"]
+        needs_preprocessing = algorithm_config.get("preprocessing", False)
+        algorithm_name = algorithm_config.get("name", "")
         
-        return algorithm_class(**params)
+        # Handle special cases for ensemble algorithms that need base models
+        if algorithm_name == "adaptive_random_forest":
+            # BaggingRegressor needs a base model
+            base_model = tree.HoeffdingTreeRegressor()
+            algorithm = algorithm_class(model=base_model, **params)
+        elif algorithm_name == "adaptive_random_forest_classifier":
+            # BaggingClassifier needs a base model  
+            base_model = tree.HoeffdingTreeClassifier()
+            algorithm = algorithm_class(model=base_model, **params)
+        else:
+            # Create the base algorithm normally
+            algorithm = algorithm_class(**params)
+        
+        # For River, we can create preprocessing pipelines
+        if needs_preprocessing:
+            # Create a preprocessing pipeline for algorithms that benefit from it
+            pipeline = compose.Pipeline(
+                preprocessing.StandardScaler(),
+                algorithm
+            )
+            return pipeline
+        
+        return algorithm
+    
+    def create_preprocessing_pipeline(self, algorithm_name: str) -> Optional[Any]:
+        """
+        Create a preprocessing pipeline for the algorithm if needed
+        
+        Args:
+            algorithm_name: Name of the algorithm
+        
+        Returns:
+            Preprocessing pipeline or None
+        """
+        if algorithm_name in ["linear_regression", "sgd_regressor", "logistic_regression", "pa_regressor", "pa_classifier"]:
+            return compose.Pipeline(
+                preprocessing.StandardScaler()
+            )
+        return None
     
     def get_supported_tasks(self) -> List[str]:
         """Get list of all supported prediction tasks"""
@@ -304,79 +281,119 @@ class AlgorithmConfiguration:
         """Get algorithm type (regression/classification)"""
         return self.algorithms.get(algorithm_name, {}).get("type", "regression")
     
-    def optimize_hyperparameters(self, algorithm_name: str, X: np.ndarray, y: np.ndarray) -> Dict[str, Any]:
+    def optimize_hyperparameters(self, algorithm_name: str, data_size: int, n_features: int) -> Dict[str, Any]:
         """
-        Get optimized hyperparameters based on data characteristics
+        Get optimized hyperparameters based on data characteristics for River algorithms
         
         Args:
             algorithm_name: Name of the algorithm
-            X: Feature matrix
-            y: Target vector
+            data_size: Number of samples (for online learning, this is less relevant)
+            n_features: Number of features
         
         Returns:
             Optimized parameters dictionary
         """
         base_params = self.algorithms.get(algorithm_name, {}).get("params", {}).copy()
         
-        # Simple optimization based on data size
-        n_samples, n_features = X.shape
-        
-        if algorithm_name == "random_forest":
-            # Adjust n_estimators based on data size
-            if n_samples < 1000:
-                base_params["n_estimators"] = 50
-            elif n_samples > 10000:
-                base_params["n_estimators"] = 200
-                
-        elif algorithm_name == "gradient_boosting":
-            # Adjust learning rate and estimators
-            if n_samples < 1000:
-                base_params["n_estimators"] = 50
-                base_params["learning_rate"] = 0.2
-            elif n_samples > 10000:
-                base_params["n_estimators"] = 200
-                base_params["learning_rate"] = 0.05
-                
-        elif algorithm_name == "neural_network":
-            # Adjust hidden layer size based on features
+        # Optimize based on number of features and expected data characteristics
+        if algorithm_name in ["adaptive_random_forest", "adaptive_random_forest_classifier"]:
+            # Adjust number of models based on complexity
             if n_features < 10:
-                base_params["hidden_layer_sizes"] = (50,)
+                base_params["n_models"] = 5
             elif n_features > 50:
-                base_params["hidden_layer_sizes"] = (200, 100, 50)
+                base_params["n_models"] = 15
+            # Adjust depth based on feature count
+            base_params["max_depth"] = min(20, max(5, n_features // 2))
                 
-        elif algorithm_name == "svr":
-            # Adjust C parameter based on data size
-            if n_samples > 5000:
-                base_params["C"] = 0.1  # Lower C for larger datasets
+        elif algorithm_name in ["hoeffding_tree", "hoeffding_tree_classifier"]:
+            # Adjust tree depth and minimum samples
+            if n_features < 10:
+                base_params["max_depth"] = 5
+                base_params["min_samples_leaf"] = 10
+            elif n_features > 50:
+                base_params["max_depth"] = 15
+                base_params["min_samples_leaf"] = 2
+                
+        elif algorithm_name in ["sgd_regressor"]:
+            # Adjust learning rate based on feature complexity
+            if n_features < 10:
+                base_params["learning_rate"] = 0.1
+            elif n_features > 50:
+                base_params["learning_rate"] = 0.001
+                
+        elif algorithm_name in ["knn_regressor", "knn_classifier"]:
+            # Adjust k and window size
+            base_params["n_neighbors"] = min(10, max(3, n_features // 5))
+            base_params["window_size"] = max(500, min(5000, data_size // 10)) if data_size > 0 else 1000
                 
         return base_params
     
     def get_feature_importance_method(self, algorithm_name: str) -> Optional[str]:
         """
         Get the method to extract feature importance for the algorithm
+        Note: River has different approaches to feature importance
         
         Args:
             algorithm_name: Name of the algorithm
         
         Returns:
-            Method name or None if not supported
+            Method name or approach description
         """
         importance_methods = {
-            "random_forest": "feature_importances_",
-            "gradient_boosting": "feature_importances_",
-            "extra_trees": "feature_importances_",
-            "decision_tree": "feature_importances_",
-            "ada_boost": "feature_importances_",
-            "random_forest_classifier": "feature_importances_",
-            "gradient_boosting_classifier": "feature_importances_",
-            "decision_tree_classifier": "feature_importances_"
+            "hoeffding_tree": "tree_feature_importance",
+            "hoeffding_tree_classifier": "tree_feature_importance", 
+            "adaptive_random_forest": "ensemble_feature_importance",
+            "adaptive_random_forest_classifier": "ensemble_feature_importance",
+            "linear_regression": "coefficient_based",
+            "logistic_regression": "coefficient_based",
+            "sgd_regressor": "coefficient_based",
+            "pa_regressor": "coefficient_based",
+            "pa_classifier": "coefficient_based"
         }
         
         return importance_methods.get(algorithm_name)
     
+    def extract_feature_importance(self, model: Any, feature_names: List[str], algorithm_name: str) -> Optional[Dict[str, float]]:
+        """
+        Extract feature importance from a trained River model
+        
+        Args:
+            model: Trained River model
+            feature_names: List of feature names
+            algorithm_name: Name of the algorithm
+        
+        Returns:
+            Dictionary of feature importances or None if not supported
+        """
+        try:
+            importance_method = self.get_feature_importance_method(algorithm_name)
+            
+            if importance_method == "coefficient_based":
+                # For linear models, use coefficients as importance
+                if hasattr(model, 'weights') and model.weights:
+                    importances = {}
+                    for feature_name in feature_names:
+                        weight = model.weights.get(feature_name, 0.0)
+                        importances[feature_name] = abs(weight)
+                    return importances
+                    
+            elif importance_method == "tree_feature_importance":
+                # For tree models, we would need to implement custom importance extraction
+                # This is more complex in River as it doesn't have built-in feature importance
+                return None
+                
+            elif importance_method == "ensemble_feature_importance":
+                # For ensemble models, aggregate importance from individual models
+                # This would require custom implementation
+                return None
+                
+            return None
+        except Exception:
+            return None
+    
     def get_prediction_confidence_method(self, algorithm_name: str) -> Optional[str]:
         """
-        Get method to calculate prediction confidence
+        Get method to calculate prediction confidence for River models
         
         Args:
             algorithm_name: Name of the algorithm
@@ -385,13 +402,12 @@ class AlgorithmConfiguration:
             Method name or None if not supported
         """
         confidence_methods = {
-            "random_forest": "predict_proba",
-            "gradient_boosting_classifier": "predict_proba", 
-            "logistic_regression": "predict_proba",
-            "svm_classifier": "predict_proba",
-            "neural_network_classifier": "predict_proba",
-            "knn_classifier": "predict_proba",
-            "naive_bayes": "predict_proba"
+            "logistic_regression": "predict_proba_one",
+            "pa_classifier": "predict_proba_one",
+            "naive_bayes_classifier": "predict_proba_one",
+            "hoeffding_tree_classifier": "predict_proba_one",
+            "adaptive_random_forest_classifier": "predict_proba_one",
+            "knn_classifier": "predict_proba_one"
         }
         
         return confidence_methods.get(algorithm_name)
@@ -410,3 +426,116 @@ class AlgorithmConfiguration:
         from app.models.telemetry_models import TelemetryFeatures
         
         return TelemetryFeatures.get_features_for_model_type(model_type)
+    
+    def is_online_learning_algorithm(self, algorithm_name: str) -> bool:
+        """
+        Check if the algorithm supports online/incremental learning
+        All River algorithms support online learning by design
+        
+        Args:
+            algorithm_name: Name of the algorithm
+        
+        Returns:
+            True (all River algorithms support online learning)
+        """
+        return algorithm_name in self.algorithms
+    
+    def get_learning_method(self, algorithm_name: str) -> str:
+        """
+        Get the learning method for the algorithm
+        
+        Args:
+            algorithm_name: Name of the algorithm
+        
+        Returns:
+            Learning method ('learn_one' for River algorithms)
+        """
+        if algorithm_name in self.algorithms:
+            return "learn_one"
+        return "unknown"
+    
+    def get_prediction_method(self, algorithm_name: str) -> str:
+        """
+        Get the prediction method for the algorithm
+        
+        Args:
+            algorithm_name: Name of the algorithm
+        
+        Returns:
+            Prediction method name
+        """
+        algorithm_type = self.get_algorithm_type(algorithm_name)
+        
+        if algorithm_type == "classification":
+            return "predict_proba_one"
+        else:
+            return "predict_one"
+    
+    def create_metrics_tracker(self, algorithm_type: str) -> Dict[str, Any]:
+        """
+        Create appropriate metrics tracker for the algorithm type
+        
+        Args:
+            algorithm_type: Type of algorithm ('regression' or 'classification')
+        
+        Returns:
+            River metrics object
+        """
+        if algorithm_type == "regression":
+            return {"MAE": metrics.MAE(), "RMSE": metrics.RMSE(), "R2": metrics.R2()}
+        else:
+            return { "Accuracy": metrics.Accuracy() ,"Precision": metrics.Precision() , "Recall": metrics.Recall() , "F1": metrics.F1()}
+    
+    def get_algorithm_description(self, algorithm_name: str) -> str:
+        """
+        Get a detailed description of the algorithm
+        
+        Args:
+            algorithm_name: Name of the algorithm
+        
+        Returns:
+            Algorithm description
+        """
+        descriptions = {
+            "linear_regression": "Online linear regression using normal equations, suitable for linear relationships",
+            "sgd_regressor": "Passive-Aggressive regressor for online learning, robust to outliers and suitable for noisy data",
+            "pa_regressor": "Passive-Aggressive regressor, robust to outliers and suitable for noisy data",
+            "hoeffding_tree": "Online decision tree using Hoeffding bounds, adapts to concept drift",
+            "adaptive_random_forest": "Ensemble of online trees that adapts to concept drift, excellent for complex patterns",
+            "knn_regressor": "K-Nearest Neighbors with sliding window, good for local patterns",
+            "logistic_regression": "Online logistic regression for binary/multi-class classification",
+            "pa_classifier": "Passive-Aggressive classifier, robust and suitable for real-time classification",
+            "naive_bayes_classifier": "Gaussian Naive Bayes, fast and effective for independent features",
+            "hoeffding_tree_classifier": "Online decision tree classifier with concept drift adaptation",
+            "adaptive_random_forest_classifier": "Ensemble classifier that adapts to changing data patterns",
+            "knn_classifier": "K-Nearest Neighbors classifier with sliding window for pattern recognition"
+        }
+        
+        return descriptions.get(algorithm_name, "Online machine learning algorithm")
+    
+    def get_algorithm_strengths(self, algorithm_name: str) -> List[str]:
+        """
+        Get the strengths of a specific algorithm
+        
+        Args:
+            algorithm_name: Name of the algorithm
+        
+        Returns:
+            List of algorithm strengths
+        """
+        strengths = {
+            "linear_regression": ["Fast training", "Interpretable", "Low memory usage", "Good for linear relationships"],
+            "sgd_regressor": ["Robust to outliers", "Fast convergence", "Good for adversarial settings", "Online learning"],
+            "pa_regressor": ["Robust to outliers", "Fast convergence", "Good for adversarial settings"],
+            "hoeffding_tree": ["Handles concept drift", "Interpretable", "Fast predictions", "Memory efficient"],
+            "adaptive_random_forest": ["Excellent accuracy", "Handles concept drift", "Robust to noise", "Feature importance"],
+            "knn_regressor": ["No assumptions about data", "Adapts to local patterns", "Simple to understand"],
+            "logistic_regression": ["Probabilistic outputs", "Fast training", "Interpretable", "Good baseline"],
+            "pa_classifier": ["Robust classification", "Fast updates", "Good for online settings"],
+            "naive_bayes_classifier": ["Very fast", "Handles missing values", "Good with small data"],
+            "hoeffding_tree_classifier": ["Interpretable", "Handles concept drift", "Fast predictions"],
+            "adaptive_random_forest_classifier": ["High accuracy", "Concept drift adaptation", "Robust ensemble"],
+            "knn_classifier": ["Non-parametric", "Local decision boundaries", "Intuitive"]
+        }
+        
+        return strengths.get(algorithm_name, ["Online learning capable"])
