@@ -299,7 +299,10 @@ class TelemetryFeatures:
             "Graphics_last_time",
             "Graphics_best_time",
             "Graphics_current_sector_index",
-            "Graphics_position"
+            "Graphics_position",
+            "Graphics_last_time",
+            "Graphics_best_time",
+            "Graphics_current_time"
         ]
     
     @classmethod

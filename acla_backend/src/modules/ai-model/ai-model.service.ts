@@ -122,31 +122,6 @@ export class AiModelService {
         return await model.save();
     }
 
-    async getModelPerformanceMetrics(modelId: string): Promise<any> {
-        const model = await this.userTrackAIModel.findById(modelId);
-        if (!model) {
-            throw new NotFoundException('AI Model not found');
-        }
-
-        return {
-            modelId: modelId,
-            modelType: model.modelType,
-            algorithmUsed: model.algorithmUsed,
-            algorithmType: model.algorithmType,
-            targetVariable: model.targetVariable,
-            trainingMetrics: model.trainingMetrics,
-            featureImportance: model.featureImportance,
-            featureCount: model.featureCount,
-            trainingSamples: model.trainingSamples,
-            modelVersion: model.modelVersion,
-            isActive: model.isActive,
-            trainedAt: model.trainedAt,
-            supportsIncremental: model.supportsIncremental,
-            recommendations: model.recommendations,
-            alternativeAlgorithms: model.alternativeAlgorithms
-        };
-    }
-
     async deleteModel(modelId: string): Promise<void> {
         const result = await this.userTrackAIModel.findByIdAndDelete(modelId);
         if (!result) {

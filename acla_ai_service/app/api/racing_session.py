@@ -179,32 +179,6 @@ async def train_multiple_ai_models(request: MultipleTrainingRequest) -> Dict[str
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Multiple model training failed: {str(e)}")
 
-
-@router.post("/evaluate-model")
-async def evaluate_model(request: ModelEvaluationRequest) -> Dict[str, Any]:
-    """
-    Evaluate trained model performance on test data
-    """
-    try:
-        result = await telemetry_service.evaluate_model_performance(
-            model_data=request.model_data,
-            test_telemetry_data=request.test_telemetry_data,
-            target_variable=request.target_variable,
-            model_type=request.model_type
-        )
-        
-        if not result.get("success", False):
-            raise HTTPException(status_code=400, detail=result.get("error", "Evaluation failed"))
-        
-        return {
-            "message": "Model evaluation completed successfully",
-            "evaluation_result": result
-        }
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Model evaluation failed: {str(e)}")
-
-
 @router.post("/validate-telemetry")
 async def validate_telemetry_data(telemetry_data: List[Dict[str, Any]] = Body(...)) -> Dict[str, Any]:
     """

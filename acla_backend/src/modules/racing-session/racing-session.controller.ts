@@ -82,8 +82,6 @@ export class RacingSessionController {
 
         const fullDataset = upload.session_data_chunks.flat();
 
-        console.log(`Upload complete for ID: ${uploadId}, total chunks: ${upload.session_data_chunks.length}, total records: ${fullDataset.length}`);
-
         // Create racing session in database
         try {
             const createdSession = await this.racingSessionService.createRacingSession(
@@ -108,7 +106,7 @@ export class RacingSessionController {
 
                     //list of ai models will be trained
                     const modelsConfig: ModelsConfig[] = [
-                        { config_id: "lap_prediction", target_variable: "lap_time", model_type: "lap_time_prediction", preferred_algorithm: "random_forest" }
+                        { config_id: "lap_prediction", target_variable: "Graphics_current_time", model_type: "lap_time_prediction" }
                     ];
 
                     let activeModel: UserTrackAIModel & { _id: Types.ObjectId; } | null = null;
@@ -146,54 +144,54 @@ export class RacingSessionController {
                             //find the matching config
                             const modelConfig = modelsConfig.find(config => config.config_id === configId);
 
-                            //if there is an active model, update the model in database
-                            if (modelConfig && modelConfig.existing_model_data && response.success) {
-                                console.log("Updating existing model:", modelConfig.existing_model_data._id);
-                                await this.aiModelService.updateModel(modelConfig.existing_model_data._id.toString(), {
-                                    modelData: response.model_data,
-                                    modelType: response.model_type,
-                                    algorithmUsed: response.algorithm_used,
-                                    algorithmType: response.algorithm_type,
-                                    targetVariable: response.target_variable,
-                                    trainingMetrics: response.training_metrics,
-                                    featureNames: response.feature_names,
-                                    featureCount: response.feature_count,
-                                    trainingSamples: response.training_samples,
-                                    modelVersion: response.model_version, // Version number for incremental training
-                                    telemetrySummary: response.telemetry_summary, // Summary of telemetry data used
-                                    recommendations: response.recommendations, // Training recommendations
-                                    algorithmDescription: response.algorithm_description, // Description of the algorithm used
-                                    supportsIncremental: response.supports_incremental, // Whether model supports incremental learning
-                                    featureImportance: response.feature_importance, // Feature importance scores
-                                    alternativeAlgorithms: response.alternative_algorithms, // Alternative algorithms for this model type
-                                    trainedAt: response.trained_at, // When the model was trained
-                                    isActive: true // Whether this model version is active
-                                });
-                            } else {
-                                //else create a new model
-                                await this.aiModelService.createModel({
-                                    userId: userId,
-                                    trackName: upload.metadata.mapName,
-                                    carName: upload.metadata.carName,
-                                    modelData: response.model_data,
-                                    modelType: response.model_type,
-                                    algorithmUsed: response.algorithm_used,
-                                    algorithmType: response.algorithm_type,
-                                    targetVariable: response.target_variable,
-                                    trainingMetrics: response.training_metrics,
-                                    featureNames: response.feature_names,
-                                    featureCount: response.feature_count,
-                                    trainingSamples: response.training_samples,
-                                    modelVersion: response.model_version, // Version number for incremental training
-                                    telemetrySummary: response.telemetry_summary, // Summary of telemetry data used
-                                    recommendations: response.recommendations, // Training recommendations
-                                    algorithmDescription: response.algorithm_description, // Description of the algorithm used
-                                    supportsIncremental: response.supports_incremental, // Whether model supports incremental learning
-                                    featureImportance: response.feature_importance, // Feature importance scores
-                                    alternativeAlgorithms: response.alternative_algorithms, // Alternative algorithms for this model type
-                                    trainedAt: response.trained_at, // When the model was trained
-                                    isActive: true // Whether this model version is active
-                                });
+                            if (response.success) {
+                                //if there is an active model, update the model in database
+                                if (modelConfig && modelConfig.existing_model_data) {
+
+                                    await this.aiModelService.updateModel(modelConfig.existing_model_data._id.toString(), {
+                                        modelData: response.model_data,
+                                        modelType: response.model_type,
+                                        algorithmUsed: response.algorithm_used,
+                                        algorithmType: response.algorithm_type,
+                                        targetVariable: response.target_variable,
+                                        trainingMetrics: response.training_metrics,
+                                        featureNames: response.feature_names,
+                                        featureCount: response.features_count,
+                                        samplesProcessed: response.samples_processed,
+                                        modelVersion: response.model_version, // Version number for incremental training
+                                        algorithmStrengths: response.algorithm_strengths, // Summary of telemetry data used
+                                        recommendations: response.recommendations, // Training recommendations
+                                        algorithmDescription: response.algorithm_description, // Description of the algorithm used
+                                        training_time: response.training_time, // Training time
+                                        dataQualityScore: response.data_quality_score, // Feature importance scores
+                                        timestamp: response.timestamp, // When the model was trained
+                                        isActive: true // Whether this model version is active
+                                    });
+                                } else {
+                                    //else create a new model
+                                    await this.aiModelService.createModel({
+                                        userId: userId,
+                                        trackName: upload.metadata.mapName,
+                                        carName: upload.metadata.carName,
+                                        modelData: response.model_data,
+                                        modelType: response.model_type,
+                                        algorithmUsed: response.algorithm_used,
+                                        algorithmType: response.algorithm_type,
+                                        targetVariable: response.target_variable,
+                                        trainingMetrics: response.training_metrics,
+                                        featureNames: response.feature_names,
+                                        featureCount: response.features_count,
+                                        samplesProcessed: response.samples_processed,
+                                        modelVersion: response.model_version, // Version number for incremental training
+                                        recommendations: response.recommendations, // Training recommendations
+                                        algorithmDescription: response.algorithm_description, // Description of the algorithm used
+                                        algorithmStrengths: response.algorithm_strengths,
+                                        training_time: response.training_time,
+                                        dataQualityScore: response.data_quality_score, // Alternative algorithms for this model type
+                                        timestamp: response.timestamp, // When the model was trained
+                                        isActive: true // Whether this model version is active
+                                    });
+                                }
                             }
                         }
                     }

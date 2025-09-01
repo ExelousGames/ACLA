@@ -23,19 +23,7 @@ class AIService:
         """Define available functions for OpenAI function calling,
         if OpenAI decides to call a function, it executes it"""
         return [
-            {
-                "name": "analyze_racing_performance",
-                "description": "Analyze racing performance from telemetry data including lap times, sector times, and speed analysis",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "session_id": {"type": "string", "description": "Racing session ID to analyze"},
-                        "analysis_type": {"type": "string", "enum": ["overall", "sectors", "consistency", "comparison"], "description": "Type of performance analysis"},
-                        "focus_areas": {"type": "array", "items": {"type": "string"}, "description": "Specific areas to focus on (e.g., braking, cornering, acceleration)"}
-                    },
-                    "required": ["session_id"]
-                }
-            },
+
             {
                 "name": "get_telemetry_insights",
                 "description": "Get detailed telemetry insights including speed traces, g-forces, and car dynamics",
@@ -58,19 +46,6 @@ class AIService:
                         "comparison_metrics": {"type": "array", "items": {"type": "string"}, "description": "Metrics to compare (lap_times, sectors, consistency, etc.)"}
                     },
                     "required": ["session_ids"]
-                }
-            },
-            {
-                "name": "get_improvement_suggestions",
-                "description": "Generate personalized improvement suggestions based on racing data analysis",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "session_id": {"type": "string", "description": "Session ID to analyze for improvements"},
-                        "skill_level": {"type": "string", "enum": ["beginner", "intermediate", "advanced"], "description": "Driver skill level"},
-                        "focus_area": {"type": "string", "description": "Specific area to focus improvements on"}
-                    },
-                    "required": ["session_id"]
                 }
             },
             {
@@ -98,19 +73,6 @@ class AIService:
                         "prediction_context": {"type": "object", "description": "Additional context like track conditions, session type"}
                     },
                     "required": ["model_id", "current_telemetry"]
-                }
-            },
-            {
-                "name": "evaluate_model_performance",
-                "description": "Evaluate how well a trained AI model performs on test data",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "model_id": {"type": "string", "description": "ID of the model to evaluate"},
-                        "test_session_ids": {"type": "array", "items": {"type": "string"}, "description": "Session IDs to use for testing"},
-                        "evaluation_metrics": {"type": "array", "items": {"type": "string"}, "description": "Metrics to calculate (accuracy, r2_score, mae, etc.)"}
-                    },
-                    "required": ["model_id", "test_session_ids"]
                 }
             },
             {
@@ -181,16 +143,13 @@ class AIService:
                     IMPORTANT: You can call specialized functions and AI models to answer user questions:
                     
                     TELEMETRY ANALYSIS FUNCTIONS:
-                    - analyze_racing_performance: Get performance analysis from telemetry data
                     - get_telemetry_insights: Get detailed telemetry insights (speed, acceleration, braking, steering)
-                    - compare_sessions: Compare multiple racing sessions
-                    - get_improvement_suggestions: Get performance improvement suggestions 
+                    - compare_sessions: Compare multiple racing sessions                   
                     - call_backend_function: Call backend APIs for data retrieval
                     
                     AI MODEL FUNCTIONS (Personalized predictions using user's own driving data):
                     - train_telemetry_ai_model: Train custom AI models on user's telemetry data
                     - predict_with_telemetry_model: Use trained AI models for personalized predictions
-                    - evaluate_model_performance: Evaluate trained model accuracy
                     - get_model_insights: Get model statistics and feature importance
                     
                     INTELLIGENT COACHING FUNCTIONS:
@@ -206,7 +165,6 @@ class AIService:
                     EXAMPLES:
                     - "Train an AI to predict my lap times" → Call train_telemetry_ai_model
                     - "What lap time will I get?" → Call predict_with_telemetry_model
-                    - "How can I improve?" → Call analyze_racing_performance + get_improvement_suggestions
                     - "Compare my sessions" → Call compare_sessions
                     
                     Always base your answers on real data from the functions, not assumptions.
@@ -308,15 +266,7 @@ class AIService:
         try:
             print(f"[DEBUG] Executing {function_name} to get data from local systems...")
             
-            if function_name == "analyze_racing_performance":
-                print("[DEBUG] Getting racing performance analysis from local telemetry service...")
-                return await self.telemetry_service.analyze_racing_performance(
-                    arguments.get("session_id"),
-                    arguments.get("analysis_type", "overall"),
-                    arguments.get("focus_areas", [])
-                )
-            
-            elif function_name == "get_telemetry_insights":
+            if function_name == "get_telemetry_insights":
                 print("[DEBUG] Getting telemetry insights from local analysis engine...")
                 return await self.telemetry_service.get_telemetry_insights(
                     arguments.get("session_id"),
@@ -330,15 +280,6 @@ class AIService:
                     arguments.get("comparison_metrics", ["lap_times"])
                 )
             
-            elif function_name == "get_improvement_suggestions":
-                print("[DEBUG] Preparing performance data for AI recommendation generation...")
-                # This prepares data that will be used by generate_ai_recommendations
-                return await self.telemetry_service.get_improvement_suggestions(
-                    arguments.get("session_id"),
-                    arguments.get("skill_level", "intermediate"),
-                    arguments.get("focus_area")
-                )
-            
             elif function_name == "train_telemetry_ai_model":
                 print("[DEBUG] Training AI model through backend ai-model controller...")
                 # Use backend ai-model controller to train model
@@ -348,11 +289,6 @@ class AIService:
                 print("[DEBUG] Making prediction through backend ai-model controller...")
                 # Use backend ai-model controller to make predictions
                 return await self._predict_via_backend(arguments, context)
-            
-            elif function_name == "evaluate_model_performance":
-                print("[DEBUG] Evaluating model through backend ai-model controller...")
-                # Use backend to get model and evaluate performance
-                return await self._evaluate_model_via_backend(arguments, context)
             
             elif function_name == "get_model_insights":
                 print("[DEBUG] Getting model insights through backend ai-model controller...")
@@ -539,17 +475,7 @@ class AIService:
         # Basic keyword matching and analysis
         query_lower = query.lower()
         
-        if any(word in query_lower for word in ["lap time", "fastest", "time", "performance"]):
-            if context and "session_id" in context:
-                result = await self.telemetry_service.analyze_racing_performance(
-                    context["session_id"], "overall", []
-                )
-                return {
-                    "answer": "Here's your performance analysis (basic mode - OpenAI not configured):",
-                    "data": result
-                }
-        
-        elif any(word in query_lower for word in ["improve", "better", "advice", "coaching"]):
+        if any(word in query_lower for word in ["improve", "better", "advice", "coaching"]):
             return {
                 "answer": "For improvement suggestions, please configure OpenAI API key for intelligent coaching advice.",
                 "suggestion": "Basic advice: Focus on consistency first, then work on finding the racing line and braking points."
@@ -558,7 +484,7 @@ class AIService:
         else:
             return {
                 "answer": "I can help with racing data analysis. Try asking about lap times, performance, or improvements. For intelligent responses, please configure OpenAI API key.",
-                "available_functions": ["analyze_racing_performance", "get_telemetry_insights", "compare_sessions"]
+                "available_functions": ["get_telemetry_insights", "compare_sessions"]
             }
     
     async def _get_telemetry_data_for_sessions(self, session_ids: List[str], user_id: Optional[str] = None) -> List[Dict[str, Any]]:

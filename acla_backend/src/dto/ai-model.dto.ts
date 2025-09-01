@@ -12,15 +12,14 @@ export class CreateSeesionAIModelDto {
     trainingMetrics: Record<string, any>; // Model performance metrics
     featureNames: string[]; // List of feature names used
     featureCount: number; // Number of features
-    trainingSamples: number; // Number of training samples
+    samplesProcessed: number; // Number of training samples
     modelVersion?: string; // Version number for incremental training
-    telemetrySummary?: Record<string, any>; // Summary of telemetry data used
+    algorithmStrengths?: string[]; // Summary of telemetry data used
     recommendations?: string[]; // Training recommendations
     algorithmDescription?: string; // Description of the algorithm used
-    supportsIncremental?: boolean; // Whether model supports incremental learning
-    featureImportance?: Record<string, any>; // Feature importance scores
-    alternativeAlgorithms?: string[]; // Alternative algorithms for this model type
-    trainedAt: string; // When the model was trained
+    training_time?: string; // When the model was trained
+    dataQualityScore?: number; // Quality score of the training data
+    timestamp: string; // When the model was trained
     isActive?: boolean; // Whether this model version is active
 }
 
@@ -33,15 +32,14 @@ export class UpdateAiModelDto {
     trainingMetrics?: Record<string, any>; // Model performance metrics
     featureNames?: string[]; // List of feature names used
     featureCount?: number; // Number of features
-    trainingSamples?: number; // Number of training samples
+    samplesProcessed?: number; // Number of training samples
     modelVersion?: string; // Version number for incremental training
-    telemetrySummary?: Record<string, any>; // Summary of telemetry data used
+    algorithmStrengths?: string[]; // Summary of telemetry data used
     recommendations?: string[]; // Training recommendations
     algorithmDescription?: string; // Description of the algorithm used
-    supportsIncremental?: boolean; // Whether model supports incremental learning
-    featureImportance?: Record<string, any>; // Feature importance scores
-    alternativeAlgorithms?: string[]; // Alternative algorithms for this model type
-    trainedAt?: string; // When the model was trained
+    training_time?: string; // Duration of training in seconds
+    dataQualityScore?: number; // Quality score of the training data
+    timestamp?: string; // When the model was trained
     isActive?: boolean; // Whether this model version is active
 }
 
