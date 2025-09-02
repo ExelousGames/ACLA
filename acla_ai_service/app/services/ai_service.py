@@ -76,33 +76,6 @@ class AIService:
                 }
             },
             {
-                "name": "get_model_insights",
-                "description": "Get insights about a trained model including feature importance and performance statistics",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "model_id": {"type": "string", "description": "ID of the model to analyze"},
-                        "include_feature_importance": {"type": "boolean", "description": "Whether to include feature importance analysis"},
-                        "include_performance_metrics": {"type": "boolean", "description": "Whether to include performance metrics"}
-                    },
-                    "required": ["model_id"]
-                }
-            },
-            {
-                "name": "generate_ai_recommendations",
-                "description": "Generate intelligent recommendations using OpenAI analysis of racing performance data",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "performance_data": {"type": "object", "description": "Racing performance data to analyze"},
-                        "skill_level": {"type": "string", "enum": ["beginner", "intermediate", "advanced"], "description": "Driver skill level"},
-                        "focus_area": {"type": "string", "description": "Specific area to focus recommendations on"},
-                        "session_context": {"type": "object", "description": "Additional session context like track, conditions, etc."}
-                    },
-                    "required": ["performance_data"]
-                }
-            },
-            {
                 "name": "explain_telemetry_patterns",
                 "description": "Generate AI explanations of telemetry data patterns in easy-to-understand language",
                 "parameters": {
@@ -116,19 +89,15 @@ class AIService:
             }
         ]
     
-    async def process_natural_language_query(self, query: str, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """Process natural language queries about racing data with function calling"""
+    async def process_natural_language_query(self, prompt: str, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Process natural language queries about racing data and function calling"""
         if not self.openai_client:
-            return await self._fallback_query_processing(query, context)
+            raise Exception("OpenAI API is not function properly.")
         
         try:
             # Prepare context information
             context_info = ""
             if context:
-                if "session_id" in context:
-                    context_info += f"Current session: {context['session_id']}\n"
-                if "user_id" in context:
-                    context_info += f"User ID: {context['user_id']}\n"
                 if "track_name" in context:
                     context_info += f"Track: {context['track_name']}\n"
             
@@ -173,7 +142,7 @@ class AIService:
                 },
                 {
                     "role": "user", 
-                    "content": query
+                    "content": prompt
                 }
             ]
             
@@ -228,7 +197,7 @@ class AIService:
                     model="gpt-4",
                     messages=messages,
                     temperature=0.7,
-                    max_tokens=1500
+                    max_tokens=100
                 )
                 
                 return {
@@ -258,96 +227,61 @@ class AIService:
             print(f"[ERROR] AI processing failed: {str(e)}")
             return {
                 "error": f"AI processing failed: {str(e)}",
-                "fallback": await self._fallback_query_processing(query, context)
+                "fallback": await self._fallback_query_processing(prompt, context)
             }
     
     async def _execute_function(self, function_name: str, arguments: Dict[str, Any], context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """execute the called function to retrieve data from local AI models and telemetry systems"""
         try:
             print(f"[DEBUG] Executing {function_name} to get data from local systems...")
-            
-            if function_name == "get_telemetry_insights":
-                print("[DEBUG] Getting telemetry insights from local analysis engine...")
-                return await self.telemetry_service.get_telemetry_insights(
+
+            # Dispatch table for function handlers
+            handlers = {
+                "get_telemetry_insights": lambda: self.telemetry_service.get_telemetry_insights(
                     arguments.get("session_id"),
                     arguments.get("data_types", ["speed", "acceleration"])
-                )
-            
-            elif function_name == "compare_sessions":
-                print("[DEBUG] Comparing sessions using local AI models...")
-                return await self.telemetry_service.compare_sessions(
+                ),
+                "compare_sessions": lambda: self.telemetry_service.compare_sessions(
                     arguments.get("session_ids"),
                     arguments.get("comparison_metrics", ["lap_times"])
-                )
-            
-            elif function_name == "train_telemetry_ai_model":
-                print("[DEBUG] Training AI model through backend ai-model controller...")
-                # Use backend ai-model controller to train model
-                return await self._train_ai_model_via_backend(arguments, context)
-            
-            elif function_name == "predict_with_telemetry_model":
-                print("[DEBUG] Making prediction through backend ai-model controller...")
-                # Use backend ai-model controller to make predictions
-                return await self._predict_via_backend(arguments, context)
-            
-            elif function_name == "get_model_insights":
-                print("[DEBUG] Getting model insights through backend ai-model controller...")
-                # Get model insights via backend
-                return await self._get_model_insights_via_backend(arguments, context)
-
-            elif function_name == "get_user_models":
-                print("[DEBUG] Getting user models through backend...")
-                return await self.get_user_models_via_backend(
+                ),
+                "train_telemetry_ai_model": lambda: self._train_ai_model_via_backend(arguments, context),
+                "predict_with_telemetry_model": lambda: self._predict_via_backend(arguments, context),
+                "get_model_insights": lambda: self._get_model_insights_via_backend(arguments, context),
+                "get_user_models": lambda: self.get_user_models_via_backend(
                     arguments.get("user_id"),
                     arguments.get("track_name"),
                     arguments.get("model_type")
-                )
-            
-            elif function_name == "get_active_model":
-                print("[DEBUG] Getting active model through backend...")
-                return await self.get_active_model_via_backend(
+                ),
+                "get_active_model": lambda: self.get_active_model_via_backend(
                     arguments.get("user_id"),
                     arguments.get("track_name"),
                     arguments.get("model_type")
-                )
-            
-            elif function_name == "perform_incremental_training":
-                print("[DEBUG] Performing incremental training through backend...")
-                return await self.perform_incremental_training_via_backend(
+                ),
+                "perform_incremental_training": lambda: self.perform_incremental_training_via_backend(
                     arguments.get("model_id"),
                     arguments.get("session_ids"),
                     arguments.get("user_id")
-                )
-
-            elif function_name == "call_backend_function":
-                print(f"[DEBUG] Calling backend API: {arguments.get('endpoint')}...")
-                return await self.backend_service.call_backend_function(
+                ),
+                "call_backend_function": lambda: self.backend_service.call_backend_function(
                     arguments.get("endpoint"),
                     arguments.get("method", "GET"),
                     arguments.get("data"),
                     self._get_auth_headers(arguments.get("user_id"))
-                )
-            
-            elif function_name == "train_ai_model":
-                print("[DEBUG] Training AI model via backend service...")
-                return await self._train_ai_model(arguments, context)
-            
-            elif function_name == "predict_with_model":
-                print(f"[DEBUG] Making prediction with model: {arguments.get('model_id')}...")
-                return await self._predict_with_model(arguments, context)
-            
-            elif function_name == "generate_ai_recommendations":
-                print("[DEBUG] Generating AI-powered recommendations using OpenAI...")
-                return await self._generate_ai_recommendations(arguments, context)
-            
-            elif function_name == "explain_telemetry_patterns":
-                print("[DEBUG] Generating pattern explanations using OpenAI...")
-                return await self._explain_telemetry_patterns(arguments, context)
-            
+                ),
+                "train_ai_model": lambda: self._train_ai_model(arguments, context),
+                "predict_with_model": lambda: self._predict_with_model(arguments, context),
+                "generate_ai_recommendations": lambda: self._generate_ai_recommendations(arguments, context),
+                "explain_telemetry_patterns": lambda: self._explain_telemetry_patterns(arguments, context),
+            }
+
+            handler = handlers.get(function_name)
+            if handler:
+                return await handler()
             else:
                 print(f"[ERROR] Unknown function: {function_name}")
                 return {"error": f"Unknown function: {function_name}"}
-                
+
         except Exception as e:
             print(f"[ERROR] Function {function_name} execution failed: {str(e)}")
             return {"error": f"Function execution failed: {str(e)}"}
