@@ -62,8 +62,6 @@ class RiverMLService:
             Dict containing trained model data and metrics
         """
         try:
-            # Get optimal algorithm configuration for this task
-            algorithm_config = self.algorithm_config.get_algorithm_for_task(model_type, preferred_algorithm)
             
             # Convert telemetry data to DataFrame
             df = pd.DataFrame(telemetry_data)
@@ -73,22 +71,30 @@ class RiverMLService:
                     "success": False,
                     "error": "No telemetry data provided",
                     "model_type": model_type,
-                    "algorithm_used": algorithm_config["name"]
                 }
             
-            # Process and clean the data
             feature_processor = FeatureProcessor(df)
+
+            # Clean data
             processed_df = feature_processor.prepare_for_analysis()
             
-            # Prepare features and target for online learning
-            features, target_values, feature_names = self._prepare_online_features_and_target(
+            # Load existing model or create new one
+            if existing_model_data:
+                model, model_type, target_name, feature_names, algorithm_name, metrics_tracker = self._load_model(existing_model_data)
+            else:
+                # Get optimal algorithm configuration for creating this new task
+                algorithm_config = self.algorithm_config.get_algorithm_for_task(model_type, preferred_algorithm)
+                model, metrics_tracker = self._create_model(algorithm_config)
+
+            # Prepare features data and target value for online learning
+            cleanedFeatureData, target_values, feature_names = self._prepare_online_features_and_target(
                 processed_df, target_variable, model_type
             )
             
-            if not features:
+            if not cleanedFeatureData:
                 return {
                     "success": False,
-                    "error": f"Could not prepare features",
+                    "error": f"Could not prepare features data",
                     "model_type": model_type,
                     "algorithm_used": algorithm_config["name"]
                 }
@@ -102,14 +108,10 @@ class RiverMLService:
                     "algorithm_used": algorithm_config["name"]
                 }
             
-            # Load existing model or create new one
-            model, metrics_tracker = self._load_or_create_model(
-                algorithm_config, existing_model_data
-            )
             
             # Train the model incrementally
             training_results = self._train_incrementally(
-                model, metrics_tracker, features, target_values, feature_names
+                model, metrics_tracker, cleanedFeatureData, target_values, feature_names
             )
             
             # Serialize the trained model
@@ -123,7 +125,7 @@ class RiverMLService:
                 "algorithm_type": algorithm_config["type"],
                 "target_variable": target_variable,
                 "training_metrics": training_results["metrics"],
-                "samples_processed": len(features),
+                "samples_processed": len(cleanedFeatureData),
                 "features_count": len(feature_names),
                 "feature_names": feature_names,
                 "algorithm_description": self.algorithm_config.get_algorithm_description(algorithm_config["name"]),
@@ -149,7 +151,7 @@ class RiverMLService:
     def _prepare_online_features_and_target(self, df: pd.DataFrame, target_variable: str, 
                                           model_type: str) -> Tuple[List[Dict], List, List[str]]:
         """
-        Prepare features and target for online learning
+        Prepare data related features and target for online learning
         
         Args:
             df: DataFrame with telemetry data
@@ -157,66 +159,66 @@ class RiverMLService:
             model_type: Type of prediction task
         
         Returns:
-            features: List of feature dictionaries for River
+            cleanedFeatureData: List of cleaned data about selected features or River
             target_values: List of target values
-            feature_names: List of feature names
+            feature_names: List of feature values
         """
         try:
             
             # Get recommended features for this model type
             recommended_features = self.algorithm_config.get_recommended_features(model_type)
    
-            # Select available features from the dataframe
+            # select only those features that are in the recommended_features that are also present in the DataFrame
+            #for each col in recommended_features, if the col is in df.columns, then use col
             available_features = [col for col in recommended_features if col in df.columns]
-         
-            if not available_features:
-              
-                # Fallback to numeric columns
-                available_features = df.select_dtypes(include=[np.number]).columns.tolist()
-                if target_variable in available_features:
-                    available_features.remove(target_variable)
-              
             
             if not available_features or target_variable not in df.columns:
-                return [], [], []
-            # Remove rows with missing target values
-            original_rows = len(df)
+                raise RuntimeError("Insufficient features or target variable missing")
+
+            # Drop rows with missing target values
             df_clean = df.dropna(subset=[target_variable])
-            rows_after_cleaning = len(df_clean)
             
             if df_clean.empty:
-                return [], [], []
+                raise RuntimeError("No valid rows available for training")
             
             # Convert to River format (list of dictionaries)
-            features = []
+            cleanedFeatureData = []
             target_values = []
             invalid_samples = 0
             
-            
             for idx, row in df_clean.iterrows():
                 # Create feature dictionary for this sample
+
                 feature_dict = {}
                 valid_sample = True
                 
                 for feature in available_features:
+                    #check each available features in the current row
+
+                    # value contains telemetry data of the current row with selected feature name
                     value = row[feature]
+
                     if pd.isna(value):
+                        # If value is missing, mark current row as invalid
                         valid_sample = False
                         invalid_samples += 1
                         break
+
+                    # If value is valid, add to feature dictionary
                     feature_dict[feature] = float(value)
                 
+                # if its a valid sample add to features and target lists
                 if valid_sample:
-                    features.append(feature_dict)
+                    cleanedFeatureData.append(feature_dict)
                     target_values.append(float(row[target_variable]))
             
-            return features, target_values, available_features
+            return cleanedFeatureData, target_values, available_features
             
         except Exception as e:
             return [], [], []
     
-    def _load_or_create_model(self, algorithm_config: Dict[str, Any], 
-                            existing_model_data: Optional[str]) -> Tuple[Any, Any]:
+
+    def _create_model(self, algorithm_config: Dict[str, Any]) -> Tuple[Any, Any]:
         """
         Load existing model or create new one with metrics tracker
         
@@ -228,23 +230,46 @@ class RiverMLService:
             model: River model instance
             metrics_tracker: Metrics tracker
         """  
-        if existing_model_data:
-            try:
-                model, feature_names = self._deserialize_river_model(existing_model_data)
-            except Exception as e:
-                # If loading fails, create new model
-                model = self.algorithm_config.create_algorithm_instance(algorithm_config)
-        else:
-            model = self.algorithm_config.create_algorithm_instance(algorithm_config)
+
+        model = self.algorithm_config.create_algorithm_instance(algorithm_config)
         
         # Create metrics tracker
         metrics_tracker = self.algorithm_config.create_metrics_tracker(algorithm_config["type"])
 
         # Additional model information
-        return model, metrics_tracker
+        return model,metrics_tracker
     
+    
+    def _load_model(self, existing_model_data: str) -> Tuple[Any, Any]:
+        """
+        Load existing model or create new one with metrics tracker
+        
+        Args:
+            algorithm_config: Algorithm configuration
+            existing_model_data: Base64 encoded existing model
+        
+        Returns:
+            model: River model instance
+            metrics_tracker: Metrics tracker
+        """  
+
+        try:
+            model, modelType, target_name, feature_names, algorithm_name = self._deserialize_river_model(existing_model_data)
+        except Exception as e:
+            raise Exception("Failed to load existing model") from e
+        
+        algorithm_config = self.algorithms[algorithm_name].copy()
+        algorithm_config["name"] = algorithm_name
+        algorithm_config["task_description"] = self.algorithm_config.get(modelType, {}).get("description", "Unknown task")
+        
+        # Create metrics tracker
+        metrics_tracker = self.algorithm_config.create_metrics_tracker(algorithm_config["type"])
+
+        # Additional model information
+        return model,modelType, target_name, feature_names, algorithm_name, metrics_tracker
+  
     def _train_incrementally(self, model: Any, metrics_tracker: Dict[str, Any], 
-                           features: List[Dict], target_values: List, 
+                           featuresData: List[Dict], target_values: List, 
                            feature_names: List[str]) -> Dict[str, Any]:
         """
         Train the model incrementally using River's online learning
@@ -252,7 +277,7 @@ class RiverMLService:
         Args:
             model: River model instance
             metrics_tracker: Metrics tracker
-            features: List of feature dictionaries
+            featuresData: List of feature dictionaries contains each feature's data
             target_values: List of target values
             feature_names: List of feature names
         
@@ -266,7 +291,7 @@ class RiverMLService:
         failed_predictions = 0
         
         # Train incrementally
-        for i, (x, y) in enumerate(zip(features, target_values)):
+        for i, (x, y) in enumerate(zip(featuresData, target_values)):
             # Make prediction first (for metrics)
             if hasattr(model, 'predict_one'):
                 try:
@@ -310,10 +335,10 @@ class RiverMLService:
         return {
             "metrics": final_metrics,
             "training_time": training_time,
-            "samples_trained": len(features)
+            "samples_trained": len(featuresData)
         }
     
-    def _serialize_river_model(self, model: Any, feature_names: List[str], 
+    def _serialize_river_model(self, model: Any, modelType:str, feature_names: List[str], target_name: str,
                               algorithm_name: str) -> str:
         """
         Serialize River model to base64 string
@@ -329,6 +354,8 @@ class RiverMLService:
         try:
             model_data = {
                 "model": model,
+                "modelType": modelType,
+                "targetName": target_name,
                 "feature_names": feature_names,
                 "algorithm_name": algorithm_name,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -358,22 +385,25 @@ class RiverMLService:
         
         Returns:
             model: River model instance
+            target_name: Name of the target variable
             feature_names: List of feature names
+            algorithm_name: Name of the algorithm
         """
         
         try:
             # Decode from base64
             decoded_data = base64.b64decode(model_data.encode('utf-8'))
-            decoded_size = len(decoded_data)
             
             # Deserialize using pickle
             buffer = io.BytesIO(decoded_data)
             model_dict = pickle.load(buffer)
             
             model = model_dict["model"]
+            modelType = model_dict["modelType"]
+            target_name = model_dict["targetName"]
             feature_names = model_dict["feature_names"]
-            
-            return model, feature_names
+            algorithm_name = model_dict["algorithm_name"]
+            return model,modelType,target_name, feature_names,algorithm_name
             
         except Exception as e:
             raise Exception(f"Failed to deserialize model: {str(e)}")

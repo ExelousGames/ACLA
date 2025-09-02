@@ -19,7 +19,7 @@ class AlgorithmConfiguration:
     
     def __init__(self):
         # Define algorithm configurations for different prediction types
-        self.algorithm_configs = {
+        self.model_configs = {
             "lap_time_prediction": {
                 "primary": "adaptive_random_forest",
                 "alternatives": ["hoeffding_tree", "linear_regression", "sgd_regressor"],
@@ -184,22 +184,25 @@ class AlgorithmConfiguration:
         Returns:
             Algorithm configuration dictionary
         """
-        if model_type not in self.algorithm_configs:
-            # Default to gradient boosting for unknown tasks
+        if model_type not in self.model_configs:
+            # Default to gradient boosting if model type is unknown
             algorithm_name = preferred_algorithm or "gradient_boosting"
         else:
-            config = self.algorithm_configs[model_type]
+            config = self.model_configs[model_type]
             if preferred_algorithm and preferred_algorithm in config["alternatives"]:
+                # Use the preferred algorithm if it's an alternative
                 algorithm_name = preferred_algorithm
             else:
+                # Use the primary algorithm if no preferred alternative is specified
                 algorithm_name = config["primary"]
         
         if algorithm_name not in self.algorithms:
+            # Default to gradient boosting if algorithm is unknown
             algorithm_name = "gradient_boosting"  # Fallback
         
         algorithm_config = self.algorithms[algorithm_name].copy()
         algorithm_config["name"] = algorithm_name
-        algorithm_config["task_description"] = self.algorithm_configs.get(model_type, {}).get("description", "Unknown task")
+        algorithm_config["task_description"] = self.model_configs.get(model_type, {}).get("description", "Unknown task")
         
         return algorithm_config
     
@@ -260,15 +263,15 @@ class AlgorithmConfiguration:
     
     def get_supported_tasks(self) -> List[str]:
         """Get list of all supported prediction tasks"""
-        return list(self.algorithm_configs.keys())
+        return list(self.model_configs.keys())
     
     def get_task_description(self, model_type: str) -> str:
         """Get description of a prediction task"""
-        return self.algorithm_configs.get(model_type, {}).get("description", "Unknown task")
+        return self.model_configs.get(model_type, {}).get("description", "Unknown task")
     
     def get_algorithm_alternatives(self, model_type: str) -> List[str]:
         """Get alternative algorithms for a task"""
-        config = self.algorithm_configs.get(model_type, {})
+        config = self.model_configs.get(model_type, {})
         alternatives = config.get("alternatives", [])
         primary = config.get("primary", "")
         return [primary] + alternatives if primary else alternatives

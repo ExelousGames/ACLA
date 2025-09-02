@@ -224,9 +224,9 @@ async def get_available_algorithms() -> Dict[str, Any]:
             },
             "algorithm_options": {
                 task: {
-                    "primary": algorithm_config.algorithm_configs[task]["primary"],
-                    "alternatives": algorithm_config.algorithm_configs[task]["alternatives"],
-                    "description": algorithm_config.algorithm_configs[task]["description"]
+                    "primary": algorithm_config.model_configs[task]["primary"],
+                    "alternatives": algorithm_config.model_configs[task]["alternatives"],
+                    "description": algorithm_config.model_configs[task]["description"]
                 }
                 for task in algorithm_config.get_supported_tasks()
             }
@@ -248,7 +248,7 @@ async def get_algorithm_info(model_type: str) -> Dict[str, Any]:
         if model_type not in algorithm_config.get_supported_tasks():
             raise HTTPException(status_code=404, detail=f"Model type '{model_type}' not supported")
         
-        task_config = algorithm_config.algorithm_configs[model_type]
+        task_config = algorithm_config.model_configs[model_type]
         alternatives = algorithm_config.get_algorithm_alternatives(model_type)
         
         algorithm_details = {}
