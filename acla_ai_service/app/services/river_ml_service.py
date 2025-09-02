@@ -42,20 +42,20 @@ class RiverMLService:
     
     async def train_online_model(self, 
                                 telemetry_data: List[Dict[str, Any]], 
-                                target_variable: str,
+                                target_name: str,
                                 model_type: str = "lap_time_prediction",
                                 preferred_algorithm: Optional[str] = None,
-                                existing_model_data: Optional[str] = None,
+                                existing_model_data_for_db: List[Dict[str, Any]] = None,
                                 user_id: Optional[str] = None) -> Dict[str, Any]:
         """
         Train or update an online model using River's streaming approach
         
         Args:
             telemetry_data: List of telemetry data dictionaries
-            target_variable: The variable to predict
+            target_name: The variable to predict
             model_type: Type of model to train
             preferred_algorithm: Override the default algorithm for this task
-            existing_model_data: Base64 encoded existing model for incremental training
+            existing_model_data_for_db: existing model for incremental training
             user_id: User identifier for tracking
          
         Returns:
@@ -79,8 +79,9 @@ class RiverMLService:
             processed_df = feature_processor.prepare_for_analysis()
             
             # Load existing model or create new one
-            if existing_model_data:
-                model, model_type, target_name, feature_names, algorithm_name, metrics_tracker = self._load_model(existing_model_data)
+            if existing_model_data_for_db:
+                model, model_type, target_name, feature_names, algorithm_name, algorithm_config, metrics_tracker = self._load_model(existing_model_data_for_db["modelData"])
+
             else:
                 # Get optimal algorithm configuration for creating this new task
                 algorithm_config = self.algorithm_config.get_algorithm_for_task(model_type, preferred_algorithm)
@@ -88,7 +89,7 @@ class RiverMLService:
 
             # Prepare features data and target value for online learning
             cleanedFeatureData, target_values, feature_names = self._prepare_online_features_and_target(
-                processed_df, target_variable, model_type
+                processed_df, target_name, model_type
             )
             
             if not cleanedFeatureData:
@@ -103,7 +104,7 @@ class RiverMLService:
             if not target_values:
                 return {
                     "success": False,
-                    "error": f"Could not prepare target values for '{target_variable}'",
+                    "error": f"Could not prepare target values for '{target_name}'",
                     "model_type": model_type,
                     "algorithm_used": algorithm_config["name"]
                 }
@@ -115,15 +116,15 @@ class RiverMLService:
             )
             
             # Serialize the trained model
-            model_data = self._serialize_river_model(model, feature_names, algorithm_config["name"])
-            
+            model_data = self._serialize_river_model(model, model_type, feature_names, target_name, algorithm_config["name"])
+
             return {
                 "success": True,
                 "model_data": model_data,
                 "model_type": model_type,
                 "algorithm_used": algorithm_config["name"],
                 "algorithm_type": algorithm_config["type"],
-                "target_variable": target_variable,
+                "target_variable": target_name,
                 "training_metrics": training_results["metrics"],
                 "samples_processed": len(cleanedFeatureData),
                 "features_count": len(feature_names),
@@ -135,7 +136,7 @@ class RiverMLService:
                 "recommendations": self._generate_training_recommendations(
                     training_results["metrics"], algorithm_config
                 ),
-                "model_version": self._get_model_version(existing_model_data),
+                "model_version": self._get_model_version(existing_model_data_for_db),
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "user_id": user_id
             }
@@ -148,14 +149,14 @@ class RiverMLService:
                 "algorithm_used": algorithm_config.get("name", "unknown") if 'algorithm_config' in locals() else "unknown"
             }
     
-    def _prepare_online_features_and_target(self, df: pd.DataFrame, target_variable: str, 
+    def _prepare_online_features_and_target(self, df: pd.DataFrame, target_name: str, 
                                           model_type: str) -> Tuple[List[Dict], List, List[str]]:
         """
         Prepare data related features and target for online learning
         
         Args:
             df: DataFrame with telemetry data
-            target_variable: Target variable name
+            target_name: Target variable name
             model_type: Type of prediction task
         
         Returns:
@@ -172,11 +173,11 @@ class RiverMLService:
             #for each col in recommended_features, if the col is in df.columns, then use col
             available_features = [col for col in recommended_features if col in df.columns]
             
-            if not available_features or target_variable not in df.columns:
+            if not available_features or target_name not in df.columns:
                 raise RuntimeError("Insufficient features or target variable missing")
 
             # Drop rows with missing target values
-            df_clean = df.dropna(subset=[target_variable])
+            df_clean = df.dropna(subset=[target_name])
             
             if df_clean.empty:
                 raise RuntimeError("No valid rows available for training")
@@ -210,7 +211,7 @@ class RiverMLService:
                 # if its a valid sample add to features and target lists
                 if valid_sample:
                     cleanedFeatureData.append(feature_dict)
-                    target_values.append(float(row[target_variable]))
+                    target_values.append(float(row[target_name]))
             
             return cleanedFeatureData, target_values, available_features
             
@@ -240,33 +241,37 @@ class RiverMLService:
         return model,metrics_tracker
     
     
-    def _load_model(self, existing_model_data: str) -> Tuple[Any, Any]:
+    def _load_model(self, existing_model_data: str) -> Tuple[Any, str, str, List[str], str, Dict[str, Any], Any]:
         """
-        Load existing model or create new one with metrics tracker
+        Load existing model with all its metadata and create metrics tracker
         
         Args:
-            algorithm_config: Algorithm configuration
             existing_model_data: Base64 encoded existing model
         
         Returns:
             model: River model instance
+            modelType: Type of the model
+            target_name: Name of the target variable
+            feature_names: List of feature names
+            algorithm_name: Name of the algorithm
+            algorithm_config: Algorithm configuration
             metrics_tracker: Metrics tracker
         """  
 
         try:
             model, modelType, target_name, feature_names, algorithm_name = self._deserialize_river_model(existing_model_data)
         except Exception as e:
-            raise Exception("Failed to load existing model") from e
-        
-        algorithm_config = self.algorithms[algorithm_name].copy()
+            raise Exception(f"Failed to load existing model, {str(e)}") from e
+
+        algorithm_config = self.algorithm_config.algorithms[algorithm_name].copy()
         algorithm_config["name"] = algorithm_name
-        algorithm_config["task_description"] = self.algorithm_config.get(modelType, {}).get("description", "Unknown task")
+        algorithm_config["task_description"] = self.algorithm_config.get_task_description(modelType)
         
         # Create metrics tracker
         metrics_tracker = self.algorithm_config.create_metrics_tracker(algorithm_config["type"])
 
         # Additional model information
-        return model,modelType, target_name, feature_names, algorithm_name, metrics_tracker
+        return model, modelType, target_name, feature_names, algorithm_name, algorithm_config, metrics_tracker
   
     def _train_incrementally(self, model: Any, metrics_tracker: Dict[str, Any], 
                            featuresData: List[Dict], target_values: List, 
@@ -376,7 +381,7 @@ class RiverMLService:
         except Exception as e:
             raise Exception(f"Failed to serialize model: {str(e)}")
     
-    def _deserialize_river_model(self, model_data: str) -> Tuple[Any, List[str]]:
+    def _deserialize_river_model(self, model_data: str) -> Tuple[Any, str, str, List[str], str]:
         """
         Deserialize River model from base64 string
         
@@ -385,12 +390,14 @@ class RiverMLService:
         
         Returns:
             model: River model instance
+            modelType: Type of the model
             target_name: Name of the target variable
             feature_names: List of feature names
             algorithm_name: Name of the algorithm
         """
         
         try:
+            print(model_data)
             # Decode from base64
             decoded_data = base64.b64decode(model_data.encode('utf-8'))
             
@@ -425,7 +432,7 @@ class RiverMLService:
         """
         try:
             # Deserialize the model
-            model, feature_names = self._deserialize_river_model(model_data)
+            model, modelType, target_name, feature_names, algorithm_name = self._deserialize_river_model(model_data)
             
             # Prepare features for prediction
             feature_dict = {}
@@ -565,7 +572,7 @@ class RiverMLService:
             Model insights
         """
         try:
-            model, feature_names = self._deserialize_river_model(model_data)
+            model, modelType, target_name, feature_names, algorithm_name = self._deserialize_river_model(model_data)
             
             # Extract model information
             model_info = {

@@ -359,7 +359,6 @@ const LiveAnalysisSessionRecording = () => {
         //separate recorded data into chunks
         for (let i = 0; i < data.length; i += chunkSize) {
             chunks.push(data.slice(i, i + chunkSize));
-            console.log("Chunk created:", chunks[chunks.length - 1]);
         }
 
         // First send metadata
