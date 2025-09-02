@@ -207,8 +207,6 @@ const LiveAnalysisSessionRecording = () => {
      * @returns 
      */
     const StartRecording = async () => {
-        console.log("StartRecording called");
-
         //if no valid live sesssion, we dont do anything
         if (hasValidLiveSession != ACC_STATUS.ACC_LIVE) {
             console.log("No valid live session, current status:", hasValidLiveSession);
@@ -249,8 +247,6 @@ const LiveAnalysisSessionRecording = () => {
         } as PythonShellOptions;
         const script = 'ACCMemoryExtractor.py';
 
-        console.log("Setting up session with track:", analysisContext.mapSelected);
-
         analysisContext.setSession((prev) => {
             if (!prev) {
                 const newSession: RacingSessionDetailedInfoDto = {
@@ -272,17 +268,14 @@ const LiveAnalysisSessionRecording = () => {
         setButtonState(ButtonState.RECORDING);
 
         try {
-            console.log("Starting Python script:", script, "with options:", options);
             //running the script in the main process (electron.js) instead this renderer process
             const { shellId } = await window.electronAPI.runPythonScript(script, options);
-            console.log("Python script started with shell ID:", shellId);
 
-            const offPythonMessage = window.electronAPI.onPythonMessage((incomingScriptShellId: number, message: string) => {
+            const OnReceiveMesssage = window.electronAPI.onPythonMessage((incomingScriptShellId: number, message: string) => {
 
                 if (shellId == incomingScriptShellId) { //check return result of recording script
                     try {
                         const obj = JSON.parse(message);
-                        console.log("Received recording message:", obj);
                         analysisContext.setLiveSessionData(obj);
                         analysisContext.setRecordedSessionData((presState: any) => {
                             return [...presState, obj];
@@ -298,16 +291,14 @@ const LiveAnalysisSessionRecording = () => {
             window.electronAPI.onPythonEnd((incomingScriptShellId: number) => {
 
                 if (shellId == incomingScriptShellId) {// session recording is terminated
-                    console.log("Python script ended, shell ID:", incomingScriptShellId);
                     setIsRecording(false);
                     setIsRecorEnded(true);
                     setButtonState(ButtonState.UPLOAD_READY);
-                    offPythonMessage();
+                    OnReceiveMesssage();
                 }
             })
 
             setIsRecording(true);
-            console.log("Recording state set to true");
 
         } catch (error) {
             console.error("Error starting recording:", error);
@@ -368,6 +359,7 @@ const LiveAnalysisSessionRecording = () => {
         //separate recorded data into chunks
         for (let i = 0; i < data.length; i += chunkSize) {
             chunks.push(data.slice(i, i + chunkSize));
+            console.log("Chunk created:", chunks[chunks.length - 1]);
         }
 
         // First send metadata

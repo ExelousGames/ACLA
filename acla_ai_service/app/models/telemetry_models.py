@@ -555,6 +555,36 @@ class TelemetryFeatures:
             "Physics_brake_temp_front_left",
             "Physics_brake_temp_front_right"
         ]
+        
+    @classmethod
+    def get_driver_behaviour_features(cls) -> List[str]:
+        """Get features specific to driver behaviour analysis"""
+        return [
+            "Graphics_normalized_car_position",
+            "Physics_car_damage_rear",
+            "Physics_car_damage_front",
+            "Physics_car_damage_left",
+            "Physics_car_damage_right",
+            "Physics_car_damage_center",
+            "Physics_speed_kmh",
+            "Physics_gas",
+            "Physics_brake",
+            "Physics_steer_angle",
+            "Physics_gear",
+            "Physics_rpm",
+            "Physics_g_force_x",
+            "Physics_g_force_y",
+            "Physics_slip_angle_front_left",
+            "Physics_slip_angle_front_right",
+            "Physics_kerb_vibration",
+            "Physics_slip_vibration",
+            "Physics_velocity_x",
+            "Physics_velocity_y",
+            "Physics_velocity_z",
+            "Graphics_track_grip_status",
+            "Graphics_current_tyre_set"
+        ]
+        
     
     @classmethod
     def get_features_for_model_type(cls, model_type: str) -> List[str]:
@@ -568,8 +598,7 @@ class TelemetryFeatures:
             List of recommended feature names for the task
         """
         feature_map = {
-            "lap_time_prediction": cls.get_performance_critical_features(),
-            "sector_time_prediction": cls.get_sector_time_features(),
+            "driver_behaviour": cls.get_driver_behaviour_features(),
             "performance_classification": cls.get_performance_critical_features(),
             "setup_recommendation": cls.get_setup_features(),
             "tire_strategy": cls.get_tire_strategy_features(),
@@ -745,8 +774,10 @@ class FeatureProcessor:
                 # Extract first car coordinates (player car) if it's a list
                 for idx in df.index:
                     car_coords = df.loc[idx, 'Graphics_car_coordinates']
+                    player_car_id = df.loc[idx, 'Graphics_player_car_id']
+                    
                     if isinstance(car_coords, list) and len(car_coords) > 0:
-                        player_coord = car_coords[0]
+                        player_coord = car_coords[player_car_id]
                         if isinstance(player_coord, dict):
                             df.loc[idx, 'Graphics_player_pos_x'] = player_coord.get('x', 0)
                             df.loc[idx, 'Graphics_player_pos_y'] = player_coord.get('y', 0)

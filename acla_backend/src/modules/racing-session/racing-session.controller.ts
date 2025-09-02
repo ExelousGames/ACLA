@@ -79,7 +79,6 @@ export class RacingSessionController {
         if (!upload) {
             throw new BadRequestException('Upload doesnt exist');
         }
-
         const fullDataset = upload.session_data_chunks.flat();
 
         // Create racing session in database
