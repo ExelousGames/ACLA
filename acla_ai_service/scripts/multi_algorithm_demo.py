@@ -26,8 +26,8 @@ async def demonstrate_multi_algorithm_system():
     tasks = algorithm_config.get_supported_tasks()
     for task in tasks:
         description = algorithm_config.get_task_description(task)
-        primary_algo = algorithm_config.algorithm_configs[task]["primary"]
-        alternatives = algorithm_config.algorithm_configs[task]["alternatives"]
+        primary_algo = algorithm_config.model_configs[task]["primary"]
+        alternatives = algorithm_config.model_configs[task]["alternatives"]
         print(f"  • {task}")
         print(f"    Description: {description}")
         print(f"    Primary Algorithm: {primary_algo}")

@@ -741,7 +741,6 @@ class FeatureProcessor:
         
         # Ensure all column names are strings to prevent AttributeError on .lower()
         if any(not isinstance(col, str) for col in processed_df.columns):
-            print("[DEBUG] Converting non-string column names to strings")
             processed_df.columns = [str(col) for col in processed_df.columns]
         
         # Handle complex nested structures from AC Competizione telemetry
