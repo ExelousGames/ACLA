@@ -3,7 +3,7 @@ import { Types } from 'mongoose';
 
 
 @Schema({ timestamps: true })
-export class UserTrackAIModel {
+export class UserACCTrackAIModel {
 
     @Prop({ type: String, ref: 'UserInfo', required: true })
     userId: string;
@@ -67,7 +67,7 @@ export class UserTrackAIModel {
 
 }
 
-export const SessionAIModelSchema = SchemaFactory.createForClass(UserTrackAIModel);
+export const SessionAIModelSchema = SchemaFactory.createForClass(UserACCTrackAIModel);
 
 // Create compound indexes for efficient queries
 SessionAIModelSchema.index({ userId: 1, trackName: 1, modelType: 1, targetVariable: 1, isActive: 1 });

@@ -1,16 +1,16 @@
 import { Injectable, NotFoundException, BadRequestException, Inject, forwardRef } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
-import { UserTrackAIModel, SessionAIModelSchema } from 'src/schemas/session-ai-model.schema';
+import { UserACCTrackAIModel, SessionAIModelSchema } from 'src/schemas/session-ai-model.schema';
 import { UserInfo } from 'src/schemas/user-info.schema';
-import { CreateSeesionAIModelDto, UpdateAiModelDto, GetAiModelDto, IncrementalTrainingDto, ModelPredictionDto, AiModelResponseDto } from 'src/dto/ai-model.dto';
+import { CreateSeesionAIModelDto as CreateACCSeesionAIModelDto, UpdateAiModelDto as UpdateACCAiModelDto, GetAiModelDto as GetACCAiModelDto, IncrementalTrainingDto, ModelPredictionDto, AiModelResponseDto } from 'src/dto/ai-model.dto';
 import { AiServiceClient, QueryRequest } from './ai-service.client';
 import { RacingSessionService } from '../racing-session/racing-session.service';
 
 @Injectable()
 export class AiModelService {
     constructor(
-        @InjectModel(UserTrackAIModel.name) private userTrackAIModel: Model<UserTrackAIModel>,
+        @InjectModel(UserACCTrackAIModel.name) private userACCTrackAIModel: Model<UserACCTrackAIModel>,
         @InjectModel(UserInfo.name) private userInfoModel: Model<UserInfo>,
         private aiServiceClient: AiServiceClient,
         @Inject(forwardRef(() => RacingSessionService))
@@ -25,7 +25,7 @@ export class AiModelService {
         return user ? (user as any)._id : null;
     }
 
-    async createModel(createAiModelDto: CreateSeesionAIModelDto): Promise<any> {
+    async createModel(createAiModelDto: CreateACCSeesionAIModelDto): Promise<any> {
         // If setting as active, deactivate other models for the same user/track/type
 
         if (createAiModelDto.isActive) {
@@ -33,6 +33,7 @@ export class AiModelService {
                 await this.deactivateModels(
                     createAiModelDto.userId,
                     createAiModelDto.trackName,
+                    createAiModelDto.carName,
                     createAiModelDto.modelType
                 );
             } catch (error) {
@@ -40,13 +41,13 @@ export class AiModelService {
             }
         }
 
-        const newModel = new this.userTrackAIModel(createAiModelDto);
+        const newModel = new this.userACCTrackAIModel(createAiModelDto);
         const savedModel = await newModel.save();
 
         return savedModel;
     }
 
-    async findModelsByUser(getUserDto: GetAiModelDto): Promise<UserTrackAIModel[]> {
+    async findModelsByUser(getUserDto: GetACCAiModelDto): Promise<UserACCTrackAIModel[]> {
         const query: any = {
             userId: getUserDto.userId,
             trackName: getUserDto.trackName,
@@ -57,7 +58,7 @@ export class AiModelService {
             query.isActive = true;
         }
 
-        return await this.userTrackAIModel.find(query).sort({ trainedAt: -1 });
+        return await this.userACCTrackAIModel.find(query).sort({ trainedAt: -1 });
     }
 
     /**
@@ -76,7 +77,7 @@ export class AiModelService {
             return null;
         }
 
-        const data = await this.userTrackAIModel.findOne({
+        const data = await this.userACCTrackAIModel.findOne({
             userId: userId,
             carName: carName,
             trackName: trackName,
@@ -88,52 +89,35 @@ export class AiModelService {
         return data;
     }
 
-    async updateModel(modelId: string, updateAiModelDto: UpdateAiModelDto): Promise<UserTrackAIModel> {
-        const model = await this.userTrackAIModel.findById(modelId);
+    async updateModel(modelId: string, updateAiModelDto: UpdateACCAiModelDto): Promise<UserACCTrackAIModel> {
+        const model = await this.userACCTrackAIModel.findById(modelId);
         if (!model) {
             throw new NotFoundException('AI Model not found');
         }
 
-        // If updating to active, deactivate other models for the same user/track/type
-        if (updateAiModelDto.isActive === true) {
-            await this.deactivateModels(
-                model.userId,
-                model.trackName,
-                model.modelType
-            );
+        try {
+            // Update the model with new values
+            Object.assign(model, updateAiModelDto);
+
+            return await model.save();
+        } catch (error) {
+            throw new BadRequestException('Error updating AI Model: ' + error.message);
         }
-
-        // Validate feature consistency if updating feature-related fields
-        if (updateAiModelDto.featureNames && updateAiModelDto.featureCount) {
-            if (updateAiModelDto.featureNames.length !== updateAiModelDto.featureCount) {
-                throw new BadRequestException('Feature count does not match the number of feature names');
-            }
-        } else if (updateAiModelDto.featureNames) {
-            updateAiModelDto.featureCount = updateAiModelDto.featureNames.length;
-        } else if (updateAiModelDto.featureCount && model.featureNames) {
-            if (updateAiModelDto.featureCount !== model.featureNames.length) {
-                throw new BadRequestException('Feature count does not match existing feature names');
-            }
-        }
-
-        // Update the model with new values
-        Object.assign(model, updateAiModelDto);
-
-        return await model.save();
     }
 
     async deleteModel(modelId: string): Promise<void> {
-        const result = await this.userTrackAIModel.findByIdAndDelete(modelId);
+        const result = await this.userACCTrackAIModel.findByIdAndDelete(modelId);
         if (!result) {
             throw new NotFoundException('AI Model not found');
         }
     }
 
-    async deactivateModels(userId: string, trackName: string, modelType: string): Promise<void> {
-        await this.userTrackAIModel.updateMany(
+    async deactivateModels(userId: string, trackName: string, carName: string, modelType: string): Promise<void> {
+        await this.userACCTrackAIModel.updateMany(
             {
                 userId,
                 trackName,
+                carName,
                 modelType,
                 isActive: true,
             },

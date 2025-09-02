@@ -1,6 +1,6 @@
 import { Injectable, HttpException, HttpStatus } from '@nestjs/common';
 import axios from 'axios';
-import { UserTrackAIModel } from 'src/schemas/session-ai-model.schema';
+import { UserACCTrackAIModel } from 'src/schemas/session-ai-model.schema';
 
 export interface QueryRequest {
     question: string;
