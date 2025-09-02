@@ -43,7 +43,7 @@ class RiverMLService:
     async def train_online_model(self, 
                                 telemetry_data: List[Dict[str, Any]], 
                                 target_variable: str,
-                                model_type: str = "lap_time_prediction",
+                                ai_model_type: str = "lap_time_prediction",
                                 preferred_algorithm: Optional[str] = None,
                                 existing_model_data: Optional[str] = None,
                                 user_id: Optional[str] = None) -> Dict[str, Any]:
@@ -70,7 +70,7 @@ class RiverMLService:
                 return {
                     "success": False,
                     "error": "No telemetry data provided",
-                    "model_type": model_type,
+                    "model_type": ai_model_type,
                 }
             
             feature_processor = FeatureProcessor(df)
@@ -80,22 +80,22 @@ class RiverMLService:
             
             # Load existing model or create new one
             if existing_model_data:
-                model, model_type, target_name, feature_names, algorithm_name, metrics_tracker = self._load_model(existing_model_data)
+                model, ai_model_type, target_name, feature_names, algorithm_name, metrics_tracker = self._load_model(existing_model_data)
             else:
                 # Get optimal algorithm configuration for creating this new task
-                algorithm_config = self.algorithm_config.get_algorithm_for_task(model_type, preferred_algorithm)
+                algorithm_config = self.algorithm_config.get_algorithm_for_task(ai_model_type, preferred_algorithm)
                 model, metrics_tracker = self._create_model(algorithm_config)
 
             # Prepare features data and target value for online learning
             cleanedFeatureData, target_values, feature_names = self._prepare_online_features_and_target(
-                processed_df, target_variable, model_type
+                processed_df, target_variable, ai_model_type
             )
             
             if not cleanedFeatureData:
                 return {
                     "success": False,
                     "error": f"Could not prepare features data",
-                    "model_type": model_type,
+                    "model_type": ai_model_type,
                     "algorithm_used": algorithm_config["name"]
                 }
             
@@ -104,7 +104,7 @@ class RiverMLService:
                 return {
                     "success": False,
                     "error": f"Could not prepare target values for '{target_variable}'",
-                    "model_type": model_type,
+                    "model_type": ai_model_type,
                     "algorithm_used": algorithm_config["name"]
                 }
             
@@ -120,7 +120,7 @@ class RiverMLService:
             return {
                 "success": True,
                 "model_data": model_data,
-                "model_type": model_type,
+                "model_type": ai_model_type,
                 "algorithm_used": algorithm_config["name"],
                 "algorithm_type": algorithm_config["type"],
                 "target_variable": target_variable,
@@ -144,12 +144,12 @@ class RiverMLService:
             return {
                 "success": False,
                 "error": f"Training failed: {str(e)}",
-                "model_type": model_type,
+                "model_type": ai_model_type,
                 "algorithm_used": algorithm_config.get("name", "unknown") if 'algorithm_config' in locals() else "unknown"
             }
     
     def _prepare_online_features_and_target(self, df: pd.DataFrame, target_variable: str, 
-                                          model_type: str) -> Tuple[List[Dict], List, List[str]]:
+                                          ai_model_type: str) -> Tuple[List[Dict], List, List[str]]:
         """
         Prepare data related features and target for online learning
         
@@ -166,7 +166,7 @@ class RiverMLService:
         try:
             
             # Get recommended features for this model type
-            recommended_features = self.algorithm_config.get_recommended_features(model_type)
+            recommended_features = self.algorithm_config.get_recommended_features(ai_model_type)
    
             # select only those features that are in the recommended_features that are also present in the DataFrame
             #for each col in recommended_features, if the col is in df.columns, then use col
