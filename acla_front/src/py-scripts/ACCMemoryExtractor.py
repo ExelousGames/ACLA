@@ -6,6 +6,7 @@ import os
 from util.json_utils import DataclassJSONUtility
 from util.clean_encode import cleanEncoding
 import sys
+import enum 
 
 recordedData = []
 
@@ -59,11 +60,14 @@ class ACCRecording:
                 # Skip private attributes
                 if key.startswith('_'):
                     continue
-                    
                 full_key = f"{prefix}{key}" if prefix else key
                 
+                if isinstance(value, enum.Enum):
+                    valueFixed = cleanEncoding(value.value)
+                    if not self.is_blank(valueFixed):
+                        flattened[full_key] = valueFixed
                 # Handle nested objects recursively
-                if hasattr(value, '__dict__'):
+                elif hasattr(value, '__dict__'):
                     nested_flattened = self.flatten_object(value, prefix=f"{full_key}_")
                     flattened.update(nested_flattened)
                 # Handle basic types
