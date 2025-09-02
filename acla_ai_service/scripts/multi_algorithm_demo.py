@@ -178,7 +178,7 @@ async def demonstrate_multi_algorithm_system():
                 telemetry_data=new_telemetry,
                 target_variable="lap_time",
                 model_type="lap_time_prediction",
-                existing_model_data=base_model,
+                existing_model_data_from_db=base_model,
                 user_id="incremental_test"
             )
             

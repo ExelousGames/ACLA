@@ -142,7 +142,7 @@ export class RacingSessionController {
 
                             //find the matching config
                             const modelConfig = modelsConfig.find(config => config.config_id === configId);
-
+                            console.log("Training result for response:", response);
                             if (response.success) {
                                 //if there is an active model, update the model in database
                                 if (modelConfig && modelConfig.existing_model_data) {

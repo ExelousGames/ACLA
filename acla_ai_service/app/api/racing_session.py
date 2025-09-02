@@ -64,7 +64,7 @@ async def train_ai_model(request: TrainingRequest) -> Dict[str, Any]:
             target_variable=request.target_variable,
             model_type=request.model_type,
             preferred_algorithm=request.preferred_algorithm,
-            existing_model_data=request.existing_model_data,
+            existing_model_data_from_db=request.existing_model_data,
             user_id=request.user_id,
         )
         
@@ -111,7 +111,7 @@ async def train_multiple_ai_models(request: MultipleTrainingRequest) -> Dict[str
                     target_variable=target_variable,
                     model_type=model_type,
                     preferred_algorithm=preferred_algorithm,
-                    existing_model_data=existing_model_data,
+                    existing_model_data_from_db=existing_model_data,
                     user_id=request.user_id,
                 )
                 

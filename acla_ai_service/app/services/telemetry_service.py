@@ -114,7 +114,7 @@ class TelemetryService:
                            target_variable: str,
                            model_type: str = "lap_time_prediction",
                            preferred_algorithm: Optional[str] = None,
-                           existing_model_data: Optional[str] = None,
+                           existing_model_data_from_db: List[Dict[str, Any]] = None,
                            user_id: Optional[str] = None,) -> Dict[str, Any]:
         """
         Train AI model on telemetry data with support for online learning using River
@@ -124,7 +124,7 @@ class TelemetryService:
             target_variable: The variable to predict (e.g., 'lap_time', 'sector_time')
             model_type: Type of model to train
             preferred_algorithm: Override the default algorithm for this task
-            existing_model_data: Base64 encoded existing model for incremental training
+            existing_model_data_from_db:  data about existing model for incremental training
             user_id: User identifier for tracking
             use_river: Whether to use River for online learning (default: True)
          
@@ -136,10 +136,10 @@ class TelemetryService:
             # Use the new River-based online learning service
             return await self.river_ml_service.train_online_model(
                 telemetry_data=telemetry_data,
-                target_variable=target_variable,
+                target_name=target_variable,
                 model_type=model_type,
                 preferred_algorithm=preferred_algorithm,
-                existing_model_data=existing_model_data,
+                existing_model_data_for_db=existing_model_data_from_db,
                 user_id=user_id
             )
                 
