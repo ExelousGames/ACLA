@@ -17,14 +17,6 @@ class QueryRequest(BaseModel):
     user_id: Optional[str] = None
     context: Optional[Dict[str, Any]] = None
 
-class TrainingQueryRequest(BaseModel):
-    query: str
-    session_ids: List[str]
-    target_variable: str = "lap_time"
-    model_type: str = "lap_time_prediction"
-    user_id: str
-    existing_model_id: Optional[str] = None
-
 class PredictionQueryRequest(BaseModel):
     query: str
     model_id: str
@@ -71,54 +63,6 @@ async def process_query(request: QueryRequest):
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Query processing failed: {str(e)}")
-
-@router.post("/query/train-model")
-async def query_train_model(request: TrainingQueryRequest):
-    """
-    Process natural language queries about training AI models via backend controller
-    Example: "Train a model to predict lap times using my last 5 sessions"
-    """
-    try:
-        # Create a training query that OpenAI will process and route to backend
-        enhanced_query = f"""
-        {request.query}
-        
-        Training Parameters:
-        - Session IDs: {request.session_ids}
-        - Target Variable: {request.target_variable}
-        - Model Type: {request.model_type}
-        - User ID: {request.user_id}
-        - Existing Model ID: {request.existing_model_id or 'None (new model)'}
-        """
-        
-        context = {
-            "user_id": request.user_id,
-            "training_request": {
-                "session_ids": request.session_ids,
-                "target_variable": request.target_variable,
-                "model_type": request.model_type,
-                "existing_model_id": request.existing_model_id
-            },
-            "query_type": "training"
-        }
-        
-        # Process the query, OpenAI will call train_telemetry_ai_model which uses backend
-        result = await ai_service.process_natural_language_query(
-            enhanced_query, 
-            context
-        )
-        
-        return {
-            "success": True,
-            "query": request.query,
-            "answer": result.get("answer"),
-            "training_result": result.get("function_calls"),
-            "backend_integration": "ai-model controller",
-            "processing_type": "ai_model_training_via_backend"
-        }
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Training query failed: {str(e)}")
 
 @router.post("/query/predict")
 async def query_predict(request: PredictionQueryRequest):

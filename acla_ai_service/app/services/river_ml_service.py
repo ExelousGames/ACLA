@@ -79,8 +79,8 @@ class RiverMLService:
             processed_df = feature_processor.prepare_for_analysis()
             
             # Load existing model or create new one
-            if existing_model_data:
-                model, model_type, target_name, feature_names, algorithm_name, metrics_tracker = self._load_model(existing_model_data)
+            if existing_model_data_for_db:
+                model, model_type, target_name, feature_names, algorithm_name, metrics_tracker = self._load_model(existing_model_data_for_db)
             else:
                 # Get optimal algorithm configuration for creating this new task
                 algorithm_config = self.algorithm_config.get_algorithm_for_task(ai_model_type, preferred_algorithm)
@@ -148,8 +148,8 @@ class RiverMLService:
                 "algorithm_used": algorithm_config.get("name", "unknown") if 'algorithm_config' in locals() else "unknown"
             }
     
-    def _prepare_online_features_and_target(self, df: pd.DataFrame, target_variable: str, 
-                                          model_type: str) -> Tuple[List[Dict], List, List[str]]:
+    def _prepare_online_features_and_target(self, df: pd.DataFrame, target_name: str, 
+                                          ai_model_type: str) -> Tuple[List[Dict], List, List[str]]:
         """
         Prepare data related features and target for online learning
         
@@ -224,7 +224,6 @@ class RiverMLService:
         
         Args:
             algorithm_config: Algorithm configuration
-            existing_model_data: Base64 encoded existing model
         
         Returns:
             model: River model instance
