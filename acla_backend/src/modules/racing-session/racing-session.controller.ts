@@ -5,7 +5,7 @@ import { AiModelResponseDto } from 'src/dto/ai-model.dto';
 import { RacingSessionService } from './racing-session.service';
 import { AiModelService } from '../ai-model/ai-model.service';
 import { UserInfoService } from '../user-info/user-info.service';
-import { UserTrackAIModel } from 'src/schemas/session-ai-model.schema';
+import { UserACCTrackAIModel } from 'src/schemas/session-ai-model.schema';
 import { AiServiceClient, ModelsConfig, TrainModelsResponse } from '../ai-model/ai-service.client';
 import { model, Types } from 'mongoose';
 
@@ -108,7 +108,7 @@ export class RacingSessionController {
                         { config_id: "lap_prediction", target_variable: "Graphics_current_time", model_type: "lap_time_prediction" }
                     ];
 
-                    let activeModel: UserTrackAIModel & { _id: Types.ObjectId; } | null = null;
+                    let activeModel: UserACCTrackAIModel & { _id: Types.ObjectId; } | null = null;
 
                     // Check for existing active models for each config
                     for (const modelConfig of modelsConfig) {
