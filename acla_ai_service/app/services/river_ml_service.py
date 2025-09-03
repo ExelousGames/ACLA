@@ -76,7 +76,7 @@ class RiverMLService:
             feature_processor = FeatureProcessor(df)
 
             # Clean data
-            processed_df = feature_processor.prepare_for_analysis()
+            processed_df = feature_processor.general_cleaning_for_analysis()
             
             # Load existing model or create new one
             if existing_model_data_for_db:
@@ -556,53 +556,3 @@ class RiverMLService:
         else:
             return 1  # First version
     
-    async def get_model_insights(self, 
-                               model_data: str,
-                               feature_importance_top_n: int = 10) -> Dict[str, Any]:
-        """
-        Get insights about a trained River model
-        
-        Args:
-            model_data: Base64 encoded model data
-            feature_importance_top_n: Number of top features to return
-        
-        Returns:
-            Model insights
-        """
-        try:
-            model, modelType, target_name, feature_names, algorithm_name = self._deserialize_river_model(model_data)
-            
-            # Extract model information
-            model_info = {
-                "feature_count": len(feature_names),
-                "feature_names": feature_names,
-                "model_type": type(model).__name__,
-                "supports_online_learning": True,
-                "memory_efficient": True
-            }
-            
-            # Try to extract feature importance
-            feature_importance = self.algorithm_config.extract_feature_importance(
-                model, feature_names, type(model).__name__.lower()
-            )
-            
-            if feature_importance:
-                # Sort by importance and take top N
-                sorted_importance = sorted(
-                    feature_importance.items(), 
-                    key=lambda x: x[1], 
-                    reverse=True
-                )[:feature_importance_top_n]
-                model_info["feature_importance"] = dict(sorted_importance)
-            
-            return {
-                "success": True,
-                "insights": model_info,
-                "timestamp": datetime.now(timezone.utc).isoformat()
-            }
-            
-        except Exception as e:
-            return {
-                "success": False,
-                "error": f"Failed to extract insights: {str(e)}"
-            }

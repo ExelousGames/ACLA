@@ -734,7 +734,7 @@ class FeatureProcessor:
             }
         }
     
-    def prepare_for_analysis(self) -> pd.DataFrame:
+    def general_cleaning_for_analysis(self) -> pd.DataFrame:
         """Prepare the DataFrame for AI analysis by cleaning and preprocessing"""
         
         processed_df = self.df.copy()

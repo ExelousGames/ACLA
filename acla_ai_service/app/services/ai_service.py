@@ -119,7 +119,6 @@ class AIService:
                     AI MODEL FUNCTIONS (Personalized predictions using user's own driving data):
                     - train_telemetry_ai_model: Train custom AI models on user's telemetry data
                     - predict_with_telemetry_model: Use trained AI models for personalized predictions
-                    - get_model_insights: Get model statistics and feature importance
                     
                     INTELLIGENT COACHING FUNCTIONS:
                     - generate_ai_recommendations: Generate intelligent coaching recommendations
@@ -247,7 +246,6 @@ class AIService:
                 ),
                 "train_telemetry_ai_model": lambda: self._train_ai_model_via_backend(arguments, context),
                 "predict_with_telemetry_model": lambda: self._predict_via_backend(arguments, context),
-                "get_model_insights": lambda: self._get_model_insights_via_backend(arguments, context),
                 "get_user_models": lambda: self.get_user_models_via_backend(
                     arguments.get("user_id"),
                     arguments.get("track_name"),
