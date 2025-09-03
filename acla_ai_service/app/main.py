@@ -2,11 +2,13 @@
 ACLA AI Service - Main application entry point
 """
 
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
 from app.core import settings
+from app.services.backend_service import backend_service
 from app.api import (
     health_router,
     racing_session_router,
@@ -17,12 +19,39 @@ from app.api.ml_endpoints import router as ml_router
 # Load environment variables
 load_dotenv()
 
-# Create FastAPI application
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifespan manager"""
+    # Startup
+    print("✅ Using new structured application")
+    print(f"🏁 {settings.app_name} v{settings.app_version}")
+    print(f"🔧 Backend URL: {settings.backend_url}")
+    print(f"🤖 OpenAI API: {'Configured' if settings.openai_api_key else 'Not configured'}")
+    
+    # Establish backend connection
+    print("🔌 Establishing backend connection...")
+    if await backend_service.establish_connection():
+        print("✅ Backend connection established successfully")
+    else:
+        print("⚠️  Backend connection failed - some features may not work")
+        print("   Check your backend credentials in environment variables:")
+        print("   - BACKEND_USERNAME")
+        print("   - BACKEND_PASSWORD")
+    
+    yield
+    
+    # Shutdown
+    print(f"🏁 {settings.app_name} shutting down...")
+
+
+# Create FastAPI application with lifespan manager
 app = FastAPI(
     title=settings.app_name,
     version=settings.app_version,
     description="AI-powered racing telemetry analysis service for Assetto Corsa Competizione",
-    debug=settings.debug
+    debug=settings.debug,
+    lifespan=lifespan
 )
 
 # Configure CORS
@@ -39,21 +68,6 @@ app.include_router(health_router)
 app.include_router(query_router)  # Main query endpoint
 app.include_router(racing_session_router)
 app.include_router(ml_router)  # Machine Learning endpoints
-
-
-@app.on_event("startup")
-async def startup_event():
-    """Application startup event"""
-    print("✅ Using new structured application")
-    print(f"🏁 {settings.app_name} v{settings.app_version}")
-    print(f"🔧 Backend URL: {settings.backend_url}")
-    print(f"🤖 OpenAI API: {'Configured' if settings.openai_api_key else 'Not configured'}")
-
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    """Application shutdown event"""
-    print(f"🏁 {settings.app_name} shutting down...")
 
 
 if __name__ == "__main__":

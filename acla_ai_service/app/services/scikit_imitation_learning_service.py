@@ -10,6 +10,8 @@ import numpy as np
 import pandas as pd
 import pickle
 import warnings
+import io
+import base64
 from typing import Dict, List, Any, Optional, Tuple, Union
 from datetime import datetime
 from pathlib import Path
@@ -31,8 +33,8 @@ from ..models.telemetry_models import TelemetryFeatures, FeatureProcessor
 warnings.filterwarnings('ignore', category=UserWarning)
 
 
-class DrivingBehaviorExtractor:
-    """Extract driving behavior patterns from telemetry data"""
+class BehaviorLearner:
+    """Extract driving behavior patterns from telemetry data and train behavior models"""
     
     def __init__(self):
         self.scaler = StandardScaler()
@@ -135,6 +137,68 @@ class DrivingBehaviorExtractor:
         driving_styles = pd.Series([style_mapping.get(cluster, 'unknown') for cluster in clusters])
         
         return driving_styles
+    
+    def train_behavior_model(self, 
+                            features: pd.DataFrame, 
+                            styles: pd.Series) -> Dict[str, Any]:
+        """
+        Train a model to predict driving behavior
+        
+        Args:
+            features: Behavior features DataFrame
+            styles: Driving style labels
+            
+        Returns:
+            Trained behavior model information
+        """
+        # Prepare data
+        feature_cols = features.select_dtypes(include=[np.number]).columns
+        X = features[feature_cols].fillna(0)
+        y = styles
+        
+        # Encode labels
+        label_encoder = LabelEncoder()
+        y_encoded = label_encoder.fit_transform(y)
+        
+        # Split data
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y_encoded, test_size=0.2, random_state=42, stratify=y_encoded
+        )
+        
+        # Scale features
+        scaler = StandardScaler()
+        X_train_scaled = scaler.fit_transform(X_train)
+        X_test_scaled = scaler.transform(X_test)
+        
+        # Train model
+        model = RandomForestClassifier(
+            n_estimators=100,
+            max_depth=20,
+            random_state=42,
+            n_jobs=-1
+        )
+        model.fit(X_train_scaled, y_train)
+
+        # Evaluate
+        y_pred = model.predict(X_test_scaled)
+        accuracy = accuracy_score(y_test, y_pred)
+        f1 = f1_score(y_test, y_pred, average='weighted')
+        
+        # Feature importance
+        feature_importance = dict(zip(feature_cols, model.feature_importances_))
+        top_features = sorted(feature_importance.items(), key=lambda x: x[1], reverse=True)[:10]
+        
+        return {
+            'model': model,
+            'scaler': scaler,
+            'label_encoder': label_encoder,
+            'feature_names': list(feature_cols),
+            'performance_metrics': {
+                'accuracy': accuracy,
+                'f1_score': f1
+            },
+            'feature_importance': dict(top_features)
+        }
 
 
 class ExpertTrajectoryLearner:
@@ -304,78 +368,13 @@ class ExpertTrajectoryLearner:
         }
         
         return {
-            'trajectory_model': self.trajectory_model,
-            'performance_metrics': performance_metrics,
-            'input_features': available_input_features,
-            'models_trained': list(models.keys())
-        }
-    
-    def serialize_model(self, trajectory_model: Dict[str, Any]) -> bytes:
-        """
-        Serialize the complete trajectory model including all components
-        
-        Args:
-            trajectory_model: Dictionary containing all model components
-            
-        Returns:
-            Serialized model as bytes
-        """
-        import pickle
-        from datetime import datetime
-        
-        # Create a comprehensive serialization package
-        serialization_package = {
-            'timestamp': datetime.now().isoformat(),
-            'model_version': '1.0',
-            'trajectory_model': trajectory_model,
-            'metadata': {
-                'num_models': len(trajectory_model.get('models', {})),
-                'input_features_count': len(trajectory_model.get('input_features', [])),
-                'has_pca': trajectory_model.get('pca') is not None,
-                'has_scaler': trajectory_model.get('scaler') is not None
+            'modelData': self.trajectory_model,
+            'metadata':{
+                'performance_metrics': performance_metrics,
+                'input_features': available_input_features,
+                'models_trained': list(models.keys())
             }
         }
-        
-        try:
-            # Serialize the complete package
-            serialized_data = pickle.dumps(serialization_package)
-            print(f"[INFO] Model serialized successfully. Size: {len(serialized_data)} bytes")
-            return serialized_data
-        except Exception as e:
-            print(f"[ERROR] Failed to serialize model: {e}")
-            raise
-    
-    def deserialize_model(self, serialized_data: bytes) -> Dict[str, Any]:
-        """
-        Deserialize a trajectory model from bytes
-        
-        Args:
-            serialized_data: Serialized model data
-            
-        Returns:
-            Deserialized trajectory model
-        """
-        import pickle
-        
-        try:
-            serialization_package = pickle.loads(serialized_data)
-            
-            # Extract the trajectory model
-            trajectory_model = serialization_package['trajectory_model']
-            
-            # Restore the model to the current instance
-            self.trajectory_model = trajectory_model
-            self.scaler = trajectory_model.get('scaler')
-            if trajectory_model.get('pca') is not None:
-                self.pca = trajectory_model.get('pca')
-            
-            print(f"[INFO] Model deserialized successfully from {serialization_package.get('timestamp', 'unknown time')}")
-            print(f"[INFO] Model version: {serialization_package.get('model_version', 'unknown')}")
-
-            return trajectory_model
-        except Exception as e:
-            print(f"[ERROR] Failed to deserialize model: {e}")
-            raise
     
     def predict_optimal_actions(self, current_state: pd.DataFrame) -> Dict[str, float]:
         """
@@ -426,13 +425,13 @@ class ImitationLearningService:
         self.models_directory = Path(models_directory)
         self.models_directory.mkdir(exist_ok=True)
         
-        self.behavior_extractor = DrivingBehaviorExtractor()
+        self.behavior_learner = BehaviorLearner()
         self.trajectory_learner = ExpertTrajectoryLearner()
         self.trained_models = {}
         
         print(f"[INFO] ImitationLearningService initialized. Models directory: {self.models_directory}")
 
-    def train_ai_model(self, telemetry_data: List[Dict[str, Any]], learning_objectives: List[str] = None) -> Dict[str, Any]:
+    def train_ai_model(self, telemetry_data: List[Dict[str, Any]], learning_objectives: List[str] = None) -> Tuple[Dict[str, Any]]:
         """
         Learn from expert driving demonstrations
         
@@ -441,7 +440,7 @@ class ImitationLearningService:
             learning_objectives: List of what to learn ('behavior', 'trajectory', 'both')
             
         Returns:
-            Dictionary with learning results
+            Tuple containing (results
         """
         if learning_objectives is None:
             learning_objectives = ['behavior', 'trajectory']
@@ -461,19 +460,23 @@ class ImitationLearningService:
             print("[INFO] Extracting driving behavior patterns...")
             
             # generate behavior features
-            behavior_features = self.behavior_extractor.generate_driving_style_features(processed_df)
+            behavior_features = self.behavior_learner.generate_driving_style_features(processed_df)
             
             # Classify driving styles
-            driving_styles = self.behavior_extractor.classify_driving_style(behavior_features)
+            driving_styles = self.behavior_learner.classify_driving_style(behavior_features)
             
             # Train behavior prediction model
-            behavior_model = self._train_behavior_model(behavior_features, driving_styles)
+            behavior_model = self.behavior_learner.train_behavior_model(behavior_features, driving_styles)
             
             results['behavior_learning'] = {
-                'model': behavior_model,
-                'features_shape': behavior_features.shape,
-                'style_distribution': driving_styles.value_counts().to_dict(),
-                'model_performance': behavior_model.get('performance_metrics', {})
+                'modelData': {
+                    'model': behavior_model
+                },
+                'metadata':{
+                    'features_shape': behavior_features.shape,
+                    'style_distribution': driving_styles.value_counts().to_dict(),
+                    'model_performance': behavior_model.get('performance_metrics', {})
+                }
             }
         
         # Learn optimal trajectories
@@ -483,100 +486,32 @@ class ImitationLearningService:
             trajectory_results = self.trajectory_learner.learn_optimal_trajectory(processed_df)
             
             results['trajectory_learning'] = trajectory_results
-        
-        self._save_imitation_model(results)
 
-        return results, self._generate_learning_summary(results)
-
-    def _train_behavior_model(self, 
-                            features: pd.DataFrame, 
-                            styles: pd.Series) -> Dict[str, Any]:
-        """
-        Train a model to predict driving behavior
-        
-        Args:
-            features: Behavior features DataFrame
-            styles: Driving style labels
-            
-        Returns:
-            Trained behavior model information
-        """
-        # Prepare data
-        feature_cols = features.select_dtypes(include=[np.number]).columns
-        X = features[feature_cols].fillna(0)
-        y = styles
-        
-        # Encode labels
-        label_encoder = LabelEncoder()
-        y_encoded = label_encoder.fit_transform(y)
-        
-        # Split data
-        X_train, X_test, y_train, y_test = train_test_split(
-            X, y_encoded, test_size=0.2, random_state=42, stratify=y_encoded
-        )
-        
-        # Scale features
-        scaler = StandardScaler()
-        X_train_scaled = scaler.fit_transform(X_train)
-        X_test_scaled = scaler.transform(X_test)
-        
-        # Train model
-        model = RandomForestClassifier(
-            n_estimators=100,
-            max_depth=20,
-            random_state=42,
-            n_jobs=-1
-        )
-        model.fit(X_train_scaled, y_train)
-        
-        # Evaluate
-        y_pred = model.predict(X_test_scaled)
-        accuracy = accuracy_score(y_test, y_pred)
-        f1 = f1_score(y_test, y_pred, average='weighted')
-        
-        # Feature importance
-        feature_importance = dict(zip(feature_cols, model.feature_importances_))
-        top_features = sorted(feature_importance.items(), key=lambda x: x[1], reverse=True)[:10]
-        
-        return {
-            'model': model,
-            'scaler': scaler,
-            'label_encoder': label_encoder,
-            'feature_names': list(feature_cols),
-            'performance_metrics': {
-                'accuracy': accuracy,
-                'f1_score': f1
-            },
-            'feature_importance': dict(top_features)
-        }
+        results['learning_summary'] = self._generate_learning_summary(results)
+        return results
     
     def predict_expert_actions(self, 
                              current_telemetry: Dict[str, Any], 
-                             model_id: str) -> Dict[str, Any]:
+                             model_data: Dict[str, Any]) -> Dict[str, Any]:
         """
         Predict what an expert would do in the current situation
         
         Args:
             current_telemetry: Current telemetry state
-            model_id: ID of the trained imitation model
+            model_data: Dictionary containing the trained imitation models
             
         Returns:
             Predicted expert actions and recommendations
         """
-        # Load model
-        model_info = self._load_imitation_model(model_id)
-        if not model_info:
-            raise ValueError(f"Model {model_id} not found")
-        
         df = pd.DataFrame([current_telemetry])
         predictions = {}
         
         # Predict driving behavior
-        if 'behavior_learning' in model_info:
-            behavior_model = model_info['behavior_learning']['model']
+        if 'behavior_learning' in model_data:
+            behavior_model = model_data['behavior_learning']['model']
             
             # Extract behavior features
-            behavior_features = self.behavior_extractor.generate_driving_style_features(df)
+            behavior_features = self.behavior_learner.generate_driving_style_features(df)
             
             # Prepare features
             feature_cols = behavior_model['feature_names']
@@ -601,10 +536,10 @@ class ImitationLearningService:
             }
         
         # Predict optimal actions
-        if 'trajectory_learning' in model_info:
+        if 'trajectory_learning' in model_data:
             try:
                 # Set the trajectory model
-                self.trajectory_learner.trajectory_model = model_info['trajectory_learning']['trajectory_model']
+                self.trajectory_learner.trajectory_model = model_data['trajectory_learning']['trajectory_model']
                 
                 optimal_actions = self.trajectory_learner.predict_optimal_actions(df)
                 predictions['optimal_actions'] = optimal_actions
@@ -672,6 +607,66 @@ class ImitationLearningService:
                     }).fillna(False)
         
         return processed_df
+    
+    # Serialize models function
+    def serialize_imitation_model(self, training_model: any) -> str:
+        """
+        Serialize trained behavior and trajectory models
+        
+        Args:
+            training_result: Dictionary containing trained models
+            
+        Returns:
+            Serialized model data as base64 encoded string
+        """
+        # Prepare serialization data
+        serialization_data = {
+            'timestamp': datetime.now().isoformat(),
+            'model': training_model
+        }
+            
+        try:
+            # Serialize to bytes
+            buffer = io.BytesIO()
+            pickle.dump(serialization_data, buffer)
+            buffer.seek(0)
+        
+            # Encode to base64
+            encoded_data = base64.b64encode(buffer.getvalue()).decode('utf-8')
+            
+            print(f"[INFO] Models serialized successfully. Size: {len(encoded_data)} characters")
+
+            return encoded_data
+                
+        except Exception as e:
+            print(f"[ERROR] Failed to serialize models: {e}")
+            raise e
+    
+    def deserialize_imitation_models(self, model_data: str) -> Dict[str, Any]:
+        """
+        Deserialize imitation learning models from base64 string
+        
+        Args:
+            model_data: Base64 encoded model data
+        
+        Returns:
+            Dictionary containing deserialized models and metadata
+        """
+        
+        try:
+            # Decode from base64
+            decoded_data = base64.b64decode(model_data.encode('utf-8'))
+            
+            # Deserialize using pickle
+            buffer = io.BytesIO(decoded_data)
+            model_dict = pickle.load(buffer)
+            
+            print(f"[INFO] Models deserialized successfully. Timestamp: {model_dict.get('timestamp', 'Unknown')}")
+            
+            return model_dict["results"]
+            
+        except Exception as e:
+            raise Exception(f"Failed to deserialize imitation learning models: {str(e)}")
 # Example usage and testing
 if __name__ == "__main__":
     print("ImitationLearningService initialized. Ready for expert demonstration learning!")

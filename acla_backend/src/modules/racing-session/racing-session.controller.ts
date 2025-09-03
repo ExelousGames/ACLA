@@ -1,12 +1,12 @@
 import { Controller, Get, UseGuards, Request, Post, Body, Query, BadRequestException, Inject, forwardRef } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
-import { RacingSessionDetailedInfoDto, SessionBasicInfoListDto, UploadReacingSessionInitDto } from 'src/dto/racing-session.dto';
+import { RacingSessionDetailedInfoDto, SessionBasicInfoListDto, UploadReacingSessionInitDto, AllSessionsInitResponseDto, SessionChunkDto, AllSessionsChunkRequestDto } from 'src/dto/racing-session.dto';
 import { AiModelResponseDto } from 'src/dto/ai-model.dto';
 import { RacingSessionService } from './racing-session.service';
-import { AiModelService } from '../ai-model/ai-model.service';
+import { UserSessionAiModelService } from '../user-session-ai-model/user-session-ai-model.service';
 import { UserInfoService } from '../user-info/user-info.service';
 import { UserACCTrackAIModel } from 'src/schemas/session-ai-model.schema';
-import { AiServiceClient, ModelsConfig, TrainModelsResponse } from '../ai-model/ai-service.client';
+import { AiServiceClient, ModelsConfig, TrainModelsResponse } from '../../shared/ai/ai-service.client';
 import { model, Types } from 'mongoose';
 
 @Controller('racing-session')
@@ -17,10 +17,16 @@ export class RacingSessionController {
         received: number;
     }>();
 
+    private downloadStates = new Map<string, {
+        initData: AllSessionsInitResponseDto;
+        downloadedChunks: Set<string>; // Track downloaded chunks by "sessionId:chunkIndex"
+        createdAt: Date;
+    }>();
+
     constructor(
         private racingSessionService: RacingSessionService,
-        @Inject(forwardRef(() => AiModelService))
-        private aiModelService: AiModelService,
+        @Inject(forwardRef(() => UserSessionAiModelService))
+        private aiModelService: UserSessionAiModelService,
         private aiServiceClient: AiServiceClient,
         private userInfoService: UserInfoService
     ) { }
@@ -31,11 +37,119 @@ export class RacingSessionController {
         return this.racingSessionService.retrieveAllRacingSessionsBasicInfo(body.map_name, body.username);
     }
 
+
     @UseGuards(AuthGuard('jwt'))
     @Post('detailedSessionInfo')
     retrieveSessionDetailedInfo(@Request() req, @Body() body): Promise<RacingSessionDetailedInfoDto | null> {
 
         return this.racingSessionService.retrieveSessionDetailedInfo(body.id);
+    }
+
+    @UseGuards(AuthGuard('jwt'))
+    @Post('download/init')
+    async initializeSessionsDownload(
+        @Request() req,
+        @Body() body: { trackName: string, carName: string, chunkSize?: number }
+    ): Promise<AllSessionsInitResponseDto> {
+        try {
+            const chunkSize = body.chunkSize || 1000; // Default chunk size
+
+            const initData = await this.racingSessionService.initializeSessionsDownload(body.trackName, body.carName, chunkSize);
+
+            // Store download state for tracking
+            this.downloadStates.set(initData.downloadId, {
+                initData,
+                downloadedChunks: new Set<string>(),
+                createdAt: new Date()
+            });
+
+            // Clean up old download states (older than 1 hour)
+            this.cleanupOldDownloadStates();
+
+            return initData;
+        } catch (error) {
+            throw new BadRequestException(`Failed to initialize download: ${error.message}`);
+        }
+    }
+
+    @UseGuards(AuthGuard('jwt'))
+    @Post('download/chunk')
+    async downloadSessionChunk(
+        @Request() req,
+        @Body() body: AllSessionsChunkRequestDto
+    ): Promise<SessionChunkDto> {
+        try {
+            // Validate download state exists
+            const downloadState = this.downloadStates.get(body.downloadId);
+            if (!downloadState) {
+                throw new BadRequestException('Download session not found or expired');
+            }
+
+            // Validate session exists in the download
+            const sessionExists = downloadState.initData.sessionMetadata.some(
+                session => session.sessionId === body.sessionId
+            );
+            if (!sessionExists) {
+                throw new BadRequestException('Session not found in download');
+            }
+
+            const chunkSize = 1000; // Use consistent chunk size
+            const chunk = await this.racingSessionService.getSessionChunk(
+                body.sessionId,
+                body.chunkIndex,
+                chunkSize
+            );
+
+            // Set the download ID from the request
+            chunk.downloadId = body.downloadId;
+
+            // Track downloaded chunk
+            const chunkKey = `${body.sessionId}:${body.chunkIndex}`;
+            downloadState.downloadedChunks.add(chunkKey);
+
+            return chunk;
+        } catch (error) {
+            throw new BadRequestException(`Failed to download chunk: ${error.message}`);
+        }
+    }
+
+    /**
+     * Clean up download states older than 1 hour
+     */
+    private cleanupOldDownloadStates(): void {
+        const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
+
+        for (const [downloadId, state] of this.downloadStates.entries()) {
+            if (state.createdAt < oneHourAgo) {
+                this.downloadStates.delete(downloadId);
+            }
+        }
+    }
+
+    @UseGuards(AuthGuard('jwt'))
+    @Post('download/status')
+    async getDownloadStatus(
+        @Request() req,
+        @Body() body: { downloadId: string }
+    ) {
+        const downloadState = this.downloadStates.get(body.downloadId);
+        if (!downloadState) {
+            throw new BadRequestException('Download session not found or expired');
+        }
+
+        const totalPossibleChunks = downloadState.initData.totalChunks;
+        const downloadedChunks = downloadState.downloadedChunks.size;
+        const progress = totalPossibleChunks > 0 ? (downloadedChunks / totalPossibleChunks) * 100 : 0;
+
+        return {
+            downloadId: body.downloadId,
+            totalSessions: downloadState.initData.totalSessions,
+            totalChunks: totalPossibleChunks,
+            downloadedChunks,
+            progress: Math.round(progress * 100) / 100, // Round to 2 decimal places
+            isComplete: downloadedChunks >= totalPossibleChunks,
+            createdAt: downloadState.createdAt
+        };
     }
 
     @UseGuards(AuthGuard('jwt'))

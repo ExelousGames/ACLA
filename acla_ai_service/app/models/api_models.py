@@ -44,3 +44,4 @@ class HealthResponse(BaseModel):
     service: str
     version: str
     timestamp: str
+    backend_connection: Optional[Dict[str, Any]] = None

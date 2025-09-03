@@ -37,3 +37,36 @@ export class RacingSessionDetailedInfoDto {
     //recorded telemetry data
     data: any[];
 }
+
+export class AllSessionsInitResponseDto {
+    downloadId: string;
+    totalSessions: number;
+    totalChunks: number;
+    sessionMetadata: {
+        sessionId: string;
+        session_name: string;
+        map: string;
+        car_name: string;
+        userId: string;
+        dataSize: number;
+        chunkCount: number;
+    }[];
+}
+
+export class SessionChunkDto {
+    downloadId: string;
+    sessionId: string;
+    chunkIndex: number;
+    totalChunks: number;
+    data: any[];
+    isComplete: boolean;
+}
+
+export class AllSessionsChunkRequestDto {
+    downloadId: string;
+    sessionId: string;
+    trackName: string;
+    carName: string;
+    chunkIndex: number;
+
+}
