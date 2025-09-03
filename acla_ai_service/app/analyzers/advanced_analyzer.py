@@ -31,7 +31,7 @@ class AdvancedRacingAnalyzer:
         
         # Validate and prepare telemetry data
         self.feature_validation = self.feature_processor.validate_features()
-        self.processed_df = self.feature_processor.prepare_for_analysis()
+        self.processed_df = self.feature_processor.general_cleaning_for_analysis()
     def get_telemetry_summary(self) -> Dict[str, Any]:
         """Get comprehensive telemetry data summary"""
         

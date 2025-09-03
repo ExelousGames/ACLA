@@ -12,6 +12,7 @@ from app.api import (
     racing_session_router,
 )
 from app.api.query import router as query_router
+from app.api.ml_endpoints import router as ml_router
 
 # Load environment variables
 load_dotenv()
@@ -37,6 +38,7 @@ app.add_middleware(
 app.include_router(health_router)
 app.include_router(query_router)  # Main query endpoint
 app.include_router(racing_session_router)
+app.include_router(ml_router)  # Machine Learning endpoints
 
 
 @app.on_event("startup")
