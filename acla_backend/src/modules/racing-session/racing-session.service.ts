@@ -1,8 +1,9 @@
 import { Injectable } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
-import { RacingSessionDetailedInfoDto, SessionBasicInfoListDto } from 'src/dto/racing-session.dto';
+import { RacingSessionDetailedInfoDto, SessionBasicInfoListDto, AllSessionsInitResponseDto, SessionChunkDto } from 'src/dto/racing-session.dto';
 import { RacingSession } from 'src/schemas/racing-session.schema';
+import * as crypto from 'crypto';
 
 @Injectable()
 export class RacingSessionService {
@@ -70,6 +71,82 @@ export class RacingSessionService {
             user_id: userId,
             data: data
         });
+    }
+
+    /**
+     * Retrieves metadata for all racing sessions with chunking information
+     * @param userId - Optional user ID to filter sessions
+     * @param chunkSize - Size of each data chunk (default: 1000)
+     * @returns Session metadata with chunking info
+     */
+    async initializeSessionsDownload(trackName: string, carName: string, chunkSize: number = 1000): Promise<AllSessionsInitResponseDto> {
+        try {
+
+            const sessions = await this.racingSession.find({ 'map': trackName, 'car_name': carName })
+                .exec();
+
+            const sessionMetadata = sessions.map(session => {
+                const dataSize = session.data ? session.data.length : 0;
+                const chunkCount = Math.ceil(dataSize / chunkSize);
+
+                return {
+                    sessionId: session._id.toString(),
+                    session_name: session.session_name,
+                    map: session.map,
+                    car_name: session.car_name,
+                    userId: session.user_id,
+                    dataSize,
+                    chunkCount
+                };
+            });
+
+            const totalChunks = sessionMetadata.reduce((total, session) => total + session.chunkCount, 0);
+
+            return {
+                downloadId: crypto.randomUUID(),
+                totalSessions: sessions.length,
+                totalChunks,
+                sessionMetadata
+            };
+        } catch (error) {
+            throw new Error(`Failed to initialize sessions download: ${error.message}`);
+        }
+    }
+
+    /**
+     * Retrieves a specific chunk of session data
+     * @param sessionId - The session ID
+     * @param chunkIndex - The chunk index to retrieve
+     * @param chunkSize - Size of each chunk (default: 1000)
+     * @returns Session chunk data
+     */
+    async getSessionChunk(sessionId: string, chunkIndex: number, chunkSize: number = 1000): Promise<SessionChunkDto> {
+        try {
+            const session = await this.racingSession.findById(sessionId)
+                .select('data')
+                .exec();
+
+            if (!session) {
+                throw new Error('Session not found');
+            }
+
+            const data = session.data || [];
+            const startIndex = chunkIndex * chunkSize;
+            const endIndex = Math.min(startIndex + chunkSize, data.length);
+            const chunkData = data.slice(startIndex, endIndex);
+            const totalChunks = Math.ceil(data.length / chunkSize);
+
+            return {
+                downloadId: '', // Will be set by controller
+                sessionId,
+                chunkIndex,
+                totalChunks,
+                data: chunkData,
+                isComplete: chunkIndex === totalChunks - 1
+            };
+        } catch (error) {
+            throw new Error(`Failed to retrieve session chunk: ${error.message}`);
+        }
     }
 
 }

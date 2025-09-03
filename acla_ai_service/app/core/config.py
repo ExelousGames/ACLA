@@ -21,6 +21,10 @@ class Settings(BaseSettings):
     # API Configuration
     backend_url: str = "http://backend:7001"
     
+    # Backend Authentication
+    backend_username: Optional[str] = None
+    backend_password: Optional[str] = None
+    
     # OpenAI Configuration
     openai_api_key: Optional[str] = None
     

@@ -1,22 +1,17 @@
-import { Module, forwardRef } from '@nestjs/common';
+import { Module } from '@nestjs/common';
 import { MongooseModule } from '@nestjs/mongoose';
-import { AiModelService } from './ai-model.service';
 import { AiModelController } from './ai-model.controller';
-import { AiServiceClient } from './ai-service.client';
-import { UserACCTrackAIModel, SessionAIModelSchema } from 'src/schemas/session-ai-model.schema';
-import { UserInfo, UserInfoSchema } from 'src/schemas/user-info.schema';
-import { RacingSessionModule } from '../racing-session/racing-session.module';
+import { AiModelService } from './ai-model.service';
+import { AIModel, AIModelSchema } from '../../schemas/ai-model.schema';
 
 @Module({
     imports: [
         MongooseModule.forFeature([
-            { name: UserACCTrackAIModel.name, schema: SessionAIModelSchema },
-            { name: UserInfo.name, schema: UserInfoSchema }
+            { name: AIModel.name, schema: AIModelSchema },
         ]),
-        forwardRef(() => RacingSessionModule),
     ],
     controllers: [AiModelController],
-    providers: [AiModelService, AiServiceClient],
-    exports: [AiModelService, AiServiceClient],
+    providers: [AiModelService],
+    exports: [AiModelService],
 })
 export class AiModelModule { }

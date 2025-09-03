@@ -13,6 +13,8 @@ import warnings
 import base64
 import pickle
 import io
+import aiohttp
+import asyncio
 from collections import Counter
 from typing import Dict, List, Any, Optional, Tuple, Union
 from datetime import datetime
@@ -38,6 +40,9 @@ from ..models.telemetry_models import TelemetryFeatures, FeatureProcessor, _safe
 
 # Import imitation learning service
 from .scikit_imitation_learning_service import ImitationLearningService
+
+# Import backend service
+from .backend_service import backend_service
 
 # Suppress sklearn warnings
 warnings.filterwarnings('ignore', category=UserWarning)
@@ -154,8 +159,17 @@ class TelemetryMLService:
         imitation_models_dir = self.models_directory / "imitation_models"
         self.imitation_learning = ImitationLearningService(str(imitation_models_dir))
         
+        # Backend service integration
+        self.backend_service = backend_service
+        
+        # Backend configuration (keeping for backward compatibility)
+        self.backend_base_url = os.getenv('BACKEND_URL', 'http://localhost:3000')
+        self.backend_jwt_token = None  # Will be set when needed
+        
         print(f"[INFO] TelemetryMLService initialized. Models directory: {self.models_directory}")
         print(f"[INFO] Imitation learning enabled. Imitation models directory: {imitation_models_dir}")
+        print(f"[INFO] Backend service integrated: {self.backend_service.base_url}")
+        print(f"[INFO] Backend connection status: {self.backend_service.is_connected}")
     
     async def train_ai_model(self, 
                             telemetry_data: List[Dict[str, Any]], 
@@ -227,14 +241,6 @@ class TelemetryMLService:
             }
             
             task_type = model_type_mapping.get(ai_model_type, "regression")
-            
-            # Handle imitation learning separately
-            if task_type == "imitation":
-                return await self.train_imitation_model(
-                    unprocessed_telemetry_data=telemetry_data,
-                    learning_objectives=['behavior', 'trajectory'],
-                    user_id=user_id
-                )
             
             # Set default algorithm based on task type and preferred_algorithm
             if preferred_algorithm:
@@ -1408,56 +1414,67 @@ class TelemetryMLService:
         return results
     
     # Imitation Learning Methods
-    
-    async def train_imitation_model(self,
-                                  unprocessed_telemetry_data: List[Dict[str, Any]],
-                                  learning_objectives: List[str] = None,
-                                  user_id: Optional[str] = None) -> Dict[str, Any]:
+    async def train_imitation_model(self) -> Dict[str, Any]:
         """
         Train an imitation learning model from expert driving demonstrations
         
         Args:
-            expert_telemetry_data: List of expert driver telemetry data
+            unprocessed_telemetry_data: List of expert driver telemetry data (optional if fetch_from_backend=True)
             learning_objectives: What to learn ('behavior', 'trajectory', 'both')
-            user_id: User identifier for tracking
+            user_id: User identifier for tracking and filtering backend data
+            jwt_token: JWT token for backend authentication
+            fetch_from_backend: Whether to fetch data from backend instead of using provided data
             
         Returns:
             Dictionary with imitation learning results
         """
-        try:
-            print(f"[INFO] Starting imitation learning from {len(unprocessed_telemetry_data)} expert demonstrations")
+        #retrieve all racing session in database
+        sessions = await backend_service.get_all_racing_sessions()
+        
+        each_session_telemetry_data = []
+        for session in sessions.get("sessions", []):
+            each_session_telemetry_data.append(session.get("telemetry_data", []))
+
+        # Flatten the list of lists into a single list of telemetry records
+        telemetry_data = [item for sublist in each_session_telemetry_data for item in sublist]
+
+        # Learn from expert demonstrations
+        results = self.imitation_learning.train_ai_model(
+            telemetry_data=telemetry_data
+        )
             
-            if learning_objectives is None:
-                learning_objectives = ['behavior', 'trajectory']
+        print(f"[INFO] Imitation learning completed successfully.")
             
-            # Learn from expert demonstrations
-            results = self.imitation_learning.train_ai_model(
-                telemetry_data=unprocessed_telemetry_data,
-                learning_objectives=learning_objectives
+        # Serialize behavior learning model if present
+        if 'behavior_learning' in results and 'model' in results['behavior_learning']:
+            
+            print("[INFO] Serializing behavior learning model...")
+            # Only serialize the actual model from the behavior_learning['model'] structure
+            behavior_model_to_serialize = results['behavior_learning']['modelData']['model']
+            behavior_model_data = self.imitation_learning.serialize_imitation_model(
+                behavior_model_to_serialize
             )
-            
-            print(f"[INFO] Imitation learning completed successfully.")
-            
-            return {
-                "success": True,
-                "learning_summary": results['learning_summary'],
-                "behavior_learning": results.get('behavior_learning', {}),
-                "trajectory_learning": results.get('trajectory_learning', {}),
-                "training_metadata": {
-                    "user_id": user_id,
-                    "training_timestamp": datetime.now().isoformat(),
-                    "expert_demonstrations_count": len(unprocessed_telemetry_data),
-                }
-            }
-            
-        except Exception as e:
-            print(f"[ERROR] Imitation learning failed: {str(e)}")
-            return {
-                "success": False,
-                "error": str(e),
-                "model_id": None
-            }
-    
+            results['behavior_learning']['modelData']['model'] = behavior_model_data
+
+            # Serialize trajectory learning models if present
+        if 'trajectory_learning' in results and 'trajectory_model' in results['trajectory_learning']:
+            print("[INFO] Serializing trajectory learning models...")
+            # Only serialize the actual trajectory_model from the trajectory_learning structure
+            trajectory_models_to_serialize = results['trajectory_learning']['modelData']['models']
+                
+            # Serialize each model individually
+            serialized_trajectory_models = {}
+            for model_name, model in trajectory_models_to_serialize.items():
+                print(f"[INFO] Serializing trajectory model: {model_name}")
+                serialized_model_data = self.imitation_learning.serialize_imitation_model(model)
+                serialized_trajectory_models[model_name] = serialized_model_data
+                
+            # Store serialized models back in the trajectory model structure
+            results['trajectory_learning']['modelData']['models'] = serialized_trajectory_models
+        #save the info to backend
+
+        await backend_service.save_imitation_learning_results(results)
+        
     async def get_expert_guidance(self,
                                 current_telemetry: Dict[str, Any],
                                 imitation_model_id: str,
@@ -1893,31 +1910,7 @@ class TelemetryMLService:
             "current_efficiency": avg_efficiency,
             "target_efficiency": min(100, avg_efficiency + potential_gain * 0.6)  # Realistic target
         }
-    
+          
 if __name__ == "__main__":
     # Example usage
     print("TelemetryMLService with Imitation Learning initialized. Ready for training!")
-    
-    # You can test with:
-    # 1. Traditional ML models:
-    # results = train_models_from_csv("path/to/your/telemetry_data.csv")
-    #
-    # 2. Imitation learning from expert data:
-    # service = TelemetryMLService()
-    # expert_results = await service.train_imitation_model(
-    #     expert_telemetry_data=expert_demonstrations,
-    #     learning_objectives=['behavior', 'trajectory']
-    # )
-    #
-    # 3. Get expert guidance:
-    # guidance = await service.get_expert_guidance(
-    #     current_telemetry=current_state,
-    #     imitation_model_id=expert_results['model_id']
-    # )
-    #
-    # 4. Analyze driving compared to expert:
-    # analysis = await service.analyze_driving_compared_to_expert(
-    #     user_telemetry_data=user_data,
-    #     expert_model_id=expert_results['model_id']
-    # )
-    # results = train_models_from_csv("path/to/your/telemetry_data.csv")
