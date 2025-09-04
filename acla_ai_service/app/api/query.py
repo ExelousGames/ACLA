@@ -13,7 +13,6 @@ router = APIRouter(tags=["query"])
 # Pydantic models for request validation
 class QueryRequest(BaseModel):
     question: str
-    dataset_id: Optional[str] = None  # session_id
     user_id: Optional[str] = None
     context: Optional[Dict[str, Any]] = None
 
@@ -25,7 +24,7 @@ class PredictionQueryRequest(BaseModel):
 
 ai_service = AIService()
 
-@router.post("/query")
+@router.post("/naturallanguagequery")
 async def process_query(request: QueryRequest):
     """
     Main endpoint for processing natural language queries
@@ -51,14 +50,9 @@ async def process_query(request: QueryRequest):
             "success": True,
             "query": request.question,
             "answer": result.get("answer"),
-            "function_calls": result.get("function_calls", []),
             "context": result.get("context"),
-            "has_openai": bool(ai_service.openai_client),
             "error": result.get("error"),
-            "fallback": result.get("fallback"),
             "processing_steps": result.get("processing_steps", []),
-            "ai_models_used": [fc["function"] for fc in result.get("function_calls", []) 
-                             if fc["function"].startswith("train_") or fc["function"].startswith("predict_")]
         }
         
     except Exception as e:

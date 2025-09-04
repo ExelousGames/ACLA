@@ -76,7 +76,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
 
             if (sessionId) {
                 // Use racing session specific endpoint
-                response = await apiService.post('/ai/racing-session/ask', {
+                response = await apiService.post('/ai-model/ai-query', {
                     session_id: sessionId,
                     question: userMessage.content
                 });
