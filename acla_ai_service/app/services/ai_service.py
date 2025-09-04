@@ -25,8 +25,8 @@ class AIService:
         return [
 
             {
-                "name": "get_telemetry_insights",
-                "description": "Get detailed telemetry insights including speed traces, g-forces, and car dynamics",
+                "name": "follow_expert_line",
+                "description": "Guide the user to follow the optimal racing line based on telemetry data",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -34,57 +34,6 @@ class AIService:
                         "data_types": {"type": "array", "items": {"type": "string"}, "description": "Types of telemetry data to analyze (speed, acceleration, braking, steering)"}
                     },
                     "required": ["session_id"]
-                }
-            },
-            {
-                "name": "compare_sessions",
-                "description": "Compare multiple racing sessions to identify improvements and patterns",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "session_ids": {"type": "array", "items": {"type": "string"}, "description": "List of session IDs to compare"},
-                        "comparison_metrics": {"type": "array", "items": {"type": "string"}, "description": "Metrics to compare (lap_times, sectors, consistency, etc.)"}
-                    },
-                    "required": ["session_ids"]
-                }
-            },
-            {
-                "name": "call_backend_function",
-                "description": "Call backend API functions to retrieve or modify data",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "endpoint": {"type": "string", "description": "Backend API endpoint to call"},
-                        "method": {"type": "string", "enum": ["GET", "POST", "PUT", "DELETE"], "description": "HTTP method"},
-                        "data": {"type": "object", "description": "Data to send with the request"},
-                        "user_id": {"type": "string", "description": "User ID for authentication"}
-                    },
-                    "required": ["endpoint", "method"]
-                }
-            },
-            {
-                "name": "predict_with_telemetry_model",
-                "description": "Use trained AI model to predict racing performance based on current telemetry data",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "model_id": {"type": "string", "description": "ID of the trained model to use"},
-                        "current_telemetry": {"type": "object", "description": "Current telemetry data for prediction"},
-                        "prediction_context": {"type": "object", "description": "Additional context like track conditions, session type"}
-                    },
-                    "required": ["model_id", "current_telemetry"]
-                }
-            },
-            {
-                "name": "explain_telemetry_patterns",
-                "description": "Generate AI explanations of telemetry data patterns in easy-to-understand language",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "telemetry_data": {"type": "object", "description": "Telemetry analysis results to explain"},
-                        "complexity_level": {"type": "string", "enum": ["simple", "detailed", "technical"], "description": "Level of explanation complexity"}
-                    },
-                    "required": ["telemetry_data"]
                 }
             }
         ]
@@ -104,36 +53,26 @@ class AIService:
             messages = [
                 {
                     "role": "system",
-                    "content": f"""You are an expert racing data analyst and AI assistant for ACLA (Assetto Corsa Competizione Lap Analyzer). 
+                    "content": f"""You are an expert racing data analyst and AI assistant for sim racing. 
                     You help drivers understand their racing performance through telemetry analysis and personalized AI models.
+                    Also, user can ask you to perform some actions using the tools provided.
+
+                    user is on Track: {context['track_name']} driving {context['car_name']}
                     
-                    Available context: {context_info}
-                    
-                    IMPORTANT: You can call specialized functions and AI models to answer user questions:
-                    
-                    TELEMETRY ANALYSIS FUNCTIONS:
-                    - get_telemetry_insights: Get detailed telemetry insights (speed, acceleration, braking, steering)
-                    - compare_sessions: Compare multiple racing sessions                   
-                    - call_backend_function: Call backend APIs for data retrieval
+                    IMPORTANT: You can call specialized functions which can extract useful data to answer user questions or perform some actions:
                     
                     AI MODEL FUNCTIONS (Personalized predictions using user's own driving data):
                     - train_telemetry_ai_model: Train custom AI models on user's telemetry data
                     - predict_with_telemetry_model: Use trained AI models for personalized predictions
                     
-                    INTELLIGENT COACHING FUNCTIONS:
-                    - generate_ai_recommendations: Generate intelligent coaching recommendations
-                    - explain_telemetry_patterns: Explain complex data patterns in simple terms
-                    
                     PROCESS:
                     1. Understand what the user wants to know or achieve
-                    2. Call appropriate functions to get data from telemetry systems or AI models
+                    2. Call appropriate functions to get data from telemetry systems and AI models, or perform actions
                     3. Use your racing expertise to interpret the data
-                    4. Provide comprehensive, actionable advice based on actual data
+                    4. Provide comprehensive, actionable advice based on actual data, or request the system to do something
                     
                     EXAMPLES:
-                    - "Train an AI to predict my lap times" → Call train_telemetry_ai_model
-                    - "What lap time will I get?" → Call predict_with_telemetry_model
-                    - "Compare my sessions" → Call compare_sessions
+                    - "i want you guide me on track" → Call follow_expert_line
                     
                     Always base your answers on real data from the functions, not assumptions.
                     The AI models learn from each user's unique driving style for personalized predictions.
@@ -169,7 +108,7 @@ class AIService:
                     
                     print(f"[DEBUG] Executing function: {function_name} with args: {function_args}")
                     
-                    # Execute the function to get data from local AI models/telemetry
+                    # Execute the function to get data or preform actions
                     result = await self._execute_function(function_name, function_args, context)
                     function_results.append({
                         "function": function_name,
@@ -236,41 +175,14 @@ class AIService:
 
             # Dispatch table for function handlers
             handlers = {
-                "get_telemetry_insights": lambda: self.telemetry_service.get_telemetry_insights(
+                "get_telemetry_insights": lambda: self.backend_service.get_telemetry_insights(
                     arguments.get("session_id"),
                     arguments.get("data_types", ["speed", "acceleration"])
                 ),
-                "compare_sessions": lambda: self.telemetry_service.compare_sessions(
+                "compare_sessions": lambda: self.backend_service.compare_sessions(
                     arguments.get("session_ids"),
                     arguments.get("comparison_metrics", ["lap_times"])
-                ),
-                "train_telemetry_ai_model": lambda: self._train_ai_model_via_backend(arguments, context),
-                "predict_with_telemetry_model": lambda: self._predict_via_backend(arguments, context),
-                "get_user_models": lambda: self.get_user_models_via_backend(
-                    arguments.get("user_id"),
-                    arguments.get("track_name"),
-                    arguments.get("model_type")
-                ),
-                "get_active_model": lambda: self.get_active_model_via_backend(
-                    arguments.get("user_id"),
-                    arguments.get("track_name"),
-                    arguments.get("model_type")
-                ),
-                "perform_incremental_training": lambda: self.perform_incremental_training_via_backend(
-                    arguments.get("model_id"),
-                    arguments.get("session_ids"),
-                    arguments.get("user_id")
-                ),
-                "call_backend_function": lambda: self.backend_service.call_backend_function(
-                    arguments.get("endpoint"),
-                    arguments.get("method", "GET"),
-                    arguments.get("data"),
-                    self._get_auth_headers(arguments.get("user_id"))
-                ),
-                "train_ai_model": lambda: self._train_ai_model(arguments, context),
-                "predict_with_model": lambda: self._predict_with_model(arguments, context),
-                "generate_ai_recommendations": lambda: self._generate_ai_recommendations(arguments, context),
-                "explain_telemetry_patterns": lambda: self._explain_telemetry_patterns(arguments, context),
+                )
             }
 
             handler = handlers.get(function_name)

@@ -4,7 +4,6 @@ import { UserACCTrackAIModel } from 'src/schemas/session-ai-model.schema';
 
 export interface QueryRequest {
     question: string;
-    dataset_id?: string;
     user_id?: string;
     context?: any;
 }
@@ -117,7 +116,7 @@ export class AiServiceClient {
 
     async processQuery(query: QueryRequest): Promise<any> {
         try {
-            const response = await axios.post(`${this.aiServiceUrl}/query`, query);
+            const response = await axios.post(`${this.aiServiceUrl}/naturallanguagequery`, query);
             return response.data;
         } catch (error) {
             throw new HttpException(
