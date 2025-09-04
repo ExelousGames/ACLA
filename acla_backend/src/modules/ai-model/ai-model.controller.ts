@@ -75,12 +75,6 @@ export class AiModelController {
 
     @Post('imitation-learning/save')
     async save_imitation_learning_results(@Body() chunkData: ChunkData) {
-        console.log("Received chunked request to save imitation learning results:", {
-            sessionId: chunkData.sessionId,
-            chunkIndex: chunkData.chunkIndex,
-            totalChunks: chunkData.totalChunks
-        });
-
         return this.chunkService.handleIncomingChunk(
             chunkData,
             async (completeData: UpdateAiModelDto) => {
@@ -115,9 +109,9 @@ export class AiModelController {
             await this.aiModelService.reinitializeGridFS();
             return { message: 'GridFS reinitialized successfully' };
         } catch (error) {
-            return { 
-                message: 'Failed to reinitialize GridFS', 
-                error: error.message 
+            return {
+                message: 'Failed to reinitialize GridFS',
+                error: error.message
             };
         }
     }
