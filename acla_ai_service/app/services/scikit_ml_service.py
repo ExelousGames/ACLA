@@ -1493,11 +1493,11 @@ class TelemetryMLService:
             )
             results['trajectory_learning']['modelData']['scaler'] = serialized_scaler_data
             
-            trajectory_scaler_to_serialize = results['trajectory_learning']['modelData']['scaler']
+            trajectory_scaler_to_serialize = results['trajectory_learning']['modelData']['pca']
             serialized_scaler_data = self.imitation_learning.serialize_imitation_model(
                 trajectory_scaler_to_serialize
             )
-            results['trajectory_learning']['modelData']['scaler'] = serialized_scaler_data
+            results['trajectory_learning']['modelData']['pca'] = serialized_scaler_data
         
         try:
             #save the info to backend
