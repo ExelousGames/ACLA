@@ -249,16 +249,87 @@ class BackendService:
         }
         return await self.call_backend_function("analysis/save", "POST", data)
 
+    async def send_chunked_data(self, data: Dict[str, Any], endpoint: str, chunk_size: int = 1024 * 1024) -> Dict[str, Any]:
+        """Send large data in chunks to a backend endpoint"""
+        import json
+        import uuid
+        from math import ceil
+        
+        # Serialize data to JSON string to calculate size
+        json_data = json.dumps(data)
+        data_size = len(json_data.encode('utf-8'))
+        
+        # Calculate number of chunks needed
+        total_chunks = max(1, ceil(data_size / chunk_size))
+        session_id = str(uuid.uuid4())
+        
+        logger.info(f"Sending data in {total_chunks} chunks (total size: {data_size} bytes, session: {session_id})")
+        
+        try:
+            # Split data into chunks
+            for chunk_index in range(total_chunks):
+                start_pos = chunk_index * chunk_size
+                end_pos = min(start_pos + chunk_size, len(json_data))
+                chunk_data = json_data[start_pos:end_pos]
+                
+                # Try to parse as valid JSON if it's the complete data in one chunk
+                if total_chunks == 1:
+                    chunk_payload = data
+                else:
+                    # For multi-chunk, send the raw string chunk
+                    chunk_payload = chunk_data
+                
+                # Create chunk data structure
+                chunk_request = {
+                    "sessionId": session_id,
+                    "chunkIndex": chunk_index,
+                    "totalChunks": total_chunks,
+                    "data": chunk_payload,
+                    "metadata": {
+                        "timestamp": None,  # Will be set by backend
+                        "size": len(chunk_data.encode('utf-8'))
+                    }
+                }
+                
+                logger.debug(f"Sending chunk {chunk_index + 1}/{total_chunks} (size: {len(chunk_data.encode('utf-8'))} bytes)")
+                
+                # Send chunk
+                response = await self.call_backend_function(endpoint, "POST", chunk_request)
+                
+                if not response.get("success", False):
+                    error_msg = response.get("message", "Unknown error")
+                    raise Exception(f"Chunk {chunk_index + 1} failed: {error_msg}")
+                
+                # Log progress
+                if response.get("isComplete", False):
+                    logger.info(f"✅ All chunks sent successfully. Final response: {response.get('message', 'Complete')}")
+                    return response
+                else:
+                    received = response.get("receivedChunks", chunk_index + 1)
+                    logger.debug(f"Chunk {chunk_index + 1}/{total_chunks} sent successfully ({received}/{total_chunks} received)")
+            
+            return {"success": True, "message": "All chunks sent", "sessionId": session_id}
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to send chunked data: {str(e)}")
+            raise
+
     async def save_imitation_learning_results(self, results: Dict[str, Any]) -> Dict[str, Any]:
-        """Save imitation learning results to backend"""
-        data = {
-            "results": results
-        }
+        """Save imitation learning results to backend using chunked transfer"""
         print("[INFO] Saving imitation learning results to backend...")
         logger.info("Saving imitation learning results to backend...")
         
         try: 
-            await self.call_backend_function("imitation-learning/save", "POST", data)
+            # Use chunked upload for large data
+            response = await self.send_chunked_data(
+                data=results, 
+                endpoint="ai-model/imitation-learning/save",
+                chunk_size=512 * 1024  # 512KB chunks
+            )
+            
+            if not response.get("success", False):
+                raise Exception(f"Backend rejected data: {response.get('message', 'Unknown error')}")
+                
         except Exception as e:
             logger.error(f"❌ Failed to save imitation learning results: {str(e)}")
             raise
