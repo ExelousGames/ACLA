@@ -1,5 +1,5 @@
 
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, InternalServerErrorException, NotFoundException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { AIModel } from '../../schemas/ai-model.schema';
@@ -109,9 +109,14 @@ export class AiModelService {
             this.aiModelModel.updateOne({ _id: existingEntries._id }, { $set: { modelData: results.modelData, metadata: results.metadata } });
         }
         else {
-            const createdEntry = new this.aiModelModel({ modelData: results.modelData, metadata: results.metadata });
-            return createdEntry.save();
+            try {
+                const createdEntry = new this.aiModelModel({ trackName, carName, modelType: 'imitation_learning', targetVariable: results.targetVariable, modelData: results.modelData, metadata: results.metadata, isActive: true });
+                return createdEntry.save();
 
+            } catch (error) {
+                console.error("Error saving imitation learning results:", error);
+                throw new InternalServerErrorException("Failed to save imitation learning results");
+            }
         }
         return null;
     }
