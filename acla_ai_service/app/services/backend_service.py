@@ -263,7 +263,7 @@ class BackendService:
         total_chunks = max(1, ceil(data_size / chunk_size))
         session_id = str(uuid.uuid4())
         
-        logger.info(f"Sending data in {total_chunks} chunks (total size: {data_size} bytes, session: {session_id})")
+        print(f"Sending data in {total_chunks} chunks (total size: {data_size} bytes, session: {session_id})")
         
         try:
             # Split data into chunks

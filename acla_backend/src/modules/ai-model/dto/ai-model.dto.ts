@@ -3,7 +3,7 @@ export class CreateAiModelDto {
     carName: string;
     modelType: string;
     targetVariable: string[];
-    modelData: string;
+    modelData?: string; // Optional since it will be stored in GridFS
     trainingMetrics?: Record<string, any>;
     samplesProcessed?: number;
     featureNames: string[];
@@ -15,11 +15,10 @@ export class CreateAiModelDto {
 }
 
 export class UpdateAiModelDto {
-
     trackName: string;
     carName: string;
     modelType: string; // lap_time_prediction, sector_time_optimization, etc.
-    modelData: any;
+    modelData?: any; // Optional since it will be stored in GridFS
     metadata: any;
     isActive: boolean; // Whether this model version is active
 }

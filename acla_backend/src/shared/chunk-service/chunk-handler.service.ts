@@ -83,6 +83,7 @@ export class ChunkHandlerService {
         processCallback: (assembledData: any) => Promise<T>
     ): Promise<ChunkProcessResult> {
         try {
+
             // Process the chunk
             const result = await this.handleChunkSessionService.processChunk(chunkData);
 
