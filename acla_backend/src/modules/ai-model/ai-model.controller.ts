@@ -3,10 +3,15 @@
 import { Controller, Get, Post, Put, Delete, Body, Param, Query } from '@nestjs/common';
 import { AiModelService } from './ai-model.service';
 import { CreateAiModelDto, UpdateAiModelDto } from './dto/ai-model.dto';
+import { ChunkClientService } from '../../shared/chunk-service/chunk.service';
+import { ChunkData } from '../../shared/chunk-service/interfaces/chunk.interface';
 
 @Controller('ai-model')
 export class AiModelController {
-    constructor(private readonly aiModelService: AiModelService) { }
+    constructor(
+        private readonly aiModelService: AiModelService,
+        private readonly chunkService: ChunkClientService
+    ) { }
 
     @Post()
     async create(@Body() createAiModelDto: CreateAiModelDto) {
@@ -53,8 +58,19 @@ export class AiModelController {
     }
 
     @Post('imitation-learning/save')
-    async save_imitation_learning_results(@Body('results') results: UpdateAiModelDto) {
-        console.log("Received request to save imitation learning results:", results);
-        return this.aiModelService.save_imitation_learning_results(results);
+    async save_imitation_learning_results(@Body() chunkData: ChunkData) {
+        console.log("Received chunked request to save imitation learning results:", {
+            sessionId: chunkData.sessionId,
+            chunkIndex: chunkData.chunkIndex,
+            totalChunks: chunkData.totalChunks
+        });
+
+        return this.chunkService.handleIncomingChunk(
+            chunkData,
+            async (completeData: UpdateAiModelDto) => {
+                console.log("Processing complete imitation learning data");
+                return this.aiModelService.save_imitation_learning_results(completeData);
+            }
+        );
     }
 }
