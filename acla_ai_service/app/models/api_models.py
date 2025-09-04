@@ -45,3 +45,12 @@ class HealthResponse(BaseModel):
     version: str
     timestamp: str
     backend_connection: Optional[Dict[str, Any]] = None
+ 
+    
+class AiModelDto(BaseModel):
+    trackName: str
+    carName: str
+    modelType: str
+    modelData: Dict[str, Any]
+    metadata: Dict[str, Any]
+    isActive: bool

@@ -53,7 +53,8 @@ export class AiModelController {
     }
 
     @Post('imitation-learning/save')
-    async save_imitation_learning_results(@Body('results') results: Record<string, any>) {
+    async save_imitation_learning_results(@Body('results') results: UpdateAiModelDto) {
+        console.log("Received request to save imitation learning results:", results);
         return this.aiModelService.save_imitation_learning_results(results);
     }
 }

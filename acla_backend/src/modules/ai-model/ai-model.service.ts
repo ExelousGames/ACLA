@@ -101,16 +101,26 @@ export class AiModelService {
     }
 
 
-    async save_imitation_learning_results(results: Record<string, any>): Promise<any> {
+    async save_imitation_learning_results(updateAiModelDto: UpdateAiModelDto): Promise<any> {
+
+        const { trackName, carName } = updateAiModelDto;
+        if (!trackName || !carName) {
+            throw new InternalServerErrorException("Missing trackName or carName in results");
+        }
         // Save the results to the database or process as needed
-        const existingEntries = await this.aiModelModel.findOne({ mapName: results.mapName, trackName: results.trackName, modelType: 'imitation_learning', isActive: true });
+        const existingEntries = await this.aiModelModel.findOne({ carName: updateAiModelDto.carName, trackName: updateAiModelDto.trackName, modelType: updateAiModelDto.modelType, isActive: true });
 
         if (existingEntries) {
-            this.aiModelModel.updateOne({ _id: existingEntries._id }, { $set: { modelData: results.modelData, metadata: results.metadata } });
+            this.aiModelModel.updateOne({ _id: existingEntries._id }, { $set: { modelData: updateAiModelDto.modelData, metadata: updateAiModelDto.metadata } });
         }
         else {
+
+            const { modelData, metadata } = updateAiModelDto;
+            if (!modelData || !metadata) {
+                throw new InternalServerErrorException("Incomplete imitation learning results");
+            }
             try {
-                const createdEntry = new this.aiModelModel({ trackName, carName, modelType: 'imitation_learning', targetVariable: results.targetVariable, modelData: results.modelData, metadata: results.metadata, isActive: true });
+                const createdEntry = new this.aiModelModel({ trackName, carName, modelType: updateAiModelDto.modelType, modelData, metadata, isActive: true });
                 return createdEntry.save();
 
             } catch (error) {

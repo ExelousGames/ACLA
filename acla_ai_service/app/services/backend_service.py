@@ -48,8 +48,6 @@ class BackendService:
                     
                     async with httpx.AsyncClient() as client:
                         url = f"{self.base_url}:{self.base_port}/userinfo/auth/login"
-                        print(f"🔌 Connecting to backend at {url}")
-                        
                         
                         response = await client.post(url, json=login_data)
                         
@@ -149,41 +147,10 @@ class BackendService:
                 return response.json()
                 
         except httpx.HTTPStatusError as e:
-            # If we get 401 Unauthorized, try to reconnect once
-            if e.response.status_code == 401:
-                logger.warning("Received 401 Unauthorized, attempting to reconnect...")
-                self.is_connected = False
-                self.jwt_token = None
-                
-                if await self.establish_connection():
-                    # Retry the request with new token
-                    auth_headers = self.get_auth_headers()
-                    if headers:
-                        auth_headers.update(headers)
-                    headers = auth_headers
-                    
-                    try:
-                        async with httpx.AsyncClient() as client:
-                            if method.upper() == "GET":
-                                response = await client.get(url, headers=headers)
-                            elif method.upper() == "POST":
-                                response = await client.post(url, json=data, headers=headers)
-                            elif method.upper() == "PUT":
-                                response = await client.put(url, json=data, headers=headers)
-                            elif method.upper() == "DELETE":
-                                response = await client.delete(url, headers=headers)
-                            
-                            response.raise_for_status()
-                            return response.json()
-                    except Exception as retry_e:
-                        return {"error": f"Retry after reconnection failed: {str(retry_e)}"}
-                else:
-                    return {"error": "Failed to reconnect after 401 error"}
-            
-            return {"error": f"HTTP error {e.response.status_code}: {e.response.text}"}
+            raise 
         except Exception as e:
-            return {"error": f"Backend call failed: {str(e)}"}
-    
+            raise
+
     async def get_racing_sessions(self, user_id: str, map_name: Optional[str] = None) -> Dict[str, Any]:
         """Get racing sessions from backend"""
         data = {"username": user_id}
@@ -287,7 +254,18 @@ class BackendService:
         data = {
             "results": results
         }
-        return await self.call_backend_function("imitation-learning/save", "POST", data)
+        print("[INFO] Saving imitation learning results to backend...")
+        logger.info("Saving imitation learning results to backend...")
+        
+        try: 
+            await self.call_backend_function("imitation-learning/save", "POST", data)
+        except Exception as e:
+            logger.error(f"❌ Failed to save imitation learning results: {str(e)}")
+            raise
+
+        logger.info("✅ Imitation learning results saved successfully")
+        return {"success": True}
+
 
 # Global backend service instance
 backend_service = BackendService()
