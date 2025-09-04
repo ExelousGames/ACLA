@@ -432,8 +432,10 @@ class AIService:
                     headers=self._get_auth_headers(user_id)
                 )
                 
-                if result.get("success") and result.get("data"):
+                if "error" not in result and result.get("success") and result.get("data"):
                     telemetry_data.extend(result["data"])
+                elif "error" in result:
+                    print(f"[ERROR] Failed to get telemetry data for session {session_id}: {result['error']}")
             
             return telemetry_data
             

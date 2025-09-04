@@ -19,6 +19,7 @@ from collections import Counter
 from typing import Dict, List, Any, Optional, Tuple, Union
 from datetime import datetime
 from pathlib import Path
+from app.models import AiModelDto
 
 # Scikit-learn imports
 from sklearn.model_selection import train_test_split, cross_val_score, GridSearchCV, StratifiedKFold
@@ -1412,7 +1413,7 @@ class TelemetryMLService:
         return results
     
     # Imitation Learning Methods
-    async def train_imitation_model(self) -> Dict[str, Any]:
+    async def train_imitation_model(self, trackName: str, carName: str) -> Dict[str, Any]:
         """
         Train an imitation learning model from expert driving demonstrations
         
@@ -1428,7 +1429,7 @@ class TelemetryMLService:
         """
         #retrieve all racing session in database
         try:
-            sessions = await backend_service.get_all_racing_sessions("Brands Hatch Circuit", "porsche_991ii_gt3_r")
+            sessions = await backend_service.get_all_racing_sessions(trackName, carName)
         except Exception as e:
             print(f"[ERROR] Failed to retrieve racing sessions: {str(e)}")
             return {"error": str(e)}
@@ -1450,8 +1451,7 @@ class TelemetryMLService:
         print(f"[INFO] Imitation learning completed successfully.")
             
         # Serialize behavior learning model if present
-        if 'behavior_learning' in results and 'model' in results['behavior_learning']:
-            
+        if 'behavior_learning' in results and 'model' in results['behavior_learning']['modelData']:
             print("[INFO] Serializing behavior learning model...")
             # Only serialize the actual model from the behavior_learning['model'] structure
             behavior_model_to_serialize = results['behavior_learning']['modelData']['model']
@@ -1460,8 +1460,19 @@ class TelemetryMLService:
             )
             results['behavior_learning']['modelData']['model'] = behavior_model_data
 
-            # Serialize trajectory learning models if present
-        if 'trajectory_learning' in results and 'trajectory_model' in results['trajectory_learning']:
+
+        # Serialize behavior learning scaler if present
+        if 'behavior_learning' in results and 'scaler' in results['behavior_learning']['modelData']:
+            print("[INFO] Serializing behavior learning scaler...")
+            # Only serialize the actual model from the behavior_learning['model'] structure
+            behavior_model_to_serialize = results['behavior_learning']['modelData']['scaler']
+            behavior_model_data = self.imitation_learning.serialize_imitation_model(
+                behavior_model_to_serialize
+            )
+            results['behavior_learning']['modelData']['scaler'] = behavior_model_data
+            
+        # Serialize trajectory learning models if present
+        if 'trajectory_learning' in results and 'models' in results['trajectory_learning']['modelData']:
             print("[INFO] Serializing trajectory learning models...")
             # Only serialize the actual trajectory_model from the trajectory_learning structure
             trajectory_models_to_serialize = results['trajectory_learning']['modelData']['models']
@@ -1475,11 +1486,32 @@ class TelemetryMLService:
                 
             # Store serialized models back in the trajectory model structure
             results['trajectory_learning']['modelData']['models'] = serialized_trajectory_models
-             
+            
+            trajectory_scaler_to_serialize = results['trajectory_learning']['modelData']['scaler']
+            serialized_scaler_data = self.imitation_learning.serialize_imitation_model(
+                trajectory_scaler_to_serialize
+            )
+            results['trajectory_learning']['modelData']['scaler'] = serialized_scaler_data
         
         try:
             #save the info to backend
-            await backend_service.save_imitation_learning_results(results)
+
+            ai_model_dto = {
+                "modelType": "imitation_learning",
+                "trackName": trackName,
+                "carName": carName,
+                "modelData": {
+                    "behavior_learning": results.get("behavior_learning"),
+                    "trajectory_learning": results.get("trajectory_learning")
+                },
+                "metadata": {
+                    "summary": results.get("summary", {}),
+                    "training_timestamp": datetime.now().isoformat()
+                },
+                "isActive": True
+            }
+            
+            await backend_service.save_imitation_learning_results(ai_model_dto)
         except Exception as error:
             print(f"[ERROR] Failed to save imitation learning results: {str(error)}")
         

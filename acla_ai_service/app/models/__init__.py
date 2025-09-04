@@ -7,7 +7,8 @@ from .api_models import (
     QueryRequest,
     AnalysisResult,
     BackendCallRequest,
-    HealthResponse
+    HealthResponse,
+    AiModelDto
 )
 from .telemetry_models import TelemetryFeatures, FeatureProcessor, TelemetryDataModel
 
@@ -19,5 +20,6 @@ __all__ = [
     "HealthResponse",
     "TelemetryFeatures",
     "FeatureProcessor",
-    "TelemetryDataModel"
+    "TelemetryDataModel",
+    "AiModelDto"
 ]
