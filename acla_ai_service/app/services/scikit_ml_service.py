@@ -161,16 +161,14 @@ class TelemetryMLService:
         
         # Backend service integration
         self.backend_service = backend_service
-        
-        # Backend configuration (keeping for backward compatibility)
-        self.backend_base_url = os.getenv('BACKEND_URL', 'http://localhost:3000')
-        self.backend_jwt_token = None  # Will be set when needed
-        
+
         print(f"[INFO] TelemetryMLService initialized. Models directory: {self.models_directory}")
         print(f"[INFO] Imitation learning enabled. Imitation models directory: {imitation_models_dir}")
         print(f"[INFO] Backend service integrated: {self.backend_service.base_url}")
         print(f"[INFO] Backend connection status: {self.backend_service.is_connected}")
-    
+        
+        
+
     async def train_ai_model(self, 
                             telemetry_data: List[Dict[str, Any]], 
                             target_variable: str,
@@ -1429,19 +1427,25 @@ class TelemetryMLService:
             Dictionary with imitation learning results
         """
         #retrieve all racing session in database
-        sessions = await backend_service.get_all_racing_sessions()
-        
+        try:
+            sessions = await backend_service.get_all_racing_sessions("Brands Hatch Circuit", "porsche_991ii_gt3_r")
+        except Exception as e:
+            print(f"[ERROR] Failed to retrieve racing sessions: {str(e)}")
+            return {"error": str(e)}
+
         each_session_telemetry_data = []
+  
         for session in sessions.get("sessions", []):
-            each_session_telemetry_data.append(session.get("telemetry_data", []))
+                each_session_telemetry_data.append(session.get("data", []))
+
+        if not each_session_telemetry_data:
+            raise ValueError("No telemetry data found")
 
         # Flatten the list of lists into a single list of telemetry records
         telemetry_data = [item for sublist in each_session_telemetry_data for item in sublist]
 
         # Learn from expert demonstrations
-        results = self.imitation_learning.train_ai_model(
-            telemetry_data=telemetry_data
-        )
+        results = self.imitation_learning.train_ai_model(telemetry_data)
             
         print(f"[INFO] Imitation learning completed successfully.")
             
@@ -1471,9 +1475,14 @@ class TelemetryMLService:
                 
             # Store serialized models back in the trajectory model structure
             results['trajectory_learning']['modelData']['models'] = serialized_trajectory_models
-        #save the info to backend
-
-        await backend_service.save_imitation_learning_results(results)
+             
+        
+        try:
+            #save the info to backend
+            await backend_service.save_imitation_learning_results(results)
+        except Exception as error:
+            print(f"[ERROR] Failed to save imitation learning results: {str(error)}")
+        
         
     async def get_expert_guidance(self,
                                 current_telemetry: Dict[str, Any],

@@ -61,3 +61,4 @@ report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 
 /acla_db/backups
 /acla_front/src/py-scripts/util/__pycache__
+/acla_ai_service/app/api/__pycache__

@@ -75,7 +75,8 @@ export class RacingSessionService {
 
     /**
      * Retrieves metadata for all racing sessions with chunking information
-     * @param userId - Optional user ID to filter sessions
+     * @param trackName - Track name to filter sessions
+     * @param carName - Car name to filter sessions  
      * @param chunkSize - Size of each data chunk (default: 1000)
      * @returns Session metadata with chunking info
      */

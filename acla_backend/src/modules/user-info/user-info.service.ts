@@ -15,8 +15,8 @@ export class UserInfoService {
         private passwordService: PasswordService
     ) { }
 
-    async findOne(userid: string): Promise<UserInfo | null> {
-        return this.userInfoModel.findOne({ id: userid }).exec();
+    async findOneWithEmail(email: string): Promise<UserInfo | null> {
+        return this.userInfoModel.findOne({ email: email }).exec();
     }
 
     async findOneWithPermissions(id: string): Promise<UserInfo | null> {

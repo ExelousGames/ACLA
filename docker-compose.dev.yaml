@@ -67,8 +67,11 @@ services:
       - .dev.env
       - .env.secrets
     environment:
-      - BACKEND_URL=http://acla_backend_c:7001
+      - BACKEND_SERVER_IP=${BACKEND_SERVER_IP}
+      - BACKEND_PROXY_PORT=${BACKEND_PORT}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - BACKEND_USERNAME=${BACKEND_USERNAME}
+      - BACKEND_PASSWORD=${BACKEND_PASSWORD}
     volumes:
       - ./acla_ai_service:/app
     ports:

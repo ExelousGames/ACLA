@@ -17,10 +17,10 @@ export class AIModel {
     @Prop({ required: true })
     targetVariable: string[]; // lap_time, sector_time, etc.
 
-    @Prop()
+    @Prop({ type: MongooseSchema.Types.Mixed })
     modelData: any;
 
-    @Prop()
+    @Prop({ type: MongooseSchema.Types.Mixed })
     metadata: any;
 
     @Prop({ required: true, default: true })

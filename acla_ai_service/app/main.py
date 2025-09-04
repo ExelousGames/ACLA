@@ -14,7 +14,7 @@ from app.api import (
     racing_session_router,
 )
 from app.api.query import router as query_router
-from app.api.ml_endpoints import router as ml_router
+
 
 # Load environment variables
 load_dotenv()
@@ -26,7 +26,7 @@ async def lifespan(app: FastAPI):
     # Startup
     print("✅ Using new structured application")
     print(f"🏁 {settings.app_name} v{settings.app_version}")
-    print(f"🔧 Backend URL: {settings.backend_url}")
+    print(f"🔧 Backend URL: {settings.backend_server_ip}")
     print(f"🤖 OpenAI API: {'Configured' if settings.openai_api_key else 'Not configured'}")
     
     # Establish backend connection
@@ -67,8 +67,6 @@ app.add_middleware(
 app.include_router(health_router)
 app.include_router(query_router)  # Main query endpoint
 app.include_router(racing_session_router)
-app.include_router(ml_router)  # Machine Learning endpoints
-
 
 if __name__ == "__main__":
     import uvicorn

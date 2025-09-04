@@ -508,7 +508,7 @@ class ImitationLearningService:
         
         # Predict driving behavior
         if 'behavior_learning' in model_data:
-            behavior_model = model_data['behavior_learning']['model']
+            behavior_model = model_data['behavior_learning']['modelData']['model']
             
             # Extract behavior features
             behavior_features = self.behavior_learner.generate_driving_style_features(df)
@@ -539,7 +539,7 @@ class ImitationLearningService:
         if 'trajectory_learning' in model_data:
             try:
                 # Set the trajectory model
-                self.trajectory_learner.trajectory_model = model_data['trajectory_learning']['trajectory_model']
+                self.trajectory_learner.trajectory_model = model_data['trajectory_learning']['modelData']
                 
                 optimal_actions = self.trajectory_learner.predict_optimal_actions(df)
                 predictions['optimal_actions'] = optimal_actions
@@ -560,19 +560,19 @@ class ImitationLearningService:
             behavior_info = results['behavior_learning']
             summary['learning_completed'].append('behavior')
             summary['behavior_summary'] = {
-                'features_extracted': behavior_info['features_shape'][1],
-                'styles_identified': len(behavior_info['style_distribution']),
-                'model_accuracy': behavior_info.get('model_performance', {}).get('accuracy', 0)
+                'features_extracted': behavior_info['metadata']['features_shape'][1],
+                'styles_identified': len(behavior_info['metadata']['style_distribution']),
+                'model_accuracy': behavior_info['metadata'].get('model_performance', {}).get('accuracy', 0)
             }
         
         if 'trajectory_learning' in results:
             trajectory_info = results['trajectory_learning']
             summary['learning_completed'].append('trajectory')
             summary['trajectory_summary'] = {
-                'models_trained': len(trajectory_info['models_trained']),
-                'input_features': len(trajectory_info['input_features']),
+                'models_trained': len(trajectory_info['metadata']['models_trained']),
+                'input_features': len(trajectory_info['metadata']['input_features']),
                 'avg_r2_score': np.mean([
-                    metrics['r2'] for metrics in trajectory_info['performance_metrics'].values()
+                    metrics['r2'] for metrics in trajectory_info['metadata']['performance_metrics'].values()
                 ])
             }
         
@@ -663,7 +663,7 @@ class ImitationLearningService:
             
             print(f"[INFO] Models deserialized successfully. Timestamp: {model_dict.get('timestamp', 'Unknown')}")
             
-            return model_dict["results"]
+            return model_dict.get("model", model_dict)
             
         except Exception as e:
             raise Exception(f"Failed to deserialize imitation learning models: {str(e)}")
