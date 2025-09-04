@@ -1,5 +1,6 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { Schema as MongooseSchema } from 'mongoose';
+import { ObjectId } from 'mongodb';
 
 
 @Schema({ timestamps: true })
@@ -14,8 +15,8 @@ export class AIModel {
     @Prop({ required: true })
     modelType: string; // lap_time_prediction, sector_time_optimization, etc.
 
-    @Prop({ type: MongooseSchema.Types.Mixed })
-    modelData: any;
+    @Prop({ type: MongooseSchema.Types.ObjectId })
+    modelDataFileId: ObjectId; // GridFS file ID for model data
 
     @Prop({ type: MongooseSchema.Types.Mixed })
     metadata: any;
