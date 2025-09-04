@@ -19,8 +19,10 @@ class Settings(BaseSettings):
     debug: bool = False
     
     # API Configuration
-    backend_url: str = "http://backend:7001"
+    backend_server_ip: Optional[str] = None
+    backend_proxy_port: Optional[str] = None
     
+
     # Backend Authentication
     backend_username: Optional[str] = None
     backend_password: Optional[str] = None

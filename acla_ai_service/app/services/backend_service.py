@@ -15,7 +15,14 @@ class BackendService:
     """Service for backend integration and communication"""
     
     def __init__(self):
-        self.base_url = settings.backend_url
+        # Construct proper URL with protocol
+        server_ip = settings.backend_server_ip or "acla_backend_c"
+        if not server_ip.startswith(('http://', 'https://')):
+            # For development, use http. For production, this should be https
+            server_ip = f"http://{server_ip}"
+        
+        self.base_url = server_ip
+        self.base_port = settings.backend_proxy_port
         self.username = settings.backend_username
         self.password = settings.backend_password
         self.jwt_token: Optional[str] = None
@@ -31,15 +38,22 @@ class BackendService:
         
         for attempt in range(max_retries):
             try:
+                
+                # Ensure only one login attempt at a time
                 async with self._session_lock:
                     login_data = {
-                        "username": self.username,
+                        "email": self.username,
                         "password": self.password
                     }
                     
                     async with httpx.AsyncClient() as client:
-                        url = f"{self.base_url}/userinfo/auth/login"
+                        url = f"{self.base_url}:{self.base_port}/userinfo/auth/login"
+                        print(f"🔌 Connecting to backend at {url}")
+                        
+                        
                         response = await client.post(url, json=login_data)
+                        
+                        # Raise for status to catch HTTP errors
                         response.raise_for_status()
                         
                         auth_response = response.json()
@@ -118,7 +132,7 @@ class BackendService:
         
         try:
             async with httpx.AsyncClient() as client:
-                url = f"{self.base_url}/{endpoint}"
+                url = f"{self.base_url}:{self.base_port}/{endpoint}"
                 
                 if method.upper() == "GET":
                     response = await client.get(url, headers=headers)
@@ -177,12 +191,14 @@ class BackendService:
             data["map_name"] = map_name
         
         return await self.call_backend_function("racing-session/sessionbasiclist", "POST", data)
-    
-    async def get_all_racing_sessions(self, chunk_size: int = 1000) -> Dict[str, Any]:
+
+    async def get_all_racing_sessions(self, trackName: str, carName: str, chunk_size: int = 1000) -> Dict[str, Any]:
         """Get all racing sessions from all users in the database"""
         try:
             # Initialize the download to get metadata about all sessions
             init_data = {
+                "trackName": trackName,
+                "carName": carName,
                 "chunkSize": chunk_size
             }
             

@@ -53,7 +53,7 @@ export class RacingSessionController {
     ): Promise<AllSessionsInitResponseDto> {
         try {
             const chunkSize = body.chunkSize || 1000; // Default chunk size
-
+            console.log(`Initializing download for track: ${body.trackName}, car: ${body.carName}, chunkSize: ${chunkSize}`);
             const initData = await this.racingSessionService.initializeSessionsDownload(body.trackName, body.carName, chunkSize);
 
             // Store download state for tracking
@@ -208,7 +208,7 @@ export class RacingSessionController {
             // ai training
             try {
                 // First, find the user by email to get their ObjectId
-                const userInfo = await this.userInfoService.findOne(upload.metadata.userId);
+                const userInfo = await this.userInfoService.findOneWithEmail(upload.metadata.userId);
 
                 if (!userInfo) {
                     console.log('User not found for email:', upload.metadata.userId);

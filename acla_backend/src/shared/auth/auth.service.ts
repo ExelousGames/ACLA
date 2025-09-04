@@ -21,7 +21,8 @@ export class AuthService {
      * @returns User object if valid, otherwise null
      */
     async validateUser(email: string, pass: string): Promise<any> {
-        const user = await this.usersService.findOne(email);
+
+        const user = await this.usersService.findOneWithEmail(email);
         // Use PasswordService to compare the plain text password with the hashed password
         if (user && await this.passwordService.comparePassword(pass, user.password)) {
             // Convert Mongoose document to plain object and remove password
