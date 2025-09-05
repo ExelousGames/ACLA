@@ -72,6 +72,7 @@ export class ChunkClientService {
                 chunkSize,
             };
 
+            // Prepare the chunks
             const result = await this.chunkHandler.prepareChunks(options);
 
             this.logger.log(
@@ -235,6 +236,37 @@ export class ChunkClientService {
                     message: `Failed to send chunked data: ${error.message}`,
                 },
                 HttpStatus.INTERNAL_SERVER_ERROR
+            );
+        }
+    }
+
+    /**
+     * Get a specific prepared chunk from a session
+     * Use this to retrieve individual chunks from a prepared session
+     */
+    async getPreparedChunk(sessionId: string, chunkIndex: number) {
+        try {
+            const chunk = this.chunkHandler.getPreparedChunk(sessionId, chunkIndex);
+            const sessionStatus = await this.getSessionStatus(sessionId);
+
+            return {
+                success: true,
+                sessionId,
+                chunkIndex,
+                totalChunks: sessionStatus.totalChunks,
+                data: chunk,
+                isLastChunk: chunkIndex === sessionStatus.totalChunks - 1,
+            };
+        } catch (error) {
+            this.logger.error(`Error getting prepared chunk ${chunkIndex} from session ${sessionId}:`, error.message);
+            throw new HttpException(
+                {
+                    success: false,
+                    message: error.message || 'Chunk not found',
+                    sessionId,
+                    chunkIndex,
+                },
+                HttpStatus.NOT_FOUND
             );
         }
     }

@@ -6,6 +6,7 @@ import { CreateAiModelDto, UpdateAiModelDto } from './dto/ai-model.dto';
 import { ChunkClientService } from '../../shared/chunk-service/chunk.service';
 import { ChunkData } from '../../shared/chunk-service/interfaces/chunk.interface';
 import { GridFSService } from '../gridfs/gridfs.service';
+import { promises } from 'dns';
 
 @Controller('ai-model')
 export class AiModelController {
@@ -59,13 +60,72 @@ export class AiModelController {
         return this.aiModelService.getActiveModel(trackName, carName, modelType);
     }
 
-    @Get('active/:trackName/:carName/:modelType/with-data')
-    async getActiveModelWithData(
+    /**
+     * Prepare the active model data for chunked transfer (returns session info only).
+     * This is the recommended way to handle large model data.
+     * Use this endpoint followed by individual calls to /chunked-data/:sessionId/:chunkIndex
+     * @param trackName 
+     * @param carName 
+     * @param modelType 
+     * @returns Session information for chunked transfer
+     */
+    @Get('active/:trackName/:carName/:modelType/prepare-chunked')
+    async initGetActiveModelData(
         @Param('trackName') trackName: string,
         @Param('carName') carName: string,
         @Param('modelType') modelType: string
     ) {
-        return this.aiModelService.getActiveModelWithData(trackName, carName, modelType);
+        const modelData = await this.aiModelService.getActiveModelWithData(trackName, carName, modelType);
+        const result = await this.chunkService.prepareDataForChunkedSending(modelData);
+
+        // Return only session info, not the actual chunks
+        return {
+            success: result.success,
+            sessionId: result.sessionId,
+            totalChunks: result.totalChunks,
+            message: result.message
+        };
+    }
+
+    /**
+     * Get a specific chunk from a prepared chunked session.
+     * @param sessionId The session ID from prepare-chunked endpoint
+     * @param chunkIndex The index of the chunk to retrieve (0-based)
+     */
+    @Get('active/chunked-data/:sessionId/:chunkIndex')
+    async getActiveModelDataChunk(
+        @Param('sessionId') sessionId: string,
+        @Param('chunkIndex') chunkIndex: string
+    ) {
+        const chunkIndexNum = parseInt(chunkIndex, 10);
+
+        if (isNaN(chunkIndexNum) || chunkIndexNum < 0) {
+            return {
+                success: false,
+                message: 'Invalid chunk index'
+            };
+        }
+
+        try {
+            // Get the session status to validate it exists
+            const sessionStatus = await this.chunkService.getSessionStatus(sessionId);
+
+            if (!sessionStatus.success) {
+                return {
+                    success: false,
+                    message: 'Session not found or expired'
+                };
+            }
+
+            // Get the chunk directly from the chunk service
+            const result = await this.chunkService.getPreparedChunk(sessionId, chunkIndexNum);
+            return result;
+        } catch (error) {
+            return {
+                success: false,
+                message: `Failed to retrieve chunk: ${error.message}`
+            };
+        }
     }
 
     @Post(':id/activate')

@@ -1,12 +1,12 @@
 import { Controller, Get, UseGuards, Request, Post, Body, Query, BadRequestException, Inject, forwardRef } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
-import { RacingSessionDetailedInfoDto, SessionBasicInfoListDto, UploadReacingSessionInitDto, AllSessionsInitResponseDto, SessionChunkDto, AllSessionsChunkRequestDto } from 'src/dto/racing-session.dto';
+import { RacingSessionDetailedInfoDto, SessionBasicInfoListDto, UploadReacingSessionInitDto, AllSessionsInitResponseDto, SessionChunkDto, AllSessionsChunkRequestDto, ImitationLearningGuidanceRequestDto, ImitationLearningGuidanceResponseDto } from 'src/dto/racing-session.dto';
 import { AiModelResponseDto } from 'src/dto/ai-model.dto';
 import { RacingSessionService } from './racing-session.service';
 import { UserSessionAiModelService } from '../user-session-ai-model/user-session-ai-model.service';
 import { UserInfoService } from '../user-info/user-info.service';
 import { UserACCTrackAIModel } from 'src/schemas/session-ai-model.schema';
-import { AiServiceClient, ModelsConfig, TrainModelsResponse } from '../../shared/ai/ai-service.client';
+import { AiServiceClient, ModelsConfig, TrainModelsResponse, ImitationLearningGuidanceRequest } from '../../shared/ai/ai-service.client';
 import { model, Types } from 'mongoose';
 
 @Controller('racing-session')
@@ -322,4 +322,51 @@ export class RacingSessionController {
             aiAnalysisAvailable: true
         };
     }
+
+    @UseGuards(AuthGuard('jwt'))
+    @Post('imitation-learning-guidance')
+    async getImitationLearningGuidance(
+        @Request() req,
+        @Body() body: ImitationLearningGuidanceRequestDto
+    ): Promise<ImitationLearningGuidanceResponseDto> {
+        try {
+            // Validate guidance_type parameter
+            const validGuidanceTypes = ["actions", "behavior", "both"];
+            if (!validGuidanceTypes.includes(body.guidance_type)) {
+                throw new BadRequestException(
+                    `Invalid guidance_type '${body.guidance_type}'. Must be one of: ${validGuidanceTypes.join(', ')}`
+                );
+            }
+
+            // Validate that current_telemetry is provided
+            if (!body.current_telemetry || Object.keys(body.current_telemetry).length === 0) {
+                throw new BadRequestException('current_telemetry is required and cannot be empty');
+            }
+
+            // Prepare request for AI service
+            const guidanceRequest: ImitationLearningGuidanceRequest = {
+                current_telemetry: body.current_telemetry,
+                guidance_type: body.guidance_type,
+                user_id: body.user_id || req.user?.email // Use authenticated user's email if not provided
+            };
+
+            // Call AI service for imitation learning guidance
+            const response = await this.aiServiceClient.getImitationLearningGuidance(guidanceRequest);
+
+            return {
+                message: response.message,
+                guidance_result: response.guidance_result,
+                timestamp: response.timestamp,
+                recommendations: response.recommendations,
+                confidence_score: response.confidence_score,
+                success: true
+            };
+
+        } catch (error) {
+            console.error('Imitation learning guidance failed:', error);
+            throw new BadRequestException(`Failed to get imitation learning guidance: ${error.message}`);
+        }
+    }
+
+
 }

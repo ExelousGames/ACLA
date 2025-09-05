@@ -22,7 +22,9 @@ export class ChunkHandlerService {
     ) { }
 
     /**
-     * Prepare large data for chunked sending
+     * Prepare large data for chunked sending. serialize and split into chunks
+     * @param options 
+     * @returns
      */
     async prepareChunks(options: ChunkPrepareOptions): Promise<ChunkPrepareResult> {
         const { data: content, chunkSize = this.DEFAULT_CHUNK_SIZE, metadata } = options;
@@ -63,6 +65,9 @@ export class ChunkHandlerService {
             }
 
             this.logger.log(`Prepared ${totalChunks} chunks for session ${sessionId}`);
+
+            // Store the prepared chunks for later retrieval
+            this.handleChunkSessionService.storePreparedChunks(sessionId, chunks);
 
             return {
                 sessionId,
@@ -230,6 +235,18 @@ export class ChunkHandlerService {
             };
         } catch (error) {
             this.logger.error('Error estimating chunk requirements:', error.message);
+            throw error;
+        }
+    }
+
+    /**
+     * Get a specific prepared chunk from a session
+     */
+    getPreparedChunk(sessionId: string, chunkIndex: number): any {
+        try {
+            return this.handleChunkSessionService.getPreparedChunk(sessionId, chunkIndex);
+        } catch (error) {
+            this.logger.error(`Error retrieving prepared chunk ${chunkIndex} from session ${sessionId}:`, error.message);
             throw error;
         }
     }

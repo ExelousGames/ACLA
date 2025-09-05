@@ -82,12 +82,6 @@ const SessionAnalysisMap = () => {
         calculateAndDrawTrack();
     }, [turningPoints]);
 
-
-    //after turning points updated, we can update the racing line in the next frame
-    useEffect(() => {
-        calculateAndDrawRacingLine();
-    }, [bezierPoints]);
-
     // Center the track when bezier points are first calculated
     useEffect(() => {
         if (bezierPoints.length > 3) {
