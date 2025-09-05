@@ -35,7 +35,7 @@ interface AnalysisContextType {
     setRecordedSessionStaticsData: (data: {}) => void;
 
     /**
-     * all the recored data
+     * all the recored data of a recently recorded session
      */
     setRecordedSessionData: Dispatch<SetStateAction<any[]>>;
 };
