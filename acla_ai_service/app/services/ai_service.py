@@ -23,10 +23,9 @@ class AIService:
         """Define available functions for OpenAI function calling,
         if OpenAI decides to call a function, it executes it"""
         return [
-
             {
-                "name": "follow_expert_line",
-                "description": "Guide the user to follow the optimal racing line based on telemetry data",
+                "name": "check_car_limit",
+                "description": "Check if the car is within the optimal limits based on telemetry data",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -35,6 +34,10 @@ class AIService:
                     },
                     "required": ["session_id"]
                 }
+            },
+            {
+                "name": "enable_guide_user_racing",
+                "description": "Enable continuous guidance that monitors telemetry data and provides real-time recommendations",
             }
         ]
     
@@ -102,6 +105,8 @@ class AIService:
             if message.tool_calls:
                 print(f"[DEBUG] OpenAI decided to call {len(message.tool_calls)} function(s)")
                 
+                should_continue_to_openai = True
+                
                 for tool_call in message.tool_calls:
                     function_name = tool_call.function.name
                     function_args = json.loads(tool_call.function.arguments)
@@ -110,6 +115,13 @@ class AIService:
                     
                     # Execute the function to get data or preform actions
                     result = await self._execute_function(function_name, function_args, context)
+                    
+                    # Check if this function indicates we should stop processing
+                    if isinstance(result, dict) and result.get("_skip_openai_processing", False):
+                        should_continue_to_openai = False
+                        # Remove the internal flag before adding to results
+                        result = {k: v for k, v in result.items() if k != "_skip_openai_processing"}
+                    
                     function_results.append({
                         "function": function_name,
                         "arguments": function_args,
@@ -128,6 +140,21 @@ class AIService:
                         "content": json.dumps(result)
                     })
                 
+                # Check if any function requested to skip OpenAI processing
+                if not should_continue_to_openai:
+                    print(f"[DEBUG] Function requested to skip OpenAI processing - returning direct response")
+                    
+                    return {
+                        "answer": message.content or "Action completed successfully.",
+                        "function_calls": function_results,
+                        "context": context,
+                        "processing_steps": [
+                            "1. Analyzed user query with OpenAI",
+                            f"2. Executed {len(function_results)} function(s)",
+                            "3. Returned direct response (skipped additional OpenAI processing)"
+                        ]
+                    }
+                
                 print(f"[DEBUG] All functions executed, sending results back to OpenAI for final response")
                 
                 # STEP 3: Send function results back to OpenAI for final comprehensive response
@@ -135,7 +162,7 @@ class AIService:
                     model="gpt-4",
                     messages=messages,
                     temperature=0.7,
-                    max_tokens=100
+                    max_tokens=1500
                 )
                 
                 return {
@@ -174,10 +201,7 @@ class AIService:
 
             # Dispatch table for function handlers
             handlers = {
-                "get_telemetry_insights": lambda: self.backend_service.get_telemetry_insights(
-                    arguments.get("session_id"),
-                    arguments.get("data_types", ["speed", "acceleration"])
-                ),
+                "enable_imitation_learning_guidance": lambda: self.enable_imitation_learning_guidance(),
                 "compare_sessions": lambda: self.backend_service.compare_sessions(
                     arguments.get("session_ids"),
                     arguments.get("comparison_metrics", ["lap_times"])
@@ -195,4 +219,8 @@ class AIService:
             print(f"[ERROR] Function {function_name} execution failed: {str(e)}")
             return {"error": f"Function execution failed: {str(e)}"}
 
-
+    def enable_imitation_learning_guidance(self) -> Dict[str, Any]:
+        results = { "_skip_openai_processing": True,
+                   'function_name': 'enable_imitation_learning_guidance'
+                   }
+        return results
