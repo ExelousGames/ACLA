@@ -147,17 +147,9 @@ class BackendService:
                 return response.json()
                 
         except httpx.HTTPStatusError as e:
-            raise 
+            raise Exception(f"Backend function call failed: {str(e)}")
         except Exception as e:
-            raise
-
-    async def get_racing_sessions(self, user_id: str, map_name: Optional[str] = None) -> Dict[str, Any]:
-        """Get racing sessions from backend"""
-        data = {"username": user_id}
-        if map_name:
-            data["map_name"] = map_name
-        
-        return await self.call_backend_function("racing-session/sessionbasiclist", "POST", data)
+            raise Exception(f"Backend function call failed: {str(e)}")
 
     async def get_all_racing_sessions(self, trackName: str, carName: str, chunk_size: int = 1000) -> Dict[str, Any]:
         """Get all racing sessions from all users in the database"""
@@ -235,19 +227,6 @@ class BackendService:
         except Exception as e:
             logger.error(f"Error retrieving all racing sessions: {str(e)}")
             return {"error": f"Failed to retrieve all racing sessions: {str(e)}"}
-    
-    async def get_session_details(self, session_id: str) -> Dict[str, Any]:
-        """Get detailed session information"""
-        data = {"id": session_id}
-        return await self.call_backend_function("racing-session/detailedSessionInfo", "POST", data)
-    
-    async def save_analysis_results(self, session_id: str, analysis_results: Dict[str, Any]) -> Dict[str, Any]:
-        """Save analysis results to backend"""
-        data = {
-            "session_id": session_id,
-            "analysis_results": analysis_results
-        }
-        return await self.call_backend_function("analysis/save", "POST", data)
 
     async def send_chunked_data(self, data: Dict[str, Any], endpoint: str, chunk_size: int = 1024 * 1024) -> Dict[str, Any]:
         """Send large data in chunks to a backend endpoint"""
@@ -337,6 +316,90 @@ class BackendService:
         logger.info("✅ Imitation learning results saved successfully")
         return {"success": True}
 
+    async def initGetActiveModelData(self, trackName: str, carName: str, modelType: str) -> Dict[str, Any]:
+        """Initialize chunked retrieval of active model data from backend"""
+        try:
+            # Call the prepare-chunked endpoint to initialize the session
+            endpoint = f"ai-model/active/{trackName}/{carName}/{modelType}/prepare-chunked"
+            response = await self.call_backend_function(endpoint, "GET")
+            
+            if "error" in response:
+                return response
+            
+            # Return the session information
+            return {
+                "success": response.get("success", False),
+                "sessionId": response.get("sessionId"),
+                "totalChunks": response.get("totalChunks"),
+                "message": response.get("message", "Session initialized successfully")
+            }
+            
+        except Exception as e:
+            logger.error(f"Error initializing active model data retrieval: {str(e)}")
+            return {"error": f"Failed to initialize active model data retrieval: {str(e)}"}
 
+    async def getActiveModelDataChunk(self, sessionId: str, chunkIndex: int) -> Dict[str, Any]:
+        """Get a specific chunk from a prepared chunked session"""
+        try:
+            # Call the chunked-data endpoint to get the specific chunk
+            endpoint = f"ai-model/active/chunked-data/{sessionId}/{chunkIndex}"
+            response = await self.call_backend_function(endpoint, "GET")
+            
+            if "error" in response:
+                return response
+            
+            return response
+            
+        except Exception as e:
+            logger.error(f"Error retrieving chunk {chunkIndex} from session {sessionId}: {str(e)}")
+            return {"error": f"Failed to retrieve chunk: {str(e)}"}
+
+    async def getCompleteActiveModelData(self, trackName: str, carName: str, modelType: str) -> Dict[str, Any]:
+        """Get complete active model data by retrieving all chunks"""
+        try:
+            # Initialize the chunked session
+            init_response = await self.initGetActiveModelData(trackName, carName, modelType)
+            
+            if not init_response.get("success", False):
+                return init_response
+            
+            session_id = init_response.get("sessionId")
+            total_chunks = init_response.get("totalChunks", 0)
+            
+            logger.info(f"Retrieving active model data in {total_chunks} chunks (session: {session_id})")
+            
+            # Collect all chunks
+            complete_data = []
+            
+            for chunk_index in range(total_chunks):
+                chunk_response = await self.getActiveModelDataChunk(session_id, chunk_index)
+                
+                if not chunk_response.get("success", False):
+                    error_msg = chunk_response.get("message", "Unknown error")
+                    logger.error(f"Failed to retrieve chunk {chunk_index}: {error_msg}")
+                    return {"error": f"Failed to retrieve chunk {chunk_index}: {error_msg}"}
+                
+                chunk_data = chunk_response.get("data")
+                if chunk_data is not None:
+                    complete_data.append(chunk_data)
+                
+                logger.debug(f"Retrieved chunk {chunk_index + 1}/{total_chunks}")
+            
+            # Reconstruct the complete model data
+            # The chunks should be assembled based on the backend's chunking strategy
+            logger.info("✅ Successfully retrieved all chunks for active model data")
+            
+            return {
+                "success": True,
+                "sessionId": session_id,
+                "totalChunks": total_chunks,
+                "data": complete_data,
+                "message": "Complete model data retrieved successfully"
+            }
+            
+        except Exception as e:
+            logger.error(f"Error retrieving complete active model data: {str(e)}")
+            return {"error": f"Failed to retrieve complete active model data: {str(e)}"}
+    
 # Global backend service instance
 backend_service = BackendService()

@@ -1,8 +1,9 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useContext } from 'react';
 import { Box, Button, Card, Flex, Text, TextField, ScrollArea, Separator, Badge, Spinner } from '@radix-ui/themes';
 import { PaperPlaneIcon, ChatBubbleIcon, PersonIcon } from '@radix-ui/react-icons';
 import apiService from 'services/api.service';
 import './ai-chat.css';
+import { AnalysisContext } from 'views/lap-analysis/session-analysis';
 
 interface Message {
     id: string;
@@ -23,6 +24,8 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
     const [isLoading, setIsLoading] = useState(false);
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const inputRef = useRef<HTMLInputElement>(null);
+
+    const analysisContext = useContext(AnalysisContext);
 
     const scrollToBottom = () => {
         messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -46,6 +49,25 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
             setMessages([welcomeMessage]);
         }
     }, [sessionId, messages.length]);
+
+    useEffect(() => {
+        const fetchImitationLearningGuidance = async () => {
+            if (!analysisContext?.liveData) return;
+
+            try {
+                const response = await apiService.post('/imitation-learning-guidance', {
+                    current_telemetry: analysisContext.liveData
+                });
+                // Handle the response here if needed
+                console.log('Imitation learning guidance response:', response.data);
+            } catch (error) {
+                console.error('Error fetching imitation learning guidance:', error);
+            }
+        };
+
+        fetchImitationLearningGuidance();
+    }, [analysisContext?.liveData]);
+
 
     const handleSendMessage = async () => {
         if (!inputValue.trim() || isLoading) return;
@@ -135,6 +157,11 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
         inputRef.current?.focus();
     };
 
+
+    const enable_limitation_guidance = async () => {
+
+
+    };
     return (
         <Card className="ai-chat-container">
             <Flex direction="column" height="100%">

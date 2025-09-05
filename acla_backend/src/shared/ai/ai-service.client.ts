@@ -79,6 +79,20 @@ export interface TrainModelsResponse {
     instructions: string;
 }
 
+export interface ImitationLearningGuidanceRequest {
+    current_telemetry: { [key: string]: any };
+    guidance_type: string; // "actions", "behavior", or "both"
+    user_id?: string;
+}
+
+export interface ImitationLearningGuidanceResponse {
+    message: string;
+    guidance_result: any;
+    timestamp?: string;
+    recommendations?: { [key: string]: any };
+    confidence_score?: number;
+}
+
 @Injectable()
 export class AiServiceClient {
     private readonly aiServiceUrl: string;
@@ -134,6 +148,18 @@ export class AiServiceClient {
         } catch (error) {
             throw new HttpException(
                 `AI Service health check failed: ${error.message}`,
+                HttpStatus.SERVICE_UNAVAILABLE
+            );
+        }
+    }
+
+    async getImitationLearningGuidance(request: ImitationLearningGuidanceRequest): Promise<ImitationLearningGuidanceResponse> {
+        try {
+            const response = await axios.post(`${this.aiServiceUrl}/racing-session/imitation-learning-guidance`, request);
+            return response.data;
+        } catch (error) {
+            throw new HttpException(
+                `AI Service imitation learning guidance failed: ${error.message}`,
                 HttpStatus.SERVICE_UNAVAILABLE
             );
         }

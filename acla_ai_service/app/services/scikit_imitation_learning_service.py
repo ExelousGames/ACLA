@@ -440,7 +440,7 @@ class ImitationLearningService:
             learning_objectives: List of what to learn ('behavior', 'trajectory', 'both')
             
         Returns:
-            Tuple containing (results
+            Dictionary with trained models and learning insights, serialized objects and ready for storage
         """
         if learning_objectives is None:
             learning_objectives = ['behavior', 'trajectory']
@@ -488,7 +488,10 @@ class ImitationLearningService:
             results['trajectory_learning'] = trajectory_results
 
         results['learning_summary'] = self._generate_learning_summary(results)
-        return results
+        
+        objects_serialized_data = self.serialize_object_inside(results)  
+         
+        return objects_serialized_data
     
     def predict_expert_actions(self, 
                              current_telemetry: Dict[str, Any], 
@@ -608,8 +611,118 @@ class ImitationLearningService:
         
         return processed_df
     
+    
+    def serialize_object_inside(self, results: any) -> str:
+                # Serialize behavior learning model if present
+        if 'behavior_learning' in results and 'model' in results['behavior_learning']['modelData']:
+            print("[INFO] Serializing behavior learning model...")
+            # Only serialize the actual model from the behavior_learning['model'] structure
+            behavior_model_to_serialize = results['behavior_learning']['modelData']['model']
+            behavior_model_data = self.imitation_learning.serialize_imitation_model(
+                behavior_model_to_serialize
+            )
+            results['behavior_learning']['modelData']['model'] = behavior_model_data
+
+
+        # Serialize behavior learning scaler if present
+        if 'behavior_learning' in results and 'scaler' in results['behavior_learning']['modelData']:
+            print("[INFO] Serializing behavior learning scaler...")
+            # Only serialize the actual model from the behavior_learning['model'] structure
+            behavior_model_to_serialize = results['behavior_learning']['modelData']['scaler']
+            behavior_model_data = self.imitation_learning.serialize_imitation_model(
+                behavior_model_to_serialize
+            )
+            results['behavior_learning']['modelData']['scaler'] = behavior_model_data
+            
+        # Serialize trajectory learning models if present
+        if 'trajectory_learning' in results and 'models' in results['trajectory_learning']['modelData']:
+            print("[INFO] Serializing trajectory learning models...")
+            # Only serialize the actual trajectory_model from the trajectory_learning structure
+            trajectory_models_to_serialize = results['trajectory_learning']['modelData']['models']
+                
+            # Serialize each model individually
+            serialized_trajectory_models = {}
+            for model_name, model in trajectory_models_to_serialize.items():
+                print(f"[INFO] Serializing trajectory model: {model_name}")
+                serialized_model_data = self.imitation_learning.serialize_imitation_model(model)
+                serialized_trajectory_models[model_name] = serialized_model_data
+                
+            # Store serialized models back in the trajectory model structure
+            results['trajectory_learning']['modelData']['models'] = serialized_trajectory_models
+            
+            trajectory_scaler_to_serialize = results['trajectory_learning']['modelData']['scaler']
+            serialized_scaler_data = self.imitation_learning.serialize_imitation_model(
+                trajectory_scaler_to_serialize
+            )
+            results['trajectory_learning']['modelData']['scaler'] = serialized_scaler_data
+            
+            trajectory_scaler_to_serialize = results['trajectory_learning']['modelData']['pca']
+            serialized_scaler_data = self.imitation_learning.serialize_imitation_model(
+                trajectory_scaler_to_serialize
+            )
+            results['trajectory_learning']['modelData']['pca'] = serialized_scaler_data
+            
+        return results
+    
+    # Deserialize object inside 
+    def deserialize_object_inside(self, serialized_results: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Deserialize the objects that were serialized by serialize_object_inside function
+        
+        Args:
+            serialized_results: Dictionary containing serialized models and metadata
+            
+        Returns:
+            Dictionary with deserialized models and original structure
+        """
+        results = serialized_results.copy()
+        
+        # Deserialize behavior learning model if present
+        if 'behavior_learning' in results and 'model' in results['behavior_learning']['modelData']:
+            print("[INFO] Deserializing behavior learning model...")
+            # Deserialize the actual model from the behavior_learning['model'] structure
+            behavior_model_serialized = results['behavior_learning']['modelData']['model']
+            behavior_model_deserialized = self.deserialize_data(behavior_model_serialized)
+            results['behavior_learning']['modelData']['model'] = behavior_model_deserialized
+
+        # Deserialize behavior learning scaler if present
+        if 'behavior_learning' in results and 'scaler' in results['behavior_learning']['modelData']:
+            print("[INFO] Deserializing behavior learning scaler...")
+            # Deserialize the actual scaler from the behavior_learning structure
+            behavior_scaler_serialized = results['behavior_learning']['modelData']['scaler']
+            behavior_scaler_deserialized = self.deserialize_data(behavior_scaler_serialized)
+            results['behavior_learning']['modelData']['scaler'] = behavior_scaler_deserialized
+            
+        # Deserialize trajectory learning models if present
+        if 'trajectory_learning' in results and 'models' in results['trajectory_learning']['modelData']:
+            print("[INFO] Deserializing trajectory learning models...")
+            # Deserialize each trajectory model individually
+            trajectory_models_serialized = results['trajectory_learning']['modelData']['models']
+                
+            # Deserialize each model individually
+            deserialized_trajectory_models = {}
+            for model_name, serialized_model in trajectory_models_serialized.items():
+                print(f"[INFO] Deserializing trajectory model: {model_name}")
+                deserialized_model = self.deserialize_data(serialized_model)
+                deserialized_trajectory_models[model_name] = deserialized_model
+                
+            # Store deserialized models back in the trajectory model structure
+            results['trajectory_learning']['modelData']['models'] = deserialized_trajectory_models
+            
+            # Deserialize trajectory scaler
+            trajectory_scaler_serialized = results['trajectory_learning']['modelData']['scaler']
+            deserialized_scaler = self.deserialize_data(trajectory_scaler_serialized)
+            results['trajectory_learning']['modelData']['scaler'] = deserialized_scaler
+            
+            # Deserialize trajectory PCA
+            trajectory_pca_serialized = results['trajectory_learning']['modelData']['pca']
+            deserialized_pca = self.deserialize_data(trajectory_pca_serialized)
+            results['trajectory_learning']['modelData']['pca'] = deserialized_pca
+            
+        return results
+    
     # Serialize models function
-    def serialize_imitation_model(self, training_model: any) -> str:
+    def serialize_data(self, data: any) -> str:
         """
         Serialize trained behavior and trajectory models
         
@@ -620,29 +733,23 @@ class ImitationLearningService:
             Serialized model data as base64 encoded string
         """
         # Prepare serialization data
-        serialization_data = {
-            'timestamp': datetime.now().isoformat(),
-            'model': training_model
-        }
             
         try:
             # Serialize to bytes
             buffer = io.BytesIO()
-            pickle.dump(serialization_data, buffer)
+            pickle.dump(data, buffer)
             buffer.seek(0)
         
             # Encode to base64
             encoded_data = base64.b64encode(buffer.getvalue()).decode('utf-8')
-            
-            print(f"[INFO] Models serialized successfully. Size: {len(encoded_data)} characters")
-
+    
             return encoded_data
                 
         except Exception as e:
             print(f"[ERROR] Failed to serialize models: {e}")
             raise e
     
-    def deserialize_imitation_models(self, model_data: str) -> Dict[str, Any]:
+    def deserialize_data(self, model_data: str) -> Dict[str, Any]:
         """
         Deserialize imitation learning models from base64 string
         
@@ -659,11 +766,8 @@ class ImitationLearningService:
             
             # Deserialize using pickle
             buffer = io.BytesIO(decoded_data)
-            model_dict = pickle.load(buffer)
-            
-            print(f"[INFO] Models deserialized successfully. Timestamp: {model_dict.get('timestamp', 'Unknown')}")
-            
-            return model_dict.get("model", model_dict)
+            data_result = pickle.load(buffer)
+            return data_result
             
         except Exception as e:
             raise Exception(f"Failed to deserialize imitation learning models: {str(e)}")

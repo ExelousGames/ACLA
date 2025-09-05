@@ -101,33 +101,6 @@ async def query_predict(request: PredictionQueryRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Prediction query failed: {str(e)}")
 
-@router.post("/query/basic")
-async def process_basic_query(request: QueryRequest):
-    """Fallback endpoint for basic query processing without OpenAI"""
-    try:
-        context = {
-            "session_id": request.dataset_id,
-            "user_id": request.user_id
-        }
-        
-        result = await ai_service._fallback_query_processing(
-            request.question, 
-            context
-        )
-        
-        return {
-            "success": True,
-            "query": request.question,
-            "answer": result.get("answer"),
-            "data": result.get("data"),
-            "suggestion": result.get("suggestion"),
-            "available_functions": result.get("available_functions"),
-            "mode": "basic_fallback"
-        }
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Basic query processing failed: {str(e)}")
-
 @router.get("/query/available-functions")
 async def get_available_functions():
     """Get list of available functions that OpenAI can call"""
@@ -153,21 +126,6 @@ async def get_available_functions():
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to get functions: {str(e)}")
 
-@router.get("/query/user-models/{user_id}")
-async def get_user_models(user_id: str):
-    """Get all AI models trained by a user"""
-    try:
-        result = await ai_service.get_user_models(user_id)
-        
-        return {
-            "success": True,
-            "user_id": user_id,
-            "models": result.get("data", []),
-            "total_models": len(result.get("data", [])) if result.get("success") else 0
-        }
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to get user models: {str(e)}")
 
 @router.delete("/query/models/{model_id}")
 async def delete_model(model_id: str, user_id: str = Body(...)):

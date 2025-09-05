@@ -100,6 +100,15 @@ export class AiModelService {
         return modelWithData;
     }
 
+    /**
+     * Get a specific chunk from a prepared session
+     */
+    async getChunkFromSession(sessionId: string, chunkIndex: number): Promise<any> {
+        // For now, we'll delegate to the chunk service
+        // In a more advanced implementation, you might have additional model-specific logic here
+        throw new Error('This method should not be called directly. Use the chunk service instead.');
+    }
+
     async update(id: string, updateAiModelDto: UpdateAiModelDto): Promise<AIModel> {
         const existingModel = await this.findOne(id);
         let modelDataFileId = existingModel.modelDataFileId;
@@ -165,6 +174,7 @@ export class AiModelService {
         }
     }
 
+    // Helper to get the currently active model for a given track, car, and type
     async getActiveModel(trackName: string, carName: string, modelType: string): Promise<AIModel> {
         const model = await this.aiModelModel
             .findOne({
@@ -183,6 +193,14 @@ export class AiModelService {
         return model;
     }
 
+
+    /**
+     * Get the currently active model for a given track, car, and type, including its model data.
+     * @param trackName 
+     * @param carName 
+     * @param modelType 
+     * @returns 
+     */
     async getActiveModelWithData(trackName: string, carName: string, modelType: string): Promise<any> {
         const model = await this.getActiveModel(trackName, carName, modelType);
         const modelId = (model as any)._id.toString();

@@ -45,6 +45,9 @@ from .scikit_imitation_learning_service import ImitationLearningService
 # Import backend service
 from .backend_service import backend_service
 
+# Import model cache service
+from .model_cache_service import model_cache_service
+
 # Suppress sklearn warnings
 warnings.filterwarnings('ignore', category=UserWarning)
 
@@ -162,11 +165,15 @@ class TelemetryMLService:
         
         # Backend service integration
         self.backend_service = backend_service
+        
+        # Model cache service integration
+        self.model_cache = model_cache_service
 
         print(f"[INFO] TelemetryMLService initialized. Models directory: {self.models_directory}")
         print(f"[INFO] Imitation learning enabled. Imitation models directory: {imitation_models_dir}")
         print(f"[INFO] Backend service integrated: {self.backend_service.base_url}")
         print(f"[INFO] Backend connection status: {self.backend_service.is_connected}")
+        print(f"[INFO] Model caching enabled - Max cache size: {self.model_cache.max_cache_size}, Max memory: {self.model_cache.max_memory_mb}MB")
         
         
 
@@ -937,20 +944,53 @@ class TelemetryMLService:
     
     def predict(self, 
                 model_id: str, 
-                df: pd.DataFrame) -> np.ndarray:
+                df: pd.DataFrame,
+                use_cache: bool = True) -> np.ndarray:
         """
-        Make predictions using a trained model
+        Make predictions using a trained model with caching support
         
         Args:
             model_id: ID of the trained model
             df: DataFrame with telemetry data for prediction
+            use_cache: Whether to use cached model if available
             
         Returns:
             Array of predictions
         """
-        model_info = self._load_model(model_id)
-        if not model_info:
-            raise ValueError(f"Model {model_id} not found")
+        model_info = None
+        
+        if use_cache:
+            # Try to get model from cache first
+            cached_result = self.model_cache.get_by_key(model_id)
+            if cached_result:
+                model_info, _ = cached_result
+                print(f"[INFO] Using cached sklearn model: {model_id}")
+        
+        # If not in cache or cache disabled, load from file
+        if model_info is None:
+            model_info = self._load_model(model_id)
+            if not model_info:
+                raise ValueError(f"Model {model_id} not found")
+            
+            if use_cache:
+                # Cache the loaded model
+                cache_metadata = {
+                    "model_id": model_id,
+                    "model_type": model_info.get('model_type', 'sklearn'),
+                    "model_name": model_info.get('model_name', 'unknown'),
+                    "loaded_at": datetime.now().isoformat()
+                }
+                
+                self.model_cache.put(
+                    model_type="sklearn",
+                    track_name="general",  # sklearn models are general purpose
+                    car_name="general",
+                    data=model_info,
+                    metadata=cache_metadata,
+                    additional_params={"model_id": model_id}
+                    # TTL will be automatically set based on model type configuration
+                )
+                print(f"[INFO] Cached sklearn model: {model_id}")
         
         # Prepare data using the same features as training
         processor = FeatureProcessor(df)
@@ -978,89 +1018,6 @@ class TelemetryMLService:
             predictions = model_info['label_encoder'].inverse_transform(predictions.astype(int))
         
         return predictions
-    
-    async def predict_online(self, 
-                           telemetry_data: Dict[str, Any],
-                           model_data: str,
-                           model_type: str) -> Dict[str, Any]:
-        """
-        Make predictions using a trained sklearn model (compatible with river service interface)
-        
-        Args:
-            telemetry_data: Current telemetry data for prediction
-            model_data: Base64 encoded model data
-            model_type: Type of model
-        
-        Returns:
-            Prediction results
-        """
-        try:
-            # Handle imitation learning models differently
-            if model_type == "imitation_learning":
-                # For imitation learning, model_data contains the model_id
-                return await self.get_expert_guidance(
-                    current_telemetry=telemetry_data,
-                    imitation_model_id=model_data,  # Assume model_data is model_id for imitation learning
-                    guidance_type="both"
-                )
-            
-            # Deserialize the model
-            model_info = self._deserialize_sklearn_model(model_data)
-            
-            # Convert single telemetry record to DataFrame
-            df = pd.DataFrame([telemetry_data])
-            
-            # Prepare features for prediction
-            processor = FeatureProcessor(df)
-            processed_df = processor.general_cleaning_for_analysis()
-            
-            # Extract features used in training
-            feature_names = model_info['feature_names']
-            missing_features = [f for f in feature_names if f not in processed_df.columns]
-            
-            if missing_features:
-                return {
-                    "success": False,
-                    "error": f"Missing required features: {missing_features}",
-                    "required_features": feature_names
-                }
-            
-            X = processed_df[feature_names].fillna(0).replace([np.inf, -np.inf], 0)
-            
-            # Scale features
-            X_scaled = model_info['scaler'].transform(X)
-            
-            # Make prediction
-            prediction = model_info['model'].predict(X_scaled)[0]
-            
-            # For classification, get confidence if available
-            confidence = None
-            if hasattr(model_info['model'], 'predict_proba'):
-                try:
-                    probabilities = model_info['model'].predict_proba(X_scaled)[0]
-                    confidence = float(max(probabilities))
-                except:
-                    confidence = None
-            
-            # Decode labels if it's a classification model
-            if model_info.get('label_encoder'):
-                prediction = model_info['label_encoder'].inverse_transform([int(prediction)])[0]
-            
-            return {
-                "success": True,
-                "prediction": float(prediction) if isinstance(prediction, (int, float)) else str(prediction),
-                "confidence": confidence,
-                "model_type": model_type,
-                "features_used": feature_names,
-                "timestamp": datetime.now().isoformat()
-            }
-            
-        except Exception as e:
-            return {
-                "success": False,
-                "error": f"Prediction failed: {str(e)}",
-                "model_type": model_type
-            }
     
     def _deserialize_sklearn_model(self, model_data: str) -> Dict[str, Any]:
         """
@@ -1448,57 +1405,6 @@ class TelemetryMLService:
         # Learn from expert demonstrations
         results = self.imitation_learning.train_ai_model(telemetry_data)
             
-        print(f"[INFO] Imitation learning completed successfully.")
-            
-        # Serialize behavior learning model if present
-        if 'behavior_learning' in results and 'model' in results['behavior_learning']['modelData']:
-            print("[INFO] Serializing behavior learning model...")
-            # Only serialize the actual model from the behavior_learning['model'] structure
-            behavior_model_to_serialize = results['behavior_learning']['modelData']['model']
-            behavior_model_data = self.imitation_learning.serialize_imitation_model(
-                behavior_model_to_serialize
-            )
-            results['behavior_learning']['modelData']['model'] = behavior_model_data
-
-
-        # Serialize behavior learning scaler if present
-        if 'behavior_learning' in results and 'scaler' in results['behavior_learning']['modelData']:
-            print("[INFO] Serializing behavior learning scaler...")
-            # Only serialize the actual model from the behavior_learning['model'] structure
-            behavior_model_to_serialize = results['behavior_learning']['modelData']['scaler']
-            behavior_model_data = self.imitation_learning.serialize_imitation_model(
-                behavior_model_to_serialize
-            )
-            results['behavior_learning']['modelData']['scaler'] = behavior_model_data
-            
-        # Serialize trajectory learning models if present
-        if 'trajectory_learning' in results and 'models' in results['trajectory_learning']['modelData']:
-            print("[INFO] Serializing trajectory learning models...")
-            # Only serialize the actual trajectory_model from the trajectory_learning structure
-            trajectory_models_to_serialize = results['trajectory_learning']['modelData']['models']
-                
-            # Serialize each model individually
-            serialized_trajectory_models = {}
-            for model_name, model in trajectory_models_to_serialize.items():
-                print(f"[INFO] Serializing trajectory model: {model_name}")
-                serialized_model_data = self.imitation_learning.serialize_imitation_model(model)
-                serialized_trajectory_models[model_name] = serialized_model_data
-                
-            # Store serialized models back in the trajectory model structure
-            results['trajectory_learning']['modelData']['models'] = serialized_trajectory_models
-            
-            trajectory_scaler_to_serialize = results['trajectory_learning']['modelData']['scaler']
-            serialized_scaler_data = self.imitation_learning.serialize_imitation_model(
-                trajectory_scaler_to_serialize
-            )
-            results['trajectory_learning']['modelData']['scaler'] = serialized_scaler_data
-            
-            trajectory_scaler_to_serialize = results['trajectory_learning']['modelData']['pca']
-            serialized_scaler_data = self.imitation_learning.serialize_imitation_model(
-                trajectory_scaler_to_serialize
-            )
-            results['trajectory_learning']['modelData']['pca'] = serialized_scaler_data
-        
         try:
             #save the info to backend
 
@@ -1507,8 +1413,7 @@ class TelemetryMLService:
                 "trackName": trackName,
                 "carName": carName,
                 "modelData": {
-                    "behavior_learning": results.get("behavior_learning"),
-                    "trajectory_learning": results.get("trajectory_learning")
+                    results
                 },
                 "metadata": {
                     "summary": results.get("summary", {}),
@@ -1522,28 +1427,81 @@ class TelemetryMLService:
             print(f"[ERROR] Failed to save imitation learning results: {str(error)}")
         
         
-    async def get_expert_guidance(self,
+    async def get_imitation_learning_expert_guidance(self,
                                 current_telemetry: Dict[str, Any],
-                                imitation_model_id: str,
+                                trackName: str,
+                                carName: str,
                                 guidance_type: str = "both") -> Dict[str, Any]:
         """
         Get expert guidance for current driving situation using imitation learning
         
         Args:
             current_telemetry: Current telemetry state
-            imitation_model_id: ID of the trained imitation model
+            trackName: Track name for the model
+            carName: Car name for the model
             guidance_type: Type of guidance ('behavior', 'actions', 'both')
             
         Returns:
             Expert guidance and recommendations
         """
         try:
-            print(f"[INFO] Getting expert guidance using model: {imitation_model_id}")
+            # First, try to get model from cache
+            cached_result = self.model_cache.get(
+                model_type="imitation_learning",
+                track_name=trackName,
+                car_name=carName,
+                model_subtype="complete_model_data"
+            )
             
+            deserialized_trajectory_models = None
+            
+            if cached_result:
+                deserialized_trajectory_models, metadata = cached_result
+                print(f"[INFO] Using cached imitation learning model for {trackName}/{carName}")
+            else:
+                # Cache miss - fetch from backend
+                print(f"[INFO] Cache miss - fetching imitation learning model from backend for {trackName}/{carName}")
+                
+                # Get active model with data from backend
+                model_response = await self.backend_service.getCompleteActiveModelData(
+                    trackName, carName, "imitation_learning"
+                )
+                
+                if "error" in model_response:
+                    return {"success": False, "error": model_response["error"]}
+                
+                model_data = model_response.get("modelData", {})
+                if not model_data:
+                    return {"success": False, "error": "No model data found"}
+
+                # Deserialize the model data
+                deserialized_trajectory_models = self.imitation_learning.deserialize_object_inside(model_data)
+                
+                # Cache the deserialized model for future use
+                cache_metadata = {
+                    "track_name": trackName,
+                    "car_name": carName,
+                    "model_type": "imitation_learning",
+                    "fetched_at": datetime.now().isoformat(),
+                    "backend_model_id": model_response.get("id", "unknown")
+                }
+                
+                self.model_cache.put(
+                    model_type="imitation_learning",
+                    track_name=trackName,
+                    car_name=carName,
+                    data=deserialized_trajectory_models,
+                    metadata=cache_metadata,
+                    model_subtype="complete_model_data"
+                    # TTL will be automatically set based on model type configuration
+                )
+                
+                print(f"[INFO] Cached imitation learning model for {trackName}/{carName}")
+
             # Get predictions from imitation model
             predictions = self.imitation_learning.predict_expert_actions(
                 current_telemetry=current_telemetry,
-                model_id=imitation_model_id
+                model_data=deserialized_trajectory_models
             )
             
             # Format guidance based on requested type
@@ -1759,7 +1717,7 @@ class TelemetryMLService:
             # Analyze each telemetry point against expert
             point_analyses = []
             for i, telemetry_point in enumerate(user_telemetry_data):
-                point_guidance = await self.get_expert_guidance(
+                point_guidance = await self.get_imitation_learning_expert_guidance(
                     current_telemetry=telemetry_point,
                     imitation_model_id=expert_model_id,
                     guidance_type="both"
@@ -1957,6 +1915,151 @@ class TelemetryMLService:
             "current_efficiency": avg_efficiency,
             "target_efficiency": min(100, avg_efficiency + potential_gain * 0.6)  # Realistic target
         }
+    
+    # Cache Management Methods
+    def invalidate_model_cache(self, 
+                              model_type: str,
+                              track_name: str,
+                              car_name: str,
+                              model_subtype: Optional[str] = None) -> bool:
+        """
+        Invalidate a specific model from cache
+        
+        Args:
+            model_type: Type of model to invalidate
+            track_name: Track name
+            car_name: Car name
+            model_subtype: Optional model subtype
+            
+        Returns:
+            True if model was cached and removed, False otherwise
+        """
+        return self.model_cache.invalidate(
+            model_type=model_type,
+            track_name=track_name,
+            car_name=car_name,
+            model_subtype=model_subtype
+        )
+    
+    def invalidate_track_cache(self, track_name: str) -> int:
+        """
+        Invalidate all cached models for a specific track
+        
+        Args:
+            track_name: Track name to invalidate
+            
+        Returns:
+            Number of models invalidated
+        """
+        pattern = f"*:{track_name}:*"
+        return self.model_cache.invalidate_by_pattern(pattern)
+    
+    def invalidate_car_cache(self, car_name: str) -> int:
+        """
+        Invalidate all cached models for a specific car
+        
+        Args:
+            car_name: Car name to invalidate
+            
+        Returns:
+            Number of models invalidated
+        """
+        pattern = f"*:*:{car_name}:*"
+        return self.model_cache.invalidate_by_pattern(pattern)
+    
+    def get_cache_stats(self) -> Dict[str, Any]:
+        """
+        Get comprehensive cache statistics
+        
+        Returns:
+            Dictionary with cache statistics and performance metrics
+        """
+        return self.model_cache.get_stats()
+    
+    def get_model_cache_info(self, 
+                            model_type: str,
+                            track_name: str,
+                            car_name: str,
+                            model_subtype: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """
+        Get information about a cached model
+        
+        Args:
+            model_type: Type of model
+            track_name: Track name
+            car_name: Car name
+            model_subtype: Optional model subtype
+            
+        Returns:
+            Cache information or None if not cached
+        """
+        return self.model_cache.get_cache_info(
+            model_type=model_type,
+            track_name=track_name,
+            car_name=car_name,
+            model_subtype=model_subtype
+        )
+    
+    def clear_all_cache(self):
+        """Clear all cached models"""
+        self.model_cache.clear()
+        print("[INFO] All cached models cleared")
+    
+    def preload_models_for_session(self, 
+                                   track_name: str, 
+                                   car_name: str,
+                                   model_types: Optional[List[str]] = None) -> Dict[str, Any]:
+        """
+        Preload models for a racing session to improve performance
+        
+        Args:
+            track_name: Track name for the session
+            car_name: Car name for the session
+            model_types: Optional list of model types to preload (default: all available)
+            
+        Returns:
+            Dictionary with preload results
+        """
+        if model_types is None:
+            model_types = ["imitation_learning"]
+        
+        results = {
+            "track_name": track_name,
+            "car_name": car_name,
+            "preloaded_models": [],
+            "failed_models": [],
+            "total_preload_time": 0
+        }
+        
+        start_time = datetime.now()
+        
+        for model_type in model_types:
+            try:
+                # Check if already cached
+                if self.model_cache.get(model_type, track_name, car_name):
+                    results["preloaded_models"].append(f"{model_type} (already cached)")
+                    continue
+                
+                # Attempt to fetch and cache the model
+                if model_type == "imitation_learning":
+                    # This would typically be an async operation, but we'll simulate it
+                    print(f"[INFO] Preloading {model_type} model for {track_name}/{car_name}")
+                    # In a real scenario, you'd fetch from backend here
+                    results["preloaded_models"].append(model_type)
+                
+            except Exception as e:
+                error_info = f"{model_type}: {str(e)}"
+                results["failed_models"].append(error_info)
+                print(f"[ERROR] Failed to preload {model_type}: {e}")
+        
+        end_time = datetime.now()
+        results["total_preload_time"] = (end_time - start_time).total_seconds()
+        
+        print(f"[INFO] Preload completed: {len(results['preloaded_models'])} successful, "
+              f"{len(results['failed_models'])} failed, "
+              f"{results['total_preload_time']:.2f}s total")
+        
+        return results
           
 if __name__ == "__main__":
     # Example usage

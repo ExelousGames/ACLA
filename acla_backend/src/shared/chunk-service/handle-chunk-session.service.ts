@@ -198,6 +198,55 @@ export class HandleChunkSessionService {
     }
 
     /**
+     * Store prepared chunks for a session (for chunked sending)
+     */
+    storePreparedChunks(sessionId: string, chunks: ChunkData[]): void {
+        const session: ChunkSession = {
+            sessionId,
+            totalChunks: chunks.length,
+            receivedChunks: chunks.length, // All chunks are already prepared
+            chunks: new Map<number, any>(),
+            createdAt: new Date(),
+            lastUpdated: new Date(),
+            status: 'complete',
+            metadata: { isPreparedForSending: true }
+        };
+
+        // Store all chunks
+        chunks.forEach(chunk => {
+            session.chunks.set(chunk.chunkIndex, chunk.data);
+        });
+
+        this.sessions.set(sessionId, session);
+        this.logger.debug(`Stored ${chunks.length} prepared chunks for session ${sessionId}`);
+    }
+
+    /**
+     * Get a specific chunk from a prepared session
+     */
+    getPreparedChunk(sessionId: string, chunkIndex: number): any {
+        const session = this.sessions.get(sessionId);
+        if (!session) {
+            throw new Error(`Session ${sessionId} not found`);
+        }
+
+        if (!session.metadata?.isPreparedForSending) {
+            throw new Error(`Session ${sessionId} is not prepared for sending`);
+        }
+
+        if (chunkIndex < 0 || chunkIndex >= session.totalChunks) {
+            throw new Error(`Invalid chunk index ${chunkIndex} for session ${sessionId}`);
+        }
+
+        const chunk = session.chunks.get(chunkIndex);
+        if (chunk === undefined) {
+            throw new Error(`Chunk ${chunkIndex} not found in session ${sessionId}`);
+        }
+
+        return chunk;
+    }
+
+    /**
      * Clean up expired sessions
      */
     private cleanupExpiredSessions(): void {

@@ -70,3 +70,18 @@ export class AllSessionsChunkRequestDto {
     chunkIndex: number;
 
 }
+
+export class ImitationLearningGuidanceRequestDto {
+    current_telemetry: { [key: string]: any };
+    guidance_type: string = "both"; // "actions", "behavior", or "both"
+    user_id?: string;
+}
+
+export class ImitationLearningGuidanceResponseDto {
+    message: string;
+    guidance_result: any;
+    timestamp?: string;
+    recommendations?: { [key: string]: any };
+    confidence_score?: number;
+    success: boolean;
+}

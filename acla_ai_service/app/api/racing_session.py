@@ -4,8 +4,10 @@ Racing session analysis endpoints for AI model training and analysis
 
 from fastapi import APIRouter, HTTPException, Body
 from typing import Dict, Any, List, Optional
+from httpx import request
 from pydantic import BaseModel
 import asyncio
+from acla_ai_service.app.services.scikit_ml_service import TelemetryMLService
 from app.services.telemetry_service import TelemetryService
 
 router = APIRouter(prefix="/racing-session", tags=["racing-session"])
@@ -19,13 +21,6 @@ class TrainingRequest(BaseModel):
     preferred_algorithm: Optional[str] = None
     user_id: Optional[str] = None
     existing_model_data: Optional[str] = None
-
-
-class PredictionRequest(BaseModel):
-    telemetry_data: Dict[str, Any]
-    model_data: str
-    model_type: str = "lap_time_prediction"
-
 
 class MultipleTrainingRequest(BaseModel):
     session_id: str
@@ -44,8 +39,21 @@ class MultipleTrainingRequest(BaseModel):
     user_id: Optional[str] = None
     parallel_training: bool = True  # Whether to train models in parallel or sequentially
 
+class PredictionRequest(BaseModel):
+    telemetry_data: Dict[str, Any]
+    model_data: str  # Base64 encoded model data from database
+    model_type: Optional[str] = "lap_time_prediction"
+    use_river: bool = True  # Whether to use River ML or legacy scikit-learn
+    user_id: Optional[str] = None
+
+class ImitationPredictRequest(BaseModel):
+    current_telemetry: Dict[str, Any]
+    guidance_type: str = "both"  # "actions", "behavior", or "both"
+    user_id: Optional[str] = None
+    
 # Initialize telemetry service
 telemetry_service = TelemetryService()
+telemetryMLService = TelemetryMLService()
 
 @router.post("/train-model")
 async def train_ai_model(request: TrainingRequest) -> Dict[str, Any]:
@@ -174,3 +182,41 @@ async def train_multiple_ai_models(request: MultipleTrainingRequest) -> Dict[str
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Multiple model training failed: {str(e)}")
 
+
+@router.post("/imitation-learning-guidance")
+async def get_imitation_learning_expert_guidance(request: ImitationPredictRequest) -> Dict[str, Any]:
+    """
+    Get expert driving guidance using imitation learning model
+    Provides recommendations based on expert driving behavior analysis
+    """
+    try:
+        # Validate guidance_type parameter
+        valid_guidance_types = ["actions", "behavior", "both"]
+        if request.guidance_type not in valid_guidance_types:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Invalid guidance_type. Must be one of: {valid_guidance_types}"
+            )
+        
+        # Call the telemetryMLService to get expert guidance
+        result = await telemetryMLService.get_imitation_learning_expert_guidance(
+            current_telemetry=request.current_telemetry,
+            guidance_type=request.guidance_type,
+        )
+        
+        if not result.get("success", False):
+            raise HTTPException(status_code=400, detail=result.get("error", "Expert guidance failed"))
+        
+        return {
+            "message": "Expert guidance generated successfully",
+            "guidance_result": result,
+            "model_data": request.model_data,
+            "timestamp": result.get("timestamp"),
+            "recommendations": result.get("recommendations", {}),
+            "confidence_score": result.get("confidence_score")
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Expert guidance failed: {str(e)}")
