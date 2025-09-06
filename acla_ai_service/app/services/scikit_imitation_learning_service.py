@@ -618,7 +618,7 @@ class ImitationLearningService:
             print("[INFO] Serializing behavior learning model...")
             # Only serialize the actual model from the behavior_learning['model'] structure
             behavior_model_to_serialize = results['behavior_learning']['modelData']['model']
-            behavior_model_data = self.imitation_learning.serialize_imitation_model(
+            behavior_model_data = self.serialize_data(
                 behavior_model_to_serialize
             )
             results['behavior_learning']['modelData']['model'] = behavior_model_data
@@ -629,7 +629,7 @@ class ImitationLearningService:
             print("[INFO] Serializing behavior learning scaler...")
             # Only serialize the actual model from the behavior_learning['model'] structure
             behavior_model_to_serialize = results['behavior_learning']['modelData']['scaler']
-            behavior_model_data = self.imitation_learning.serialize_imitation_model(
+            behavior_model_data = self.serialize_data(
                 behavior_model_to_serialize
             )
             results['behavior_learning']['modelData']['scaler'] = behavior_model_data
@@ -644,20 +644,20 @@ class ImitationLearningService:
             serialized_trajectory_models = {}
             for model_name, model in trajectory_models_to_serialize.items():
                 print(f"[INFO] Serializing trajectory model: {model_name}")
-                serialized_model_data = self.imitation_learning.serialize_imitation_model(model)
+                serialized_model_data = self.serialize_data(model)
                 serialized_trajectory_models[model_name] = serialized_model_data
                 
             # Store serialized models back in the trajectory model structure
             results['trajectory_learning']['modelData']['models'] = serialized_trajectory_models
             
             trajectory_scaler_to_serialize = results['trajectory_learning']['modelData']['scaler']
-            serialized_scaler_data = self.imitation_learning.serialize_imitation_model(
+            serialized_scaler_data = self.serialize_data(
                 trajectory_scaler_to_serialize
             )
             results['trajectory_learning']['modelData']['scaler'] = serialized_scaler_data
             
             trajectory_scaler_to_serialize = results['trajectory_learning']['modelData']['pca']
-            serialized_scaler_data = self.imitation_learning.serialize_imitation_model(
+            serialized_scaler_data = self.serialize_data(
                 trajectory_scaler_to_serialize
             )
             results['trajectory_learning']['modelData']['pca'] = serialized_scaler_data

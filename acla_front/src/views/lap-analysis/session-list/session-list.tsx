@@ -21,7 +21,12 @@ const SessionList = () => {
     const analysisContext = useContext(AnalysisContext);
     const auth = useAuth();
     useEffect(() => {
-        apiService.post('racing-session/sessionbasiclist', { map_name: analysisContext.mapSelected, username: auth?.userEmail })
+        console.log('Fetching sessions for userId:', auth?.userProfile.id, 'and map:', analysisContext.mapSelected);
+        if (!auth?.userProfile.id || !analysisContext.mapSelected) {
+            setSessionList([]);
+            return;
+        }
+        apiService.post('racing-session/sessionbasiclist', { map_name: analysisContext.mapSelected, user_id: auth?.userProfile.id })
             .then((result) => {
                 const data = result.data as SessionBasicInfoListDto;
                 let count = 0;
@@ -35,7 +40,7 @@ const SessionList = () => {
                 }))
             }).catch((e) => {
             });
-    }, []);
+    }, [analysisContext.mapSelected]);
     return (
         <div className='SessionList'>
             <ScrollArea.Root className="SessionListScrollAreaRoot">

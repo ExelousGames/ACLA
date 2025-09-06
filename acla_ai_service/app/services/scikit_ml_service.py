@@ -1412,9 +1412,7 @@ class TelemetryMLService:
                 "modelType": "imitation_learning",
                 "trackName": trackName,
                 "carName": carName,
-                "modelData": {
-                    results
-                },
+                "modelData": results,
                 "metadata": {
                     "summary": results.get("summary", {}),
                     "training_timestamp": datetime.now().isoformat()
@@ -1426,6 +1424,7 @@ class TelemetryMLService:
         except Exception as error:
             print(f"[ERROR] Failed to save imitation learning results: {str(error)}")
         
+        return results
         
     async def get_imitation_learning_expert_guidance(self,
                                 current_telemetry: Dict[str, Any],

@@ -19,6 +19,10 @@ export class UserInfoService {
         return this.userInfoModel.findOne({ email: email }).exec();
     }
 
+    async findOneById(id: string): Promise<UserInfo | null> {
+        return this.userInfoModel.findOne({ id: id }).exec();
+    }
+
     async findOneWithPermissions(id: string): Promise<UserInfo | null> {
 
         //path is the field name in UserInfo schema

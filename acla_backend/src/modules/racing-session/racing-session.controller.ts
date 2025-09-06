@@ -34,7 +34,7 @@ export class RacingSessionController {
     @UseGuards(AuthGuard('jwt'))
     @Post('sessionbasiclist')
     retrieveAllRacingBasicSessionsInfo(@Request() req, @Body() body): Promise<SessionBasicInfoListDto | null> {
-        return this.racingSessionService.retrieveAllRacingSessionsBasicInfo(body.map_name, body.username);
+        return this.racingSessionService.retrieveAllRacingSessionsBasicInfo(body.map_name, body.user_id);
     }
 
 
@@ -155,7 +155,7 @@ export class RacingSessionController {
     @Post('upload/init')
     async initUpload(@Body() metadata: UploadReacingSessionInitDto) {
         const uploadId = crypto.randomUUID();
-
+        console.log('Initialized upload with ID:', uploadId, 'for user:', metadata.userId);
         this.uploadStates.set(uploadId, {
             metadata,
             session_data_chunks: [],
@@ -206,11 +206,11 @@ export class RacingSessionController {
 
             // ai training
             try {
-                // First, find the user by email to get their ObjectId
-                const userInfo = await this.userInfoService.findOneWithEmail(upload.metadata.userId);
+                // First, find the user by user id  to get their ObjectId
+                const userInfo = await this.userInfoService.findOneById(upload.metadata.userId);
 
                 if (!userInfo) {
-                    console.log('User not found for email:', upload.metadata.userId);
+                    console.log('User not found for id:', upload.metadata.userId);
                 } else {
 
                     const userId = upload.metadata.userId;

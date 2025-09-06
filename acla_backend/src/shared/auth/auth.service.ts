@@ -35,7 +35,7 @@ export class AuthService {
 
     //after successfully login, system give user a JWT token for continued access
     async giveJWTToken(userinfo: any) {
-        const payload = { username: userinfo.email, sub: userinfo.id }; // Use 'id' instead of 'userId'
+        const payload = { username: userinfo.email, id: userinfo.id }; // Use 'id' instead of 'userId'
         return {
             //generate our JWT from a subset of the user object properties,  //which we then return as a simple object with a single access_token property
             access_token: this.jwtService.sign(payload, { secret: jwtConstants.secret }),

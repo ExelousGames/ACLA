@@ -72,8 +72,9 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
             if (!analysisContext?.liveData || !imitationLearningEnabled) return;
 
             try {
-                const response = await apiService.post('/imitation-learning-guidance', {
-                    current_telemetry: analysisContext.liveData
+                const response = await apiService.post('/racing-session/imitation-learning-guidance', {
+                    current_telemetry: analysisContext.liveData,
+                    guidance_type: "both", // "actions", "behavior", or "both"
                 });
                 // Handle the response here if needed
                 console.log('Imitation learning guidance response:', response.data);
@@ -114,18 +115,19 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
             let response;
 
             // Use openai general natural language ai query endpoint
-            response = await apiService.post('/ai/query', {
-                question: userMessage.content
+            response = await apiService.post('ai-model/ai-query', {
+                question: userMessage.content,
+                sessionId: sessionId,
             });
 
             const responseData = response.data as any;
             let aiResponseContent = responseData?.answer || responseData?.response || "I'm sorry, I couldn't process your request.";
             let functionCalls: FunctionCall[] = [];
             let functionResults: FunctionResult[] = [];
+            console.log('AI response data:', responseData);
 
             // Check if the response contains function calls
             if (responseData?.function_calls && Array.isArray(responseData.function_calls)) {
-                console.log('AI response contains function calls:', responseData.function_calls);
 
                 try {
                     // Parse function calls from the response
@@ -134,44 +136,12 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
                         arguments: typeof fc.arguments === 'string' ? JSON.parse(fc.arguments) : fc.arguments
                     }));
 
-                    // Execute function calls
-                    setMessages(prev => prev.filter(msg => msg.id !== 'loading').concat({
-                        id: 'executing-functions',
-                        content: `Executing ${functionCalls.length} function(s)...`,
-                        isUser: false,
-                        timestamp: new Date(),
-                        isLoading: true
-                    }));
-
                     // Execute all function calls
                     for (const functionCall of functionCalls) {
                         const result = await executeFunctionCall(functionCall);
                         functionResults.push(result);
                     }
 
-                    // Update the AI response content with function results if available
-                    if (functionResults.length > 0) {
-                        const successfulResults = functionResults.filter(r => r.success);
-                        if (successfulResults.length > 0) {
-                            aiResponseContent += '\n\n**Function Results:**\n';
-                            successfulResults.forEach((result, index) => {
-                                aiResponseContent += `\n${index + 1}. **${result.function}**: `;
-                                if (typeof result.result === 'object') {
-                                    aiResponseContent += `\n\`\`\`json\n${JSON.stringify(result.result, null, 2)}\n\`\`\``;
-                                } else {
-                                    aiResponseContent += result.result;
-                                }
-                            });
-                        }
-
-                        const failedResults = functionResults.filter(r => !r.success);
-                        if (failedResults.length > 0) {
-                            aiResponseContent += '\n\n**Function Errors:**\n';
-                            failedResults.forEach((result, index) => {
-                                aiResponseContent += `\n${index + 1}. **${result.function}**: ${result.error}`;
-                            });
-                        }
-                    }
                 } catch (parseError) {
                     console.error('Error parsing function calls:', parseError);
                     aiResponseContent += '\n\n*Note: Function calls were detected but could not be parsed properly.*';
@@ -293,7 +263,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
                     data_types: args.data_types || ['speed', 'acceleration', 'braking', 'steering']
                 });
 
-            case 'enable_imitation_learning_guidance':
+            case 'enable_guide_user_racing':
                 // Enable the continuous imitation learning guidance
                 setImitationLearningEnabled(true);
 
@@ -302,7 +272,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
                     enabled: true
                 };
 
-            case 'disable_imitation_learning_guidance':
+            case 'disable_guide_user_racing':
                 // Disable the continuous imitation learning guidance
                 setImitationLearningEnabled(false);
 
@@ -428,8 +398,8 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
                                                         size="1"
                                                     >
                                                         {message.functionResults.every(r => r.success)
-                                                            ? `${message.functionResults.length} function(s) executed successfully`
-                                                            : `${message.functionResults.filter(r => r.success).length}/${message.functionResults.length} functions executed`
+                                                            ? `${message.functionResults.length} command(s) executed successfully`
+                                                            : `${message.functionResults.filter(r => r.success).length}/${message.functionResults.length} commands executed`
                                                         }
                                                     </Badge>
                                                 </Box>
