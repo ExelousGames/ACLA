@@ -67,8 +67,6 @@ export class UserSessionAiModelController {
             question: string;
             sessionId?: string;
             trackName?: string;
-            modelType?: string;
-            queryType?: 'ai_model_operation' | 'model_query' | 'general';
             context?: any;
         },
         @Request() req: any
@@ -79,18 +77,12 @@ export class UserSessionAiModelController {
         // - "Which of my models performs best for Monza?" (model_query)
         // - General AI queries (general)
 
-        const queryType = body.queryType || (body.trackName || body.modelType ? 'model_query' : 'ai_model_operation');
-
         const queryRequest = {
             question: body.question,
-            dataset_id: body.sessionId,
             user_id: req?.user?.id,
             context: {
                 ...body.context,
-                user_id: req?.user?.id,
                 track_name: body.trackName,
-                model_type: body.modelType,
-                type: queryType
             }
         };
 

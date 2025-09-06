@@ -353,7 +353,7 @@ const LiveAnalysisSessionRecording = () => {
             sessionName: analysisContext.sessionSelected?.session_name,
             mapName: analysisContext.mapSelected,
             carName: analysisContext.recordedSessioStaticsData.car_model || "Unknown Car",
-            userId: auth?.userId,
+            userId: auth?.userProfile.id || "unknown",
         } as UploadReacingSessionInitDto;
 
         //separate recorded data into chunks

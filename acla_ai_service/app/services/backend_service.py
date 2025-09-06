@@ -233,9 +233,28 @@ class BackendService:
         import json
         import uuid
         from math import ceil
+        import numpy as np
+        
+        def convert_numpy_types(obj):
+            """Convert numpy types to native Python types for JSON serialization"""
+            if isinstance(obj, np.integer):
+                return int(obj)
+            elif isinstance(obj, np.floating):
+                return float(obj)
+            elif isinstance(obj, np.ndarray):
+                return obj.tolist()
+            elif isinstance(obj, dict):
+                return {key: convert_numpy_types(value) for key, value in obj.items()}
+            elif isinstance(obj, list):
+                return [convert_numpy_types(item) for item in obj]
+            else:
+                return obj
+        
+        # Convert numpy types to native Python types
+        serializable_data = convert_numpy_types(data)
         
         # Serialize data to JSON string to calculate size
-        json_data = json.dumps(data)
+        json_data = json.dumps(serializable_data)
         data_size = len(json_data.encode('utf-8'))
         
         # Calculate number of chunks needed
@@ -253,7 +272,7 @@ class BackendService:
                 
                 # Try to parse as valid JSON if it's the complete data in one chunk
                 if total_chunks == 1:
-                    chunk_payload = data
+                    chunk_payload = serializable_data
                 else:
                     # For multi-chunk, send the raw string chunk
                     chunk_payload = chunk_data
@@ -283,11 +302,6 @@ class BackendService:
                 if response.get("isComplete", False):
                     logger.info(f"✅ All chunks sent successfully. Final response: {response.get('message', 'Complete')}")
                     return response
-                else:
-                    received = response.get("receivedChunks", chunk_index + 1)
-                    logger.debug(f"Chunk {chunk_index + 1}/{total_chunks} sent successfully ({received}/{total_chunks} received)")
-            
-            return {"success": True, "message": "All chunks sent", "sessionId": session_id}
             
         except Exception as e:
             logger.error(f"❌ Failed to send chunked data: {str(e)}")

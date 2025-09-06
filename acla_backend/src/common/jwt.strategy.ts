@@ -27,10 +27,10 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
   // Based on the way JWT signing works, we're guaranteed that we're receiving a valid token that we have previously signed and issued to a valid user.
   //As a result of all this, our response to the validate() callback is trivial: we simply return an object containing the userId and username properties. 
   async validate(payload: any) {
-    // Get user with permissions for authorization
-    const user = await this.userInfoService.findOneWithPermissions(payload.username);
+    // Get user with permissions for authorization using the user ID from payload.id
+    const user = await this.userInfoService.findOneWithPermissions(payload.id);
     return {
-      userId: payload.sub,
+      userId: payload.id,
       username: payload.username,
       user: user // Include full user object with permissions
     };

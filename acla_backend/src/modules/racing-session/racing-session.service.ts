@@ -10,12 +10,17 @@ export class RacingSessionService {
     constructor(@InjectModel(RacingSession.name) private racingSession: Model<RacingSession>) {
     }
 
-    //
+    /**
+     * Retrieves basic information about all racing sessions for a specific map and user.
+     * @param mapName - The name of the racing map.
+     * @param userId - The ID of the user.
+     * @returns A promise that resolves to a list of basic session information.
+     */
     async retrieveAllRacingSessionsBasicInfo(mapName: string, userId: string): Promise<SessionBasicInfoListDto | null> {
 
         try {
             let racingMap: SessionBasicInfoListDto = new SessionBasicInfoListDto();
-
+            //find all sessions with the map name and user id, only return session_name and _id
             const data = await this.racingSession.find({ 'map': mapName, 'user_id': userId }).select('session_name user_id').exec();
             data.forEach((element) => {
                 racingMap.list.push({

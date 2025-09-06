@@ -7,7 +7,7 @@ from typing import Dict, Any, List, Optional
 from httpx import request
 from pydantic import BaseModel
 import asyncio
-from acla_ai_service.app.services.scikit_ml_service import TelemetryMLService
+from app.services.scikit_ml_service import TelemetryMLService
 from app.services.telemetry_service import TelemetryService
 
 router = APIRouter(prefix="/racing-session", tags=["racing-session"])
@@ -189,6 +189,8 @@ async def get_imitation_learning_expert_guidance(request: ImitationPredictReques
     Get expert driving guidance using imitation learning model
     Provides recommendations based on expert driving behavior analysis
     """
+
+    print(request)
     try:
         # Validate guidance_type parameter
         valid_guidance_types = ["actions", "behavior", "both"]

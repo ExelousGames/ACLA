@@ -4,7 +4,6 @@ import apiService from 'services/api.service';
 
 interface AuthContextType {
     userEmail: string;
-    userId: string;
     token: string | null;
     userProfile: any | null;
     login: (data: { email: string; password: string }) => Promise<void>;
@@ -24,7 +23,6 @@ const AuthProvider = ({ children }: { children: ReactNode }) => {
 
     const [userEmail, setUserEmail] = useState('');
     const [token, setToken] = useState(localStorage.getItem("token") || "");
-    const [userId, setUserId] = useState(localStorage.getItem("userId") || "");
     const [userProfile, setUserProfile] = useState<any>(null);
     const navigate = useNavigate();
 
@@ -48,8 +46,6 @@ const AuthProvider = ({ children }: { children: ReactNode }) => {
         }
         setToken(token);
         setUserEmail(username);
-        setUserId(userId);
-
         // Fetch user profile with permissions
         fetchUserProfile();
     }, []);
@@ -64,10 +60,8 @@ const AuthProvider = ({ children }: { children: ReactNode }) => {
                 let tokentemp: string = response.data.access_token;
                 setUserEmail(data.email);
                 setToken(tokentemp);
-                setUserId(response.data.userId);
                 localStorage.setItem("token", tokentemp);
                 localStorage.setItem("username", data.email);
-                localStorage.setItem("userId", response.data.userId);
 
                 // Fetch user profile after successful login
                 await fetchUserProfile();
@@ -125,7 +119,6 @@ const AuthProvider = ({ children }: { children: ReactNode }) => {
     return <AuthContext.Provider value={{
         token,
         userEmail: userEmail,
-        userId: userId,
         userProfile,
         login,
         logout,
