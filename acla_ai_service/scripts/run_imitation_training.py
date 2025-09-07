@@ -44,7 +44,7 @@ async def main():
         print()
         
         # Run the train_imitation_model function
-        results = await ml_service.train_imitation_model('Brands Hatch Circuit', 'porsche_991ii_gt3_r')
+        results = await ml_service.train_imitation_model('brands_hatch', 'porsche_991ii_gt3_r')
 
         print("\n" + "=" * 60)
         print("TRAINING COMPLETED")

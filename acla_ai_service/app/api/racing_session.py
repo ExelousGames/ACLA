@@ -48,6 +48,8 @@ class PredictionRequest(BaseModel):
 
 class ImitationPredictRequest(BaseModel):
     current_telemetry: Dict[str, Any]
+    track_name: str
+    car_name: str   
     guidance_type: str = "both"  # "actions", "behavior", or "both"
     user_id: Optional[str] = None
     
@@ -189,8 +191,6 @@ async def get_imitation_learning_expert_guidance(request: ImitationPredictReques
     Get expert driving guidance using imitation learning model
     Provides recommendations based on expert driving behavior analysis
     """
-
-    print(request)
     try:
         # Validate guidance_type parameter
         valid_guidance_types = ["actions", "behavior", "both"]
@@ -200,22 +200,23 @@ async def get_imitation_learning_expert_guidance(request: ImitationPredictReques
                 detail=f"Invalid guidance_type. Must be one of: {valid_guidance_types}"
             )
         
-        # Call the telemetryMLService to get expert guidance
-        result = await telemetryMLService.get_imitation_learning_expert_guidance(
-            current_telemetry=request.current_telemetry,
-            guidance_type=request.guidance_type,
-        )
+        try:
+            # Call the telemetryMLService to get expert guidance
+            result = await telemetryMLService.get_imitation_learning_expert_guidance(
+                current_telemetry=request.current_telemetry,
+                trackName=request.track_name,
+                carName=request.car_name,
+                guidance_type=request.guidance_type,
+            )
         
-        if not result.get("success", False):
-            raise HTTPException(status_code=400, detail=result.get("error", "Expert guidance failed"))
+            print(f"Imitation learning guidance result: {result}")
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Error in expert guidance service: {str(e)}")
         
         return {
             "message": "Expert guidance generated successfully",
             "guidance_result": result,
-            "model_data": request.model_data,
             "timestamp": result.get("timestamp"),
-            "recommendations": result.get("recommendations", {}),
-            "confidence_score": result.get("confidence_score")
         }
         
     except HTTPException:

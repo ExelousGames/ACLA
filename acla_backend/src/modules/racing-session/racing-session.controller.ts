@@ -346,6 +346,8 @@ export class RacingSessionController {
             // Prepare request for AI service
             const guidanceRequest: ImitationLearningGuidanceRequest = {
                 current_telemetry: body.current_telemetry,
+                track_name: body.track_name,
+                car_name: body.car_name,
                 guidance_type: body.guidance_type,
                 user_id: body.user_id || req.user?.email // Use authenticated user's email if not provided
             };

@@ -48,6 +48,38 @@ declare global {
              * @returns 
              */
             sendMessageToPython: (shellId: number, message: string) => void;
+
+            /**
+             * Start local speech recognition (offline)
+             * @returns Promise<{success: boolean, recordingId?: string}>
+             */
+            startSpeechRecognition: () => Promise<{ success: boolean, recordingId?: string, error?: string }>;
+
+            /**
+             * Stop local speech recognition
+             * @returns Promise<{success: boolean, transcript?: string}>
+             */
+            stopSpeechRecognition: () => Promise<{ success: boolean, transcript?: string, error?: string }>;
+
+            /**
+             * Check if speech recognition is available
+             * @returns Promise<boolean>
+             */
+            isSpeechRecognitionAvailable: () => Promise<boolean>;
+
+            /**
+             * Listen for speech recognition status updates
+             * @param callback Function to handle status updates
+             * @returns Function to remove listener
+             */
+            onSpeechRecognitionStatus: (callback: (status: any) => void) => () => void;
+
+            /**
+             * Listen for speech recognition completion
+             * @param callback Function to handle completion
+             * @returns Function to remove listener  
+             */
+            onSpeechRecognitionComplete: (callback: (result: { success: boolean, transcript?: string, error?: string }) => void) => () => void;
         };
     }
 }

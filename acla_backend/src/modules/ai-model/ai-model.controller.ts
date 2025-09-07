@@ -51,15 +51,6 @@ export class AiModelController {
         return this.aiModelService.remove(id);
     }
 
-    @Get('active/:trackName/:carName/:modelType')
-    async getActiveModel(
-        @Param('trackName') trackName: string,
-        @Param('carName') carName: string,
-        @Param('modelType') modelType: string
-    ) {
-        return this.aiModelService.getActiveModel(trackName, carName, modelType);
-    }
-
     /**
      * Prepare the active model data for chunked transfer (returns session info only).
      * This is the recommended way to handle large model data.

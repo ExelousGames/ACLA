@@ -1,1 +1,22 @@
 pyaccsharedmemory
+
+# Speech Recognition Dependencies for Voice Input
+SpeechRecognition==3.10.0
+pyaudio==0.2.11
+pocketsphinx==0.1.15
+
+# Enhanced audio processing
+numpy==1.24.3
+scipy==1.11.1
+librosa==0.10.0
+noisereduce==3.0.0
+webrtcvad==2.0.10
+pyannote-audio==3.1.1
+
+# Better speech models
+openai-whisper==20230314
+torch==2.0.1
+torchaudio==2.0.2
+
+# Audio format handling
+soundfile==0.12.1

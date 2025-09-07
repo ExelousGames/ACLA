@@ -12,6 +12,7 @@ import { RacingSessionDetailedInfoDto } from 'data/live-analysis/live-analysis-t
 import SessionAnalysisSplit from './sessionAnalysis/session-analysis-split';
 import { useEnvironment } from 'contexts/EnvironmentContext';
 import LiveAnalysisSessionRecording from './liveAnalysisSessionRecording';
+import { VisualizationInstance } from './visualization/VisualizationRegistry';
 
 //use interface when create a context, help prevent runtime error and type safe
 interface AnalysisContextType {
@@ -23,6 +24,10 @@ interface AnalysisContextType {
     liveData: any;
     recordedSessionData: any[];
     recordedSessioStaticsData: any;
+    /**
+     * Active visualizations in the multi-info container
+     */
+    activeVisualizations: VisualizationInstance[];
     setMap: (map: string | null) => void;
     setSession: Dispatch<SetStateAction<RacingSessionDetailedInfoDto | null>>;
     setLiveSessionData: (data: {}) => void;
@@ -38,6 +43,11 @@ interface AnalysisContextType {
      * all the recored data of a recently recorded session
      */
     setRecordedSessionData: Dispatch<SetStateAction<any[]>>;
+
+    /**
+     * Update active visualizations
+     */
+    setActiveVisualizations: Dispatch<SetStateAction<VisualizationInstance[]>>;
 };
 
 
@@ -48,6 +58,7 @@ export const AnalysisContext = createContext<AnalysisContextType>({
     liveData: {} as any,
     recordedSessionData: [],
     recordedSessioStaticsData: {} as any,
+    activeVisualizations: [],
     setMap: (map: string | null) => { },
     setSession: ((value: RacingSessionDetailedInfoDto | null) => {
         console.warn('No provider for AnalysisContext');
@@ -57,6 +68,9 @@ export const AnalysisContext = createContext<AnalysisContextType>({
     setRecordedSessionData: ((value: any[]) => {
         console.warn('No provider for AnalysisContext');
     }) as Dispatch<SetStateAction<any[]>>,
+    setActiveVisualizations: ((value: VisualizationInstance[]) => {
+        console.warn('No provider for AnalysisContext');
+    }) as Dispatch<SetStateAction<VisualizationInstance[]>>,
 });
 
 const SessionAnalysis = () => {
@@ -68,6 +82,7 @@ const SessionAnalysis = () => {
     const [liveData, setLiveData] = useState({});
     const [recordedSessioStaticsData, setRecordedSessionStaticsData] = useState({});
     const [recordedSessionData, setRecordedSessionData] = useState<any[]>([]);
+    const [activeVisualizations, setActiveVisualizations] = useState<VisualizationInstance[]>([]);
     const environment = useEnvironment();
     //switch tab when a map or a session is selected
     useEffect(() => {
@@ -99,7 +114,7 @@ const SessionAnalysis = () => {
 
 
     return (
-        <AnalysisContext.Provider value={{ mapSelected: mapSelected, sessionSelected: sessionSelected, liveData: liveData, recordedSessionData: recordedSessionData, recordedSessioStaticsData: recordedSessioStaticsData, setMap, setSession, setLiveSessionData: setLiveData, setRecordedSessionStaticsData, setRecordedSessionData }}>
+        <AnalysisContext.Provider value={{ mapSelected: mapSelected, sessionSelected: sessionSelected, liveData: liveData, recordedSessionData: recordedSessionData, recordedSessioStaticsData: recordedSessioStaticsData, activeVisualizations: activeVisualizations, setMap, setSession, setLiveSessionData: setLiveData, setRecordedSessionStaticsData, setRecordedSessionData, setActiveVisualizations }}>
             <Tabs.Root className="LiveAnalysisTabsRoot" defaultValue="mapLists" value={activeTab} onValueChange={setActiveTab}>
                 <Tabs.List className="live-analysis-tablists" justify="start">
                     <Tabs.Trigger value="mapLists">Maps</Tabs.Trigger>
