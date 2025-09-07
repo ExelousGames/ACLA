@@ -137,7 +137,7 @@ class TelemetryService:
             return await self.river_ml_service.train_online_model(
                 telemetry_data=telemetry_data,
                 target_variable=target_variable,
-                ai_model_type=model_type,
+                model_type=model_type,
                 preferred_algorithm=preferred_algorithm,
                 existing_model_data_for_db=existing_model_data_from_db,
                 user_id=user_id

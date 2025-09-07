@@ -160,10 +160,23 @@ class BehaviorLearner:
         label_encoder = LabelEncoder()
         y_encoded = label_encoder.fit_transform(y)
         
-        # Split data
-        X_train, X_test, y_train, y_test = train_test_split(
-            X, y_encoded, test_size=0.2, random_state=42, stratify=y_encoded
-        )
+        # Check if stratification is possible (each class needs at least 2 samples)
+        unique_classes, class_counts = np.unique(y_encoded, return_counts=True)
+        min_class_count = np.min(class_counts)
+        
+        # Split data with or without stratification based on data distribution
+        if min_class_count >= 2 and len(unique_classes) > 1:
+            # Can use stratification
+            X_train, X_test, y_train, y_test = train_test_split(
+                X, y_encoded, test_size=0.2, random_state=42, stratify=y_encoded
+            )
+            print(f"[INFO] Using stratified split with {len(unique_classes)} classes")
+        else:
+            # Cannot use stratification - some classes have only 1 sample
+            X_train, X_test, y_train, y_test = train_test_split(
+                X, y_encoded, test_size=0.2, random_state=42
+            )
+            print(f"[WARNING] Using random split (no stratification) - some classes have only {min_class_count} sample(s)")
         
         # Scale features
         scaler = StandardScaler()
@@ -226,11 +239,32 @@ class ExpertTrajectoryLearner:
             features['track_position'] = df['Graphics_normalized_car_position']
             features['track_position_rate'] = df['Graphics_normalized_car_position'].diff()
         
+        # 3D Player position features for precise trajectory analysis
+        if 'Graphics_player_pos_x' in df.columns:
+            features['player_pos_x'] = df['Graphics_player_pos_x']
+            features['player_pos_x_velocity'] = features['player_pos_x'].diff().rolling(window=3).mean()
+            
+        if 'Graphics_player_pos_y' in df.columns:
+            features['player_pos_y'] = df['Graphics_player_pos_y']
+            features['player_pos_y_velocity'] = features['player_pos_y'].diff().rolling(window=3).mean()
+            
+        if 'Graphics_player_pos_z' in df.columns:
+            features['player_pos_z'] = df['Graphics_player_pos_z']
+            features['player_pos_z_velocity'] = features['player_pos_z'].diff().rolling(window=3).mean()
+            
         # Speed and racing line
         if 'Physics_speed_kmh' in df.columns:
             features['speed'] = df['Physics_speed_kmh']
             features['speed_change'] = df['Physics_speed_kmh'].diff()
             features['acceleration'] = features['speed_change'] / 0.016  # Assuming ~60fps
+        
+        # Gear information for optimal shifting and trajectory optimization
+        if 'Physics_gear' in df.columns:
+            features['gear'] = df['Physics_gear']
+            features['gear_change'] = df['Physics_gear'].diff()
+            # Gear-speed ratio for optimization
+            if 'Physics_speed_kmh' in df.columns:
+                features['speed_per_gear'] = df['Physics_speed_kmh'] / (df['Physics_gear'] + 1)  # +1 to avoid division by zero
         
         # Steering and line choice
         if 'Physics_steer_angle' in df.columns:
@@ -267,8 +301,7 @@ class ExpertTrajectoryLearner:
         return features
     
     def learn_optimal_trajectory(self, 
-                               expert_df: pd.DataFrame, 
-                               track_segments: Optional[List[str]] = None) -> Dict[str, Any]:
+                               expert_df: pd.DataFrame) -> Dict[str, Any]:
         """
         Learn optimal trajectory from expert demonstrations
         
@@ -303,8 +336,28 @@ class ExpertTrajectoryLearner:
         if 'brake' in trajectory_features.columns:
             targets['optimal_brake'] = trajectory_features['brake']
         
+        # Gear optimization target
+        if 'gear' in trajectory_features.columns:
+            targets['optimal_gear'] = trajectory_features['gear']
+        
+        # Position optimization targets (3D position for precise trajectory learning)
+        if 'player_pos_x' in trajectory_features.columns:
+            targets['optimal_player_pos_x'] = trajectory_features['player_pos_x']
+        
+        if 'player_pos_y' in trajectory_features.columns:
+            targets['optimal_player_pos_y'] = trajectory_features['player_pos_y']
+            
+        if 'player_pos_z' in trajectory_features.columns:
+            targets['optimal_player_pos_z'] = trajectory_features['player_pos_z']
+        
+        # Track position optimization target (fallback if 3D positions not available)
+        if 'track_position' in trajectory_features.columns:
+            targets['optimal_track_position'] = trajectory_features['track_position']
+        
         # Prepare input features (current state)
-        input_features = ['track_position', 'speed', 'steering_angle']
+        input_features = ['track_position', 'speed', 'steering_angle', 'gear', 
+                         'player_pos_x', 'player_pos_y', 'player_pos_z',
+                         'player_pos_x_velocity', 'player_pos_y_velocity', 'player_pos_z_velocity']
         available_input_features = [f for f in input_features if f in trajectory_features.columns]
         
         if len(available_input_features) < 2:
@@ -316,8 +369,10 @@ class ExpertTrajectoryLearner:
         X_scaled = self.scaler.fit_transform(X)
         
         # Apply PCA for dimensionality reduction if needed
+        pca_used = False
         if X_scaled.shape[1] > 10:
             X_scaled = self.pca.fit_transform(X_scaled)
+            pca_used = True
         
         # Train models for each target
         models = {}
@@ -327,42 +382,69 @@ class ExpertTrajectoryLearner:
             if target_values.isna().sum() / len(target_values) > 0.5:
                 continue  # Skip targets with too many missing values
             
-            # Clean target values
-            y = target_values.fillna(target_values.median())
+            # Clean target values based on type
+            if target_name == 'optimal_gear':
+                # For gear, fill missing values with mode (most common gear) and keep as integer
+                mode_value = target_values.mode().iloc[0] if not target_values.mode().empty else 1
+                y = target_values.fillna(mode_value).astype(int)
+            else:
+                # For continuous values, use median
+                y = target_values.fillna(target_values.median())
             
             # Split data
             X_train, X_test, y_train, y_test = train_test_split(
                 X_scaled, y, test_size=0.2, random_state=42
             )
             
-            # Train model
-            model = RandomForestRegressor(
-                n_estimators=100, 
-                max_depth=20, 
-                random_state=42,
-                n_jobs=-1
-            )
-            model.fit(X_train, y_train)
-            
-            # Evaluate model
-            y_pred = model.predict(X_test)
-            metrics = {
-                'mse': mean_squared_error(y_test, y_pred),
-                'mae': mean_absolute_error(y_test, y_pred),
-                'r2': model.score(X_test, y_test)
-            }
+            # Use different model types based on target variable
+            if target_name == 'optimal_gear':
+                # Use classifier for discrete gear values, you cant have 3.5 gear   
+                model = RandomForestClassifier(
+                    n_estimators=100, 
+                    max_depth=20, 
+                    random_state=42,
+                    n_jobs=-1
+                )
+                model.fit(X_train, y_train)
+                
+                # Evaluate classifier
+                y_pred = model.predict(X_test)
+                metrics = {
+                    'accuracy': accuracy_score(y_test, y_pred),
+                    'f1_score': f1_score(y_test, y_pred, average='weighted')
+                }
+            else:
+                # Use regressor for continuous values
+                model = RandomForestRegressor(
+                    n_estimators=100, 
+                    max_depth=20, 
+                    random_state=42,
+                    n_jobs=-1
+                )
+                model.fit(X_train, y_train)
+                
+                # Evaluate regressor
+                y_pred = model.predict(X_test)
+                metrics = {
+                    'mse': mean_squared_error(y_test, y_pred),
+                    'mae': mean_absolute_error(y_test, y_pred),
+                    'r2': model.score(X_test, y_test)
+                }
             
             models[target_name] = model
             performance_metrics[target_name] = metrics
             
-            
-            print(f"[INFO] {target_name} model - R²: {metrics['r2']:.3f}, MAE: {metrics['mae']:.3f}")
+            # Log metrics based on model type
+            if target_name == 'optimal_gear':
+                print(f"[INFO] {target_name} model - Accuracy: {metrics['accuracy']:.3f}, F1: {metrics['f1_score']:.3f}")
+            else:
+                print(f"[INFO] {target_name} model - R²: {metrics['r2']:.3f}, MAE: {metrics['mae']:.3f}")
         
         # Store the complete trajectory model
         self.trajectory_model = {
             'models': models,
             'scaler': self.scaler,
-            'pca': self.pca if hasattr(self, 'pca') else None,
+            'pca': self.pca if pca_used else None,
             'input_features': available_input_features,
             'performance_metrics': performance_metrics
         }
@@ -394,22 +476,169 @@ class ExpertTrajectoryLearner:
         
         # Prepare input
         input_features = self.trajectory_model['input_features']
+        
+        # Ensure all required features are available
+        missing_features = [f for f in input_features if f not in trajectory_features.columns]
+        if missing_features:
+            raise ValueError(f"Missing required features for prediction: {missing_features}")
+            
         X = trajectory_features[input_features].fillna(0)
         
         # Scale features
         X_scaled = self.trajectory_model['scaler'].transform(X)
         
-        # Apply PCA if used during training
-        if self.trajectory_model['pca'] is not None:
+        # Apply PCA if it was used during training and is fitted
+        if (self.trajectory_model['pca'] is not None and 
+            hasattr(self.trajectory_model['pca'], 'components_')):
             X_scaled = self.trajectory_model['pca'].transform(X_scaled)
         
         # Make predictions
         predictions = {}
         for target_name, model in self.trajectory_model['models'].items():
-            pred = model.predict(X_scaled)
-            predictions[target_name] = float(pred[0] if len(pred) == 1 else pred.mean())
+            try:
+                pred = model.predict(X_scaled)
+                # Handle gear predictions as integers
+                if target_name == 'optimal_gear':
+                    predictions[target_name] = int(pred[0] if len(pred) == 1 else int(pred.mean()))
+                else:
+                    predictions[target_name] = float(pred[0] if len(pred) == 1 else pred.mean())
+            except Exception as e:
+                print(f"[WARNING] Failed to predict {target_name}: {e}")
+                predictions[target_name] = 1 if target_name == 'optimal_gear' else 0.0
         
         return predictions
+
+    def debug_trajectory_model(self) -> Dict[str, Any]:
+        """
+        Debug method to inspect the current trajectory model state
+        
+        Returns:
+            Dictionary with detailed model debugging information
+        """
+        if not self.trajectory_model:
+            return {
+                'status': 'No model trained',
+                'has_model': False
+            }
+        
+        debug_info = {
+            'status': 'Model available',
+            'has_model': True,
+            'model_structure': {}
+        }
+        
+        # Check model structure
+        for key, value in self.trajectory_model.items():
+            if key == 'models':
+                debug_info['model_structure']['models'] = {
+                    'count': len(value),
+                    'model_names': list(value.keys()),
+                    'model_types': {name: str(type(model)) for name, model in value.items()}
+                }
+            elif key == 'scaler':
+                debug_info['model_structure']['scaler'] = {
+                    'type': str(type(value)),
+                    'fitted': hasattr(value, 'scale_'),
+                    'n_features': getattr(value, 'n_features_in_', None)
+                }
+            elif key == 'pca':
+                if value is not None:
+                    debug_info['model_structure']['pca'] = {
+                        'type': str(type(value)),
+                        'fitted': hasattr(value, 'components_'),
+                        'n_components': getattr(value, 'n_components_', None),
+                        'explained_variance_ratio': getattr(value, 'explained_variance_ratio_', None)
+                    }
+                else:
+                    debug_info['model_structure']['pca'] = None
+            elif key == 'input_features':
+                debug_info['model_structure']['input_features'] = {
+                    'count': len(value),
+                    'features': value
+                }
+            elif key == 'performance_metrics':
+                debug_info['model_structure']['performance_metrics'] = value
+        
+        return debug_info
+    
+    def validate_prediction_input(self, current_state: pd.DataFrame) -> Dict[str, Any]:
+        """
+        Validate input data for prediction without actually making predictions
+        
+        Args:
+            current_state: Current telemetry state to validate
+            
+        Returns:
+            Dictionary with validation results
+        """
+        validation_results = {
+            'valid': True,
+            'errors': [],
+            'warnings': [],
+            'input_analysis': {},
+            'feature_analysis': {}
+        }
+        
+        # Check if model exists
+        if not self.trajectory_model:
+            validation_results['valid'] = False
+            validation_results['errors'].append("No trajectory model trained")
+            return validation_results
+        
+        # Analyze input data
+        validation_results['input_analysis'] = {
+            'shape': current_state.shape,
+            'columns': list(current_state.columns),
+            'dtypes': current_state.dtypes.to_dict(),
+            'missing_values': current_state.isnull().sum().to_dict(),
+            'infinite_values': np.isinf(current_state.select_dtypes(include=[np.number])).sum().to_dict()
+        }
+        
+        # Check for problematic values
+        numeric_cols = current_state.select_dtypes(include=[np.number]).columns
+        for col in numeric_cols:
+            if current_state[col].isnull().sum() > 0:
+                validation_results['warnings'].append(f"Column {col} has {current_state[col].isnull().sum()} missing values")
+            if np.isinf(current_state[col]).sum() > 0:
+                validation_results['warnings'].append(f"Column {col} has {np.isinf(current_state[col]).sum()} infinite values")
+        
+        current_state
+        try:
+            # Extract features
+            trajectory_features = self.extract_trajectory_features(current_state)
+            
+            validation_results['feature_analysis'] = {
+                'extracted_features_count': trajectory_features.shape[1],
+                'extracted_features': list(trajectory_features.columns),
+                'required_features': self.trajectory_model['input_features']
+            }
+            
+            # Check for missing features
+            required_features = self.trajectory_model['input_features']
+            missing_features = [f for f in required_features if f not in trajectory_features.columns]
+            
+            if missing_features:
+                validation_results['valid'] = False
+                validation_results['errors'].append(f"Missing required features: {missing_features}")
+            
+            # Check feature data quality
+            feature_subset = trajectory_features[required_features].fillna(0)
+            
+            for feature in required_features:
+                if feature in trajectory_features.columns:
+                    feature_data = trajectory_features[feature]
+                    if feature_data.isnull().all():
+                        validation_results['warnings'].append(f"Feature {feature} is all null values")
+                    elif np.isinf(feature_data).any():
+                        validation_results['warnings'].append(f"Feature {feature} contains infinite values")
+                    elif feature_data.std() == 0:
+                        validation_results['warnings'].append(f"Feature {feature} has zero variance")
+            
+        except Exception as e:
+            validation_results['valid'] = False
+            validation_results['errors'].append(f"Feature extraction failed: {str(e)}")
+        
+        return validation_results
 
 
 class ImitationLearningService:
@@ -449,10 +678,16 @@ class ImitationLearningService:
         print(f"[INFO] Learning objectives: {learning_objectives}")
         
         # Convert to DataFrame
-        feature_processor = FeatureProcessor(pd.DataFrame(telemetry_data))
+        telemetry_df = pd.DataFrame(telemetry_data)
+        feature_processor = FeatureProcessor(telemetry_df)
         # Cleaned data
         processed_df = feature_processor.general_cleaning_for_analysis()
-            
+        
+        # Filter for valid laps and select top 1% fastest
+        processed_df = self._filter_top_performance_laps(processed_df)
+        if processed_df.empty:
+            raise ValueError("No valid telemetry data available after filtering for training.")
+        
         results = {}
         
         # Learn driving behavior patterns
@@ -494,7 +729,7 @@ class ImitationLearningService:
         return objects_serialized_data
     
     def predict_expert_actions(self, 
-                             current_telemetry: Dict[str, Any], 
+                             processed_df: pd.DataFrame, 
                              model_data: Dict[str, Any]) -> Dict[str, Any]:
         """
         Predict what an expert would do in the current situation
@@ -506,15 +741,15 @@ class ImitationLearningService:
         Returns:
             Predicted expert actions and recommendations
         """
-        df = pd.DataFrame([current_telemetry])
         predictions = {}
         
+        print(f"[INFO] Predicting expert actions for current telemetry state")
         # Predict driving behavior
         if 'behavior_learning' in model_data:
             behavior_model = model_data['behavior_learning']['modelData']['model']
             
             # Extract behavior features
-            behavior_features = self.behavior_learner.generate_driving_style_features(df)
+            behavior_features = self.behavior_learner.generate_driving_style_features(processed_df)
             
             # Prepare features
             feature_cols = behavior_model['feature_names']
@@ -544,13 +779,264 @@ class ImitationLearningService:
                 # Set the trajectory model
                 self.trajectory_learner.trajectory_model = model_data['trajectory_learning']['modelData']
                 
-                optimal_actions = self.trajectory_learner.predict_optimal_actions(df)
+                optimal_actions = self.trajectory_learner.predict_optimal_actions(processed_df)
                 predictions['optimal_actions'] = optimal_actions
             except Exception as e:
                 print(f"[WARNING] Could not predict optimal actions: {e}")
                 predictions['optimal_actions'] = {}
         
         return predictions
+    
+    def _filter_top_performance_laps(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Filter for valid laps and select top 1% fastest laps for training
+        
+        Args:
+            df: Processed telemetry DataFrame
+            
+        Returns:
+            Filtered DataFrame containing only top 1% fastest valid laps
+        """
+        print(f"[INFO] Starting lap filtering from {len(df)} telemetry records")
+        
+        # We'll work with all data first, then filter by validity percentage per lap
+        working_df = df.copy()
+        
+        # Check if we have the required columns
+        has_valid_lap_column = 'Graphics_is_valid_lap' in working_df.columns
+        if not has_valid_lap_column:
+            print("[WARNING] Graphics_is_valid_lap column not found, cannot validate lap quality - returning all data")
+            return working_df
+        else:
+            print(f"[INFO] Found Graphics_is_valid_lap column, will filter laps by validity percentage")
+        
+        # Group by lap and calculate lap times
+        # Use both Graphics_completed_lap and Graphics_normalized_car_position together for robust lap detection
+        has_completed_lap = 'Graphics_completed_lap' in working_df.columns
+        has_position = 'Graphics_normalized_car_position' in working_df.columns
+        
+        # Only proceed if we have both fields - return empty data otherwise
+        if not (has_completed_lap and has_position):
+            print("[WARNING] Lap filtering requires both Graphics_completed_lap and Graphics_normalized_car_position - returning empty DataFrame")
+            return pd.DataFrame()
+        
+        # Use both completed_lap counter and position data for most accurate lap detection
+        print("[INFO] Using both Graphics_completed_lap and Graphics_normalized_car_position for lap detection")
+        
+        completed_laps = working_df['Graphics_completed_lap'].fillna(0)
+        position = working_df['Graphics_normalized_car_position'].fillna(0)
+        
+        # Primary method: detect when completed_lap increments (official lap completion)
+        completed_lap_changes = completed_laps.diff() > 0
+        
+        # Use completed_lap changes as primary lap boundary indicator
+        lap_boundaries = completed_lap_changes 
+        
+        # Create cumulative lap ID
+        working_df['lap_id'] = lap_boundaries.cumsum()
+        
+        # Group all telemetry data by these lap ids, allowing the code to process each lap individually
+        lap_groups = working_df.groupby('lap_id')
+        print(f"[INFO] Detected {len(lap_groups)} individual lap segments using completed_lap changes")
+        
+        # Calculate lap times for each lap
+        lap_times = []
+        lap_data = []
+        total_laps_processed = 0
+        full_laps_found = 0
+        
+        for lap_id, lap_df in lap_groups:
+            total_laps_processed += 1
+            
+            if len(lap_df) < 10:  # Skip very short laps (likely incomplete)
+                continue
+            
+            # Check validity percentage if is_valid_lap column is available
+            if has_valid_lap_column:
+                if not self._is_lap_mostly_valid(lap_df,0.95):  # Require at least 95% valid points
+                    continue
+            
+            # Validate that this is a full lap using normalized_car_position
+            if not self._is_full_lap(lap_df):
+                continue
+            
+            full_laps_found += 1
+                
+            # Calculate lap time
+            if 'Graphics_current_time' in lap_df.columns:
+                # Use the current lap time at the end of this lap (already in milliseconds)
+                lap_time = lap_df['Graphics_current_time'].iloc[-1] / 1000.0  # Convert to seconds
+            
+            if lap_time > 0:  # Only include laps with valid times
+                lap_times.append(lap_time)
+                lap_data.append(lap_df)
+        
+        if not lap_times:
+            print(f"[WARNING] No valid full lap times found out of {total_laps_processed} processed laps, returning empty DataFrame")
+            return pd.DataFrame()
+        
+        print(f"[INFO] Processed {total_laps_processed} potential laps")
+        if has_valid_lap_column:
+            print(f"[INFO] Found {full_laps_found} complete full laps with ≥95% valid data points")
+        else:
+            print(f"[INFO] Found {full_laps_found} complete full laps (validity checking skipped)")
+        print(f"[INFO] Calculated lap times for {len(lap_times)} qualifying laps")
+        print(f"[INFO] Best lap time: {min(lap_times):.3f}s, Worst: {max(lap_times):.3f}s")
+        
+        # Sort laps by time (fastest first)
+        sorted_indices = np.argsort(lap_times)
+
+        # Calculate how many laps to keep (top 5%, minimum 1 lap)
+        num_laps_to_keep = max(1, int(np.ceil(len(lap_times) * 0.05)))
+        print(f"[INFO] Selecting top {num_laps_to_keep} fastest laps out of {len(lap_times)} total laps")
+        
+        # Select top laps
+        top_lap_indices = sorted_indices[:num_laps_to_keep]
+        
+        # Combine data from selected laps
+        filtered_data_frames = [lap_data[i] for i in top_lap_indices]
+        filtered_df = pd.concat(filtered_data_frames, ignore_index=True)
+        
+        # Report selected lap times
+        selected_lap_times = [lap_times[i] for i in top_lap_indices]
+        print(f"[INFO] Selected lap times: {[f'{t:.3f}s' for t in selected_lap_times]}")
+        print(f"[INFO] Filtered to {len(filtered_df)} records from top {num_laps_to_keep} fastest complete full laps")
+        
+        return filtered_df
+    
+    def _is_lap_mostly_valid(self, lap_df: pd.DataFrame, min_valid_percentage: float = 0.75) -> bool:
+        """
+        Check if a lap has a sufficient percentage of valid data points
+        
+        Args:
+            lap_df: DataFrame containing telemetry data for one lap
+            min_valid_percentage: Minimum percentage of valid points (default 75% in decimal)
+            
+        Returns:
+            True if the lap has enough valid data points
+        """
+        if 'Graphics_is_valid_lap' not in lap_df.columns:
+            return True  # Assume valid if we can't check
+        
+        valid_points = lap_df['Graphics_is_valid_lap'].fillna(False)
+        total_points = len(valid_points)
+        
+        if total_points == 0:
+            return False
+        
+        # Count boolean True values, handling different data types
+        if valid_points.dtype == 'bool':
+            valid_count = valid_points.sum()
+        else:
+            # Handle string or numeric representations
+            valid_count = (
+                (valid_points == True) | 
+                (valid_points == 'True') | 
+                (valid_points == 'true') | 
+                (valid_points == 1) | 
+                (valid_points == '1')
+            ).sum()
+        
+        valid_percentage = valid_count / total_points
+        
+        if valid_percentage < min_valid_percentage:
+            print(f"[DEBUG] Rejected lap: only {valid_percentage:.1%} valid points (need {min_valid_percentage:.1%})")
+            return False
+        
+        return True
+    
+    def _is_full_lap(self, lap_df: pd.DataFrame) -> bool:
+        """
+        Validate that a lap contains a complete track progression from start to finish
+        Uses both Graphics_normalized_car_position and Graphics_completed_lap when available
+        
+        Args:
+            lap_df: DataFrame containing telemetry data for one lap
+            
+        Returns:
+            True if the lap contains progression from ~0 to ~1 in normalized_car_position
+            and shows consistent completed lap counter behavior
+        """
+        has_position = 'Graphics_normalized_car_position' in lap_df.columns
+        has_completed_lap = 'Graphics_completed_lap' in lap_df.columns
+        
+        # If we have neither field, assume valid (fallback)
+        if not has_position and not has_completed_lap:
+            print("[WARNING] No position or completed lap data available, cannot validate full lap")
+            return True
+        
+        # Validate using normalized car position (primary validation)
+        position_valid = True
+        if has_position:
+            positions = lap_df['Graphics_normalized_car_position'].dropna()
+            
+            if len(positions) == 0:
+                position_valid = False
+            else:
+                min_position = positions.min()
+                max_position = positions.max()
+                
+                # Check if the lap covers most of the track
+                # Allow some tolerance: lap should go from close to 0 to close to 1
+                starts_near_beginning = min_position <= 0.15  # Starts at or before 15% of track
+                ends_near_finish = max_position >= 0.85       # Ends at or after 85% of track
+                
+                # Additional check: ensure good coverage of the track
+                position_range = max_position - min_position
+                good_coverage = position_range >= 0.7  # Covers at least 70% of track length
+                
+                position_valid = starts_near_beginning and ends_near_finish and good_coverage
+                
+                if not position_valid:
+                    print(f"[DEBUG] Position validation failed: min_pos={min_position:.3f}, max_pos={max_position:.3f}, range={position_range:.3f}")
+        
+        # Validate using completed lap counter (secondary validation)
+        completed_lap_valid = True
+        if has_completed_lap:
+            completed_laps = lap_df['Graphics_completed_lap'].fillna(0)
+            
+            # For a valid lap, the completed lap counter should either:
+            # 1. Stay constant throughout the lap (during lap progress)
+            # 2. Show exactly one increment at the end (lap completion)
+            unique_values = completed_laps.unique()
+            
+            if len(unique_values) == 1:
+                # Counter stayed constant - lap in progress, this is expected
+                completed_lap_valid = True
+            elif len(unique_values) == 2:
+                # Counter incremented once - should be at the end of the lap
+                # Check that the increment happens towards the end of the data
+                increment_positions = completed_laps.diff() > 0
+                if increment_positions.sum() == 1:  # Exactly one increment
+                    # Find where the increment occurred
+                    increment_index = increment_positions.idxmax()
+                    total_records = len(completed_laps)
+                    increment_position_ratio = (increment_index / total_records) if total_records > 0 else 0
+                    
+                    # Increment should happen in the latter part of the lap (after 70% completion)
+                    completed_lap_valid = increment_position_ratio >= 0.7
+                    if not completed_lap_valid:
+                        print(f"[DEBUG] Completed lap increment too early: {increment_position_ratio:.1%} through lap")
+                else:
+                    # Multiple increments - suspicious
+                    completed_lap_valid = False
+                    print(f"[DEBUG] Multiple completed lap increments detected: {increment_positions.sum()}")
+            else:
+                # Too many different values - suspicious
+                completed_lap_valid = False
+                print(f"[DEBUG] Too many completed lap values: {len(unique_values)} unique values")
+        
+        # Combine validations - both must pass if both fields are available
+        if has_position and has_completed_lap:
+            is_valid = position_valid and completed_lap_valid
+            if not is_valid:
+                print(f"[DEBUG] Rejected lap: position_valid={position_valid}, completed_lap_valid={completed_lap_valid}")
+        elif has_position:
+            is_valid = position_valid
+        else:  # has_completed_lap only
+            is_valid = completed_lap_valid
+        
+        return is_valid
     
     def _generate_learning_summary(self, results: Dict[str, Any]) -> Dict[str, Any]:
         """Generate a summary of learning results"""
@@ -571,12 +1057,25 @@ class ImitationLearningService:
         if 'trajectory_learning' in results:
             trajectory_info = results['trajectory_learning']
             summary['learning_completed'].append('trajectory')
+            
+            # Calculate average performance metric, handling both regression (r2) and classification (accuracy) models
+            performance_metrics = trajectory_info['metadata']['performance_metrics']
+            
+            # Separate regression and classification metrics
+            r2_scores = [metrics['r2'] for metrics in performance_metrics.values() if 'r2' in metrics]
+            accuracy_scores = [metrics['accuracy'] for metrics in performance_metrics.values() if 'accuracy' in metrics]
+            
+            # Calculate average scores
+            avg_r2 = np.mean(r2_scores) if r2_scores else 0.0
+            avg_accuracy = np.mean(accuracy_scores) if accuracy_scores else 0.0
+            
             summary['trajectory_summary'] = {
                 'models_trained': len(trajectory_info['metadata']['models_trained']),
                 'input_features': len(trajectory_info['metadata']['input_features']),
-                'avg_r2_score': np.mean([
-                    metrics['r2'] for metrics in trajectory_info['metadata']['performance_metrics'].values()
-                ])
+                'avg_r2_score': avg_r2,
+                'avg_accuracy_score': avg_accuracy,
+                'regression_models': len(r2_scores),
+                'classification_models': len(accuracy_scores)
             }
         
         return summary
@@ -656,11 +1155,13 @@ class ImitationLearningService:
             )
             results['trajectory_learning']['modelData']['scaler'] = serialized_scaler_data
             
-            trajectory_scaler_to_serialize = results['trajectory_learning']['modelData']['pca']
-            serialized_scaler_data = self.serialize_data(
-                trajectory_scaler_to_serialize
-            )
-            results['trajectory_learning']['modelData']['pca'] = serialized_scaler_data
+            # Serialize trajectory PCA only if it exists and is not None
+            trajectory_pca_to_serialize = results['trajectory_learning']['modelData']['pca']
+            if trajectory_pca_to_serialize is not None:
+                serialized_pca_data = self.serialize_data(trajectory_pca_to_serialize)
+                results['trajectory_learning']['modelData']['pca'] = serialized_pca_data
+            else:
+                results['trajectory_learning']['modelData']['pca'] = None
             
         return results
     
@@ -714,10 +1215,14 @@ class ImitationLearningService:
             deserialized_scaler = self.deserialize_data(trajectory_scaler_serialized)
             results['trajectory_learning']['modelData']['scaler'] = deserialized_scaler
             
-            # Deserialize trajectory PCA
-            trajectory_pca_serialized = results['trajectory_learning']['modelData']['pca']
-            deserialized_pca = self.deserialize_data(trajectory_pca_serialized)
-            results['trajectory_learning']['modelData']['pca'] = deserialized_pca
+            # Deserialize trajectory PCA (only if it exists and is not None)
+            if 'pca' in results['trajectory_learning']['modelData']:
+                trajectory_pca_serialized = results['trajectory_learning']['modelData']['pca']
+                if trajectory_pca_serialized is not None:
+                    deserialized_pca = self.deserialize_data(trajectory_pca_serialized)
+                    results['trajectory_learning']['modelData']['pca'] = deserialized_pca
+                else:
+                    results['trajectory_learning']['modelData']['pca'] = None
             
         return results
     
@@ -771,6 +1276,242 @@ class ImitationLearningService:
             
         except Exception as e:
             raise Exception(f"Failed to deserialize imitation learning models: {str(e)}")
+        
+
+    def _create_detailed_point_comparison(self, 
+                                        processed_df: pd.DataFrame, 
+                                        optimal_actions: Dict[str, Any]) -> Dict[str, Any]:
+        """Create detailed comparison for a single telemetry point"""
+        
+        # Get the first (and typically only) row of the processed DataFrame
+        if processed_df.empty:
+            return {"error": "No telemetry data provided", "point_similarity": 0.0}
+        
+        # Extract the current telemetry row as a dictionary for easier access
+        current_row = processed_df.iloc[0].to_dict()
+        
+        # Initialize the comparison dictionary
+        comparison = {
+            "point_similarity": 0.0
+        }
+
+        # Speed comparison
+        user_speed = current_row.get('Physics_speed_kmh', 0)
+        expert_speed = optimal_actions.get('optimal_speed', user_speed)
+        comparison["speed"] = {
+            "user_value": user_speed,
+            "expert_value": expert_speed,
+            "difference": expert_speed - user_speed,
+            "percentage_diff": ((user_speed - expert_speed) / max(expert_speed, 1)) * 100 if expert_speed > 0 else 0
+        }
+        
+        # Throttle comparison
+        user_throttle = current_row.get('Physics_gas', 0)
+        expert_throttle = optimal_actions.get('optimal_throttle', user_throttle)
+        comparison["throttle"] = {
+            "user_value": user_throttle,
+            "expert_value": expert_throttle,
+            "difference": expert_throttle - user_throttle,
+            "percentage_diff": ((user_throttle - expert_throttle) / max(expert_throttle, 0.01)) * 100 if expert_throttle > 0 else 0
+        }
+        
+        # Brake comparison
+        user_brake = current_row.get('Physics_brake', 0)
+        expert_brake = optimal_actions.get('optimal_brake', user_brake)
+        comparison["brake"] = {
+            "user_value": user_brake,
+            "expert_value": expert_brake,
+            "difference": expert_brake - user_brake,
+            "percentage_diff": ((user_brake - expert_brake) / max(expert_brake, 0.01)) * 100 if expert_brake > 0 else 0
+        }
+        
+        # Steering comparison
+        user_steering = current_row.get('Physics_steer_angle', 0)
+        expert_steering = optimal_actions.get('optimal_steering', user_steering)
+        comparison["steering"] = {
+            "user_value": user_steering,
+            "expert_value": expert_steering,
+            "difference": expert_steering - user_steering,
+            "percentage_diff": ((user_steering - expert_steering) / max(abs(expert_steering), 0.01)) * 100 if abs(expert_steering) > 0 else 0
+        }
+        
+        # Gear comparison (if available)
+        user_gear = current_row.get('Physics_gear', 0)
+        expert_gear = optimal_actions.get('optimal_gear', user_gear)
+        comparison["gear"] = {
+            "user_value": user_gear,
+            "expert_value": expert_gear,
+            "difference": expert_gear - user_gear,
+            "gear_optimal": abs(expert_gear - user_gear) <= 1  # Within 1 gear is considered good
+        }
+        
+        # Position comparison (if available)
+
+        # Try alternative position fields from processed DataFrame
+        user_pos_x = current_row.get('Graphics_player_pos_x', None)
+        user_pos_y = current_row.get('Graphics_player_pos_y', None)
+        user_pos_z = current_row.get('Graphics_player_pos_z', None)
+
+
+        expert_pos_x = optimal_actions.get('optimal_player_pos_x', user_pos_x)
+        expert_pos_y = optimal_actions.get('optimal_player_pos_y', user_pos_y)
+        expert_pos_z = optimal_actions.get('optimal_player_pos_z', user_pos_z)
+        
+        #if we have full 3D position data, use it for detailed comparison
+        if all(pos is not None for pos in [user_pos_x, user_pos_y, user_pos_z, expert_pos_x, expert_pos_y, expert_pos_z]):
+            # Calculate 3D distance difference
+            pos_diff_x = expert_pos_x - user_pos_x
+            pos_diff_y = expert_pos_y - user_pos_y
+            pos_diff_z = expert_pos_z - user_pos_z
+            
+            # Calculate lateral distance (X-Z plane, assuming Y is vertical)
+            lateral_distance = np.sqrt(pos_diff_x**2 + pos_diff_z**2)
+            
+            comparison["position"] = {
+                "user_position": {"x": user_pos_x, "y": user_pos_y, "z": user_pos_z},
+                "expert_position": {"x": expert_pos_x, "y": expert_pos_y, "z": expert_pos_z},
+                "difference": {"x": pos_diff_x, "y": pos_diff_y, "z": pos_diff_z},
+                "lateral_distance": lateral_distance,  # More relevant for racing line analysis
+                "vertical_difference": abs(pos_diff_y)  # Height difference
+            }
+        else:
+            # Track position fallback if 3D positions aren't available
+            user_track_pos = current_row.get('Graphics_normalized_car_position', 0)
+            expert_track_pos = optimal_actions.get('optimal_track_position', user_track_pos)
+            
+            comparison["position"] = {
+                "user_track_position": user_track_pos,
+                "expert_track_position": expert_track_pos,
+                "track_position_difference": expert_track_pos - user_track_pos,
+                "position_accuracy": max(0, 100 - abs(expert_track_pos - user_track_pos) * 100)
+            }
+        
+        # Calculate overall similarity score for this point
+        similarity_scores = []
+        
+        # Speed similarity (normalize by speed) - handle potential edge cases
+        speed_percentage_diff = comparison["speed"]["percentage_diff"]
+        speed_sim = max(0, min(100, 100 - abs(speed_percentage_diff)))
+        similarity_scores.append(speed_sim)
+        
+        # Input similarities - ensure values are in [0, 100] range
+        throttle_diff = abs(comparison["throttle"]["difference"])
+        brake_diff = abs(comparison["brake"]["difference"])
+        steering_diff = abs(comparison["steering"]["difference"])
+        
+        # Throttle and brake are typically in [0, 1] range, so multiply by 100
+        throttle_sim = max(0, min(100, 100 - (throttle_diff * 100)))
+        brake_sim = max(0, min(100, 100 - (brake_diff * 100)))
+        
+        # Steering is in radians, typically [-π, π], so scale appropriately
+        # Assume max steering is about 1 radian (57 degrees), scale by 50 to get percentage
+        steering_sim = max(0, min(100, 100 - (steering_diff * 57.3)))  # Convert radians to degrees
+        
+        similarity_scores.extend([throttle_sim, brake_sim, steering_sim])
+        
+        # Position similarity (if 3D position data is available)
+        if "lateral_distance" in comparison.get("position", {}):
+            # For racing, lateral distance is more important than 3D distance
+            lateral_dist = comparison["position"]["lateral_distance"]
+            # Assume 10 meters is a significant difference, scale accordingly
+            position_sim = max(0, min(100, 100 - (lateral_dist / 10.0) * 100))
+            similarity_scores.append(position_sim)
+        elif "position_accuracy" in comparison.get("position", {}):
+            # Use track position accuracy if available
+            position_sim = comparison["position"]["position_accuracy"]
+            similarity_scores.append(position_sim)
+        
+        # Calculate mean similarity, ensuring we have valid scores
+        valid_scores = [score for score in similarity_scores if not np.isnan(score) and np.isfinite(score)]
+        comparison["point_similarity"] = np.mean(valid_scores) if valid_scores else 0.0
+        
+        return comparison
+
+    def _analyze_action_performance(self, 
+                                  processed_df: pd.DataFrame, 
+                                  optimal_actions: Dict[str, Any]) -> Dict[str, Any]:
+        """Analyze performance implications of action differences"""
+        
+        # Get the first (and typically only) row of the processed DataFrame
+        if processed_df.empty:
+            return {"error": "No telemetry data provided", "overall_efficiency": 0}
+        
+        # Extract the current telemetry row as a dictionary for easier access
+        current_row = processed_df.iloc[0].to_dict()
+        
+        analysis = {}
+        
+        # Calculate input efficiency
+        current_speed = current_row.get('Physics_speed_kmh', 0)
+        current_throttle = current_row.get('Physics_gas', 0)
+        current_brake = current_row.get('Physics_brake', 0)
+        
+        optimal_speed = optimal_actions.get('optimal_speed', current_speed)
+        optimal_throttle = optimal_actions.get('optimal_throttle', current_throttle)
+        optimal_brake = optimal_actions.get('optimal_brake', current_brake)
+        
+        # Speed efficiency
+        speed_efficiency = min(100, max(0, 100 - abs(optimal_speed - current_speed) * 2))
+        analysis['speed_efficiency'] = speed_efficiency
+        
+        # Input efficiency
+        throttle_efficiency = min(100, max(0, 100 - abs(optimal_throttle - current_throttle) * 100))
+        brake_efficiency = min(100, max(0, 100 - abs(optimal_brake - current_brake) * 100))
+        
+        analysis['throttle_efficiency'] = throttle_efficiency
+        analysis['brake_efficiency'] = brake_efficiency
+        
+        # Position efficiency
+        position_efficiency = 100  # Default if no position data
+        
+        # Try 3D position data first
+        user_pos_x = current_row.get('Graphics_player_pos_x', None)
+        user_pos_y = current_row.get('Graphics_player_pos_y', None)
+        user_pos_z = current_row.get('Graphics_player_pos_z', None)
+        
+        expert_pos_x = optimal_actions.get('optimal_player_pos_x', user_pos_x)
+        expert_pos_y = optimal_actions.get('optimal_player_pos_y', user_pos_y)
+        expert_pos_z = optimal_actions.get('optimal_player_pos_z', user_pos_z)
+        
+        if all(pos is not None for pos in [user_pos_x, user_pos_y, user_pos_z, expert_pos_x, expert_pos_y, expert_pos_z]):
+            # Calculate 3D distance difference
+            pos_diff_x = expert_pos_x - user_pos_x
+            pos_diff_y = expert_pos_y - user_pos_y
+            pos_diff_z = expert_pos_z - user_pos_z
+            
+            # Calculate lateral distance (X-Z plane, assuming Y is vertical)
+            lateral_distance = np.sqrt(pos_diff_x**2 + pos_diff_z**2)
+            
+            # Position efficiency based on lateral distance (10 meters = 0% efficiency)
+            position_efficiency = max(0, min(100, 100 - (lateral_distance / 10.0) * 100))
+            
+        else:
+            # Fallback to track position if 3D positions aren't available
+            user_track_pos = current_row.get('Graphics_normalized_car_position', 0)
+            expert_track_pos = optimal_actions.get('optimal_track_position', user_track_pos)
+            
+            if user_track_pos is not None and expert_track_pos is not None:
+                track_pos_diff = abs(expert_track_pos - user_track_pos)
+                position_efficiency = max(0, min(100, 100 - track_pos_diff * 100))
+        
+        analysis['position_efficiency'] = position_efficiency
+        analysis['overall_efficiency'] = (speed_efficiency + throttle_efficiency + brake_efficiency + position_efficiency) / 4
+        
+        # Performance insights
+        if analysis['overall_efficiency'] > 95:
+            analysis['performance_level'] = "Expert-level"
+            analysis['improvement_potential'] = "Minimal"
+        elif analysis['overall_efficiency'] > 80:
+            analysis['performance_level'] = "Advanced"
+            analysis['improvement_potential'] = "Low"
+        elif analysis['overall_efficiency'] > 70:
+            analysis['performance_level'] = "Intermediate"
+            analysis['improvement_potential'] = "Moderate"
+        else:
+            analysis['performance_level'] = "Beginner"
+            analysis['improvement_potential'] = "High"
+        
+        return analysis
 # Example usage and testing
 if __name__ == "__main__":
     print("ImitationLearningService initialized. Ready for expert demonstration learning!")

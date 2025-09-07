@@ -217,23 +217,12 @@ const LiveAnalysisSessionRecording = () => {
         if (!analysisContext.recordedSessioStaticsData) {
             console.error("No static data available from session check");
             return;
-        }
+        };
 
-        const trackId = analysisContext.recordedSessioStaticsData.track;
-        console.log("Track ID from static data:", trackId);
-
-        //find and set the track name by using the saved static data from the CheckSessionValid()
-        if (!ACCMemoeryTracks.has(trackId)) {
-            console.error("Track not found in ACCMemoeryTracks. Available tracks:", Array.from(ACCMemoeryTracks.keys()));
-            console.error("Requested track ID:", trackId);
-            // For now, let's use a default track name or continue anyway
-            const defaultTrackName = "Unknown Track";
-            analysisContext.setMap(defaultTrackName);
-        } else {
-            const trackname: string = ACCMemoeryTracks.get(trackId)!;
-            console.log("Found track name:", trackname);
-            analysisContext.setMap(trackname);
-        }
+        //use the track name directly from the static data
+        const trackname: string = analysisContext.recordedSessioStaticsData.track || "Unknown Track";
+        const carname: string = analysisContext.recordedSessioStaticsData.car_model || "Unknown Car";
+        analysisContext.setMap(trackname);
 
         const currentDate = new Date();
         const filename: string = `acc_${currentDate.getFullYear()}_${currentDate.getMonth()}_${currentDate.getDate()}_${currentDate.getHours()}_${currentDate.getMinutes()}_${currentDate.getSeconds()}.csv`;

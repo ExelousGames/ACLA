@@ -33,8 +33,9 @@
     "test": "react-scripts test",
     "eject": "react-scripts eject",
     "electron": "electron .",
-    "start:electron": "concurrently \"env-cmd -f ../.dev.env react-scripts start\" \"wait-on http://localhost:3000 && electron .\"",
-    "build:electron": "env-cmd -f ../.prod.env react-scripts build && npx electron-builder"
+    "setup-speech": "node setup-speech.js",
+    "start:electron": "npm run setup-speech && concurrently \"env-cmd -f ../.dev.env react-scripts start\" \"wait-on http://localhost:3000 && electron .\"",
+    "build:electron": "npm run setup-speech && env-cmd -f ../.prod.env react-scripts build && npx electron-builder"
   },
   "eslintConfig": {
     "extends": [

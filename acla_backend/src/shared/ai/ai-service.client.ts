@@ -81,6 +81,8 @@ export interface TrainModelsResponse {
 
 export interface ImitationLearningGuidanceRequest {
     current_telemetry: { [key: string]: any };
+    track_name: string;
+    car_name: string;
     guidance_type: string; // "actions", "behavior", or "both"
     user_id?: string;
 }
@@ -155,6 +157,7 @@ export class AiServiceClient {
 
     async getImitationLearningGuidance(request: ImitationLearningGuidanceRequest): Promise<ImitationLearningGuidanceResponse> {
         try {
+
             const response = await axios.post(`${this.aiServiceUrl}/racing-session/imitation-learning-guidance`, request);
             return response.data;
         } catch (error) {

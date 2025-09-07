@@ -463,10 +463,14 @@ const MapEditor = () => {
             points = createRacingTurningPointOffset(bezierPoints, 'left')
             index = 0;
             result = [];
-            for (let i = 0; i < points.length - 1; i += 3) {
+            for (let i = 0; i < points.length - 3; i += 3) {
                 //we only want the turning points
                 const P0 = points[i];
                 const P3 = points[i + 3];
+
+                // Add null checks to prevent errors
+                if (!P0 || !P3) continue;
+
                 index++;
                 // Only push Q0 if it's the first segment to avoid duplicates
                 if (i === 0) result.push({ id: 0, position: P0 });
@@ -489,10 +493,14 @@ const MapEditor = () => {
             index = 0;
             result = [];
             //we only need the turning position
-            for (let i = 0; i < points.length - 1; i += 3) {
+            for (let i = 0; i < points.length - 3; i += 3) {
                 //we only want the turning points
                 const P0 = points[i];
                 const P3 = points[i + 3];
+
+                // Add null checks to prevent errors
+                if (!P0 || !P3) continue;
+
                 index++;
                 // Only push Q0 if it's the first segment to avoid duplicates
                 if (i === 0) result.push({ id: 0, position: P0 });

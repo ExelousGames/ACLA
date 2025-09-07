@@ -6,6 +6,7 @@ from typing import Dict, Any, Optional
 import httpx
 import asyncio
 import logging
+import json
 from app.core import settings
 
 logger = logging.getLogger(__name__)
@@ -371,10 +372,14 @@ class BackendService:
     async def getCompleteActiveModelData(self, trackName: str, carName: str, modelType: str) -> Dict[str, Any]:
         """Get complete active model data by retrieving all chunks"""
         try:
+            logger.info(f"Starting retrieval of active model data for {trackName}/{carName}/{modelType}")
+            
             # Initialize the chunked session
             init_response = await self.initGetActiveModelData(trackName, carName, modelType)
+            logger.info(f"Successfully initialized chunked session: {init_response}")
             
             if not init_response.get("success", False):
+                logger.error(f"Failed to initialize chunked session: {init_response}")
                 return init_response
             
             session_id = init_response.get("sessionId")
@@ -383,7 +388,7 @@ class BackendService:
             logger.info(f"Retrieving active model data in {total_chunks} chunks (session: {session_id})")
             
             # Collect all chunks
-            complete_data = []
+            complete_data_chunks = []
             
             for chunk_index in range(total_chunks):
                 chunk_response = await self.getActiveModelDataChunk(session_id, chunk_index)
@@ -395,21 +400,35 @@ class BackendService:
                 
                 chunk_data = chunk_response.get("data")
                 if chunk_data is not None:
-                    complete_data.append(chunk_data)
+                    complete_data_chunks.append(chunk_data)
                 
                 logger.debug(f"Retrieved chunk {chunk_index + 1}/{total_chunks}")
             
-            # Reconstruct the complete model data
-            # The chunks should be assembled based on the backend's chunking strategy
-            logger.info("✅ Successfully retrieved all chunks for active model data")
+            # Reconstruct the complete model data by joining all chunks
+            # The chunks contain string portions that need to be concatenated and parsed
+            logger.info("🔄 Assembling chunks into complete model data...")
             
-            return {
-                "success": True,
-                "sessionId": session_id,
-                "totalChunks": total_chunks,
-                "data": complete_data,
-                "message": "Complete model data retrieved successfully"
-            }
+            try:
+                # Join all chunk data strings to reconstruct the original JSON string
+                complete_json_string = ''.join(complete_data_chunks)
+                # Parse the complete JSON string back to the original data structure
+                complete_model_data = json.loads(complete_json_string)
+                
+                logger.info("✅ Successfully assembled and parsed complete model data")
+                
+                return {
+                    "success": True,
+                    "sessionId": session_id,
+                    "totalChunks": total_chunks,
+                    "data": complete_model_data,
+                    "message": "Complete model data retrieved and assembled successfully"
+                }
+            except json.JSONDecodeError as e:
+                logger.error(f"Failed to parse assembled chunk data: {str(e)}")
+                return {"error": f"Failed to parse assembled chunk data: {str(e)}"}
+            except Exception as e:
+                logger.error(f"Failed to assemble chunk data: {str(e)}")
+                return {"error": f"Failed to assemble chunk data: {str(e)}"}
             
         except Exception as e:
             logger.error(f"Error retrieving complete active model data: {str(e)}")

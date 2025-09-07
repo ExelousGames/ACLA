@@ -73,6 +73,8 @@ export class AllSessionsChunkRequestDto {
 
 export class ImitationLearningGuidanceRequestDto {
     current_telemetry: { [key: string]: any };
+    track_name: string;
+    car_name: string;
     guidance_type: string = "both"; // "actions", "behavior", or "both"
     user_id?: string;
 }

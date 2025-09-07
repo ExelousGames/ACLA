@@ -1,0 +1,209 @@
+.chartCard {
+    padding: 16px;
+    overflow: auto;
+}
+
+.chartHeader {
+    margin-bottom: 12px;
+}
+
+.loadingContainer {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: calc(100% - 40px);
+}
+
+.contentContainer {
+    height: calc(100% - 60px);
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding: 8px 4px;
+    margin-top: 8px;
+}
+
+.behaviorSection {
+    margin-bottom: 20px;
+}
+
+.sectionTitle {
+    margin-bottom: 12px;
+    display: block;
+}
+
+.confidenceContainer {
+    margin-bottom: 12px;
+}
+
+.confidenceBadges {
+    margin-bottom: 8px;
+}
+
+.confidenceProgress {
+    margin-bottom: 16px;
+    height: 12px;
+}
+
+.styleDistribution {
+    margin-bottom: 16px;
+}
+
+.distributionTitle {
+    margin-bottom: 8px;
+    display: block;
+}
+
+.distributionList {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.distributionItem {
+    margin-bottom: 4px;
+}
+
+.distributionItemHeader {
+    margin-bottom: 4px;
+}
+
+.distributionStyle {
+    min-width: 100px;
+    flex-shrink: 0;
+}
+
+.distributionConfidence {
+    text-align: right;
+}
+
+.distributionProgress {
+    width: 100%;
+    height: 8px;
+}
+
+.recommendationsTitle {
+    margin-bottom: 8px;
+    display: block;
+}
+
+.recommendationsList {
+    font-size: 12px;
+    line-height: 1.6;
+}
+
+.recommendationItem {
+    margin-bottom: 6px;
+}
+
+.recommendationText {
+    display: block;
+}
+
+.actionSection {
+    margin-bottom: 20px;
+}
+
+.performanceGrid {
+    margin-bottom: 16px;
+}
+
+.performanceItem {
+    text-align: center;
+    padding: 8px;
+}
+
+.performanceLabel {
+    display: block;
+    margin-bottom: 8px;
+    white-space: nowrap;
+}
+
+.separator {
+    margin: 16px 0;
+}
+
+.mainSeparator {
+    margin: 130px 0;
+}
+
+.actionComparison {
+    margin-bottom: 32px;
+}
+
+.comparisonTitle {
+    margin-bottom: 16px;
+    display: block;
+}
+
+.comparisonContainer {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+.comparisonRow {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+}
+
+.comparisonBox {
+    padding: 16px;
+    background-color: var(--gray-2);
+    border-radius: 8px;
+    min-height: 100px;
+}
+
+.comparisonBoxTitle {
+    display: block;
+    margin-bottom: 12px;
+}
+
+.comparisonValues {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.comparisonValue {
+    line-height: 1.6;
+}
+
+.comparisonDiff {
+    line-height: 1.6;
+    font-size: 11px;
+}
+
+.gearExpert {
+    min-height: 24px;
+}
+
+.efficiencyTitle {
+    margin-bottom: 12px;
+    display: block;
+}
+
+.efficiencyItem {
+    text-align: center;
+    padding: 10px;
+}
+
+.efficiencyLabel {
+    display: block;
+    margin-bottom: 8px;
+    white-space: nowrap;
+}
+
+.efficiencyProgress {
+    margin-bottom: 6px;
+    height: 10px;
+}
+
+.timestamp {
+    margin-top: 20px;
+    font-size: 10px;
+    color: #666;
+    text-align: center;
+    padding: 8px 0;
+    border-top: 1px solid var(--gray-6);
+}
