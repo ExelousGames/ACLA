@@ -508,8 +508,10 @@ class TrackCorneringAnalyzer:
             is_valid = completed_lap_valid
         
         return is_valid  
+    
+
     def get_cornering_analysis_summary(self, df: pd.DataFrame) -> Dict[str, Any]:
-        """Get summary statistics for cornering analysis"""
+        """Get summary statistics for cornering analysis including detailed corner information"""
         
         if 'cornering_phase' not in df.columns:
             return {"error": "No cornering phase data found. Run identify_cornering_phases first."}
@@ -533,9 +535,91 @@ class TrackCorneringAnalyzer:
                 if 'Physics_gas' in df.columns:
                     phase_metrics[phase]['avg_throttle'] = phase_data['Physics_gas'].mean()
         
+        # Get detailed information for each corner
+        corner_details = {}
+        valid_corner_ids = [cid for cid in df['corner_id'].unique() if cid >= 0]
+        
+        for corner_id in valid_corner_ids:
+            corner_data = df[df['corner_id'] == corner_id].copy()
+            
+            if len(corner_data) == 0:
+                continue
+                
+            corner_details[f"corner_{corner_id}"] = self._get_corner_phase_details(corner_data)
+        
         return {
             'total_corners_detected': corner_count,
             'phase_distribution': phase_counts.to_dict(),
             'phase_metrics': phase_metrics,
-            'corner_ids': sorted([cid for cid in df['corner_id'].unique() if cid >= 0])
+            'corner_ids': sorted(valid_corner_ids),
+            'corner_details': corner_details
         }
+    
+    def _get_corner_phase_details(self, corner_data: pd.DataFrame) -> Dict[str, Any]:
+        """Get detailed phase information for a single corner including normalized car positions"""
+        
+        phases = ['entry', 'turn_in', 'apex', 'acceleration', 'exit']
+        corner_detail = {
+            'corner_start_position': None,
+            'corner_end_position': None,
+            'total_duration_points': len(corner_data),
+            'phases': {}
+        }
+        
+        # Get overall corner start and end positions
+        if 'Graphics_normalized_car_position' in corner_data.columns:
+            corner_detail['corner_start_position'] = corner_data['Graphics_normalized_car_position'].iloc[0]
+            corner_detail['corner_end_position'] = corner_data['Graphics_normalized_car_position'].iloc[-1]
+        
+        # Get detailed information for each phase
+        for phase in phases:
+            phase_data = corner_data[corner_data['cornering_phase'] == phase]
+            
+            if len(phase_data) == 0:
+                corner_detail['phases'][phase] = {
+                    'normalized_car_position': None,
+                    'avg_speed': None,
+                    'avg_steering_angle': None,
+                    'duration_points': 0,
+                    'avg_brake': None,
+                    'avg_throttle': None
+                }
+                continue
+            
+            # Calculate phase metrics
+            phase_info = {
+                'duration_points': len(phase_data),
+                'avg_speed': phase_data['Physics_speed_kmh'].mean(),
+                'avg_steering_angle': np.abs(phase_data['Physics_steer_angle']).mean()
+            }
+            
+            # Get normalized car position for this phase
+            if 'Graphics_normalized_car_position' in phase_data.columns:
+                # For most phases, use the middle position
+                if phase == 'entry':
+                    # For entry, use the starting position
+                    phase_info['normalized_car_position'] = phase_data['Graphics_normalized_car_position'].iloc[0]
+                elif phase == 'exit':
+                    # For exit, use the ending position  
+                    phase_info['normalized_car_position'] = phase_data['Graphics_normalized_car_position'].iloc[-1]
+                else:
+                    # For turn_in, apex, acceleration - use middle position
+                    mid_idx = len(phase_data) // 2
+                    phase_info['normalized_car_position'] = phase_data['Graphics_normalized_car_position'].iloc[mid_idx]
+            else:
+                phase_info['normalized_car_position'] = None
+            
+            # Add brake and throttle data if available
+            if 'Physics_brake' in phase_data.columns:
+                phase_info['avg_brake'] = phase_data['Physics_brake'].mean()
+            else:
+                phase_info['avg_brake'] = None
+                
+            if 'Physics_gas' in phase_data.columns:
+                phase_info['avg_throttle'] = phase_data['Physics_gas'].mean()
+            else:
+                phase_info['avg_throttle'] = None
+            
+            corner_detail['phases'][phase] = phase_info
+        
+        return corner_detail
