@@ -1451,7 +1451,7 @@ class ImitationLearningService:
         optimal_brake = optimal_actions.get('optimal_brake', current_brake)
         
         # Speed efficiency
-        speed_efficiency = min(100, max(0, 100 - abs(optimal_speed - current_speed) * 2))
+        speed_efficiency = min(100, max(0, 100 - abs(optimal_speed - current_speed) * 10))  # 1 km/h difference = 10% efficiency
         analysis['speed_efficiency'] = speed_efficiency
         
         # Input efficiency
@@ -1481,9 +1481,8 @@ class ImitationLearningService:
             
             # Calculate lateral distance (X-Z plane, assuming Y is vertical)
             lateral_distance = np.sqrt(pos_diff_x**2 + pos_diff_z**2)
-            
-            # Position efficiency based on lateral distance (10 meters = 0% efficiency)
-            position_efficiency = max(0, min(100, 100 - (lateral_distance / 10.0) * 100))
+            # Position efficiency based on lateral distance (1 meters = 0% efficiency)
+            position_efficiency = max(0, min(100, 100 - (lateral_distance / 1.0) * 100))
             
         else:
             # Fallback to track position if 3D positions aren't available
@@ -1501,7 +1500,7 @@ class ImitationLearningService:
         if analysis['overall_efficiency'] > 95:
             analysis['performance_level'] = "Expert-level"
             analysis['improvement_potential'] = "Minimal"
-        elif analysis['overall_efficiency'] > 80:
+        elif analysis['overall_efficiency'] > 85:
             analysis['performance_level'] = "Advanced"
             analysis['improvement_potential'] = "Low"
         elif analysis['overall_efficiency'] > 70:

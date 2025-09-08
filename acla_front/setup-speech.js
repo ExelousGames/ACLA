@@ -33,8 +33,9 @@ function checkAndInstallSpeechDeps() {
         let basicInstalled = checkPackages(basicPackages);
         let enhancedInstalled = checkPackages(enhancedPackages);
         let whisperInstalled = checkPackages(whisperPackages);
+        let ffmpegAvailable = checkFFmpegAvailability();
 
-        console.log(`📋 Status: Basic=${basicInstalled}, Enhanced=${enhancedInstalled}, Whisper=${whisperInstalled}`);
+        console.log(`📋 Status: Basic=${basicInstalled}, Enhanced=${enhancedInstalled}, Whisper=${whisperInstalled}, FFmpeg=${ffmpegAvailable}`);
 
         // Install missing packages
         if (!basicInstalled) {
@@ -61,6 +62,9 @@ function checkAndInstallSpeechDeps() {
         // Copy/create the enhanced script
         setupEnhancedScript();
 
+        // Check and install ffmpeg for Whisper
+        checkAndInstallFFmpeg();
+
         console.log('');
         console.log('========================================');
         console.log(' Setup Complete!');
@@ -70,8 +74,16 @@ function checkAndInstallSpeechDeps() {
         console.log('🎤 Your voice input now supports:');
         console.log('   ✓ Noise reduction and audio enhancement');
         console.log('   ✓ Voice activity detection');
-        console.log('   ✓ Multiple recognition engines');
-        console.log('   ✓ Offline Whisper AI (highest quality)');
+        console.log('   ✓ Multiple recognition engines (Google, Sphinx)');
+
+        // Check ffmpeg status for final message
+        try {
+            execSync('ffmpeg -version', { stdio: 'ignore', timeout: 3000 });
+            console.log('   ✓ Offline Whisper AI (highest quality) - ffmpeg available');
+        } catch {
+            console.log('   ⚠ Whisper AI requires ffmpeg (see installation instructions above)');
+        }
+
         console.log('   ✓ Improved accuracy and reliability');
         console.log('');
         console.log('Please restart your Electron app to use the enhanced features.');
@@ -80,6 +92,15 @@ function checkAndInstallSpeechDeps() {
         console.error('❌ Setup failed:', error.message);
         console.log('⚠️  Creating fallback configuration...');
         createFallbackScript();
+    }
+}
+
+function checkFFmpegAvailability() {
+    try {
+        execSync('ffmpeg -version', { stdio: 'ignore', timeout: 3000 });
+        return true;
+    } catch {
+        return false;
     }
 }
 
@@ -236,6 +257,117 @@ function setupEnhancedScript() {
     } else {
         console.log('⚠️  Enhanced script not found, creating fallback');
         createFallbackScript();
+    }
+}
+
+function checkAndInstallFFmpeg() {
+    console.log('🎬 Checking ffmpeg (required for Whisper AI)...');
+
+    try {
+        // Check if ffmpeg is already available
+        execSync('ffmpeg -version', { stdio: 'ignore', timeout: 5000 });
+        console.log('✅ ffmpeg is already installed and available');
+        return true;
+    } catch (error) {
+        console.log('⚠️  ffmpeg not found - required for Whisper AI speech recognition');
+
+        if (os.platform() === 'win32') {
+            console.log('🔧 Attempting to install ffmpeg on Windows...');
+
+            // Try multiple installation methods
+            const installMethods = [
+                {
+                    name: 'Windows Package Manager (winget)',
+                    command: 'winget install ffmpeg',
+                    description: 'Official Windows package manager'
+                },
+                {
+                    name: 'Chocolatey',
+                    command: 'choco install ffmpeg -y',
+                    description: 'Popular Windows package manager'
+                }
+            ];
+
+            for (const method of installMethods) {
+                try {
+                    console.log(`📦 Trying ${method.name}...`);
+                    execSync(method.command, { stdio: 'inherit', timeout: 120000 });
+
+                    // For winget installations, try refreshing PATH in case it was updated
+                    if (method.name.includes('winget')) {
+                        console.log('🔄 Refreshing PATH environment variable...');
+                        try {
+                            // Refresh PATH by reloading environment variables
+                            const refreshCmd = '$env:PATH = [System.Environment]::GetEnvironmentVariable("PATH","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("PATH","User")';
+                            execSync(`powershell -Command "${refreshCmd}"`, { stdio: 'ignore' });
+
+                            // Small delay to allow PATH refresh (synchronous)
+                            const start = Date.now();
+                            while (Date.now() - start < 1000) {
+                                // Simple blocking delay
+                            }
+                        } catch (refreshError) {
+                            console.log('⚠️  PATH refresh failed, but continuing with verification');
+                        }
+                    }
+
+                    // Verify installation
+                    try {
+                        execSync('ffmpeg -version', { stdio: 'ignore', timeout: 5000 });
+                        console.log(`✅ ffmpeg successfully installed via ${method.name}`);
+                        return true;
+                    } catch (verifyError) {
+                        console.log(`⚠️  Installation completed but ffmpeg not found in PATH`);
+                        console.log('💡 Try restarting your terminal or VS Code to refresh PATH');
+
+                        // If it's winget and verification failed, suggest manual PATH refresh
+                        if (method.name.includes('winget')) {
+                            console.log('🔧 Quick fix: Run this command in your terminal:');
+                            console.log('   $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("PATH","User")');
+                        }
+                        continue;
+                    }
+                } catch (installError) {
+                    console.log(`❌ ${method.name} installation failed, trying next method...`);
+                    continue;
+                }
+            }
+
+            // If automatic installation failed, provide manual instructions
+            console.log('\n🔧 Automatic installation failed. Manual installation required:');
+            console.log('');
+            console.log('Method 1 - Download directly:');
+            console.log('1. Visit: https://ffmpeg.org/download.html#build-windows');
+            console.log('2. Download the "Windows builds by BtbN" release');
+            console.log('3. Extract to C:\\ffmpeg\\');
+            console.log('4. Add C:\\ffmpeg\\bin to your system PATH');
+            console.log('');
+            console.log('Method 2 - Use package managers:');
+            console.log('• Windows Package Manager: winget install ffmpeg');
+            console.log('• Chocolatey: choco install ffmpeg');
+            console.log('• Scoop: scoop install ffmpeg');
+            console.log('');
+            console.log('Method 3 - Portable version:');
+            console.log('1. Download: https://www.gyan.dev/ffmpeg/builds/');
+            console.log('2. Extract anywhere and add bin folder to PATH');
+            console.log('');
+            console.log('📝 Note: If you installed ffmpeg but it\'s not found:');
+            console.log('   • Restart your terminal/VS Code to refresh PATH');
+            console.log('   • Or run: $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("PATH","User")');
+            console.log('');
+            console.log('⚠️  Without ffmpeg, Whisper AI will not work, but Google/Sphinx recognition will still function.');
+
+        } else if (os.platform() === 'darwin') {
+            console.log('🍎 macOS installation:');
+            console.log('Install with Homebrew: brew install ffmpeg');
+        } else {
+            console.log('🐧 Linux installation:');
+            console.log('Ubuntu/Debian: sudo apt update && sudo apt install ffmpeg');
+            console.log('CentOS/RHEL: sudo yum install ffmpeg');
+            console.log('Fedora: sudo dnf install ffmpeg');
+        }
+
+        return false;
     }
 }
 
