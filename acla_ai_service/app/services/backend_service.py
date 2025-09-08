@@ -271,21 +271,16 @@ class BackendService:
                 end_pos = min(start_pos + chunk_size, len(json_data))
                 chunk_data = json_data[start_pos:end_pos]
                 
-                # Try to parse as valid JSON if it's the complete data in one chunk
-                if total_chunks == 1:
-                    chunk_payload = serializable_data
-                else:
-                    # For multi-chunk, send the raw string chunk
-                    chunk_payload = chunk_data
+                # Always send the JSON string chunk, never the raw object
+                chunk_payload = chunk_data
                 
-                # Create chunk data structure
+                # Create chunk data structure matching ChunkData interface
                 chunk_request = {
                     "sessionId": session_id,
                     "chunkIndex": chunk_index,
                     "totalChunks": total_chunks,
                     "data": chunk_payload,
                     "metadata": {
-                        "timestamp": None,  # Will be set by backend
                         "size": len(chunk_data.encode('utf-8'))
                     }
                 }

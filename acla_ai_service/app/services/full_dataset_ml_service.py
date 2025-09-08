@@ -1532,7 +1532,6 @@ class Full_dataset_TelemetryMLService:
         
         # Get analysis summary
         analysis_summary = track_analyzer.get_cornering_analysis_summary(cornering_df)
-        return analysis_summary
         try:
             #save the info to backend
             ai_model_dto = {

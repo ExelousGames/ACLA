@@ -1000,7 +1000,7 @@ class TrackCorneringAnalyzer:
             return {"error": "No cornering phase data found. Run identify_cornering_phases first."}
         
         phase_counts = df['cornering_phase'].value_counts()
-        corner_count = df['corner_id'].nunique() - (1 if -1 in df['corner_id'].values else 0)
+        corner_count = int(df['corner_id'].nunique() - (1 if -1 in df['corner_id'].values else 0))
         
         # Calculate average metrics per phase
         phase_metrics = {}
@@ -1011,21 +1011,32 @@ class TrackCorneringAnalyzer:
                 speed_values = phase_data['Physics_speed_kmh'].dropna()
                 steering_values = np.abs(phase_data['Physics_steer_angle']).dropna()
                 
+                # Helper function to ensure JSON-safe numeric values
+                def safe_float(value):
+                    """Convert to float and handle nan/inf values"""
+                    try:
+                        result = float(value)
+                        if np.isnan(result) or np.isinf(result):
+                            return 0.0
+                        return result
+                    except (ValueError, TypeError):
+                        return 0.0
+                
                 phase_metrics[phase] = {
-                    'avg_speed': float(speed_values.mean()) if len(speed_values) > 0 else 0.0,
-                    'avg_steering': float(steering_values.mean()) if len(steering_values) > 0 else 0.0,
+                    'avg_speed': safe_float(speed_values.mean()) if len(speed_values) > 0 else 0.0,
+                    'avg_steering': safe_float(steering_values.mean()) if len(steering_values) > 0 else 0.0,
                     'data_points': int(len(phase_data))
                 }
                 
                 if 'Physics_brake' in df.columns:
                     brake_values = phase_data['Physics_brake'].dropna()
-                    phase_metrics[phase]['avg_brake'] = float(brake_values.mean()) if len(brake_values) > 0 else 0.0
+                    phase_metrics[phase]['avg_brake'] = safe_float(brake_values.mean()) if len(brake_values) > 0 else 0.0
                 else:
                     phase_metrics[phase]['avg_brake'] = 0.0
                     
                 if 'Physics_gas' in df.columns:
                     throttle_values = phase_data['Physics_gas'].dropna()
-                    phase_metrics[phase]['avg_throttle'] = float(throttle_values.mean()) if len(throttle_values) > 0 else 0.0
+                    phase_metrics[phase]['avg_throttle'] = safe_float(throttle_values.mean()) if len(throttle_values) > 0 else 0.0
                 else:
                     phase_metrics[phase]['avg_throttle'] = 0.0
             else:
@@ -1040,7 +1051,7 @@ class TrackCorneringAnalyzer:
         
         # Get detailed information for each corner
         corner_details = {}
-        valid_corner_ids = [cid for cid in df['corner_id'].unique() if cid >= 0]
+        valid_corner_ids = [int(cid) for cid in df['corner_id'].unique() if cid >= 0]
         
         for corner_id in valid_corner_ids:
             corner_data = df[df['corner_id'] == corner_id].copy()
@@ -1051,15 +1062,26 @@ class TrackCorneringAnalyzer:
             corner_details[f"corner_{corner_id}"] = self._get_corner_phase_details(corner_data)
         
         return {
-            'total_corners_detected': int(corner_count),
+            'total_corners_detected': corner_count,
             'phase_distribution': {str(k): int(v) for k, v in phase_counts.to_dict().items()},
             'phase_metrics': phase_metrics,
-            'corner_ids': [int(cid) for cid in sorted(valid_corner_ids)],
+            'corner_ids': sorted(valid_corner_ids),
             'corner_details': corner_details
         }
     
     def _get_corner_phase_details(self, corner_data: pd.DataFrame) -> Dict[str, Any]:
         """Get detailed phase information for a single corner including normalized car positions"""
+        
+        # Helper function to ensure JSON-safe numeric values
+        def safe_float(value):
+            """Convert to float and handle nan/inf values"""
+            try:
+                result = float(value)
+                if np.isnan(result) or np.isinf(result):
+                    return 0.0
+                return result
+            except (ValueError, TypeError):
+                return 0.0
         
         phases = ['entry', 'turn_in', 'apex', 'acceleration', 'exit']
         corner_detail = {
@@ -1073,8 +1095,8 @@ class TrackCorneringAnalyzer:
         if 'Graphics_normalized_car_position' in corner_data.columns:
             position_data = corner_data['Graphics_normalized_car_position'].dropna()
             if len(position_data) > 0:
-                corner_detail['corner_start_position'] = float(position_data.iloc[0])
-                corner_detail['corner_end_position'] = float(position_data.iloc[-1])
+                corner_detail['corner_start_position'] = safe_float(position_data.iloc[0])
+                corner_detail['corner_end_position'] = safe_float(position_data.iloc[-1])
         
         # Get detailed information for each phase
         for phase in phases:
@@ -1098,10 +1120,10 @@ class TrackCorneringAnalyzer:
                         # Estimate position based on phase order within corner
                         phase_order = {'entry': 0.1, 'turn_in': 0.3, 'apex': 0.5, 'acceleration': 0.7, 'exit': 0.9}
                         if phase in phase_order:
-                            start_pos = float(total_corner_positions.iloc[0])
-                            end_pos = float(total_corner_positions.iloc[-1])
+                            start_pos = safe_float(total_corner_positions.iloc[0])
+                            end_pos = safe_float(total_corner_positions.iloc[-1])
                             estimated_pos = start_pos + (end_pos - start_pos) * phase_order[phase]
-                            phase_info['normalized_car_position'] = float(estimated_pos)
+                            phase_info['normalized_car_position'] = safe_float(estimated_pos)
                 
                 corner_detail['phases'][phase] = phase_info
                 continue
@@ -1110,12 +1132,12 @@ class TrackCorneringAnalyzer:
             if 'Physics_speed_kmh' in phase_data.columns:
                 speed_values = phase_data['Physics_speed_kmh'].dropna()
                 if len(speed_values) > 0:
-                    phase_info['avg_speed'] = float(speed_values.mean())
+                    phase_info['avg_speed'] = safe_float(speed_values.mean())
             
             if 'Physics_steer_angle' in phase_data.columns:
                 steering_values = np.abs(phase_data['Physics_steer_angle']).dropna()
                 if len(steering_values) > 0:
-                    phase_info['avg_steering_angle'] = float(steering_values.mean())
+                    phase_info['avg_steering_angle'] = safe_float(steering_values.mean())
             
             # Get normalized car position for this phase - be more robust with NaN handling
             if 'Graphics_normalized_car_position' in phase_data.columns:
@@ -1125,21 +1147,21 @@ class TrackCorneringAnalyzer:
                     # Choose position based on phase type and available data
                     if phase == 'entry':
                         # For entry, use the starting position
-                        phase_info['normalized_car_position'] = float(position_values.iloc[0])
+                        phase_info['normalized_car_position'] = safe_float(position_values.iloc[0])
                     elif phase == 'exit':
                         # For exit, use the ending position  
-                        phase_info['normalized_car_position'] = float(position_values.iloc[-1])
+                        phase_info['normalized_car_position'] = safe_float(position_values.iloc[-1])
                     else:
                         # For turn_in, apex, acceleration - use middle position
                         if len(position_values) >= 3:
                             mid_idx = len(position_values) // 2
-                            phase_info['normalized_car_position'] = float(position_values.iloc[mid_idx])
+                            phase_info['normalized_car_position'] = safe_float(position_values.iloc[mid_idx])
                         elif len(position_values) == 2:
                             # If only 2 points, average them
-                            phase_info['normalized_car_position'] = float(position_values.mean())
+                            phase_info['normalized_car_position'] = safe_float(position_values.mean())
                         else:
                             # If only 1 point, use it
-                            phase_info['normalized_car_position'] = float(position_values.iloc[0])
+                            phase_info['normalized_car_position'] = safe_float(position_values.iloc[0])
                 else:
                     # If no position data for this phase, try to estimate from overall corner
                     total_corner_positions = corner_data['Graphics_normalized_car_position'].dropna()
@@ -1154,21 +1176,21 @@ class TrackCorneringAnalyzer:
                             phase_relative_pos = (phase_indices[len(phase_indices)//2] - corner_start_idx) / (corner_end_idx - corner_start_idx)
                             
                             # Interpolate position
-                            start_pos = float(total_corner_positions.iloc[0])
-                            end_pos = float(total_corner_positions.iloc[-1])
+                            start_pos = safe_float(total_corner_positions.iloc[0])
+                            end_pos = safe_float(total_corner_positions.iloc[-1])
                             interpolated_pos = start_pos + (end_pos - start_pos) * phase_relative_pos
-                            phase_info['normalized_car_position'] = float(interpolated_pos)
+                            phase_info['normalized_car_position'] = safe_float(interpolated_pos)
             
             # Add brake and throttle data if available
             if 'Physics_brake' in phase_data.columns:
                 brake_values = phase_data['Physics_brake'].dropna()
                 if len(brake_values) > 0:
-                    phase_info['avg_brake'] = float(brake_values.mean())
+                    phase_info['avg_brake'] = safe_float(brake_values.mean())
                 
             if 'Physics_gas' in phase_data.columns:
                 throttle_values = phase_data['Physics_gas'].dropna()
                 if len(throttle_values) > 0:
-                    phase_info['avg_throttle'] = float(throttle_values.mean())
+                    phase_info['avg_throttle'] = safe_float(throttle_values.mean())
             
             corner_detail['phases'][phase] = phase_info
         
