@@ -6,16 +6,16 @@ import { ObjectId } from 'mongodb';
 @Schema({ timestamps: true })
 export class AIModel {
 
-    @Prop({ required: true })
+    @Prop()
     trackName: string;
 
-    @Prop({ required: true })
+    @Prop()
     carName: string;
 
     @Prop({ required: true })
     modelType: string; // lap_time_prediction, sector_time_optimization, etc.
 
-    @Prop({ type: MongooseSchema.Types.ObjectId })
+    @Prop({ type: MongooseSchema.Types.ObjectId, required: true })
     modelDataFileId: ObjectId; // GridFS file ID for model data
 
     @Prop({ type: MongooseSchema.Types.Mixed })
@@ -29,5 +29,5 @@ export class AIModel {
 export const AIModelSchema = SchemaFactory.createForClass(AIModel);
 
 // Create compound indexes for efficient queries
-AIModelSchema.index({ trackName: 1, carName: 1, modelType: 1, isActive: 1 });
+AIModelSchema.index({ modelType: 1, isActive: 1 });
 

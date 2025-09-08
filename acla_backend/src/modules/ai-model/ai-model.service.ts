@@ -175,20 +175,25 @@ export class AiModelService {
     }
 
     // Helper to get the currently active model for a given track, car, and type
-    async getActiveModel(trackName: string, carName: string, modelType: string): Promise<AIModel> {
+    async getActiveModel(trackName?: string, carName?: string, modelType?: string): Promise<AIModel> {
+        const query: any = { isActive: true };
+        
+        if (trackName) query.trackName = trackName;
+        if (carName) query.carName = carName;
+        if (modelType) query.modelType = modelType;
+
         const model = await this.aiModelModel
-            .findOne({
-                trackName,
-                carName,
-                modelType,
-                isActive: true
-            })
+            .findOne(query)
             .exec();
 
         if (!model) {
-            throw new NotFoundException(
-                `Active AI Model not found for track: ${trackName}, car: ${carName}, type: ${modelType}`
-            );
+            const filterParts: string[] = [];
+            if (trackName) filterParts.push(`track: ${trackName}`);
+            if (carName) filterParts.push(`car: ${carName}`);
+            if (modelType) filterParts.push(`type: ${modelType}`);
+            
+            const filterDescription = filterParts.length > 0 ? ` for ${filterParts.join(', ')}` : '';
+            throw new NotFoundException(`Active AI Model not found${filterDescription}`);
         }
         return model;
     }
@@ -201,7 +206,7 @@ export class AiModelService {
      * @param modelType 
      * @returns 
      */
-    async getActiveModelWithData(trackName: string, carName: string, modelType: string): Promise<any> {
+    async getActiveModelWithData(trackName?: string, carName?: string, modelType?: string): Promise<any> {
         const model = await this.getActiveModel(trackName, carName, modelType);
         const modelId = (model as any)._id.toString();
         return this.findOneWithModelData(modelId);
@@ -232,100 +237,104 @@ export class AiModelService {
     }
 
 
-    async save_imitation_learning_results(updateAiModelDto: UpdateAiModelDto): Promise<any> {
-        const { trackName, carName } = updateAiModelDto;
-        if (!trackName || !carName) {
-            throw new InternalServerErrorException("Missing trackName or carName in results");
-        }
-
-        const existingEntry = await this.aiModelModel.findOne({
-            carName: updateAiModelDto.carName,
-            trackName: updateAiModelDto.trackName,
-            modelType: updateAiModelDto.modelType,
-            isActive: true
-        });
+    async save_ai_model(updateAiModelDto: UpdateAiModelDto): Promise<any> {
+        const existingEntry = await this.findActiveModel(updateAiModelDto);
 
         if (existingEntry) {
-            // Update existing entry
-            let modelDataFileId = existingEntry.modelDataFileId;
-
-            if (updateAiModelDto.modelData) {
-                // Delete old file if it exists
-                if (modelDataFileId) {
-                    try {
-                        await this.gridfsService.deleteFile(modelDataFileId, GRIDFS_BUCKETS.AI_MODELS);
-                    } catch (error) {
-                        console.error(`Error deleting old model data from GridFS: ${error.message}`);
-                    }
-                }
-
-                // Upload new model data
-                const filename = `model_${trackName}_${carName}_${updateAiModelDto.modelType}_${Date.now()}.json`;
-
-                modelDataFileId = await this.gridfsService.uploadJSON(
-                    updateAiModelDto.modelData,
-                    filename,
-                    {
-                        trackName,
-                        carName,
-                        modelType: updateAiModelDto.modelType,
-                        uploadedAt: new Date()
-                    },
-                    GRIDFS_BUCKETS.AI_MODELS
-                );
-            }
-
-            await this.aiModelModel.updateOne(
-                { _id: existingEntry._id },
-                {
-                    $set: {
-                        modelDataFileId: modelDataFileId,
-                        metadata: updateAiModelDto.metadata
-                    }
-                }
-            );
-            return { updated: true };
+            return await this.updateExistingModel(existingEntry, updateAiModelDto);
         } else {
-            // Create new entry
-            const { modelData, metadata } = updateAiModelDto;
-            if (!modelData) {
-                throw new InternalServerErrorException("Incomplete imitation learning results");
-            }
+            return await this.createNewModel(updateAiModelDto);
+        }
+    }
 
-            try {
-                let modelDataFileId: ObjectId | undefined;
+    private async findActiveModel(dto: UpdateAiModelDto): Promise<AIModel | null> {
+        const query: any = { isActive: true };
+        if (dto.modelType) query.modelType = dto.modelType;
+        if (dto.trackName) query.trackName = dto.trackName;
+        if (dto.carName) query.carName = dto.carName;
 
-                if (modelData) {
-                    const filename = `model_${trackName}_${carName}_${updateAiModelDto.modelType}_${Date.now()}.json`;
+        return await this.aiModelModel.findOne(query);
+    }
 
-                    modelDataFileId = await this.gridfsService.uploadJSON(
-                        modelData,
-                        filename,
-                        {
-                            trackName,
-                            carName,
-                            modelType: updateAiModelDto.modelType,
-                            uploadedAt: new Date()
-                        },
-                        GRIDFS_BUCKETS.AI_MODELS
-                    );
+    private async updateExistingModel(existingEntry: AIModel, updateDto: UpdateAiModelDto): Promise<any> {
+        let modelDataFileId = existingEntry.modelDataFileId;
+
+        if (updateDto.modelData) {
+            modelDataFileId = await this.replaceModelData(
+                existingEntry.modelDataFileId,
+                updateDto.modelData,
+                updateDto
+            );
+        }
+
+        await this.aiModelModel.updateOne(
+            { _id: (existingEntry as any)._id },
+            {
+                $set: {
+                    modelDataFileId: modelDataFileId,
+                    metadata: updateDto.metadata
                 }
+            }
+        );
 
-                const createdEntry = new this.aiModelModel({
-                    trackName,
-                    carName,
-                    modelType: updateAiModelDto.modelType,
-                    modelDataFileId,
-                    metadata,
-                    isActive: true
-                });
-                return createdEntry.save();
+        return { updated: true };
+    }
 
+    private async createNewModel(updateDto: UpdateAiModelDto): Promise<AIModel> {
+        if (!updateDto.modelData) {
+            throw new InternalServerErrorException("Incomplete imitation learning results");
+        }
+
+        try {
+            const modelDataFileId = await this.uploadModelData(updateDto.modelData, updateDto);
+
+            const createdEntry = new this.aiModelModel({
+                trackName: updateDto.trackName,
+                carName: updateDto.carName,
+                modelType: updateDto.modelType,
+                modelDataFileId,
+                metadata: updateDto.metadata,
+                isActive: true
+            });
+
+            return createdEntry.save();
+        } catch (error) {
+            console.error("Error saving imitation learning results:", error);
+            throw new InternalServerErrorException("Failed to save imitation learning results");
+        }
+    }
+
+    private async replaceModelData(
+        oldFileId: ObjectId | undefined,
+        newModelData: any,
+        dto: UpdateAiModelDto
+    ): Promise<ObjectId> {
+        // Delete old file if it exists
+        if (oldFileId) {
+            try {
+                await this.gridfsService.deleteFile(oldFileId, GRIDFS_BUCKETS.AI_MODELS);
             } catch (error) {
-                console.error("Error saving imitation learning results:", error);
-                throw new InternalServerErrorException("Failed to save imitation learning results");
+                console.error(`Error deleting old model data from GridFS: ${error.message}`);
             }
         }
+
+        return await this.uploadModelData(newModelData, dto);
+    }
+
+    private async uploadModelData(modelData: any, dto: UpdateAiModelDto): Promise<ObjectId> {
+        const filename = `model_${dto.trackName || 'unknown'}_${dto.carName || 'unknown'}_${dto.modelType}_${Date.now()}.json`;
+
+        return await this.gridfsService.uploadJSON(
+            modelData,
+            filename,
+            {
+                trackName: dto.trackName,
+                carName: dto.carName,
+                modelType: dto.modelType,
+                uploadedAt: new Date()
+            },
+            GRIDFS_BUCKETS.AI_MODELS
+        );
     }
 
     // Additional methods for different GridFS collections
