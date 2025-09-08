@@ -80,15 +80,23 @@ export class RacingSessionService {
 
     /**
      * Retrieves metadata for all racing sessions with chunking information
-     * @param trackName - Track name to filter sessions
-     * @param carName - Car name to filter sessions  
+     * @param trackName - Track name to filter sessions (optional)
+     * @param carName - Car name to filter sessions (optional)
      * @param chunkSize - Size of each data chunk (default: 1000)
      * @returns Session metadata with chunking info
      */
-    async initializeSessionsDownload(trackName: string, carName: string, chunkSize: number = 1000): Promise<AllSessionsInitResponseDto> {
+    async initializeSessionsDownload(trackName?: string, carName?: string, chunkSize: number = 1000): Promise<AllSessionsInitResponseDto> {
         try {
+            // Build filter object dynamically based on provided parameters
+            const filter: any = {};
+            if (trackName) {
+                filter.map = trackName;
+            }
+            if (carName) {
+                filter.car_name = carName;
+            }
 
-            const sessions = await this.racingSession.find({ 'map': trackName, 'car_name': carName })
+            const sessions = await this.racingSession.find(filter)
                 .exec();
 
             const sessionMetadata = sessions.map(session => {

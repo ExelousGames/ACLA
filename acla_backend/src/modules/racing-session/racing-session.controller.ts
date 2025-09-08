@@ -49,7 +49,7 @@ export class RacingSessionController {
     @Post('download/init')
     async initializeSessionsDownload(
         @Request() req,
-        @Body() body: { trackName: string, carName: string, chunkSize?: number }
+        @Body() body: { trackName?: string, carName?: string, chunkSize?: number }
     ): Promise<AllSessionsInitResponseDto> {
         try {
             const chunkSize = body.chunkSize || 1000; // Default chunk size

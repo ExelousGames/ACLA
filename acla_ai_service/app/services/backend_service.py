@@ -152,7 +152,7 @@ class BackendService:
         except Exception as e:
             raise Exception(f"Backend function call failed: {str(e)}")
 
-    async def get_all_racing_sessions(self, trackName: str, carName: str, chunk_size: int = 1000) -> Dict[str, Any]:
+    async def get_all_racing_sessions(self, trackName: Optional[str] = None, carName: Optional[str] = None, chunk_size: int = 1000) -> Dict[str, Any]:
         """Get all racing sessions from all users in the database"""
         try:
             # Initialize the download to get metadata about all sessions
@@ -308,16 +308,16 @@ class BackendService:
             logger.error(f"❌ Failed to send chunked data: {str(e)}")
             raise
 
-    async def save_imitation_learning_results(self, results: Dict[str, Any]) -> Dict[str, Any]:
-        """Save imitation learning results to backend using chunked transfer"""
-        print("[INFO] Saving imitation learning results to backend...")
-        logger.info("Saving imitation learning results to backend...")
-        
-        try: 
+    async def save_ai_model(self, results: Dict[str, Any]) -> Dict[str, Any]:
+        """Save AI model results to backend using chunked transfer"""
+        print("[INFO] Saving AI model results to backend...")
+        logger.info("Saving AI model results to backend...")
+
+        try:
             # Use chunked upload for large data
             response = await self.send_chunked_data(
                 data=results, 
-                endpoint="ai-model/imitation-learning/save",
+                endpoint="ai-model/save",
                 chunk_size=512 * 1024  # 512KB chunks
             )
             

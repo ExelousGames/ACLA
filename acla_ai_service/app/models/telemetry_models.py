@@ -824,7 +824,6 @@ class FeatureProcessor:
                 try:
                     # Convert time strings to numeric values where possible
                     df[field + '_numeric'] = df[field].apply(self._parse_time_string)
-                    print(f"[DEBUG] Converted {field} to numeric")
                 except Exception as e:
                     print(f"[DEBUG] Error converting {field}: {str(e)}")
         

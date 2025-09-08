@@ -1,26 +1,19 @@
 export class CreateAiModelDto {
-    trackName: string;
-    carName: string;
+    trackName?: string;
+    carName?: string;
     modelType: string;
-    targetVariable: string[];
-    modelData?: string; // Optional since it will be stored in GridFS
-    trainingMetrics?: Record<string, any>;
-    samplesProcessed?: number;
-    featureNames: string[];
-    modelVersion?: string;
-    recommendations?: string[];
-    dataQualityScore?: number;
-    timestamp?: string;
+    modelData: any;
+    metadata?: any;
     isActive?: boolean;
 }
 
 export class UpdateAiModelDto {
-    trackName: string;
-    carName: string;
-    modelType: string; // lap_time_prediction, sector_time_optimization, etc.
-    modelData?: any; // Optional since it will be stored in GridFS
-    metadata: any;
-    isActive: boolean; // Whether this model version is active
+    trackName?: string;
+    carName?: string;
+    modelType?: string;
+    modelData?: any;
+    metadata?: any;
+    isActive?: boolean;
 }
 
 

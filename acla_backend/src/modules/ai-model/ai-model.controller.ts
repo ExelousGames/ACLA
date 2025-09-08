@@ -55,16 +55,16 @@ export class AiModelController {
      * Prepare the active model data for chunked transfer (returns session info only).
      * This is the recommended way to handle large model data.
      * Use this endpoint followed by individual calls to /chunked-data/:sessionId/:chunkIndex
-     * @param trackName 
-     * @param carName 
-     * @param modelType 
+     * @param modelType Required - The type of model to retrieve
+     * @param trackName Optional - The track name to filter by (query parameter)
+     * @param carName Optional - The car name to filter by (query parameter)
      * @returns Session information for chunked transfer
      */
-    @Get('active/:trackName/:carName/:modelType/prepare-chunked')
+    @Get('active/:modelType/prepare-chunked')
     async initGetActiveModelData(
-        @Param('trackName') trackName: string,
-        @Param('carName') carName: string,
-        @Param('modelType') modelType: string
+        @Param('modelType') modelType: string,
+        @Query('trackName') trackName?: string,
+        @Query('carName') carName?: string
     ) {
         const modelData = await this.aiModelService.getActiveModelWithData(trackName, carName, modelType);
         const result = await this.chunkService.prepareDataForChunkedSending(modelData);
@@ -124,13 +124,13 @@ export class AiModelController {
         return this.aiModelService.activateModel(id);
     }
 
-    @Post('imitation-learning/save')
-    async save_imitation_learning_results(@Body() chunkData: ChunkData) {
+    @Post('save')
+    async save_one_ai_model(@Body() chunkData: ChunkData) {
         return this.chunkService.handleIncomingChunk(
             chunkData,
             async (completeData: UpdateAiModelDto) => {
                 console.log("Processing complete imitation learning data");
-                return this.aiModelService.save_imitation_learning_results(completeData);
+                return this.aiModelService.save_ai_model(completeData);
             }
         );
     }
