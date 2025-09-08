@@ -7,7 +7,7 @@ from typing import Dict, Any, List, Optional
 from httpx import request
 from pydantic import BaseModel
 import asyncio
-from app.services.scikit_ml_service import TelemetryMLService
+from app.services.full_dataset_ml_service import Full_dataset_TelemetryMLService
 from app.services.telemetry_service import TelemetryService
 
 router = APIRouter(prefix="/racing-session", tags=["racing-session"])
@@ -55,7 +55,7 @@ class ImitationPredictRequest(BaseModel):
     
 # Initialize telemetry service
 telemetry_service = TelemetryService()
-telemetryMLService = TelemetryMLService()
+telemetryMLService = Full_dataset_TelemetryMLService()
 
 @router.post("/train-model")
 async def train_ai_model(request: TrainingRequest) -> Dict[str, Any]:
@@ -208,8 +208,7 @@ async def get_imitation_learning_expert_guidance(request: ImitationPredictReques
                 carName=request.car_name,
                 guidance_type=request.guidance_type,
             )
-        
-            print(f"Imitation learning guidance result: {result}")
+
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Error in expert guidance service: {str(e)}")
         

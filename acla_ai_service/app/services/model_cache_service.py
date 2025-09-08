@@ -106,6 +106,8 @@ class ModelCacheService:
         
         # Thread-safe cache storage using OrderedDict for LRU
         self._cache: OrderedDict[str, CacheEntry] = OrderedDict()
+        
+        # Lock for thread safety
         self._lock = threading.RLock()
         
         # Cache statistics
@@ -300,10 +302,14 @@ class ModelCacheService:
         Returns:
             Tuple of (model_data, metadata) if found, None otherwise
         """
+        
+        # Generate cache key
         cache_key = self._generate_cache_key(
             model_type, track_name, car_name, model_subtype, additional_params
         )
         
+        
+        # The with statement in Python is used for resource management, ensuring that resources are properly acquired and released, even 
         with self._lock:
             if cache_key not in self._cache:
                 self._stats['misses'] += 1

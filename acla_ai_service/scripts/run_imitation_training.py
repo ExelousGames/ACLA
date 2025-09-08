@@ -17,7 +17,7 @@ parent_dir = current_dir.parent
 sys.path.insert(0, str(parent_dir))
 
 # Import the TelemetryMLService
-from app.services.scikit_ml_service import TelemetryMLService
+from app.services.full_dataset_ml_service import Full_dataset_TelemetryMLService
 
 
 async def main():
@@ -32,7 +32,7 @@ async def main():
         # Initialize the TelemetryMLService
         print("[INFO] Initializing TelemetryMLService...")
         models_directory = os.path.join(parent_dir, "models")
-        ml_service = TelemetryMLService(models_directory=models_directory)
+        ml_service = Full_dataset_TelemetryMLService(models_directory=models_directory)
         
         print("[INFO] Starting imitation learning training...")
         print("[INFO] This will:")
