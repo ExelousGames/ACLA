@@ -136,15 +136,15 @@ class TrackCorneringAnalyzer:
                 # More lenient minimum duration check
                 if corner_end - corner_start > max(10, self.min_corner_duration // 2):
                     # Get position data if available
-                    position_start = None
-                    position_end = None
+                    position_start = 0.0
+                    position_end = 0.0
                     
                     if 'Graphics_normalized_car_position' in df.columns:
                         pos_col = df['Graphics_normalized_car_position']
                         if not pd.isna(pos_col.iloc[corner_start]):
-                            position_start = pos_col.iloc[corner_start]
+                            position_start = float(pos_col.iloc[corner_start])
                         if not pd.isna(pos_col.iloc[corner_end]):
-                            position_end = pos_col.iloc[corner_end]
+                            position_end = float(pos_col.iloc[corner_end])
                     
                     corners[corner_id] = {
                         'start_idx': corner_start,
@@ -164,15 +164,15 @@ class TrackCorneringAnalyzer:
         # Handle corner that continues to end of data
         if in_corner_section and len(df) - corner_start > max(10, self.min_corner_duration // 2):
             corner_end = len(df) - 1
-            position_start = None
-            position_end = None
+            position_start = 0.0
+            position_end = 0.0
             
             if 'Graphics_normalized_car_position' in df.columns:
                 pos_col = df['Graphics_normalized_car_position']
                 if not pd.isna(pos_col.iloc[corner_start]):
-                    position_start = pos_col.iloc[corner_start]
+                    position_start = float(pos_col.iloc[corner_start])
                 if not pd.isna(pos_col.iloc[corner_end]):
-                    position_end = pos_col.iloc[corner_end]
+                    position_end = float(pos_col.iloc[corner_end])
             
             corners[corner_id] = {
                 'start_idx': corner_start,
@@ -345,15 +345,15 @@ class TrackCorneringAnalyzer:
             # Validate this is actually a corner using additional checks
             if self._is_valid_corner_region(df, extended_start, extended_end, steering_abs, speed):
                 # Get position data if available
-                position_start = None
-                position_end = None
+                position_start = 0.0
+                position_end = 0.0
                 
                 if 'Graphics_normalized_car_position' in df.columns:
                     pos_col = df['Graphics_normalized_car_position']
                     if not pd.isna(pos_col.iloc[extended_start]):
-                        position_start = pos_col.iloc[extended_start]
+                        position_start = float(pos_col.iloc[extended_start])
                     if not pd.isna(pos_col.iloc[extended_end]):
-                        position_end = pos_col.iloc[extended_end]
+                        position_end = float(pos_col.iloc[extended_end])
                 
                 max_steering_val = steering_abs.iloc[extended_start:extended_end+1].max()
                 min_speed_val = speed.iloc[extended_start:extended_end+1].min()
@@ -1012,30 +1012,30 @@ class TrackCorneringAnalyzer:
                 steering_values = np.abs(phase_data['Physics_steer_angle']).dropna()
                 
                 phase_metrics[phase] = {
-                    'avg_speed': float(speed_values.mean()) if len(speed_values) > 0 else None,
-                    'avg_steering': float(steering_values.mean()) if len(steering_values) > 0 else None,
+                    'avg_speed': float(speed_values.mean()) if len(speed_values) > 0 else 0.0,
+                    'avg_steering': float(steering_values.mean()) if len(steering_values) > 0 else 0.0,
                     'data_points': int(len(phase_data))
                 }
                 
                 if 'Physics_brake' in df.columns:
                     brake_values = phase_data['Physics_brake'].dropna()
-                    phase_metrics[phase]['avg_brake'] = float(brake_values.mean()) if len(brake_values) > 0 else None
+                    phase_metrics[phase]['avg_brake'] = float(brake_values.mean()) if len(brake_values) > 0 else 0.0
                 else:
-                    phase_metrics[phase]['avg_brake'] = None
+                    phase_metrics[phase]['avg_brake'] = 0.0
                     
                 if 'Physics_gas' in df.columns:
                     throttle_values = phase_data['Physics_gas'].dropna()
-                    phase_metrics[phase]['avg_throttle'] = float(throttle_values.mean()) if len(throttle_values) > 0 else None
+                    phase_metrics[phase]['avg_throttle'] = float(throttle_values.mean()) if len(throttle_values) > 0 else 0.0
                 else:
-                    phase_metrics[phase]['avg_throttle'] = None
+                    phase_metrics[phase]['avg_throttle'] = 0.0
             else:
-                # If no data for this phase, fill with None values (JSON-friendly)
+                # If no data for this phase, fill with default values (no None values)
                 phase_metrics[phase] = {
-                    'avg_speed': None,
-                    'avg_steering': None,
+                    'avg_speed': 0.0,
+                    'avg_steering': 0.0,
                     'data_points': 0,
-                    'avg_brake': None,
-                    'avg_throttle': None
+                    'avg_brake': 0.0,
+                    'avg_throttle': 0.0
                 }
         
         # Get detailed information for each corner
@@ -1063,8 +1063,8 @@ class TrackCorneringAnalyzer:
         
         phases = ['entry', 'turn_in', 'apex', 'acceleration', 'exit']
         corner_detail = {
-            'corner_start_position': None,
-            'corner_end_position': None,
+            'corner_start_position': 0.0,
+            'corner_end_position': 0.0,
             'total_duration_points': int(len(corner_data)),
             'phases': {}
         }
@@ -1080,14 +1080,14 @@ class TrackCorneringAnalyzer:
         for phase in phases:
             phase_data = corner_data[corner_data['cornering_phase'] == phase].copy()
             
-            # Initialize phase info with JSON-friendly None values
+            # Initialize phase info with default values (no None values)
             phase_info = {
-                'normalized_car_position': None,
-                'avg_speed': None,
-                'avg_steering_angle': None,
+                'normalized_car_position': 0.0,
+                'avg_speed': 0.0,
+                'avg_steering_angle': 0.0,
                 'duration_points': int(len(phase_data)),
-                'avg_brake': None,
-                'avg_throttle': None
+                'avg_brake': 0.0,
+                'avg_throttle': 0.0
             }
             
             if len(phase_data) == 0:
