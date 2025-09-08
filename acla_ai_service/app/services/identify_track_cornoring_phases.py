@@ -9,6 +9,13 @@ class TrackCorneringAnalyzer:
     """
     A comprehensive class for identifying and analyzing track cornering phases
     from telemetry data including steering angles, speed, and car position.
+    
+    Corner Phases Defined:
+    - Entry: Driver starts braking to slow down, preparing for trail braking
+    - Turn-in: Trail braking phase - combining braking and steering toward apex
+    - Apex: The geometric center point of the corner with minimum speed
+    - Acceleration: Driver begins throttle application after apex
+    - Exit: Full throttle application and corner exit
     """
     
     def __init__(self, steering_threshold_percentile: float = 0.7, 
@@ -116,7 +123,14 @@ class TrackCorneringAnalyzer:
         return corners
 
     def _analyze_corner_phases(self, corner_df: pd.DataFrame, corner_id: int) -> Dict[str, List[int]]:
-        """Analyze a single corner to identify Entry, Turn-in, Apex, Acceleration, Exit phases"""
+        """
+        Analyze a single corner to identify racing phases:
+        - Entry: Initial braking phase preparing for trail braking
+        - Turn-in: Trail braking (combining brake + steering) toward apex
+        - Apex: Minimum speed point at corner's geometric center
+        - Acceleration: Throttle application begins after apex
+        - Exit: Full acceleration out of corner
+        """
         
         phases = {
             'entry': [],
@@ -154,27 +168,33 @@ class TrackCorneringAnalyzer:
         min_speed_idx = max(0, min(len(corner_df) - 1, min_speed_idx))
         max_steering_idx = max(0, min(len(corner_df) - 1, max_steering_idx))
         
-        # Phase 1: Entry (start until significant braking ends)
+        # Phase 1: Entry (driver starts braking to slow down, preparing for trail braking)
         entry_end = self._find_entry_phase_end(corner_df, brake_data, speed_smooth)
         # Ensure entry phase has at least some data points
         entry_end = max(entry_end, 3)  # Minimum 3 points for entry
         phases['entry'] = list(range(0, min(entry_end, len(corner_df))))
         
-        # Phase 2: Turn-in (end of entry until apex)
+        # Phase 2: Turn-in (trail braking - combining braking and steering toward apex)
         turn_in_start = max(entry_end, 0)
-        apex_idx = self._find_apex_index(corner_df, min_speed_idx, max_steering_idx)
-        # Ensure turn-in phase exists
-        if apex_idx <= turn_in_start:
-            apex_idx = turn_in_start + max(3, (len(corner_df) - turn_in_start) // 4)
-        phases['turn_in'] = list(range(turn_in_start, min(apex_idx, len(corner_df))))
+        turn_in_end = self._find_turn_in_phase_end(corner_df, brake_data, steering_abs, turn_in_start)
         
-        # Phase 3: Apex (around minimum speed point)
+        # Ensure turn-in phase exists and doesn't exceed reasonable bounds
+        if turn_in_end <= turn_in_start:
+            turn_in_end = turn_in_start + max(3, (len(corner_df) - turn_in_start) // 4)
+        
+        phases['turn_in'] = list(range(turn_in_start, min(turn_in_end, len(corner_df))))
+        
+        # Phase 3: Apex (around minimum speed point - the geometric center of the corner)
+        apex_idx = self._find_apex_index(corner_df, min_speed_idx, max_steering_idx)
         apex_window = max(3, len(corner_df) // 10)  # Dynamic window size
-        apex_start = max(0, apex_idx - apex_window // 2)
+        apex_start = max(turn_in_end, apex_idx - apex_window // 2)  # Start from end of turn-in
         apex_end = min(len(corner_df), apex_idx + apex_window // 2)
-        # Ensure apex doesn't overlap too much with turn_in
-        apex_start = max(apex_start, turn_in_start + len(phases['turn_in']) - 1)
-        phases['apex'] = list(range(apex_start, apex_end))
+        
+        # Ensure apex phase has minimum size
+        if apex_end <= apex_start:
+            apex_end = apex_start + max(3, len(corner_df) // 15)
+        
+        phases['apex'] = list(range(apex_start, min(apex_end, len(corner_df))))
         
         # Phase 4: Acceleration (apex end until throttle application stabilizes)
         accel_start = apex_end
@@ -237,26 +257,83 @@ class TrackCorneringAnalyzer:
         return phases
 
     def _find_entry_phase_end(self, corner_df: pd.DataFrame, brake_data: pd.Series, speed_smooth: pd.Series) -> int:
-        """Find where entry phase ends (typically when heavy braking stops)"""
+        """Find where entry phase ends - when driver transitions from initial braking to trail braking"""
         
-        # Look for significant braking
-        brake_threshold = brake_data.quantile(0.8) if brake_data.max() > 0 else 0
+        # Entry phase: driver starts braking to slow down, preparing for trail braking
+        # This ends when significant steering input begins (transition to turn_in/trail braking)
         
-        if brake_threshold > 0:
-            # Find last point of significant braking
-            significant_braking = brake_data > brake_threshold
-            if significant_braking.any():
-                last_brake_idx = significant_braking[::-1].idxmax()  # Last occurrence
-                return max(5, last_brake_idx - corner_df.index[0] + 3)
+        steering_abs = np.abs(corner_df['Physics_steer_angle'])
         
-        # Fallback: use speed reduction pattern
-        speed_diff = speed_smooth.diff()
-        # Find where speed stops decreasing significantly
-        for i in range(5, len(speed_diff) - 5):
-            if speed_diff.iloc[i:i+5].mean() > -0.5:  # Speed stabilizing
-                return i
+        # Find when steering input becomes significant (start of trail braking)
+        steering_threshold = steering_abs.quantile(0.3)  # Lower threshold for initial steering input
         
-        return len(corner_df) // 4  # Fallback to 25% of corner
+        # Look for sustained steering input (not just momentary)
+        steering_window = 3
+        significant_steering = steering_abs.rolling(window=steering_window).mean() > steering_threshold
+        
+        # Find first point where sustained steering begins
+        if significant_steering.any():
+            first_steering_idx = significant_steering.idxmax() - corner_df.index[0]
+            # Entry phase ends just before significant steering input begins
+            entry_end = max(3, first_steering_idx - 2)  # Minimum 3 points for entry
+        else:
+            # Fallback: use brake pressure pattern if no clear steering signal
+            brake_threshold = brake_data.quantile(0.6) if brake_data.max() > 0 else 0
+            
+            if brake_threshold > 0:
+                # Find when brake pressure stabilizes (end of initial braking phase)
+                brake_diff = brake_data.diff().abs()
+                stable_brake_threshold = brake_diff.quantile(0.3)
+                
+                for i in range(5, len(brake_data) - 3):
+                    if brake_diff.iloc[i:i+3].mean() < stable_brake_threshold and brake_data.iloc[i] > brake_threshold:
+                        return i
+            
+            # Ultimate fallback
+            entry_end = len(corner_df) // 4
+        
+        return min(entry_end, len(corner_df) - 5)  # Ensure we leave room for other phases
+
+    def _find_turn_in_phase_end(self, corner_df: pd.DataFrame, brake_data: pd.Series, steering_abs: pd.Series, start_idx: int) -> int:
+        """Find where turn-in phase ends - when trail braking transitions to pure cornering at apex"""
+        
+        # Turn-in phase: trail braking (combining braking and steering)
+        # This ends when braking significantly reduces and we approach the apex
+        
+        if start_idx >= len(corner_df) - 5:
+            return len(corner_df)
+        
+        # Look for the point where braking pressure drops significantly
+        # while steering is maintained (end of trail braking)
+        brake_section = brake_data.iloc[start_idx:]
+        steering_section = steering_abs.iloc[start_idx:]
+        
+        if len(brake_section) < 5:
+            return len(corner_df)
+        
+        # Find where brake pressure drops while steering is still significant
+        brake_threshold = brake_section.quantile(0.4)  # Moderate braking threshold
+        steering_threshold = steering_section.quantile(0.7)  # High steering threshold
+        
+        # Look for the transition point
+        for i in range(3, len(brake_section) - 2):
+            current_brake = brake_section.iloc[i:i+3].mean()
+            current_steering = steering_section.iloc[i:i+3].mean()
+            
+            # Trail braking ends when brake pressure drops significantly
+            # but steering remains high (approaching apex)
+            if current_brake < brake_threshold and current_steering > steering_threshold:
+                return start_idx + i
+        
+        # Fallback: use speed minimum as indicator of apex approach
+        speed_section = corner_df['Physics_speed_kmh'].iloc[start_idx:]
+        min_speed_relative_idx = speed_section.idxmin() - corner_df.index[start_idx]
+        
+        if min_speed_relative_idx > 5:
+            return start_idx + min_speed_relative_idx
+        
+        # Ultimate fallback
+        return start_idx + max(5, len(brake_section) // 2)
 
     def _find_apex_index(self, corner_df: pd.DataFrame, min_speed_idx: int, max_steering_idx: int) -> int:
         """Find the apex point combining speed and steering information"""
@@ -295,9 +372,7 @@ class TrackCorneringAnalyzer:
                 if throttle_diff.iloc[i:i+3].mean() < steady_threshold:
                     return start_idx + i
         
-        # Fallback: use remaining 70% of corner for accel + exit
-        remaining_length = len(corner_df) - start_idx
-        return start_idx + int(remaining_length * 0.7)
+        return len(corner_df)
 
     def _resolve_phase_overlaps(self, phases: Dict[str, List[int]], total_length: int) -> Dict[str, List[int]]:
         """Resolve any overlapping phase assignments"""
@@ -334,7 +409,7 @@ class TrackCorneringAnalyzer:
         has_valid_lap_column = 'Graphics_is_valid_lap' in working_df.columns
         if not has_valid_lap_column:
             print("[WARNING] Graphics_is_valid_lap column not found, cannot validate lap quality - returning all data")
-            return working_df
+            return pd.DataFrame()
         else:
             print(f"[INFO] Found Graphics_is_valid_lap column, will filter laps by validity percentage")
         
@@ -345,11 +420,7 @@ class TrackCorneringAnalyzer:
         
         # Only proceed if we have both fields - return empty data otherwise
         if not (has_completed_lap and has_position):
-            print("[WARNING] Lap filtering requires both Graphics_completed_lap and Graphics_normalized_car_position - returning empty DataFrame")
             return pd.DataFrame()
-        
-        # Use both completed_lap counter and position data for most accurate lap detection
-        print("[INFO] Using both Graphics_completed_lap and Graphics_normalized_car_position for lap detection")
         
         completed_laps = working_df['Graphics_completed_lap'].fillna(0)
         position = working_df['Graphics_normalized_car_position'].fillna(0)
@@ -401,14 +472,8 @@ class TrackCorneringAnalyzer:
                 lap_data.append(lap_df)
         
         if not lap_times:
-            print(f"[WARNING] No valid full lap times found out of {total_laps_processed} processed laps, returning empty DataFrame")
             return pd.DataFrame()
         
-        print(f"[INFO] Processed {total_laps_processed} potential laps")
-        if has_valid_lap_column:
-            print(f"[INFO] Found {full_laps_found} complete full laps with ≥{self.min_valid_percentage:.1%} valid data points")
-        else:
-            print(f"[INFO] Found {full_laps_found} complete full laps (validity checking skipped)")
         print(f"[INFO] Calculated lap times for {len(lap_times)} qualifying laps")
         print(f"[INFO] Best lap time: {min(lap_times):.3f}s, Worst: {max(lap_times):.3f}s")
         
@@ -582,16 +647,36 @@ class TrackCorneringAnalyzer:
         for phase in ['entry', 'turn_in', 'apex', 'acceleration', 'exit']:
             phase_data = df[df['cornering_phase'] == phase]
             if len(phase_data) > 0:
+                # Ensure all metrics are JSON-serializable
+                speed_values = phase_data['Physics_speed_kmh'].dropna()
+                steering_values = np.abs(phase_data['Physics_steer_angle']).dropna()
+                
                 phase_metrics[phase] = {
-                    'avg_speed': phase_data['Physics_speed_kmh'].mean(),
-                    'avg_steering': np.abs(phase_data['Physics_steer_angle']).mean(),
-                    'data_points': len(phase_data)
+                    'avg_speed': float(speed_values.mean()) if len(speed_values) > 0 else None,
+                    'avg_steering': float(steering_values.mean()) if len(steering_values) > 0 else None,
+                    'data_points': int(len(phase_data))
                 }
                 
                 if 'Physics_brake' in df.columns:
-                    phase_metrics[phase]['avg_brake'] = phase_data['Physics_brake'].mean()
+                    brake_values = phase_data['Physics_brake'].dropna()
+                    phase_metrics[phase]['avg_brake'] = float(brake_values.mean()) if len(brake_values) > 0 else None
+                else:
+                    phase_metrics[phase]['avg_brake'] = None
+                    
                 if 'Physics_gas' in df.columns:
-                    phase_metrics[phase]['avg_throttle'] = phase_data['Physics_gas'].mean()
+                    throttle_values = phase_data['Physics_gas'].dropna()
+                    phase_metrics[phase]['avg_throttle'] = float(throttle_values.mean()) if len(throttle_values) > 0 else None
+                else:
+                    phase_metrics[phase]['avg_throttle'] = None
+            else:
+                # If no data for this phase, fill with None values (JSON-friendly)
+                phase_metrics[phase] = {
+                    'avg_speed': None,
+                    'avg_steering': None,
+                    'data_points': 0,
+                    'avg_brake': None,
+                    'avg_throttle': None
+                }
         
         # Get detailed information for each corner
         corner_details = {}
@@ -606,10 +691,10 @@ class TrackCorneringAnalyzer:
             corner_details[f"corner_{corner_id}"] = self._get_corner_phase_details(corner_data)
         
         return {
-            'total_corners_detected': corner_count,
-            'phase_distribution': phase_counts.to_dict(),
+            'total_corners_detected': int(corner_count),
+            'phase_distribution': {str(k): int(v) for k, v in phase_counts.to_dict().items()},
             'phase_metrics': phase_metrics,
-            'corner_ids': sorted(valid_corner_ids),
+            'corner_ids': [int(cid) for cid in sorted(valid_corner_ids)],
             'corner_details': corner_details
         }
     
@@ -620,7 +705,7 @@ class TrackCorneringAnalyzer:
         corner_detail = {
             'corner_start_position': None,
             'corner_end_position': None,
-            'total_duration_points': len(corner_data),
+            'total_duration_points': int(len(corner_data)),
             'phases': {}
         }
         
@@ -628,19 +713,19 @@ class TrackCorneringAnalyzer:
         if 'Graphics_normalized_car_position' in corner_data.columns:
             position_data = corner_data['Graphics_normalized_car_position'].dropna()
             if len(position_data) > 0:
-                corner_detail['corner_start_position'] = position_data.iloc[0]
-                corner_detail['corner_end_position'] = position_data.iloc[-1]
+                corner_detail['corner_start_position'] = float(position_data.iloc[0])
+                corner_detail['corner_end_position'] = float(position_data.iloc[-1])
         
         # Get detailed information for each phase
         for phase in phases:
             phase_data = corner_data[corner_data['cornering_phase'] == phase].copy()
             
-            # Initialize phase info with None values
+            # Initialize phase info with JSON-friendly None values
             phase_info = {
                 'normalized_car_position': None,
                 'avg_speed': None,
                 'avg_steering_angle': None,
-                'duration_points': len(phase_data),
+                'duration_points': int(len(phase_data)),
                 'avg_brake': None,
                 'avg_throttle': None
             }
@@ -653,10 +738,10 @@ class TrackCorneringAnalyzer:
                         # Estimate position based on phase order within corner
                         phase_order = {'entry': 0.1, 'turn_in': 0.3, 'apex': 0.5, 'acceleration': 0.7, 'exit': 0.9}
                         if phase in phase_order:
-                            start_pos = total_corner_positions.iloc[0]
-                            end_pos = total_corner_positions.iloc[-1]
+                            start_pos = float(total_corner_positions.iloc[0])
+                            end_pos = float(total_corner_positions.iloc[-1])
                             estimated_pos = start_pos + (end_pos - start_pos) * phase_order[phase]
-                            phase_info['normalized_car_position'] = estimated_pos
+                            phase_info['normalized_car_position'] = float(estimated_pos)
                 
                 corner_detail['phases'][phase] = phase_info
                 continue
@@ -665,12 +750,12 @@ class TrackCorneringAnalyzer:
             if 'Physics_speed_kmh' in phase_data.columns:
                 speed_values = phase_data['Physics_speed_kmh'].dropna()
                 if len(speed_values) > 0:
-                    phase_info['avg_speed'] = speed_values.mean()
+                    phase_info['avg_speed'] = float(speed_values.mean())
             
             if 'Physics_steer_angle' in phase_data.columns:
                 steering_values = np.abs(phase_data['Physics_steer_angle']).dropna()
                 if len(steering_values) > 0:
-                    phase_info['avg_steering_angle'] = steering_values.mean()
+                    phase_info['avg_steering_angle'] = float(steering_values.mean())
             
             # Get normalized car position for this phase - be more robust with NaN handling
             if 'Graphics_normalized_car_position' in phase_data.columns:
@@ -680,21 +765,21 @@ class TrackCorneringAnalyzer:
                     # Choose position based on phase type and available data
                     if phase == 'entry':
                         # For entry, use the starting position
-                        phase_info['normalized_car_position'] = position_values.iloc[0]
+                        phase_info['normalized_car_position'] = float(position_values.iloc[0])
                     elif phase == 'exit':
                         # For exit, use the ending position  
-                        phase_info['normalized_car_position'] = position_values.iloc[-1]
+                        phase_info['normalized_car_position'] = float(position_values.iloc[-1])
                     else:
                         # For turn_in, apex, acceleration - use middle position
                         if len(position_values) >= 3:
                             mid_idx = len(position_values) // 2
-                            phase_info['normalized_car_position'] = position_values.iloc[mid_idx]
+                            phase_info['normalized_car_position'] = float(position_values.iloc[mid_idx])
                         elif len(position_values) == 2:
                             # If only 2 points, average them
-                            phase_info['normalized_car_position'] = position_values.mean()
+                            phase_info['normalized_car_position'] = float(position_values.mean())
                         else:
                             # If only 1 point, use it
-                            phase_info['normalized_car_position'] = position_values.iloc[0]
+                            phase_info['normalized_car_position'] = float(position_values.iloc[0])
                 else:
                     # If no position data for this phase, try to estimate from overall corner
                     total_corner_positions = corner_data['Graphics_normalized_car_position'].dropna()
@@ -709,20 +794,21 @@ class TrackCorneringAnalyzer:
                             phase_relative_pos = (phase_indices[len(phase_indices)//2] - corner_start_idx) / (corner_end_idx - corner_start_idx)
                             
                             # Interpolate position
-                            start_pos = total_corner_positions.iloc[0]
-                            end_pos = total_corner_positions.iloc[-1]
-                            phase_info['normalized_car_position'] = start_pos + (end_pos - start_pos) * phase_relative_pos
+                            start_pos = float(total_corner_positions.iloc[0])
+                            end_pos = float(total_corner_positions.iloc[-1])
+                            interpolated_pos = start_pos + (end_pos - start_pos) * phase_relative_pos
+                            phase_info['normalized_car_position'] = float(interpolated_pos)
             
             # Add brake and throttle data if available
             if 'Physics_brake' in phase_data.columns:
                 brake_values = phase_data['Physics_brake'].dropna()
                 if len(brake_values) > 0:
-                    phase_info['avg_brake'] = brake_values.mean()
+                    phase_info['avg_brake'] = float(brake_values.mean())
                 
             if 'Physics_gas' in phase_data.columns:
                 throttle_values = phase_data['Physics_gas'].dropna()
                 if len(throttle_values) > 0:
-                    phase_info['avg_throttle'] = throttle_values.mean()
+                    phase_info['avg_throttle'] = float(throttle_values.mean())
             
             corner_detail['phases'][phase] = phase_info
         
