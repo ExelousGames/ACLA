@@ -93,25 +93,122 @@ interface AiChatProps {
 const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) => {
     const [messages, setMessages] = useState<Message[]>([]);
     const [inputValue, setInputValue] = useState('');
+
+    // Loading and mode states
     const [isLoading, setIsLoading] = useState(false);
     const [debugMode, setDebugMode] = useState(false);
     const [imitationLearningEnabled, setImitationLearningEnabled] = useState(false);
-    const [isRecording, setIsRecording] = useState(false);
-    const [speechRecognition, setSpeechRecognition] = useState<SpeechRecognition | null>(null);
-    const [voiceError, setVoiceError] = useState<string | null>(null);
+
+    // Simplified recording state management
+    const [recording, setRecording] = useState({
+        error: null as string | null,
+        transcript: '',
+        // idle means not actively recording or processing, completed means recording completed and finished processing.
+        status: 'inactive' as 'inactive' | 'initing' | 'idle' | 'listening' | 'detected' | 'processing' | 'completed' | 'error'
+    });
+
     const [environment, setEnvironment] = useState<'electron' | 'web'>('web');
+    const [speechRecognition, setSpeechRecognition] = useState<SpeechRecognition | null>(null);
     const [electronSpeechAvailable, setElectronSpeechAvailable] = useState(false);
-    const [isCurrentInputFromVoice, setIsCurrentInputFromVoice] = useState(false);
-    const [interimTranscript, setInterimTranscript] = useState('');
-    const [finalTranscript, setFinalTranscript] = useState('');
-    const silenceTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-    const voiceTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-    const isRecordingRef = useRef<boolean>(false); // Ref to track recording state reliably
-    const lastStartAttemptRef = useRef<number>(0); // Debounce mechanism
+
+    // Helper functions for recording state management
+    const isUninteractableState = recording.status === 'initing' || recording.status === 'processing' || recording.status === 'listening';
+    const isRecordingCompleted = recording.status === 'completed';
+    const isVoiceActive = recording.status === 'listening' || recording.status === 'initing' || recording.status === 'processing';
+
+
+    const updateRecording = (updates: Partial<typeof recording>) => {
+        console.log('🎤 Recording state update:', updates);
+        setRecording(prev => {
+            const newState = { ...prev, ...updates };
+            console.log('🎤 New recording state:', newState);
+            return newState;
+        });
+    };
+
+    const resetRecording = (clearTranscript = false) => {
+        setRecording(prev => ({
+            ...prev,
+            error: null,
+            status: 'idle',
+            ...(clearTranscript && {
+                transcript: ''
+            })
+        }));
+    };
+
+    const startRecording = () => {
+        console.log('🎤 Starting recording - setting status to listening');
+        updateRecording({
+            error: null,
+            status: 'initing',
+            transcript: ''
+        });
+    };
+
+    const stopRecording = (transcript = '') => {
+        console.log('🎤 Stopping recording - setting status to idle');
+        updateRecording({
+            status: 'idle',
+            transcript
+        });
+    };
+
+    const setRecordingError = (error: string) => {
+        console.log('🎤 Recording error:', error);
+        updateRecording({
+            error,
+            status: 'error'
+        });
+    };
+
+    // Simplified refs - combine timeouts into one object
+    const timeoutRefs = useRef({
+        silence: null as NodeJS.Timeout | null,
+        voice: null as NodeJS.Timeout | null
+    });
+    const lastStartAttemptRef = useRef<number>(0);
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const inputRef = useRef<HTMLInputElement>(null);
 
     const analysisContext = useContext(AnalysisContext);
+
+    // Utility function to generate unique message IDs
+    const generateUniqueId = (prefix: string = 'msg') => {
+        return `${prefix}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    };
+
+    // Simplified utility functions
+    const resetRecordingState = (clearTranscripts = false) => {
+        resetRecording(clearTranscripts);
+    };
+
+    const clearAllTimeouts = () => {
+        Object.values(timeoutRefs.current).forEach(timeout => {
+            if (timeout) {
+                clearTimeout(timeout);
+            }
+        });
+        timeoutRefs.current = { silence: null, voice: null };
+    };
+
+    const addStatusMessage = (type: string, content: string) => {
+        const message: Message = {
+            id: generateUniqueId(type),
+            content: `🎤 ${content}`,
+            isUser: false,
+            timestamp: new Date()
+        };
+        setMessages(prev => [...prev, message]);
+    };
+
+    const handleRecordingError = (error: string, shouldShowMessage = true) => {
+        setRecordingError(error);
+        clearAllTimeouts();
+        if (shouldShowMessage) {
+            addStatusMessage('error', error);
+        }
+    };
 
     const scrollToBottom = () => {
         messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -252,6 +349,8 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
     const initializeElectronSpeechRecognition = async () => {
         try {
             if (window.electronAPI && window.electronAPI.isSpeechRecognitionAvailable) {
+
+                // Check availability
                 const available = await window.electronAPI.isSpeechRecognitionAvailable();
                 setElectronSpeechAvailable(available);
 
@@ -262,34 +361,26 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
 
                         // Handle enhanced status updates
                         if (status.status === 'listening') {
-                            setVoiceError(null);
-                            if (status.enhanced) {
-                                const listeningMessage: Message = {
-                                    id: `listening-${Date.now()}`,
-                                    content: `🎤 Enhanced listening mode activated${status.whisper ? ' with Whisper AI' : ''}...`,
-                                    isUser: false,
-                                    timestamp: new Date()
-                                };
-                                setMessages(prev => [...prev, listeningMessage]);
-                            }
+                            updateRecording({ status: 'listening', error: null });
+
                         } else if (status.status === 'speech_detected') {
-                            // Show speech detection feedback
-                            const speechMessage: Message = {
-                                id: `speech-detected-${Date.now()}`,
-                                content: '🎤 Speech detected, continuing to listen...',
-                                isUser: false,
-                                timestamp: new Date()
-                            };
-                            setMessages(prev => [...prev, speechMessage]);
+                            updateRecording({ status: 'detected', error: null });
                         } else if (status.status === 'processing') {
-                            const processingMessage: Message = {
-                                id: `processing-${Date.now()}`,
-                                content: `🎤 Processing audio${status.chunks_collected ? ` (${status.chunks_collected} segments)` : ''}...`,
-                                isUser: false,
-                                timestamp: new Date()
-                            };
-                            setMessages(prev => [...prev, processingMessage]);
+                            updateRecording({ status: 'processing', error: null });
                         }
+                        else if (status.status === 'calibrating') {
+                            updateRecording({ status: 'initing', error: null });
+                        }
+                        else if (status.status === 'ready') {
+                            updateRecording({ status: 'idle', error: null });
+                        }
+                        else if (status.status === 'initing') {
+                            updateRecording({ status: 'initing', error: null });
+                        }
+                        else if (status.status === 'idle') {
+                            updateRecording({ status: 'idle', error: null });
+                        }
+
                     });
 
                     const completeUnsubscribe = window.electronAPI.onSpeechRecognitionComplete((result) => {
@@ -319,29 +410,15 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
     };
 
     const handleElectronSpeechResult = (result: { success: boolean, transcript?: string, error?: string, method?: string, confidence?: number, enhanced?: boolean }) => {
-        setIsRecording(false);
-        isRecordingRef.current = false;
+        resetRecording();
+        clearAllTimeouts();
 
-        // Clear timeout
-        if (voiceTimeoutRef.current) {
-            clearTimeout(voiceTimeoutRef.current);
-            voiceTimeoutRef.current = null;
-        }
-
-        if (result.success && result.transcript && result.transcript.trim()) {
+        if (result.success && result.transcript?.trim()) {
             const transcript = cleanTranscript(result.transcript.trim());
-            console.log('Electron voice recognition result:', {
-                transcript,
-                method: result.method,
-                confidence: result.confidence,
-                enhanced: result.enhanced
-            });
 
-            // Only set input if we have meaningful content
             if (transcript.length > 0) {
-                // Set the input value with the transcribed text, but don't auto-send
                 setInputValue(transcript);
-                setIsCurrentInputFromVoice(true);
+                updateRecording({ status: 'completed' });
 
                 // Show recognition quality feedback
                 if (result.enhanced && result.confidence !== undefined) {
@@ -351,280 +428,148 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
                         result.method === 'google' ? 'Google' :
                             result.method === 'sphinx' ? 'Offline' : 'Unknown';
 
-                    const qualityInfo: Message = {
-                        id: `quality-${Date.now()}`,
-                        content: `🎤 ${qualityMessage} recognition using ${methodName} (${Math.round((result.confidence || 0) * 100)}% confidence)`,
-                        isUser: false,
-                        timestamp: new Date()
-                    };
-                    setMessages(prev => [...prev, qualityInfo]);
+                    addStatusMessage('quality', `${qualityMessage} recognition using ${methodName} (${Math.round((result.confidence || 0) * 100)}% confidence)`);
                 }
 
-                // Focus the input field so user can see the transcribed text
                 if (inputRef.current) {
                     inputRef.current.focus();
                 }
             } else {
-                // Handle empty transcript
-                const emptyMessage: Message = {
-                    id: `empty-transcript-${Date.now()}`,
-                    content: '🎤 No speech detected or transcript was empty. Please try speaking more clearly.',
-                    isUser: false,
-                    timestamp: new Date()
-                };
-                setMessages(prev => [...prev, emptyMessage]);
+                addStatusMessage('empty-transcript', 'No speech detected or transcript was empty. Please try speaking more clearly.');
             }
-        } else if (!result.success && result.error) {
-            // Handle error
-            setVoiceError(result.error);
-            const errorMessage: Message = {
-                id: `electron-error-${Date.now()}`,
-                content: `🎤 ${result.error}${result.enhanced ? ' (Enhanced mode)' : ''}`,
-                isUser: false,
-                timestamp: new Date()
-            };
-            setMessages(prev => [...prev, errorMessage]);
-        } else if (result.success && (!result.transcript || !result.transcript.trim())) {
-            // Handle success but empty transcript
-            const noSpeechMessage: Message = {
-                id: `no-speech-${Date.now()}`,
-                content: '🎤 Recording completed but no speech was detected. Please try again.',
-                isUser: false,
-                timestamp: new Date()
-            };
-            setMessages(prev => [...prev, noSpeechMessage]);
+        } else if (result.error) {
+            handleRecordingError(result.error + (result.enhanced ? ' (Enhanced mode)' : ''));
+        } else {
+            addStatusMessage('no-speech', 'Recording completed but no speech was detected. Please try again.');
         }
     };
 
     const initializeWebSpeechRecognition = () => {
         const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 
-        if (SpeechRecognition) {
-            const recognition = new SpeechRecognition();
-            recognition.continuous = false; // Change to false to prevent auto-restart issues
-            recognition.interimResults = true; // Show interim results for better user feedback
-
-            // Always use English for voice recognition
-            recognition.lang = 'en-US';
-
-            console.log(`Initializing speech recognition with language: ${recognition.lang}`);
-
-            recognition.onstart = () => {
-                console.log('Voice recognition started');
-                setVoiceError(null); // Clear any previous errors
-                setInterimTranscript('');
-                setFinalTranscript('');
-            };
-
-            recognition.onresult = (event: SpeechRecognitionEvent) => {
-                let interim = '';
-                let final = '';
-
-                // Process all results from the current recognition session
-                for (let i = event.resultIndex; i < event.results.length; i++) {
-                    const result = event.results[i];
-                    const transcript = result[0].transcript;
-
-                    if (result.isFinal) {
-                        final += transcript;
-                    } else {
-                        interim += transcript;
-                    }
-                }
-
-                // Update interim results for real-time feedback
-                setInterimTranscript(interim);
-
-                // If we have final results, process them
-                if (final) {
-                    setFinalTranscript(prev => prev + final);
-                    setInterimTranscript(''); // Clear interim when we get final results
-
-                    // Reset silence timeout when we get speech
-                    if (silenceTimeoutRef.current) {
-                        clearTimeout(silenceTimeoutRef.current);
-                    }
-
-                    // Set a silence timeout to automatically finish recognition
-                    // if no speech is detected for 2 seconds after final result
-                    silenceTimeoutRef.current = setTimeout(() => {
-                        if (recognition && isRecording) {
-                            recognition.stop();
-                        }
-                    }, 2000);
-                }
-
-                // Update input field with both final and interim text
-                const combinedTranscript = (finalTranscript + final + interim).trim();
-                setInputValue(combinedTranscript);
-
-                console.log('Voice recognition - Final:', final, 'Interim:', interim, 'Combined:', combinedTranscript);
-            };
-
-            recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
-                console.error('Voice recognition error:', event.error, event.message);
-                setIsRecording(false);
-                isRecordingRef.current = false;
-
-                // Clear timeouts
-                if (voiceTimeoutRef.current) {
-                    clearTimeout(voiceTimeoutRef.current);
-                    voiceTimeoutRef.current = null;
-                }
-                if (silenceTimeoutRef.current) {
-                    clearTimeout(silenceTimeoutRef.current);
-                    silenceTimeoutRef.current = null;
-                }
-
-                // Reset transcript states on error
-                setInterimTranscript('');
-                setFinalTranscript('');
-
-                // Handle different types of errors
-                let errorMessage = '';
-                let shouldShowMessage = true;
-
-                switch (event.error) {
-                    case 'network':
-                        errorMessage = 'Network error: Please check your internet connection and try again.';
-                        setVoiceError('Network error');
-                        break;
-                    case 'not-allowed':
-                        errorMessage = 'Microphone access denied. Please allow microphone permissions and try again.';
-                        setVoiceError('Permission denied');
-                        break;
-                    case 'no-speech':
-                        errorMessage = 'No speech detected. Please speak clearly and try again.';
-                        setVoiceError('No speech detected');
-                        // Still show message for no-speech as it helps user understand
-                        break;
-                    case 'audio-capture':
-                        errorMessage = 'Audio capture failed. Please check your microphone and try again.';
-                        setVoiceError('Audio capture failed');
-                        break;
-                    case 'service-not-allowed':
-                        errorMessage = 'Speech recognition service not allowed. Please check browser settings.';
-                        setVoiceError('Service not allowed');
-                        break;
-                    case 'aborted':
-                        // Don't show error message for intentional aborts
-                        shouldShowMessage = false;
-                        setVoiceError(null);
-                        break;
-                    default:
-                        errorMessage = `Voice recognition error: ${event.error}. Please try speaking more clearly.`;
-                        setVoiceError(event.error);
-                }
-
-                // Add error message to chat if appropriate
-                if (shouldShowMessage && errorMessage) {
-                    const errorChatMessage: Message = {
-                        id: `error-${Date.now()}`,
-                        content: `🎤 ${errorMessage}`,
-                        isUser: false,
-                        timestamp: new Date()
-                    };
-                    setMessages(prev => [...prev, errorChatMessage]);
-                }
-            };
-
-            recognition.onend = () => {
-                console.log('Voice recognition ended');
-                setIsRecording(false);
-                isRecordingRef.current = false;
-
-                // Clear timeouts
-                if (voiceTimeoutRef.current) {
-                    clearTimeout(voiceTimeoutRef.current);
-                    voiceTimeoutRef.current = null;
-                }
-                if (silenceTimeoutRef.current) {
-                    clearTimeout(silenceTimeoutRef.current);
-                    silenceTimeoutRef.current = null;
-                }
-
-                // Finalize the transcript
-                const completeFinalTranscript = cleanTranscript((finalTranscript + interimTranscript).trim());
-                if (completeFinalTranscript && completeFinalTranscript.length > 0) {
-                    setInputValue(completeFinalTranscript);
-                    setIsCurrentInputFromVoice(true);
-
-                    // Focus the input field and position cursor at the end
-                    setTimeout(() => {
-                        if (inputRef.current) {
-                            inputRef.current.focus();
-                            inputRef.current.setSelectionRange(completeFinalTranscript.length, completeFinalTranscript.length);
-                        }
-                    }, 100);
-
-                    console.log('Voice recognition completed with transcript:', completeFinalTranscript);
-                } else {
-                    // Handle case where no meaningful speech was detected
-                    const noSpeechMessage: Message = {
-                        id: `no-speech-web-${Date.now()}`,
-                        content: '🎤 Recording completed but no clear speech was detected. Please try again.',
-                        isUser: false,
-                        timestamp: new Date()
-                    };
-                    setMessages(prev => [...prev, noSpeechMessage]);
-                    console.log('Voice recognition ended with no meaningful transcript');
-                }
-
-                // Reset transcript states
-                setInterimTranscript('');
-                setFinalTranscript('');
-            };
-
-            setSpeechRecognition(recognition);
-        } else {
+        if (!SpeechRecognition) {
             console.warn('Speech recognition not supported in this browser');
+            return;
         }
+
+        const recognition = new SpeechRecognition();
+        recognition.continuous = false;
+        recognition.interimResults = true;
+        recognition.lang = 'en-US';
+
+        recognition.onstart = () => {
+            console.log('Voice recognition started');
+            updateRecording({
+                error: null,
+                transcript: ''
+            });
+        };
+
+        recognition.onresult = (event: SpeechRecognitionEvent) => {
+            let interim = '';
+            let final = '';
+
+            for (let i = event.resultIndex; i < event.results.length; i++) {
+                const result = event.results[i];
+                const transcript = result[0].transcript;
+
+                if (result.isFinal) {
+                    final += transcript;
+                } else {
+                    interim += transcript;
+                }
+            }
+
+            // Update the transcript in our recording state
+            const currentTranscript = recording.transcript + final;
+            updateRecording({
+                transcript: currentTranscript
+            });
+
+            if (final) {
+                if (timeoutRefs.current.silence) {
+                    clearTimeout(timeoutRefs.current.silence);
+                }
+
+                timeoutRefs.current.silence = setTimeout(() => {
+                    if (recognition && recording.status === 'listening') {
+                        recognition.stop();
+                    }
+                }, 2000);
+            }
+
+            const combinedTranscript = (currentTranscript + interim).trim();
+            setInputValue(combinedTranscript);
+        };
+
+        recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
+            console.error('Voice recognition error:', event.error, event.message);
+            resetRecording(true);
+            clearAllTimeouts();
+
+            const errorMessages = {
+                'network': 'Network error: Please check your internet connection and try again.',
+                'not-allowed': 'Microphone access denied. Please allow microphone permissions and try again.',
+                'no-speech': 'No speech detected. Please speak clearly and try again.',
+                'audio-capture': 'Audio capture failed. Please check your microphone and try again.',
+                'service-not-allowed': 'Speech recognition service not allowed. Please check browser settings.',
+                'aborted': null // Don't show message for intentional aborts
+            };
+
+            const errorMessage = errorMessages[event.error as keyof typeof errorMessages] ||
+                `Voice recognition error: ${event.error}. Please try speaking more clearly.`;
+
+            if (errorMessage) {
+                handleRecordingError(errorMessage);
+            }
+        };
+
+        recognition.onend = () => {
+            console.log('Voice recognition ended');
+            const currentTranscript = cleanTranscript(recording.transcript.trim());
+            resetRecording();
+            clearAllTimeouts();
+
+            if (currentTranscript && currentTranscript.length > 0) {
+                setInputValue(currentTranscript);
+                updateRecording({ status: 'completed' });
+
+                setTimeout(() => {
+                    if (inputRef.current) {
+                        inputRef.current.focus();
+                        inputRef.current.setSelectionRange(currentTranscript.length, currentTranscript.length);
+                    }
+                }, 100);
+            } else {
+                addStatusMessage('no-speech-web', 'Recording completed but no clear speech was detected. Please try again.');
+            }
+        };
+
+        setSpeechRecognition(recognition);
     };    // Cleanup effect
     useEffect(() => {
         return () => {
-            // Clear voice timeouts if component unmounts
-            if (voiceTimeoutRef.current) {
-                clearTimeout(voiceTimeoutRef.current);
-                voiceTimeoutRef.current = null;
-            }
-            if (silenceTimeoutRef.current) {
-                clearTimeout(silenceTimeoutRef.current);
-                silenceTimeoutRef.current = null;
-            }
 
-            // Force stop any ongoing recording and reset state
+            clearAllTimeouts();
             try {
-                if (speechRecognition && (isRecording || isRecordingRef.current)) {
-                    speechRecognition.abort(); // Use abort() instead of stop() for immediate termination
+                if (speechRecognition && (recording.status === 'listening' || recording.status === 'processing' || recording.status === 'initing')) {
+                    speechRecognition.abort();
                 }
             } catch (error) {
                 console.warn('Error aborting speech recognition during cleanup:', error);
             } finally {
-                // Always reset state during cleanup
-                setIsRecording(false);
-                isRecordingRef.current = false;
+                resetRecording(true);
             }
         };
-    }, [speechRecognition, isRecording]);
+    }, [speechRecognition, recording.status]);
 
-    // Add a force stop function for emergency situations
     const forceStopVoiceRecording = () => {
         console.log('Force stopping voice recording...');
+        clearAllTimeouts();
 
-        // Clear all timeouts
-        if (voiceTimeoutRef.current) {
-            clearTimeout(voiceTimeoutRef.current);
-            voiceTimeoutRef.current = null;
-        }
-        if (silenceTimeoutRef.current) {
-            clearTimeout(silenceTimeoutRef.current);
-            silenceTimeoutRef.current = null;
-        }
-
-        // Force stop all recognition
         try {
             if (speechRecognition) {
-                speechRecognition.abort(); // Use abort for immediate stop
+                speechRecognition.abort();
             }
             if (window.electronAPI?.stopSpeechRecognition) {
                 window.electronAPI.stopSpeechRecognition().catch(console.warn);
@@ -632,120 +577,73 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
         } catch (error) {
             console.warn('Error during force stop:', error);
         } finally {
-            // Always reset state
-            setIsRecording(false);
-            isRecordingRef.current = false;
-            setInterimTranscript('');
-            setVoiceError(null);
+            resetRecording(true);
         }
     };
 
     // Add keyboard shortcut to force stop recording (Escape key)
     useEffect(() => {
         const handleKeyDown = (event: KeyboardEvent) => {
-            if (event.key === 'Escape' && (isRecording || isRecordingRef.current)) {
+            if (event.key === 'Escape' && isUninteractableState) {
                 event.preventDefault();
                 forceStopVoiceRecording();
-
-                // Show user feedback
-                const escapeMessage: Message = {
-                    id: `escape-stop-${Date.now()}`,
-                    content: '🎤 Voice recording stopped by Escape key.',
-                    isUser: false,
-                    timestamp: new Date()
-                };
-                setMessages(prev => [...prev, escapeMessage]);
+                addStatusMessage('escape-stop', 'Voice recording stopped by Escape key.');
             }
         };
 
         document.addEventListener('keydown', handleKeyDown);
-        return () => {
-            document.removeEventListener('keydown', handleKeyDown);
-        };
-    }, [isRecording]);
+        return () => document.removeEventListener('keydown', handleKeyDown);
+    }, [isUninteractableState]);
 
-    // Debug function to check current recording state
-    const debugRecordingState = () => {
-        const state = {
-            isRecording,
-            isRecordingRef: isRecordingRef.current,
+    // Debug and sync utilities (simplified)
+    useEffect(() => {
+        const debugRecordingState = () => ({
+            recording,
             speechRecognition: !!speechRecognition,
             environment,
-            electronSpeechAvailable,
-            voiceError,
-            interimTranscript,
-            finalTranscript,
-            hasVoiceTimeout: !!voiceTimeoutRef.current,
-            hasSilenceTimeout: !!silenceTimeoutRef.current,
-        };
-        console.log('Voice Recording Debug State:', state);
-        return state;
-    };
+            electronSpeechAvailable
+        });
 
-    // Expose debug function to window for easy access
-    useEffect(() => {
         (window as any).debugVoiceRecording = debugRecordingState;
+
+        // Periodic state sync check
+        const interval = setInterval(() => {
+            if (recording.status === 'listening' && !speechRecognition) {
+                console.warn('State sync issue detected: recording status is listening but no speech recognition');
+                resetRecording();
+                setRecordingError('Recording state was reset due to sync issue');
+            }
+        }, 5000);
+
         return () => {
             delete (window as any).debugVoiceRecording;
+            clearInterval(interval);
         };
-    }, [isRecording, speechRecognition, voiceError, interimTranscript, finalTranscript]);
-
-    // Periodic state sync check - ensures UI and actual speech recognition stay in sync
-    useEffect(() => {
-        const interval = setInterval(() => {
-            // If we think we're recording but have no active speech recognition, fix it
-            if ((isRecording || isRecordingRef.current) && !speechRecognition) {
-                console.warn('State sync issue detected: recording state true but no speech recognition');
-                setIsRecording(false);
-                isRecordingRef.current = false;
-                setVoiceError('Recording state was reset due to sync issue');
-            }
-        }, 5000); // Check every 5 seconds
-
-        return () => clearInterval(interval);
-    }, [isRecording, speechRecognition]);
+    }, [recording, speechRecognition, environment, electronSpeechAvailable]);
 
     const startVoiceRecording = async () => {
-        // Debounce mechanism - prevent calls within 1 second of each other
+        // Debounce mechanism
         const now = Date.now();
         if (now - lastStartAttemptRef.current < 1000) {
-            console.warn('Voice recording start attempt too soon after previous attempt, ignoring');
+            console.warn('Voice recording start attempt too soon, ignoring');
             return;
         }
         lastStartAttemptRef.current = now;
 
-        // Prevent multiple simultaneous recordings using both state and ref
-        if (isRecording || isRecordingRef.current) {
-            console.warn('Voice recording already in progress, ignoring new request');
+        if (recording.status === 'listening') {
+            console.warn('Voice recording already in progress');
             return;
         }
 
         try {
-            // Set both state and ref immediately
-            setIsRecording(true);
-            isRecordingRef.current = true;
-
-            // Clear any previous errors
-            setVoiceError(null);
+            startRecording();
 
             // Stop any existing speech recognition first
             if (speechRecognition) {
-                try {
-                    speechRecognition.stop();
-                } catch (e) {
-                    console.warn('Error stopping previous speech recognition:', e);
-                }
+                try { speechRecognition.stop(); } catch (e) { console.warn('Error stopping previous recognition:', e); }
             }
 
-            // Clear any existing timeouts
-            if (voiceTimeoutRef.current) {
-                clearTimeout(voiceTimeoutRef.current);
-                voiceTimeoutRef.current = null;
-            }
-            if (silenceTimeoutRef.current) {
-                clearTimeout(silenceTimeoutRef.current);
-                silenceTimeoutRef.current = null;
-            }
+            clearAllTimeouts();
 
             if (environment === 'electron') {
                 await startElectronSpeechRecognition();
@@ -754,30 +652,9 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
             }
         } catch (error) {
             console.error('Error starting voice recognition:', error);
-            // Always reset state on error
-            setIsRecording(false);
-            isRecordingRef.current = false;
-
-            // Clear timeouts on error
-            if (voiceTimeoutRef.current) {
-                clearTimeout(voiceTimeoutRef.current);
-                voiceTimeoutRef.current = null;
-            }
-            if (silenceTimeoutRef.current) {
-                clearTimeout(silenceTimeoutRef.current);
-                silenceTimeoutRef.current = null;
-            }
-
             const errorMessage = error instanceof Error ? error.message : 'Failed to start voice recognition';
-            setVoiceError(errorMessage);
-
-            const chatErrorMessage: Message = {
-                id: `start-error-${Date.now()}`,
-                content: `🎤 ${errorMessage}`,
-                isUser: false,
-                timestamp: new Date()
-            };
-            setMessages(prev => [...prev, chatErrorMessage]);
+            handleRecordingError(errorMessage);
+            addStatusMessage('start-error', errorMessage);
         }
     };
 
@@ -786,13 +663,12 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
             throw new Error('Electron speech recognition not available');
         }
 
-        // Double-check we're not already recording using ref
-        if (isRecordingRef.current) {
+        if (recording.status === 'listening') {
             console.warn('Electron speech recognition already in progress');
             return;
         }
 
-        // Stop any existing Electron speech recognition first
+        // Stop any existing recognition
         try {
             if (window.electronAPI.stopSpeechRecognition) {
                 await window.electronAPI.stopSpeechRecognition();
@@ -801,30 +677,20 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
             console.warn('Error stopping previous Electron speech recognition:', e);
         }
 
-        setInputValue(''); // Clear current input
+        setInputValue('');
 
-        // Set a timeout to stop recording after 30 seconds
-        voiceTimeoutRef.current = setTimeout(async () => {
-            if (isRecordingRef.current) {
+        // Forces recording to stop after 30 seconds maximum
+        timeoutRefs.current.voice = setTimeout(async () => {
+            if (recording.status === 'listening') {
                 await stopVoiceRecording();
-                const timeoutMessage: Message = {
-                    id: `timeout-${Date.now()}`,
-                    content: '🎤 Voice recording timed out after 30 seconds.',
-                    isUser: false,
-                    timestamp: new Date()
-                };
-                setMessages(prev => [...prev, timeoutMessage]);
+                addStatusMessage('timeout', 'Voice recording timed out after 30 seconds.');
             }
         }, 30000);
 
         const result = await window.electronAPI.startSpeechRecognition();
         if (!result.success) {
-            setIsRecording(false); // Reset state on failure
-            isRecordingRef.current = false;
-            if (voiceTimeoutRef.current) {
-                clearTimeout(voiceTimeoutRef.current);
-                voiceTimeoutRef.current = null;
-            }
+            resetRecording();
+            clearAllTimeouts();
             throw new Error(result.error || 'Failed to start speech recognition');
         }
     };
@@ -834,13 +700,12 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
             throw new Error('Web speech recognition not available');
         }
 
-        // Double-check we're not already recording using ref
-        if (isRecordingRef.current) {
+        if (recording.status === 'listening') {
             console.warn('Web speech recognition already in progress');
             return;
         }
 
-        // Check for microphone permissions
+        // Check microphone permissions
         if (navigator.permissions) {
             try {
                 const permission = await navigator.permissions.query({ name: 'microphone' as PermissionName });
@@ -849,59 +714,40 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
                 }
             } catch (permError) {
                 console.warn('Permission check failed:', permError);
-                // Continue anyway, let speech recognition handle it
             }
         }
 
-        // Stop any ongoing recognition first
+        // Stop any ongoing recognition
         try {
             speechRecognition.stop();
-            // Wait a short moment for cleanup
             await new Promise(resolve => setTimeout(resolve, 100));
         } catch (e) {
             console.warn('Error stopping previous web speech recognition:', e);
         }
 
-        setInputValue(''); // Clear current input
-        setInterimTranscript(''); // Reset interim transcript
-        setFinalTranscript(''); // Reset final transcript
+        setInputValue('');
+        updateRecording({ transcript: '' });
 
-        // Set a longer timeout to stop recording after 30 seconds for better user experience
-        voiceTimeoutRef.current = setTimeout(() => {
-            if (speechRecognition && isRecordingRef.current) {
+        // Set timeout for 30 seconds
+        timeoutRefs.current.voice = setTimeout(() => {
+            if (speechRecognition && recording.status === 'listening') {
                 speechRecognition.stop();
-                const timeoutMessage: Message = {
-                    id: `timeout-${Date.now()}`,
-                    content: '🎤 Voice recording timed out after 30 seconds.',
-                    isUser: false,
-                    timestamp: new Date()
-                };
-                setMessages(prev => [...prev, timeoutMessage]);
+                addStatusMessage('timeout', 'Voice recording timed out after 30 seconds.');
             }
         }, 30000);
 
         try {
             speechRecognition.start();
         } catch (error) {
-            setIsRecording(false); // Reset state on failure
-            isRecordingRef.current = false;
-            if (voiceTimeoutRef.current) {
-                clearTimeout(voiceTimeoutRef.current);
-                voiceTimeoutRef.current = null;
-            }
+            resetRecording();
+            clearAllTimeouts();
             throw error;
         }
     };
 
     const stopVoiceRecording = async () => {
-        // Clear timeout first
-        if (voiceTimeoutRef.current) {
-            clearTimeout(voiceTimeoutRef.current);
-            voiceTimeoutRef.current = null;
-        }
+        clearAllTimeouts();
 
-        // Always attempt to stop, even if state says we're not recording
-        // This handles cases where state gets out of sync
         try {
             if (environment === 'electron') {
                 await stopElectronSpeechRecognition();
@@ -911,11 +757,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
         } catch (error) {
             console.error('Error in stopVoiceRecording:', error);
         } finally {
-            // Always reset state regardless of what happened above
-            setIsRecording(false);
-            isRecordingRef.current = false;
-            setInterimTranscript('');
-            // Note: Don't reset finalTranscript here as it might contain useful data
+            resetRecording();
         }
     };
 
@@ -924,25 +766,12 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
 
         try {
             const result = await window.electronAPI.stopSpeechRecognition();
-
             if (!result.success) {
                 console.warn('Failed to stop speech recognition:', result.error);
             }
-
-            // The actual result will be handled by the event listener
-            // in handleElectronSpeechResult, so we don't need to do anything here
-
         } catch (error) {
             console.error('Error stopping Electron speech recognition:', error);
-            setIsRecording(false);
-            isRecordingRef.current = false;
-            const errorMessage: Message = {
-                id: `stop-error-${Date.now()}`,
-                content: `🎤 Error: ${error instanceof Error ? error.message : 'Failed to stop speech recognition'}`,
-                isUser: false,
-                timestamp: new Date()
-            };
-            setMessages(prev => [...prev, errorMessage]);
+            addStatusMessage('stop-error', error instanceof Error ? error.message : 'Failed to stop speech recognition');
         }
     };
 
@@ -950,30 +779,14 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
         if (speechRecognition) {
             try {
                 speechRecognition.stop();
-                // Force state reset immediately for better UX
-                setIsRecording(false);
-                isRecordingRef.current = false;
-
-                // Clear timeouts
-                if (voiceTimeoutRef.current) {
-                    clearTimeout(voiceTimeoutRef.current);
-                    voiceTimeoutRef.current = null;
-                }
-                if (silenceTimeoutRef.current) {
-                    clearTimeout(silenceTimeoutRef.current);
-                    silenceTimeoutRef.current = null;
-                }
+                resetRecording();
+                clearAllTimeouts();
             } catch (error) {
                 console.error('Error stopping web speech recognition:', error);
-                // Force state reset even on error
-                setIsRecording(false);
-                isRecordingRef.current = false;
-                setVoiceError('Failed to stop recording');
+                setRecordingError('Failed to stop recording');
             }
         } else {
-            // If no speechRecognition object, still reset state
-            setIsRecording(false);
-            isRecordingRef.current = false;
+            resetRecording();
         }
     };
     const sendToAI = async (messageContent: string) => {
@@ -1015,7 +828,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
             }
 
             const aiResponse: Message = {
-                id: (Date.now() + 1).toString(),
+                id: generateUniqueId('ai'),
                 content: aiResponseContent,
                 isUser: false,
                 timestamp: new Date(),
@@ -1028,7 +841,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
         } catch (error) {
             console.error('Error sending message to AI:', error);
             const errorMessage: Message = {
-                id: (Date.now() + 1).toString(),
+                id: generateUniqueId('error'),
                 content: "I'm sorry, I encountered an error while processing your request. Please try again.",
                 isUser: false,
                 timestamp: new Date()
@@ -1041,14 +854,14 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
         }
     };
 
-    const handleSendMessage = async (isFromVoice = false) => {
+    const handleSendMessage = async () => {
         if (!inputValue.trim() || isLoading) return;
 
-        // Use the voice input flag if not explicitly provided
-        const actualIsFromVoice = isFromVoice || isCurrentInputFromVoice;
+        // Check if this message came from voice input
+        const actualIsFromVoice = isRecordingCompleted;
 
         const userMessage: Message = {
-            id: Date.now().toString(),
+            id: generateUniqueId('user'),
             content: inputValue.trim(),
             isUser: true,
             timestamp: new Date(),
@@ -1058,12 +871,14 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
         setMessages(prev => [...prev, userMessage]);
         const messageContent = inputValue.trim();
         setInputValue('');
-        setIsCurrentInputFromVoice(false); // Clear the voice input flag
+        updateRecording({ status: 'idle' }); // Clear the voice input status
+
+        // Set loading state
         setIsLoading(true);
 
         // Add loading message
         const loadingMessage: Message = {
-            id: 'loading',
+            id: generateUniqueId('loading'),
             content: 'Thinking...',
             isUser: false,
             timestamp: new Date(),
@@ -1074,20 +889,21 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
         await sendToAI(messageContent);
     };
 
+    // handle user input change
     const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
         const newValue = e.target.value;
         setInputValue(newValue);
 
-        // If user is typing manually (not just backspacing), clear the voice flag
-        if (newValue.length > inputValue.length) {
-            setIsCurrentInputFromVoice(false);
+        // If user is typing manually (not just backspacing), clear the voice status
+        if (newValue.length > inputValue.length && isRecordingCompleted) {
+            updateRecording({ status: 'idle' });
         }
     };
 
     const handleKeyPress = (e: React.KeyboardEvent) => {
         if (e.key === 'Enter' && !e.shiftKey) {
             e.preventDefault();
-            handleSendMessage(false);
+            handleSendMessage();
         }
     };
 
@@ -1291,6 +1107,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
     // Microphone Icon Component
     const MicrophoneIcon = () => (
         <svg
+            className="mic-icon"
             width="16"
             height="16"
             viewBox="0 0 24 24"
@@ -1310,6 +1127,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
     // Recording Animation Microphone Icon
     const RecordingMicrophoneIcon = () => (
         <svg
+            className="recording-mic-icon"
             width="16"
             height="16"
             viewBox="0 0 24 24"
@@ -1318,7 +1136,6 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
             strokeWidth="2"
             strokeLinecap="round"
             strokeLinejoin="round"
-            style={{ animation: 'pulse 1s infinite' }}
         >
             <path d="M12 1a4 4 0 0 0-4 4v6a4 4 0 0 0 8 0V5a4 4 0 0 0-4-4z" />
             <path d="M19 11v1a7 7 0 0 1-14 0v-1" />
@@ -1357,7 +1174,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
                                 Voice input not supported
                             </Badge>
                         )}
-                        {voiceError && (
+                        {recording.error && (
                             <Badge variant="soft" color="red" size="1">
                                 Voice error
                             </Badge>
@@ -1489,72 +1306,49 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
                 {/* Input Area */}
                 <Separator />
                 <Box p="3">
-                    {/* Recording status indicator */}
-                    {isRecording && (
-                        <Flex align="center" gap="2" mb="2" p="2"
-                            style={{
-                                backgroundColor: 'var(--red-2)',
-                                borderRadius: '6px',
-                                border: '1px solid var(--red-6)'
-                            }}>
-                            <RecordingMicrophoneIcon />
-                            <Text size="2" color="red" weight="medium">
-                                Recording in progress...
-                                {interimTranscript && (
-                                    <Text size="1" color="gray" ml="2">
-                                        "{interimTranscript.slice(0, 50)}{interimTranscript.length > 50 ? '...' : ''}"
-                                    </Text>
-                                )}
-                            </Text>
-                            <Button
-                                size="1"
-                                variant="soft"
-                                color="red"
-                                onClick={forceStopVoiceRecording}
-                                title="Force stop recording (or press Escape)"
-                            >
-                                Force Stop
-                            </Button>
-                        </Flex>
-                    )}
-
                     <Flex gap="2">
                         <TextField.Root
                             ref={inputRef}
                             placeholder={
-                                isRecording
-                                    ? "🎤 Recording... (Press Escape or click Force Stop to cancel)"
-                                    : isCurrentInputFromVoice
+                                isUninteractableState
+                                    ? `🎤 ${recording.status === 'listening' ? 'Recording...' : recording.status === 'processing' ? 'Processing...' : 'Initializing...'} (Press Escape or click Force Stop to cancel)`
+                                    : isRecordingCompleted
                                         ? "Voice input ready - press Enter to send or continue editing..."
                                         : "Ask me anything about your racing session..."
                             }
                             value={inputValue}
                             onChange={handleInputChange}
                             onKeyPress={handleKeyPress}
-                            disabled={isLoading || isRecording}
+                            disabled={isLoading || isUninteractableState}
                             style={{ flex: 1 }}
                         />
                         {(speechRecognition || electronSpeechAvailable) && (
                             <IconButton
-                                onClick={isRecording ? stopVoiceRecording : startVoiceRecording}
+                                onClick={isUninteractableState ? stopVoiceRecording : startVoiceRecording}
                                 disabled={isLoading}
                                 size="2"
-                                variant={isRecording ? "solid" : "ghost"}
-                                color={isRecording ? "red" : voiceError ? "orange" : "gray"}
+                                variant={isUninteractableState ? "solid" : "ghost"}
+                                color={isUninteractableState ? "red" : recording.error ? "orange" : "gray"}
                                 title={
-                                    voiceError
-                                        ? `Voice error: ${voiceError}. Click to retry.`
-                                        : isRecording
-                                            ? "Recording active - Click to stop or press Escape"
+                                    recording.error
+                                        ? `Voice error: ${recording.error}. Click to retry.`
+                                        : isUninteractableState
+                                            ? `Recording ${recording.status} - Click to stop or press Escape`
                                             : `Start voice recording (${environment === 'electron' ? 'Local' : 'Web'} mode)`
                                 }
+                                style={{
+                                    ...(isUninteractableState && {
+                                        backgroundColor: 'var(--red-9)',
+                                        color: 'white'
+                                    })
+                                }}
                             >
-                                {isRecording ? <RecordingMicrophoneIcon /> : <MicrophoneIcon />}
+                                {isUninteractableState ? <RecordingMicrophoneIcon /> : <MicrophoneIcon />}
                             </IconButton>
                         )}
                         <Button
-                            onClick={() => handleSendMessage(false)}
-                            disabled={!inputValue.trim() || isLoading || isRecording}
+                            onClick={() => handleSendMessage()}
+                            disabled={!inputValue.trim() || isLoading || isUninteractableState}
                             size="2"
                         >
                             <PaperPlaneIcon />

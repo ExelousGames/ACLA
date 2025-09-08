@@ -58,8 +58,33 @@
     }
 }
 
+/* Animation for recording microphone */
+@keyframes micPulse {
+
+    0%,
+    100% {
+        opacity: 1;
+        transform: scale(1);
+    }
+
+    50% {
+        opacity: 0.7;
+        transform: scale(1.1);
+    }
+}
+
 .ai-chat-message .rt-Spinner {
     animation: pulse 1.5s ease-in-out infinite;
+}
+
+/* Recording microphone animation */
+.recording-mic-icon {
+    animation: micPulse 1s ease-in-out infinite;
+    color: var(--red-9) !important;
+}
+
+.mic-icon {
+    transition: all 0.2s ease-in-out;
 }
 
 /* Responsive design */

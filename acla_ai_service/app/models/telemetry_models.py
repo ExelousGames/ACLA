@@ -765,7 +765,8 @@ class FeatureProcessor:
         return processed_df
     
     def _handle_complex_fields(self, df: pd.DataFrame) -> None:
-        """Handle complex nested fields from AC Competizione telemetry"""
+        """Handle complex nested fields from AC Competizione telemetry
+        player car coordinates is extracted from array of car coordinates, and named as Graphics_player_pos_x, Graphics_player_pos_y, Graphics_player_pos_z"""
         
         # Handle Graphics_car_coordinates array - extract player car position
         if 'Graphics_car_coordinates' in df.columns:
