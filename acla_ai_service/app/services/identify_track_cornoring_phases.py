@@ -137,6 +137,11 @@ class TrackCorneringAnalyzer:
         brake_data = corner_df.get('Physics_brake', pd.Series([0] * len(corner_df)))
         throttle_data = corner_df.get('Physics_gas', pd.Series([0] * len(corner_df)))
         
+        # Get car position data for phase validation
+        position_data = None
+        if 'Graphics_normalized_car_position' in corner_df.columns:
+            position_data = corner_df['Graphics_normalized_car_position'].fillna(method='ffill').fillna(method='bfill')
+        
         # Smooth the data
         steering_smooth = steering_abs.rolling(window=3, center=True).mean().fillna(steering_abs)
         speed_smooth = speed.rolling(window=3, center=True).mean().fillna(speed)
@@ -151,30 +156,83 @@ class TrackCorneringAnalyzer:
         
         # Phase 1: Entry (start until significant braking ends)
         entry_end = self._find_entry_phase_end(corner_df, brake_data, speed_smooth)
+        # Ensure entry phase has at least some data points
+        entry_end = max(entry_end, 3)  # Minimum 3 points for entry
         phases['entry'] = list(range(0, min(entry_end, len(corner_df))))
         
         # Phase 2: Turn-in (end of entry until apex)
         turn_in_start = max(entry_end, 0)
         apex_idx = self._find_apex_index(corner_df, min_speed_idx, max_steering_idx)
+        # Ensure turn-in phase exists
+        if apex_idx <= turn_in_start:
+            apex_idx = turn_in_start + max(3, (len(corner_df) - turn_in_start) // 4)
         phases['turn_in'] = list(range(turn_in_start, min(apex_idx, len(corner_df))))
         
         # Phase 3: Apex (around minimum speed point)
         apex_window = max(3, len(corner_df) // 10)  # Dynamic window size
         apex_start = max(0, apex_idx - apex_window // 2)
         apex_end = min(len(corner_df), apex_idx + apex_window // 2)
+        # Ensure apex doesn't overlap too much with turn_in
+        apex_start = max(apex_start, turn_in_start + len(phases['turn_in']) - 1)
         phases['apex'] = list(range(apex_start, apex_end))
         
         # Phase 4: Acceleration (apex end until throttle application stabilizes)
         accel_start = apex_end
         accel_end = self._find_acceleration_phase_end(corner_df, throttle_data, accel_start)
+        # Ensure acceleration phase has reasonable size
+        min_accel_end = accel_start + max(3, (len(corner_df) - accel_start) // 3)
+        accel_end = max(accel_end, min_accel_end)
         phases['acceleration'] = list(range(accel_start, min(accel_end, len(corner_df))))
         
         # Phase 5: Exit (acceleration end until corner end)
         exit_start = max(accel_end, apex_end)
+        # Ensure exit phase exists
+        exit_start = min(exit_start, len(corner_df) - 3)  # Leave at least 3 points for exit
         phases['exit'] = list(range(exit_start, len(corner_df)))
         
-        # Clean up overlapping phases
+        # Clean up overlapping phases and ensure all points are covered
         phases = self._resolve_phase_overlaps(phases, len(corner_df))
+        
+        # Verify that all phases have position data if available
+        if position_data is not None:
+            phases = self._validate_phases_with_position_data(phases, corner_df, position_data)
+        
+        return phases
+    
+    def _validate_phases_with_position_data(self, phases: Dict[str, List[int]], corner_df: pd.DataFrame, position_data: pd.Series) -> Dict[str, List[int]]:
+        """Validate and adjust phases to ensure they have position data"""
+        
+        # Check each phase to ensure it has valid position data
+        for phase_name, indices in phases.items():
+            if not indices:
+                continue
+                
+            # Check if phase indices have position data
+            valid_indices = []
+            for idx in indices:
+                if idx < len(position_data) and not pd.isna(position_data.iloc[idx]):
+                    valid_indices.append(idx)
+            
+            # If no valid indices, try to expand phase to neighboring valid data
+            if not valid_indices and indices:
+                # Look for nearest valid position data
+                start_idx = min(indices)
+                end_idx = max(indices)
+                
+                # Expand search range slightly
+                search_start = max(0, start_idx - 2)
+                search_end = min(len(position_data), end_idx + 3)
+                
+                for idx in range(search_start, search_end):
+                    if not pd.isna(position_data.iloc[idx]):
+                        valid_indices.append(idx)
+                
+                # If still no valid data, keep original indices but log warning
+                if not valid_indices:
+                    print(f"Warning: Phase {phase_name} has no valid position data")
+                    valid_indices = indices
+            
+            phases[phase_name] = valid_indices if valid_indices else indices
         
         return phases
 
@@ -568,57 +626,103 @@ class TrackCorneringAnalyzer:
         
         # Get overall corner start and end positions
         if 'Graphics_normalized_car_position' in corner_data.columns:
-            corner_detail['corner_start_position'] = corner_data['Graphics_normalized_car_position'].iloc[0]
-            corner_detail['corner_end_position'] = corner_data['Graphics_normalized_car_position'].iloc[-1]
+            position_data = corner_data['Graphics_normalized_car_position'].dropna()
+            if len(position_data) > 0:
+                corner_detail['corner_start_position'] = position_data.iloc[0]
+                corner_detail['corner_end_position'] = position_data.iloc[-1]
         
         # Get detailed information for each phase
         for phase in phases:
-            phase_data = corner_data[corner_data['cornering_phase'] == phase]
+            phase_data = corner_data[corner_data['cornering_phase'] == phase].copy()
             
-            if len(phase_data) == 0:
-                corner_detail['phases'][phase] = {
-                    'normalized_car_position': None,
-                    'avg_speed': None,
-                    'avg_steering_angle': None,
-                    'duration_points': 0,
-                    'avg_brake': None,
-                    'avg_throttle': None
-                }
-                continue
-            
-            # Calculate phase metrics
+            # Initialize phase info with None values
             phase_info = {
+                'normalized_car_position': None,
+                'avg_speed': None,
+                'avg_steering_angle': None,
                 'duration_points': len(phase_data),
-                'avg_speed': phase_data['Physics_speed_kmh'].mean(),
-                'avg_steering_angle': np.abs(phase_data['Physics_steer_angle']).mean()
+                'avg_brake': None,
+                'avg_throttle': None
             }
             
-            # Get normalized car position for this phase
+            if len(phase_data) == 0:
+                # If no data for this phase, try to estimate position from corner progression
+                if 'Graphics_normalized_car_position' in corner_data.columns:
+                    total_corner_positions = corner_data['Graphics_normalized_car_position'].dropna()
+                    if len(total_corner_positions) > 0:
+                        # Estimate position based on phase order within corner
+                        phase_order = {'entry': 0.1, 'turn_in': 0.3, 'apex': 0.5, 'acceleration': 0.7, 'exit': 0.9}
+                        if phase in phase_order:
+                            start_pos = total_corner_positions.iloc[0]
+                            end_pos = total_corner_positions.iloc[-1]
+                            estimated_pos = start_pos + (end_pos - start_pos) * phase_order[phase]
+                            phase_info['normalized_car_position'] = estimated_pos
+                
+                corner_detail['phases'][phase] = phase_info
+                continue
+            
+            # Calculate phase metrics for phases with data
+            if 'Physics_speed_kmh' in phase_data.columns:
+                speed_values = phase_data['Physics_speed_kmh'].dropna()
+                if len(speed_values) > 0:
+                    phase_info['avg_speed'] = speed_values.mean()
+            
+            if 'Physics_steer_angle' in phase_data.columns:
+                steering_values = np.abs(phase_data['Physics_steer_angle']).dropna()
+                if len(steering_values) > 0:
+                    phase_info['avg_steering_angle'] = steering_values.mean()
+            
+            # Get normalized car position for this phase - be more robust with NaN handling
             if 'Graphics_normalized_car_position' in phase_data.columns:
-                # For most phases, use the middle position
-                if phase == 'entry':
-                    # For entry, use the starting position
-                    phase_info['normalized_car_position'] = phase_data['Graphics_normalized_car_position'].iloc[0]
-                elif phase == 'exit':
-                    # For exit, use the ending position  
-                    phase_info['normalized_car_position'] = phase_data['Graphics_normalized_car_position'].iloc[-1]
+                position_values = phase_data['Graphics_normalized_car_position'].dropna()
+                
+                if len(position_values) > 0:
+                    # Choose position based on phase type and available data
+                    if phase == 'entry':
+                        # For entry, use the starting position
+                        phase_info['normalized_car_position'] = position_values.iloc[0]
+                    elif phase == 'exit':
+                        # For exit, use the ending position  
+                        phase_info['normalized_car_position'] = position_values.iloc[-1]
+                    else:
+                        # For turn_in, apex, acceleration - use middle position
+                        if len(position_values) >= 3:
+                            mid_idx = len(position_values) // 2
+                            phase_info['normalized_car_position'] = position_values.iloc[mid_idx]
+                        elif len(position_values) == 2:
+                            # If only 2 points, average them
+                            phase_info['normalized_car_position'] = position_values.mean()
+                        else:
+                            # If only 1 point, use it
+                            phase_info['normalized_car_position'] = position_values.iloc[0]
                 else:
-                    # For turn_in, apex, acceleration - use middle position
-                    mid_idx = len(phase_data) // 2
-                    phase_info['normalized_car_position'] = phase_data['Graphics_normalized_car_position'].iloc[mid_idx]
-            else:
-                phase_info['normalized_car_position'] = None
+                    # If no position data for this phase, try to estimate from overall corner
+                    total_corner_positions = corner_data['Graphics_normalized_car_position'].dropna()
+                    if len(total_corner_positions) > 0:
+                        # Get phase indices within the corner
+                        phase_indices = corner_data[corner_data['cornering_phase'] == phase].index
+                        if len(phase_indices) > 0:
+                            # Find relative position of phase within corner
+                            corner_indices = corner_data.index
+                            corner_start_idx = corner_indices[0]
+                            corner_end_idx = corner_indices[-1]
+                            phase_relative_pos = (phase_indices[len(phase_indices)//2] - corner_start_idx) / (corner_end_idx - corner_start_idx)
+                            
+                            # Interpolate position
+                            start_pos = total_corner_positions.iloc[0]
+                            end_pos = total_corner_positions.iloc[-1]
+                            phase_info['normalized_car_position'] = start_pos + (end_pos - start_pos) * phase_relative_pos
             
             # Add brake and throttle data if available
             if 'Physics_brake' in phase_data.columns:
-                phase_info['avg_brake'] = phase_data['Physics_brake'].mean()
-            else:
-                phase_info['avg_brake'] = None
+                brake_values = phase_data['Physics_brake'].dropna()
+                if len(brake_values) > 0:
+                    phase_info['avg_brake'] = brake_values.mean()
                 
             if 'Physics_gas' in phase_data.columns:
-                phase_info['avg_throttle'] = phase_data['Physics_gas'].mean()
-            else:
-                phase_info['avg_throttle'] = None
+                throttle_values = phase_data['Physics_gas'].dropna()
+                if len(throttle_values) > 0:
+                    phase_info['avg_throttle'] = throttle_values.mean()
             
             corner_detail['phases'][phase] = phase_info
         
