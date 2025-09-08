@@ -1530,10 +1530,9 @@ class Full_dataset_TelemetryMLService:
         # Identify cornering phases
         cornering_df = track_analyzer.identify_cornering_phases(filtered_df)
         
-        print(cornering_df)
         # Get analysis summary
         analysis_summary = track_analyzer.get_cornering_analysis_summary(cornering_df)
-        return cornering_df
+        return analysis_summary
         try:
             #save the info to backend
             ai_model_dto = {
