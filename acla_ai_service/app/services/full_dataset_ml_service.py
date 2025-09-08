@@ -49,6 +49,9 @@ from .backend_service import backend_service
 # Import model cache service
 from .model_cache_service import model_cache_service
 
+# Import cornering analysis
+from .identify_track_cornoring_phases import TrackCorneringAnalyzer
+
 # Suppress sklearn warnings
 warnings.filterwarnings('ignore', category=UserWarning)
 
@@ -129,7 +132,7 @@ class ModelConfig:
     }
 
 
-class TelemetryMLService:
+class Full_dataset_TelemetryMLService:
     """
     Machine Learning Service for AC Competizione Telemetry Analysis
     
@@ -366,7 +369,7 @@ class TelemetryMLService:
             # Convert sklearn results to match river_ml_service format
             if training_result:
                 # Serialize model for database storage
-                model_data = self._serialize_sklearn_model(training_result['model_id'])
+                model_data = self._serialize_model_data(training_result['model_id'])
                 
                 return {
                     "success": True,
@@ -1025,7 +1028,7 @@ class TelemetryMLService:
         
         return predictions
     
-    def _deserialize_sklearn_model(self, model_data: str) -> Dict[str, Any]:
+    def _deserialize_model_data(self, model_data: str) -> Dict[str, Any]:
         """
         Deserialize sklearn model from base64 string
         
@@ -1049,7 +1052,7 @@ class TelemetryMLService:
             raise Exception(f"Failed to deserialize model: {str(e)}")
     
     
-    def _serialize_sklearn_model(self, model_id: str) -> str:
+    def _serialize_model_data(self, model_id: str) -> str:
         """
         Serialize sklearn model to base64 string for database storage
         
@@ -1417,7 +1420,7 @@ class TelemetryMLService:
                 "isActive": True
             }
             
-            await backend_service.save_imitation_learning_results(ai_model_dto)
+            await backend_service.save_ai_model(ai_model_dto)
         except Exception as error:
             pass
         
@@ -1441,123 +1444,15 @@ class TelemetryMLService:
             Expert guidance and recommendations
         """
         
-        model_key = f"{trackName}/{carName}/imitation_learning"
-        is_fetching_thread = False
-        deserialized_trajectory_models = None
-        
         try:
-            # First, try to get model from cache without any locking
-            cached_result = self.model_cache.get(
+            # Get model from cache or fetch from backend using the separated function
+            deserialized_trajectory_models, metadata = await self._get_cached_model_or_fetch(
                 model_type="imitation_learning",
                 track_name=trackName,
                 car_name=carName,
-                model_subtype="complete_model_data"
+                model_subtype="complete_model_data",
+                deserializer_func=self.imitation_learning.deserialize_object_inside
             )
-            
-            if cached_result:
-                deserialized_trajectory_models, metadata = cached_result
-            else:
-                # Use a proper async lock to prevent race conditions
-                async with self._lock_creation_lock:
-                    # Double-check cache after acquiring lock
-                    cached_result = self.model_cache.get(
-                        model_type="imitation_learning",
-                        track_name=trackName,
-                        car_name=carName,
-                        model_subtype="complete_model_data"
-                    )
-                    
-                    if cached_result:
-                        deserialized_trajectory_models, metadata = cached_result
-                    elif model_key in self._model_fetch_locks:
-                        # Another thread is fetching this model, wait for it
-                        fetch_event = self._model_fetch_locks[model_key]
-                    else:
-                        # We're the first to request this model, create the event and mark ourselves as fetching
-                        self._model_fetch_locks[model_key] = asyncio.Event()
-                        is_fetching_thread = True
-                
-                # If we need to wait for another thread
-                if not deserialized_trajectory_models and not is_fetching_thread:
-                    try:
-                        await fetch_event.wait()
-                        # The other thread should have cached the model, try cache again
-                        cached_result = self.model_cache.get(
-                            model_type="imitation_learning",
-                            track_name=trackName,
-                            car_name=carName,
-                            model_subtype="complete_model_data"
-                        )
-                        if cached_result:
-                            deserialized_trajectory_models, metadata = cached_result
-                            print(f"[INFO] Using model cached by another thread for {trackName}/{carName}")
-                        else:
-                            print(f"[WARNING] Expected cached model not found after waiting for {trackName}/{carName}")
-                    except Exception as wait_error:
-                        print(f"[ERROR] Error while waiting for model fetch: {str(wait_error)}")
-                        # Continue to try fetching ourselves as fallback
-                        is_fetching_thread = True
-                
-                # If we are the fetching thread or fallback, do the actual fetch
-                if not deserialized_trajectory_models and is_fetching_thread:
-                    try:
-                        print(f"[INFO] Fetching model data from backend for {trackName}/{carName}")
-                        model_response = await self.backend_service.getCompleteActiveModelData(
-                            trackName, carName, "imitation_learning"
-                        )
-                          
-                        if "error" in model_response:
-                            raise Exception(f"Backend error: {model_response['error']}")
-                        
-                        # Extract modelData from the correct location in response
-                        model_data = None
-                        if "data" in model_response and isinstance(model_response["data"], dict):
-                            model_data = model_response["data"].get("modelData", {})
-                        else:
-                            model_data = model_response.get("modelData", {})
-                        
-                        if not model_data:
-                            raise Exception("No model data found in response")
-
-                        # Deserialize the model data
-                        deserialized_trajectory_models = self.imitation_learning.deserialize_object_inside(model_data)
-                        
-                        # Cache the deserialized model for future use
-                        cache_metadata = {
-                            "track_name": trackName,
-                            "car_name": carName,
-                            "model_type": "imitation_learning",
-                            "fetched_at": datetime.now().isoformat(),
-                            "backend_model_id": model_response.get("id", "unknown")
-                        }
-                        
-                        self.model_cache.put(
-                            model_type="imitation_learning",
-                            track_name=trackName,
-                            car_name=carName,
-                            data=deserialized_trajectory_models,
-                            metadata=cache_metadata,
-                            model_subtype="complete_model_data"
-                        )
-                        
-                        print(f"[INFO] Successfully fetched and cached model for {trackName}/{carName}")
-                        
-                    except Exception as fetch_error:
-                        print(f"[ERROR] Failed to fetch model: {str(fetch_error)}")
-                        raise fetch_error
-                    finally:
-                        # Always signal completion and clean up lock when we're the fetching thread
-                        if model_key in self._model_fetch_locks:
-                            try:
-                                self._model_fetch_locks[model_key].set()
-                                del self._model_fetch_locks[model_key]
-                                print(f"[INFO] Released fetch lock for {trackName}/{carName}")
-                            except Exception as cleanup_error:
-                                print(f"[WARNING] Error cleaning up fetch lock: {str(cleanup_error)}")
-            
-            # At this point, we should have the model data
-            if not deserialized_trajectory_models:
-                raise Exception("Failed to obtain model data from cache or backend")
             
             # Prepare current telemetry data
             df = pd.DataFrame([current_telemetry])
@@ -1578,7 +1473,6 @@ class TelemetryMLService:
                 guidance['behavior_guidance'] = {
                     "predicted_driving_style": behavior_pred['predicted_style'],
                     "confidence": behavior_pred['confidence'],
-                    "style_recommendations": self._generate_behavior_recommendations(behavior_pred),
                     "alternative_styles": behavior_pred['style_probabilities']
                 }
             
@@ -1599,485 +1493,282 @@ class TelemetryMLService:
         except Exception as e:
             print(f"[ERROR] Failed to get expert guidance: {str(e)}")
             
-            # Clean up any locks that might have been created by this thread
-            if is_fetching_thread and hasattr(self, '_model_fetch_locks') and model_key in self._model_fetch_locks:
-                try:
-                    self._model_fetch_locks[model_key].set()  # Signal any waiting threads
-                    del self._model_fetch_locks[model_key]
-                    print(f"[INFO] Emergency cleanup of fetch lock for {trackName}/{carName}")
-                except Exception as cleanup_error:
-                    print(f"[WARNING] Error during emergency lock cleanup: {str(cleanup_error)}")
-            
             return {
                 "success": False,
                 "error": str(e),
                 "timestamp": datetime.now().isoformat()
             }
-    
-    def _generate_behavior_recommendations(self, behavior_prediction: Dict[str, Any]) -> List[str]:
-        """Generate driving behavior recommendations based on prediction"""
-        recommendations = []
-        predicted_style = behavior_prediction['predicted_style']
-        confidence = behavior_prediction['confidence']
-        
-        if confidence > 0.8:
-            recommendations.append(f"Expert analysis shows {predicted_style} driving style (high confidence)")
-        else:
-            recommendations.append(f"Driving style appears to be {predicted_style} (moderate confidence)")
-        
-        # Style-specific recommendations
-        style_advice = {
-            'aggressive': [
-                "Consider smoother throttle and brake inputs for better tire management",
-                "Try to maintain higher minimum speeds through corners",
-                "Focus on consistent lap times rather than single fast laps"
-            ],
-            'smooth': [
-                "Your smooth driving style is excellent for tire longevity",
-                "You can afford to be slightly more aggressive on throttle application",
-                "Consider pushing harder in practice to find the limit"
-            ],
-            'conservative': [
-                "You have room to push harder - try braking later into corners",
-                "Increase throttle application aggressiveness on corner exit",
-                "Focus on finding the racing line for better lap times"
-            ],
-            'optimal': [
-                "Your driving style matches expert patterns very well",
-                "Maintain this consistent approach for race conditions",
-                "Focus on race craft and strategic driving"
-            ],
-            'defensive': [
-                "Good for wheel-to-wheel racing situations",
-                "In qualifying or practice, try to be more aggressive",
-                "Focus on protecting the inside line in races"
-            ]
-        }
-        
-        recommendations.extend(style_advice.get(predicted_style, [
-            "Continue analyzing your driving patterns for improvement",
-            "Compare your telemetry with expert drivers",
-            "Focus on consistency and smooth inputs"
-        ]))
-        
-        return recommendations
-    
-    
-    def _calculate_driving_metrics_comparison(self, detailed_comparisons: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """Calculate overall driving metrics comparison from detailed point comparisons"""
-        
-        if not detailed_comparisons:
-            return {"error": "No comparison data available"}
-        
-        metrics = {
-            "speed_analysis": {},
-            "throttle_analysis": {},
-            "brake_analysis": {},
-            "steering_analysis": {},
-            "gear_analysis": {},
-            "overall_similarity": 0
-        }
-        
-        # Collect all comparison data
-        speed_diffs = []
-        throttle_diffs = []
-        brake_diffs = []
-        steering_diffs = []
-        gear_optimal_count = 0
-        similarity_scores = []
-        
-        for comparison in detailed_comparisons:
-            comps = comparison.get("comparisons", {})
-            
-            if "speed" in comps:
-                speed_diffs.append(comps["speed"]["difference"])
-            if "throttle" in comps:
-                throttle_diffs.append(comps["throttle"]["difference"])
-            if "brake" in comps:
-                brake_diffs.append(comps["brake"]["difference"])
-            if "steering" in comps:
-                steering_diffs.append(comps["steering"]["difference"])
-            if "gear" in comps:
-                if comps["gear"]["gear_optimal"]:
-                    gear_optimal_count += 1
-            
-            similarity_scores.append(comparison.get("point_similarity", 0))
-        
-        # Speed analysis
-        if speed_diffs:
-            metrics["speed_analysis"] = {
-                "average_difference_kmh": np.mean(speed_diffs),
-                "speed_deficit_percentage": (len([d for d in speed_diffs if d > 5]) / len(speed_diffs)) * 100,
-                "speed_excess_percentage": (len([d for d in speed_diffs if d < -5]) / len(speed_diffs)) * 100,
-                "speed_consistency": max(0, 100 - np.std(speed_diffs)),
-                "max_speed_difference": max(abs(d) for d in speed_diffs),
-                "recommendation": self._generate_speed_recommendation(speed_diffs)
-            }
-        
-        # Throttle analysis
-        if throttle_diffs:
-            metrics["throttle_analysis"] = {
-                "average_difference": np.mean(throttle_diffs),
-                "aggressive_percentage": (len([d for d in throttle_diffs if d < -0.1]) / len(throttle_diffs)) * 100,
-                "conservative_percentage": (len([d for d in throttle_diffs if d > 0.1]) / len(throttle_diffs)) * 100,
-                "throttle_consistency": max(0, 100 - np.std(throttle_diffs) * 100),
-                "recommendation": self._generate_throttle_recommendation(throttle_diffs)
-            }
-        
-        # Brake analysis
-        if brake_diffs:
-            metrics["brake_analysis"] = {
-                "average_difference": np.mean(brake_diffs),
-                "under_braking_percentage": (len([d for d in brake_diffs if d > 0.1]) / len(brake_diffs)) * 100,
-                "over_braking_percentage": (len([d for d in brake_diffs if d < -0.1]) / len(brake_diffs)) * 100,
-                "brake_consistency": max(0, 100 - np.std(brake_diffs) * 100),
-                "recommendation": self._generate_brake_recommendation(brake_diffs)
-            }
-        
-        # Steering analysis
-        if steering_diffs:
-            metrics["steering_analysis"] = {
-                "average_difference_rad": np.mean(steering_diffs),
-                "steering_precision": max(0, 100 - np.std(steering_diffs) * 100),
-                "over_steering_percentage": (len([d for d in steering_diffs if abs(d) > 0.1]) / len(steering_diffs)) * 100,
-                "recommendation": self._generate_steering_recommendation(steering_diffs)
-            }
-        
-        # Gear analysis
-        if detailed_comparisons:
-            gear_optimality = (gear_optimal_count / len(detailed_comparisons)) * 100
-            metrics["gear_analysis"] = {
-                "optimal_gear_percentage": gear_optimality,
-                "recommendation": self._generate_gear_recommendation(gear_optimality)
-            }
-        
-        # Overall similarity
-        if similarity_scores:
-            metrics["overall_similarity"] = np.mean(similarity_scores)
-        
-        return metrics
-    
-    def _generate_speed_recommendation(self, speed_diffs: List[float]) -> str:
-        """Generate speed-specific recommendation"""
-        avg_diff = np.mean(speed_diffs)
-        if avg_diff > 10:
-            return "You're consistently carrying too much speed - focus on better braking points"
-        elif avg_diff > 5:
-            return "Slight tendency to carry excess speed - work on braking consistency"
-        elif avg_diff < -10:
-            return "You're leaving significant speed on the table - try braking later and carrying more corner speed"
-        elif avg_diff < -5:
-            return "You can carry more speed through corners - practice finding the limit gradually"
-        else:
-            return "Good speed management overall - maintain this consistency"
-    
-    def _generate_throttle_recommendation(self, throttle_diffs: List[float]) -> str:
-        """Generate throttle-specific recommendation"""
-        avg_diff = np.mean(throttle_diffs)
-        if avg_diff > 0.2:
-            return "You're being too conservative with throttle - apply power earlier and more aggressively"
-        elif avg_diff > 0.1:
-            return "Slightly conservative throttle application - try being more aggressive on corner exit"
-        elif avg_diff < -0.2:
-            return "Too aggressive with throttle - focus on smoother application to avoid wheelspin"
-        elif avg_diff < -0.1:
-            return "Slightly aggressive throttle - work on progressive application"
-        else:
-            return "Good throttle control - maintain this technique"
-    
-    def _generate_brake_recommendation(self, brake_diffs: List[float]) -> str:
-        """Generate brake-specific recommendation"""
-        avg_diff = np.mean(brake_diffs)
-        if avg_diff > 0.2:
-            return "You're under-braking significantly - brake later and with more pressure"
-        elif avg_diff > 0.1:
-            return "Slightly under-braking - you can brake later and with more confidence"
-        elif avg_diff < -0.2:
-            return "Over-braking - try braking later and with more progressive pressure release"
-        elif avg_diff < -0.1:
-            return "Slightly over-braking - work on later braking points"
-        else:
-            return "Good braking technique - maintain this approach"
-    
-    def _generate_steering_recommendation(self, steering_diffs: List[float]) -> str:
-        """Generate steering-specific recommendation"""
-        precision = max(0, 100 - np.std(steering_diffs) * 100)
-        if precision < 70:
-            return "Inconsistent steering inputs - focus on smoother, more precise steering"
-        elif precision < 85:
-            return "Good steering control with room for improvement in precision"
-        else:
-            return "Excellent steering precision - maintain this smooth technique"
-    
-    def _generate_gear_recommendation(self, gear_optimality: float) -> str:
-        """Generate gear-specific recommendation"""
-        if gear_optimality < 60:
-            return "Significant gear optimization needed - focus on optimal shift points"
-        elif gear_optimality < 80:
-            return "Good gear selection with some room for improvement"
-        else:
-            return "Excellent gear selection - maintain this technique"
-    
 
-    
-    def _generate_overall_driving_analysis(self, point_analyses: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """Generate overall driving analysis from individual point analyses"""
+    async def identify_track_corners(self, trackName: str) -> Dict[str, Any]:
+        try:
+            sessions = await backend_service.get_all_racing_sessions(trackName)
+        except Exception as e:
+            return {"error": str(e)}
+
+        each_session_telemetry_data = []
+  
+        for session in sessions.get("sessions", []):
+                each_session_telemetry_data.append(session.get("data", []))
+
+        if not each_session_telemetry_data:
+            raise ValueError("No telemetry data found")
+
+        # Flatten the list of lists into a single list of telemetry records
+        telemetry_data = [item for sublist in each_session_telemetry_data for item in sublist]
         
-        # Collect efficiency scores
-        efficiency_scores = []
-        behavior_styles = []
+        # Convert to DataFrame for analysis
+        df = pd.DataFrame(telemetry_data)
         
-        for analysis in point_analyses:
-            action_guidance = analysis.get("action_guidance", {})
-            if "performance_insights" in action_guidance:
-                efficiency_scores.append(action_guidance["performance_insights"].get("overall_efficiency", 0))
-            
-            behavior_guidance = analysis.get("behavior_guidance", {})
-            if "predicted_driving_style" in behavior_guidance:
-                behavior_styles.append(behavior_guidance["predicted_driving_style"])
+        # Process telemetry data
+        feature_processor = FeatureProcessor(df)
+        processed_df = feature_processor.general_cleaning_for_analysis()
         
-        # Calculate overall metrics
-        avg_efficiency = np.mean(efficiency_scores) if efficiency_scores else 0
-        efficiency_consistency = 100 - np.std(efficiency_scores) if len(efficiency_scores) > 1 else 100
+        # Create track cornering analyzer and filter top performance laps
+        track_analyzer = TrackCorneringAnalyzer()
+        filtered_df = track_analyzer.filter_top_performance_laps(processed_df)
         
-        # Most common driving style
-        most_common_style = max(set(behavior_styles), key=behavior_styles.count) if behavior_styles else "unknown"
-        style_consistency = (behavior_styles.count(most_common_style) / len(behavior_styles) * 100) if behavior_styles else 0
+        # Identify cornering phases
+        cornering_df = track_analyzer.identify_cornering_phases(filtered_df)
         
-        return {
-            "average_efficiency": avg_efficiency,
-            "efficiency_consistency": efficiency_consistency,
-            "dominant_driving_style": most_common_style,
-            "style_consistency": style_consistency,
-            "data_points_analyzed": len(point_analyses),
-            "performance_category": self._categorize_performance(avg_efficiency),
-            "consistency_category": self._categorize_consistency(efficiency_consistency)
-        }
-    
-    def _generate_improvement_plan(self, point_analyses: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """Generate personalized improvement plan based on analysis"""
-        
-        # Collect all recommendations
-        all_behavior_recs = []
-        all_action_recs = []
-        
-        for analysis in point_analyses:
-            behavior_guidance = analysis.get("behavior_guidance", {})
-            action_guidance = analysis.get("action_guidance", {})
-            
-            if "style_recommendations" in behavior_guidance:
-                all_behavior_recs.extend(behavior_guidance["style_recommendations"])
-            
-            if "action_recommendations" in action_guidance:
-                all_action_recs.extend(action_guidance["action_recommendations"])
-        
-        # Find most common recommendations
-        behavior_counter = Counter(all_behavior_recs)
-        action_counter = Counter(all_action_recs)
-        
-        return {
-            "priority_behavior_improvements": [item for item, count in behavior_counter.most_common(3)],
-            "priority_action_improvements": [item for item, count in action_counter.most_common(3)],
-            "practice_focus_areas": self._identify_focus_areas(point_analyses),
-            "estimated_improvement_potential": self._estimate_improvement_potential(point_analyses)
-        }
-    
-    def _calculate_consistency_metrics(self, point_analyses: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """Calculate driving consistency metrics"""
-        
-        efficiency_scores = []
-        for analysis in point_analyses:
-            action_guidance = analysis.get("action_guidance", {})
-            if "performance_insights" in action_guidance:
-                efficiency_scores.append(action_guidance["performance_insights"].get("overall_efficiency", 0))
-        
-        if len(efficiency_scores) < 2:
-            return {"consistency_score": 100, "variability": 0}
-        
-        consistency_score = 100 - np.std(efficiency_scores)
-        variability = np.std(efficiency_scores)
-        
-        return {
-            "consistency_score": max(0, consistency_score),
-            "variability": variability,
-            "efficiency_range": {
-                "min": min(efficiency_scores),
-                "max": max(efficiency_scores),
-                "average": np.mean(efficiency_scores)
+        print(cornering_df)
+        # Get analysis summary
+        analysis_summary = track_analyzer.get_cornering_analysis_summary(cornering_df)
+        return cornering_df
+        try:
+            #save the info to backend
+            ai_model_dto = {
+                "modelType": "track_corner_analysis",
+                "trackName": trackName,
+                "modelData": analysis_summary,
+                "metadata": {
+                },
+                "isActive": True
             }
-        }
-    
-    def _categorize_performance(self, efficiency: float) -> str:
-        """Categorize performance level based on efficiency"""
-        if efficiency >= 90:
-            return "Expert"
-        elif efficiency >= 75:
-            return "Advanced"
-        elif efficiency >= 60:
-            return "Intermediate"
-        elif efficiency >= 40:
-            return "Beginner"
-        else:
-            return "Novice"
-    
-    def _categorize_consistency(self, consistency: float) -> str:
-        """Categorize consistency level"""
-        if consistency >= 90:
-            return "Very Consistent"
-        elif consistency >= 75:
-            return "Consistent"
-        elif consistency >= 60:
-            return "Moderately Consistent"
-        else:
-            return "Inconsistent"
-    
-    def _identify_focus_areas(self, point_analyses: List[Dict[str, Any]]) -> List[str]:
-        """Identify key areas for practice focus"""
-        focus_areas = []
-        
-        # Analyze efficiency patterns
-        low_efficiency_count = 0
-        for analysis in point_analyses:
-            action_guidance = analysis.get("action_guidance", {})
-            if "performance_insights" in action_guidance:
-                efficiency = action_guidance["performance_insights"].get("overall_efficiency", 100)
-                if efficiency < 60:
-                    low_efficiency_count += 1
-        
-        if low_efficiency_count > len(point_analyses) * 0.3:
-            focus_areas.append("Overall driving technique and smoothness")
-        
-        # Add specific focus areas based on common issues
-        focus_areas.extend([
-            "Throttle control and timing",
-            "Brake pressure modulation",
-            "Racing line optimization",
-            "Consistency across multiple laps"
-        ])
-        
-        return focus_areas[:4]  # Return top 4 focus areas
-    
-    def _estimate_improvement_potential(self, point_analyses: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """Estimate improvement potential based on current performance"""
-        
-        efficiency_scores = []
-        for analysis in point_analyses:
-            action_guidance = analysis.get("action_guidance", {})
-            if "performance_insights" in action_guidance:
-                efficiency_scores.append(action_guidance["performance_insights"].get("overall_efficiency", 0))
-        
-        if not efficiency_scores:
-            return {"potential": "Unknown", "estimated_gain": 0}
-        
-        avg_efficiency = np.mean(efficiency_scores)
-        potential_gain = 100 - avg_efficiency
-        
-        if potential_gain > 40:
-            potential_level = "Very High"
-        elif potential_gain > 25:
-            potential_level = "High"
-        elif potential_gain > 15:
-            potential_level = "Moderate"
-        elif potential_gain > 5:
-            potential_level = "Low"
-        else:
-            potential_level = "Minimal"
-        
-        return {
-            "potential": potential_level,
-            "estimated_gain": potential_gain,
-            "current_efficiency": avg_efficiency,
-            "target_efficiency": min(100, avg_efficiency + potential_gain * 0.6)  # Realistic target
-        }
-    
-    # Cache Management Methods
-    def invalidate_model_cache(self, 
-                              model_type: str,
-                              track_name: str,
-                              car_name: str,
-                              model_subtype: Optional[str] = None) -> bool:
-        """
-        Invalidate a specific model from cache
-        
-        Args:
-            model_type: Type of model to invalidate
-            track_name: Track name
-            car_name: Car name
-            model_subtype: Optional model subtype
             
-        Returns:
-            True if model was cached and removed, False otherwise
-        """
-        return self.model_cache.invalidate(
-            model_type=model_type,
-            track_name=track_name,
-            car_name=car_name,
-            model_subtype=model_subtype
-        )
-    
-    def invalidate_track_cache(self, track_name: str) -> int:
-        """
-        Invalidate all cached models for a specific track
-        
-        Args:
-            track_name: Track name to invalidate
-            
-        Returns:
-            Number of models invalidated
-        """
-        pattern = f"*:{track_name}:*"
-        return self.model_cache.invalidate_by_pattern(pattern)
-    
-    def invalidate_car_cache(self, car_name: str) -> int:
-        """
-        Invalidate all cached models for a specific car
-        
-        Args:
-            car_name: Car name to invalidate
-            
-        Returns:
-            Number of models invalidated
-        """
-        pattern = f"*:*:{car_name}:*"
-        return self.model_cache.invalidate_by_pattern(pattern)
-    
-    def get_cache_stats(self) -> Dict[str, Any]:
-        """
-        Get comprehensive cache statistics
-        
-        Returns:
-            Dictionary with cache statistics and performance metrics
-        """
-        return self.model_cache.get_stats()
-    
-    def get_model_cache_info(self, 
-                            model_type: str,
-                            track_name: str,
-                            car_name: str,
-                            model_subtype: Optional[str] = None) -> Optional[Dict[str, Any]]:
-        """
-        Get information about a cached model
-        
-        Args:
-            model_type: Type of model
-            track_name: Track name
-            car_name: Car name
-            model_subtype: Optional model subtype
-            
-        Returns:
-            Cache information or None if not cached
-        """
-        return self.model_cache.get_cache_info(
-            model_type=model_type,
-            track_name=track_name,
-            car_name=car_name,
-            model_subtype=model_subtype
-        )
+            await backend_service.save_ai_model(ai_model_dto)
+        except Exception as error:
+            pass
+        return analysis_summary
     
     def clear_all_cache(self):
         """Clear all cached models"""
         self.model_cache.clear()
         print("[INFO] All cached models cleared")
+    
+    async def _get_cached_model_or_fetch(self,
+                                        model_type: str,
+                                        track_name: str,
+                                        car_name: str,
+                                        model_subtype: str = "complete_model_data",
+                                        deserializer_func=None) -> Tuple[Any, Dict[str, Any]]:
+        """
+        Get model from cache or fetch from backend with thread-safe locking
+        
+        Args:
+            model_type: Type of model ('imitation_learning', etc.)
+            track_name: Track name for the model
+            car_name: Car name for the model  
+            model_subtype: Subtype identifier for the model
+            deserializer_func: Function to deserialize model data from backend
+            
+        Returns:
+            Tuple of (deserialized_model_data, metadata)
+        """
+        # Unique key for the model to manage locks
+        model_key = f"{track_name}/{car_name}/{model_type}"
+        
+        # Use flags to track if this thread is responsible for fetching
+        is_fetching_thread = False
+        deserialized_model_data = None
+        metadata = {}
+        
+        try:
+            # First, try to get model from cache without any locking
+            cached_result = self.model_cache.get(
+                model_type=model_type,
+                track_name=track_name,
+                car_name=car_name,
+                model_subtype=model_subtype
+            )
+            
+            if cached_result:
+                deserialized_model_data, metadata = cached_result
+                return deserialized_model_data, metadata
+            
+            # If no cached result, handle fetching with proper locking
+            async with self._lock_creation_lock:
+                # Double-check cache after acquiring lock
+                cached_result = self.model_cache.get(
+                    model_type=model_type,
+                    track_name=track_name,
+                    car_name=car_name,
+                    model_subtype=model_subtype
+                )
+                
+                if cached_result:
+                    deserialized_model_data, metadata = cached_result
+                    return deserialized_model_data, metadata
+                elif model_key in self._model_fetch_locks:
+                    # Another thread is fetching this model, wait for it
+                    fetch_event = self._model_fetch_locks[model_key]
+                else:
+                    # We're the first to request this model, create the event and mark ourselves as fetching
+                    self._model_fetch_locks[model_key] = asyncio.Event()
+                    is_fetching_thread = True
+            
+            # If we need to wait for another thread
+            if not deserialized_model_data and not is_fetching_thread:
+                try:
+                    await fetch_event.wait()
+                    # The other thread should have cached the model, try cache again
+                    cached_result = self.model_cache.get(
+                        model_type=model_type,
+                        track_name=track_name,
+                        car_name=car_name,
+                        model_subtype=model_subtype
+                    )
+                    if cached_result:
+                        deserialized_model_data, metadata = cached_result
+                        print(f"[INFO] Using model cached by another thread for {track_name}/{car_name}")
+                    else:
+                        print(f"[WARNING] Expected cached model not found after waiting for {track_name}/{car_name}")
+                        # Continue to try fetching ourselves as fallback
+                        is_fetching_thread = True
+                except Exception as wait_error:
+                    print(f"[ERROR] Error while waiting for model fetch: {str(wait_error)}")
+                    # Continue to try fetching ourselves as fallback
+                    is_fetching_thread = True
+
+            # If we are the fetching thread or no data in cache, do the actual fetch
+            if not deserialized_model_data and is_fetching_thread:
+                try:
+                    deserialized_model_data, metadata = await self._fetch_and_cache_model(
+                        model_type=model_type,
+                        track_name=track_name,
+                        car_name=car_name,
+                        model_subtype=model_subtype,
+                        deserializer_func=deserializer_func
+                    )
+                    print(f"[INFO] Successfully fetched and cached model for {track_name}/{car_name}")
+                    
+                except Exception as fetch_error:
+                    print(f"[ERROR] Failed to fetch model: {str(fetch_error)}")
+                    raise fetch_error
+                finally:
+                    # Always signal completion and clean up lock when we're the fetching thread
+                    self._cleanup_fetch_lock(model_key, track_name, car_name)
+            
+            # At this point, we should have the model data
+            if not deserialized_model_data:
+                raise Exception("Failed to obtain model data from cache or backend")
+            
+            return deserialized_model_data, metadata
+            
+        except Exception as e:
+            # Clean up any locks that might have been created by this thread
+            if is_fetching_thread:
+                self._emergency_cleanup_fetch_lock(model_key, track_name, car_name)
+            
+            raise e
+    
+    async def _fetch_and_cache_model(self,
+                                    model_type: str,
+                                    track_name: str,
+                                    car_name: str,
+                                    model_subtype: str = "complete_model_data",
+                                    deserializer_func=None) -> Tuple[Any, Dict[str, Any]]:
+        """
+        Fetch model from backend and cache it
+        
+        Args:
+            model_type: Type of model ('imitation_learning', etc.)
+            track_name: Track name for the model
+            car_name: Car name for the model
+            model_subtype: Subtype identifier for the model
+            deserializer_func: Function to deserialize model data from backend
+            
+        Returns:
+            Tuple of (deserialized_model_data, metadata)
+        """
+        model_response = await self.backend_service.getCompleteActiveModelData(
+            track_name, car_name, model_type
+        )
+          
+        if "error" in model_response:
+            raise Exception(f"Backend error: {model_response['error']}")
+        
+        # Extract modelData from the correct location in response
+        model_data = None
+        if "data" in model_response and isinstance(model_response["data"], dict):
+            model_data = model_response["data"].get("modelData", {})
+        else:
+            model_data = model_response.get("modelData", {})
+        
+        if not model_data:
+            raise Exception("No model data found in response")
+
+        # Deserialize the model data using provided function or default
+        if deserializer_func:
+            deserialized_model_data = deserializer_func(model_data)
+        elif model_type == "imitation_learning":
+            deserialized_model_data = self.imitation_learning.deserialize_object_inside(model_data)
+        else:
+            # For other model types, you might need to add more deserializers
+            deserialized_model_data = model_data
+        
+        # Cache the deserialized model for future use
+        cache_metadata = {
+            "track_name": track_name,
+            "car_name": car_name,
+            "model_type": model_type,
+            "fetched_at": datetime.now().isoformat(),
+            "backend_model_id": model_response.get("id", "unknown")
+        }
+        
+        self.model_cache.put(
+            model_type=model_type,
+            track_name=track_name,
+            car_name=car_name,
+            data=deserialized_model_data,
+            metadata=cache_metadata,
+            model_subtype=model_subtype
+        )
+        
+        return deserialized_model_data, cache_metadata
+    
+    def _cleanup_fetch_lock(self, model_key: str, track_name: str, car_name: str):
+        """
+        Clean up fetch lock for a specific model key
+        
+        Args:
+            model_key: The model key used for locking
+            track_name: Track name for logging
+            car_name: Car name for logging
+        """
+        if model_key in self._model_fetch_locks:
+            try:
+                self._model_fetch_locks[model_key].set()
+                del self._model_fetch_locks[model_key]
+                print(f"[INFO] Released fetch lock for {track_name}/{car_name}")
+            except Exception as cleanup_error:
+                print(f"[WARNING] Error cleaning up fetch lock: {str(cleanup_error)}")
+    
+    def _emergency_cleanup_fetch_lock(self, model_key: str, track_name: str, car_name: str):
+        """
+        Emergency cleanup of fetch lock with additional safety checks
+        
+        Args:
+            model_key: The model key used for locking
+            track_name: Track name for logging
+            car_name: Car name for logging
+        """
+        if hasattr(self, '_model_fetch_locks') and model_key in self._model_fetch_locks:
+            try:
+                self._model_fetch_locks[model_key].set()  # Signal any waiting threads
+                del self._model_fetch_locks[model_key]
+                print(f"[INFO] Emergency cleanup of fetch lock for {track_name}/{car_name}")
+            except Exception as cleanup_error:
+                print(f"[WARNING] Error during emergency lock cleanup: {str(cleanup_error)}")
     
     def preload_models_for_session(self, 
                                    track_name: str, 
