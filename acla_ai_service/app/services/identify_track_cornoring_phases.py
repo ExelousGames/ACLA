@@ -60,8 +60,9 @@ class TrackCorneringAnalyzer:
             print(f"Warning: Missing required features: {missing_features}")
             return df_analysis
         
-        # Step 1: Identify corners using steering angle and position changes
+        # Step 1: Identify corners using multi-factor analysis
         corners = self._identify_corners(df_analysis)
+        print(f"[INFO] Detected {len(corners)} corners using improved multi-factor analysis")
         
         # Step 2: For each corner, identify the phases
         for corner_id, corner_data in corners.items():
@@ -82,45 +83,253 @@ class TrackCorneringAnalyzer:
         return df_analysis
 
     def _identify_corners(self, df: pd.DataFrame) -> Dict[int, Dict[str, Any]]:
-        """Identify corner sections using steering angle and position data"""
+        """
+        Identify corner sections using multi-factor analysis:
+        steering angle, speed reduction, and track position changes
+        """
         
-        # Calculate steering angle magnitude and smooth it
-        steering_abs = np.abs(df['Physics_steer_angle']).rolling(window=5).mean()
+        # Prepare smoothed data for analysis
+        steering_abs = np.abs(df['Physics_steer_angle']).rolling(window=5, center=True).mean().fillna(method='ffill').fillna(method='bfill')
+        speed = df['Physics_speed_kmh'].rolling(window=5, center=True).mean().fillna(method='ffill').fillna(method='bfill')
         
-        # Define steering threshold for corner detection
-        steering_threshold = steering_abs.quantile(self.steering_threshold_percentile)
+        # Multi-factor corner detection
+        corner_indicators = self._calculate_corner_indicators(df, steering_abs, speed)
         
-        # Find regions where steering exceeds threshold
-        in_corner = steering_abs > steering_threshold
+        # Find corner regions using combined indicators
+        corner_regions = self._find_corner_regions(corner_indicators, len(df))
         
-        corners = {}
-        corner_id = 0
-        in_corner_section = False
-        corner_start = 0
+        # Validate and refine corners
+        validated_corners = self._validate_corners(df, corner_regions, steering_abs, speed)
+        
+        return validated_corners
+    
+    def _calculate_corner_indicators(self, df: pd.DataFrame, steering_abs: pd.Series, speed: pd.Series) -> pd.Series:
+        """Calculate a combined corner indicator using multiple telemetry signals"""
+        
+        # Factor 1: Steering angle (normalized 0-1)
+        steering_threshold = steering_abs.quantile(0.6)  # Lower threshold for better sensitivity
+        steering_indicator = (steering_abs > steering_threshold).astype(float)
+        
+        # Factor 2: Speed reduction (normalized 0-1)
+        speed_diff = speed.diff().rolling(window=3).mean().fillna(0)
+        speed_reduction_indicator = (speed_diff < -2.0).astype(float)  # Significant deceleration
+        
+        # Factor 3: Brake application (if available)
+        brake_indicator = pd.Series([0.0] * len(df))
+        if 'Physics_brake' in df.columns:
+            brake_data = df['Physics_brake'].fillna(0)
+            brake_threshold = brake_data.quantile(0.5) if brake_data.max() > 0 else 0
+            brake_indicator = (brake_data > brake_threshold).astype(float)
+        
+        # Factor 4: Track curvature (using position changes if available)
+        curvature_indicator = pd.Series([0.0] * len(df))
+        if 'Graphics_normalized_car_position' in df.columns:
+            position = df['Graphics_normalized_car_position'].fillna(method='ffill').fillna(method='bfill')
+            # Calculate rate of position change to detect tight sections
+            position_rate = position.diff().abs().rolling(window=5).mean().fillna(0)
+            position_threshold = position_rate.quantile(0.7)
+            curvature_indicator = (position_rate < position_threshold * 0.5).astype(float)  # Slow position change = tight corner
+        
+        # Combine indicators with weights
+        # Steering is most important, followed by speed/brake, then curvature
+        combined_score = (
+            0.4 * steering_indicator +
+            0.25 * speed_reduction_indicator +
+            0.2 * brake_indicator +
+            0.15 * curvature_indicator
+        )
+        
+        # Smooth the combined score
+        return combined_score.rolling(window=7, center=True).mean().fillna(method='ffill').fillna(method='bfill')
+    
+    def _find_corner_regions(self, corner_indicators: pd.Series, data_length: int) -> List[Tuple[int, int]]:
+        """Find regions where corner indicators suggest cornering activity"""
+        
+        # Use adaptive threshold - but ensure it's reasonable
+        q70_threshold = corner_indicators.quantile(0.7)
+        q80_threshold = corner_indicators.quantile(0.8)
+        
+        # Choose threshold based on data distribution
+        if q70_threshold > 0.6:
+            corner_threshold = q70_threshold
+        elif q80_threshold > 0.4:
+            corner_threshold = q80_threshold  
+        else:
+            corner_threshold = max(0.35, corner_indicators.mean() + corner_indicators.std())
+        
+        print(f"[DEBUG] Corner detection threshold: {corner_threshold:.3f}")
+        
+        # Find regions above threshold
+        in_corner = corner_indicators > corner_threshold
+        
+        regions = []
+        region_start = None
         
         for i, is_cornering in enumerate(in_corner):
-            if is_cornering and not in_corner_section:
-                # Start of new corner
-                corner_start = max(0, i - 10)  # Include approach phase
-                in_corner_section = True
-            elif not is_cornering and in_corner_section:
-                # End of corner
-                corner_end = min(len(df) - 1, i + 10)  # Include exit phase
-                
-                # Only consider significant corners (minimum duration)
-                if corner_end - corner_start > self.min_corner_duration:
-                    corners[corner_id] = {
-                        'start_idx': corner_start,
-                        'end_idx': corner_end,
-                        'position_start': df.iloc[corner_start]['Graphics_normalized_car_position'],
-                        'position_end': df.iloc[corner_end]['Graphics_normalized_car_position'],
-                        'max_steering': steering_abs.iloc[corner_start:corner_end].max()
-                    }
-                    corner_id += 1
-                
-                in_corner_section = False
+            if is_cornering and region_start is None:
+                # Start of new corner region
+                region_start = i
+            elif not is_cornering and region_start is not None:
+                # End of corner region
+                if i - region_start > self.min_corner_duration:
+                    regions.append((region_start, i))
+                region_start = None
         
-        return corners
+        # Handle case where corner continues to end of data
+        if region_start is not None and data_length - region_start > self.min_corner_duration:
+            regions.append((region_start, data_length - 1))
+        
+        # Merge nearby regions that might be part of the same corner
+        merged_regions = self._merge_nearby_regions(regions, max_gap=15)
+        
+        print(f"[DEBUG] Found {len(regions)} raw regions, merged to {len(merged_regions)} corners")
+        
+        return merged_regions
+    
+    def _merge_nearby_regions(self, regions: List[Tuple[int, int]], max_gap: int = 15) -> List[Tuple[int, int]]:
+        """Merge corner regions that are close together (likely same corner)"""
+        
+        if not regions:
+            return regions
+        
+        # Sort regions by start position
+        sorted_regions = sorted(regions, key=lambda x: x[0])
+        merged = [sorted_regions[0]]
+        
+        for current_start, current_end in sorted_regions[1:]:
+            last_start, last_end = merged[-1]
+            
+            # If current region starts within max_gap of previous region end
+            if current_start - last_end <= max_gap:
+                # Merge regions
+                merged[-1] = (last_start, max(last_end, current_end))
+            else:
+                # Keep as separate region
+                merged.append((current_start, current_end))
+        
+        return merged
+    
+    def _validate_corners(self, df: pd.DataFrame, corner_regions: List[Tuple[int, int]], 
+                         steering_abs: pd.Series, speed: pd.Series) -> Dict[int, Dict[str, Any]]:
+        """Validate corner regions and create corner dictionary"""
+        
+        validated_corners = {}
+        corner_id = 0
+        
+        for start_idx, end_idx in corner_regions:
+            # Extend region slightly to include approach and exit
+            extended_start = max(0, start_idx - 8)
+            extended_end = min(len(df) - 1, end_idx + 8)
+            
+            # Validate this is actually a corner using additional checks
+            if self._is_valid_corner_region(df, extended_start, extended_end, steering_abs, speed):
+                # Get position data if available
+                position_start = None
+                position_end = None
+                
+                if 'Graphics_normalized_car_position' in df.columns:
+                    pos_col = df['Graphics_normalized_car_position']
+                    if not pd.isna(pos_col.iloc[extended_start]):
+                        position_start = pos_col.iloc[extended_start]
+                    if not pd.isna(pos_col.iloc[extended_end]):
+                        position_end = pos_col.iloc[extended_end]
+                
+                max_steering_val = steering_abs.iloc[extended_start:extended_end+1].max()
+                min_speed_val = speed.iloc[extended_start:extended_end+1].min()
+                avg_steering_val = steering_abs.iloc[extended_start:extended_end+1].mean()
+                
+                validated_corners[corner_id] = {
+                    'start_idx': extended_start,
+                    'end_idx': extended_end,
+                    'position_start': position_start,
+                    'position_end': position_end,
+                    'max_steering': max_steering_val,
+                    'min_speed': min_speed_val,
+                    'avg_steering': avg_steering_val
+                }
+                
+                print(f"[DEBUG] Corner {corner_id}: indices {extended_start}-{extended_end}, "
+                      f"max_steering={max_steering_val:.3f}, min_speed={min_speed_val:.1f}km/h")
+                corner_id += 1
+        
+        return validated_corners
+    
+    def get_corner_detection_debug_info(self, df: pd.DataFrame) -> Dict[str, Any]:
+        """Get debug information about corner detection process"""
+        
+        if len(df) < 50:
+            return {"error": "Not enough data for corner detection"}
+        
+        # Check required features
+        required_features = ['Physics_steer_angle', 'Physics_speed_kmh']
+        missing_features = [f for f in required_features if f not in df.columns]
+        if missing_features:
+            return {"error": f"Missing required features: {missing_features}"}
+        
+        # Calculate indicators
+        steering_abs = np.abs(df['Physics_steer_angle']).rolling(window=5, center=True).mean().fillna(method='ffill').fillna(method='bfill')
+        speed = df['Physics_speed_kmh'].rolling(window=5, center=True).mean().fillna(method='ffill').fillna(method='bfill')
+        corner_indicators = self._calculate_corner_indicators(df, steering_abs, speed)
+        
+        # Get statistics
+        return {
+            "total_data_points": len(df),
+            "steering_stats": {
+                "mean": float(steering_abs.mean()),
+                "max": float(steering_abs.max()),
+                "q50": float(steering_abs.quantile(0.5)),
+                "q70": float(steering_abs.quantile(0.7)),
+                "q90": float(steering_abs.quantile(0.9))
+            },
+            "speed_stats": {
+                "mean": float(speed.mean()),
+                "min": float(speed.min()),
+                "max": float(speed.max()),
+                "range": float(speed.max() - speed.min())
+            },
+            "corner_indicator_stats": {
+                "mean": float(corner_indicators.mean()),
+                "max": float(corner_indicators.max()),
+                "q70": float(corner_indicators.quantile(0.7)),
+                "q80": float(corner_indicators.quantile(0.8)),
+                "points_above_0.3": int((corner_indicators > 0.3).sum()),
+                "points_above_0.5": int((corner_indicators > 0.5).sum())
+            },
+            "has_brake_data": 'Physics_brake' in df.columns,
+            "has_position_data": 'Graphics_normalized_car_position' in df.columns
+        }
+    
+    def _is_valid_corner_region(self, df: pd.DataFrame, start_idx: int, end_idx: int, 
+                               steering_abs: pd.Series, speed: pd.Series) -> bool:
+        """Additional validation to ensure detected region is actually a corner"""
+        
+        if end_idx <= start_idx or end_idx - start_idx < self.min_corner_duration:
+            return False
+        
+        corner_section = df.iloc[start_idx:end_idx+1]
+        
+        # Check 1: Must have significant steering activity
+        avg_steering = steering_abs.iloc[start_idx:end_idx+1].mean()
+        max_steering = steering_abs.iloc[start_idx:end_idx+1].max()
+        
+        if max_steering < steering_abs.quantile(0.5) or avg_steering < steering_abs.quantile(0.3):
+            return False
+        
+        # Check 2: Should show speed reduction pattern typical of corners
+        corner_speeds = speed.iloc[start_idx:end_idx+1]
+        speed_range = corner_speeds.max() - corner_speeds.min()
+        
+        if speed_range < 5.0:  # Less than 5 km/h speed variation suggests not a real corner
+            return False
+        
+        # Check 3: Steering should be sustained, not just momentary
+        high_steering_points = (steering_abs.iloc[start_idx:end_idx+1] > steering_abs.quantile(0.6)).sum()
+        steering_ratio = high_steering_points / len(corner_section)
+        
+        if steering_ratio < 0.3:  # Less than 30% high steering suggests false positive
+            return False
+        
+        return True
 
     def _analyze_corner_phases(self, corner_df: pd.DataFrame, corner_id: int) -> Dict[str, List[int]]:
         """
