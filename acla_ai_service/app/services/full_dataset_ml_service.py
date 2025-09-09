@@ -648,8 +648,11 @@ class Full_dataset_TelemetryMLService:
             if not model_response or not model_response.get('success', False) or 'data' not in model_response:
                 raise ValueError("No cornering analysis data found for this track")
             
-            analysis_data = model_response.get('modelData', {})
+            analysis_data = model_response.get('data', {}).get('modelData', {})
+            if not analysis_data:
+                raise ValueError("Cornering analysis data is empty")
             
+            #retrieve all racing session in database
             try:
                 sessions = await backend_service.get_all_racing_sessions(trackName)
             except Exception as e:
@@ -667,17 +670,14 @@ class Full_dataset_TelemetryMLService:
             telemetry_data = [item for sublist in each_session_telemetry_data for item in sublist]
             
             service = CornerImitationLearningService()
-            results = service.train_corner_specific_model(telemetry_data, analysis_data)
-
-            # Serialize the results before saving to database
-            serialized_results = service.serialize_object_inside(results)
+            serialized_model_results,results = service.train_corner_specific_model(telemetry_data, analysis_data)
 
             # Save results to backend
             try:
                 ai_model_dto = {
                     "modelType": "track_corner_training",
                     "trackName": trackName,
-                    "modelData": serialized_results,
+                    "modelData": serialized_model_results,
                     "metadata": {
                         "training_timestamp": datetime.now().isoformat()
                     },
@@ -714,20 +714,15 @@ class Full_dataset_TelemetryMLService:
 
             if not model_data:
                 return {"error": "No valid cornering model found for this track"}
-
+            
             # Create CornerImitationLearningService instance
             service = CornerImitationLearningService()
-
+            print(model_data.get('corner_models', {}).keys())
             # Deserialize the model data using the service's deserialize method
-            deserialized_data = service.deserialize_object_inside(model_data)
+            deserialized_data = service.receive_serialized_model_data(model_data)
             
             # Reconstruct the trained models from the saved data
             if 'corner_models' in deserialized_data:
-                # Set up the service with the trained corner models
-                corner_learner = CornerSpecificLearner()
-                corner_learner.corner_models = deserialized_data['corner_models']
-                service.corner_learner = corner_learner
-                
                 # Get optimal actions for the current position
                 predictions = service.get_all_corner_predictions(corner_analysis_result)
                 
