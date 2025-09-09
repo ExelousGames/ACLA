@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Standalone script to run identify_track_corners function only
+Standalone script to run analyze_track_cornering function only
 
-This script initializes the TelemetryMLService and runs the identify_track_corners function
+This script initializes the TelemetryMLService and runs the analyze_track_cornering function
 to analyze track corners and cornering phases from telemetry data across all racing sessions.
 """
 
@@ -44,8 +44,8 @@ async def main():
         print("       - Save results to the backend")
         print()
         
-        # Run the identify_track_corners function
-        results = await ml_service.identify_track_corners('brands_hatch')
+        # Run the analyze_track_cornering function
+        results = await ml_service.analyze_track_cornering('brands_hatch')
 
         print("\n" + "=" * 60)
         print("CORNER IDENTIFICATION COMPLETED")

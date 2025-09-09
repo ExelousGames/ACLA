@@ -270,7 +270,7 @@ class BackendService:
                 start_pos = chunk_index * chunk_size
                 end_pos = min(start_pos + chunk_size, len(json_data))
                 chunk_data = json_data[start_pos:end_pos]
-                
+
                 # Always send the JSON string chunk, never the raw object
                 chunk_payload = chunk_data
                 
@@ -326,11 +326,24 @@ class BackendService:
         logger.info("✅ Imitation learning results saved successfully")
         return {"success": True}
 
-    async def initGetActiveModelData(self, trackName: str, carName: str, modelType: str) -> Dict[str, Any]:
+    async def initGetActiveModelData(self, trackName: Optional[str], carName: Optional[str], modelType: str) -> Dict[str, Any]:
         """Initialize chunked retrieval of active model data from backend"""
         try:
             # Call the prepare-chunked endpoint to initialize the session
-            endpoint = f"ai-model/active/{trackName}/{carName}/{modelType}/prepare-chunked"
+            # trackName and carName are query parameters, not path parameters
+            endpoint = f"ai-model/active/{modelType}/prepare-chunked"
+            
+            # Build query parameters
+            query_params = []
+            if trackName:
+                query_params.append(f"trackName={trackName}")
+            if carName:
+                query_params.append(f"carName={carName}")
+            
+            if query_params:
+                endpoint += "?" + "&".join(query_params)
+            
+            print(f"[INFO] Initializing active model data retrieval from endpoint: {endpoint}")
             response = await self.call_backend_function(endpoint, "GET")
             
             if "error" in response:
@@ -364,7 +377,7 @@ class BackendService:
             logger.error(f"Error retrieving chunk {chunkIndex} from session {sessionId}: {str(e)}")
             return {"error": f"Failed to retrieve chunk: {str(e)}"}
 
-    async def getCompleteActiveModelData(self, trackName: str, carName: str, modelType: str) -> Dict[str, Any]:
+    async def getCompleteActiveModelData(self, trackName: Optional[str], carName: Optional[str], modelType: str) -> Dict[str, Any]:
         """Get complete active model data by retrieving all chunks"""
         try:
             logger.info(f"Starting retrieval of active model data for {trackName}/{carName}/{modelType}")
