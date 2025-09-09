@@ -289,12 +289,6 @@ class ExpertTrajectoryLearner:
             features['current_time'] = df['Graphics_current_time']
             features['time_rate'] = df['Graphics_current_time'].diff()
         
-        # Tire and setup features
-        tire_temp_cols = [col for col in df.columns if 'tyre_core_temp' in col]
-        if tire_temp_cols:
-            features['avg_tire_temp'] = df[tire_temp_cols].mean(axis=1)
-            features['tire_temp_variance'] = df[tire_temp_cols].var(axis=1)
-        
         # Fill missing values
         features = features.fillna(method='bfill').fillna(0)
         
@@ -1511,6 +1505,8 @@ class ImitationLearningService:
             analysis['improvement_potential'] = "High"
         
         return analysis
+    
+    
 # Example usage and testing
 if __name__ == "__main__":
     print("ImitationLearningService initialized. Ready for expert demonstration learning!")

@@ -66,6 +66,7 @@ export class AiModelController {
         @Query('trackName') trackName?: string,
         @Query('carName') carName?: string
     ) {
+        console.log(`Preparing chunked data for active model - Track: ${trackName}, Car: ${carName}, Type: ${modelType}`);
         const modelData = await this.aiModelService.getActiveModelWithData(trackName, carName, modelType);
         const result = await this.chunkService.prepareDataForChunkedSending(modelData);
 

@@ -6,6 +6,7 @@ from typing import Dict, Any, Optional, List
 import json
 import asyncio
 from openai import AsyncOpenAI
+from app.services.full_dataset_ml_service import Full_dataset_TelemetryMLService
 from app.core import settings
 from app.services.telemetry_service import TelemetryService
 from app.services.backend_service import BackendService
@@ -18,7 +19,7 @@ class AIService:
         self.openai_client = AsyncOpenAI(api_key=settings.openai_api_key) if settings.openai_api_key else None
         self.telemetry_service = TelemetryService()
         self.backend_service = BackendService()
-    
+        self.telemetryMLService = Full_dataset_TelemetryMLService()
     def get_available_functions(self) -> List[Dict[str, Any]]:
         """Define available functions for OpenAI function calling,
         if OpenAI decides to call a function, it executes it"""
@@ -294,9 +295,13 @@ class AIService:
             print(f"[ERROR] Function {function_name} execution failed: {str(e)}")
             return {"error": f"Function execution failed: {str(e)}"}
 
-    def enable_guide_user_racing(self) -> Dict[str, Any]:
-         
-        results = { "_skip_openai_processing": True,
+    def enable_guide_user_racing(self, trackName: str, carName: str) -> Dict[str, Any]:
+        
+        track_corner_data = self.backend_service.getCompleteActiveModelData(trackName,'track_corner_analysis')
+
+        
+            
+        results = { "_skip_openai_processing": False,
                    'function_name': 'enable_guide_user_racing'
                      ,'message': 'Racing guidance has been enabled! I will now monitor your telemetry data and provide real-time recommendations to help you improve your lap times and racing performance.'
                    }

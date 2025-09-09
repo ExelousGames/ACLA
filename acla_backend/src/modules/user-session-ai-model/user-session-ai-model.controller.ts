@@ -4,7 +4,7 @@ import { Types } from 'mongoose';
 import { UserSessionAiModelService } from './user-session-ai-model.service';
 import { CreateSeesionAIModelDto, UpdateAiModelDto, GetAiModelDto, IncrementalTrainingDto, ModelPredictionDto } from 'src/dto/ai-model.dto';
 
-@Controller('ai-model')
+@Controller('user-ai-model')
 export class UserSessionAiModelController {
     constructor(private readonly aiModelService: UserSessionAiModelService) { }
 
