@@ -281,7 +281,7 @@ class AIService:
 
             # Handle different function types (sync vs async)
             if function_name == "enable_guide_user_racing":
-                return self.enable_guide_user_racing()
+                return await self.enable_guide_user_racing()
             elif function_name == "compare_sessions":
                 return await self.backend_service.compare_sessions(
                     arguments.get("session_ids"),
@@ -295,7 +295,7 @@ class AIService:
             print(f"[ERROR] Function {function_name} execution failed: {str(e)}")
             return {"error": f"Function execution failed: {str(e)}"}
 
-    def enable_guide_user_racing(self, ) -> Dict[str, Any]:
+    async def enable_guide_user_racing(self) -> Dict[str, Any]:
         
         trackName: str = 'brands_hatch'
         try:
@@ -303,7 +303,6 @@ class AIService:
             response = await self.backend_service.getCompleteActiveModelData(trackName, None, modelType='track_corner_analysis')
             # Check if the response contains an error
             if "error" in response:
-                print(f"[ERROR] Backend returned error: {response['error']}")
                 return {
                     "_skip_openai_processing": True,
                     'function_name': 'enable_guide_user_racing',
@@ -322,7 +321,7 @@ class AIService:
                 }
             
             # Extract the actual model data from the response
-            track_corner_data = response.get("data").get("modelData")
+            track_corner_data = response.get("data")
             if track_corner_data is None:
                 print(f"[ERROR] No data found in response: {response}")
                 return {
@@ -332,11 +331,8 @@ class AIService:
                     'message': 'Failed to enable racing guidance - no model data available.'
                 }
             
-            print(f"[DEBUG] Successfully retrieved track corner data: {type(track_corner_data)}")
-            print(f"[DEBUG] Track corner data keys: {list(track_corner_data.keys()) if isinstance(track_corner_data, dict) else 'Not a dict'}")
-            
             # Now you can access the data properly
-            prediction_result = self.telemetryMLService.predict_optimal_cornering(trackName, track_corner_data)
+            prediction_result = self.telemetryMLService.predict_optimal_cornering(trackName, track_corner_data.get("modelData"))
             print(f"[DEBUG] Prediction result: {prediction_result}")
             
         except Exception as e:
