@@ -34,11 +34,11 @@ warnings.filterwarnings('ignore', category=UserWarning)
 
 class CornerSpecificLearner:
     """Learn optimal actions for specific corner phases using normalized car position"""
-    
-    def __init__(self):
-        self.corner_models = {}
+
+    def __init__(self, corner_models: Optional[Dict[str, Any]] = None):
+        self.corner_models = corner_models or {}
         self.scaler = StandardScaler()
-        self.corner_phases = ['entry', 'turn_in', 'apex', 'exit']
+        self.corner_phases = ['entry', 'turn_in', 'apex', 'acceleration', 'exit']
     
     def extract_corner_specific_features(self, df: pd.DataFrame, corner_positions: Dict[str, float]) -> pd.DataFrame:
         """
@@ -128,15 +128,21 @@ class CornerSpecificLearner:
             Dictionary with corner-specific models
         """
         corner_models = {}
-        
         for corner_name, corner_positions in corner_definitions.items():
             print(f"[INFO] Learning optimal actions for {corner_name}")
+            print(f"[DEBUG] Corner positions: {corner_positions}")
             
             # Extract corner-specific data for all phases
             corner_data = self._extract_corner_telemetry(expert_df, corner_positions)
             
             if corner_data.empty:
                 print(f"[WARNING] No data found for {corner_name}")
+                print(f"[DEBUG] Total telemetry records: {len(expert_df)}")
+                if 'Graphics_normalized_car_position' in expert_df.columns:
+                    pos_range = expert_df['Graphics_normalized_car_position'].min(), expert_df['Graphics_normalized_car_position'].max()
+                    print(f"[DEBUG] Position range in data: {pos_range}")
+                else:
+                    print(f"[DEBUG] Graphics_normalized_car_position column missing from telemetry data")
                 continue
             
             # Train models for each phase
@@ -144,18 +150,28 @@ class CornerSpecificLearner:
             
             for phase in self.corner_phases:
                 if phase not in corner_positions:
+                    print(f"[DEBUG] Phase {phase} not found in corner positions, skipping")
                     continue
                     
                 phase_position = corner_positions[phase]
+                print(f"[DEBUG] Training model for phase {phase} at position {phase_position:.4f}")
                 phase_model = self._train_phase_model(corner_data, phase, phase_position)
                 
                 if phase_model:
                     phase_models[phase] = phase_model
+                    print(f"[DEBUG] Successfully trained model for phase {phase}")
+                else:
+                    print(f"[DEBUG] Failed to train model for phase {phase}")
             
             if phase_models:
                 corner_models[corner_name] = phase_models
+                print(f"[DEBUG] Added {len(phase_models)} phase models for {corner_name}")
+            else:
+                print(f"[DEBUG] No phase models created for {corner_name}")
         
         self.corner_models = corner_models
+        
+        print(f"[INFO] Completed learning for {len(corner_models)} corners")
         return corner_models
     
     def _extract_corner_telemetry(self, df: pd.DataFrame, corner_positions: Dict[str, float]) -> pd.DataFrame:
@@ -166,13 +182,20 @@ class CornerSpecificLearner:
         min_pos = min(corner_positions.values()) - 0.02  # Add buffer
         max_pos = max(corner_positions.values()) + 0.02
         
+        print(f"[DEBUG] Corner range: {min_pos:.4f} to {max_pos:.4f}")
+        
         # Handle track wraparound (if corner crosses start/finish line)
         if max_pos > 1.0:
             corner_mask = (positions >= min_pos) | (positions <= (max_pos - 1.0))
+            print(f"[DEBUG] Using wraparound logic: pos >= {min_pos:.4f} OR pos <= {max_pos - 1.0:.4f}")
         else:
             corner_mask = (positions >= min_pos) & (positions <= max_pos)
+            print(f"[DEBUG] Using normal range: {min_pos:.4f} <= pos <= {max_pos:.4f}")
         
-        return df[corner_mask].copy()
+        filtered_data = df[corner_mask].copy()
+        print(f"[DEBUG] Extracted {len(filtered_data)} records for this corner range")
+        
+        return filtered_data
     
     def _train_phase_model(self, corner_data: pd.DataFrame, phase: str, phase_position: float) -> Dict[str, Any]:
         """Train a model for a specific corner phase"""
@@ -181,12 +204,39 @@ class CornerSpecificLearner:
         positions = corner_data['Graphics_normalized_car_position']
         distance_to_phase = np.abs(positions - phase_position)
         
-        # Select the closest 10% of points to this phase
-        phase_threshold = np.percentile(distance_to_phase, 10)
+        print(f"[DEBUG] Phase {phase}: corner_data has {len(corner_data)} records")
+        print(f"[DEBUG] Phase {phase}: distance_to_phase range: {distance_to_phase.min():.4f} to {distance_to_phase.max():.4f}")
+        
+        # Select points closest to this phase - use more flexible approach for small datasets
+        if len(corner_data) == 0:
+            print(f"[DEBUG] Phase {phase}: No corner data available")
+            return None
+        
+        if len(corner_data) <= 10:
+            # For small datasets, take the closest 50% of points but at least 2 points
+            min_points = min(2, len(corner_data))
+            phase_threshold = np.percentile(distance_to_phase, 50)
+        else:
+            # For larger datasets, take the closest 20% of points
+            phase_threshold = np.percentile(distance_to_phase, 20)
+        
+        print(f"[DEBUG] Phase {phase}: Using threshold: {phase_threshold:.4f}")
+        
         phase_mask = distance_to_phase <= phase_threshold
         phase_data = corner_data[phase_mask]
         
-        if len(phase_data) < 5:  # Need minimum data points
+        # Ensure we have at least some minimum data points
+        if len(phase_data) < 2:
+            # If threshold gives us too few points, take the closest N points directly
+            min_points = min(3, len(corner_data))
+            closest_indices = distance_to_phase.nsmallest(min_points).index
+            phase_data = corner_data.loc[closest_indices]
+            print(f"[DEBUG] Phase {phase}: Fallback - taking {min_points} closest points")
+        
+        print(f"[DEBUG] Phase {phase}: Selected {len(phase_data)} data points")
+        
+        if len(phase_data) < 2:  # Need minimum 2 data points
+            print(f"[DEBUG] Phase {phase}: Still insufficient data points ({len(phase_data)} < 2)")
             return None
         
         # Define input features (current state before the phase)
@@ -496,25 +546,22 @@ class CornerImitationLearningService:
         }
     }
     """
-    
-    def __init__(self, models_directory: str = "corner_imitation_models"):
+
+    def __init__(self, corner_models: Optional[Dict[str, Any]] = None):
         """
         Initialize the corner-specific imitation learning service
         
         Args:
             models_directory: Directory to save/load trained corner models
         """
-        self.models_directory = Path(models_directory)
-        self.models_directory.mkdir(exist_ok=True)
-        
-        self.corner_learner = None
+        self.corner_learner = CornerSpecificLearner(corner_models)
         self.trained_models = {}
-        
-        print(f"[INFO] CornerImitationLearningService initialized. Models directory: {self.models_directory}")
+
+        print(f"[INFO] CornerImitationLearningService initialized.")
 
     def train_corner_specific_model(self, 
                                    telemetry_data: List[Dict[str, Any]], 
-                                   corner_analysis_result: Dict[str, Any]) -> Dict[str, Any]:
+                                   corner_analysis_result: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """
         Train corner-specific imitation learning models
         
@@ -525,6 +572,7 @@ class CornerImitationLearningService:
         Returns:
             Corner-specific trained models
         """
+
         # Convert corner analysis result to corner definitions format
         corner_definitions = self._convert_corner_analysis_to_definitions(corner_analysis_result)
         
@@ -538,21 +586,16 @@ class CornerImitationLearningService:
         # Filter for best laps
         processed_df = self._filter_top_performance_laps(processed_df)
         
-        # Initialize corner learner
-        corner_learner = CornerSpecificLearner()
-        
         # Train corner models
-        corner_models = corner_learner.learn_corner_optimal_actions(processed_df, corner_definitions)
-        
-        # Store the learner for predictions
-        self.corner_learner = corner_learner
-        
-        return {
+        corner_models = self.corner_learner.learn_corner_optimal_actions(processed_df, corner_definitions)
+
+        ai_model_data = {
             'corner_models': corner_models,
             'corners_trained': len(corner_models),
             'total_phases': sum(len(phases) for phases in corner_models.values()),
             'corner_definitions_used': corner_definitions
         }
+        return self.serialize_object_inside(ai_model_data),ai_model_data
 
     def predict_corner_optimal_actions(self, 
                                      current_telemetry: pd.DataFrame, 
@@ -1058,7 +1101,7 @@ class CornerImitationLearningService:
         
         return is_valid
     
-    def serialize_object_inside(self, results: any) -> str:
+    def serialize_object_inside(self, results: any) -> Dict[str, Any]:
         """
         Serialize corner learning models and related objects
         
@@ -1073,87 +1116,60 @@ class CornerImitationLearningService:
             print("[INFO] Serializing corner learning models...")
             serialized_corner_models = {}
             
-            for corner_name, corner_model in results['corner_models'].items():
+            for corner_name, corner_model in results.get('corner_models', []).items():
                 print(f"[INFO] Serializing corner model: {corner_name}")
-                serialized_model_data = self.serialize_data(corner_model)
-                serialized_corner_models[corner_name] = serialized_model_data
+                try:
+                    # Serialize to bytes using pickle
+                    buffer = io.BytesIO()
+                    pickle.dump(corner_model, buffer)
+                    buffer.seek(0)
+                    
+                    # Encode to base64
+                    encoded_data = base64.b64encode(buffer.getvalue()).decode('utf-8')
+                    serialized_corner_models[corner_name] = encoded_data
+                    
+                except Exception as e:
+                    print(f"[ERROR] Failed to serialize corner model {corner_name}: {e}")
+                    raise e
                 
             results['corner_models'] = serialized_corner_models
             
         return results
     
-    def deserialize_object_inside(self, serialized_results: Dict[str, Any]) -> Dict[str, Any]:
+    def receive_serialized_model_data(self, serialized_data: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Deserialize corner learning models that were serialized by serialize_object_inside
-        
+        Deserialize corner learning models that were serialized by serialize_object_inside, if contained corner models, reconstruct the CornerSpecificLearner instance.
+
         Args:
             serialized_results: Dictionary containing serialized models and metadata
             
         Returns:
             Dictionary with deserialized models and original structure
         """
-        results = serialized_results.copy()
+        results = serialized_data.copy()
         
         # Deserialize corner learning models if present
         if 'corner_models' in results:
             print("[INFO] Deserializing corner learning models...")
             deserialized_corner_models = {}
-            
-            for corner_name, serialized_model in results['corner_models'].items():
+
+            for corner_name, serialized_model in results.get('corner_models', []).items():
                 print(f"[INFO] Deserializing corner model: {corner_name}")
-                deserialized_model = self.deserialize_data(serialized_model)
-                deserialized_corner_models[corner_name] = deserialized_model
-                
-            results['corner_models'] = deserialized_corner_models
-            
+                try:
+                    # Decode from base64
+                    decoded_data = base64.b64decode(serialized_model.encode('utf-8'))
+                    
+                    # Deserialize using pickle
+                    buffer = io.BytesIO(decoded_data)
+                    deserialized_model = pickle.load(buffer)
+                    deserialized_corner_models[corner_name] = deserialized_model
+                    results['corner_models'] = deserialized_corner_models
+                except Exception as e:
+                    print(f"[ERROR] Failed to deserialize corner model {corner_name}: {e}")
+                    raise Exception(f"Failed to deserialize corner learning model {corner_name}: {str(e)}")
+
+            self.corner_learner = CornerSpecificLearner(results.get('corner_models', {}))
         return results
-    
-    def serialize_data(self, data: any) -> str:
-        """
-        Serialize trained corner models
-        
-        Args:
-            data: Model data to serialize
-            
-        Returns:
-            Serialized model data as base64 encoded string
-        """
-        try:
-            # Serialize to bytes
-            buffer = io.BytesIO()
-            pickle.dump(data, buffer)
-            buffer.seek(0)
-        
-            # Encode to base64
-            encoded_data = base64.b64encode(buffer.getvalue()).decode('utf-8')
-    
-            return encoded_data
-                
-        except Exception as e:
-            print(f"[ERROR] Failed to serialize corner model: {e}")
-            raise e
-    
-    def deserialize_data(self, model_data: str) -> Dict[str, Any]:
-        """
-        Deserialize corner learning models from base64 string
-        
-        Args:
-            model_data: Base64 encoded model data
-        
-        Returns:
-            Deserialized model data
-        """
-        try:
-            # Decode from base64
-            decoded_data = base64.b64decode(model_data.encode('utf-8'))
-            
-            # Deserialize using pickle
-            buffer = io.BytesIO(decoded_data)
-            data_result = pickle.load(buffer)
-            return data_result
-            
-        except Exception as e:
-            raise Exception(f"Failed to deserialize corner learning models: {str(e)}")
     
     def _generate_learning_summary(self, results: Dict[str, Any]) -> Dict[str, Any]:
         """Generate a summary of corner learning results"""

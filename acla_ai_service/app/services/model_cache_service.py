@@ -128,7 +128,7 @@ class ModelCacheService:
         logger.info(f"Configuration - Max size: {self.max_cache_size}, "
                    f"Max memory: {self.max_memory_mb}MB, Default TTL: {self.default_ttl_seconds}s")
     
-    def _generate_cache_key(self, model_type: str, track_name: str, car_name: str, 
+    def _generate_cache_key(self, model_type: str, track_name: Optional[str] = None, car_name: Optional[str] = None, 
                           model_subtype: Optional[str] = None, 
                           additional_params: Optional[Dict[str, Any]] = None) -> str:
         """
@@ -136,15 +136,15 @@ class ModelCacheService:
         
         Args:
             model_type: Type of model (e.g., 'imitation_learning', 'lap_time_prediction')
-            track_name: Track name
-            car_name: Car name
+            track_name: Track name (optional)
+            car_name: Car name (optional)
             model_subtype: Optional subtype (e.g., 'behavior', 'trajectory')
             additional_params: Additional parameters for key generation
             
         Returns:
             Unique cache key string
         """
-        key_components = [model_type, track_name, car_name]
+        key_components = [model_type, track_name or 'any', car_name or 'any']
         
         if model_subtype:
             key_components.append(model_subtype)
@@ -215,9 +215,9 @@ class ModelCacheService:
 
     def put(self, 
             model_type: str,
-            track_name: str, 
-            car_name: str,
             data: Any,
+            track_name: Optional[str] = None, 
+            car_name: Optional[str] = None,
             metadata: Optional[Dict[str, Any]] = None,
             model_subtype: Optional[str] = None,
             ttl_seconds: Optional[int] = None,
@@ -227,9 +227,9 @@ class ModelCacheService:
         
         Args:
             model_type: Type of model
-            track_name: Track name
-            car_name: Car name
             data: Model data to cache
+            track_name: Track name (optional)
+            car_name: Car name (optional)
             metadata: Optional metadata
             model_subtype: Optional model subtype
             ttl_seconds: TTL override (None uses default)
@@ -285,8 +285,8 @@ class ModelCacheService:
     
     def get(self, 
             model_type: str,
-            track_name: str,
-            car_name: str,
+            track_name: Optional[str] = None,
+            car_name: Optional[str] = None,
             model_subtype: Optional[str] = None,
             additional_params: Optional[Dict[str, Any]] = None) -> Optional[Tuple[Any, Dict[str, Any]]]:
         """
@@ -294,8 +294,8 @@ class ModelCacheService:
         
         Args:
             model_type: Type of model
-            track_name: Track name
-            car_name: Car name
+            track_name: Track name (optional)
+            car_name: Car name (optional)
             model_subtype: Optional model subtype
             additional_params: Additional parameters for key generation
             
@@ -369,8 +369,8 @@ class ModelCacheService:
     
     def invalidate(self, 
                    model_type: str,
-                   track_name: str,
-                   car_name: str,
+                   track_name: Optional[str] = None,
+                   car_name: Optional[str] = None,
                    model_subtype: Optional[str] = None,
                    additional_params: Optional[Dict[str, Any]] = None) -> bool:
         """
@@ -378,8 +378,8 @@ class ModelCacheService:
         
         Args:
             model_type: Type of model
-            track_name: Track name
-            car_name: Car name
+            track_name: Track name (optional)
+            car_name: Car name (optional)
             model_subtype: Optional model subtype
             additional_params: Additional parameters for key generation
             
@@ -507,8 +507,8 @@ class ModelCacheService:
     
     def get_cache_info(self, 
                        model_type: str,
-                       track_name: str,
-                       car_name: str,
+                       track_name: Optional[str] = None,
+                       car_name: Optional[str] = None,
                        model_subtype: Optional[str] = None,
                        additional_params: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
         """
@@ -516,8 +516,8 @@ class ModelCacheService:
         
         Args:
             model_type: Type of model
-            track_name: Track name
-            car_name: Car name
+            track_name: Track name (optional)
+            car_name: Car name (optional)
             model_subtype: Optional model subtype
             additional_params: Additional parameters for key generation
             

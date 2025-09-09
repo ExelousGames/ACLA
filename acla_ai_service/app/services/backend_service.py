@@ -378,7 +378,11 @@ class BackendService:
             return {"error": f"Failed to retrieve chunk: {str(e)}"}
 
     async def getCompleteActiveModelData(self, trackName: Optional[str], carName: Optional[str], modelType: str) -> Dict[str, Any]:
-        """Get complete active model data by retrieving all chunks"""
+        """Get complete active model data by retrieving all chunks
+        
+        returned result contains dict_keys(['success', 'sessionId', 'totalChunks', 'data', 'message'])
+        
+        """ 
         try:
             logger.info(f"Starting retrieval of active model data for {trackName}/{carName}/{modelType}")
             

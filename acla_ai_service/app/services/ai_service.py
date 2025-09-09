@@ -330,10 +330,9 @@ class AIService:
                     'error': "No model data found in backend response",
                     'message': 'Failed to enable racing guidance - no model data available.'
                 }
-            
+
             # Now you can access the data properly
-            prediction_result = self.telemetryMLService.predict_optimal_cornering(trackName, track_corner_data.get("modelData"))
-            print(f"[DEBUG] Prediction result: {prediction_result}")
+            prediction_result = await self.telemetryMLService.predict_optimal_cornering(trackName, track_corner_data.get("modelData"))
             
         except Exception as e:
             print(f"[ERROR] Error retrieving corner analysis model: {str(e)}")
