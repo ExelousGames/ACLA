@@ -13,7 +13,7 @@ import warnings
 import base64
 import pickle
 import io
-from .Corner_imitation_learning_service import CornerImitationLearningService
+from .Corner_imitation_learning_service import CornerImitationLearningService, CornerSpecificLearner
 import aiohttp
 import asyncio
 import time
@@ -669,12 +669,15 @@ class Full_dataset_TelemetryMLService:
             service = CornerImitationLearningService()
             results = service.train_corner_specific_model(telemetry_data, analysis_data)
 
+            # Serialize the results before saving to database
+            serialized_results = service.serialize_object_inside(results)
+
             # Save results to backend
             try:
                 ai_model_dto = {
                     "modelType": "track_corner_training",
                     "trackName": trackName,
-                    "modelData": results,
+                    "modelData": serialized_results,
                     "metadata": {
                         "training_timestamp": datetime.now().isoformat()
                     },
@@ -690,11 +693,74 @@ class Full_dataset_TelemetryMLService:
             return {"error": str(e)}
     
 
-    def predict_optimal_cornering(self):
-        """Predict optimal cornering using trained cornering model"""
-        pass
-    
-    
+    async def predict_optimal_cornering(self, trackName: str,corner_analysis_result: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Predict optimal cornering using trained cornering model
+        
+        Args:
+            trackName: Track name for the model
+            normalized_car_position: Current car position on track (0.0 to 1.0)
+        
+        Returns:
+            Dictionary with optimal cornering actions and guidance
+        """
+        try:
+            # Get model from cache or fetch from backend
+            model_data, metadata = await self._get_cached_model_or_fetch(
+                model_type="track_corner_training",
+                track_name=trackName,
+                model_subtype="complete_model_data"
+            )
+
+            if not model_data:
+                return {"error": "No valid cornering model found for this track"}
+
+            # Create CornerImitationLearningService instance
+            service = CornerImitationLearningService()
+
+            # Deserialize the model data using the service's deserialize method
+            deserialized_data = service.deserialize_object_inside(model_data)
+            
+            # Reconstruct the trained models from the saved data
+            if 'corner_models' in deserialized_data:
+                # Set up the service with the trained corner models
+                corner_learner = CornerSpecificLearner()
+                corner_learner.corner_models = deserialized_data['corner_models']
+                service.corner_learner = corner_learner
+                
+                # Get optimal actions for the current position
+                predictions = service.get_all_corner_predictions(corner_analysis_result)
+                
+                return predictions
+            else:
+                return {"error": "Invalid model data structure - missing corner_models"}
+                
+        except Exception as e:
+            return {
+                "error": f"Failed to predict optimal cornering: {str(e)}",
+                "track_name": trackName,
+                "timestamp": datetime.now().isoformat()
+            }
+
+    async def predict_optimal_cornering_from_telemetry(self, trackName: str, current_telemetry: Dict[str, Any]):
+        """
+        Predict optimal cornering using current telemetry data
+        
+        Args:
+            trackName: Track name for the model
+            current_telemetry: Current telemetry data containing normalized_car_position
+        
+        Returns:
+            Dictionary with optimal cornering actions and guidance
+        """
+        # Extract normalized car position from telemetry
+        normalized_position = current_telemetry.get('Graphics_normalized_car_position')
+        
+        if normalized_position is None:
+            return {"error": "No normalized car position found in telemetry data"}
+        
+        return await self.predict_optimal_cornering(trackName, normalized_position)
+
     def clear_all_cache(self):
         """Clear all cached models"""
         self.model_cache.clear()
@@ -702,8 +768,8 @@ class Full_dataset_TelemetryMLService:
     
     async def _get_cached_model_or_fetch(self,
                                         model_type: str,
-                                        track_name: str,
-                                        car_name: str,
+                                        track_name: Optional[str] = None,
+                                        car_name: Optional[str] = None,
                                         model_subtype: str = "complete_model_data",
                                         deserializer_func=None) -> Tuple[Any, Dict[str, Any]]:
         """
@@ -711,8 +777,8 @@ class Full_dataset_TelemetryMLService:
         
         Args:
             model_type: Type of model ('imitation_learning', etc.)
-            track_name: Track name for the model
-            car_name: Car name for the model  
+            track_name: Track name for the model (optional)
+            car_name: Car name for the model (optional)
             model_subtype: Subtype identifier for the model
             deserializer_func: Function to deserialize model data from backend
             
@@ -720,7 +786,7 @@ class Full_dataset_TelemetryMLService:
             Tuple of (deserialized_model_data, metadata)
         """
         # Unique key for the model to manage locks
-        model_key = f"{track_name}/{car_name}/{model_type}"
+        model_key = f"{track_name or 'any'}/{car_name or 'any'}/{model_type}"
         
         # Use flags to track if this thread is responsible for fetching
         is_fetching_thread = False
@@ -774,9 +840,9 @@ class Full_dataset_TelemetryMLService:
                     )
                     if cached_result:
                         deserialized_model_data, metadata = cached_result
-                        print(f"[INFO] Using model cached by another thread for {track_name}/{car_name}")
+                        print(f"[INFO] Using model cached by another thread for {track_name or 'any'}/{car_name or 'any'}")
                     else:
-                        print(f"[WARNING] Expected cached model not found after waiting for {track_name}/{car_name}")
+                        print(f"[WARNING] Expected cached model not found after waiting for {track_name or 'any'}/{car_name or 'any'}")
                         # Continue to try fetching ourselves as fallback
                         is_fetching_thread = True
                 except Exception as wait_error:
@@ -794,14 +860,14 @@ class Full_dataset_TelemetryMLService:
                         model_subtype=model_subtype,
                         deserializer_func=deserializer_func
                     )
-                    print(f"[INFO] Successfully fetched and cached model for {track_name}/{car_name}")
+                    print(f"[INFO] Successfully fetched and cached model for {track_name or 'any'}/{car_name or 'any'}")
                     
                 except Exception as fetch_error:
                     print(f"[ERROR] Failed to fetch model: {str(fetch_error)}")
                     raise fetch_error
                 finally:
                     # Always signal completion and clean up lock when we're the fetching thread
-                    self._cleanup_fetch_lock(model_key, track_name, car_name)
+                    self._cleanup_fetch_lock(model_key, track_name or 'any', car_name or 'any')
             
             # At this point, we should have the model data
             if not deserialized_model_data:
@@ -812,14 +878,14 @@ class Full_dataset_TelemetryMLService:
         except Exception as e:
             # Clean up any locks that might have been created by this thread
             if is_fetching_thread:
-                self._emergency_cleanup_fetch_lock(model_key, track_name, car_name)
+                self._emergency_cleanup_fetch_lock(model_key, track_name or 'any', car_name or 'any')
             
             raise e
     
     async def _fetch_and_cache_model(self,
                                     model_type: str,
-                                    track_name: str,
-                                    car_name: str,
+                                    track_name: Optional[str] = None,
+                                    car_name: Optional[str] = None,
                                     model_subtype: str = "complete_model_data",
                                     deserializer_func=None) -> Tuple[Any, Dict[str, Any]]:
         """
@@ -827,8 +893,8 @@ class Full_dataset_TelemetryMLService:
         
         Args:
             model_type: Type of model ('imitation_learning', etc.)
-            track_name: Track name for the model
-            car_name: Car name for the model
+            track_name: Track name for the model (optional)
+            car_name: Car name for the model (optional)
             model_subtype: Subtype identifier for the model
             deserializer_func: Function to deserialize model data from backend
             

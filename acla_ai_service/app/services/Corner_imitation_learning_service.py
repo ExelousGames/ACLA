@@ -614,6 +614,158 @@ class CornerImitationLearningService:
             result['actions_summary'] = actions_summary
         
         return result
+
+    def get_all_corner_predictions(self, corner_analysis_result: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Get predictions for all corners detected in the corner analysis result
+        
+        Args:
+            corner_analysis_result: Result from track cornering analysis service with corner details
+        
+        Returns:
+            Dictionary containing predictions for all corners and their phases
+            
+            Return structure:
+            {
+                'total_corners': int,                    # Total number of corners analyzed
+                'corner_predictions': {
+                    'corner_0': {
+                        'corner_name': str,              # Name of the corner
+                        'phases': {
+                            'entry': {
+                                'phase_position': float,          # Normalized track position (0.0-1.0)
+                                'duration_points': int,           # Number of telemetry points in this phase
+                                'optimal_actions': {
+                                    'optimal_throttle': {
+                                        'value': float,           # Throttle value (0.0-1.0)
+                                        'description': str,       # Human-readable description
+                                        'change_rate': float,     # Rate of change per frame
+                                        'rapidity': str          # Description of change speed
+                                    },
+                                    'optimal_brake': { ... },    # Same structure as throttle
+                                    'optimal_steering': { ... }, # Same structure as throttle
+                                    'optimal_speed': {
+                                        'value': float,          # Speed in km/h
+                                        'description': str,      # Human-readable description
+                                        'change_rate': float,    # Rate of change per frame
+                                        'rapidity': str         # Description of change speed
+                                    }
+                                },
+                                'confidence': float,             # Prediction confidence (0.0-1.0)
+                                'actions_summary': [str, ...],   # Human-readable action summaries
+                                'distance_to_phase': float       # Distance from trained phase position
+                            },
+                            'turn_in': { ... },          # Same structure as entry
+                            'apex': { ... },             # Same structure as entry
+                            'acceleration': { ... },     # Same structure as entry
+                            'exit': { ... }              # Same structure as entry
+                        },
+                        'corner_summary': {
+                            'total_phases': int,                 # Total phases in this corner
+                            'phases_with_predictions': int,      # Phases that have valid predictions
+                            'corner_start_position': float,      # Start of corner (normalized position)
+                            'corner_end_position': float,        # End of corner (normalized position)
+                            'average_confidence': float          # Average confidence across all phases
+                        }
+                    },
+                    # ... more corners
+                },
+                'summary': {
+                    'corners_with_predictions': int,         # Number of corners with valid predictions
+                    'total_phases_predicted': int,           # Total number of phases with predictions
+                    'corners_without_predictions': [str],    # List of corner names without predictions
+                    'prediction_coverage': float             # Percentage of corners with predictions (0.0-1.0)
+                }
+            }
+        """
+        if not hasattr(self, 'corner_learner') or not self.corner_learner:
+            return {"error": "No corner models trained. Train models first using train_corner_specific_model()"}
+        
+        if 'corner_details' not in corner_analysis_result:
+            return {"error": "No corner_details found in analysis result"}
+        
+        corner_details = corner_analysis_result['corner_details']
+        all_predictions = {
+            'total_corners': len(corner_details),
+            'corner_predictions': {},
+            'summary': {
+                'corners_with_predictions': 0,
+                'total_phases_predicted': 0,
+                'corners_without_predictions': []
+            }
+        }
+        
+        for corner_name, corner_info in corner_details.items():
+            corner_predictions = {
+                'corner_name': corner_name,
+                'phases': {},
+                'corner_summary': {
+                    'total_phases': 0,
+                    'phases_with_predictions': 0,
+                    'corner_start_position': corner_info.get('corner_start_position', 0.0),
+                    'corner_end_position': corner_info.get('corner_end_position', 0.0)
+                }
+            }
+            
+            if 'phases' not in corner_info:
+                corner_predictions['error'] = "No phases found for this corner"
+                all_predictions['corner_predictions'][corner_name] = corner_predictions
+                all_predictions['summary']['corners_without_predictions'].append(corner_name)
+                continue
+            
+            phases = corner_info['phases']
+            corner_predictions['corner_summary']['total_phases'] = len(phases)
+            
+            # Get predictions for each phase
+            for phase_name, phase_info in phases.items():
+                phase_position = phase_info.get('normalized_car_position', 0.0)
+                
+                # Get optimal actions at this phase position
+                phase_prediction = self.get_optimal_actions_at_position(phase_position)
+                
+                # Structure the phase prediction
+                if 'error' not in phase_prediction:
+                    corner_predictions['phases'][phase_name] = {
+                        'phase_position': phase_position,
+                        'duration_points': phase_info.get('duration_points', 0),
+                        'optimal_actions': phase_prediction.get('optimal_actions', {}),
+                        'confidence': phase_prediction.get('confidence', 0.0),
+                        'actions_summary': phase_prediction.get('actions_summary', []),
+                        'distance_to_phase': phase_prediction.get('distance_to_phase', 0.0)
+                    }
+                    corner_predictions['corner_summary']['phases_with_predictions'] += 1
+                    all_predictions['summary']['total_phases_predicted'] += 1
+                else:
+                    corner_predictions['phases'][phase_name] = {
+                        'phase_position': phase_position,
+                        'duration_points': phase_info.get('duration_points', 0),
+                        'error': phase_prediction['error']
+                    }
+            
+            # Add corner-level summary
+            if corner_predictions['corner_summary']['phases_with_predictions'] > 0:
+                all_predictions['summary']['corners_with_predictions'] += 1
+                
+                # Calculate average confidence for this corner
+                confidences = []
+                for phase_data in corner_predictions['phases'].values():
+                    if 'confidence' in phase_data:
+                        confidences.append(phase_data['confidence'])
+                
+                if confidences:
+                    corner_predictions['corner_summary']['average_confidence'] = np.mean(confidences)
+            else:
+                all_predictions['summary']['corners_without_predictions'].append(corner_name)
+            
+            all_predictions['corner_predictions'][corner_name] = corner_predictions
+        
+        # Add overall summary statistics
+        all_predictions['summary']['prediction_coverage'] = (
+            all_predictions['summary']['corners_with_predictions'] / all_predictions['total_corners']
+            if all_predictions['total_corners'] > 0 else 0.0
+        )
+
+        return all_predictions
     
     def _convert_corner_analysis_to_definitions(self, corner_analysis_result: Dict[str, Any]) -> Dict[str, Dict[str, float]]:
         """

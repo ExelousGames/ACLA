@@ -794,7 +794,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
             let response;
 
             // Use openai general natural language ai query endpoint
-            response = await apiService.post('ai-model/ai-query', {
+            response = await apiService.post('user-ai-model/ai-query', {
                 question: messageContent,
                 sessionId: sessionId,
             });

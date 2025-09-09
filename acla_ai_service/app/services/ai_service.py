@@ -295,13 +295,60 @@ class AIService:
             print(f"[ERROR] Function {function_name} execution failed: {str(e)}")
             return {"error": f"Function execution failed: {str(e)}"}
 
-    def enable_guide_user_racing(self, trackName: str, carName: str) -> Dict[str, Any]:
+    def enable_guide_user_racing(self, ) -> Dict[str, Any]:
         
-        track_corner_data = self.backend_service.getCompleteActiveModelData(trackName,'track_corner_analysis')
-
-        
+        trackName: str = 'brands_hatch'
+        try:
+            # Call the async method with await
+            response = await self.backend_service.getCompleteActiveModelData(trackName, None, modelType='track_corner_analysis')
+            # Check if the response contains an error
+            if "error" in response:
+                print(f"[ERROR] Backend returned error: {response['error']}")
+                return {
+                    "_skip_openai_processing": True,
+                    'function_name': 'enable_guide_user_racing',
+                    'error': f"Failed to retrieve model data: {response['error']}",
+                    'message': 'Failed to enable racing guidance due to backend error.'
+                }
             
-        results = { "_skip_openai_processing": False,
+            # Check if response was successful
+            if not response.get("success", False):
+                print(f"[ERROR] Backend request was not successful: {response}")
+                return {
+                    "_skip_openai_processing": True,
+                    'function_name': 'enable_guide_user_racing',
+                    'error': f"Backend request failed: {response.get('message', 'Unknown error')}",
+                    'message': 'Failed to enable racing guidance due to unsuccessful backend response.'
+                }
+            
+            # Extract the actual model data from the response
+            track_corner_data = response.get("data").get("modelData")
+            if track_corner_data is None:
+                print(f"[ERROR] No data found in response: {response}")
+                return {
+                    "_skip_openai_processing": True,
+                    'function_name': 'enable_guide_user_racing',
+                    'error': "No model data found in backend response",
+                    'message': 'Failed to enable racing guidance - no model data available.'
+                }
+            
+            print(f"[DEBUG] Successfully retrieved track corner data: {type(track_corner_data)}")
+            print(f"[DEBUG] Track corner data keys: {list(track_corner_data.keys()) if isinstance(track_corner_data, dict) else 'Not a dict'}")
+            
+            # Now you can access the data properly
+            prediction_result = self.telemetryMLService.predict_optimal_cornering(trackName, track_corner_data)
+            print(f"[DEBUG] Prediction result: {prediction_result}")
+            
+        except Exception as e:
+            print(f"[ERROR] Error retrieving corner analysis model: {str(e)}")
+            return {
+                "_skip_openai_processing": True,
+                'function_name': 'enable_guide_user_racing',
+                'error': f"Exception occurred: {str(e)}",
+                'message': 'Failed to enable racing guidance due to an unexpected error.'
+            }
+        
+        results = { "_skip_openai_processing": True,
                    'function_name': 'enable_guide_user_racing'
                      ,'message': 'Racing guidance has been enabled! I will now monitor your telemetry data and provide real-time recommendations to help you improve your lap times and racing performance.'
                    }
