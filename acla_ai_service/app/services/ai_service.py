@@ -37,10 +37,12 @@ class AIService:
                 }
             },
             {
-                "name": "enable_guide_user_racing",
-                "description": "this will enable continuous guidance that monitors telemetry data and provides real-time recommendations. This function does not require any parameters.",
+                "name": "track_detail_for_guide",
+                "description": "extract the detailed starting location, gas, brake, and throttle inputs for every corner in a specific track. this function lists information about entry, turn-in, apex, and exit of every corner. this function is perfect for generating detailed driving guides and real-time driving guide on track display at specific points on the track.",
                 "parameters": {
-                }
+                    "track_name": {"type": "string", "description": "Name of the track to retrieve data"}
+                },
+                "required": ["track_name"]
             }
         ]
     
@@ -51,6 +53,70 @@ class AIService:
         conversation_history: Optional[List[Dict[str, Any]]] = None
     ) -> Dict[str, Any]:
         """Process natural language queries about racing data and function calling
+        
+        PROCESS FLOW DIAGRAM:
+        ┌─────────────────────────────────────────────────────────────────────────────┐
+        │                           TWO-STAGE AI PROCESSING                           │
+        └─────────────────────────────────────────────────────────────────────────────┘
+        
+        ┌─────────────────┐    ┌─────────────────────────────────────────────────────┐
+        │   User Prompt   │───▶│                STAGE 1: ANALYSIS                   │
+        └─────────────────┘    │                                                     │
+                               │  ┌─────────────────┐                               │
+                               │  │   OpenAI GPT-4  │  Examines prompt &            │
+                               │  │   First Query   │  decides what functions       │
+                               │  │                 │  to call (if any)             │
+                               │  └─────────┬───────┘                               │
+                               │            │                                       │
+                               │            ▼                                       │
+                               │  ┌─────────────────┐                               │
+                               │  │ Function Calls? │                               │
+                               │  │   (tool_calls)  │                               │
+                               │  └─────┬─────┬─────┘                               │
+                               └────────┼─────┼─────────────────────────────────────┘
+                                       NO    YES
+                                        │     │
+                               ┌────────▼─────▼─────────────────────────────────────┐
+                               │                STAGE 2: EXECUTION                  │
+                    ┌──────────┤                                                     │
+                    │          │  ┌─────────────────┐    ┌─────────────────────────┐│
+             Direct │          │  │  Execute Each   │    │    Function Results     ││
+             Answer │          │  │    Function     │───▶│                         ││
+                    │          │  │                 │    │  • Data for OpenAI      ││
+                    │          │  └─────────┬───────┘    │  • Side Products (_*)   ││
+                    │          │            │            │    - _guidance_enabled  ││
+                    │          │            ▼            │    - _prediction_result ││
+                    │          │  ┌─────────────────┐    │    - _track_corner_data ││
+                    │          │  │   OpenAI GPT-4  │    │                         ││
+                    │          │  │  Second Query   │◀───┤  Filter: Only send     ││
+                    │          │  │  (Final Answer) │    │  non-underscore data    ││
+                    │          │  └─────────┬───────┘    │  to OpenAI              ││
+                    │          └────────────┼────────────┴─────────────────────────┘│
+                    │                       │                                       │
+                    │                       ▼                                       │
+                    │          ┌─────────────────────────────────────────────────────┐
+                    └─────────▶│                 FINAL RESULT                        │
+                               │                                                     │
+                               │  {                                                  │
+                               │    "answer": "OpenAI's final response",            │
+                               │    "side_products": {                              │
+                               │      "track_detail_for_guide": {                 │
+                               │        "_guidance_enabled": true,                  │
+                               │        "_prediction_result": {...},               │
+                               │        "_track_corner_data": {...}                │
+                               │      }                                             │
+                               │    },                                              │
+                               │    "context": {...},                              │
+                               │    "messages": [...]                              │
+                               │  }                                                 │
+                               └─────────────────────────────────────────────────────┘
+        
+        KEY CONCEPTS:
+        • Stage 1: OpenAI analyzes user intent and decides what functions to call
+        • Stage 2: Functions execute and produce TWO types of outputs:
+          - Regular data: Sent to OpenAI for generating the final answer
+          - Side products (prefixed with _): Returned to caller for external use
+        • Final result contains both OpenAI's answer AND all side products
         
         Args:
             prompt: The user's natural language query
@@ -76,7 +142,7 @@ class AIService:
                     
                     AI MODEL FUNCTIONS (Personalized predictions using user's own driving data):
                     - train_telemetry_ai_model: Train custom AI models on user's telemetry data
-                    - enable_guide_user_racing: enable continuously monitor telemetry and provide real-time driving guide on track
+                    - track_detail_for_guide: outputs simple guidance about entry, turn-in, apex, exit about every corner in sa track, enable continuously real-time driving guide on track
                     
                     PROCESS:
                     1. Understand what the user wants to know or achieve
@@ -130,7 +196,6 @@ class AIService:
             
             try:
                 message = response.choices[0].message
-                function_results = []
             except Exception as e:
                 print(f"[ERROR] Failed to parse OpenAI response: {str(e)}")
                 raise Exception(f"OpenAI response parsing failed: {str(e)}") from e
@@ -151,48 +216,60 @@ class AIService:
                     # Continue processing even if message history fails
                     pass
                 
+                # Store side products from function executions
+                side_products = {}
+                
                 try:
                     for tool_call in message.tool_calls:
                         try:
                             function_name = tool_call.function.name
                             function_args = json.loads(tool_call.function.arguments)
                         except Exception as e:
-                            print(f"[ERROR] Failed to parse function call: {str(e)}")
-                            function_results.append({
-                                "function": "parse_error",
-                                "arguments": {},
-                                "result": {"error": f"Function call parsing failed: {str(e)}"}
-                            })
+                            # Store parse error in side_products for debugging
+                            side_products["parse_error"] = {
+                                "_error": f"Function call parsing failed: {str(e)}",
+                                "_function": "parse_error",
+                                "_arguments": {}
+                            }
                             continue
                         
                         print(f"[DEBUG] Executing function: {function_name} with args: {function_args}")
                         
-                        # Execute the function to get data or preform actions
+                        # Execute the function to get data or perform actions
                         try:
                             result = await self._execute_function(function_name, function_args, context)
+                            
+                            # Check if function has side products (anything that should be returned to caller)
+                            if isinstance(result, dict):
+                                # Extract data for OpenAI (excluding side products)
+                                openai_data = {k: v for k, v in result.items() if not k.startswith('_')}
+                                
+                                # Extract side products (keys starting with _)
+                                function_side_products = {k: v for k, v in result.items() if k.startswith('_')}
+                                if function_side_products:
+                                    side_products[function_name] = function_side_products
+                                
+                                # Use filtered data for OpenAI
+                                result_for_openai = openai_data if openai_data else result
+                            else:
+                                result_for_openai = result
+                                
                         except Exception as e:
                             print(f"[ERROR] Function execution failed for {function_name}: {str(e)}")
                             result = {"error": f"Function execution failed: {str(e)}"}
+                            result_for_openai = result
                         
-                        function_results.append({
-                            "function": function_name,
-                            "arguments": function_args,
-                            "result": result
-                        })
-                        
-                        # Add the tool result to conversation history
+                        # Add the tool result to conversation history (use filtered data for OpenAI)
                         try:
                             messages.append({
                                 "role": "tool",
                                 "tool_call_id": tool_call.id,
-                                "content": json.dumps(result)
+                                "content": json.dumps(result_for_openai)
                             })
                         except Exception as e:
-                            print(f"[ERROR] Failed to append tool result to message history: {str(e)}")
                             # Continue processing even if message history fails
                             pass
                 except Exception as e:
-                    print(f"[ERROR] Function execution loop failed: {str(e)}")
                     raise Exception(f"Function execution loop failed: {str(e)}") from e
                 
                 print(f"[DEBUG] All functions executed, sending results back to OpenAI for final response")
@@ -218,18 +295,18 @@ class AIService:
                         "content": final_answer
                     })
                     
-                    return {
+                    # Prepare final result with OpenAI answer and all side products
+                    result = {
                         "answer": final_answer,
-                        "function_calls": function_results,
                         "context": context,
                         "messages": messages,  # Return updated conversation for external management
-                        "processing_steps": [
-                            "1. Analyzed user query with OpenAI",
-                            f"2. OpenAI determined {len(function_results)} function(s) needed",
-                            "3. Executed functions to get data from local AI models",
-                            "4. Sent results back to OpenAI for final response"
-                        ]
                     }
+                    
+                    # Add side products from function executions to the final result
+                    if side_products:
+                        result["side_products"] = side_products
+                        
+                    return result
                 except Exception as e:
                     print(f"[ERROR] Failed to format final response: {str(e)}")
                     raise Exception(f"Final response formatting failed: {str(e)}") from e
@@ -244,9 +321,8 @@ class AIService:
                     "content": direct_answer
                 })
                 
-                return {
+                result = {
                     "answer": direct_answer,
-                    "function_calls": function_results,
                     "context": context,
                     "messages": messages,  # Return updated conversation for external management
                     "processing_steps": [
@@ -254,16 +330,19 @@ class AIService:
                         "2. No additional data needed - direct response provided"
                     ]
                 }
+                
+                # No side products since no functions were called, but maintain consistent structure
+                # (side_products will be empty/absent)
+                
+                return result
             except Exception as e:
                 print(f"[ERROR] Failed to format direct response: {str(e)}")
                 raise Exception(f"Direct response formatting failed: {str(e)}") from e
             
         except Exception as e:
-            print(f"[ERROR] Natural language query processing failed: {str(e)}")
-            print(f"[ERROR] Call stack: {type(e).__name__}: {str(e)}")
-            
+
             # Return error response with call stack information
-            return {
+            raise RuntimeError({
                 "error": f"Natural language query processing failed: {str(e)}",
                 "error_type": type(e).__name__,
                 "processing_steps": [
@@ -272,16 +351,32 @@ class AIService:
                     f"3. Error message: {str(e)}"
                 ],
                 "context": context
-            }
+            })
     
     async def _execute_function(self, function_name: str, arguments: Dict[str, Any], context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """execute the called function to retrieve data from local AI models and telemetry systems"""
+        """Execute the called function to retrieve data from local AI models and telemetry systems
+        
+        FUNCTION OUTPUT SEPARATION:
+        ┌─────────────────────────────────────────────────────────────────┐
+        │                    Function Return Format                       │
+        │                                                                 │
+        │  {                                                              │
+        │    # Regular keys → Sent to OpenAI for final answer            │
+        │    "status": "success",                                         │
+        │    "message": "Operation completed",                            │
+        │                                                                 │
+        │    # Keys starting with _ → Side products for external use     │
+        │    "_guidance_enabled": true,                                   │
+        │    "_prediction_result": {...},                                 │
+        │    "_track_corner_data": {...},                                │
+        │    "_skip_openai_processing": true                             │
+        │  }                                                             │
+        └─────────────────────────────────────────────────────────────────┘
+        """
         try:
-            print(f"[DEBUG] Executing {function_name}...")
-
             # Handle different function types (sync vs async)
-            if function_name == "enable_guide_user_racing":
-                return await self.enable_guide_user_racing()
+            if function_name == "track_detail_for_guide":
+                return await self.track_detail_for_guide()
             elif function_name == "compare_sessions":
                 return await self.backend_service.compare_sessions(
                     arguments.get("session_ids"),
@@ -292,59 +387,40 @@ class AIService:
                 return {"error": f"Unknown function: {function_name}"}
 
         except Exception as e:
-            print(f"[ERROR] Function {function_name} execution failed: {str(e)}")
-            return {"error": f"Function execution failed: {str(e)}"}
+            return {"error": f"Function {function_name} execution failed: {str(e)}"}
 
-    async def enable_guide_user_racing(self) -> Dict[str, Any]:
+    async def track_detail_for_guide(self, trackName: str = None) -> Dict[str, Any]:
         
-        trackName: str = 'brands_hatch'
         try:
             # Call the async method with await
             response = await self.backend_service.getCompleteActiveModelData(trackName, None, modelType='track_corner_analysis')
-            # Check if the response contains an error
-            if "error" in response:
-                return {
-                    "_skip_openai_processing": True,
-                    'function_name': 'enable_guide_user_racing',
-                    'error': f"Failed to retrieve model data: {response['error']}",
-                    'message': 'Failed to enable racing guidance due to backend error.'
-                }
-            
-            # Check if response was successful
-            if not response.get("success", False):
-                print(f"[ERROR] Backend request was not successful: {response}")
-                return {
-                    "_skip_openai_processing": True,
-                    'function_name': 'enable_guide_user_racing',
-                    'error': f"Backend request failed: {response.get('message', 'Unknown error')}",
-                    'message': 'Failed to enable racing guidance due to unsuccessful backend response.'
-                }
-            
+
             # Extract the actual model data from the response
             track_corner_data = response.get("data")
             if track_corner_data is None:
-                print(f"[ERROR] No data found in response: {response}")
-                return {
-                    "_skip_openai_processing": True,
-                    'function_name': 'enable_guide_user_racing',
-                    'error': "No model data found in backend response",
-                    'message': 'Failed to enable racing guidance - no model data available.'
-                }
+                raise Exception("No model data found in the response")
 
             # Now you can access the data properly
             prediction_result = await self.telemetryMLService.predict_optimal_cornering(trackName, track_corner_data.get("modelData"))
-            
+
+            guidance_instructions = {
+            "task": "Format the following corner guidance data into a JSON array of actionable sentences",
+            "format_requirement": "Each sentence should follow: 'At [user readable corner name such as first corner] [phase]: [actions]'",
+            "guidance_data": prediction_result.get("simple_guidance", ""),
+            "example_format": "At first corner entry: use light throttle, apply moderate braking, steer with slight left turn"
+        }
         except Exception as e:
-            print(f"[ERROR] Error retrieving corner analysis model: {str(e)}")
-            return {
-                "_skip_openai_processing": True,
-                'function_name': 'enable_guide_user_racing',
-                'error': f"Exception occurred: {str(e)}",
-                'message': 'Failed to enable racing guidance due to an unexpected error.'
-            }
+            raise Exception(f"Failed to enable racing guidance: {str(e)}")
         
-        results = { "_skip_openai_processing": True,
-                   'function_name': 'enable_guide_user_racing'
-                     ,'message': 'Racing guidance has been enabled! I will now monitor your telemetry data and provide real-time recommendations to help you improve your lap times and racing performance.'
-                   }
-        return results
+        # Return both data for OpenAI and side products for external use
+        return {
+            # Data for OpenAI's second query
+            'status': 'success',
+            'message': guidance_instructions,
+            
+            # Side products (prefixed with _) for external use
+            '_guidance_enabled': True,
+            '_prediction_result': prediction_result.get("predictions", {}),
+            '_track_corner_data': track_corner_data,
+            '_skip_openai_processing': True,  # Special flag to skip second OpenAI query if needed
+        }

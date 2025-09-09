@@ -27,7 +27,6 @@ ai_service = AIService()
 @router.post("/naturallanguagequery")
 async def process_query(request: QueryRequest):
 
-    print(request)
     """
     Main endpoint for processing natural language queries
     OpenAI generates intelligent answers using trained AI models as supporting tools
@@ -54,12 +53,7 @@ async def process_query(request: QueryRequest):
         return {
             "success": True,
             "query": request.question,
-            "answer": result.get("answer"),
-            "function_calls": result.get("function_calls", []),
-            "message": result.get("message"),
-            "context": result.get("context"),
-            "error": result.get("error"),
-            "processing_steps": result.get("processing_steps", []),
+            "payload": result,
         }
         
     except Exception as e:

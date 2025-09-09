@@ -713,11 +713,11 @@ class Full_dataset_TelemetryMLService:
             )
 
             if not model_data:
-                return {"error": "No valid cornering model found for this track"}
+                raise ValueError({"error": "No valid cornering model found for this track"})
             
             # Create CornerImitationLearningService instance
             service = CornerImitationLearningService()
-            print(model_data.get('corner_models', {}).keys())
+
             # Deserialize the model data using the service's deserialize method
             deserialized_data = service.receive_serialized_model_data(model_data)
             
@@ -725,17 +725,16 @@ class Full_dataset_TelemetryMLService:
             if 'corner_models' in deserialized_data:
                 # Get optimal actions for the current position
                 predictions = service.get_all_corner_predictions(corner_analysis_result)
-                
-                return predictions
+                simple_corner_guidance = service.get_simple_corner_guidance(corner_analysis_result)
+                return {"predictions": predictions, "simple_guidance": simple_corner_guidance}
             else:
-                return {"error": "Invalid model data structure - missing corner_models"}
+                raise  RuntimeError({"error": "Invalid model data structure - missing corner_models"}) 
                 
         except Exception as e:
-            return {
-                "error": f"Failed to predict optimal cornering: {str(e)}",
+            raise ValueError({
+                "error": f"predict_optimal_cornering(), Failed to predict optimal cornering: {str(e)}",
                 "track_name": trackName,
-                "timestamp": datetime.now().isoformat()
-            }
+            })
 
     async def predict_optimal_cornering_from_telemetry(self, trackName: str, current_telemetry: Dict[str, Any]):
         """
