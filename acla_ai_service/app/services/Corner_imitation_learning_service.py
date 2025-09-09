@@ -673,11 +673,9 @@ class CornerImitationLearningService:
                 'total_corners': int,                    # Total number of corners analyzed
                 'corner_predictions': {
                     'corner_0': {
-                        'corner_name': str,              # Name of the corner
                         'phases': {
                             'entry': {
                                 'phase_position': float,          # Normalized track position (0.0-1.0)
-                                'duration_points': int,           # Number of telemetry points in this phase
                                 'optimal_actions': {
                                     'optimal_throttle': {
                                         'value': float,           # Throttle value (0.0-1.0)
@@ -696,7 +694,6 @@ class CornerImitationLearningService:
                                 },
                                 'confidence': float,             # Prediction confidence (0.0-1.0)
                                 'actions_summary': [str, ...],   # Human-readable action summaries
-                                'distance_to_phase': float       # Distance from trained phase position
                             },
                             'turn_in': { ... },          # Same structure as entry
                             'apex': { ... },             # Same structure as entry
@@ -704,7 +701,6 @@ class CornerImitationLearningService:
                             'exit': { ... }              # Same structure as entry
                         },
                         'corner_summary': {
-                            'total_phases': int,                 # Total phases in this corner
                             'phases_with_predictions': int,      # Phases that have valid predictions
                             'corner_start_position': float,      # Start of corner (normalized position)
                             'corner_end_position': float,        # End of corner (normalized position)
@@ -712,12 +708,6 @@ class CornerImitationLearningService:
                         }
                     },
                     # ... more corners
-                },
-                'summary': {
-                    'corners_with_predictions': int,         # Number of corners with valid predictions
-                    'total_phases_predicted': int,           # Total number of phases with predictions
-                    'corners_without_predictions': [str],    # List of corner names without predictions
-                    'prediction_coverage': float             # Percentage of corners with predictions (0.0-1.0)
                 }
             }
         """
@@ -730,20 +720,13 @@ class CornerImitationLearningService:
         corner_details = corner_analysis_result['corner_details']
         all_predictions = {
             'total_corners': len(corner_details),
-            'corner_predictions': {},
-            'summary': {
-                'corners_with_predictions': 0,
-                'total_phases_predicted': 0,
-                'corners_without_predictions': []
-            }
+            'corner_predictions': {}
         }
         
         for corner_name, corner_info in corner_details.items():
             corner_predictions = {
-                'corner_name': corner_name,
                 'phases': {},
                 'corner_summary': {
-                    'total_phases': 0,
                     'phases_with_predictions': 0,
                     'corner_start_position': corner_info.get('corner_start_position', 0.0),
                     'corner_end_position': corner_info.get('corner_end_position', 0.0)
@@ -753,11 +736,9 @@ class CornerImitationLearningService:
             if 'phases' not in corner_info:
                 corner_predictions['error'] = "No phases found for this corner"
                 all_predictions['corner_predictions'][corner_name] = corner_predictions
-                all_predictions['summary']['corners_without_predictions'].append(corner_name)
                 continue
             
             phases = corner_info['phases']
-            corner_predictions['corner_summary']['total_phases'] = len(phases)
             
             # Get predictions for each phase
             for phase_name, phase_info in phases.items():
@@ -770,26 +751,19 @@ class CornerImitationLearningService:
                 if 'error' not in phase_prediction:
                     corner_predictions['phases'][phase_name] = {
                         'phase_position': phase_position,
-                        'duration_points': phase_info.get('duration_points', 0),
                         'optimal_actions': phase_prediction.get('optimal_actions', {}),
                         'confidence': phase_prediction.get('confidence', 0.0),
-                        'actions_summary': phase_prediction.get('actions_summary', []),
-                        'distance_to_phase': phase_prediction.get('distance_to_phase', 0.0)
+                        'actions_summary': phase_prediction.get('actions_summary', [])
                     }
                     corner_predictions['corner_summary']['phases_with_predictions'] += 1
-                    all_predictions['summary']['total_phases_predicted'] += 1
                 else:
                     corner_predictions['phases'][phase_name] = {
                         'phase_position': phase_position,
-                        'duration_points': phase_info.get('duration_points', 0),
                         'error': phase_prediction['error']
                     }
             
-            # Add corner-level summary
+            # Calculate average confidence for this corner
             if corner_predictions['corner_summary']['phases_with_predictions'] > 0:
-                all_predictions['summary']['corners_with_predictions'] += 1
-                
-                # Calculate average confidence for this corner
                 confidences = []
                 for phase_data in corner_predictions['phases'].values():
                     if 'confidence' in phase_data:
@@ -797,16 +771,12 @@ class CornerImitationLearningService:
                 
                 if confidences:
                     corner_predictions['corner_summary']['average_confidence'] = np.mean(confidences)
+                else:
+                    corner_predictions['corner_summary']['average_confidence'] = 0.0
             else:
-                all_predictions['summary']['corners_without_predictions'].append(corner_name)
+                corner_predictions['corner_summary']['average_confidence'] = 0.0
             
             all_predictions['corner_predictions'][corner_name] = corner_predictions
-        
-        # Add overall summary statistics
-        all_predictions['summary']['prediction_coverage'] = (
-            all_predictions['summary']['corners_with_predictions'] / all_predictions['total_corners']
-            if all_predictions['total_corners'] > 0 else 0.0
-        )
 
         return all_predictions
     
