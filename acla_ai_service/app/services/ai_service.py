@@ -38,7 +38,7 @@ class AIService:
             },
             {
                 "name": "track_detail_for_guide",
-                "description": "extract the detailed starting location, gas, brake, and throttle inputs for every corner in a specific track. this function lists information about entry, turn-in, apex, and exit of every corner. this function is perfect for generating detailed driving guides and real-time driving guide on track display at specific points on the track.",
+                "description": "extract the detailed starting location, gas, brake, and throttle inputs for every corner in a specific track. this function lists information about entry, turn-in, apex, and exit of every corner. this function is perfect for generating detailed driving guides and real-time driving guide on track display at specific points on the track. system will notice how to process the response",
                 "parameters": {
                     "track_name": {"type": "string", "description": "Name of the track to retrieve data"}
                 },
