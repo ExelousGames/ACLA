@@ -658,6 +658,8 @@ class CornerImitationLearningService:
         
         return result
 
+
+
     def get_all_corner_predictions(self, corner_analysis_result: Dict[str, Any]) -> Dict[str, Any]:
         """
         Get predictions for all corners detected in the corner analysis result
@@ -779,6 +781,63 @@ class CornerImitationLearningService:
             all_predictions['corner_predictions'][corner_name] = corner_predictions
 
         return all_predictions
+    
+
+    def get_simple_corner_guidance(self, corner_analysis_result: Dict[str, Any]) -> Dict[float, str]:
+        """
+        Simple method to get guidance sentences for all corner phases
+        
+        Args:
+            corner_analysis_result: Result from track cornering analysis service
+        
+        Returns:
+            Dictionary with normalized car positions as keys and guidance sentences as values
+            Format: {0.15: "At corner_0 entry: Throttle: light throttle (0.15), Brake: moderate braking (0.45)"}
+        """
+        # Get all corner predictions
+        predictions = self.get_all_corner_predictions(corner_analysis_result)
+        
+        # Extract guidance sentences with positions
+        guidance_dict = {}
+        
+        if 'corner_predictions' not in predictions:
+            return guidance_dict
+        
+        for corner_name, corner_data in predictions['corner_predictions'].items():
+            if 'phases' not in corner_data:
+                continue
+                
+            for phase_name, phase_data in corner_data['phases'].items():
+                phase_position = phase_data.get('phase_position', 0.0)
+                
+                if 'actions_summary' in phase_data:
+                    # Create a guidance sentence for this phase
+                    actions = ", ".join(phase_data['actions_summary'])
+                    sentence = f"At {corner_name} {phase_name}: {actions}"
+                    guidance_dict[phase_position] = sentence
+                elif 'optimal_actions' in phase_data:
+                    # Fallback: create sentence from optimal_actions directly
+                    actions = []
+                    optimal_actions = phase_data['optimal_actions']
+                    
+                    if 'optimal_throttle' in optimal_actions:
+                        throttle = optimal_actions['optimal_throttle']
+                        actions.append(f"use {throttle['description']}")
+                    
+                    if 'optimal_brake' in optimal_actions:
+                        brake = optimal_actions['optimal_brake']
+                        if brake['value'] > 0.05:  # Only mention braking if significant
+                            actions.append(f"apply {brake['description']}")
+                    
+                    if 'optimal_steering' in optimal_actions:
+                        steering = optimal_actions['optimal_steering']
+                        actions.append(f"steer with {steering['description']}")
+                    
+                    if actions:
+                        sentence = f"At {corner_name} {phase_name}: {', '.join(actions)}"
+                        guidance_dict[phase_position] = sentence
+        
+        return guidance_dict
     
     def _convert_corner_analysis_to_definitions(self, corner_analysis_result: Dict[str, Any]) -> Dict[str, Dict[str, float]]:
         """
@@ -1135,7 +1194,6 @@ class CornerImitationLearningService:
                     deserialized_corner_models[corner_name] = deserialized_model
                     results['corner_models'] = deserialized_corner_models
                 except Exception as e:
-                    print(f"[ERROR] Failed to deserialize corner model {corner_name}: {e}")
                     raise Exception(f"Failed to deserialize corner learning model {corner_name}: {str(e)}")
 
             self.corner_learner = CornerSpecificLearner(results.get('corner_models', {}))
