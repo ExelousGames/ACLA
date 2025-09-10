@@ -97,7 +97,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
     // Loading and mode states
     const [isLoading, setIsLoading] = useState(false);
     const [debugMode, setDebugMode] = useState(false);
-    const [imitationLearningEnabled, setImitationLearningEnabled] = useState(false);
+    const [TrackGuideEnabled, setTrackGuideEnabled] = useState(false);
 
     // Simplified recording state management
     const [recording, setRecording] = useState({
@@ -235,57 +235,23 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
 
     useEffect(() => {
         const fetchImitationLearningGuidance = async () => {
-            if (!analysisContext?.liveData || !imitationLearningEnabled) return;
+            if (!analysisContext?.liveData || !TrackGuideEnabled) return;
 
             try {
 
-                const response = await apiService.post('/racing-session/imitation-learning-guidance', {
-                    current_telemetry: analysisContext.liveData,
-                    track_name: analysisContext.recordedSessioStaticsData?.track || "unknown",
-                    car_name: analysisContext.recordedSessioStaticsData?.car_model || "unknown",
-                    guidance_type: "both", // "actions", "behavior", or "both"
-                });
                 // Handle the response here if needed
-                console.log('Imitation learning guidance response:', response.data);
             } catch (error) {
                 console.error('Error fetching imitation learning guidance:', error);
             }
         };
 
         fetchImitationLearningGuidance();
-    }, [analysisContext?.liveData, imitationLearningEnabled]);
+    }, [analysisContext?.liveData, TrackGuideEnabled]);
 
     // Auto-manage imitation guidance chart visibility
     useEffect(() => {
-        const imitationChartId = 'imitation-guidance-chart-auto';
-
-        if (imitationLearningEnabled) {
-            // Check if chart already exists to avoid duplicates
-            const existingCharts = visualizationController.getCurrentInstances();
-            const chartExists = existingCharts.some(chart =>
-                chart.type === 'imitation-guidance-chart' ||
-                chart.id === imitationChartId
-            );
-
-            if (!chartExists) {
-                // Add the imitation guidance chart
-                visualizationController.executeCommand({
-                    action: 'add',
-                    type: 'imitation-guidance-chart',
-                    data: {
-                        sessionId: sessionId,
-                        autoManaged: true // Flag to indicate this was auto-added
-                    },
-                    config: {
-                        title: 'AI Driving Guidance',
-                        autoUpdate: true
-                    }
-                });
-
-                console.log('Auto-added imitation guidance chart');
-            }
-        } else {
-            // Remove auto-managed imitation guidance charts
+        if (!TrackGuideEnabled) {
+            // Remove all auto-managed imitation guidance charts when disabled
             const existingCharts = visualizationController.getCurrentInstances();
             existingCharts.forEach(chart => {
                 if (chart.type === 'imitation-guidance-chart' && chart.data?.autoManaged) {
@@ -293,11 +259,11 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
                         action: 'remove',
                         id: chart.id
                     });
-                    console.log('Auto-removed imitation guidance chart:', chart.id);
+                    console.log('Auto-manage: removed imitation guidance chart:', chart.id);
                 }
             });
         }
-    }, [imitationLearningEnabled, sessionId]);
+    }, [TrackGuideEnabled, sessionId]);
 
     // Cleanup auto-managed charts when component unmounts
     useEffect(() => {
@@ -796,16 +762,31 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
             // Use openai general natural language ai query endpoint
             response = await apiService.post('user-ai-model/ai-query', {
                 question: messageContent,
-                sessionId: sessionId,
+                context: {
+                    session_id: sessionId || '',
+                    trackname: analysisContext?.recordedSessioStaticsData?.track || '',
+                },
             });
 
             const responseData = response.data as any;
-            let aiResponseContent = responseData?.answer || responseData?.response || "I'm sorry, I couldn't process your request.";
+            let aiResponseContent = responseData?.payload?.answer || responseData?.answer || responseData?.response || "I'm sorry, I couldn't process your request.";
             let functionCalls: FunctionCall[] = [];
             let functionResults: FunctionResult[] = [];
             console.log('AI response data:', responseData);
 
-            // Check if the response contains function calls
+            // Check if the response contains track guidance data in side_products
+            if (responseData?.payload?.side_products?.track_detail_for_guide) {
+                try {
+                    // Call startTrackGuide with the complete response data
+                    startTrackGuide(responseData);
+                    console.log('Track guidance enabled from AI response');
+                } catch (error) {
+                    console.error('Error enabling track guidance:', error);
+                    aiResponseContent += '\n\n*Note: Track guidance data was received but could not be processed properly.*';
+                }
+            }
+
+            // Check if the response contains function calls (legacy support)
             if (responseData?.function_calls && Array.isArray(responseData.function_calls)) {
 
                 try {
@@ -817,7 +798,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
 
                     // Execute all function calls
                     for (const functionCall of functionCalls) {
-                        const result = await executeFunctionCall(functionCall);
+                        const result = await executeFunctionCall(functionCall, responseData);
                         functionResults.push(result);
                     }
 
@@ -908,11 +889,11 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
     };
 
     // Function execution system
-    const executeFunctionCall = async (functionCall: FunctionCall): Promise<FunctionResult> => {
+    const executeFunctionCall = async (functionCall: FunctionCall, responseData: any): Promise<FunctionResult> => {
         try {
             console.log(`Executing function: ${functionCall.function} with args:`, functionCall.arguments);
 
-            const result = await findAndExecuteFunction(functionCall.function, functionCall.arguments);
+            const result = await findAndExecuteFunction(functionCall.function, functionCall.arguments, responseData);
 
             return {
                 function: functionCall.function,
@@ -933,7 +914,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
     };
 
     // Define available functions that can be called
-    const findAndExecuteFunction = async (functionName: string, args: Record<string, any>): Promise<any> => {
+    const findAndExecuteFunction = async (functionName: string, args: Record<string, any>, responseData: any): Promise<any> => {
         // Add session context to function arguments if available and not already provided
         const sessionIdToUse = args.session_id ||
             sessionId ||
@@ -969,9 +950,9 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
                     data_types: args.data_types || ['speed', 'acceleration', 'braking', 'steering']
                 });
 
-            case 'enable_guide_user_racing':
+            case 'track_detail_for_guide':
                 // Enable the continuous imitation learning guidance
-                setImitationLearningEnabled(true);
+                startTrackGuide(responseData);
 
                 return {
                     status: 'Imitation learning guidance enabled - now continuously monitoring telemetry data and displaying AI guidance chart',
@@ -981,7 +962,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
 
             case 'disable_guide_user_racing':
                 // Disable the continuous imitation learning guidance
-                setImitationLearningEnabled(false);
+                setTrackGuideEnabled(false);
 
                 return {
                     status: 'Imitation learning guidance disabled - no longer monitoring telemetry data and guidance chart removed',
@@ -1077,6 +1058,33 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
         }
     };
 
+    const startTrackGuide = (responseData: any) => {
+
+        const preloadSentences = parseGuidanceData(responseData.payload.answer);
+        const trackData = responseData.payload?.side_products?.track_detail_for_guide;
+
+        // Add imitation guidance chart with the track data
+        if (preloadSentences && trackData) {
+            visualizationController.executeCommand({
+                action: 'add',
+                type: 'imitation-guidance-chart',
+                data: {
+                    preloadSentences: preloadSentences,
+                    trackData: trackData,
+                    sessionId: sessionId,
+                    autoManaged: true
+                },
+                config: {
+                    title: 'AI Track Guidance',
+                    autoUpdate: true
+                }
+            });
+        }
+
+        setTrackGuideEnabled(true);
+    }
+
+
     // Utility function to clean and improve transcript quality
     const cleanTranscript = (transcript: string): string => {
         return transcript
@@ -1144,6 +1152,124 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
         </svg>
     );
 
+    /**
+     * Extracts JSON object from a string that may contain markdown code blocks or other text
+     * @param text - The string that may contain JSON
+     * @returns Parsed JSON object or null if no valid JSON found
+     */
+    const extractJsonFromString = (text: string): any => {
+        if (!text || typeof text !== 'string') {
+            return null;
+        }
+
+        try {
+            // First, try to parse the entire string as JSON (handles case where it's just {})
+            return JSON.parse(text.trim());
+        } catch {
+            // If that fails, look for JSON within the string
+        }
+
+        // Remove markdown code blocks (```json ... ``` or ``` ... ```
+        let cleanedText = text.replace(/```(?:json)?\s*([\s\S]*?)\s*```/gi, '$1');
+
+        // Try to find JSON object boundaries
+        const jsonPatterns = [
+            // Look for objects starting with { and ending with }
+            /\{[\s\S]*\}/,
+            // Look for arrays starting with [ and ending with ]
+            /\[[\s\S]*\]/
+        ];
+
+        for (const pattern of jsonPatterns) {
+            const match = cleanedText.match(pattern);
+            if (match) {
+                try {
+                    const jsonStr = match[0].trim();
+                    return JSON.parse(jsonStr);
+                } catch (parseError) {
+                    console.warn('Failed to parse extracted JSON:', parseError);
+                    continue;
+                }
+            }
+        }
+
+        // Try to find multiple JSON objects in the string
+        const lines = cleanedText.split('\n');
+        let jsonStart = -1;
+        let braceCount = 0;
+        let jsonContent = '';
+
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i].trim();
+
+            for (let j = 0; j < line.length; j++) {
+                const char = line[j];
+
+                if (char === '{') {
+                    if (jsonStart === -1) {
+                        jsonStart = i;
+                        jsonContent = '';
+                    }
+                    braceCount++;
+                    jsonContent += char;
+                } else if (char === '}' && jsonStart !== -1) {
+                    braceCount--;
+                    jsonContent += char;
+
+                    if (braceCount === 0) {
+                        // Found complete JSON object
+                        try {
+                            return JSON.parse(jsonContent);
+                        } catch (parseError) {
+                            console.warn('Failed to parse found JSON object:', parseError);
+                            jsonStart = -1;
+                            jsonContent = '';
+                        }
+                    }
+                } else if (jsonStart !== -1) {
+                    jsonContent += char;
+                }
+            }
+
+            if (jsonStart !== -1 && i < lines.length - 1) {
+                jsonContent += '\n';
+            }
+        }
+
+        console.warn('No valid JSON found in string:', text);
+        return null;
+    };
+
+    // Add this helper function to validate and structure guidance data
+    const parseGuidanceData = (text: string): { throttle_guidance?: string[], brake_guidance?: string[], steering_guidance?: string[] } | null => {
+        const jsonData = extractJsonFromString(text);
+
+        if (!jsonData || typeof jsonData !== 'object') {
+            return null;
+        }
+
+        // Validate the structure matches expected guidance format
+        const guidanceData: any = {};
+
+        if (Array.isArray(jsonData.throttle_guidance)) {
+            guidanceData.throttle_guidance = jsonData.throttle_guidance;
+        }
+
+        if (Array.isArray(jsonData.brake_guidance)) {
+            guidanceData.brake_guidance = jsonData.brake_guidance;
+        }
+
+        if (Array.isArray(jsonData.steering_guidance)) {
+            guidanceData.steering_guidance = jsonData.steering_guidance;
+        }
+
+        // Return null if no valid guidance arrays found
+        if (Object.keys(guidanceData).length === 0) {
+            return null;
+        }
+
+        return guidanceData;
+    };
 
     return (
         <Card className="ai-chat-container">

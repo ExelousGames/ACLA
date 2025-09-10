@@ -38,11 +38,14 @@ class AIService:
             },
             {
                 "name": "track_detail_for_guide",
-                "description": "extract the detailed starting location, gas, brake, and throttle inputs for every corner in a specific track. this function lists information about entry, turn-in, apex, and exit of every corner. this function is perfect for generating detailed driving guides and real-time driving guide on track display at specific points on the track. system will notice how to process the response",
+                "description": "Start the guiding process. After calling this function, you still need to generate some sentences for gas, brake, and throttle inputs.",
                 "parameters": {
-                    "track_name": {"type": "string", "description": "Name of the track to retrieve data"}
-                },
-                "required": ["track_name"]
+                    "type": "object",
+                    "properties": {
+                        "track_name": {"type": "string", "description": "Name of the track to retrieve data"}
+                    },
+                    "required": ["track_name"]
+                }
             }
         ]
     
@@ -142,8 +145,8 @@ class AIService:
                     
                     AI MODEL FUNCTIONS (Personalized predictions using user's own driving data):
                     - train_telemetry_ai_model: Train custom AI models on user's telemetry data
-                    - track_detail_for_guide: outputs simple guidance about entry, turn-in, apex, exit about every corner in sa track, enable continuously real-time driving guide on track
-                    
+                    - track_detail_for_guide: start the guiding process. after calling this function, you still need to generate some sentences for gas, brake, and throttle inputs. comboine the cornering analysis data with the simple guidance data to generate detailed driving guide and real-time driving guide on track display at specific points on the track. system will notice how to process the response
+
                     PROCESS:
                     1. Understand what the user wants to know or achieve
                     2. Call appropriate functions to get data from telemetry systems and AI models, or perform actions
@@ -183,7 +186,7 @@ class AIService:
 
             try:
                 response = await self.openai_client.chat.completions.create(
-                    model="gpt-4",
+                    model="gpt-4o",
                     messages=messages,
                     tools=tools,
                     tool_choice="auto",
@@ -273,17 +276,15 @@ class AIService:
                     raise Exception(f"Function execution loop failed: {str(e)}") from e
                 
                 print(f"[DEBUG] All functions executed, sending results back to OpenAI for final response")
-                
                 # STEP 3: Send function results back to OpenAI for final comprehensive response
                 try:
                     final_response = await self.openai_client.chat.completions.create(
-                        model="gpt-4",
+                        model="gpt-4o",
                         messages=messages,
                         temperature=0.7,
-                        max_tokens=500
+                        max_tokens=1500
                     )
                 except Exception as e:
-                    print(f"[ERROR] Final OpenAI API call failed: {str(e)}")
                     raise Exception(f"Final OpenAI API call failed: {str(e)}") from e
                 
                 try:
@@ -325,10 +326,6 @@ class AIService:
                     "answer": direct_answer,
                     "context": context,
                     "messages": messages,  # Return updated conversation for external management
-                    "processing_steps": [
-                        "1. Analyzed query with OpenAI",
-                        "2. No additional data needed - direct response provided"
-                    ]
                 }
                 
                 # No side products since no functions were called, but maintain consistent structure
@@ -404,11 +401,76 @@ class AIService:
             prediction_result = await self.telemetryMLService.predict_optimal_cornering(trackName, track_corner_data.get("modelData"))
 
             guidance_instructions = {
-            "task": "Format the following corner guidance data into a JSON array of actionable sentences",
-            "format_requirement": "Each sentence should follow: 'At [user readable corner name such as first corner] [phase]: [actions]'",
-            "guidance_data": prediction_result.get("simple_guidance", ""),
-            "example_format": "At first corner entry: use light throttle, apply moderate braking, steer with slight left turn"
-        }
+                "task": "follow the json_structure to generate racing guidance sentences for car operation techniques in JSON format",
+                "json_structure": {
+                    "throttle_guidance": [
+                        "sentence 1 about throttle technique",
+                        "sentence 2 about throttle technique", 
+                        "sentence 3 about throttle technique",
+                        "sentence 4 about throttle technique"
+                    ],
+                    "brake_guidance": [
+                        "sentence 1 about brake technique",
+                        "sentence 2 about brake technique",
+                        "sentence 3 about brake technique", 
+                        "sentence 4 about brake technique"
+                    ],
+                    "steering_guidance": [
+                        "sentence 1 about steering technique",
+                        "sentence 2 about steering technique",
+                        "sentence 3 about steering technique",
+                        "sentence 4 about steering technique"
+                    ]
+                },
+                "car_operations": {
+                    "throttle": {
+                        "descriptions": ["gentle throttle", "progressive throttle", "steady throttle", "aggressive throttle"],
+                        "techniques": ["maintain traction", "corner exit acceleration", "straight line power", "grip optimization"]
+                    },
+                    "brake": {
+                        "descriptions": ["progressive braking", "trail braking", "threshold braking", "light braking"],
+                        "techniques": ["weight transfer", "front grip maintenance", "maximum stopping", "speed adjustment"]
+                    },
+                    "steering": {
+                        "descriptions": ["smooth inputs", "quick corrections", "gradual turn-in", "counter steering"],
+                        "techniques": ["tire grip preservation", "oversteer management", "high-speed cornering", "slide control"]
+                    }
+                },
+                "sentence_requirements": [
+                    "Generate exactly 12 sentences total (4 for each operation type)",
+                    "Each sentence should describe a specific racing technique",
+                    "Focus on HOW to operate the car effectively",
+                    "Use descriptive technique words from the provided lists",
+                    "Make sentences actionable and practical",
+                    "No distance measurements or track position references",
+                    "Return ONLY the JSON object",
+                    "No markdown formatting (```json```)",
+                    "No explanatory text",
+                    "No code blocks",
+                    "Start directly with { and end with }",
+                    "Exactly 4 sentences per guidance type"
+                ],
+                "example_output": {
+                    "throttle_guidance": [
+                        "Apply gentle throttle at corner apex to maintain traction",
+                        "Use progressive throttle increase through corner exit", 
+                        "Maintain steady throttle on long straights",
+                        "Apply aggressive throttle in dry conditions with good grip"
+                    ],
+                    "brake_guidance": [
+                        "Use progressive braking for smooth weight transfer",
+                        "Apply trail braking technique to maintain front grip",
+                        "Use threshold braking for maximum stopping power",
+                        "Apply light braking for minor speed adjustments"
+                    ],
+                    "steering_guidance": [
+                        "Make smooth steering inputs to preserve tire grip",
+                        "Use quick steering corrections for oversteer management",
+                        "Apply gradual turn-in for high-speed corners", 
+                        "Use counter steering to control rear slides"
+                    ]
+                }
+            }
         except Exception as e:
             raise Exception(f"Failed to enable racing guidance: {str(e)}")
         
@@ -421,6 +483,5 @@ class AIService:
             # Side products (prefixed with _) for external use
             '_guidance_enabled': True,
             '_prediction_result': prediction_result.get("predictions", {}),
-            '_track_corner_data': track_corner_data,
             '_skip_openai_processing': True,  # Special flag to skip second OpenAI query if needed
         }

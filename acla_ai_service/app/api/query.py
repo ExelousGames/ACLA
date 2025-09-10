@@ -32,20 +32,15 @@ async def process_query(request: QueryRequest):
     OpenAI generates intelligent answers using trained AI models as supporting tools
     """
     try:
-        context = {
-            "question": request.question,
-            "user_id": request.user_id
-        }
         
         # Add any additional context from the request
-        if request.context:
-            context.update(request.context)
+
             
         # Process the query with OpenAI, which can call telemetry AI models as needed
         try:
             result = await ai_service.process_natural_language_query(
                 request.question,
-                context
+                request.context
             )
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"process_natural_language_query() AI query processing error: {str(e)}")
@@ -93,10 +88,7 @@ async def query_predict(request: PredictionQueryRequest):
         return {
             "success": True,
             "query": request.query,
-            "answer": result.get("answer"),
-            "prediction_result": result.get("function_calls"),
-            "backend_integration": "ai-model controller",
-            "processing_type": "ai_model_prediction_via_backend"
+            "payload": result,
         }
         
     except Exception as e:
