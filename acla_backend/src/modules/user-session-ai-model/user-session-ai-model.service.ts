@@ -129,14 +129,7 @@ export class UserSessionAiModelService {
         try {
             // Forward the AI query to the AI service
             const result = await this.aiServiceClient.processQuery(queryRequest);
-            return {
-                success: true,
-                query: queryRequest.question,
-                answer: result.answer,
-                function_calls: result.function_calls || [],
-                context: result.context,
-                ai_processing: true
-            };
+            return result;
         } catch (error) {
             throw new BadRequestException(`AI query processing failed: ${error.message}`);
         }

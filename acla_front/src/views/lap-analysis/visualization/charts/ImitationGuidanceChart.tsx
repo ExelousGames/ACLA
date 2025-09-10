@@ -6,94 +6,74 @@ import apiService from 'services/api.service';
 import styles from './ImitationGuidanceChart.module.css';
 
 interface ImitationGuidanceData {
-    message: string;
-    guidance_result: {
-        success: boolean;
-        timestamp: string;
-        behavior_guidance: {
-            predicted_driving_style: string;
-            confidence: number;
-            style_recommendations: string[];
-            alternative_styles: {
-                [key: string]: number;
-            };
-        };
-        action_guidance: {
-            optimal_actions: {
-                optimal_speed: number;
-                optimal_steering: number;
-                optimal_throttle: number;
-                optimal_brake: number;
-                optimal_gear: number;
-                optimal_player_pos_x: number;
-                optimal_player_pos_y: number;
-                optimal_player_pos_z: number;
-                optimal_track_position: number;
-            };
-            action_recommendations: {
-                point_similarity: number;
-                speed: {
-                    user_value: number;
-                    expert_value: number;
-                    difference: number;
-                    percentage_diff: number;
-                };
-                throttle: {
-                    user_value: number;
-                    expert_value: number;
-                    difference: number;
-                    percentage_diff: number;
-                };
-                brake: {
-                    user_value: number;
-                    expert_value: number;
-                    difference: number;
-                    percentage_diff: number;
-                };
-                steering: {
-                    user_value: number;
-                    expert_value: number;
-                    difference: number;
-                    percentage_diff: number;
-                };
-                gear: {
-                    user_value: number;
-                    expert_value: number;
-                    difference: number;
-                    gear_optimal: boolean;
-                };
-                position: {
-                    user_position: {
-                        x: number;
-                        y: number;
-                        z: number;
+    preloadSentences?: {
+        throttle_guidance?: string[];
+        brake_guidance?: string[];
+        steering_guidance?: string[];
+    };
+    trackData?: {
+        _guidance_enabled: boolean;
+        _prediction_result: {
+            total_corners: number;
+            corner_predictions: {
+                [key: string]: {
+                    phases: {
+                        [phaseName: string]: {
+                            phase_position: number;
+                            optimal_actions: {
+                                optimal_throttle?: {
+                                    value: number;
+                                    description: string;
+                                    change_rate: number;
+                                    rapidity: string;
+                                };
+                                optimal_brake?: {
+                                    value: number;
+                                    description: string;
+                                    change_rate: number;
+                                    rapidity: string;
+                                };
+                                optimal_steering?: {
+                                    value: number;
+                                    description: string;
+                                    change_rate: number;
+                                    rapidity: string;
+                                };
+                                optimal_speed?: {
+                                    value: number;
+                                    description: string;
+                                    change_rate: number;
+                                    rapidity: string;
+                                };
+                            };
+                            confidence: number;
+                            actions_summary: string[];
+                        };
                     };
-                    expert_position: {
-                        x: number;
-                        y: number;
-                        z: number;
+                    corner_summary: {
+                        phases_with_predictions: number;
+                        corner_start_position: number;
+                        corner_end_position: number;
+                        average_confidence: number;
                     };
-                    difference: {
-                        x: number;
-                        y: number;
-                        z: number;
-                    };
-                    lateral_distance: number;
-                    vertical_difference: number;
                 };
-            };
-            performance_insights: {
-                speed_efficiency: number;
-                throttle_efficiency: number;
-                brake_efficiency: number;
-                overall_efficiency: number;
-                performance_level: string;
-                improvement_potential: string;
             };
         };
     };
-    timestamp: string;
-    success: boolean;
+}
+
+interface CurrentGuidance {
+    phase: string;
+    corner: number;
+    position: number;
+    actions: {
+        throttle: string;
+        brake: string;
+        steering: string;
+        speed: string;
+    };
+    confidence: number;
+    humanReadableText: string;
 }
 
 const ImitationGuidanceChart: React.FC<VisualizationProps> = ({
@@ -104,306 +84,637 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = ({
     height = 400
 }) => {
     const analysisContext = useContext(AnalysisContext);
-    const [guidanceData, setGuidanceData] = useState<ImitationGuidanceData | null>(null);
-    const [isInitialLoading, setIsInitialLoading] = useState(true);
-    const [isUpdating, setIsUpdating] = useState(false);
-    const [error, setError] = useState<string | null>(null);
+    const [isLoading, setIsLoading] = useState(false);
+    const [currentGuidance, setCurrentGuidance] = useState<CurrentGuidance | null>(null);
+    const [trackGuidanceData, setTrackGuidanceData] = useState<ImitationGuidanceData | null>(null);
 
-    // Fetch imitation learning guidance
+    // Extract guidance data from the visualization data
     useEffect(() => {
-        // Don't start interval if no live data
-        if (!analysisContext?.liveData) {
-            setIsInitialLoading(false);
-            return;
+        if (data?.trackData && data?.preloadSentences) {
+            setTrackGuidanceData({
+                trackData: data.trackData,
+                preloadSentences: data.preloadSentences
+            });
+        }
+    }, [data]);
+
+    // Function to normalize car position (0-1 range)
+    const normalizeCarPosition = (telemetryData: any): number => {
+        if (!telemetryData) {
+            console.log('No telemetry data provided');
+            return 0;
         }
 
-        const fetchGuidance = async () => {
-            // Only show loading spinner on initial load
-            if (!guidanceData) {
-                setIsInitialLoading(true);
-            } else {
-                setIsUpdating(true);
+        // Check for Assetto Corsa Competizione normalized position (primary)
+        if (telemetryData.Graphics_normalized_car_position !== undefined) {
+            const position = telemetryData.Graphics_normalized_car_position;
+            console.log('Using Graphics_normalized_car_position:', position);
+            return Math.max(0, Math.min(1, position));
+        }
+
+        // Check for generic normalized position
+        if (telemetryData.normalizedPosition !== undefined) {
+            console.log('Using normalizedPosition:', telemetryData.normalizedPosition);
+            return Math.max(0, Math.min(1, telemetryData.normalizedPosition));
+        }
+
+        // Calculate from lap progress if available
+        if (telemetryData.lapProgress !== undefined) {
+            console.log('Using lapProgress:', telemetryData.lapProgress);
+            return Math.max(0, Math.min(1, telemetryData.lapProgress));
+        }
+
+        // Calculate from distance traveled and track length
+        if (telemetryData.Graphics_distance_traveled !== undefined) {
+            // Estimate track length from distance and position if we have both
+            if (telemetryData.Graphics_normalized_car_position !== undefined && telemetryData.Graphics_normalized_car_position > 0) {
+                const estimatedTrackLength = telemetryData.Graphics_distance_traveled / telemetryData.Graphics_normalized_car_position;
+                const position = (telemetryData.Graphics_distance_traveled % estimatedTrackLength) / estimatedTrackLength;
+                console.log('Using distance_traveled calculation:', telemetryData.Graphics_distance_traveled, 'estimated track length:', estimatedTrackLength, '=', position);
+                return Math.max(0, Math.min(1, position));
             }
-            setError(null);
+        }
 
-            try {
-                const response = await apiService.post('/racing-session/imitation-learning-guidance', {
-                    current_telemetry: analysisContext.liveData,
-                    track_name: analysisContext.recordedSessioStaticsData?.track || "unknown",
-                    car_name: analysisContext.recordedSessioStaticsData?.car_model || "unknown",
-                    guidance_type: "both", // "actions", "behavior", or "both"
-                });
+        // Calculate from lap distance and track length
+        if (telemetryData.lapDistance !== undefined && telemetryData.trackLength) {
+            const position = telemetryData.lapDistance / telemetryData.trackLength;
+            console.log('Using lapDistance/trackLength:', telemetryData.lapDistance, '/', telemetryData.trackLength, '=', position);
+            return Math.max(0, Math.min(1, position));
+        }
 
-                const responseData = response.data as ImitationGuidanceData;
-                if (responseData.success) {
-                    setGuidanceData(responseData);
+        // Check for spline position (common in racing games)
+        if (telemetryData.splinePosition !== undefined) {
+            console.log('Using splinePosition:', telemetryData.splinePosition);
+            return Math.max(0, Math.min(1, telemetryData.splinePosition));
+        }
+
+        // Fallback: use time-based calculation if lap time is available
+        if (telemetryData.Graphics_current_time !== undefined && telemetryData.Graphics_best_time && telemetryData.Graphics_best_time > 0) {
+            const position = Math.min(telemetryData.Graphics_current_time / telemetryData.Graphics_best_time, 1.0);
+            console.log('Using ACC time-based calculation:', telemetryData.Graphics_current_time, '/', telemetryData.Graphics_best_time, '=', position);
+            return Math.max(0, position);
+        }
+
+        // Generic time-based fallback
+        if (telemetryData.currentLapTime !== undefined && telemetryData.bestLapTime && telemetryData.bestLapTime > 0) {
+            const position = Math.min(telemetryData.currentLapTime / telemetryData.bestLapTime, 1.0);
+            console.log('Using generic time-based calculation:', telemetryData.currentLapTime, '/', telemetryData.bestLapTime, '=', position);
+            return Math.max(0, position);
+        }
+
+        console.log('No suitable position data found in telemetry');
+        console.log('Available fields:', Object.keys(telemetryData).filter(k => k.includes('position') || k.includes('distance') || k.includes('progress')));
+        return 0;
+    };
+
+    // Function to find the current corner and phase based on position
+    const findCurrentCornerAndPhase = (position: number) => {
+        if (!trackGuidanceData?.trackData?._prediction_result?.corner_predictions) {
+            console.log('No corner predictions available');
+            return null;
+        }
+
+        const cornerPredictions = trackGuidanceData.trackData._prediction_result.corner_predictions;
+
+        // Helper function to determine which phase the position is in
+        const findPhaseInCorner = (cornerData: any, position: number) => {
+            const phases = Object.entries(cornerData.phases);
+
+            // Sort phases by their position to create proper ranges
+            const sortedPhases = phases
+                .filter(([_, phaseData]: [string, any]) => phaseData.phase_position !== undefined)
+                .sort(([_, a]: [string, any], [__, b]: [string, any]) => a.phase_position - b.phase_position);
+
+            if (sortedPhases.length === 0) return null;
+
+            // Check each phase range
+            for (let i = 0; i < sortedPhases.length; i++) {
+                const [currentPhaseName, currentPhaseData] = sortedPhases[i];
+                const currentPhasePos = (currentPhaseData as any).phase_position;
+
+                let phaseStart, phaseEnd;
+
+                if (i === 0) {
+                    // First phase: from corner start to halfway to next phase
+                    phaseStart = cornerData.corner_summary.corner_start_position;
+                    if (i + 1 < sortedPhases.length) {
+                        const nextPhasePos = (sortedPhases[i + 1][1] as any).phase_position;
+                        phaseEnd = (currentPhasePos + nextPhasePos) / 2;
+                    } else {
+                        phaseEnd = cornerData.corner_summary.corner_end_position;
+                    }
+                } else if (i === sortedPhases.length - 1) {
+                    // Last phase: from halfway from previous phase to corner end
+                    const prevPhasePos = (sortedPhases[i - 1][1] as any).phase_position;
+                    phaseStart = (prevPhasePos + currentPhasePos) / 2;
+                    phaseEnd = cornerData.corner_summary.corner_end_position;
                 } else {
-                    setError('Failed to get guidance data');
+                    // Middle phases: from halfway to previous to halfway to next
+                    const prevPhasePos = (sortedPhases[i - 1][1] as any).phase_position;
+                    const nextPhasePos = (sortedPhases[i + 1][1] as any).phase_position;
+                    phaseStart = (prevPhasePos + currentPhasePos) / 2;
+                    phaseEnd = (currentPhasePos + nextPhasePos) / 2;
                 }
-            } catch (error) {
-                console.error('Error fetching imitation learning guidance:', error);
-                setError('Failed to fetch guidance data');
-            } finally {
-                setIsInitialLoading(false);
-                setIsUpdating(false);
+
+                // Check if position is within this phase range
+                if (position >= phaseStart && position <= phaseEnd) {
+                    return {
+                        phaseName: currentPhaseName,
+                        phaseData: currentPhaseData,
+                        phaseStart,
+                        phaseEnd
+                    };
+                }
             }
+
+            // If no exact match, return the closest phase
+            let closestPhase = null;
+            let minDistance = Infinity;
+
+            for (const [phaseName, phaseData] of sortedPhases) {
+                const distance = Math.abs(position - (phaseData as any).phase_position);
+                if (distance < minDistance) {
+                    minDistance = distance;
+                    closestPhase = { phaseName, phaseData };
+                }
+            }
+
+            return closestPhase;
         };
 
-        // Fetch guidance every 5 seconds when live data changes (less aggressive than 2 seconds)
-        const interval = setInterval(fetchGuidance, 5000);
+        // Check each corner to see if position is within its boundaries
+        for (const [cornerKey, cornerData] of Object.entries(cornerPredictions)) {
+            const cornerNum = parseInt(cornerKey.replace('corner_', ''));
+            const cornerStart = cornerData.corner_summary.corner_start_position;
+            const cornerEnd = cornerData.corner_summary.corner_end_position;
 
-        // Initial fetch
-        fetchGuidance();
+            // Handle wrap-around case (corner that crosses lap boundary)
+            let isInCorner = false;
+            if (cornerEnd < cornerStart) {
+                // Corner wraps around (e.g., start=0.9, end=0.1)
+                isInCorner = position >= cornerStart || position <= cornerEnd;
+            } else {
+                // Normal corner
+                isInCorner = position >= cornerStart && position <= cornerEnd;
+            }
 
-        return () => clearInterval(interval);
-    }, [analysisContext?.liveData, analysisContext?.recordedSessioStaticsData]);
-
-    const getDrivingStyleColor = (style: string) => {
-        switch (style.toLowerCase()) {
-            case 'aggressive': return 'red';
-            case 'conservative': return 'blue';
-            case 'defensive': return 'yellow';
-            case 'optimal': return 'green';
-            case 'smooth': return 'purple';
-            default: return 'gray';
+            if (isInCorner) {
+                const phaseResult = findPhaseInCorner(cornerData, position);
+                if (phaseResult) {
+                    return {
+                        corner: cornerNum,
+                        phase: phaseResult.phaseName,
+                        phaseData: phaseResult.phaseData
+                    };
+                }
+            }
         }
+
+        // If not in any corner, check between corners (straights)
+        // Find the closest upcoming and previous corners
+        let closestUpcomingCorner = null;
+        let closestPreviousCorner = null;
+        let upcomingDistance = Infinity;
+        let previousDistance = Infinity;
+
+        for (const [cornerKey, cornerData] of Object.entries(cornerPredictions)) {
+            const cornerNum = parseInt(cornerKey.replace('corner_', ''));
+            const cornerStart = cornerData.corner_summary.corner_start_position;
+            const cornerEnd = cornerData.corner_summary.corner_end_position;
+
+            // Calculate distance to upcoming corner
+            let distanceToStart;
+            if (cornerStart >= position) {
+                // Corner is ahead on this lap
+                distanceToStart = cornerStart - position;
+            } else {
+                // Corner is on next lap (wrap around)
+                distanceToStart = (1 - position) + cornerStart;
+            }
+
+            // Calculate distance from previous corner
+            let distanceFromEnd;
+            if (cornerEnd <= position) {
+                // Corner is behind on this lap
+                distanceFromEnd = position - cornerEnd;
+            } else {
+                // Corner ended on previous lap (wrap around)
+                distanceFromEnd = position + (1 - cornerEnd);
+            }
+
+            // Track closest upcoming corner
+            if (distanceToStart < upcomingDistance && distanceToStart < 0.3) { // Within 30% of track
+                upcomingDistance = distanceToStart;
+                closestUpcomingCorner = { cornerNum, cornerData, distance: distanceToStart };
+            }
+
+            // Track closest previous corner
+            if (distanceFromEnd < previousDistance && distanceFromEnd < 0.3) { // Within 30% of track
+                previousDistance = distanceFromEnd;
+                closestPreviousCorner = { cornerNum, cornerData, distance: distanceFromEnd };
+            }
+        }
+
+        // Provide different guidance based on position on straight
+        if (closestUpcomingCorner || closestPreviousCorner) {
+            // Determine if we're approaching a corner or on a straight
+            const isApproachingCorner = closestUpcomingCorner && upcomingDistance < 0.08; // Within 8%
+            const isOnStraight = closestPreviousCorner && previousDistance > 0.02; // More than 2% from last corner
+
+            if (isApproachingCorner && closestUpcomingCorner) {
+                // Approaching corner - provide entry preparation guidance
+                const phases = Object.entries(closestUpcomingCorner.cornerData.phases);
+                const entryPhase = phases.find(([name, _]) =>
+                    name.toLowerCase().includes('entry') ||
+                    name.toLowerCase().includes('brake')
+                );
+
+                if (entryPhase) {
+                    const [phaseName, phaseData] = entryPhase;
+                    return {
+                        corner: closestUpcomingCorner.cornerNum,
+                        phase: `Approaching Corner ${closestUpcomingCorner.cornerNum}`,
+                        phaseData: {
+                            ...phaseData,
+                            optimal_actions: {
+                                optimal_throttle: {
+                                    value: 0.8,
+                                    description: "Maintain high throttle until braking point",
+                                    change_rate: 0,
+                                    rapidity: "steady"
+                                },
+                                optimal_brake: {
+                                    value: 0.0,
+                                    description: "No braking yet, prepare for upcoming corner",
+                                    change_rate: 0,
+                                    rapidity: "ready"
+                                },
+                                optimal_steering: {
+                                    value: 0.0,
+                                    description: "Keep steering straight, line up for corner entry",
+                                    change_rate: 0,
+                                    rapidity: "smooth"
+                                },
+                                optimal_speed: {
+                                    value: 200,
+                                    description: "Maintain high speed until braking zone",
+                                    change_rate: 0,
+                                    rapidity: "maintain"
+                                }
+                            }
+                        } as any
+                    };
+                }
+            } else if (isOnStraight) {
+                // On straight section - provide straight-line guidance
+                const straightGuidance = {
+                    optimal_actions: {
+                        optimal_throttle: {
+                            value: 1.0,
+                            description: "Full throttle on straight section",
+                            change_rate: 0,
+                            rapidity: "maximum"
+                        },
+                        optimal_brake: {
+                            value: 0.0,
+                            description: "No braking required on straight",
+                            change_rate: 0,
+                            rapidity: "none"
+                        },
+                        optimal_steering: {
+                            value: 0.0,
+                            description: "Keep car straight and stable",
+                            change_rate: 0,
+                            rapidity: "minimal"
+                        },
+                        optimal_speed: {
+                            value: 250,
+                            description: "Maximize speed on straight section",
+                            change_rate: 1,
+                            rapidity: "increasing"
+                        }
+                    },
+                    confidence: 0.9,
+                    phase_position: position
+                };
+
+                return {
+                    corner: 0, // Special case for straights
+                    phase: closestUpcomingCorner ?
+                        `Straight (${upcomingDistance < 0.15 ? 'approaching' : 'toward'} Corner ${closestUpcomingCorner.cornerNum})` :
+                        'Straight Section',
+                    phaseData: straightGuidance
+                };
+            }
+        }
+
+        return null;
     };
 
-    const getPerformanceLevelColor = (level: string) => {
-        switch (level.toLowerCase()) {
-            case 'expert': return 'green';
-            case 'advanced': return 'blue';
-            case 'intermediate': return 'yellow';
-            case 'beginner': return 'red';
-            default: return 'gray';
+    // Function to generate human-readable guidance text
+    const generateHumanReadableText = (actions: any, phase: string): string => {
+        let guidanceText = '';
+
+        // Handle straight sections and approaching corners with direct descriptions
+        if (phase.includes('Straight') || phase.includes('Approaching')) {
+            if (actions.optimal_throttle) {
+                guidanceText += actions.optimal_throttle.description + '. ';
+            }
+            if (actions.optimal_brake && actions.optimal_brake.value > 0) {
+                guidanceText += actions.optimal_brake.description + '. ';
+            }
+            if (actions.optimal_steering) {
+                guidanceText += actions.optimal_steering.description + '. ';
+            }
+            if (actions.optimal_speed) {
+                guidanceText += actions.optimal_speed.description + '. ';
+            }
+            return guidanceText.trim();
         }
+
+        // For corner phases, use preloaded sentences if available
+        if (!trackGuidanceData?.preloadSentences) {
+            // Fallback to action descriptions if no preloaded sentences
+            if (actions.optimal_throttle) {
+                guidanceText += actions.optimal_throttle.description + '. ';
+            }
+            if (actions.optimal_brake) {
+                guidanceText += actions.optimal_brake.description + '. ';
+            }
+            if (actions.optimal_steering) {
+                guidanceText += actions.optimal_steering.description + '. ';
+            }
+            if (actions.optimal_speed) {
+                guidanceText += actions.optimal_speed.description + '. ';
+            }
+            return guidanceText.trim();
+        }
+
+        const sentences = trackGuidanceData.preloadSentences;
+
+        // Select appropriate guidance based on current actions and phase
+        if (actions.optimal_throttle && sentences.throttle_guidance) {
+            const throttleIndex = Math.min(
+                Math.floor(actions.optimal_throttle.value * sentences.throttle_guidance.length),
+                sentences.throttle_guidance.length - 1
+            );
+            guidanceText += sentences.throttle_guidance[throttleIndex] + '. ';
+        }
+
+        if (actions.optimal_brake && sentences.brake_guidance) {
+            const brakeIndex = Math.min(
+                Math.floor(actions.optimal_brake.value * sentences.brake_guidance.length),
+                sentences.brake_guidance.length - 1
+            );
+            guidanceText += sentences.brake_guidance[brakeIndex] + '. ';
+        }
+
+        if (actions.optimal_steering && sentences.steering_guidance) {
+            const steerIndex = Math.min(
+                Math.floor(Math.abs(actions.optimal_steering.value) * sentences.steering_guidance.length),
+                sentences.steering_guidance.length - 1
+            );
+            guidanceText += sentences.steering_guidance[steerIndex] + '. ';
+        }
+
+        return guidanceText.trim();
     };
 
-    const renderBehaviorGuidance = (behavior: ImitationGuidanceData['guidance_result']['behavior_guidance']) => (
-        <Box className={styles.behaviorSection}>
-            <Text size="3" weight="bold" className={styles.sectionTitle}>Driving Style Analysis</Text>
+    // Main effect to monitor live telemetry data and update guidance
+    useEffect(() => {
+        if (!analysisContext?.liveData || !trackGuidanceData) return;
 
-            <Box className={styles.confidenceContainer}>
-                <Flex align="center" gap="3" className={styles.confidenceBadges}>
-                    <Badge color={getDrivingStyleColor(behavior.predicted_driving_style)} size="2">
-                        {behavior.predicted_driving_style.charAt(0).toUpperCase() + behavior.predicted_driving_style.slice(1)}
-                    </Badge>
-                    <Text size="2" color="gray">Confidence: {(behavior.confidence * 100).toFixed(1)}%</Text>
-                </Flex>
-                <Progress value={behavior.confidence * 100} className={styles.confidenceProgress} />
-            </Box>
+        const telemetryData = analysisContext.liveData;
+        const normalizedPosition = normalizeCarPosition(telemetryData);
 
-            <Box className={styles.styleDistribution}>
-                <Text size="2" weight="medium" className={styles.distributionTitle}>Style Distribution:</Text>
-                <Box className={styles.distributionList}>
-                    {Object.entries(behavior.alternative_styles).map(([style, confidence]) => (
-                        <Box key={style} className={styles.distributionItem}>
-                            <Flex align="center" justify="between" className={styles.distributionItemHeader}>
-                                <Text size="1" className={styles.distributionStyle}>
-                                    {style.charAt(0).toUpperCase() + style.slice(1)}
-                                </Text>
-                                <Text size="1" color="gray" className={styles.distributionConfidence}>
-                                    {(confidence * 100).toFixed(0)}%
-                                </Text>
-                            </Flex>
-                            <Progress
-                                value={confidence * 100}
-                                className={styles.distributionProgress}
-                                color={getDrivingStyleColor(style)}
-                            />
-                        </Box>
-                    ))}
-                </Box>
-            </Box>
+        // Find current corner and phase
+        const currentLocation = findCurrentCornerAndPhase(normalizedPosition);
 
-            <Box>
-                <Text size="2" weight="medium" className={styles.recommendationsTitle}>Recommendations:</Text>
-                <Box className={styles.recommendationsList}>
-                    {behavior.style_recommendations.map((rec, index) => (
-                        <Box key={index} className={styles.recommendationItem}>
-                            <Text size="1" color="gray" className={styles.recommendationText}>
-                                • {rec}
-                            </Text>
-                        </Box>
-                    ))}
-                </Box>
-            </Box>
-        </Box>
-    );
+        // Enhanced debug logging for phase detection
+        if (Math.random() < 0.2) { // Log 20% of the time for debugging
+            console.log('Position:', normalizedPosition.toFixed(4));
+            if (trackGuidanceData?.trackData?._prediction_result?.corner_predictions) {
+                const corners = trackGuidanceData.trackData._prediction_result.corner_predictions;
+                console.log('Available corners:');
+                Object.entries(corners).forEach(([key, corner]: [string, any]) => {
+                    console.log(`  ${key}: ${corner.corner_summary.corner_start_position.toFixed(4)} - ${corner.corner_summary.corner_end_position.toFixed(4)}`);
+                });
+            }
+            if (currentLocation) {
+                if (currentLocation.corner === 0) {
+                    console.log('Found location: Straight section -', currentLocation.phase);
+                } else {
+                    console.log('Found location:', `Corner ${currentLocation.corner} - ${currentLocation.phase}`);
+                }
+            } else {
+                console.log('No location match found');
+            }
+        }
 
-    const renderActionGuidance = (actions: ImitationGuidanceData['guidance_result']['action_guidance']) => (
-        <Box>
-            <Text size="3" weight="bold" className={styles.sectionTitle}>Performance Analysis</Text>
+        if (currentLocation) {
+            const actions = (currentLocation.phaseData as any).optimal_actions;
+            const humanText = generateHumanReadableText(actions, currentLocation.phase);
 
-            <Box className={styles.actionSection}>
-                <Grid columns="3" gap="3" className={styles.performanceGrid}>
-                    <Box className={styles.performanceItem}>
-                        <Text size="1" color="gray" className={styles.performanceLabel}>Performance Level</Text>
-                        <Badge color={getPerformanceLevelColor(actions.performance_insights.performance_level)} size="2">
-                            {actions.performance_insights.performance_level}
-                        </Badge>
-                    </Box>
-                    <Box className={styles.performanceItem}>
-                        <Text size="1" color="gray" className={styles.performanceLabel}>Overall Efficiency</Text>
-                        <Text size="2" weight="bold">{actions.performance_insights.overall_efficiency.toFixed(1)}%</Text>
-                    </Box>
-                    <Box className={styles.performanceItem}>
-                        <Text size="1" color="gray" className={styles.performanceLabel}>Point Similarity</Text>
-                        <Text size="2" weight="bold">{actions.action_recommendations.point_similarity.toFixed(1)}%</Text>
-                    </Box>
-                </Grid>
-            </Box>
+            // Enhanced human-readable text with phase context
+            let enhancedGuidanceText = humanText;
+            if (!enhancedGuidanceText || enhancedGuidanceText.length < 10) {
+                // Generate contextual guidance based on phase type
+                if (currentLocation.phase.includes('Straight')) {
+                    enhancedGuidanceText = "You're on a straight section. Focus on maximizing speed and preparing for the next corner. Keep the car stable and straight.";
+                } else if (currentLocation.phase.includes('Approaching')) {
+                    enhancedGuidanceText = "Corner approaching! Start preparing for entry - check your speed, find your braking point, and position the car for optimal entry.";
+                } else if (currentLocation.phase.toLowerCase().includes('entry')) {
+                    enhancedGuidanceText = "Corner entry phase. Focus on smooth braking, proper turn-in timing, and setting up for the apex.";
+                } else if (currentLocation.phase.toLowerCase().includes('apex')) {
+                    enhancedGuidanceText = "At the apex! Maintain smooth steering input and prepare to get back on throttle as you exit the corner.";
+                } else if (currentLocation.phase.toLowerCase().includes('exit')) {
+                    enhancedGuidanceText = "Corner exit phase. Gradually increase throttle while unwinding steering to maximize acceleration down the straight.";
+                } else {
+                    enhancedGuidanceText = humanText || "Follow the AI recommendations for optimal performance in this section.";
+                }
+            }
 
-            <Separator className={styles.separator} />
+            const guidance: CurrentGuidance = {
+                phase: currentLocation.phase,
+                corner: currentLocation.corner,
+                position: normalizedPosition,
+                actions: {
+                    throttle: actions.optimal_throttle?.description || 'N/A',
+                    brake: actions.optimal_brake?.description || 'N/A',
+                    steering: actions.optimal_steering?.description || 'N/A',
+                    speed: actions.optimal_speed?.description || 'N/A'
+                },
+                confidence: (currentLocation.phaseData as any).confidence || 0,
+                humanReadableText: enhancedGuidanceText
+            };
 
-            <Box className={styles.actionComparison}>
-                <Text size="2" weight="medium" className={styles.comparisonTitle}>Action Comparison:</Text>
-                <Box className={styles.comparisonContainer}>
-                    {/* Speed and Throttle Row */}
-                    <Box className={styles.comparisonRow}>
-                        <Box className={styles.comparisonBox}>
-                            <Text size="1" weight="medium" className={styles.comparisonBoxTitle}>Speed</Text>
-                            <Box className={styles.comparisonValues}>
-                                <Text size="1" color="blue" className={styles.comparisonValue}>User: {actions.action_recommendations.speed.user_value.toFixed(1)}</Text>
-                                <Text size="1" color="green" className={styles.comparisonValue}>Expert: {actions.action_recommendations.speed.expert_value.toFixed(1)}</Text>
-                                <Text size="1" color="gray" className={styles.comparisonDiff}>
-                                    Diff: {actions.action_recommendations.speed.percentage_diff.toFixed(1)}%
-                                </Text>
-                            </Box>
-                        </Box>
-                        <Box className={styles.comparisonBox}>
-                            <Text size="1" weight="medium" className={styles.comparisonBoxTitle}>Throttle</Text>
-                            <Box className={styles.comparisonValues}>
-                                <Text size="1" color="blue" className={styles.comparisonValue}>User: {actions.action_recommendations.throttle.user_value.toFixed(3)}</Text>
-                                <Text size="1" color="green" className={styles.comparisonValue}>Expert: {actions.action_recommendations.throttle.expert_value.toFixed(3)}</Text>
-                                <Text size="1" color="gray" className={styles.comparisonDiff}>
-                                    Diff: {actions.action_recommendations.throttle.percentage_diff.toFixed(1)}%
-                                </Text>
-                            </Box>
-                        </Box>
-                    </Box>
-                    {/* Brake and Gear Row */}
-                    <Box className={styles.comparisonRow}>
-                        <Box className={styles.comparisonBox}>
-                            <Text size="1" weight="medium" className={styles.comparisonBoxTitle}>Brake</Text>
-                            <Box className={styles.comparisonValues}>
-                                <Text size="1" color="blue" className={styles.comparisonValue}>User: {actions.action_recommendations.brake.user_value.toFixed(3)}</Text>
-                                <Text size="1" color="green" className={styles.comparisonValue}>Expert: {actions.action_recommendations.brake.expert_value.toFixed(3)}</Text>
-                                <Text size="1" color="gray" className={styles.comparisonDiff}>
-                                    Diff: {actions.action_recommendations.brake.percentage_diff.toFixed(1)}%
-                                </Text>
-                            </Box>
-                        </Box>
-                        <Box className={styles.comparisonBox}>
-                            <Text size="1" weight="medium" className={styles.comparisonBoxTitle}>Gear</Text>
-                            <Box className={styles.comparisonValues}>
-                                <Text size="1" color="blue" className={styles.comparisonValue}>User: {actions.action_recommendations.gear.user_value}</Text>
-                                <Flex align="center" gap="2" className={styles.gearExpert}>
-                                    <Text size="1" color="green" className={styles.comparisonValue}>Expert: {actions.action_recommendations.gear.expert_value}</Text>
-                                    {actions.action_recommendations.gear.gear_optimal && (
-                                        <Badge color="green" size="1">✓</Badge>
-                                    )}
-                                </Flex>
-                                <Text size="1" color="gray" className={styles.comparisonDiff}>
-                                    {actions.action_recommendations.gear.gear_optimal ? 'Optimal' : 'Sub-optimal'}
-                                </Text>
-                            </Box>
-                        </Box>
-                    </Box>
-                    {/* Position Row */}
-                    <Box className={styles.comparisonRow}>
-                        <Box className={styles.comparisonBox}>
-                            <Text size="1" weight="medium" className={styles.comparisonBoxTitle}>Lateral Distance</Text>
-                            <Box className={styles.comparisonValues}>
-                                <Text size="1" color="gray" className={styles.comparisonValue}>Distance: {actions.action_recommendations.position.lateral_distance.toFixed(2)}m</Text>
-                                <Text size="1" color="gray" className={styles.comparisonValue}>Vertical: {Math.abs(actions.action_recommendations.position.vertical_difference).toFixed(2)}m</Text>
-                            </Box>
-                        </Box>
-                        <Box className={styles.comparisonBox}>
-                            <Text size="1" weight="medium" className={styles.comparisonBoxTitle}>Track Position</Text>
-                            <Box className={styles.comparisonValues}>
-                                <Text size="1" color="green" className={styles.comparisonValue}>Optimal: {actions.optimal_actions.optimal_track_position.toFixed(3)}</Text>
-                            </Box>
-                        </Box>
-                    </Box>
-                </Box>
-            </Box>
+            setCurrentGuidance(guidance);
+        } else {
+            // No specific guidance available for current position
+            setCurrentGuidance(null);
+        }
+    }, [analysisContext?.liveData, trackGuidanceData]);
 
-            <Separator className={styles.separator} />
+    if (isLoading) {
+        return (
+            <Card className={styles.chartCard} style={{ width, height }}>
+                <div className={styles.loadingContainer}>
+                    <Text>Loading guidance data...</Text>
+                </div>
+            </Card>
+        );
+    }
 
-            <Box>
-                <Text size="2" weight="medium" className={styles.efficiencyTitle}>Efficiency Breakdown:</Text>
-                <Grid columns="3" gap="2">
-                    <Box className={styles.efficiencyItem}>
-                        <Text size="1" className={styles.efficiencyLabel}>Speed</Text>
-                        <Progress
-                            value={actions.performance_insights.speed_efficiency}
-                            color="blue"
-                            className={styles.efficiencyProgress}
-                        />
-                        <Text size="1" color="gray">{actions.performance_insights.speed_efficiency.toFixed(1)}%</Text>
-                    </Box>
-                    <Box className={styles.efficiencyItem}>
-                        <Text size="1" className={styles.efficiencyLabel}>Throttle</Text>
-                        <Progress
-                            value={actions.performance_insights.throttle_efficiency}
-                            color="green"
-                            className={styles.efficiencyProgress}
-                        />
-                        <Text size="1" color="gray">{actions.performance_insights.throttle_efficiency.toFixed(1)}%</Text>
-                    </Box>
-                    <Box className={styles.efficiencyItem}>
-                        <Text size="1" className={styles.efficiencyLabel}>Brake</Text>
-                        <Progress
-                            value={actions.performance_insights.brake_efficiency}
-                            color="red"
-                            className={styles.efficiencyProgress}
-                        />
-                        <Text size="1" color="gray">{actions.performance_insights.brake_efficiency.toFixed(1)}%</Text>
-                    </Box>
-                </Grid>
-            </Box>
-        </Box>
-    );
+    if (!trackGuidanceData) {
+        return (
+            <Card className={styles.chartCard} style={{ width, height }}>
+                <Text size="2">Track guidance not available. Enable track guidance through AI chat.</Text>
+            </Card>
+        );
+    }
 
     return (
-        <Card style={{ width, height }} className={styles.chartCard}>
-            <Flex justify="between" align="center" className={styles.chartHeader}>
-                <Text size="3" weight="bold">AI Driving Guidance</Text>
-                {isUpdating && (
-                    <Badge color="blue" size="1">Updating...</Badge>
-                )}
-            </Flex>
+        <Card className={styles.chartCard} style={{ width, height }}>
+            <Box className={styles.chartHeader}>
+                <Text size="4" weight="bold">Real-Time Track Guidance</Text>
+                <Text size="2" color="gray">Live telemetry-based driving guidance</Text>
+            </Box>
 
-            {isInitialLoading && (
-                <Box className={styles.loadingContainer}>
-                    <Text color="gray">Loading guidance...</Text>
-                </Box>
-            )}
+            <Separator className={styles.separator} />
 
-            {error && (
-                <Box className={styles.loadingContainer}>
-                    <Text color="red">{error}</Text>
-                </Box>
-            )}
+            <Box className={styles.contentContainer}>
+                {currentGuidance ? (
+                    <>
+                        <Box className={styles.behaviorSection}>
+                            <Text className={styles.sectionTitle} size="3" weight="medium">
+                                Current Location: {currentGuidance.corner === 0 ? currentGuidance.phase : `Corner ${currentGuidance.corner} - ${currentGuidance.phase}`}
+                            </Text>
 
-            {!guidanceData && !isInitialLoading && !error && (
-                <Box className={styles.loadingContainer}>
-                    <Text color="gray">No guidance data available</Text>
-                </Box>
-            )}
+                            <Box className={styles.confidenceContainer}>
+                                <Flex justify="between" align="center" className={styles.confidenceBadges}>
+                                    <Text size="2">Position: {(currentGuidance.position * 100).toFixed(1)}%</Text>
+                                    <Badge color="blue">
+                                        Confidence: {(currentGuidance.confidence * 100).toFixed(0)}%
+                                    </Badge>
+                                </Flex>
+                                <Progress
+                                    value={currentGuidance.confidence * 100}
+                                    className={styles.confidenceProgress}
+                                />
+                            </Box>
+                        </Box>
 
-            {guidanceData && guidanceData.success && guidanceData.guidance_result.success && !isInitialLoading && (
-                <Box className={styles.contentContainer}>
-                    {renderBehaviorGuidance(guidanceData.guidance_result.behavior_guidance)}
-                    <Separator className={styles.mainSeparator} />
-                    {renderActionGuidance(guidanceData.guidance_result.action_guidance)}
+                        <Separator className={styles.separator} />
 
-                    <Box className={styles.timestamp}>
-                        Last updated: {new Date(guidanceData.timestamp).toLocaleTimeString()}
+                        <Box className={styles.behaviorSection}>
+                            <Text className={styles.sectionTitle} size="3" weight="medium">
+                                AI Guidance
+                            </Text>
+                            <Box style={{
+                                padding: '12px',
+                                backgroundColor: 'var(--blue-2)',
+                                borderRadius: '8px',
+                                marginBottom: '16px'
+                            }}>
+                                <Text size="2" style={{ lineHeight: '1.6' }}>
+                                    {currentGuidance.humanReadableText ||
+                                        `${currentGuidance.phase}: Follow the recommended actions for optimal performance.`}
+                                </Text>
+                            </Box>
+                        </Box>
+
+                        <Separator className={styles.separator} />
+
+                        <Box className={styles.actionComparison}>
+                            <Text className={styles.comparisonTitle} size="3" weight="medium">
+                                Recommended Actions
+                            </Text>
+                            <Box className={styles.comparisonContainer}>
+                                <Grid columns="2" gap="3">
+                                    <Box className={styles.comparisonBox}>
+                                        <Text className={styles.comparisonBoxTitle} size="2" weight="medium">
+                                            🚗 Throttle
+                                        </Text>
+                                        <Box className={styles.comparisonValues}>
+                                            <Text className={styles.comparisonValue} size="2">
+                                                {currentGuidance.actions.throttle}
+                                            </Text>
+                                        </Box>
+                                    </Box>
+
+                                    <Box className={styles.comparisonBox}>
+                                        <Text className={styles.comparisonBoxTitle} size="2" weight="medium">
+                                            🛑 Brake
+                                        </Text>
+                                        <Box className={styles.comparisonValues}>
+                                            <Text className={styles.comparisonValue} size="2">
+                                                {currentGuidance.actions.brake}
+                                            </Text>
+                                        </Box>
+                                    </Box>
+
+                                    <Box className={styles.comparisonBox}>
+                                        <Text className={styles.comparisonBoxTitle} size="2" weight="medium">
+                                            🎯 Steering
+                                        </Text>
+                                        <Box className={styles.comparisonValues}>
+                                            <Text className={styles.comparisonValue} size="2">
+                                                {currentGuidance.actions.steering}
+                                            </Text>
+                                        </Box>
+                                    </Box>
+
+                                    <Box className={styles.comparisonBox}>
+                                        <Text className={styles.comparisonBoxTitle} size="2" weight="medium">
+                                            ⚡ Speed
+                                        </Text>
+                                        <Box className={styles.comparisonValues}>
+                                            <Text className={styles.comparisonValue} size="2">
+                                                {currentGuidance.actions.speed}
+                                            </Text>
+                                        </Box>
+                                    </Box>
+                                </Grid>
+                            </Box>
+                        </Box>
+                    </>
+                ) : (
+                    <Box style={{ textAlign: 'center', padding: '20px' }}>
+                        <Text size="3" color="gray">
+                            No specific guidance available for current track position
+                        </Text>
+                        <Text size="2" color="gray" style={{ display: 'block', marginTop: '8px' }}>
+                            Continue driving to receive AI-powered guidance
+                        </Text>
+
+                        {/* Debug information */}
+                        {analysisContext?.liveData && (
+                            <Box style={{
+                                marginTop: '16px',
+                                padding: '12px',
+                                backgroundColor: 'var(--gray-2)',
+                                borderRadius: '8px',
+                                textAlign: 'left'
+                            }}>
+                                <Text size="1" weight="medium" style={{ display: 'block', marginBottom: '8px' }}>
+                                    Debug Info:
+                                </Text>
+                                <Text size="1" style={{ display: 'block', fontFamily: 'monospace' }}>
+                                    Position: {normalizeCarPosition(analysisContext.liveData).toFixed(4)}
+                                </Text>
+                                <Text size="1" style={{ display: 'block', fontFamily: 'monospace' }}>
+                                    Available data: {Object.keys(analysisContext.liveData).join(', ')}
+                                </Text>
+                                {trackGuidanceData?.trackData?._prediction_result && (
+                                    <Text size="1" style={{ display: 'block', fontFamily: 'monospace' }}>
+                                        Corners: {trackGuidanceData.trackData._prediction_result.total_corners}
+                                    </Text>
+                                )}
+                            </Box>
+                        )}
                     </Box>
-                </Box>
-            )}
+                )}
+            </Box>
         </Card>
     );
 };

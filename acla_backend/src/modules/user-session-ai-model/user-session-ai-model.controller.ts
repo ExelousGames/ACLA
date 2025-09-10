@@ -65,8 +65,6 @@ export class UserSessionAiModelController {
     async processAIQuery(
         @Body() body: {
             question: string;
-            sessionId?: string;
-            trackName?: string;
             context?: any;
         },
         @Request() req: any
@@ -82,7 +80,6 @@ export class UserSessionAiModelController {
             user_id: req?.user?.id,
             context: {
                 ...body.context,
-                track_name: body.trackName,
             }
         };
 

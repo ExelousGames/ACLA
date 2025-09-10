@@ -584,7 +584,7 @@ class CornerImitationLearningService:
         processed_df = feature_processor.general_cleaning_for_analysis()
         
         # Filter for best laps
-        processed_df = self._filter_top_performance_laps(processed_df)
+        processed_df = self._filter_top_performance_laps(processed_df,0.2)
         
         # Train corner models
         corner_models = self.corner_learner.learn_corner_optimal_actions(processed_df, corner_definitions)
@@ -878,8 +878,8 @@ class CornerImitationLearningService:
         
         print(f"[INFO] Converted {len(corner_definitions)} corners from analysis result")
         return corner_definitions
-    
-    def _filter_top_performance_laps(self, df: pd.DataFrame) -> pd.DataFrame:
+
+    def _filter_top_performance_laps(self, df: pd.DataFrame, topPercentageToKeep: float = 0.01) -> pd.DataFrame:
         """
         Filter for valid laps and select top 1% fastest laps for training
         
@@ -979,7 +979,7 @@ class CornerImitationLearningService:
         sorted_indices = np.argsort(lap_times)
 
         # Calculate how many laps to keep (top 5%, minimum 1 lap)
-        num_laps_to_keep = max(1, int(np.ceil(len(lap_times) * 0.05)))
+        num_laps_to_keep = max(1, int(np.ceil(len(lap_times) * topPercentageToKeep)))
         print(f"[INFO] Selecting top {num_laps_to_keep} fastest laps out of {len(lap_times)} total laps")
         
         # Select top laps
