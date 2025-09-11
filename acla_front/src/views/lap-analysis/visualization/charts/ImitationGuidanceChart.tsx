@@ -63,8 +63,8 @@ interface ImitationGuidanceData {
 }
 
 interface CurrentGuidance {
-    phase: string;
     corner: number;
+    phase: string;
     position: number;
     actions: {
         throttle: string;
@@ -75,6 +75,7 @@ interface CurrentGuidance {
     confidence: number;
     humanReadableText: string;
     nextPhase?: {
+        corner: number;
         name: string;
         data?: any;
         distance: number;
@@ -83,7 +84,7 @@ interface CurrentGuidance {
 }
 
 // Configuration constants
-const GUIDANCE_TRANSITION_THRESHOLD = 3; // seconds before switching to next phase guidance
+const GUIDANCE_TRANSITION_THRESHOLD = 1; // seconds before switching to next phase guidance
 const URGENT_TRANSITION_THRESHOLD = 0.5; // seconds for urgent next phase warnings
 
 const ImitationGuidanceChart: React.FC<VisualizationProps> = ({
@@ -102,6 +103,7 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = ({
     const [currentCornerIndex, setCurrentCornerIndex] = useState<number>(1); // Track which corner we're currently monitoring
     const [lastCompletedLap, setLastCompletedLap] = useState<number>(0); // Track last completed lap for detection
     const [isInActivePhase, setIsInActivePhase] = useState<boolean>(false); // Track if currently in a corner phase
+    const [lastSentGuidanceMessage, setLastSentGuidanceMessage] = useState<string>(''); // Track last sent guidance to avoid duplicates
 
     // Store corner boundaries for quick lookup
     const [cornerBoundaries, setCornerBoundaries] = useState<Array<{ cornerNum: number, start: number, end: number }>>([]);
@@ -145,7 +147,7 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = ({
     };
 
     // Function to calculate approach speed based on position history
-    const calculateApproachSpeed = (currentPosition: number, history: Array<{ position: number, timestamp: number, lap: number }>): number => {
+    const calculateApproachSpeed = (history: Array<{ position: number, timestamp: number, lap: number }>): number => {
         if (history.length < 3) return 0;
 
         const recentHistory = history.slice(-5);
@@ -197,6 +199,7 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = ({
                 phase: phaseResult.phaseName,
                 phaseData: phaseResult.phaseData,
                 nextPhase: nextPhaseInfo ? {
+                    corner: nextPhaseInfo.corner,
                     name: nextPhaseInfo.name,
                     data: nextPhaseInfo.data,
                     distance: nextPhaseInfo.distance,
@@ -238,6 +241,7 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = ({
             let nextPhaseName = null;
             let nextPhaseData = null;
             let nextPhasePosition = 0;
+            let nextPhaseCorner = cornerNum;
 
             if (currentPhaseIndex >= 0 && currentPhaseIndex < phases.length - 1) {
                 // Next phase is in same corner
@@ -245,10 +249,11 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = ({
                 nextPhaseName = name;
                 nextPhaseData = data;
                 nextPhasePosition = (data as any).phase_position;
+                nextPhaseCorner = cornerNum;
             } else {
                 // Look for next corner's first phase
                 const totalCorners = Object.keys(cornerPredictions).length;
-                const nextCornerNum = (cornerNum + 1) % totalCorners;
+                const nextCornerNum = (cornerNum % totalCorners) + 1;
                 const nextCornerData = cornerPredictions[`corner_${nextCornerNum}`];
 
                 if (nextCornerData) {
@@ -257,9 +262,10 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = ({
 
                     if (nextCornerPhases.length > 0) {
                         const [name, data] = nextCornerPhases[0];
-                        nextPhaseName = `Corner ${nextCornerNum} - ${name}`;
+                        nextPhaseName = name; // Just the phase name, no corner prefix
                         nextPhaseData = data;
                         nextPhasePosition = (data as any).phase_position;
+                        nextPhaseCorner = nextCornerNum;
                     }
                 }
             }
@@ -271,6 +277,7 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = ({
             const timeToReach = approachSpeed > 0 ? distance / approachSpeed : Infinity;
 
             return {
+                corner: nextPhaseCorner,
                 name: nextPhaseName,
                 data: nextPhaseData,
                 distance: distance,
@@ -290,22 +297,25 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = ({
             return buildCornerResult(currentCornerIndex);
         }
 
-        // Position is outside current corner - check adjacent corners
-        const totalCorners = cornerBoundaries.length;
-        const cornersToCheck = [
-            (currentCornerIndex % totalCorners) + 1, // Next corner
-            currentCornerIndex === 1 ? totalCorners : currentCornerIndex - 1 // Previous corner
-        ];
-
-        for (const cornerIndex of cornersToCheck) {
-            const boundary = cornerBoundaries.find(b => b.cornerNum === cornerIndex);
-            if (boundary && position >= boundary.start && position <= boundary.end) {
-                setCurrentCornerIndex(cornerIndex);
-                return buildCornerResult(cornerIndex);
+        // First, check if we're in any corner boundary at all
+        let foundCorner = null;
+        for (const boundary of cornerBoundaries) {
+            if (position >= boundary.start && position <= boundary.end) {
+                foundCorner = boundary.cornerNum;
+                break;
             }
         }
 
-        // Position is between corners (straight section)
+        // Only update currentCornerIndex if we found a corner and it's different from current
+        if (foundCorner !== null && foundCorner !== currentCornerIndex) {
+            setCurrentCornerIndex(foundCorner);
+            return buildCornerResult(foundCorner);
+        } else if (foundCorner !== null) {
+            // We're in the same corner, use current corner index
+            return buildCornerResult(currentCornerIndex);
+        }
+
+        // Position is between corners (straight section) - don't update currentCornerIndex
         return null;
     };
 
@@ -313,15 +323,6 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = ({
     const generateHumanReadableText = (actions: any, phase: string): string => {
         const actionTypes = ['optimal_throttle', 'optimal_brake', 'optimal_steering', 'optimal_speed'];
 
-        // Handle straight sections and approaching corners with direct descriptions
-        if (phase.includes('Straight') || phase.includes('Approaching')) {
-            const descriptions = actionTypes
-                .filter(type => actions[type]?.description && (type !== 'optimal_brake' || actions[type].value > 0))
-                .map(type => actions[type].description);
-            return descriptions.join('. ') + (descriptions.length ? '.' : '');
-        }
-
-        // For corner phases, use preloaded sentences if available
         if (!trackGuidanceData?.preloadSentences) {
             const descriptions = actionTypes
                 .map(type => actions[type]?.description)
@@ -332,32 +333,61 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = ({
         const sentences = trackGuidanceData.preloadSentences;
         const guidanceTexts = [];
 
-        // Select appropriate guidance based on current actions and phase
+        // Helper function to get sentence index based on rapidity
+        const getSentenceIndex = (rapidity: string): number | null => {
+            switch (rapidity?.toLowerCase()) {
+                case 'gradually':
+                    return 0;
+                case 'moderately':
+                    return 1;
+                case 'quickly':
+                    return 2;
+                case 'rapidly':
+                    return 3;
+                default:
+                    return null; // Return null if rapidity is not recognized
+            }
+        };
+
+        // Add throttle guidance
         if (actions.optimal_throttle && sentences.throttle_guidance) {
-            const index = Math.min(
-                Math.floor(actions.optimal_throttle.value * sentences.throttle_guidance.length),
-                sentences.throttle_guidance.length - 1
-            );
-            guidanceTexts.push(sentences.throttle_guidance[index]);
+            const rapidityIndex = getSentenceIndex(actions.optimal_throttle.rapidity);
+            if (rapidityIndex !== null && sentences.throttle_guidance[rapidityIndex]) {
+                guidanceTexts.push(sentences.throttle_guidance[rapidityIndex]);
+            }
         }
 
+        // Add brake guidance
         if (actions.optimal_brake && sentences.brake_guidance) {
-            const index = Math.min(
-                Math.floor(actions.optimal_brake.value * sentences.brake_guidance.length),
-                sentences.brake_guidance.length - 1
-            );
-            guidanceTexts.push(sentences.brake_guidance[index]);
+            const rapidityIndex = getSentenceIndex(actions.optimal_brake.rapidity);
+            if (rapidityIndex !== null && sentences.brake_guidance[rapidityIndex]) {
+                guidanceTexts.push(sentences.brake_guidance[rapidityIndex]);
+            }
         }
 
+        // Add steering guidance
         if (actions.optimal_steering && sentences.steering_guidance) {
-            const index = Math.min(
-                Math.floor(Math.abs(actions.optimal_steering.value) * sentences.steering_guidance.length),
-                sentences.steering_guidance.length - 1
-            );
-            guidanceTexts.push(sentences.steering_guidance[index]);
+            const rapidityIndex = getSentenceIndex(actions.optimal_steering.rapidity);
+            if (rapidityIndex !== null && sentences.steering_guidance[rapidityIndex]) {
+                guidanceTexts.push(sentences.steering_guidance[rapidityIndex]);
+            }
         }
 
-        return guidanceTexts.join('. ') + (guidanceTexts.length ? '.' : '');
+        const generatedText = guidanceTexts.join('. ') + (guidanceTexts.length ? '.' : '');
+
+        // Send the generated guidance text to AI chat if it's not empty and different from the last one
+        if (generatedText && analysisContext?.sendGuidanceToChat) {
+            // Include phase information for context
+            const fullGuidanceMessage = `${phase}: ${generatedText}`;
+
+            // Only send if different from the last sent message to avoid spam
+            if (fullGuidanceMessage !== lastSentGuidanceMessage) {
+                analysisContext.sendGuidanceToChat(fullGuidanceMessage);
+                setLastSentGuidanceMessage(fullGuidanceMessage);
+            }
+        }
+
+        return generatedText;
     };
 
     // Main effect to monitor live telemetry data and update guidance
@@ -385,48 +415,32 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = ({
         });
 
         // Calculate current approach speed to next phase
-        const approachSpeed = calculateApproachSpeed(normalizedPosition, positionHistory);
+        const approachSpeed = calculateApproachSpeed(positionHistory);
         setCurrentSpeed(approachSpeed);
 
-        // Find current corner and phase with approach speed
+        // Find current phase and next phase
         const currentLocation = findCurrentCornerAndPhase(normalizedPosition, approachSpeed);
 
         if (currentLocation) {
             setIsInActivePhase(true);
 
-            // Determine guidance phase based on approach speed
+            // Determine if we should show next phase guidance
             const shouldUseNextPhase = currentLocation.nextPhase &&
                 currentLocation.nextPhase.timeToReach > 0 &&
                 currentLocation.nextPhase.timeToReach <= GUIDANCE_TRANSITION_THRESHOLD &&
                 currentLocation.nextPhase.data;
 
-            const {
-                phase: guidancePhase,
-                data: guidancePhaseData,
-                isNext: isNextPhaseGuidance,
-                isUrgent: isUrgentTransition
-            } = shouldUseNextPhase
-                    ? {
-                        phase: currentLocation.nextPhase!.name,
-                        data: currentLocation.nextPhase!.data,
-                        isNext: true,
-                        isUrgent: currentLocation.nextPhase!.timeToReach <= URGENT_TRANSITION_THRESHOLD
-                    }
-                    : {
-                        phase: currentLocation.phase,
-                        data: currentLocation.phaseData,
-                        isNext: false,
-                        isUrgent: false
-                    };
+            // Use next phase data for guidance if conditions are met, otherwise use current phase
+            const guidanceData = shouldUseNextPhase ? currentLocation.nextPhase!.data : currentLocation.phaseData;
+            const isNextPhaseGuidance = shouldUseNextPhase;
+            const isUrgentTransition = shouldUseNextPhase && currentLocation.nextPhase!.timeToReach <= URGENT_TRANSITION_THRESHOLD;
 
-            const actions = (guidancePhaseData as any).optimal_actions;
-            const humanText = generateHumanReadableText(actions, guidancePhase);
+            const actions = (guidanceData as any).optimal_actions;
+            const humanText = generateHumanReadableText(actions, shouldUseNextPhase ? currentLocation.nextPhase!.name : currentLocation.phase);
 
             const guidance: CurrentGuidance = {
-                phase: isNextPhaseGuidance
-                    ? (isUrgentTransition ? `⚠️ NOW: ${guidancePhase}` : `🔄 Next: ${guidancePhase}`)
-                    : guidancePhase,
-                corner: currentLocation.corner,
+                corner: shouldUseNextPhase ? currentLocation.nextPhase!.corner : currentLocation.corner,
+                phase: shouldUseNextPhase ? currentLocation.nextPhase!.name : currentLocation.phase,
                 position: normalizedPosition,
                 actions: {
                     throttle: actions.optimal_throttle?.description || 'N/A',
@@ -434,7 +448,7 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = ({
                     steering: actions.optimal_steering?.description || 'N/A',
                     speed: actions.optimal_speed?.description || 'N/A'
                 },
-                confidence: (guidancePhaseData as any).confidence || 0,
+                confidence: (guidanceData as any).confidence || 0,
                 humanReadableText: isNextPhaseGuidance
                     ? (isUrgentTransition
                         ? `⚠️ URGENT: Prepare now! ${humanText}`
