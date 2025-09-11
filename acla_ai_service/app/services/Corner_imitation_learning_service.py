@@ -47,8 +47,8 @@ class CornerSpecificLearner:
         Args:
             df: Telemetry DataFrame
             corner_positions: Dict with corner phases and their normalized positions
-                             e.g., {'entry': 0.15, 'turn_in': 0.18, 'apex': 0.20, 'exit': 0.22}
-        
+                             e.g., {'entry': 0.15, 'turn_in': 0.18, 'apex': 0.20, 'acceleration': 0.21, 'exit': 0.22}
+
         Returns:
             DataFrame with corner-specific features
         """
@@ -120,8 +120,8 @@ class CornerSpecificLearner:
             expert_df: Expert telemetry data
             corner_definitions: Dict of corners with their phase positions
                                e.g., {
-                                   'corner_1': {'entry': 0.15, 'turn_in': 0.18, 'apex': 0.20, 'exit': 0.22},
-                                   'corner_2': {'entry': 0.45, 'turn_in': 0.47, 'apex': 0.49, 'exit': 0.51}
+                                   'corner_1': {'entry': 0.15, 'turn_in': 0.18, 'apex': 0.20, 'acceleration': 0.21, 'exit': 0.22},
+                                   'corner_2': {'entry': 0.45, 'turn_in': 0.47, 'apex': 0.49, 'acceleration': 0.50, 'exit': 0.51}
                                }
         
         Returns:
@@ -477,7 +477,7 @@ class CornerSpecificLearner:
             # For throttle/brake, change_rate is per frame (0-1 range)
             if change_rate <= 0.001:
                 return "steady"
-            elif change_rate <= 0.005:
+            elif change_rate <= 0.05:
                 return "gradual"
             elif change_rate <= 0.1:
                 return "moderate"
