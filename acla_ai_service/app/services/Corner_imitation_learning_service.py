@@ -491,7 +491,7 @@ class CornerSpecificLearner:
         elif action_type == 'steering':
             # For steering, change_rate is in radians per frame
             if change_rate <= 0.002:
-                return "smooth"
+                return "steady"
             elif change_rate <= 0.008:
                 return "gradual"
             elif change_rate <= 0.020:
@@ -499,7 +499,7 @@ class CornerSpecificLearner:
             elif change_rate <= 0.040:
                 return "quick"
             elif change_rate <= 0.070:
-                return "sharp"
+                return "rapid"
             else:
                 return "aggressive"
         
