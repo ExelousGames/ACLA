@@ -111,6 +111,13 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
     const [speechRecognition, setSpeechRecognition] = useState<SpeechRecognition | null>(null);
     const [electronSpeechAvailable, setElectronSpeechAvailable] = useState(false);
 
+    // Text-to-speech states
+    const [speechSynthesis, setSpeechSynthesis] = useState<SpeechSynthesis | null>(null);
+    const [isTextToSpeechEnabled, setIsTextToSpeechEnabled] = useState(false);
+    const [isSpeaking, setIsSpeaking] = useState(false);
+    const [selectedVoice, setSelectedVoice] = useState<SpeechSynthesisVoice | null>(null);
+    const [availableVoices, setAvailableVoices] = useState<SpeechSynthesisVoice[]>([]);
+
     // Helper functions for recording state management
     const isUninteractableState = recording.status === 'initing' || recording.status === 'processing' || recording.status === 'listening';
     const isRecordingCompleted = recording.status === 'completed';
@@ -170,6 +177,8 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
     const lastStartAttemptRef = useRef<number>(0);
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const inputRef = useRef<HTMLInputElement>(null);
+    const speechQueueRef = useRef<string[]>([]);
+    const currentUtteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
 
     const analysisContext = useContext(AnalysisContext);
 
@@ -214,9 +223,177 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
         messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
     };
 
+    // Text-to-speech utility functions
+    const initializeTextToSpeech = () => {
+        if ('speechSynthesis' in window) {
+            const synth = window.speechSynthesis;
+            setSpeechSynthesis(synth);
+
+            // Load available voices
+            const loadVoices = () => {
+                const voices = synth.getVoices();
+                setAvailableVoices(voices);
+
+                // Select a default voice (prefer English voices)
+                const englishVoices = voices.filter(voice => voice.lang.startsWith('en'));
+                const defaultVoice = englishVoices.find(voice => voice.default) || 
+                                   englishVoices.find(voice => voice.name.includes('Google')) ||
+                                   englishVoices[0] || 
+                                   voices[0];
+                
+                if (defaultVoice) {
+                    setSelectedVoice(defaultVoice);
+                }
+            };
+
+            // Load voices immediately
+            loadVoices();
+
+            // Also load voices when they become available (some browsers load them asynchronously)
+            synth.onvoiceschanged = loadVoices;
+
+            return true;
+        }
+        return false;
+    };
+
+    const speakText = (text: string, options?: { isGuidance?: boolean }) => {
+        if (!speechSynthesis || !isTextToSpeechEnabled || !selectedVoice) {
+            return;
+        }
+
+        // Stop current speech if speaking
+        if (isSpeaking) {
+            speechSynthesis.cancel();
+            setIsSpeaking(false);
+        }
+
+        // Clean text for better speech synthesis
+        const cleanText = text
+            .replace(/\*\*(.*?)\*\*/g, '$1') // Remove markdown bold
+            .replace(/\*(.*?)\*/g, '$1') // Remove markdown italic
+            .replace(/```[\s\S]*?```/g, '') // Remove code blocks
+            .replace(/`(.*?)`/g, '$1') // Remove inline code
+            .replace(/https?:\/\/[^\s]+/g, 'link') // Replace URLs with "link"
+            .replace(/[#]+\s*/g, '') // Remove markdown headers
+            .replace(/\n+/g, '. ') // Replace newlines with periods
+            .replace(/\s+/g, ' ') // Normalize whitespace
+            .trim();
+
+        if (!cleanText) return;
+
+        // Split very long messages into chunks to prevent browser timeout
+        const maxLength = 200;
+        if (cleanText.length > maxLength) {
+            const sentences = cleanText.split(/[.!?]+/).filter(s => s.trim().length > 0);
+            let currentChunk = '';
+            
+            for (const sentence of sentences) {
+                if ((currentChunk + sentence).length > maxLength && currentChunk) {
+                    speechQueueRef.current.push(currentChunk.trim() + '.');
+                    currentChunk = sentence;
+                } else {
+                    currentChunk += (currentChunk ? '. ' : '') + sentence;
+                }
+            }
+            
+            if (currentChunk.trim()) {
+                speechQueueRef.current.push(currentChunk.trim() + '.');
+            }
+            
+            // Start speaking the first chunk
+            if (speechQueueRef.current.length > 0) {
+                const firstChunk = speechQueueRef.current.shift();
+                if (firstChunk) {
+                    speakText(firstChunk, options);
+                }
+            }
+            return;
+        }
+
+        const utterance = new SpeechSynthesisUtterance(cleanText);
+        currentUtteranceRef.current = utterance;
+
+        utterance.voice = selectedVoice;
+        utterance.rate = options?.isGuidance ? 1.1 : 0.9; // Slightly faster for guidance
+        utterance.pitch = options?.isGuidance ? 1.1 : 1.0; // Slightly higher pitch for guidance
+        utterance.volume = 0.8;
+
+        utterance.onstart = () => {
+            setIsSpeaking(true);
+        };
+
+        utterance.onend = () => {
+            setIsSpeaking(false);
+            currentUtteranceRef.current = null;
+            
+            // Process queue if there are more messages
+            if (speechQueueRef.current.length > 0) {
+                const nextText = speechQueueRef.current.shift();
+                if (nextText) {
+                    setTimeout(() => speakText(nextText), 100);
+                }
+            }
+        };
+
+        utterance.onerror = (event) => {
+            console.error('Speech synthesis error:', event);
+            setIsSpeaking(false);
+            currentUtteranceRef.current = null;
+        };
+
+        speechSynthesis.speak(utterance);
+    };
+
+    const stopSpeaking = () => {
+        if (speechSynthesis && isSpeaking) {
+            speechSynthesis.cancel();
+            setIsSpeaking(false);
+            currentUtteranceRef.current = null;
+            speechQueueRef.current = []; // Clear queue
+        }
+    };
+
+    const toggleTextToSpeech = () => {
+        const newState = !isTextToSpeechEnabled;
+        setIsTextToSpeechEnabled(newState);
+        
+        // Save preference to localStorage
+        localStorage.setItem('ai-chat-tts-enabled', newState.toString());
+        
+        if (!newState && isSpeaking) {
+            stopSpeaking();
+        }
+        
+        // Show feedback message
+        const statusMessage = newState ? 'Text-to-speech enabled' : 'Text-to-speech disabled';
+        addStatusMessage('tts-toggle', statusMessage);
+    };
+
     useEffect(() => {
         scrollToBottom();
     }, [messages]);
+
+    // Automatically speak new AI messages
+    useEffect(() => {
+        if (!isTextToSpeechEnabled || messages.length === 0) return;
+
+        const lastMessage = messages[messages.length - 1];
+        
+        // Only speak AI messages (not user messages) and not loading messages
+        if (!lastMessage.isUser && !lastMessage.isLoading && lastMessage.content) {
+            // Don't speak the welcome message on first load
+            if (lastMessage.id === 'welcome' && messages.length === 1) return;
+            
+            // Determine if this is a guidance message
+            const isGuidanceMessage = lastMessage.id.includes('guidance');
+            
+            // Add a small delay to ensure the message is rendered
+            setTimeout(() => {
+                speakText(lastMessage.content, { isGuidance: isGuidanceMessage });
+            }, 300);
+        }
+    }, [messages, isTextToSpeechEnabled]);
 
     // Listen for guidance messages from ImitationGuidanceChart
     const lastProcessedGuidanceRef = useRef<string>('');
@@ -313,6 +490,20 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
         const currentEnvironment = detectEnvironment();
         setEnvironment(currentEnvironment);
 
+        // Initialize text-to-speech
+        const ttsAvailable = initializeTextToSpeech();
+        if (ttsAvailable) {
+            console.log('Text-to-speech initialized successfully');
+            
+            // Load saved TTS preference
+            const savedTtsEnabled = localStorage.getItem('ai-chat-tts-enabled');
+            if (savedTtsEnabled === 'true') {
+                setIsTextToSpeechEnabled(true);
+            }
+        } else {
+            console.warn('Text-to-speech not available in this environment');
+        }
+
         let cleanup: (() => void) | undefined;
 
         const initialize = async () => {
@@ -334,6 +525,8 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
             if (cleanup) {
                 cleanup();
             }
+            // Clean up text-to-speech
+            stopSpeaking();
         };
     }, []);
 
@@ -551,6 +744,9 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
             } finally {
                 resetRecording(true);
             }
+            
+            // Cleanup text-to-speech
+            stopSpeaking();
         };
     }, [speechRecognition, recording.status]);
 
@@ -580,11 +776,17 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
                 forceStopVoiceRecording();
                 addStatusMessage('escape-stop', 'Voice recording stopped by Escape key.');
             }
+            // Add keyboard shortcut to stop speech (Ctrl+Space or Cmd+Space)
+            if ((event.ctrlKey || event.metaKey) && event.code === 'Space' && isSpeaking) {
+                event.preventDefault();
+                stopSpeaking();
+                addStatusMessage('speech-stop', 'Text-to-speech stopped.');
+            }
         };
 
         document.addEventListener('keydown', handleKeyDown);
         return () => document.removeEventListener('keydown', handleKeyDown);
-    }, [isUninteractableState]);
+    }, [isUninteractableState, isSpeaking]);
 
     // Debug and sync utilities (simplified)
     useEffect(() => {
@@ -1177,6 +1379,23 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
         </svg>
     );
 
+    // Speaker Icon Component
+    const SpeakerIcon = () => (
+        <svg
+            width="12"
+            height="12"
+            viewBox="0 0 24 24"
+            fill="currentColor"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+        >
+            <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+            <path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07" />
+        </svg>
+    );
+
     /**
      * Extracts JSON object from a string that may contain markdown code blocks or other text
      * @param text - The string that may contain JSON
@@ -1311,6 +1530,31 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
                         )}
                     </Flex>
                     <Flex align="center" gap="2">
+                        {/* Text-to-speech controls */}
+                        {speechSynthesis && (
+                            <>
+                                <Button
+                                    variant="ghost"
+                                    size="1"
+                                    onClick={toggleTextToSpeech}
+                                    color={isTextToSpeechEnabled ? "green" : "gray"}
+                                    title={isTextToSpeechEnabled ? "Disable text-to-speech" : "Enable text-to-speech"}
+                                >
+                                    🔊 TTS
+                                </Button>
+                                {isSpeaking && (
+                                    <Button
+                                        variant="ghost"
+                                        size="1"
+                                        onClick={stopSpeaking}
+                                        color="red"
+                                        title="Stop speaking"
+                                    >
+                                        🔇 Stop
+                                    </Button>
+                                )}
+                            </>
+                        )}
                         <Button
                             variant="ghost"
                             size="1"
@@ -1324,9 +1568,19 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
                                 Voice input not supported
                             </Badge>
                         )}
+                        {!speechSynthesis && (
+                            <Badge variant="soft" color="orange" size="1">
+                                Text-to-speech not supported
+                            </Badge>
+                        )}
                         {recording.error && (
                             <Badge variant="soft" color="red" size="1">
                                 Voice error
+                            </Badge>
+                        )}
+                        {isTextToSpeechEnabled && (
+                            <Badge variant="soft" color="green" size="1">
+                                TTS On ({selectedVoice?.name?.split(' ')[0] || 'Default'})
                             </Badge>
                         )}
                     </Flex>
@@ -1359,6 +1613,13 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
                                             <line x1="12" y1="20" x2="12" y2="24" />
                                             <line x1="8" y1="24" x2="16" y2="24" />
                                         </svg>
+                                    )}
+                                    {/* Show speaking indicator for AI messages */}
+                                    {!message.isUser && isTextToSpeechEnabled && isSpeaking && (
+                                        <Flex align="center" gap="1">
+                                            <SpeakerIcon />
+                                            <Text size="1" color="blue">Speaking...</Text>
+                                        </Flex>
                                     )}
                                     <Text size="1" color="gray">
                                         {message.timestamp.toLocaleTimeString()}
@@ -1393,6 +1654,22 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
                                             <Text size="2" style={{ whiteSpace: 'pre-wrap' }}>
                                                 {message.content}
                                             </Text>
+
+                                            {/* Individual message speech control for AI messages */}
+                                            {!message.isUser && speechSynthesis && !message.isLoading && (
+                                                <Flex justify="end" mt="1">
+                                                    <Button
+                                                        variant="ghost"
+                                                        size="1"
+                                                        onClick={() => speakText(message.content, { isGuidance: message.id.includes('guidance') })}
+                                                        disabled={isSpeaking}
+                                                        title="Speak this message"
+                                                        style={{ opacity: 0.7 }}
+                                                    >
+                                                        <SpeakerIcon />
+                                                    </Button>
+                                                </Flex>
+                                            )}
 
                                             {/* Show function execution indicator (always visible) */}
                                             {!debugMode && message.functionResults && message.functionResults.length > 0 && (
