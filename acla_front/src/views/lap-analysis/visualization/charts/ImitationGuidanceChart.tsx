@@ -111,6 +111,7 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = ({
     // Extract guidance data from the visualization data
     useEffect(() => {
         if (data?.trackData && data?.preloadSentences) {
+            console.log(data?.preloadSentences);
             setTrackGuidanceData({
                 trackData: data.trackData,
                 preloadSentences: data.preloadSentences
@@ -332,7 +333,9 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = ({
 
         const sentences = trackGuidanceData.preloadSentences;
         const guidanceTexts = [];
-
+        console.log('Actions for text generation:', sentences);
+        console.log('Actions for text generation:', actions);
+        console.log('Current phase:', phase);
         // Helper function to get sentence index based on rapidity
         const getSentenceIndex = (rapidity: string): number | null => {
             switch (rapidity?.toLowerCase()) {
@@ -374,7 +377,7 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = ({
         }
 
         const generatedText = guidanceTexts.join('. ') + (guidanceTexts.length ? '.' : '');
-
+        console.log('Generated guidance text:', generatedText);
         // Send the generated guidance text to AI chat if it's not empty and different from the last one
         if (generatedText && analysisContext?.sendGuidanceToChat) {
             // Include phase information for context

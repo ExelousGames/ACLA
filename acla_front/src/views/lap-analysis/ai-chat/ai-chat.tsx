@@ -1292,7 +1292,6 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
         if (Object.keys(guidanceData).length === 0) {
             return null;
         }
-        console.log('Parsed guidance data:', guidanceData);
         return guidanceData;
     };
 
