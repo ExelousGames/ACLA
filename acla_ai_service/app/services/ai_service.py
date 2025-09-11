@@ -422,20 +422,6 @@ class AIService:
                         "sentence 4 about steering technique"
                     ]
                 },
-                "car_operations": {
-                    "throttle": {
-                        "descriptions": ["gentle throttle", "progressive throttle", "steady throttle", "aggressive throttle"],
-                        "techniques": ["maintain traction", "corner exit acceleration", "straight line power", "grip optimization"]
-                    },
-                    "brake": {
-                        "descriptions": ["progressive braking", "trail braking", "threshold braking", "light braking"],
-                        "techniques": ["weight transfer", "front grip maintenance", "maximum stopping", "speed adjustment"]
-                    },
-                    "steering": {
-                        "descriptions": ["smooth inputs", "quick corrections", "gradual turn-in", "counter steering"],
-                        "techniques": ["tire grip preservation", "oversteer management", "high-speed cornering", "slide control"]
-                    }
-                },
                 "sentence_requirements": [
                     "Generate exactly 12 sentences total (4 for each operation type)",
                     "Each sentence should describe a specific racing technique",
@@ -452,22 +438,22 @@ class AIService:
                 ],
                 "example_output": {
                     "throttle_guidance": [
-                        "Apply gentle throttle at corner apex to maintain traction",
-                        "Use progressive throttle increase through corner exit", 
-                        "Maintain steady throttle on long straights",
-                        "Apply aggressive throttle in dry conditions with good grip"
+                        "gradually apply throttle when exiting corners to avoid wheel spin",
+                        "moderately increase throttle through corner exit",
+                        "quickly apply throttle when straightening out of corners",
+                        "rapidly apply throttle in dry conditions with good grip"
                     ],
                     "brake_guidance": [
-                        "Use progressive braking for smooth weight transfer",
-                        "Apply trail braking technique to maintain front grip",
-                        "Use threshold braking for maximum stopping power",
-                        "Apply light braking for minor speed adjustments"
+                        "gradually apply brake pressure when entering corners",
+                        "moderately increase brake pressure during cornering",
+                        "quickly apply brake pressure when approaching tight corners",
+                        "rapidly apply brake pressure in wet conditions to avoid locking up"
                     ],
                     "steering_guidance": [
-                        "Make smooth steering inputs to preserve tire grip",
-                        "Use quick steering corrections for oversteer management",
-                        "Apply gradual turn-in for high-speed corners", 
-                        "Use counter steering to control rear slides"
+                        "gradually apply steering input when entering corners",
+                        "moderately increase steering input during cornering",
+                        "quickly apply steering input when navigating tight corners", 
+                        "rapidly to counter steering"
                     ]
                 }
             }

@@ -28,6 +28,10 @@ interface AnalysisContextType {
      * Active visualizations in the multi-info container
      */
     activeVisualizations: VisualizationInstance[];
+    /**
+     * Latest guidance message from ImitationGuidanceChart
+     */
+    latestGuidanceMessage: string | null;
     setMap: (map: string | null) => void;
     setSession: Dispatch<SetStateAction<RacingSessionDetailedInfoDto | null>>;
     setLiveSessionData: (data: {}) => void;
@@ -48,6 +52,11 @@ interface AnalysisContextType {
      * Update active visualizations
      */
     setActiveVisualizations: Dispatch<SetStateAction<VisualizationInstance[]>>;
+
+    /**
+     * Send a guidance message from components to AI chat
+     */
+    sendGuidanceToChat: (message: string) => void;
 };
 
 
@@ -59,6 +68,7 @@ export const AnalysisContext = createContext<AnalysisContextType>({
     recordedSessionData: [],
     recordedSessioStaticsData: {} as any,
     activeVisualizations: [],
+    latestGuidanceMessage: null,
     setMap: (map: string | null) => { },
     setSession: ((value: RacingSessionDetailedInfoDto | null) => {
         console.warn('No provider for AnalysisContext');
@@ -71,6 +81,9 @@ export const AnalysisContext = createContext<AnalysisContextType>({
     setActiveVisualizations: ((value: VisualizationInstance[]) => {
         console.warn('No provider for AnalysisContext');
     }) as Dispatch<SetStateAction<VisualizationInstance[]>>,
+    sendGuidanceToChat: (message: string) => {
+        console.warn('No provider for AnalysisContext');
+    },
 });
 
 const SessionAnalysis = () => {
@@ -83,7 +96,13 @@ const SessionAnalysis = () => {
     const [recordedSessioStaticsData, setRecordedSessionStaticsData] = useState({});
     const [recordedSessionData, setRecordedSessionData] = useState<any[]>([]);
     const [activeVisualizations, setActiveVisualizations] = useState<VisualizationInstance[]>([]);
+    const [latestGuidanceMessage, setLatestGuidanceMessage] = useState<string | null>(null);
     const environment = useEnvironment();
+
+    // Function to send guidance messages to chat
+    const sendGuidanceToChat = (message: string) => {
+        setLatestGuidanceMessage(message);
+    };
     //switch tab when a map or a session is selected
     useEffect(() => {
         if (mapSelected != null) {
@@ -114,7 +133,22 @@ const SessionAnalysis = () => {
 
 
     return (
-        <AnalysisContext.Provider value={{ mapSelected: mapSelected, sessionSelected: sessionSelected, liveData: liveData, recordedSessionData: recordedSessionData, recordedSessioStaticsData: recordedSessioStaticsData, activeVisualizations: activeVisualizations, setMap, setSession, setLiveSessionData: setLiveData, setRecordedSessionStaticsData, setRecordedSessionData, setActiveVisualizations }}>
+        <AnalysisContext.Provider value={{ 
+            mapSelected, 
+            sessionSelected, 
+            liveData, 
+            recordedSessionData, 
+            recordedSessioStaticsData, 
+            activeVisualizations, 
+            latestGuidanceMessage,
+            setMap, 
+            setSession, 
+            setLiveSessionData: setLiveData, 
+            setRecordedSessionStaticsData, 
+            setRecordedSessionData, 
+            setActiveVisualizations,
+            sendGuidanceToChat
+        }}>
             <Tabs.Root className="LiveAnalysisTabsRoot" defaultValue="mapLists" value={activeTab} onValueChange={setActiveTab}>
                 <Tabs.List className="live-analysis-tablists" justify="start">
                     <Tabs.Trigger value="mapLists">Maps</Tabs.Trigger>

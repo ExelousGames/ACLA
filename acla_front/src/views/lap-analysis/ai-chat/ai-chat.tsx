@@ -218,6 +218,31 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
         scrollToBottom();
     }, [messages]);
 
+    // Listen for guidance messages from ImitationGuidanceChart
+    const lastProcessedGuidanceRef = useRef<string>('');
+    const lastGuidanceTimestampRef = useRef<number>(0);
+    useEffect(() => {
+        if (analysisContext?.latestGuidanceMessage && 
+            analysisContext.latestGuidanceMessage !== lastProcessedGuidanceRef.current) {
+            
+            // Throttle guidance messages to avoid spam (max 1 per 2 seconds)
+            const now = Date.now();
+            if (now - lastGuidanceTimestampRef.current < 2000) {
+                return;
+            }
+            
+            const guidanceMessage: Message = {
+                id: generateUniqueId('guidance'),
+                content: analysisContext.latestGuidanceMessage,
+                isUser: false,
+                timestamp: new Date()
+            };
+            setMessages(prev => [...prev, guidanceMessage]);
+            lastProcessedGuidanceRef.current = analysisContext.latestGuidanceMessage;
+            lastGuidanceTimestampRef.current = now;
+        }
+    }, [analysisContext?.latestGuidanceMessage]);
+
     useEffect(() => {
         // Add welcome message when component mounts
         if (messages.length === 0) {
@@ -1321,7 +1346,12 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
                                 <Flex align="center" gap="2">
                                     {!message.isUser && <PersonIcon />}
                                     <Text size="1" color="gray">
-                                        {message.isUser ? 'You' : 'AI Assistant'}
+                                        {message.isUser 
+                                            ? 'You' 
+                                            : message.id.includes('guidance') 
+                                                ? '🎯 Live Track Guidance'
+                                                : 'AI Assistant'
+                                        }
                                     </Text>
                                     {message.isVoiceInput && (
                                         <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" style={{ color: 'var(--accent-9)' }}>
@@ -1343,10 +1373,15 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
                                         borderRadius: '12px',
                                         backgroundColor: message.isUser
                                             ? 'var(--accent-9)'
-                                            : 'var(--gray-3)',
+                                            : message.id.includes('guidance')
+                                                ? 'var(--green-3)'  // Special styling for guidance messages
+                                                : 'var(--gray-3)',
                                         color: message.isUser
                                             ? 'var(--accent-contrast)'
-                                            : 'var(--gray-12)'
+                                            : message.id.includes('guidance')
+                                                ? 'var(--green-12)'  // Special color for guidance messages
+                                                : 'var(--gray-12)',
+                                        border: message.id.includes('guidance') ? '1px solid var(--green-7)' : 'none'
                                     }}
                                 >
                                     {message.isLoading ? (
