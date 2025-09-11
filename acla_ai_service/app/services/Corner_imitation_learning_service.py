@@ -130,7 +130,6 @@ class CornerSpecificLearner:
         corner_models = {}
         for corner_name, corner_positions in corner_definitions.items():
             print(f"[INFO] Learning optimal actions for {corner_name}")
-            print(f"[DEBUG] Corner positions: {corner_positions}")
             
             # Extract corner-specific data for all phases
             corner_data = self._extract_corner_telemetry(expert_df, corner_positions)
@@ -159,9 +158,6 @@ class CornerSpecificLearner:
                 
                 if phase_model:
                     phase_models[phase] = phase_model
-                    print(f"[DEBUG] Successfully trained model for phase {phase}")
-                else:
-                    print(f"[DEBUG] Failed to train model for phase {phase}")
             
             if phase_models:
                 corner_models[corner_name] = phase_models
@@ -262,42 +258,42 @@ class CornerSpecificLearner:
         
         if 'Physics_gas' in phase_data.columns:
             throttle_value = phase_data['Physics_gas'].mean()
-            throttle_change_rate = abs(phase_data['Physics_gas'].diff().mean()) if len(phase_data) > 1 else 0
+            throttle_change_rate = phase_data['Physics_gas'].diff().mean() if len(phase_data) > 1 else 0
             target_actions['optimal_throttle'] = {
                 'value': throttle_value,
                 'description': self._get_throttle_description(throttle_value),
                 'change_rate': throttle_change_rate,
-                'rapidity': self._get_action_rapidity(throttle_change_rate, 'throttle')
+                'rapidity': self._get_action_rapidity(abs(throttle_change_rate), 'throttle')
             }
         
         if 'Physics_brake' in phase_data.columns:
             brake_value = phase_data['Physics_brake'].mean()
-            brake_change_rate = abs(phase_data['Physics_brake'].diff().mean()) if len(phase_data) > 1 else 0
+            brake_change_rate = phase_data['Physics_brake'].diff().mean() if len(phase_data) > 1 else 0
             target_actions['optimal_brake'] = {
                 'value': brake_value,
                 'description': self._get_brake_description(brake_value),
                 'change_rate': brake_change_rate,
-                'rapidity': self._get_action_rapidity(brake_change_rate, 'brake')
+                'rapidity': self._get_action_rapidity(abs(brake_change_rate), 'brake')
             }
         
         if 'Physics_steer_angle' in phase_data.columns:
             steering_value = phase_data['Physics_steer_angle'].mean()
-            steering_change_rate = abs(phase_data['Physics_steer_angle'].diff().mean()) if len(phase_data) > 1 else 0
+            steering_change_rate = phase_data['Physics_steer_angle'].diff().mean() if len(phase_data) > 1 else 0
             target_actions['optimal_steering'] = {
                 'value': steering_value,
                 'description': self._get_steering_description(steering_value),
                 'change_rate': steering_change_rate,
-                'rapidity': self._get_action_rapidity(steering_change_rate, 'steering')
+                'rapidity': self._get_action_rapidity(abs(steering_change_rate), 'steering')
             }
         
         if 'Physics_speed_kmh' in phase_data.columns:
             speed_value = phase_data['Physics_speed_kmh'].mean()
-            speed_change_rate = abs(phase_data['Physics_speed_kmh'].diff().mean()) if len(phase_data) > 1 else 0
+            speed_change_rate = phase_data['Physics_speed_kmh'].diff().mean() if len(phase_data) > 1 else 0
             target_actions['optimal_speed'] = {
                 'value': speed_value,
                 'description': self._get_speed_description(speed_value),
                 'change_rate': speed_change_rate,
-                'rapidity': self._get_action_rapidity(speed_change_rate, 'speed')
+                'rapidity': self._get_action_rapidity(abs(speed_change_rate), 'speed')
             }
         
         # For now, return the expert averages for this phase
@@ -580,7 +576,7 @@ class CornerImitationLearningService:
         processed_df = feature_processor.general_cleaning_for_analysis()
         
         # Filter for best laps
-        processed_df = self._filter_top_performance_laps(processed_df,0.2)
+        processed_df = self._filter_top_performance_laps(processed_df,1)
         
         # Train corner models
         corner_models = self.corner_learner.learn_corner_optimal_actions(processed_df, corner_definitions)
