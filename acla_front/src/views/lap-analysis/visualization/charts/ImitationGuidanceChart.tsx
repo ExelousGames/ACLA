@@ -79,13 +79,12 @@ interface CurrentGuidance {
         data?: any;
         distance: number;
         timeToReach: number;
-        approachSpeed: number;
     };
 }
 
 // Configuration constants
-const GUIDANCE_TRANSITION_THRESHOLD = 5; // seconds before switching to next phase guidance
-const URGENT_TRANSITION_THRESHOLD = 3; // seconds for urgent next phase warnings
+const GUIDANCE_TRANSITION_THRESHOLD = 3; // seconds before switching to next phase guidance
+const URGENT_TRANSITION_THRESHOLD = 0.5; // seconds for urgent next phase warnings
 
 const ImitationGuidanceChart: React.FC<VisualizationProps> = ({
     id,
@@ -147,39 +146,32 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = ({
 
     // Function to calculate approach speed based on position history
     const calculateApproachSpeed = (currentPosition: number, history: Array<{ position: number, timestamp: number, lap: number }>): number => {
-        if (history.length < 3) return 0; // Need at least 3 data points for reliable calculation
+        if (history.length < 3) return 0;
 
-        // Use last 5 data points for better accuracy
         const recentHistory = history.slice(-5);
         if (recentHistory.length < 3) return 0;
 
-        let totalDistance = 0;
-        let totalTime = 0;
+        const validDistances = recentHistory.slice(1).map((curr, i) => {
+            const prev = recentHistory[i];
+            let distance = curr.position - prev.position;
 
-        for (let i = 1; i < recentHistory.length; i++) {
-            const prevPoint = recentHistory[i - 1];
-            const currPoint = recentHistory[i];
-
-            let distance = currPoint.position - prevPoint.position;
-
-            // Handle lap wrap-around using lap counter
-            const lapDifference = currPoint.lap - prevPoint.lap;
-            if (lapDifference > 0) {
-                // Crossed finish line - add full lap distance
-                distance += lapDifference * 1.0;
-            } else if (lapDifference < 0) {
-                // Went backwards across finish line (rare case)
-                distance -= Math.abs(lapDifference) * 1.0;
+            // Handle lap changes and wrap-around
+            if (curr.lap !== prev.lap) {
+                distance += (curr.lap - prev.lap) * 1.0;
             } else if (Math.abs(distance) > 0.5) {
-                // Same lap but large position jump - likely telemetry glitch, skip this point
-                continue;
+                return null; // Mark telemetry glitches
             }
 
-            totalDistance += Math.abs(distance);
-            totalTime += currPoint.timestamp - prevPoint.timestamp;
-        }
+            return {
+                distance: Math.abs(distance),
+                time: curr.timestamp - prev.timestamp
+            };
+        }).filter((d): d is { distance: number; time: number } => d !== null);
 
-        return totalTime > 0 ? totalDistance / (totalTime / 1000) : 0; // positions per second
+        const totalDistance = validDistances.reduce((sum, d) => sum + d.distance, 0);
+        const totalTime = validDistances.reduce((sum, d) => sum + d.time, 0);
+
+        return totalTime > 0 ? totalDistance / (totalTime / 1000) : 0;
     };
 
     // Function to find the current corner and phase based on position with optimized corner tracking
@@ -209,7 +201,6 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = ({
                     data: nextPhaseInfo.data,
                     distance: nextPhaseInfo.distance,
                     timeToReach: nextPhaseInfo.timeToReach,
-                    approachSpeed: nextPhaseInfo.approachSpeed
                 } : null
             };
         };
@@ -257,7 +248,7 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = ({
             } else {
                 // Look for next corner's first phase
                 const totalCorners = Object.keys(cornerPredictions).length;
-                const nextCornerNum = cornerNum >= totalCorners ? 1 : cornerNum + 1;
+                const nextCornerNum = (cornerNum + 1) % totalCorners;
                 const nextCornerData = cornerPredictions[`corner_${nextCornerNum}`];
 
                 if (nextCornerData) {
@@ -274,7 +265,6 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = ({
             }
 
             if (!nextPhaseName || !nextPhaseData) return null;
-
             let distance = nextPhasePosition - position;
             if (distance < 0) distance += 1.0; // Handle wrap-around
 
@@ -285,7 +275,6 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = ({
                 data: nextPhaseData,
                 distance: distance,
                 timeToReach: timeToReach,
-                approachSpeed: approachSpeed
             };
         };
 
@@ -390,8 +379,8 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = ({
         // Update position history for approach speed calculation
         setPositionHistory(prev => {
             const newHistory = [...prev, { position: normalizedPosition, timestamp: currentTime, lap: currentCompletedLaps }];
-            // Keep only last 5 seconds of data
-            const fiveSecondsAgo = currentTime - 5000;
+            // Keep only last 3 seconds of data
+            const fiveSecondsAgo = currentTime - 3000;
             return newHistory.filter(entry => entry.timestamp > fiveSecondsAgo);
         });
 
@@ -571,12 +560,6 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = ({
                                                     <Text size="1" color="gray">Distance</Text>
                                                     <Text size="1" style={{ display: 'block', fontWeight: '500' }}>
                                                         {(currentGuidance.nextPhase.distance * 100).toFixed(1)}%
-                                                    </Text>
-                                                </Box>
-                                                <Box>
-                                                    <Text size="1" color="gray">Approach Speed</Text>
-                                                    <Text size="1" style={{ display: 'block', fontWeight: '500' }}>
-                                                        {(currentGuidance.nextPhase.approachSpeed * 100).toFixed(1)}%/s
                                                     </Text>
                                                 </Box>
                                             </Grid>
