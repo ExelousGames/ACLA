@@ -236,11 +236,11 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
 
                 // Select a default voice (prefer English voices)
                 const englishVoices = voices.filter(voice => voice.lang.startsWith('en'));
-                const defaultVoice = englishVoices.find(voice => voice.default) || 
-                                   englishVoices.find(voice => voice.name.includes('Google')) ||
-                                   englishVoices[0] || 
-                                   voices[0];
-                
+                const defaultVoice = englishVoices.find(voice => voice.default) ||
+                    englishVoices.find(voice => voice.name.includes('Google')) ||
+                    englishVoices[0] ||
+                    voices[0];
+
                 if (defaultVoice) {
                     setSelectedVoice(defaultVoice);
                 }
@@ -287,7 +287,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
         if (cleanText.length > maxLength) {
             const sentences = cleanText.split(/[.!?]+/).filter(s => s.trim().length > 0);
             let currentChunk = '';
-            
+
             for (const sentence of sentences) {
                 if ((currentChunk + sentence).length > maxLength && currentChunk) {
                     speechQueueRef.current.push(currentChunk.trim() + '.');
@@ -296,11 +296,11 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
                     currentChunk += (currentChunk ? '. ' : '') + sentence;
                 }
             }
-            
+
             if (currentChunk.trim()) {
                 speechQueueRef.current.push(currentChunk.trim() + '.');
             }
-            
+
             // Start speaking the first chunk
             if (speechQueueRef.current.length > 0) {
                 const firstChunk = speechQueueRef.current.shift();
@@ -326,7 +326,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
         utterance.onend = () => {
             setIsSpeaking(false);
             currentUtteranceRef.current = null;
-            
+
             // Process queue if there are more messages
             if (speechQueueRef.current.length > 0) {
                 const nextText = speechQueueRef.current.shift();
@@ -357,14 +357,14 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
     const toggleTextToSpeech = () => {
         const newState = !isTextToSpeechEnabled;
         setIsTextToSpeechEnabled(newState);
-        
+
         // Save preference to localStorage
         localStorage.setItem('ai-chat-tts-enabled', newState.toString());
-        
+
         if (!newState && isSpeaking) {
             stopSpeaking();
         }
-        
+
         // Show feedback message
         const statusMessage = newState ? 'Text-to-speech enabled' : 'Text-to-speech disabled';
         addStatusMessage('tts-toggle', statusMessage);
@@ -379,15 +379,15 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
         if (!isTextToSpeechEnabled || messages.length === 0) return;
 
         const lastMessage = messages[messages.length - 1];
-        
+
         // Only speak AI messages (not user messages) and not loading messages
         if (!lastMessage.isUser && !lastMessage.isLoading && lastMessage.content) {
             // Don't speak the welcome message on first load
             if (lastMessage.id === 'welcome' && messages.length === 1) return;
-            
+
             // Determine if this is a guidance message
             const isGuidanceMessage = lastMessage.id.includes('guidance');
-            
+
             // Add a small delay to ensure the message is rendered
             setTimeout(() => {
                 speakText(lastMessage.content, { isGuidance: isGuidanceMessage });
@@ -494,7 +494,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
         const ttsAvailable = initializeTextToSpeech();
         if (ttsAvailable) {
             console.log('Text-to-speech initialized successfully');
-            
+
             // Load saved TTS preference
             const savedTtsEnabled = localStorage.getItem('ai-chat-tts-enabled');
             if (savedTtsEnabled === 'true') {
@@ -744,7 +744,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
             } finally {
                 resetRecording(true);
             }
-            
+
             // Cleanup text-to-speech
             stopSpeaking();
         };
@@ -1530,31 +1530,6 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
                         )}
                     </Flex>
                     <Flex align="center" gap="2">
-                        {/* Text-to-speech controls */}
-                        {speechSynthesis && (
-                            <>
-                                <Button
-                                    variant="ghost"
-                                    size="1"
-                                    onClick={toggleTextToSpeech}
-                                    color={isTextToSpeechEnabled ? "green" : "gray"}
-                                    title={isTextToSpeechEnabled ? "Disable text-to-speech" : "Enable text-to-speech"}
-                                >
-                                    🔊 TTS
-                                </Button>
-                                {isSpeaking && (
-                                    <Button
-                                        variant="ghost"
-                                        size="1"
-                                        onClick={stopSpeaking}
-                                        color="red"
-                                        title="Stop speaking"
-                                    >
-                                        🔇 Stop
-                                    </Button>
-                                )}
-                            </>
-                        )}
                         <Button
                             variant="ghost"
                             size="1"
@@ -1759,6 +1734,25 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
                             disabled={isLoading || isUninteractableState}
                             style={{ flex: 1 }}
                         />
+                        {/* Text-to-speech controls next to microphone */}
+                        {speechSynthesis && (
+                            <IconButton
+                                onClick={isSpeaking ? stopSpeaking : toggleTextToSpeech}
+                                disabled={isLoading}
+                                size="2"
+                                variant={isTextToSpeechEnabled ? "solid" : "ghost"}
+                                color={isSpeaking ? "red" : isTextToSpeechEnabled ? "green" : "gray"}
+                                title={
+                                    isSpeaking
+                                        ? "Stop speaking"
+                                        : isTextToSpeechEnabled
+                                            ? "Disable auto text-to-speech"
+                                            : "Enable auto text-to-speech"
+                                }
+                            >
+                                {isSpeaking ? "🔇" : isTextToSpeechEnabled ? "🔊" : "🔇"}
+                            </IconButton>
+                        )}
                         {(speechRecognition || electronSpeechAvailable) && (
                             <IconButton
                                 onClick={isUninteractableState ? stopVoiceRecording : startVoiceRecording}

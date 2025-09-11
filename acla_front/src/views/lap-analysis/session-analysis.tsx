@@ -133,19 +133,19 @@ const SessionAnalysis = () => {
 
 
     return (
-        <AnalysisContext.Provider value={{ 
-            mapSelected, 
-            sessionSelected, 
-            liveData, 
-            recordedSessionData, 
-            recordedSessioStaticsData, 
-            activeVisualizations, 
+        <AnalysisContext.Provider value={{
+            mapSelected,
+            sessionSelected,
+            liveData,
+            recordedSessionData,
+            recordedSessioStaticsData,
+            activeVisualizations,
             latestGuidanceMessage,
-            setMap, 
-            setSession, 
-            setLiveSessionData: setLiveData, 
-            setRecordedSessionStaticsData, 
-            setRecordedSessionData, 
+            setMap,
+            setSession,
+            setLiveSessionData: setLiveData,
+            setRecordedSessionStaticsData,
+            setRecordedSessionData,
             setActiveVisualizations,
             sendGuidanceToChat
         }}>
