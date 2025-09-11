@@ -479,9 +479,9 @@ class CornerSpecificLearner:
                 return "steady"
             elif change_rate <= 0.005:
                 return "gradual"
-            elif change_rate <= 0.015:
+            elif change_rate <= 0.1:
                 return "moderate"
-            elif change_rate <= 0.030:
+            elif change_rate <= 0.2:
                 return "quick"
             else:
                 return "rapid"
@@ -490,11 +490,11 @@ class CornerSpecificLearner:
             # For steering, change_rate is in radians per frame
             if change_rate <= 0.002:
                 return "steady"
-            elif change_rate <= 0.008:
+            elif change_rate <= 0.01:
                 return "gradual"
-            elif change_rate <= 0.020:
+            elif change_rate <= 0.07:
                 return "moderate"
-            elif change_rate <= 0.040:
+            elif change_rate <= 0.1:
                 return "quick"
             else :
                 return "rapid"
