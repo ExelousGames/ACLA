@@ -339,13 +339,13 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = ({
         // Helper function to get sentence index based on rapidity
         const getSentenceIndex = (rapidity: string): number | null => {
             switch (rapidity?.toLowerCase()) {
-                case 'gradually':
+                case 'gradual':
                     return 0;
-                case 'moderately':
+                case 'moderate':
                     return 1;
-                case 'quickly':
+                case 'quick':
                     return 2;
-                case 'rapidly':
+                case 'rapid':
                     return 3;
                 default:
                     return null; // Return null if rapidity is not recognized
