@@ -168,6 +168,11 @@ class Full_dataset_TelemetryMLService:
         imitation_models_dir = self.models_directory / "imitation_models"
         self.imitation_learning = ImitationLearningService(str(imitation_models_dir))
         
+        # Initialize corner shape unsupervised learning service
+        corner_shape_models_dir = self.models_directory / "corner_shapes"
+        from .corner_shape_unsupervised_service import CornerShapeUnsupervisedService
+        self.corner_shape_learning = CornerShapeUnsupervisedService(str(corner_shape_models_dir))
+        
         # Backend service integration
         self.backend_service = backend_service
         
@@ -755,10 +760,113 @@ class Full_dataset_TelemetryMLService:
         
         return await self.predict_optimal_cornering(trackName, normalized_position)
 
+    # Corner Shape Unsupervised Learning Methods
+    async def learn_corner_shapes(self, trackName: str, 
+                                 clustering_params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """
+        Learn corner shapes for a specific track using unsupervised machine learning
+        
+        This method uses multiple clustering algorithms to automatically discover
+        different types of corners on a track based on their shape characteristics
+        extracted from racing telemetry data.
+        
+        Args:
+            trackName: Name of the track to analyze
+            clustering_params: Optional parameters for clustering algorithms
+                             e.g., {'n_clusters': 6, 'eps': 0.5, 'min_samples': 3}
+                             
+        Returns:
+            Dictionary with corner shape learning results including:
+            - Discovered corner types and their characteristics
+            - Clustering algorithm performance metrics
+            - Feature importance and analysis
+        """
+        try:
+            results = await self.corner_shape_learning.learn_corner_shapes(trackName, clustering_params)
+            
+            # Save results to backend if successful
+            if 'error' not in results:
+                try:
+                    # Add metadata for backend storage
+                    backend_results = {
+                        'model_type': 'corner_shape_unsupervised',
+                        'track_name': trackName,
+                        'car_name': None,  # Corner shapes are car-independent
+                        'results': results,
+                        'algorithm': results.get('clustering_results', {}).get('best_algorithm', 'kmeans'),
+                        'created_at': datetime.now().isoformat(),
+                        'feature_count': len(results.get('feature_names', [])),
+                        'corner_count': results.get('total_corners_found', 0)
+                    }
+                    
+                    await self.backend_service.save_ai_model(backend_results)
+                    results['saved_to_backend'] = True
+                    
+                except Exception as backend_error:
+                    print(f"[WARNING] Failed to save corner shape results to backend: {str(backend_error)}")
+                    results['saved_to_backend'] = False
+                    results['backend_error'] = str(backend_error)
+            
+            return results
+            
+        except Exception as e:
+            return {
+                "error": f"Failed to learn corner shapes for track {trackName}: {str(e)}",
+                "track_name": trackName
+            }
+    
+    async def predict_corner_shape_type(self, trackName: str, 
+                                       current_telemetry: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Predict the type/cluster of the current corner based on learned corner shapes
+        
+        Args:
+            trackName: Track name for the model
+            current_telemetry: Current corner telemetry data
+            
+        Returns:
+            Dictionary with corner type prediction and characteristics
+        """
+        try:
+            return await self.corner_shape_learning.predict_corner_shape(trackName, current_telemetry)
+        except Exception as e:
+            return {
+                "error": f"Failed to predict corner shape type: {str(e)}",
+                "track_name": trackName
+            }
+    
+    def get_corner_shape_analysis_summary(self, trackName: str) -> Dict[str, Any]:
+        """
+        Get a summary of corner shape analysis results for a track
+        
+        Args:
+            trackName: Track name
+            
+        Returns:
+            Dictionary with corner shape learning summary and statistics
+        """
+        try:
+            return self.corner_shape_learning.get_corner_shape_summary(trackName)
+        except Exception as e:
+            return {
+                "error": f"Failed to get corner shape summary for track {trackName}: {str(e)}",
+                "track_name": trackName
+            }
+    
+    def clear_corner_shape_cache(self, trackName: Optional[str] = None):
+        """
+        Clear corner shape learning cache
+        
+        Args:
+            trackName: Optional track name to clear specific cache, or None to clear all
+        """
+        self.corner_shape_learning.clear_cache(trackName)
+
     def clear_all_cache(self):
-        """Clear all cached models"""
+        """Clear all cached models including corner shapes"""
         self.model_cache.clear()
-        print("[INFO] All cached models cleared")
+        self.corner_shape_learning.clear_cache()
+        print("[INFO] All cached models cleared (including corner shapes)")
     
     async def _get_cached_model_or_fetch(self,
                                         model_type: str,
@@ -991,7 +1099,7 @@ class Full_dataset_TelemetryMLService:
             Dictionary with preload results
         """
         if model_types is None:
-            model_types = ["imitation_learning"]
+            model_types = ["imitation_learning", "corner_shape_unsupervised"]
         
         results = {
             "track_name": track_name,
@@ -1016,6 +1124,19 @@ class Full_dataset_TelemetryMLService:
                     print(f"[INFO] Preloading {model_type} model for {track_name}/{car_name}")
                     # In a real scenario, you'd fetch from backend here
                     results["preloaded_models"].append(model_type)
+                elif model_type == "corner_shape_unsupervised":
+                    # Check if corner shape learning data exists for this track
+                    try:
+                        summary = self.corner_shape_learning.get_corner_shape_summary(track_name)
+                        if 'error' not in summary:
+                            print(f"[INFO] Corner shape analysis already available for {track_name}")
+                            results["preloaded_models"].append(model_type)
+                        else:
+                            print(f"[INFO] No corner shape analysis found for {track_name}")
+                            results["failed_models"].append(f"{model_type}: No analysis data found")
+                    except Exception as e:
+                        print(f"[WARNING] Failed to check corner shape data: {e}")
+                        results["failed_models"].append(f"{model_type}: {str(e)}")
                 
             except Exception as e:
                 error_info = f"{model_type}: {str(e)}"
