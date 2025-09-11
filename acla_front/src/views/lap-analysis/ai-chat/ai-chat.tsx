@@ -222,15 +222,15 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
     const lastProcessedGuidanceRef = useRef<string>('');
     const lastGuidanceTimestampRef = useRef<number>(0);
     useEffect(() => {
-        if (analysisContext?.latestGuidanceMessage && 
+        if (analysisContext?.latestGuidanceMessage &&
             analysisContext.latestGuidanceMessage !== lastProcessedGuidanceRef.current) {
-            
+
             // Throttle guidance messages to avoid spam (max 1 per 2 seconds)
             const now = Date.now();
             if (now - lastGuidanceTimestampRef.current < 2000) {
                 return;
             }
-            
+
             const guidanceMessage: Message = {
                 id: generateUniqueId('guidance'),
                 content: analysisContext.latestGuidanceMessage,
@@ -1292,7 +1292,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
         if (Object.keys(guidanceData).length === 0) {
             return null;
         }
-
+        console.log('Parsed guidance data:', guidanceData);
         return guidanceData;
     };
 
@@ -1346,9 +1346,9 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
                                 <Flex align="center" gap="2">
                                     {!message.isUser && <PersonIcon />}
                                     <Text size="1" color="gray">
-                                        {message.isUser 
-                                            ? 'You' 
-                                            : message.id.includes('guidance') 
+                                        {message.isUser
+                                            ? 'You'
+                                            : message.id.includes('guidance')
                                                 ? '🎯 Live Track Guidance'
                                                 : 'AI Assistant'
                                         }
