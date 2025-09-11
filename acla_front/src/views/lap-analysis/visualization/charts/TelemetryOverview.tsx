@@ -6,20 +6,28 @@ import { VisualizationProps } from '../VisualizationRegistry';
 const TelemetryOverview: React.FC<VisualizationProps> = ({ id, data, config, width = '100%', height = 200 }) => {
     const analysisContext = useContext(AnalysisContext);
 
-    const telemetryData = data || analysisContext.recordedSessionData;
+    const telemetryData = data || analysisContext.liveData;
 
-    // Calculate basic statistics
+    // Calculate current statistics from live data
     const stats = React.useMemo(() => {
-        if (!telemetryData || telemetryData.length === 0) return null;
+        if (!telemetryData || Object.keys(telemetryData).length === 0) return null;
 
-        const speeds = telemetryData.map((d: any) => d.speed || 0).filter((s: number) => s > 0);
-        const laps = telemetryData.filter((d: any) => d.lapCount);
+        // Extract current values from flattened live data structure
+        const currentSpeed = telemetryData.Physics_speed_kmh || 0;
+        const currentSteer = Math.abs(telemetryData.Physics_steer_angle || 0);
+        const currentGas = telemetryData.Physics_gas || 0;
+        const currentBrake = telemetryData.Physics_brake || 0;
+        const currentLap = telemetryData.Graphics_completed_lap || 0;
 
         return {
-            avgSpeed: speeds.length > 0 ? (speeds.reduce((a: number, b: number) => a + b, 0) / speeds.length).toFixed(1) : '0',
-            maxSpeed: speeds.length > 0 ? Math.max(...speeds).toFixed(1) : '0',
-            totalLaps: laps.length,
-            dataPoints: telemetryData.length
+            currentSpeed: currentSpeed.toFixed(1),
+            currentSteer: currentSteer.toFixed(3),
+            currentGas: currentGas.toFixed(2),
+            currentBrake: currentBrake.toFixed(2),
+            currentLap: currentLap,
+            rpm: telemetryData.Physics_rpm || 0,
+            gear: telemetryData.Physics_gear || 0,
+            fuel: telemetryData.Physics_fuel || 0
         };
     }, [telemetryData]);
 
@@ -27,22 +35,38 @@ const TelemetryOverview: React.FC<VisualizationProps> = ({ id, data, config, wid
         <Card style={{ width, height, padding: '16px' }}>
             <Text size="3" weight="bold" style={{ marginBottom: '12px' }}>Telemetry Overview</Text>
             {stats ? (
-                <Grid columns="2" gap="3" style={{ height: 'calc(100% - 40px)' }}>
+                <Grid columns="2" gap="2" style={{ height: 'calc(100% - 40px)' }}>
                     <Box>
-                        <Text size="2" color="gray">Average Speed</Text>
-                        <Text size="4" weight="bold">{stats.avgSpeed} km/h</Text>
+                        <Text size="2" color="gray">Current Speed</Text>
+                        <Text size="4" weight="bold">{stats.currentSpeed} km/h</Text>
                     </Box>
                     <Box>
-                        <Text size="2" color="gray">Max Speed</Text>
-                        <Text size="4" weight="bold">{stats.maxSpeed} km/h</Text>
+                        <Text size="2" color="gray">Current RPM</Text>
+                        <Text size="4" weight="bold">{stats.rpm}</Text>
                     </Box>
                     <Box>
-                        <Text size="2" color="gray">Total Laps</Text>
-                        <Text size="4" weight="bold">{stats.totalLaps}</Text>
+                        <Text size="2" color="gray">Steering Input</Text>
+                        <Text size="4" weight="bold">{(parseFloat(stats.currentSteer) * 100).toFixed(0)}%</Text>
                     </Box>
                     <Box>
-                        <Text size="2" color="gray">Data Points</Text>
-                        <Text size="4" weight="bold">{stats.dataPoints}</Text>
+                        <Text size="2" color="gray">Gas Pedal</Text>
+                        <Text size="4" weight="bold">{(parseFloat(stats.currentGas) * 100).toFixed(0)}%</Text>
+                    </Box>
+                    <Box>
+                        <Text size="2" color="gray">Brake Pedal</Text>
+                        <Text size="4" weight="bold">{(parseFloat(stats.currentBrake) * 100).toFixed(0)}%</Text>
+                    </Box>
+                    <Box>
+                        <Text size="2" color="gray">Current Gear</Text>
+                        <Text size="4" weight="bold">{stats.gear}</Text>
+                    </Box>
+                    <Box>
+                        <Text size="2" color="gray">Fuel Level</Text>
+                        <Text size="4" weight="bold">{stats.fuel}L</Text>
+                    </Box>
+                    <Box>
+                        <Text size="2" color="gray">Completed Laps</Text>
+                        <Text size="4" weight="bold">{stats.currentLap}</Text>
                     </Box>
                 </Grid>
             ) : (
