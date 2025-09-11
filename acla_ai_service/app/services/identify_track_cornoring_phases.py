@@ -1,7 +1,7 @@
 import pandas as pd
 import numpy as np
 from typing import Dict, List, Tuple, Any
-from scipy.signal import find_peaks
+from scipy.signal import find_peaks, savgol_filter
 from sklearn.preprocessing import StandardScaler
 
 
@@ -61,6 +61,16 @@ class TrackCorneringAnalyzer:
             print(f"Warning: Missing required features: {missing_features}")
             return df_analysis
         
+        # Apply Savitzky-Golay smoothing to steering data once at the beginning
+        steering_raw = np.abs(df_analysis['Physics_steer_angle']).ffill().bfill()
+        
+        # Use savgol_filter with window length 7 and polynomial order 2 for better feature preservation
+        if len(steering_raw) >= 7:
+            df_analysis['steering_smooth'] = savgol_filter(steering_raw, window_length=7, polyorder=2)
+        else:
+            # Fallback for short data - use simple rolling mean
+            df_analysis['steering_smooth'] = steering_raw.rolling(window=3, center=True).mean().fillna(steering_raw)
+        
         # Step 1: Identify corners using multi-factor analysis
         corners = self._identify_corners(df_analysis)
         print(f"[INFO] Detected {len(corners)} corners using improved multi-factor analysis")
@@ -89,9 +99,13 @@ class TrackCorneringAnalyzer:
         steering angle, speed reduction, and track position changes
         """
         
-        # Prepare smoothed data for analysis
-        steering_abs = np.abs(df['Physics_steer_angle']).rolling(window=5, center=True).mean().fillna(method='ffill').fillna(method='bfill')
-        speed = df['Physics_speed_kmh'].rolling(window=5, center=True).mean().fillna(method='ffill').fillna(method='bfill')
+        # Use pre-smoothed steering data and prepare smoothed speed data using savgol_filter
+        steering_abs = df['steering_smooth']
+        speed_raw = df['Physics_speed_kmh'].ffill().bfill()
+        if len(speed_raw) >= 7:
+            speed = pd.Series(savgol_filter(speed_raw, window_length=7, polyorder=2), index=df.index)
+        else:
+            speed = speed_raw.rolling(window=3, center=True).mean().fillna(speed_raw)
         
         # Multi-factor corner detection
         corner_indicators = self._calculate_corner_indicators(df, steering_abs, speed)
@@ -113,7 +127,7 @@ class TrackCorneringAnalyzer:
     def _fallback_steering_detection(self, df: pd.DataFrame, steering_abs: pd.Series, speed: pd.Series) -> Dict[int, Dict[str, Any]]:
         """Fallback corner detection using simple steering angle thresholding"""
         
-        # Use a much simpler approach - just steering angle
+        # Use a much simpler approach - just steering angle (already smoothed)
         steering_threshold = steering_abs.quantile(self.steering_threshold_percentile * 0.8)  # Lower the threshold
         print(f"[DEBUG] Fallback steering threshold: {steering_threshold:.3f}")
         
@@ -245,7 +259,7 @@ class TrackCorneringAnalyzer:
         combined_score = pd.concat([primary_score, secondary_score], axis=1).max(axis=1)
         
         # Light smoothing to reduce noise
-        return combined_score.rolling(window=3, center=True).mean().fillna(method='ffill').fillna(method='bfill')
+        return combined_score.rolling(window=3, center=True).mean().ffill().bfill()
     
     def _find_corner_regions(self, corner_indicators: pd.Series, data_length: int) -> List[Tuple[int, int]]:
         """Find regions where corner indicators suggest cornering activity"""
@@ -388,9 +402,21 @@ class TrackCorneringAnalyzer:
         if missing_features:
             return {"error": f"Missing required features: {missing_features}"}
         
-        # Calculate indicators
-        steering_abs = np.abs(df['Physics_steer_angle']).rolling(window=5, center=True).mean().fillna(method='ffill').fillna(method='bfill')
-        speed = df['Physics_speed_kmh'].rolling(window=5, center=True).mean().fillna(method='ffill').fillna(method='bfill')
+        # Calculate indicators using pre-smoothed steering if available, otherwise smooth it with savgol_filter
+        if 'steering_smooth' in df.columns:
+            steering_abs = df['steering_smooth']
+        else:
+            steering_raw = np.abs(df['Physics_steer_angle']).ffill().bfill()
+            if len(steering_raw) >= 7:
+                steering_abs = pd.Series(savgol_filter(steering_raw, window_length=7, polyorder=2), index=df.index)
+            else:
+                steering_abs = steering_raw.rolling(window=3, center=True).mean().fillna(steering_raw)
+        
+        speed_raw = df['Physics_speed_kmh'].ffill().bfill()
+        if len(speed_raw) >= 7:
+            speed = pd.Series(savgol_filter(speed_raw, window_length=7, polyorder=2), index=df.index)
+        else:
+            speed = speed_raw.rolling(window=3, center=True).mean().fillna(speed_raw)
         corner_indicators = self._calculate_corner_indicators(df, steering_abs, speed)
         
         # Try corner detection to see what happens
@@ -485,7 +511,8 @@ class TrackCorneringAnalyzer:
 
     def _analyze_corner_phases(self, corner_df: pd.DataFrame, corner_id: int) -> Dict[str, List[int]]:
         """
-        Analyze a single corner to identify racing phases based on actual racing dynamics:
+        Analyze a single corner to identify racing phases based on actual racing dynamics.
+        CRITICAL: Each phase MUST follow the previous one in STRICT sequential order:
         - Entry: The braking zone - detected by brake application and speed reduction
         - Turn-in: Steering toward apex with speed constantly slowing down and steering movement
         - Apex: The slowest point of the corner
@@ -506,20 +533,34 @@ class TrackCorneringAnalyzer:
         
         # Reset index to work with 0-based indexing
         corner_df_indexed = corner_df.reset_index(drop=True)
+        corner_length = len(corner_df_indexed)
         
-        # Calculate key metrics for phase identification
-        steering_abs = np.abs(corner_df_indexed['Physics_steer_angle'])
+        # Calculate key metrics for phase identification using pre-smoothed steering
+        steering_smooth = corner_df_indexed['steering_smooth']
         speed = corner_df_indexed['Physics_speed_kmh']
         
         # Get brake and throttle data
         brake_data = corner_df_indexed.get('Physics_brake', pd.Series([0] * len(corner_df_indexed)))
         throttle_data = corner_df_indexed.get('Physics_gas', pd.Series([0] * len(corner_df_indexed)))
         
-        # Smooth data for better analysis
-        steering_smooth = steering_abs.rolling(window=3, center=True).mean().fillna(steering_abs)
-        speed_smooth = speed.rolling(window=3, center=True).mean().fillna(speed)
-        brake_smooth = brake_data.rolling(window=3, center=True).mean().fillna(brake_data)
-        throttle_smooth = throttle_data.rolling(window=3, center=True).mean().fillna(throttle_data)
+        # Smooth other data for better analysis using savgol_filter (steering already smoothed)
+        if len(speed) >= 7:
+            speed_smooth = pd.Series(savgol_filter(speed.ffill().bfill(), 
+                                                  window_length=7, polyorder=2), index=speed.index)
+        else:
+            speed_smooth = speed.rolling(window=3, center=True).mean().fillna(speed)
+        
+        if len(brake_data) >= 7:
+            brake_smooth = pd.Series(savgol_filter(brake_data.fillna(0), 
+                                                  window_length=7, polyorder=2), index=brake_data.index)
+        else:
+            brake_smooth = brake_data.rolling(window=3, center=True).mean().fillna(brake_data)
+        
+        if len(throttle_data) >= 7:
+            throttle_smooth = pd.Series(savgol_filter(throttle_data.fillna(0), 
+                                                     window_length=7, polyorder=2), index=throttle_data.index)
+        else:
+            throttle_smooth = throttle_data.rolling(window=3, center=True).mean().fillna(throttle_data)
         
         # Calculate speed change (negative = deceleration)
         speed_change = speed_smooth.diff().rolling(window=3).mean().fillna(0)
@@ -527,39 +568,53 @@ class TrackCorneringAnalyzer:
         # Find key reference points
         min_speed_idx = speed_smooth.idxmin()  # Apex point
         
-        # Phase 1: Entry - The braking zone
-        # Look for significant brake application and speed reduction at the beginning
-        entry_end = self._find_entry_phase_end_v2(brake_smooth, speed_change, len(corner_df_indexed))
-        phases['entry'] = list(range(0, entry_end))
+        # ENFORCE STRICT SEQUENTIAL ORDERING - each phase boundary is calculated in order
+        # and MUST NOT overlap with previous phases
         
-        # Phase 2: Turn-in - Steering toward apex with speed constantly slowing down
-        # Look for steering movement with continued deceleration
-        turn_in_start = entry_end
+        # Phase 1: Entry - The braking zone (starts at beginning)
+        entry_start = 0
+        entry_end = self._find_entry_phase_end_v2(brake_smooth, speed_change, corner_length)
+        entry_end = max(2, min(entry_end, corner_length // 4))  # Entry cannot exceed 25% of corner
+        phases['entry'] = list(range(entry_start, entry_end))
+        
+        # Phase 2: Turn-in - MUST start after entry ends, MUST end before or at apex
+        turn_in_start = entry_end  # STRICT: starts exactly where entry ends
         turn_in_end = self._find_turn_in_phase_end_v2(steering_smooth, speed_change, brake_smooth, 
-                                                      turn_in_start, min_speed_idx, len(corner_df_indexed))
+                                                      turn_in_start, min_speed_idx, corner_length)
+        # ENFORCE: turn-in cannot go past apex and must leave room for apex phase
+        turn_in_end = min(turn_in_end, min_speed_idx - 1)  
+        turn_in_end = max(turn_in_start + 2, turn_in_end)  # Minimum turn-in length
         phases['turn_in'] = list(range(turn_in_start, turn_in_end))
         
-        # Phase 3: Apex - The slowest point of the corner
-        # Window around the minimum speed point
-        apex_window = max(2, len(corner_df_indexed) // 15)  # Small window around apex
-        apex_start = max(turn_in_end, min_speed_idx - apex_window)
-        apex_end = min(len(corner_df_indexed), min_speed_idx + apex_window + 1)
+        # Phase 3: Apex - MUST start after turn-in ends, centered around minimum speed
+        apex_start = turn_in_end  # STRICT: starts exactly where turn-in ends
+        apex_window = max(3, corner_length // 12)  # Apex window size
+        apex_end = min(corner_length - 4, apex_start + apex_window)  # Leave room for accel/exit
+        # Ensure apex includes the minimum speed point if possible
+        if min_speed_idx >= apex_start and min_speed_idx < apex_end:
+            # Good, apex contains min speed point
+            pass
+        else:
+            # Adjust apex to include min speed point while respecting boundaries
+            apex_end = min(corner_length - 4, min_speed_idx + 2)
         phases['apex'] = list(range(apex_start, apex_end))
         
-        # Phase 4: Acceleration - Gradual throttle application after apex
-        # Look for throttle increase and gradual steering reduction
-        accel_start = apex_end
+        # Phase 4: Acceleration - MUST start after apex ends
+        accel_start = apex_end  # STRICT: starts exactly where apex ends
         accel_end = self._find_acceleration_phase_end_v2(throttle_smooth, steering_smooth, 
-                                                         accel_start, len(corner_df_indexed))
+                                                         accel_start, corner_length)
+        # ENFORCE: acceleration must leave room for exit phase
+        accel_end = min(accel_end, corner_length - 2)  
+        accel_end = max(accel_start + 2, accel_end)  # Minimum acceleration length
         phases['acceleration'] = list(range(accel_start, accel_end))
         
-        # Phase 5: Exit - Full throttle application
-        # From end of acceleration phase to corner end
-        exit_start = accel_end
-        phases['exit'] = list(range(exit_start, len(corner_df_indexed)))
+        # Phase 5: Exit - MUST start after acceleration ends, goes to corner end
+        exit_start = accel_end  # STRICT: starts exactly where acceleration ends
+        exit_end = corner_length  # STRICT: goes to the very end
+        phases['exit'] = list(range(exit_start, exit_end))
         
-        # Ensure all phases have at least minimum points and no overlaps
-        phases = self._validate_and_clean_phases(phases, len(corner_df_indexed))
+        # Final validation to ensure no gaps or overlaps in the sequential phases
+        phases = self._enforce_strict_sequential_phases(phases, corner_length)
         
         return phases
     
@@ -606,12 +661,12 @@ class TrackCorneringAnalyzer:
         # Entry phase: driver starts braking to slow down, preparing for trail braking
         # This ends when significant steering input begins (transition to turn_in/trail braking)
         
-        steering_abs = np.abs(corner_df['Physics_steer_angle'])
+        steering_abs = corner_df['steering_smooth']  # Use pre-smoothed steering
         
         # Find when steering input becomes significant (start of trail braking)
         steering_threshold = steering_abs.quantile(0.3)  # Lower threshold for initial steering input
         
-        # Look for sustained steering input (not just momentary)
+        # Look for sustained steering input (not just momentary) - no additional smoothing needed
         steering_window = 3
         significant_steering = steering_abs.rolling(window=steering_window).mean() > steering_threshold
         
@@ -737,17 +792,26 @@ class TrackCorneringAnalyzer:
         """
         Find the end of the entry phase (braking zone) by detecting brake application and deceleration.
         Entry phase ends when driver transitions from pure braking to turn-in with steering.
+        
+        CRITICAL: Entry phase MUST NOT exceed 25% of corner length to ensure room for all subsequent phases.
         """
+        # ENFORCE: Entry cannot exceed 25% of corner to leave room for turn-in, apex, acceleration, exit
+        max_allowed_end = min(corner_length // 4, corner_length - 8)
+        min_entry_end = 2  # Minimum entry length
+        
+        if max_allowed_end <= min_entry_end:
+            return min_entry_end
+        
         # Look for sustained braking or significant deceleration at the start
         brake_threshold = brake_smooth.quantile(0.3) if brake_smooth.max() > 0 else 0
         decel_threshold = -2.0  # km/h per data point - significant deceleration
         
-        # Find where braking activity starts to reduce or deceleration stabilizes
-        entry_end = max(3, corner_length // 6)  # Default to ~16% of corner
+        # Default entry end (conservative)
+        entry_end = min(corner_length // 8, max_allowed_end)  # Default to ~12.5% of corner
         
         if brake_smooth.max() > 0.1:  # If we have brake data
             # Look for when braking starts to reduce significantly
-            for i in range(3, min(corner_length // 2, len(brake_smooth) - 2)):
+            for i in range(min_entry_end, min(max_allowed_end, len(brake_smooth) - 2)):
                 # Check if brake pressure is reducing and we're past initial heavy braking
                 recent_brake = brake_smooth.iloc[max(0, i-2):i+1].mean()
                 if recent_brake < brake_threshold * 0.6 and i > 5:
@@ -756,14 +820,15 @@ class TrackCorneringAnalyzer:
         else:
             # No brake data, use speed deceleration pattern
             # Look for when deceleration starts to stabilize or reduce
-            for i in range(3, min(corner_length // 2, len(speed_change) - 2)):
+            for i in range(min_entry_end, min(max_allowed_end, len(speed_change) - 2)):
                 recent_decel = speed_change.iloc[max(0, i-2):i+1].mean()
                 # Entry ends when deceleration becomes less severe (preparing for turn-in)
                 if recent_decel > decel_threshold * 0.5 and i > 5:
                     entry_end = i
                     break
         
-        return min(entry_end, corner_length - 8)  # Leave room for other phases
+        # ENFORCE: Respect strict sequential boundaries
+        return max(min_entry_end, min(entry_end, max_allowed_end))
 
     def _find_turn_in_phase_end_v2(self, steering_smooth: pd.Series, speed_change: pd.Series, 
                                    brake_smooth: pd.Series, start_idx: int, min_speed_idx: int, 
@@ -773,18 +838,27 @@ class TrackCorneringAnalyzer:
         - Steering movement toward apex
         - Speed constantly slowing down (deceleration)
         - Possible continued braking (trail braking) or engine braking
+        
+        CRITICAL: Turn-in MUST end BEFORE apex phase begins to maintain strict sequential order.
         """
         if start_idx >= corner_length - 5:
-            return min(start_idx + 3, corner_length - 3)
+            return min(start_idx + 3, corner_length - 5)
         
-        # Turn-in should end near the apex (minimum speed point)
-        # Look for the point where speed stops decreasing significantly
-        turn_in_end = min(min_speed_idx, corner_length - 5)
+        # ENFORCE: Turn-in must end at least 2 points before min_speed_idx to leave room for apex
+        max_allowed_end = min(min_speed_idx - 2, corner_length - 4)
+        
+        # Minimum turn-in length
+        min_turn_in_end = start_idx + 3
+        
+        if max_allowed_end <= min_turn_in_end:
+            # Not enough room - use minimum valid boundary
+            return min_turn_in_end
         
         # Find where deceleration significantly reduces (approaching apex)
         steering_threshold = steering_smooth.quantile(0.5)
+        turn_in_end = max_allowed_end  # Default to maximum allowed
         
-        for i in range(start_idx + 3, min(min_speed_idx + 3, len(speed_change) - 2)):
+        for i in range(min_turn_in_end, min(max_allowed_end, len(speed_change) - 2)):
             # Check recent speed change pattern
             recent_speed_change = speed_change.iloc[max(start_idx, i-3):i+1]
             avg_decel = recent_speed_change.mean()
@@ -796,7 +870,8 @@ class TrackCorneringAnalyzer:
                     turn_in_end = i
                     break
         
-        return max(start_idx + 3, min(turn_in_end, corner_length - 5))
+        # ENFORCE: Respect strict sequential boundaries
+        return max(min_turn_in_end, min(turn_in_end, max_allowed_end))
 
     def _find_acceleration_phase_end_v2(self, throttle_smooth: pd.Series, steering_smooth: pd.Series,
                                         start_idx: int, corner_length: int) -> int:
@@ -805,97 +880,161 @@ class TrackCorneringAnalyzer:
         - Gradual throttle application after apex
         - Gradual reduction in steering angle as car straightens
         - Speed increasing
+        
+        CRITICAL: Acceleration MUST end BEFORE exit phase begins to maintain strict sequential order.
         """
         if start_idx >= corner_length - 3:
-            return corner_length - 1
+            return corner_length - 2  # Leave at least 1 point for exit
         
-        # Default acceleration phase length
-        accel_end = min(start_idx + max(5, (corner_length - start_idx) // 2), corner_length - 2)
+        # ENFORCE: Acceleration must end at least 2 points before corner end to leave room for exit
+        max_allowed_end = corner_length - 2
+        min_accel_end = start_idx + 2  # Minimum acceleration length
+        
+        if max_allowed_end <= min_accel_end:
+            return min_accel_end
+        
+        # Default acceleration phase length (more conservative)
+        accel_end = min(start_idx + max(3, (corner_length - start_idx) // 3), max_allowed_end)
         
         if throttle_smooth.max() > 0.3:  # If we have throttle data
             # Look for sustained throttle application (transition to full throttle/exit)
             throttle_threshold = throttle_smooth.quantile(0.7)
             
-            for i in range(start_idx + 3, min(corner_length - 1, len(throttle_smooth))):
+            for i in range(min_accel_end, min(max_allowed_end, len(throttle_smooth))):
                 # Check for sustained high throttle (entering exit phase)
                 recent_throttle = throttle_smooth.iloc[max(start_idx, i-2):i+1].mean()
-                if recent_throttle > throttle_threshold:
+                if recent_throttle > throttle_threshold and i > start_idx + 3:
                     accel_end = i
                     break
         else:
             # No throttle data, use steering reduction pattern
             # Acceleration phase ends when steering reduces significantly
-            initial_steering = steering_smooth.iloc[start_idx:start_idx+3].mean()
-            
-            for i in range(start_idx + 3, min(corner_length - 1, len(steering_smooth))):
-                current_steering = steering_smooth.iloc[i]
-                # If steering has reduced to 50% of initial acceleration phase steering
-                if current_steering < initial_steering * 0.5 and i > start_idx + 5:
-                    accel_end = i
-                    break
+            if start_idx + 3 < len(steering_smooth):
+                initial_steering = steering_smooth.iloc[start_idx:start_idx+3].mean()
+                
+                for i in range(min_accel_end, min(max_allowed_end, len(steering_smooth))):
+                    current_steering = steering_smooth.iloc[i]
+                    # If steering has reduced to 50% of initial acceleration phase steering
+                    if current_steering < initial_steering * 0.5 and i > start_idx + 3:
+                        accel_end = i
+                        break
         
-        return min(accel_end, corner_length - 2)
+        # ENFORCE: Respect strict sequential boundaries
+        return max(min_accel_end, min(accel_end, max_allowed_end))
+
+    def _enforce_strict_sequential_phases(self, phases: Dict[str, List[int]], corner_length: int) -> Dict[str, List[int]]:
+        """
+        ENFORCE STRICT SEQUENTIAL ORDERING: Entry → Turn-in → Apex → Acceleration → Exit
+        Each phase MUST follow the previous one with NO overlaps and NO gaps.
+        Every corner point must be assigned to exactly one phase in the correct order.
+        """
+        phase_order = ['entry', 'turn_in', 'apex', 'acceleration', 'exit']
+        min_phase_size = max(1, corner_length // 15)  # Minimum size per phase
+        
+        # Create a clean sequential assignment
+        sequential_phases = {phase: [] for phase in phase_order}
+        
+        # Calculate target sizes for each phase (ensure reasonable distribution)
+        base_size = corner_length // 5  # Equal distribution baseline
+        
+        # Determine actual boundaries from current phase assignments (if valid)
+        boundaries = []
+        for i, phase_name in enumerate(phase_order):
+            if phases[phase_name]:
+                if i == 0:  # Entry
+                    boundaries.append(0)  # Always start at 0
+                    boundaries.append(max(phases[phase_name]) + 1)
+                elif i == len(phase_order) - 1:  # Exit
+                    boundaries.append(corner_length)  # Always end at corner_length
+                else:
+                    # For middle phases, use the computed boundaries but validate
+                    phase_end = max(phases[phase_name]) + 1
+                    boundaries.append(min(phase_end, corner_length - (len(phase_order) - i - 1) * min_phase_size))
+            else:
+                # If phase is empty, estimate boundary
+                if i == 0:
+                    boundaries.extend([0, min(base_size, corner_length // 4)])
+                elif i == len(phase_order) - 1:
+                    boundaries.append(corner_length)
+                else:
+                    # Estimate based on position in sequence
+                    est_boundary = (i + 1) * corner_length // len(phase_order)
+                    boundaries.append(min(est_boundary, corner_length - (len(phase_order) - i - 1) * min_phase_size))
+        
+        # Ensure we have the right number of boundaries
+        if len(boundaries) != len(phase_order) + 1:
+            # Fallback: create even distribution
+            boundaries = []
+            for i in range(len(phase_order) + 1):
+                boundaries.append(i * corner_length // len(phase_order))
+            boundaries[-1] = corner_length  # Ensure last boundary is exactly corner_length
+        
+        # Validate boundaries to ensure minimum phase sizes
+        for i in range(len(phase_order)):
+            phase_start = boundaries[i]
+            phase_end = boundaries[i + 1]
+            
+            # Ensure minimum phase size
+            if phase_end - phase_start < min_phase_size:
+                # Adjust boundaries to meet minimum size requirements
+                needed_size = min_phase_size - (phase_end - phase_start)
+                
+                if i < len(phase_order) - 1:  # Not the last phase
+                    # Try to expand by taking from next phases
+                    available_space = corner_length - phase_end - (len(phase_order) - i - 2) * min_phase_size
+                    expansion = min(needed_size, available_space)
+                    boundaries[i + 1] = min(corner_length, phase_end + expansion)
+                elif i > 0:  # Not the first phase
+                    # Try to expand by taking from previous phases
+                    available_space = phase_start - i * min_phase_size
+                    expansion = min(needed_size, available_space)
+                    boundaries[i] = max(0, phase_start - expansion)
+        
+        # Final boundary validation - ensure strict ordering and no overlaps
+        for i in range(1, len(boundaries)):
+            if boundaries[i] <= boundaries[i-1]:
+                # Fix boundary conflicts
+                boundaries[i] = boundaries[i-1] + 1
+        
+        # Ensure last boundary is exactly corner_length
+        boundaries[-1] = corner_length
+        
+        # Assign phases based on validated boundaries
+        for i, phase_name in enumerate(phase_order):
+            phase_start = boundaries[i]
+            phase_end = boundaries[i + 1]
+            sequential_phases[phase_name] = list(range(phase_start, phase_end))
+        
+        # Verify complete coverage and no gaps/overlaps
+        all_indices = set()
+        for phase_indices in sequential_phases.values():
+            for idx in phase_indices:
+                if idx in all_indices:
+                    raise ValueError(f"Index {idx} assigned to multiple phases - this should never happen!")
+                all_indices.add(idx)
+        
+        # Verify all corner indices are covered
+        expected_indices = set(range(corner_length))
+        if all_indices != expected_indices:
+            missing = expected_indices - all_indices
+            extra = all_indices - expected_indices
+            raise ValueError(f"Phase assignment incomplete: missing {missing}, extra {extra}")
+        
+        # Log phase boundaries for debugging
+        print(f"[DEBUG] Corner phases - Entry: {len(sequential_phases['entry'])} points, "
+              f"Turn-in: {len(sequential_phases['turn_in'])} points, "
+              f"Apex: {len(sequential_phases['apex'])} points, "
+              f"Acceleration: {len(sequential_phases['acceleration'])} points, "
+              f"Exit: {len(sequential_phases['exit'])} points")
+        
+        return sequential_phases
 
     def _validate_and_clean_phases(self, phases: Dict[str, List[int]], corner_length: int) -> Dict[str, List[int]]:
         """
-        Validate phases ensuring no overlaps, minimum sizes, and complete coverage.
+        DEPRECATED: Use _enforce_strict_sequential_phases instead.
+        This method is kept for backward compatibility but should not be used.
         """
-        # Ensure minimum phase sizes
-        min_phase_size = max(2, corner_length // 20)  # At least 5% of corner for each phase
-        
-        # Phase order and ensure sequential arrangement
-        phase_order = ['entry', 'turn_in', 'apex', 'acceleration', 'exit']
-        
-        # Clean up each phase
-        for phase_name in phase_order:
-            if len(phases[phase_name]) < min_phase_size:
-                # Expand phase if too small
-                if phases[phase_name]:
-                    start_idx = min(phases[phase_name])
-                    end_idx = max(phases[phase_name])
-                    # Expand symmetrically
-                    expansion_needed = min_phase_size - len(phases[phase_name])
-                    expand_start = max(0, start_idx - expansion_needed // 2)
-                    expand_end = min(corner_length, end_idx + expansion_needed // 2 + 1)
-                    phases[phase_name] = list(range(expand_start, expand_end))
-        
-        # Resolve overlaps by enforcing sequential order
-        for i, phase_name in enumerate(phase_order[:-1]):
-            next_phase = phase_order[i + 1]
-            
-            if phases[phase_name] and phases[next_phase]:
-                current_end = max(phases[phase_name])
-                next_start = min(phases[next_phase])
-                
-                # If overlap exists, adjust boundaries
-                if current_end >= next_start:
-                    # Split the overlap
-                    split_point = (current_end + next_start) // 2
-                    phases[phase_name] = [idx for idx in phases[phase_name] if idx <= split_point]
-                    phases[next_phase] = [idx for idx in phases[next_phase] if idx > split_point]
-        
-        # Fill any gaps between phases
-        all_assigned = set()
-        for phase_indices in phases.values():
-            all_assigned.update(phase_indices)
-        
-        # Assign unassigned indices to the most appropriate phase
-        for idx in range(corner_length):
-            if idx not in all_assigned:
-                # Find which phase this index should belong to based on position
-                for i, phase_name in enumerate(phase_order):
-                    phase_start = min(phases[phase_name]) if phases[phase_name] else idx
-                    phase_end = max(phases[phase_name]) if phases[phase_name] else idx
-                    
-                    if not phases[phase_name] or (phase_start <= idx <= phase_end):
-                        phases[phase_name].append(idx)
-                        break
-        
-        # Sort all phase indices
-        for phase_name in phases:
-            phases[phase_name] = sorted(phases[phase_name])
-        
-        return phases
+        return self._enforce_strict_sequential_phases(phases, corner_length)
 
 
     def filter_top_performance_laps(self, df: pd.DataFrame) -> pd.DataFrame:
