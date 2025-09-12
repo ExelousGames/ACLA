@@ -109,6 +109,7 @@ class CornerIdentificationUnsupervisedService:
         self.corner_models = {}
         self.scalers = {}
         self.track_corner_profiles = {}
+        self.corner_patterns = []  # Store learned corner patterns for reuse
         
         # Backend service integration
         self.backend_service = backend_service
@@ -118,54 +119,34 @@ class CornerIdentificationUnsupervisedService:
         self.corner_detection_sensitivity = 0.7
         self.smoothing_window = 7
         
-    async def learn_track_corner_patterns(self, trackName: str, carName: Optional[str] = None) -> Dict[str, Any]:
+    async def learn_track_corner_patterns(self, telemetry_data: List[Dict[str, Any]]) -> Dict[str, Any]:
         """
-        Learn corner patterns for a specific track using unsupervised learning
+        Learn corner patterns using unsupervised learning from cleaned telemetry data
         
         Args:
-            trackName: Name of the track
-            carName: Optional car name filter
+            telemetry_data: Clean telemetry data for learning
             
         Returns:
             Dictionary with learning results and extracted corner patterns
         """
         try:
-            print(f"[INFO] Starting unsupervised corner pattern learning for track: {trackName}")
+            print(f"[INFO] Starting unsupervised corner pattern learning with cleaned data")
             
-            # Retrieve telemetry data from backend
-            if carName:
-                sessions = await self.backend_service.get_all_racing_sessions(trackName, carName)
-            else:
-                sessions = await self.backend_service.get_all_racing_sessions(trackName)
-            
-            if not sessions or "sessions" not in sessions:
+            if not telemetry_data:
                 return {
                     "success": False,
-                    "error": "No telemetry sessions found",
+                    "error": "No telemetry data provided",
                     "corner_patterns": []
                 }
             
-            # Collect telemetry data from all sessions
-            all_telemetry_data = []
-            for session in sessions.get("sessions", []):
-                session_telemetry = await self._extract_session_telemetry(session)
-                if session_telemetry:
-                    all_telemetry_data.extend(session_telemetry)
+            print(f"[INFO] Using provided clean telemetry data: {len(telemetry_data)} records")
+            all_telemetry_data = telemetry_data
             
-            if not all_telemetry_data:
-                return {
-                    "success": False,
-                    "error": "No valid telemetry data found in sessions",
-                    "corner_patterns": []
-                }
-            
-            # Convert to DataFrame and process
+            # Convert to DataFrame - data is already clean
             df = pd.DataFrame(all_telemetry_data)
-            feature_processor = FeatureProcessor(df)
-            processed_df = feature_processor.general_cleaning_for_analysis()
             
             # Filter for top performance laps
-            performance_df = self._filter_top_performance_data(processed_df)
+            performance_df = self._filter_top_performance_data(df)
             
             # Identify corner segments using unsupervised methods
             corner_segments = self._identify_corner_segments_unsupervised(performance_df)
@@ -185,30 +166,33 @@ class CornerIdentificationUnsupervisedService:
                     "data_points": segment_data['end_idx'] - segment_data['start_idx'] + 1
                 })
             
+            # Store the corner patterns in the class instance for later use
+            self.corner_patterns = corner_patterns
+            
             # Cluster similar corners to identify corner types
             corner_clusters = self._cluster_corner_types(corner_patterns)
             
             # Save learned patterns
             track_model = {
-                "track_name": trackName,
-                "car_name": carName,
+                "track_name": "generic",
+                "car_name": "all_cars",
                 "corner_patterns": corner_patterns,
                 "corner_clusters": corner_clusters,
                 "total_corners": len(corner_patterns),
                 "learning_timestamp": datetime.now().isoformat()
             }
             
-            model_path = self.models_directory / f"corner_patterns_{trackName}_{carName or 'all_cars'}.pkl"
+            model_path = self.models_directory / f"corner_patterns_generic_all_cars.pkl"
             joblib.dump(track_model, model_path)
             
-            self.track_corner_profiles[f"{trackName}_{carName or 'all_cars'}"] = track_model
+            self.track_corner_profiles["generic_all_cars"] = track_model
             
-            print(f"[INFO] Successfully learned {len(corner_patterns)} corner patterns for {trackName}")
+            print(f"[INFO] Successfully learned {len(corner_patterns)} corner patterns")
             
             return {
                 "success": True,
-                "track_name": trackName,
-                "car_name": carName,
+                "track_name": "generic",
+                "car_name": "all_cars",
                 "total_corners_identified": len(corner_patterns),
                 "corner_patterns": corner_patterns,
                 "corner_clusters": corner_clusters,
@@ -216,62 +200,39 @@ class CornerIdentificationUnsupervisedService:
             }
             
         except Exception as e:
-            print(f"[ERROR] Failed to learn corner patterns for {trackName}: {str(e)}")
+            print(f"[ERROR] Failed to learn corner patterns: {str(e)}")
             return {
                 "success": False,
                 "error": str(e),
                 "corner_patterns": []
             }
     
-    async def extract_corner_features_for_telemetry(self, 
-                                                   telemetry_data: List[Dict[str, Any]], 
-                                                   trackName: str,
-                                                   carName: Optional[str] = None) -> List[Dict[str, Any]]:
+    async def extract_corner_features_for_telemetry(self, telemetry_data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
-        Extract corner features and insert them back into telemetry data
+        Extract corner features and insert them back into clean telemetry data using the saved model
         
         Args:
-            telemetry_data: List of telemetry records
-            trackName: Track name for corner pattern matching
-            carName: Optional car name
+            telemetry_data: List of clean telemetry records to predict on
             
         Returns:
             Enhanced telemetry data with corner features
         """
         try:
-            # Load or learn corner patterns for this track
-            model_key = f"{trackName}_{carName or 'all_cars'}"
-            if model_key not in self.track_corner_profiles:
-                await self.learn_track_corner_patterns(trackName, carName)
+            # Check if we have a learned model
+            if not self.corner_patterns:
+                print("[ERROR] No corner patterns model available. Please run learn_track_corner_patterns first.")
+                return telemetry_data
             
-            # Convert telemetry data to DataFrame
+            print(f"[INFO] Using saved corner model with {len(self.corner_patterns)} learned corner patterns")
+            
+            # Convert telemetry data to DataFrame - data is already clean
             df = pd.DataFrame(telemetry_data)
-            feature_processor = FeatureProcessor(df)
-            processed_df = feature_processor.general_cleaning_for_analysis()
-            
-            # Identify corners in current telemetry
-            corner_segments = self._identify_corner_segments_unsupervised(processed_df)
             
             # Initialize corner feature columns
-            corner_features = self._initialize_corner_feature_columns(len(processed_df))
+            corner_features = self._initialize_corner_feature_columns(len(df))
             
-            # Extract and assign corner features
-            for corner_id, segment_data in corner_segments.items():
-                start_idx = segment_data['start_idx']
-                end_idx = segment_data['end_idx']
-                
-                # Extract characteristics for this corner
-                corner_df = processed_df.iloc[start_idx:end_idx+1]
-                characteristics = self._extract_corner_characteristics(corner_df)
-                
-                # Assign corner features to all data points in this corner
-                self._assign_corner_features_to_segment(
-                    corner_features, 
-                    start_idx, 
-                    end_idx, 
-                    characteristics, 
-                    corner_id
-                )
+            # Use the saved corner patterns to match and assign features
+            self._match_corners_with_learned_patterns(df, corner_features)
             
             # Add corner features to original telemetry data
             enhanced_telemetry = []
@@ -285,7 +246,7 @@ class CornerIdentificationUnsupervisedService:
                 
                 enhanced_telemetry.append(enhanced_record)
             
-            print(f"[INFO] Enhanced {len(enhanced_telemetry)} telemetry records with corner features")
+            print(f"[INFO] Enhanced {len(enhanced_telemetry)} telemetry records with corner features using saved model")
             return enhanced_telemetry
             
         except Exception as e:
@@ -979,22 +940,22 @@ class CornerIdentificationUnsupervisedService:
             print(f"[ERROR] Failed to extract session telemetry: {str(e)}")
             return []
     
-    def get_corner_identification_summary(self, trackName: str, carName: Optional[str] = None) -> Dict[str, Any]:
-        """Get summary of corner identification results for a track"""
-        model_key = f"{trackName}_{carName or 'all_cars'}"
+    def get_corner_identification_summary(self) -> Dict[str, Any]:
+        """Get summary of corner identification results"""
+        model_key = "generic_all_cars"
         
         if model_key not in self.track_corner_profiles:
             return {
                 "success": False,
-                "error": "No corner profile found for this track/car combination"
+                "error": "No corner profile found - please run learning first"
             }
         
         profile = self.track_corner_profiles[model_key]
         
         return {
             "success": True,
-            "track_name": trackName,
-            "car_name": carName,
+            "track_name": "generic",
+            "car_name": "all_cars",
             "total_corners": profile.get("total_corners", 0),
             "corner_types": self._summarize_corner_types(profile.get("corner_patterns", [])),
             "corner_clusters": profile.get("corner_clusters", {}),
@@ -1011,21 +972,192 @@ class CornerIdentificationUnsupervisedService:
         
         return type_counts
     
-    def clear_corner_cache(self, trackName: Optional[str] = None, carName: Optional[str] = None):
-        """Clear cached corner identification models"""
-        if trackName and carName:
-            model_key = f"{trackName}_{carName}"
-            self.track_corner_profiles.pop(model_key, None)
-        elif trackName:
-            # Clear all models for this track
-            keys_to_remove = [k for k in self.track_corner_profiles.keys() if k.startswith(f"{trackName}_")]
-            for key in keys_to_remove:
-                self.track_corner_profiles.pop(key, None)
-        else:
-            # Clear all cached models
-            self.track_corner_profiles.clear()
+    def _match_corners_with_learned_patterns(self, df: pd.DataFrame, corner_features: Dict[str, List[float]]):
+        """
+        Match corners in new telemetry data with learned corner patterns and assign features
         
-        print(f"[INFO] Cleared corner identification cache for track: {trackName or 'all'}, car: {carName or 'all'}")
+        Args:
+            df: New telemetry data as DataFrame
+            corner_features: Dictionary to populate with corner features
+        """
+        try:
+            # Identify corners in the new telemetry data
+            corner_segments = self._identify_corner_segments_unsupervised(df)
+            
+            if not corner_segments:
+                print("[INFO] No corners detected in the telemetry data")
+                return
+            
+            print(f"[INFO] Detected {len(corner_segments)} corner segments in new telemetry data")
+            
+            # For each detected corner, find the best matching learned pattern
+            for corner_id, segment_data in corner_segments.items():
+                start_idx = segment_data['start_idx']
+                end_idx = segment_data['end_idx']
+                
+                # Extract characteristics for this detected corner
+                corner_df = df.iloc[start_idx:end_idx+1]
+                detected_characteristics = self._extract_corner_characteristics(corner_df)
+                
+                # Find the best matching learned pattern
+                best_match_pattern = self._find_best_matching_pattern(detected_characteristics, segment_data)
+                
+                if best_match_pattern:
+                    # Use the learned pattern's characteristics
+                    learned_characteristics = self._create_characteristics_from_pattern(best_match_pattern)
+                    print(f"[INFO] Corner {corner_id} matched with learned pattern (type: {learned_characteristics.corner_type})")
+                else:
+                    # Fallback to detected characteristics if no good match found
+                    learned_characteristics = detected_characteristics
+                    print(f"[INFO] Corner {corner_id} using detected characteristics (no good pattern match)")
+                
+                # Assign corner features to all data points in this corner
+                self._assign_corner_features_to_segment(
+                    corner_features, 
+                    start_idx, 
+                    end_idx, 
+                    learned_characteristics, 
+                    corner_id
+                )
+                
+        except Exception as e:
+            print(f"[ERROR] Failed to match corners with learned patterns: {str(e)}")
+    
+    def _find_best_matching_pattern(self, detected_characteristics: CornerCharacteristics, 
+                                   segment_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """
+        Find the best matching learned corner pattern for a detected corner
+        
+        Args:
+            detected_characteristics: Characteristics of the detected corner
+            segment_data: Segment information (position, etc.)
+            
+        Returns:
+            Best matching corner pattern or None if no good match found
+        """
+        try:
+            if not self.corner_patterns:
+                return None
+            
+            best_match = None
+            best_score = float('inf')
+            match_threshold = 0.5  # Similarity threshold
+            
+            # Calculate track position for matching
+            detected_position = segment_data.get('position_start', 0.0)
+            
+            for pattern in self.corner_patterns:
+                pattern_chars = pattern['characteristics']
+                pattern_position = pattern.get('track_position_start', 0.0)
+                
+                # Calculate similarity score based on multiple factors
+                similarity_score = self._calculate_pattern_similarity(
+                    detected_characteristics, 
+                    pattern_chars, 
+                    detected_position, 
+                    pattern_position
+                )
+                
+                if similarity_score < best_score and similarity_score < match_threshold:
+                    best_score = similarity_score
+                    best_match = pattern
+            
+            return best_match
+            
+        except Exception as e:
+            print(f"[ERROR] Failed to find best matching pattern: {str(e)}")
+            return None
+    
+    def _calculate_pattern_similarity(self, detected_chars: CornerCharacteristics, 
+                                    pattern_chars: Dict[str, Any],
+                                    detected_position: float, 
+                                    pattern_position: float) -> float:
+        """
+        Calculate similarity score between detected corner and learned pattern
+        Lower score = better match
+        
+        Args:
+            detected_chars: Detected corner characteristics
+            pattern_chars: Learned pattern characteristics
+            detected_position: Track position of detected corner
+            pattern_position: Track position of learned pattern
+            
+        Returns:
+            Similarity score (lower = more similar)
+        """
+        try:
+            score = 0.0
+            
+            # Position similarity (weight: 30%)
+            position_diff = abs(detected_position - pattern_position)
+            # Handle wraparound for normalized position (0-1)
+            position_diff = min(position_diff, 1.0 - position_diff) if position_diff > 0.5 else position_diff
+            score += position_diff * 0.3
+            
+            # Duration similarity (weight: 20%)
+            detected_duration = detected_chars.total_corner_duration
+            pattern_duration = pattern_chars.get('total_corner_duration', 0)
+            if pattern_duration > 0:
+                duration_diff = abs(detected_duration - pattern_duration) / max(detected_duration, pattern_duration)
+                score += duration_diff * 0.2
+            
+            # Steering similarity (weight: 25%)
+            detected_steering = detected_chars.apex_max_steering
+            pattern_steering = pattern_chars.get('apex_max_steering', 0)
+            if max(detected_steering, pattern_steering) > 0:
+                steering_diff = abs(detected_steering - pattern_steering) / max(detected_steering, pattern_steering)
+                score += steering_diff * 0.25
+            
+            # Speed efficiency similarity (weight: 15%)
+            detected_speed_eff = detected_chars.speed_efficiency
+            pattern_speed_eff = pattern_chars.get('speed_efficiency', 0)
+            if max(detected_speed_eff, pattern_speed_eff) > 0:
+                speed_diff = abs(detected_speed_eff - pattern_speed_eff) / max(detected_speed_eff, pattern_speed_eff)
+                score += speed_diff * 0.15
+            
+            # Corner type similarity (weight: 10%)
+            detected_type = detected_chars.corner_type
+            pattern_type = pattern_chars.get('corner_type', 'unknown')
+            if detected_type != pattern_type:
+                score += 0.1
+            
+            return score
+            
+        except Exception as e:
+            print(f"[ERROR] Failed to calculate pattern similarity: {str(e)}")
+            return float('inf')
+    
+    def _create_characteristics_from_pattern(self, pattern: Dict[str, Any]) -> CornerCharacteristics:
+        """
+        Create CornerCharacteristics object from a learned pattern
+        
+        Args:
+            pattern: Learned corner pattern dictionary
+            
+        Returns:
+            CornerCharacteristics object populated with pattern data
+        """
+        characteristics = CornerCharacteristics()
+        pattern_chars = pattern['characteristics']
+        
+        try:
+            # Copy all characteristics from the pattern
+            for attr_name in dir(characteristics):
+                if not attr_name.startswith('_') and hasattr(characteristics, attr_name):
+                    if attr_name in pattern_chars:
+                        setattr(characteristics, attr_name, pattern_chars[attr_name])
+            
+            return characteristics
+            
+        except Exception as e:
+            print(f"[ERROR] Failed to create characteristics from pattern: {str(e)}")
+            return characteristics
+    
+    def clear_corner_cache(self):
+        """Clear cached corner identification models"""
+        # Clear all cached models
+        self.track_corner_profiles.clear()
+        print(f"[INFO] Cleared corner identification cache")
 
 
 # Create service instance
