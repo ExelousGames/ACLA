@@ -1,0 +1,58 @@
++---------------------+  +-----------------------+
+|   Sub-Optimal Log   |  |   Optimal Reference   |
+| [S1, S2, S3, ..., Sn]|  | [O1, O2, O3, ..., On] |
++---------------------+  +-----------------------+
+            |                         |
+            |--- Align Timestamps ----|
+            |
+            v
++-----------------------------------------------+
+|         Calculate Error Metric (E_t)          |
+|   E_t = f(S_t, O_t)  (e.g., Lateral Distance)  |
+| [E1, E2, E3, ..., En]                         |
++-----------------------------------------------+
+            |
+            |--- find_peaks(E_t) & Analysis ---|
+            |
+            v
++-----------------------------------------------+
+|     Identify "Correction Event" Sections      |
+|   [Rise, Peak, Fall] for each major error     |
+|        [Start_idx, End_idx]                   |
++-----------------------------------------------+
+            |
+            |--- Slice Data for each Event ---|
+            |
+            v
++-----------------------------------------------+
+|     Extract Sequences from Descending Slope   |
+|   (The "Constantly Going Down" Sections)      |
+|                                               |
+| For a section [s, e]:                         |
+|  +-> Input: [S_s, S_s+1, ..., S_s+49]         | |--->
+|  +-> Target: [Expert Action at s+50]          | |
+|  +-> Input: [S_s+1, S_s+2, ..., S_s+50]       | | This is your
+|  +-> Target: [Expert Action at s+51]          | | final training
+|  +-> ... for all points in [s, e]             | | dataset
++-----------------------------------------------+ |
+            |                                    |
+            |--- Also sample from Low-Error ---| |
+            |   sections for balance           | |
+            |----------------------------------| |
+            v                                    v
++--------------------+             +-----------------------------+
+| Final Training     |             | Transformer Model Training  |
+| Dataset            |============>|                             |
+| (Prioritized       |             | Input: State Sequence       |
+|  Sequences)        |             | Output: Predicted Action    |
++--------------------+             +-----------------------------+
+            ^                                    ^
+            |                                    |
+            |                                    |
++----------------------+              +----------------------------+
+| Balanced Sampling:   |              | The model learns:          |
+| 70%: Correction      |              | "In this specific sub-     |
+| 30%: Optimal Cruising|              | optimal situation (high   |
+|                      |              | error, decreasing), the   |
++----------------------+              | expert does THIS."        |
+                                      +----------------------------+

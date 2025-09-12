@@ -7,14 +7,13 @@ using your TelemetryFeatures and FeatureProcessor classes.
 
 import os
 import pandas as pd
+from acla_ai_service.app.services.imitate_expert_learning_service import ImitateExpertLearningService
 import numpy as np
 import joblib
 import warnings
 import base64
 import pickle
 import io
-from .Corner_imitation_learning_service import CornerImitationLearningService, CornerSpecificLearner
-import aiohttp
 import asyncio
 import time
 from collections import Counter
@@ -41,97 +40,24 @@ from sklearn.compose import ColumnTransformer
 # Import your telemetry models
 from ..models.telemetry_models import TelemetryFeatures, FeatureProcessor, _safe_float
 
-# Import imitation learning service
-from .old_scikit_imitation_learning_service import ImitationLearningService
-
 # Import backend service
 from .backend_service import backend_service
 
 # Import model cache service
 from .model_cache_service import model_cache_service
 
-# Import cornering analysis
-from .old_identify_track_cornoring_phases import TrackCorneringAnalyzer
+# PyTorch imports (for transformer model)
+try:
+    import torch
+    import torch.nn as nn
+    from torch.utils.data import DataLoader
+    TORCH_AVAILABLE = True
+except ImportError:
+    TORCH_AVAILABLE = False
+    print("[WARNING] PyTorch not available - transformer functionality will be disabled")
 
 # Suppress sklearn warnings
 warnings.filterwarnings('ignore', category=UserWarning)
-
-class ModelConfig:
-    """Configuration for different ML model types"""
-    
-    REGRESSION_MODELS = {
-        'random_forest': {
-            'model': RandomForestRegressor,
-            'params': {
-                'n_estimators': [50, 100, 200],
-                'max_depth': [10, 20, None],
-                'min_samples_split': [2, 5, 10],
-                'min_samples_leaf': [1, 2, 4]
-            }
-        },
-        'gradient_boosting': {
-            'model': GradientBoostingRegressor,
-            'params': {
-                'n_estimators': [50, 100, 200],
-                'learning_rate': [0.01, 0.1, 0.2],
-                'max_depth': [3, 6, 9]
-            }
-        },
-        'linear_regression': {
-            'model': LinearRegression,
-            'params': {}
-        },
-        'ridge': {
-            'model': Ridge,
-            'params': {
-                'alpha': [0.1, 1.0, 10.0, 100.0]
-            }
-        },
-        'svr': {
-            'model': SVR,
-            'params': {
-                'C': [0.1, 1, 10],
-                'gamma': ['scale', 'auto'],
-                'kernel': ['rbf', 'linear']
-            }
-        }
-    }
-    
-    CLASSIFICATION_MODELS = {
-        'random_forest': {
-            'model': RandomForestClassifier,
-            'params': {
-                'n_estimators': [50, 100, 200],
-                'max_depth': [10, 20, None],
-                'min_samples_split': [2, 5, 10],
-                'min_samples_leaf': [1, 2, 4]
-            }
-        },
-        'gradient_boosting': {
-            'model': GradientBoostingClassifier,
-            'params': {
-                'n_estimators': [50, 100, 200],
-                'learning_rate': [0.01, 0.1, 0.2],
-                'max_depth': [3, 6, 9]
-            }
-        },
-        'logistic_regression': {
-            'model': LogisticRegression,
-            'params': {
-                'C': [0.1, 1, 10],
-                'max_iter': [1000]
-            }
-        },
-        'svc': {
-            'model': SVC,
-            'params': {
-                'C': [0.1, 1, 10],
-                'gamma': ['scale', 'auto'],
-                'kernel': ['rbf', 'linear']
-            }
-        }
-    }
-
 
 class Full_dataset_TelemetryMLService:
     """
@@ -164,15 +90,6 @@ class Full_dataset_TelemetryMLService:
         self.scalers = {}
         self.label_encoders = {}
         
-        # Initialize imitation learning service
-        imitation_models_dir = self.models_directory / "imitation_models"
-        self.imitation_learning = ImitationLearningService(str(imitation_models_dir))
-        
-        # Initialize corner shape unsupervised learning service
-        corner_shape_models_dir = self.models_directory / "corner_shapes"
-        from .corner_shape_unsupervised_service import CornerShapeUnsupervisedService
-        self.corner_shape_learning = CornerShapeUnsupervisedService(str(corner_shape_models_dir))
-        
         # Initialize corner identification unsupervised service
         corner_identification_models_dir = self.models_directory / "corner_identification"
         from .corner_identification_unsupervised_service import CornerIdentificationUnsupervisedService
@@ -182,6 +99,7 @@ class Full_dataset_TelemetryMLService:
         tire_grip_models_dir = self.models_directory / "tire_grip"
         from .tire_grip_analysis_service import TireGripAnalysisService
         self.tire_grip_analysis = TireGripAnalysisService(str(tire_grip_models_dir))
+
         
         # Backend service integration
         self.backend_service = backend_service
@@ -193,840 +111,114 @@ class Full_dataset_TelemetryMLService:
         self._model_fetch_locks = {}
         self._lock_creation_lock = asyncio.Lock()
 
-    def get_fetch_locks_status(self) -> Dict[str, Any]:
-        """
-        Get status of current fetch locks for debugging purposes
-        
-        Returns:
-            Dictionary with lock status information
-        """
-        return {
-            "active_locks": list(self._model_fetch_locks.keys()),
-            "lock_count": len(self._model_fetch_locks),
-            "timestamp": datetime.now().isoformat()
-        }
-    
-    async def clear_stuck_fetch_locks(self, max_age_minutes: int = 10) -> Dict[str, Any]:
-        """
-        Clear fetch locks that might be stuck (emergency cleanup)
-        
-        Args:
-            max_age_minutes: Age threshold for considering locks as stuck
-            
-        Returns:
-            Dictionary with cleanup results
-        """
-        cleared_locks = []
-        
-        try:
-            async with self._lock_creation_lock:
-                # Since we can't track lock creation time in this simple implementation,
-                # we'll just clear all locks as an emergency measure
-                for model_key in list(self._model_fetch_locks.keys()):
-                    try:
-                        self._model_fetch_locks[model_key].set()
-                        del self._model_fetch_locks[model_key]
-                        cleared_locks.append(model_key)
-                    except Exception as e:
-                        pass
-            
-            return {
-                "success": True,
-                "cleared_locks": cleared_locks,
-                "cleared_count": len(cleared_locks),
-                "timestamp": datetime.now().isoformat()
-            }
-            
-        except Exception as e:
-            return {
-                "success": False,
-                "error": str(e),
-                "cleared_locks": cleared_locks,
-                "cleared_count": len(cleared_locks),
-                "timestamp": datetime.now().isoformat()
-            }
-            
-    def _deserialize_model_data(self, model_data: str) -> Dict[str, Any]:
-        """
-        Deserialize sklearn model from base64 string
-        
-        Args:
-            model_data: Base64 encoded model data
-        
-        Returns:
-            Model info dictionary
-        """
-        try:
-            # Decode from base64
-            decoded_data = base64.b64decode(model_data.encode('utf-8'))
-            
-            # Deserialize using pickle
-            buffer = io.BytesIO(decoded_data)
-            model_info = pickle.load(buffer)
-            
-            return model_info
-            
-        except Exception as e:
-            raise Exception(f"Failed to deserialize model: {str(e)}")
-    
-    
-    def _serialize_model_data(self, model_id: str) -> str:
-        """
-        Serialize sklearn model to base64 string for database storage
-        
-        Args:
-            model_id: ID of the trained model
-        
-        Returns:
-            Base64 encoded model data
-        """
-        try:
-            model_info = self._load_model(model_id)
-            if not model_info:
-                raise Exception(f"Model {model_id} not found")
-            
-            # Serialize using pickle
-            buffer = io.BytesIO()
-            pickle.dump(model_info, buffer)
-            buffer.seek(0)
-        
-            # Encode to base64
-            encoded_data = base64.b64encode(buffer.getvalue()).decode('utf-8')
-            return encoded_data
-            
-        except Exception as e:
-            raise Exception(f"Failed to serialize model: {str(e)}")
-    
-    def _get_algorithm_description(self, algorithm_name: str) -> str:
-        """Get description of the algorithm"""
-        descriptions = {
-            'random_forest': 'Random Forest: Ensemble method using multiple decision trees for robust predictions',
-            'gradient_boosting': 'Gradient Boosting: Sequential ensemble method that corrects previous model errors',
-            'linear_regression': 'Linear Regression: Simple linear relationship modeling between features and target',
-            'ridge': 'Ridge Regression: Linear regression with L2 regularization to prevent overfitting',
-            'logistic_regression': 'Logistic Regression: Linear method for classification with probabilistic output',
-            'svc': 'Support Vector Classifier: Maximum margin classifier for complex decision boundaries',
-            'svr': 'Support Vector Regression: Support vector method for regression with robust outlier handling'
-        }
-        return descriptions.get(algorithm_name, f'Advanced {algorithm_name} algorithm')
-    
-    def _get_algorithm_strengths(self, algorithm_name: str) -> List[str]:
-        """Get strengths of the algorithm"""
-        strengths = {
-            'random_forest': [
-                'Handles missing values well',
-                'Provides feature importance',
-                'Resistant to overfitting',
-                'Works with mixed data types'
-            ],
-            'gradient_boosting': [
-                'High predictive accuracy',
-                'Handles complex patterns',
-                'Robust to outliers',
-                'Good feature selection'
-            ],
-            'linear_regression': [
-                'Fast training and prediction',
-                'Interpretable coefficients',
-                'Low memory usage',
-                'Good baseline model'
-            ],
-            'ridge': [
-                'Prevents overfitting',
-                'Stable with multicollinearity',
-                'Fast computation',
-                'Regularized solution'
-            ],
-            'logistic_regression': [
-                'Probabilistic output',
-                'Fast and efficient',
-                'Interpretable results',
-                'No tuning of hyperparameters'
-            ],
-            'svc': [
-                'Effective in high dimensions',
-                'Memory efficient',
-                'Versatile with kernel tricks',
-                'Works well with limited data'
-            ],
-            'svr': [
-                'Robust to outliers',
-                'Effective in high dimensions',
-                'Memory efficient',
-                'Non-linear modeling capability'
-            ]
-        }
-        return strengths.get(algorithm_name, ['Advanced machine learning capabilities'])
-    
-    def _calculate_data_quality_score(self, df: pd.DataFrame) -> float:
-        """Calculate a data quality score (0-100)"""
-        try:
-            # Check for missing values
-            missing_ratio = df.isnull().sum().sum() / (df.shape[0] * df.shape[1])
-            missing_score = max(0, 100 - (missing_ratio * 100))
-            
-            # Check for duplicate rows
-            duplicate_ratio = df.duplicated().sum() / len(df)
-            duplicate_score = max(0, 100 - (duplicate_ratio * 100))
-            
-            # Check for outliers (using IQR method)
-            numeric_cols = df.select_dtypes(include=[np.number]).columns
-            outlier_ratio = 0
-            if len(numeric_cols) > 0:
-                for col in numeric_cols:
-                    Q1 = df[col].quantile(0.25)
-                    Q3 = df[col].quantile(0.75)
-                    IQR = Q3 - Q1
-                    outliers = ((df[col] < (Q1 - 1.5 * IQR)) | (df[col] > (Q3 + 1.5 * IQR))).sum()
-                    outlier_ratio += outliers / len(df)
-                outlier_ratio = outlier_ratio / len(numeric_cols)
-            
-            outlier_score = max(0, 100 - (outlier_ratio * 100))
-            
-            # Average the scores
-            overall_score = (missing_score + duplicate_score + outlier_score) / 3
-            return round(overall_score, 2)
-            
-        except Exception:
-            return 75.0  # Default moderate score
-    
-    def _generate_training_recommendations(self, metrics: Dict[str, Any], 
-                                         algorithm_name: str, task_type: str) -> List[str]:
-        """Generate recommendations based on training metrics and algorithm"""
-        recommendations = []
-        
-        # Performance-based recommendations
-        if task_type == "regression":
-            mae = metrics.get("mae", float('inf'))
-            rmse = metrics.get("mse", float('inf')) ** 0.5 if metrics.get("mse") else float('inf')
-            r2 = metrics.get("r2", 0)
-            
-            if r2 < 0.6:
-                recommendations.append("Consider feature engineering or trying a different algorithm")
-            if mae > 5.0:
-                recommendations.append("High prediction error - check data quality and feature relevance")
-            if r2 > 0.8:
-                recommendations.append("Excellent model performance - monitor for overfitting")
-                
-        else:  # classification
-            accuracy = metrics.get("accuracy", 0)
-            f1 = metrics.get("f1", 0)
-            
-            if accuracy < 0.7:
-                recommendations.append("Low classification accuracy - consider feature selection or different algorithm")
-            if f1 < 0.6:
-                recommendations.append("Poor F1 score - check class balance and feature quality")
-            if accuracy > 0.9:
-                recommendations.append("Excellent classification performance - validate on new data")
-        
-        # Algorithm-specific recommendations
-        if algorithm_name == "linear_regression" and metrics.get("r2", 0) < 0.6:
-            recommendations.append("Linear model may not capture complex patterns - try tree-based algorithms")
-        elif algorithm_name == "random_forest":
-            recommendations.append("Random Forest provides good baseline - tune hyperparameters for better performance")
-        elif algorithm_name == "gradient_boosting":
-            recommendations.append("Gradient Boosting can achieve high accuracy - monitor training time and overfitting")
-        elif algorithm_name == "ridge":
-            recommendations.append("Ridge regression prevents overfitting - good for many features")
-        
-        if not recommendations:
-            recommendations.append("Model training completed successfully - monitor performance over time")
-        
-        return recommendations
-
-    
-    def _save_model(self, 
-                   model, 
-                   scaler, 
-                   model_id: str, 
-                   feature_names: List[str], 
-                   model_type: str,
-                   label_encoder=None):
-        """Save trained model and associated components"""
-        model_info = {
-            'model_id': model_id,
-            'model': model,
-            'scaler': scaler,
-            'label_encoder': label_encoder,
-            'feature_names': feature_names,
-            'model_name': model.__class__.__name__,
-            'model_type': model_type,
-            'created_at': datetime.now().isoformat()
-        }
-        
-        model_path = self.models_directory / f"{model_id}.pkl"
-        joblib.dump(model_info, model_path)
-    
-    def _load_model(self, model_id: str) -> Optional[Dict[str, Any]]:
-        """Load a trained model"""
-        model_path = self.models_directory / f"{model_id}.pkl"
-        if not model_path.exists():
-            return None
-        
-        return joblib.load(model_path)
-    
-    
-    # Imitation Learning Methods
-    async def train_imitation_model(self, trackName: str, carName: str) -> Dict[str, Any]:
-        """
-        Train an imitation learning model from expert driving demonstrations
-        
-        Args:
-            unprocessed_telemetry_data: List of expert driver telemetry data (optional if fetch_from_backend=True)
-            learning_objectives: What to learn ('behavior', 'trajectory', 'both')
-            user_id: User identifier for tracking and filtering backend data
-            jwt_token: JWT token for backend authentication
-            fetch_from_backend: Whether to fetch data from backend instead of using provided data
-            
-        Returns:
-            Dictionary with imitation learning results
-        """
-        #retrieve all racing session in database
-        try:
-            sessions = await backend_service.get_all_racing_sessions(trackName, carName)
-        except Exception as e:
-            return {"error": str(e)}
-
-        each_session_telemetry_data = []
-  
-        for session in sessions.get("sessions", []):
-                each_session_telemetry_data.append(session.get("data", []))
-
-        if not each_session_telemetry_data:
-            raise ValueError("No telemetry data found")
-
-        # Flatten the list of lists into a single list of telemetry records
-        telemetry_data = [item for sublist in each_session_telemetry_data for item in sublist]
-
-        # Learn from expert demonstrations
-        results = self.imitation_learning.train_ai_model(telemetry_data)
-            
-        try:
-            #save the info to backend
-
-            ai_model_dto = {
-                "modelType": "imitation_learning",
-                "trackName": trackName,
-                "carName": carName,
-                "modelData": results,
-                "metadata": {
-                    "summary": results.get("summary", {}),
-                    "training_timestamp": datetime.now().isoformat()
-                },
-                "isActive": True
-            }
-            
-            await backend_service.save_ai_model(ai_model_dto)
-        except Exception as error:
-            pass
-        
-        return results
-        
-    async def get_imitation_learning_expert_guidance(self,
-                                current_telemetry: Dict[str, Any],
-                                trackName: str,
-                                carName: str,
-                                guidance_type: str = "both") -> Dict[str, Any]:
-        """
-        Get expert guidance for current driving situation using imitation learning
-        
-        Args:
-            current_telemetry: Current telemetry state
-            trackName: Track name for the model
-            carName: Car name for the model
-            guidance_type: Type of guidance ('behavior', 'actions', 'both')
-            
-        Returns:
-            Expert guidance and recommendations
-        """
-        
-        try:
-            # Get model from cache or fetch from backend using the separated function
-            deserialized_trajectory_models, metadata = await self._get_cached_model_or_fetch(
-                model_type="imitation_learning",
-                track_name=trackName,
-                car_name=carName,
-                model_subtype="complete_model_data",
-                deserializer_func=self.imitation_learning.deserialize_object_inside
-            )
-            
-            # Prepare current telemetry data
-            df = pd.DataFrame([current_telemetry])
-            processor = FeatureProcessor(df)
-            processed_df = processor.general_cleaning_for_analysis()
-        
-            # Get predictions from imitation model
-            predictions = self.imitation_learning.predict_expert_actions(
-                processed_df=processed_df,
-                model_data=deserialized_trajectory_models
-            )
-
-            # Format guidance based on requested type
-            guidance = {"success": True, "timestamp": datetime.now().isoformat()}
-            
-            if guidance_type in ['behavior', 'both'] and 'driving_behavior' in predictions:
-                behavior_pred = predictions['driving_behavior']
-                guidance['behavior_guidance'] = {
-                    "predicted_driving_style": behavior_pred['predicted_style'],
-                    "confidence": behavior_pred['confidence'],
-                    "alternative_styles": behavior_pred['style_probabilities']
-                }
-            
-            if guidance_type in ['actions', 'both'] and 'optimal_actions' in predictions:
-                optimal_actions = predictions['optimal_actions']
-                guidance['action_guidance'] = {
-                    "optimal_actions": optimal_actions,
-                    "action_recommendations": self.imitation_learning._create_detailed_point_comparison(
-                        processed_df, optimal_actions
-                    ),
-                    "performance_insights": self.imitation_learning._analyze_action_performance(
-                        processed_df, optimal_actions
-                    )
-                }
-                
-            return guidance
-            
-        except Exception as e:
-            print(f"[ERROR] Failed to get expert guidance: {str(e)}")
-            
-            return {
-                "success": False,
-                "error": str(e),
-                "timestamp": datetime.now().isoformat()
-            }
-
-    async def analyze_track_cornering(self, trackName: str) -> Dict[str, Any]:
-        try:
-            sessions = await backend_service.get_all_racing_sessions(trackName)
-        except Exception as e:
-            return {"error": str(e)}
-
-        each_session_telemetry_data = []
-  
-        for session in sessions.get("sessions", []):
-                each_session_telemetry_data.append(session.get("data", []))
-
-        if not each_session_telemetry_data:
-            raise ValueError("No telemetry data found")
-
-        # Flatten the list of lists into a single list of telemetry records
-        telemetry_data = [item for sublist in each_session_telemetry_data for item in sublist]
-        
-        # Convert to DataFrame for analysis
-        df = pd.DataFrame(telemetry_data)
-        
-        # Process telemetry data
-        feature_processor = FeatureProcessor(df)
-        processed_df = feature_processor.general_cleaning_for_analysis()
-        
-        # Create track cornering analyzer and filter top performance laps
-        track_analyzer = TrackCorneringAnalyzer()
-        filtered_df = track_analyzer.filter_top_performance_laps(processed_df)
-        
-        # Identify cornering phases
-        cornering_df = track_analyzer.identify_cornering_phases(filtered_df)
-        
-        # Get analysis summary
-        analysis_summary = track_analyzer.get_cornering_analysis_summary(cornering_df)
-        try:
-            #save the info to backend
-            ai_model_dto = {
-                "modelType": "track_corner_analysis",
-                "trackName": trackName,
-                "modelData": analysis_summary,
-                "metadata": {
-                },
-                "isActive": True
-            }
-            
-            await backend_service.save_ai_model(ai_model_dto)
-        except Exception as error:
-            pass
-        return analysis_summary
-    
-    
-    async def train_track_cornering_model(self, trackName: str) -> Dict[str, Any]:
-        """
-        Train a model to predict optimal cornering speeds based on telemetry data
-        
-        Args:
-            trackName: Track name for the model
-            carName: Car name for the model
-            
-        Returns:
-            Dictionary with cornering model training results
-        """
-        try:
-            # Load previously saved cornering analysis from backend
-            model_response = await backend_service.getCompleteActiveModelData(trackName, None, "track_corner_analysis")
-            
-            if not model_response or not model_response.get('success', False) or 'data' not in model_response:
-                raise ValueError("No cornering analysis data found for this track")
-            
-            analysis_data = model_response.get('data', {}).get('modelData', {})
-            if not analysis_data:
-                raise ValueError("Cornering analysis data is empty")
-            
-            #retrieve all racing session in database
-            try:
-                sessions = await backend_service.get_all_racing_sessions(trackName)
-            except Exception as e:
-                return {"error": str(e)}
-
-            each_session_telemetry_data = []
-  
-            for session in sessions.get("sessions", []):
-                each_session_telemetry_data.append(session.get("data", []))
-
-            if not each_session_telemetry_data:
-                raise ValueError("No telemetry data found")
-
-            # Flatten the list of lists into a single list of telemetry records
-            telemetry_data = [item for sublist in each_session_telemetry_data for item in sublist]
-            
-            service = CornerImitationLearningService()
-            serialized_model_results,results = service.train_corner_specific_model(telemetry_data, analysis_data)
-
-            # Save results to backend
-            try:
-                ai_model_dto = {
-                    "modelType": "track_corner_training",
-                    "trackName": trackName,
-                    "modelData": serialized_model_results,
-                    "metadata": {
-                        "training_timestamp": datetime.now().isoformat()
-                    },
-                    "isActive": True
-                }
-                await backend_service.save_ai_model(ai_model_dto)
-            except Exception as error:
-                print(f"[ERROR] Failed to save AI model: {error}")
-                pass
-            
-            return results
-        except Exception as e:
-            return {"error": str(e)}
-    
-
-    async def predict_optimal_cornering(self, trackName: str,corner_analysis_result: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Predict optimal cornering using trained cornering model
-        
-        Args:
-            trackName: Track name for the model
-            normalized_car_position: Current car position on track (0.0 to 1.0)
-        
-        Returns:
-            Dictionary with optimal cornering actions and guidance
-        """
-        try:
-            # Get model from cache or fetch from backend
-            model_data, metadata = await self._get_cached_model_or_fetch(
-                model_type="track_corner_training",
-                track_name=trackName,
-                model_subtype="complete_model_data"
-            )
-
-            if not model_data:
-                raise ValueError({"error": "No valid cornering model found for this track"})
-            
-            # Create CornerImitationLearningService instance
-            service = CornerImitationLearningService()
-
-            # Deserialize the model data using the service's deserialize method
-            deserialized_data = service.receive_serialized_model_data(model_data)
-            
-            # Reconstruct the trained models from the saved data
-            if 'corner_models' in deserialized_data:
-                # Get optimal actions for the current position
-                predictions = service.get_all_corner_predictions(corner_analysis_result)
-                simple_corner_guidance = service.get_simple_corner_guidance(corner_analysis_result)
-                return {"predictions": predictions, "simple_guidance": simple_corner_guidance}
-            else:
-                raise  RuntimeError({"error": "Invalid model data structure - missing corner_models"}) 
-                
-        except Exception as e:
-            raise ValueError({
-                "error": f"predict_optimal_cornering(), Failed to predict optimal cornering: {str(e)}",
-                "track_name": trackName,
-            })
-
-    async def predict_optimal_cornering_from_telemetry(self, trackName: str, current_telemetry: Dict[str, Any]):
-        """
-        Predict optimal cornering using current telemetry data
-        
-        Args:
-            trackName: Track name for the model
-            current_telemetry: Current telemetry data containing normalized_car_position
-        
-        Returns:
-            Dictionary with optimal cornering actions and guidance
-        """
-        # Extract normalized car position from telemetry
-        normalized_position = current_telemetry.get('Graphics_normalized_car_position')
-        
-        if normalized_position is None:
-            return {"error": "No normalized car position found in telemetry data"}
-        
-        return await self.predict_optimal_cornering(trackName, normalized_position)
-
-    # Corner Shape Unsupervised Learning Methods
-    async def learn_corner_shapes(self, trackName: str, 
-                                 clustering_params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """
-        Learn corner shapes for a specific track using unsupervised machine learning
-        
-        This method uses multiple clustering algorithms to automatically discover
-        different types of corners on a track based on their shape characteristics
-        extracted from racing telemetry data.
-        
-        Args:
-            trackName: Name of the track to analyze
-            clustering_params: Optional parameters for clustering algorithms
-                             e.g., {'n_clusters': 6, 'eps': 0.5, 'min_samples': 3}
-                             
-        Returns:
-            Dictionary with corner shape learning results including:
-            - Discovered corner types and their characteristics
-            - Clustering algorithm performance metrics
-            - Feature importance and analysis
-        """
-        try:
-            results = await self.corner_shape_learning.learn_corner_shapes(trackName, clustering_params)
-            
-            # Save results to backend if successful
-            if 'error' not in results:
-                try:
-                    # Add metadata for backend storage
-                    backend_results = {
-                        'model_type': 'corner_shape_unsupervised',
-                        'track_name': trackName,
-                        'car_name': None,  # Corner shapes are car-independent
-                        'results': results,
-                        'algorithm': results.get('clustering_results', {}).get('best_algorithm', 'kmeans'),
-                        'created_at': datetime.now().isoformat(),
-                        'feature_count': len(results.get('feature_names', [])),
-                        'corner_count': results.get('total_corners_found', 0)
-                    }
-                    
-                    await self.backend_service.save_ai_model(backend_results)
-                    results['saved_to_backend'] = True
-                    
-                except Exception as backend_error:
-                    print(f"[WARNING] Failed to save corner shape results to backend: {str(backend_error)}")
-                    results['saved_to_backend'] = False
-                    results['backend_error'] = str(backend_error)
-            
-            return results
-            
-        except Exception as e:
-            return {
-                "error": f"Failed to learn corner shapes for track {trackName}: {str(e)}",
-                "track_name": trackName
-            }
-    
-    async def predict_corner_shape_type(self, trackName: str, 
-                                       current_telemetry: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Predict the type/cluster of the current corner based on learned corner shapes
-        
-        Args:
-            trackName: Track name for the model
-            current_telemetry: Current corner telemetry data
-            
-        Returns:
-            Dictionary with corner type prediction and characteristics
-        """
-        try:
-            return await self.corner_shape_learning.predict_corner_shape(trackName, current_telemetry)
-        except Exception as e:
-            return {
-                "error": f"Failed to predict corner shape type: {str(e)}",
-                "track_name": trackName
-            }
-    
-    def get_corner_shape_analysis_summary(self, trackName: str) -> Dict[str, Any]:
-        """
-        Get a summary of corner shape analysis results for a track
-        
-        Args:
-            trackName: Track name
-            
-        Returns:
-            Dictionary with corner shape learning summary and statistics
-        """
-        try:
-            return self.corner_shape_learning.get_corner_shape_summary(trackName)
-        except Exception as e:
-            return {
-                "error": f"Failed to get corner shape summary for track {trackName}: {str(e)}",
-                "track_name": trackName
-            }
-    
-    def clear_corner_shape_cache(self, trackName: Optional[str] = None):
-        """
-        Clear corner shape learning cache
-        
-        Args:
-            trackName: Optional track name to clear specific cache, or None to clear all
-        """
-        self.corner_shape_learning.clear_cache(trackName)
-
-    # Corner Identification Unsupervised Learning Methods
-    async def learn_corner_characteristics(self, trackName: str, carName: Optional[str] = None) -> Dict[str, Any]:
-        """
-        Learn detailed corner characteristics for a track using unsupervised methods
-        
-        Args:
-            trackName: Track name for corner identification
-            carName: Optional car name filter
-            
-        Returns:
-            Dictionary with corner identification and feature extraction results
-        """
-        try:
-            results = await self.corner_identification.learn_track_corner_patterns(trackName, carName)
-            
-            # Save results to backend if successful
-            if results.get("success"):
-                model_data = {
-                    "modelType": "corner_identification",
-                    "trackName": trackName,
-                    "carName": carName or "all_cars",
-                    "modelData": results,
-                    "timestamp": datetime.now().isoformat()
-                }
-                
-                try:
-                    await self.backend_service.save_ai_model(
-                        AiModelDto(**model_data)
-                    )
-                    print(f"[INFO] Corner identification model saved to backend for {trackName}")
-                except Exception as save_error:
-                    print(f"[WARNING] Failed to save corner identification model to backend: {str(save_error)}")
-            
-            return results
-            
-        except Exception as e:
-            print(f"[ERROR] Failed to learn corner characteristics for {trackName}: {str(e)}")
-            return {
-                "success": False,
-                "error": str(e),
-                "corner_patterns": []
-            }
-    
-    async def enhance_telemetry_with_corner_features(self, 
-                                                    telemetry_data: List[Dict[str, Any]], 
-                                                    trackName: str,
-                                                    carName: Optional[str] = None) -> List[Dict[str, Any]]:
-        """
-        Enhance telemetry data with extracted corner features
-        
-        Args:
-            telemetry_data: List of telemetry records
-            trackName: Track name for corner pattern matching
-            carName: Optional car name
-            
-        Returns:
-            Enhanced telemetry data with corner identification features
-        """
-        try:
-            enhanced_telemetry = await self.corner_identification.extract_corner_features_for_telemetry(
-                telemetry_data, trackName, carName
-            )
-            
-            print(f"[INFO] Enhanced {len(enhanced_telemetry)} telemetry records with corner features")
-            return enhanced_telemetry
-            
-        except Exception as e:
-            print(f"[ERROR] Failed to enhance telemetry with corner features: {str(e)}")
-            return telemetry_data  # Return original data on failure
-    
-    def get_corner_identification_summary(self, trackName: str, carName: Optional[str] = None) -> Dict[str, Any]:
-        """
-        Get summary of corner identification results for a track
-        
-        Args:
-            trackName: Track name
-            carName: Optional car name
-            
-        Returns:
-            Dictionary with corner identification summary
-        """
-        return self.corner_identification.get_corner_identification_summary(trackName, carName)
-    
-    def clear_corner_identification_cache(self, trackName: Optional[str] = None, carName: Optional[str] = None):
-        """
-        Clear corner identification cache
-        
-        Args:
-            trackName: Optional track name to clear specific cache
-            carName: Optional car name to clear specific cache
-        """
-        self.corner_identification.clear_corner_cache(trackName, carName)
-
-    # Tire Grip Analysis Methods
-    async def train_tire_grip_model(self, trackName: str, carName: Optional[str] = None) -> Dict[str, Any]:
-        """
-        Train tire grip analysis models for a specific track/car combination
-        
-        Args:
-            trackName: Name of the track
-            carName: Name of the car (optional)
-            
-        Returns:
-            Training results and model performance metrics
-        """
-        return await self.tire_grip_analysis.train_tire_grip_model(trackName, carName)
-    
-    async def extract_tire_grip_features(self, 
-                                       telemetry_data: List[Dict[str, Any]], 
-                                       trackName: str,
-                                       carName: Optional[str] = None) -> List[Dict[str, Any]]:
-        """
-        Extract tire grip features from telemetry data using trained models
-        
-        Args:
-            telemetry_data: List of telemetry records
-            trackName: Track name for model selection
-            carName: Car name for model selection
-            
-        Returns:
-            Enhanced telemetry data with tire grip features
-        """
-        return await self.tire_grip_analysis.extract_tire_grip_features(telemetry_data, trackName, carName)
-    
-    def get_tire_grip_model_summary(self, trackName: str, carName: Optional[str] = None) -> Dict[str, Any]:
-        """
-        Get summary of trained tire grip models
-        
-        Args:
-            trackName: Track name
-            carName: Car name (optional)
-            
-        Returns:
-            Model summary information
-        """
-        return self.tire_grip_analysis.get_model_summary(trackName, carName)
-    
-    def clear_tire_grip_cache(self, trackName: Optional[str] = None, carName: Optional[str] = None):
-        """
-        Clear tire grip analysis model cache
-        
-        Args:
-            trackName: Optional track name to clear specific cache
-            carName: Optional car name to clear specific cache
-        """
-        self.tire_grip_analysis.clear_models_cache(trackName, carName)
-
     def clear_all_cache(self):
-        """Clear all cached models including corner shapes, corner identification, and tire grip analysis"""
+        """Clear all cached models including corner identification, and tire grip analysis"""
         self.model_cache.clear()
-        self.corner_shape_learning.clear_cache()
         self.corner_identification.clear_corner_cache()
         self.tire_grip_analysis.clear_models_cache()
-        print("[INFO] All cached models cleared (including corner shapes, corner identification, and tire grip analysis)")
+        print("[INFO] All cached models cleared (including corner identification, and tire grip analysis)")
     
+    async def _fetch_and_cache_model(self,
+                                    model_type: str,
+                                    track_name: Optional[str] = None,
+                                    car_name: Optional[str] = None,
+                                    model_subtype: str = "complete_model_data",
+                                    deserializer_func=None) -> Tuple[Any, Dict[str, Any]]:
+        """
+        Fetch model from backend and cache it
+        
+        Args:
+            model_type: Type of model ('imitation_learning', etc.)
+            track_name: Track name for the model (optional)
+            car_name: Car name for the model (optional)
+            model_subtype: Subtype identifier for the model
+            deserializer_func: Function to deserialize model data from backend
+            
+        Returns:
+            Tuple of (deserialized_model_data, metadata)
+        """
+        model_response = await self.backend_service.getCompleteActiveModelData(
+            track_name, car_name, model_type
+        )
+          
+        if "error" in model_response:
+            raise Exception(f"Backend error: {model_response['error']}")
+        
+        # Extract modelData from the correct location in response
+        model_data = None
+        if "data" in model_response and isinstance(model_response["data"], dict):
+            model_data = model_response["data"].get("modelData", {})
+        else:
+            model_data = model_response.get("modelData", {})
+        
+        if not model_data:
+            raise Exception("No model data found in response")
+
+        # Deserialize the model data using provided function or default
+        if deserializer_func:
+            deserialized_model_data = deserializer_func(model_data)
+        elif model_type == "imitation_learning":
+            imitation_learning = ImitateExpertLearningService()
+            deserialized_model_data = imitation_learning.deserialize_object_inside(model_data)
+        else:
+            # For other model types, you might need to add more deserializers
+            deserialized_model_data = model_data
+        
+        # Cache the deserialized model for future use
+        cache_metadata = {
+            "track_name": track_name,
+            "car_name": car_name,
+            "model_type": model_type,
+            "fetched_at": datetime.now().isoformat(),
+            "backend_model_id": model_response.get("id", "unknown")
+        }
+        
+        self.model_cache.put(
+            model_type=model_type,
+            track_name=track_name,
+            car_name=car_name,
+            data=deserialized_model_data,
+            metadata=cache_metadata,
+            model_subtype=model_subtype
+        )
+        
+        return deserialized_model_data, cache_metadata
+    
+    def _cleanup_fetch_lock(self, model_key: str, track_name: str, car_name: str):
+        """
+        Clean up fetch lock for a specific model key
+        
+        Args:
+            model_key: The model key used for locking
+            track_name: Track name for logging
+            car_name: Car name for logging
+        """
+        if model_key in self._model_fetch_locks:
+            try:
+                self._model_fetch_locks[model_key].set()
+                del self._model_fetch_locks[model_key]
+                print(f"[INFO] Released fetch lock for {track_name}/{car_name}")
+            except Exception as cleanup_error:
+                print(f"[WARNING] Error cleaning up fetch lock: {str(cleanup_error)}")
+    
+    def _emergency_cleanup_fetch_lock(self, model_key: str, track_name: str, car_name: str):
+        """
+        Emergency cleanup of fetch lock with additional safety checks
+        
+        Args:
+            model_key: The model key used for locking
+            track_name: Track name for logging
+            car_name: Car name for logging
+        """
+        if hasattr(self, '_model_fetch_locks') and model_key in self._model_fetch_locks:
+            try:
+                self._model_fetch_locks[model_key].set()  # Signal any waiting threads
+                del self._model_fetch_locks[model_key]
+                print(f"[INFO] Emergency cleanup of fetch lock for {track_name}/{car_name}")
+            except Exception as cleanup_error:
+                print(f"[WARNING] Error during emergency lock cleanup: {str(cleanup_error)}")
+    
+
     async def _get_cached_model_or_fetch(self,
                                         model_type: str,
                                         track_name: Optional[str] = None,
@@ -1143,105 +335,6 @@ class Full_dataset_TelemetryMLService:
             
             raise e
     
-    async def _fetch_and_cache_model(self,
-                                    model_type: str,
-                                    track_name: Optional[str] = None,
-                                    car_name: Optional[str] = None,
-                                    model_subtype: str = "complete_model_data",
-                                    deserializer_func=None) -> Tuple[Any, Dict[str, Any]]:
-        """
-        Fetch model from backend and cache it
-        
-        Args:
-            model_type: Type of model ('imitation_learning', etc.)
-            track_name: Track name for the model (optional)
-            car_name: Car name for the model (optional)
-            model_subtype: Subtype identifier for the model
-            deserializer_func: Function to deserialize model data from backend
-            
-        Returns:
-            Tuple of (deserialized_model_data, metadata)
-        """
-        model_response = await self.backend_service.getCompleteActiveModelData(
-            track_name, car_name, model_type
-        )
-          
-        if "error" in model_response:
-            raise Exception(f"Backend error: {model_response['error']}")
-        
-        # Extract modelData from the correct location in response
-        model_data = None
-        if "data" in model_response and isinstance(model_response["data"], dict):
-            model_data = model_response["data"].get("modelData", {})
-        else:
-            model_data = model_response.get("modelData", {})
-        
-        if not model_data:
-            raise Exception("No model data found in response")
-
-        # Deserialize the model data using provided function or default
-        if deserializer_func:
-            deserialized_model_data = deserializer_func(model_data)
-        elif model_type == "imitation_learning":
-            deserialized_model_data = self.imitation_learning.deserialize_object_inside(model_data)
-        else:
-            # For other model types, you might need to add more deserializers
-            deserialized_model_data = model_data
-        
-        # Cache the deserialized model for future use
-        cache_metadata = {
-            "track_name": track_name,
-            "car_name": car_name,
-            "model_type": model_type,
-            "fetched_at": datetime.now().isoformat(),
-            "backend_model_id": model_response.get("id", "unknown")
-        }
-        
-        self.model_cache.put(
-            model_type=model_type,
-            track_name=track_name,
-            car_name=car_name,
-            data=deserialized_model_data,
-            metadata=cache_metadata,
-            model_subtype=model_subtype
-        )
-        
-        return deserialized_model_data, cache_metadata
-    
-    def _cleanup_fetch_lock(self, model_key: str, track_name: str, car_name: str):
-        """
-        Clean up fetch lock for a specific model key
-        
-        Args:
-            model_key: The model key used for locking
-            track_name: Track name for logging
-            car_name: Car name for logging
-        """
-        if model_key in self._model_fetch_locks:
-            try:
-                self._model_fetch_locks[model_key].set()
-                del self._model_fetch_locks[model_key]
-                print(f"[INFO] Released fetch lock for {track_name}/{car_name}")
-            except Exception as cleanup_error:
-                print(f"[WARNING] Error cleaning up fetch lock: {str(cleanup_error)}")
-    
-    def _emergency_cleanup_fetch_lock(self, model_key: str, track_name: str, car_name: str):
-        """
-        Emergency cleanup of fetch lock with additional safety checks
-        
-        Args:
-            model_key: The model key used for locking
-            track_name: Track name for logging
-            car_name: Car name for logging
-        """
-        if hasattr(self, '_model_fetch_locks') and model_key in self._model_fetch_locks:
-            try:
-                self._model_fetch_locks[model_key].set()  # Signal any waiting threads
-                del self._model_fetch_locks[model_key]
-                print(f"[INFO] Emergency cleanup of fetch lock for {track_name}/{car_name}")
-            except Exception as cleanup_error:
-                print(f"[WARNING] Error during emergency lock cleanup: {str(cleanup_error)}")
-    
     def preload_models_for_session(self, 
                                    track_name: str, 
                                    car_name: str,
@@ -1284,18 +377,9 @@ class Full_dataset_TelemetryMLService:
                     # In a real scenario, you'd fetch from backend here
                     results["preloaded_models"].append(model_type)
                 elif model_type == "corner_shape_unsupervised":
-                    # Check if corner shape learning data exists for this track
-                    try:
-                        summary = self.corner_shape_learning.get_corner_shape_summary(track_name)
-                        if 'error' not in summary:
-                            print(f"[INFO] Corner shape analysis already available for {track_name}")
-                            results["preloaded_models"].append(model_type)
-                        else:
-                            print(f"[INFO] No corner shape analysis found for {track_name}")
-                            results["failed_models"].append(f"{model_type}: No analysis data found")
-                    except Exception as e:
-                        print(f"[WARNING] Failed to check corner shape data: {e}")
-                        results["failed_models"].append(f"{model_type}: {str(e)}")
+                    # Corner shape analysis not yet implemented
+                    print(f"[INFO] Corner shape analysis not yet implemented")
+                    results["failed_models"].append(f"{model_type}: Not yet implemented")
                 
             except Exception as e:
                 error_info = f"{model_type}: {str(e)}"
@@ -1310,6 +394,970 @@ class Full_dataset_TelemetryMLService:
               f"{results['total_preload_time']:.2f}s total")
         
         return results
+    def get_fetch_locks_status(self) -> Dict[str, Any]:
+        """
+        Get status of current fetch locks for debugging purposes
+        
+        Returns:
+            Dictionary with lock status information
+        """
+        return {
+            "active_locks": list(self._model_fetch_locks.keys()),
+            "lock_count": len(self._model_fetch_locks),
+            "timestamp": datetime.now().isoformat()
+        }
+    
+    async def clear_stuck_fetch_locks(self, max_age_minutes: int = 10) -> Dict[str, Any]:
+        """
+        Clear fetch locks that might be stuck (emergency cleanup)
+        
+        Args:
+            max_age_minutes: Age threshold for considering locks as stuck
+            
+        Returns:
+            Dictionary with cleanup results
+        """
+        cleared_locks = []
+        
+        try:
+            async with self._lock_creation_lock:
+                # Since we can't track lock creation time in this simple implementation,
+                # we'll just clear all locks as an emergency measure
+                for model_key in list(self._model_fetch_locks.keys()):
+                    try:
+                        self._model_fetch_locks[model_key].set()
+                        del self._model_fetch_locks[model_key]
+                        cleared_locks.append(model_key)
+                    except Exception as e:
+                        pass
+            
+            return {
+                "success": True,
+                "cleared_locks": cleared_locks,
+                "cleared_count": len(cleared_locks),
+                "timestamp": datetime.now().isoformat()
+            }
+            
+        except Exception as e:
+            return {
+                "success": False,
+                "error": str(e),
+                "cleared_locks": cleared_locks,
+                "cleared_count": len(cleared_locks),
+                "timestamp": datetime.now().isoformat()
+            }
+    
+    def _generate_training_recommendations(self, metrics: Dict[str, Any], 
+                                         algorithm_name: str, task_type: str) -> List[str]:
+        """Generate recommendations based on training metrics and algorithm"""
+        recommendations = []
+        
+        # Performance-based recommendations
+        if task_type == "regression":
+            mae = metrics.get("mae", float('inf'))
+            rmse = metrics.get("mse", float('inf')) ** 0.5 if metrics.get("mse") else float('inf')
+            r2 = metrics.get("r2", 0)
+            
+            if r2 < 0.6:
+                recommendations.append("Consider feature engineering or trying a different algorithm")
+            if mae > 5.0:
+                recommendations.append("High prediction error - check data quality and feature relevance")
+            if r2 > 0.8:
+                recommendations.append("Excellent model performance - monitor for overfitting")
+                
+        else:  # classification
+            accuracy = metrics.get("accuracy", 0)
+            f1 = metrics.get("f1", 0)
+            
+            if accuracy < 0.7:
+                recommendations.append("Low classification accuracy - consider feature selection or different algorithm")
+            if f1 < 0.6:
+                recommendations.append("Poor F1 score - check class balance and feature quality")
+            if accuracy > 0.9:
+                recommendations.append("Excellent classification performance - validate on new data")
+        
+        # Algorithm-specific recommendations
+        if algorithm_name == "linear_regression" and metrics.get("r2", 0) < 0.6:
+            recommendations.append("Linear model may not capture complex patterns - try tree-based algorithms")
+        elif algorithm_name == "random_forest":
+            recommendations.append("Random Forest provides good baseline - tune hyperparameters for better performance")
+        elif algorithm_name == "gradient_boosting":
+            recommendations.append("Gradient Boosting can achieve high accuracy - monitor training time and overfitting")
+        elif algorithm_name == "ridge":
+            recommendations.append("Ridge regression prevents overfitting - good for many features")
+        
+        if not recommendations:
+            recommendations.append("Model training completed successfully - monitor performance over time")
+        
+        return recommendations
+
+    
+    def _save_model(self, 
+                   model, 
+                   scaler, 
+                   model_id: str, 
+                   feature_names: List[str], 
+                   model_type: str,
+                   label_encoder=None):
+        """Save trained model and associated components"""
+        model_info = {
+            'model_id': model_id,
+            'model': model,
+            'scaler': scaler,
+            'label_encoder': label_encoder,
+            'feature_names': feature_names,
+            'model_name': model.__class__.__name__,
+            'model_type': model_type,
+            'created_at': datetime.now().isoformat()
+        }
+        
+        model_path = self.models_directory / f"{model_id}.pkl"
+        joblib.dump(model_info, model_path)
+    
+    def _load_model(self, model_id: str) -> Optional[Dict[str, Any]]:
+        """Load a trained model"""
+        model_path = self.models_directory / f"{model_id}.pkl"
+        if not model_path.exists():
+            return None
+        
+        return joblib.load(model_path)
+    
+    
+    # Imitation Learning Methods
+    async def train_imitation_model(self, trackName: str, carName: str) -> Dict[str, Any]:
+        """
+        Train an imitation learning model from expert driving demonstrations
+        
+        Args:
+            unprocessed_telemetry_data: List of expert driver telemetry data (optional if fetch_from_backend=True)
+            learning_objectives: What to learn ('behavior', 'trajectory', 'both')
+            user_id: User identifier for tracking and filtering backend data
+            jwt_token: JWT token for backend authentication
+            fetch_from_backend: Whether to fetch data from backend instead of using provided data
+            
+        Returns:
+            Dictionary with imitation learning results
+        """
+        #retrieve all racing session in database
+        try:
+            sessions = await backend_service.get_all_racing_sessions(trackName, carName)
+        except Exception as e:
+            return {"error": str(e)}
+
+        each_session_telemetry_data = []
+  
+        for session in sessions.get("sessions", []):
+                each_session_telemetry_data.append(session.get("data", []))
+
+        if not each_session_telemetry_data:
+            raise ValueError("No telemetry data found")
+
+        # Flatten the list of lists into a single list of telemetry records
+        telemetry_data = [item for sublist in each_session_telemetry_data for item in sublist]
+
+        # Learn from expert demonstrations
+
+        imitation_learning = ImitateExpertLearningService()
+        results = imitation_learning.train_ai_model(telemetry_data)
+            
+        try:
+            #save the info to backend
+
+            ai_model_dto = {
+                "modelType": "imitation_learning",
+                "trackName": trackName,
+                "carName": carName,
+                "modelData": results,
+                "metadata": {
+                    "summary": results.get("summary", {}),
+                    "training_timestamp": datetime.now().isoformat()
+                },
+                "isActive": True
+            }
+            
+            await backend_service.save_ai_model(ai_model_dto)
+        except Exception as error:
+            pass
+        
+        return results
+
+    # Corner Shape Unsupervised Learning Methods
+    async def learn_corner_shapes(self, trackName: str, 
+                                 clustering_params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """
+        Learn corner shapes for a specific track using unsupervised machine learning
+        
+        This method uses multiple clustering algorithms to automatically discover
+        different types of corners on a track based on their shape characteristics
+        extracted from racing telemetry data.
+        
+        Args:
+            trackName: Name of the track to analyze
+            clustering_params: Optional parameters for clustering algorithms
+                             e.g., {'n_clusters': 6, 'eps': 0.5, 'min_samples': 3}
+                             
+        Returns:
+            Dictionary with corner shape learning results including:
+            - Discovered corner types and their characteristics
+            - Clustering algorithm performance metrics
+            - Feature importance and analysis
+        """
+        try:
+            # Corner shape learning is not yet implemented
+            results = {
+                "error": f"Corner shape learning not yet implemented for track {trackName}",
+                "track_name": trackName,
+                "implemented": False
+            }
+            
+            return results
+            
+        except Exception as e:
+            return {
+                "error": f"Failed to learn corner shapes for track {trackName}: {str(e)}",
+                "track_name": trackName
+            }
+    
+    # Corner Identification Unsupervised Learning Methods
+    async def learn_corner_characteristics(self, trackName: str, carName: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Learn detailed corner characteristics for a track using unsupervised methods
+        
+        Args:
+            trackName: Track name for corner identification
+            carName: Optional car name filter
+            
+        Returns:
+            Dictionary with corner identification and feature extraction results
+        """
+        try:
+            results = await self.corner_identification.learn_track_corner_patterns(trackName, carName)
+            
+            # Save results to backend if successful
+            if results.get("success"):
+                model_data = {
+                    "modelType": "corner_identification",
+                    "trackName": trackName,
+                    "carName": carName or "all_cars",
+                    "modelData": results,
+                    "timestamp": datetime.now().isoformat()
+                }
+                
+                try:
+                    await self.backend_service.save_ai_model(
+                        AiModelDto(**model_data)
+                    )
+                    print(f"[INFO] Corner identification model saved to backend for {trackName}")
+                except Exception as save_error:
+                    print(f"[WARNING] Failed to save corner identification model to backend: {str(save_error)}")
+            
+            return results
+            
+        except Exception as e:
+            print(f"[ERROR] Failed to learn corner characteristics for {trackName}: {str(e)}")
+            return {
+                "success": False,
+                "error": str(e),
+                "corner_patterns": []
+            }
+    
+    async def extract_corner_features_for_telemetry(self, 
+                                                    telemetry_data: List[Dict[str, Any]], 
+                                                    trackName: str,
+                                                    carName: Optional[str] = None) -> List[Dict[str, Any]]:
+        """
+        Enhance telemetry data with extracted corner features
+        
+        Args:
+            telemetry_data: List of telemetry records
+            trackName: Track name for corner pattern matching
+            carName: Optional car name
+            
+        Returns:
+            Enhanced telemetry data with corner identification features
+        """
+        try:
+            enhanced_telemetry = await self.corner_identification.extract_corner_features_for_telemetry(
+                telemetry_data, trackName, carName
+            )
+            
+            print(f"[INFO] Enhanced {len(enhanced_telemetry)} telemetry records with corner features")
+            return enhanced_telemetry
+            
+        except Exception as e:
+            print(f"[ERROR] Failed to enhance telemetry with corner features: {str(e)}")
+            return telemetry_data  # Return original data on failure
+    
+
+    # Tire Grip Analysis Methods
+    async def train_tire_grip_model(self, trackName: str, carName: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Train tire grip analysis models for a specific track/car combination
+        
+        Args:
+            trackName: Name of the track
+            carName: Name of the car (optional)
+            
+        Returns:
+            Training results and model performance metrics
+        """
+        return await self.tire_grip_analysis.train_tire_grip_model(trackName, carName)
+    
+    async def extract_tire_grip_features(self, 
+                                       telemetry_data: List[Dict[str, Any]], 
+                                       trackName: str,
+                                       carName: Optional[str] = None) -> List[Dict[str, Any]]:
+        """
+        Extract tire grip features from telemetry data using trained models
+        
+        Args:
+            telemetry_data: List of telemetry records
+            trackName: Track name for model selection
+            carName: Car name for model selection
+            
+        Returns:
+            Enhanced telemetry data with tire grip features
+        """
+        return await self.tire_grip_analysis.extract_tire_grip_features(telemetry_data, trackName, carName)
+    
+
+    async def transformerLearning(self, trackName: str):
+        try:
+            sessions = await backend_service.get_all_racing_sessions(trackName)
+        except Exception as e:
+            return {"error": str(e)}
+
+        each_session_telemetry_data = []
+  
+        for session in sessions.get("sessions", []):
+                each_session_telemetry_data.append(session.get("data", []))
+
+        if not each_session_telemetry_data:
+            raise ValueError("No telemetry data found")
+        
+        # make sure every ai model is using the same data for training
+        # Convert to DataFrame
+        telemetry_df = pd.DataFrame(each_session_telemetry_data)
+        feature_processor = FeatureProcessor(telemetry_df)
+        # Cleaned data
+        processed_df = feature_processor.general_cleaning_for_analysis()
+        
+        processed_df,laps = feature_processor._filter_top_performance_laps(processed_df,1)
+
+        if processed_df.empty:
+            raise ValueError("No valid telemetry data available after filtering for training.")
+        
+        # Filter top 1% laps as expert demonstrations
+        top_laps = laps[:int(len(laps) * 0.01)]
+        # get rest of laps
+        rest_laps = laps[int(len(laps) * 0.01):]
+
+        # Flatten the list of lists into a single list of telemetry records
+        top_laps_telemetry_data = [item for sublist in top_laps for item in sublist]
+
+        # Learn from expert demonstrations
+        imitation_learning = ImitateExpertLearningService()
+        imitation_learning.train_ai_model(top_laps_telemetry_data)
+        
+        #enrich data
+        enriched_contextual_data = await self.enriched_contextual_data(rest_laps)
+
+        #process enriched data, Generate training pairs with performance sections
+        comparison_results = imitation_learning.compare_telemetry_with_expert(enriched_contextual_data, 5, 5)
+        training_and_expert_action = comparison_results.get('transformer_training_pairs', [])
+        
+        # train transformer model
+        transformer_results = await self._train_expert_action_transformer(
+            training_and_expert_action=training_and_expert_action,
+            trackName=trackName
+        )
+        
+        return {
+            "success": True,
+            "transformer_training": transformer_results,
+            "expert_imitation_trained": True,
+            "contextual_data_enriched": len(enriched_contextual_data),
+            "training_pairs_generated": len(training_and_expert_action),
+            "comparison_results": {
+                "total_data_points": comparison_results.get('total_data_points', 0),
+                "overall_score": comparison_results.get('overall_score', 0.0),
+                "performance_sections_count": len(comparison_results.get('performance_sections', []))
+            },
+            "track_name": trackName
+        }
+
+    async def _train_expert_action_transformer(self, 
+                                             training_and_expert_action: List[Dict[str, Any]],
+                                             trackName: str) -> Dict[str, Any]:
+        """
+        Train the transformer model to predict expert actions from current telemetry
+        
+        Args:
+            training_and_expert_action: List of training pairs with telemetry sections and expert actions
+            trackName: Track name for model identification
+            
+        Returns:
+            Training results and model performance metrics
+        """
+        try:
+            # Check if PyTorch is available
+            if not TORCH_AVAILABLE:
+                return {
+                    "success": False,
+                    "error": "PyTorch is not available - please install torch to use transformer functionality"
+                }
+            
+            # Import the transformer model (inside try block to handle import errors gracefully)
+            from ..models.transformer_model import (
+                ExpertActionTransformer, 
+                ExpertActionTrainer,
+                TelemetryActionDataset,
+                create_expert_action_transformer
+            )
+            
+            print(f"[INFO] Starting transformer training for {trackName} with {len(training_and_expert_action)} training pairs")
+            
+            if not training_and_expert_action:
+                return {
+                    "success": False,
+                    "error": "No training pairs available for transformer training"
+                }
+            
+            # Extract telemetry and expert action data from training pairs
+            telemetry_data = []
+            expert_actions = []
+            
+            for pair in training_and_expert_action:
+                # Extract telemetry section (rising/peak/falling performance sections)
+                telemetry_section = pair.get("telemetry_section", [])
+                # Extract corresponding expert actions
+                expert_action_section = pair.get("expert_actions", [])
+                
+                if telemetry_section and expert_action_section:
+                    telemetry_data.extend(telemetry_section)
+                    
+                    # Process expert actions to extract action values
+                    for expert_action in expert_action_section:
+                        if isinstance(expert_action, dict):
+                            # Extract optimal actions if available
+                            optimal_actions = expert_action.get('optimal_actions', {})
+                            
+                            # Create action dictionary with steering, throttle, brake
+                            action_dict = {
+                                'Physics_steer_angle': optimal_actions.get('optimal_steering', 0.0),
+                                'Physics_gas': optimal_actions.get('optimal_throttle', 0.0),
+                                'Physics_brake': optimal_actions.get('optimal_brake', 0.0)
+                            }
+                            expert_actions.append(action_dict)
+                        else:
+                            # If expert_action is already in the right format
+                            expert_actions.append(expert_action)
+            
+            if not telemetry_data or not expert_actions:
+                return {
+                    "success": False,
+                    "error": "No valid telemetry-action pairs found in training data"
+                }
+            
+            print(f"[INFO] Extracted {len(telemetry_data)} telemetry records and {len(expert_actions)} expert actions")
+            
+            # Determine input feature count from telemetry data
+            if isinstance(telemetry_data[0], dict):
+                input_features = len(telemetry_data[0])
+            else:
+                # Fallback to a reasonable number if structure is different
+                input_features = 32
+            
+            # Create transformer model and trainer
+            model, trainer = create_expert_action_transformer(
+                telemetry_features=input_features,
+                action_features=3,  # steering, throttle, brake
+                d_model=256,
+                nhead=8,
+                num_encoder_layers=6,
+                num_decoder_layers=6,
+                dim_feedforward=1024,
+                dropout=0.1,
+                max_sequence_length=100
+            )
+            
+            print(f"[INFO] Created transformer model with {sum(p.numel() for p in model.parameters()):,} parameters")
+            
+            # Create dataset and split into train/validation
+            dataset = TelemetryActionDataset(
+                telemetry_data=telemetry_data,
+                expert_actions=expert_actions,
+                sequence_length=50,
+                prediction_horizon=20
+            )
+            
+            print(f"[INFO] Created dataset with {len(dataset)} sequences")
+            
+            if len(dataset) == 0:
+                return {
+                    "success": False,
+                    "error": "Dataset creation resulted in 0 sequences - check data compatibility"
+                }
+            
+            # Split into train/validation sets
+            train_size = int(0.8 * len(dataset))
+            val_size = len(dataset) - train_size
+            
+            train_dataset, val_dataset = torch.utils.data.random_split(
+                dataset, [train_size, val_size]
+            )
+            
+            # Create data loaders
+            batch_size = min(16, len(train_dataset))  # Adjust batch size based on data availability
+            
+            train_dataloader = DataLoader(
+                train_dataset, 
+                batch_size=batch_size, 
+                shuffle=True,
+                drop_last=True if len(train_dataset) > batch_size else False
+            )
+            
+            val_dataloader = None
+            if len(val_dataset) > 0:
+                val_batch_size = min(8, len(val_dataset))
+                val_dataloader = DataLoader(
+                    val_dataset, 
+                    batch_size=val_batch_size, 
+                    shuffle=False,
+                    drop_last=False
+                )
+            
+            print(f"[INFO] Created data loaders: train_size={len(train_dataset)}, val_size={len(val_dataset)}")
+            
+            # Train the model
+            model_save_path = str(self.models_directory / f"transformer_{trackName.replace(' ', '_')}.pth")
+            
+            training_results = trainer.train(
+                train_dataloader=train_dataloader,
+                val_dataloader=val_dataloader,
+                num_epochs=50,  # Adjust based on data size
+                patience=10,
+                save_path=model_save_path
+            )
+            
+            print(f"[INFO] Transformer training completed for {trackName}")
+            
+            # Save model metadata to backend
+            try:
+                transformer_model_data = {
+                    "model_path": model_save_path,
+                    "input_features": input_features,
+                    "training_results": training_results,
+                    "model_parameters": {
+                        "d_model": 256,
+                        "nhead": 8,
+                        "num_encoder_layers": 6,
+                        "num_decoder_layers": 6,
+                        "sequence_length": 50,
+                        "prediction_horizon": 20
+                    },
+                    "scaler_data": dataset.scaler.__dict__ if hasattr(dataset, 'scaler') else None
+                }
+                
+                ai_model_dto = {
+                    "modelType": "expert_action_transformer",
+                    "trackName": trackName,
+                    "carName": None,  # Track-specific model
+                    "modelData": transformer_model_data,
+                    "metadata": {
+                        "training_pairs": len(training_and_expert_action),
+                        "dataset_sequences": len(dataset),
+                        "training_results": training_results,
+                        "training_timestamp": datetime.now().isoformat()
+                    },
+                    "isActive": True
+                }
+                
+                await backend_service.save_ai_model(ai_model_dto)
+                print(f"[INFO] Saved transformer model data to backend for track: {trackName}")
+                
+            except Exception as backend_error:
+                print(f"[WARNING] Failed to save transformer model to backend: {str(backend_error)}")
+            
+            return {
+                "success": True,
+                "model_path": model_save_path,
+                "training_results": training_results,
+                "dataset_info": {
+                    "total_sequences": len(dataset),
+                    "train_sequences": len(train_dataset),
+                    "val_sequences": len(val_dataset),
+                    "input_features": input_features
+                },
+                "model_info": {
+                    "parameters": sum(p.numel() for p in model.parameters()),
+                    "model_size_mb": sum(p.numel() * p.element_size() for p in model.parameters()) / (1024 * 1024)
+                }
+            }
+            
+        except ImportError as import_error:
+            return {
+                "success": False,
+                "error": f"Failed to import transformer dependencies: {str(import_error)}. Please install PyTorch.",
+                "track_name": trackName
+            }
+        except Exception as e:
+            print(f"[ERROR] Failed to train transformer model for {trackName}: {str(e)}")
+            return {
+                "success": False,
+                "error": str(e),
+                "track_name": trackName
+            }
+
+    async def predict_expert_actions(self, 
+                                   current_telemetry: List[Dict[str, Any]],
+                                   trackName: str,
+                                   sequence_length: int = 20,
+                                   temperature: float = 1.0) -> Dict[str, Any]:
+        """
+        Predict expert action sequence from current telemetry using trained transformer
+        
+        Args:
+            current_telemetry: Current telemetry data
+            trackName: Track name for model selection
+            sequence_length: Number of future actions to predict
+            temperature: Sampling temperature (1.0 = normal, lower = more conservative)
+            
+        Returns:
+            Predicted expert actions and confidence scores
+        """
+        try:
+            # Check if PyTorch is available
+            if not TORCH_AVAILABLE:
+                return {
+                    "success": False,
+                    "error": "PyTorch is not available - cannot perform transformer predictions"
+                }
+            
+            # Load the trained model from backend
+            try:
+                model_response = await self.backend_service.getCompleteActiveModelData(
+                    trackName, None, "expert_action_transformer"
+                )
+                
+                if "error" in model_response:
+                    return {
+                        "success": False,
+                        "error": f"No trained transformer model found for track {trackName}"
+                    }
+                
+                model_data = model_response.get("data", {}).get("modelData", {})
+                if not model_data:
+                    return {
+                        "success": False,
+                        "error": f"No model data found for track {trackName}"
+                    }
+                
+            except Exception as backend_error:
+                return {
+                    "success": False,
+                    "error": f"Failed to load model from backend: {str(backend_error)}"
+                }
+            
+            # Import transformer model
+            from ..models.transformer_model import (
+                ExpertActionTransformer, 
+                create_expert_action_transformer
+            )
+            
+            # Extract model parameters
+            model_params = model_data.get("model_parameters", {})
+            input_features = model_data.get("input_features", 32)
+            model_path = model_data.get("model_path", "")
+            
+            # Create model with same architecture
+            model, trainer = create_expert_action_transformer(
+                telemetry_features=input_features,
+                action_features=3,
+                d_model=model_params.get("d_model", 256),
+                nhead=model_params.get("nhead", 8),
+                num_encoder_layers=model_params.get("num_encoder_layers", 6),
+                num_decoder_layers=model_params.get("num_decoder_layers", 6),
+                max_sequence_length=model_params.get("sequence_length", 50)
+            )
+            
+            # Load model weights if available
+            if model_path and os.path.exists(model_path):
+                trainer.load_model(model_path)
+                print(f"[INFO] Loaded transformer model from {model_path}")
+            else:
+                print("[WARNING] Model weights not found - using untrained model")
+            
+            # Prepare input telemetry data
+            if not current_telemetry:
+                return {
+                    "success": False,
+                    "error": "No telemetry data provided for prediction"
+                }
+            
+            # Convert telemetry to tensor format
+            telemetry_df = pd.DataFrame(current_telemetry)
+            
+            # Extract features (similar to training)
+            feature_columns = [
+                'Physics_speed_kmh', 'Physics_gear', 'Physics_rpm', 'Physics_brake',
+                'Physics_gas', 'Physics_steer_angle', 'Physics_slip_angle_front_left',
+                'Physics_slip_angle_front_right', 'Physics_g_force_x', 'Physics_g_force_y',
+                'Physics_g_force_z', 'Physics_tyre_core_temp_front_left',
+                'Physics_tyre_core_temp_front_right', 'Physics_brake_temp_front_left',
+                'Physics_brake_temp_front_right', 'Graphics_delta_lap_time'
+            ]
+            
+            available_features = [col for col in feature_columns if col in telemetry_df.columns]
+            if not available_features:
+                available_features = telemetry_df.select_dtypes(include=[np.number]).columns.tolist()
+            
+            if not available_features:
+                return {
+                    "success": False,
+                    "error": "No numeric features found in telemetry data"
+                }
+            
+            features = telemetry_df[available_features].fillna(0).values
+            
+            # Apply scaling if scaler data is available
+            scaler_data = model_data.get("scaler_data")
+            if scaler_data:
+                try:
+                    scaler = StandardScaler()
+                    # Restore scaler state
+                    scaler.mean_ = np.array(scaler_data.get("mean_", [0] * features.shape[1]))
+                    scaler.scale_ = np.array(scaler_data.get("scale_", [1] * features.shape[1]))
+                    scaler.var_ = np.array(scaler_data.get("var_", [1] * features.shape[1]))
+                    scaler.n_samples_seen_ = scaler_data.get("n_samples_seen_", 1)
+                    
+                    features = scaler.transform(features)
+                except Exception as scaling_error:
+                    print(f"[WARNING] Failed to apply scaling: {scaling_error}")
+            
+            # Convert to PyTorch tensor
+            telemetry_tensor = torch.FloatTensor(features).unsqueeze(1)  # [seq_len, batch_size=1, features]
+            
+            # Predict expert actions
+            predicted_actions, performance_scores = model.predict_expert_sequence(
+                telemetry_tensor, sequence_length, temperature
+            )
+            
+            # Convert predictions back to numpy/list format
+            actions_numpy = predicted_actions.squeeze(1).numpy()  # [seq_len, action_features]
+            performance_numpy = performance_scores.squeeze().numpy()  # [seq_len]
+            
+            # Format results
+            predicted_sequence = []
+            for i in range(len(actions_numpy)):
+                action_dict = {
+                    "timestep": i + 1,
+                    "steering_angle": float(actions_numpy[i, 0]),
+                    "throttle": float(actions_numpy[i, 1]) if len(actions_numpy[i]) > 1 else 0.0,
+                    "brake": float(actions_numpy[i, 2]) if len(actions_numpy[i]) > 2 else 0.0,
+                    "performance_score": float(performance_numpy[i]) if len(performance_numpy) > i else 0.0
+                }
+                predicted_sequence.append(action_dict)
+            
+            return {
+                "success": True,
+                "track_name": trackName,
+                "predicted_actions": predicted_sequence,
+                "prediction_info": {
+                    "sequence_length": sequence_length,
+                    "temperature": temperature,
+                    "input_features": len(available_features),
+                    "input_timesteps": len(current_telemetry)
+                },
+                "model_info": {
+                    "model_parameters": model_params,
+                    "input_features": input_features
+                }
+            }
+            
+        except ImportError as import_error:
+            return {
+                "success": False,
+                "error": f"Failed to import transformer dependencies: {str(import_error)}"
+            }
+        except Exception as e:
+            print(f"[ERROR] Failed to predict expert actions for {trackName}: {str(e)}")
+            return {
+                "success": False,
+                "error": str(e),
+                "track_name": trackName
+            }
+
+    async def enriched_contextual_data(self, laps: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Enrich laps data with contextual features using trained models
+        
+        Args:
+            laps: List of lap telemetry data dictionaries
+            
+        Returns:
+            Enriched telemetry data with corner identification and tire grip features
+        """
+        print(f"[INFO] Starting contextual data enrichment for {len(laps)} laps")
+        
+        if not laps:
+            print("[WARNING] No laps data provided for enrichment")
+            return []
+        
+        try:
+            # Split laps for training and feature extraction (70% training, 30% extraction)
+            split_index = int(len(laps) * 0.7)
+            training_laps = laps[:split_index]
+            extraction_laps = laps[split_index:]
+            
+            print(f"[INFO] Split data: {len(training_laps)} laps for training, {len(extraction_laps)} laps for extraction")
+            
+            # Flatten training data for model training
+            training_telemetry = []
+            for lap_data in training_laps:
+                if isinstance(lap_data, dict) and 'data' in lap_data:
+                    training_telemetry.extend(lap_data['data'])
+                elif isinstance(lap_data, list):
+                    training_telemetry.extend(lap_data)
+                else:
+                    training_telemetry.append(lap_data)
+            
+            # Extract track and car information from first lap
+            track_name = "unknown_track"
+            car_name = None
+            
+            if training_telemetry and len(training_telemetry) > 0:
+                first_record = training_telemetry[0]
+                if isinstance(first_record, dict):
+                    track_name = first_record.get('track', first_record.get('trackName', 'unknown_track'))
+                    car_name = first_record.get('car', first_record.get('carName'))
+            
+            print(f"[INFO] Detected track: {track_name}, car: {car_name}")
+            
+            # Train corner identification model using training data
+            print("[INFO] Training corner identification model...")
+            try:
+                corner_results = await self.corner_identification.learn_track_corner_patterns(
+                    training_telemetry
+                )
+                if corner_results.get("success"):
+                    print(f"[INFO] Corner identification training successful: {corner_results.get('total_corners', 0)} corners identified")
+                else:
+                    print(f"[WARNING] Corner identification training failed: {corner_results.get('error', 'Unknown error')}")
+            except Exception as e:
+                print(f"[ERROR] Corner identification training failed: {str(e)}")
+                corner_results = {"success": False, "error": str(e)}
+            
+            # Train tire grip analysis model using training data
+            print("[INFO] Training tire grip analysis model...")
+            try:
+                tire_grip_results = await self.tire_grip_analysis.train_tire_grip_model(training_telemetry)
+                if tire_grip_results.get("success"):
+                    print(f"[INFO] Tire grip model training successful: {tire_grip_results.get('models_trained', 0)} models trained")
+                else:
+                    print(f"[WARNING] Tire grip model training failed: {tire_grip_results.get('error', 'Unknown error')}")
+            except Exception as e:
+                print(f"[ERROR] Tire grip analysis training failed: {str(e)}")
+                tire_grip_results = {"success": False, "error": str(e)}
+            
+            # Now extract features for all telemetry data (both training and extraction)
+            enriched_telemetry_data = []
+            total_laps = len(laps)
+            
+            for lap_idx, lap_data in enumerate(laps):
+                print(f"[INFO] Processing lap {lap_idx + 1}/{total_laps} for feature extraction...")
+                
+                try:
+                    # Extract telemetry records from lap
+                    if isinstance(lap_data, dict) and 'data' in lap_data:
+                        telemetry_records = lap_data['data']
+                        lap_metadata = {k: v for k, v in lap_data.items() if k != 'data'}
+                    elif isinstance(lap_data, list):
+                        telemetry_records = lap_data
+                        lap_metadata = {}
+                    else:
+                        telemetry_records = [lap_data]
+                        lap_metadata = {}
+                    
+                    if not telemetry_records:
+                        continue
+                    
+                    # Extract corner features for this lap's telemetry
+                    corner_enhanced_telemetry = telemetry_records
+                    if corner_results.get("success"):
+                        try:
+                            corner_enhanced_telemetry = await self.corner_identification.extract_corner_features_for_telemetry(
+                                telemetry_records
+                            )
+                            print(f"[INFO] Added corner features to {len(corner_enhanced_telemetry)} records")
+                        except Exception as e:
+                            print(f"[WARNING] Failed to extract corner features for lap {lap_idx}: {str(e)}")
+                            corner_enhanced_telemetry = telemetry_records
+                    
+                    # Extract tire grip features for this lap's telemetry
+                    fully_enhanced_telemetry = corner_enhanced_telemetry
+                    if tire_grip_results.get("success"):
+                        try:
+                            fully_enhanced_telemetry = await self.tire_grip_analysis.extract_tire_grip_features(
+                                corner_enhanced_telemetry
+                            )
+                            print(f"[INFO] Added tire grip features to {len(fully_enhanced_telemetry)} records")
+                        except Exception as e:
+                            print(f"[WARNING] Failed to extract tire grip features for lap {lap_idx}: {str(e)}")
+                            fully_enhanced_telemetry = corner_enhanced_telemetry
+                    
+                    # Reconstruct lap data with enhanced telemetry
+                    enriched_lap = {
+                        **lap_metadata,
+                        'data': fully_enhanced_telemetry,
+                        'enrichment_info': {
+                            'corner_features_added': corner_results.get("success", False),
+                            'tire_grip_features_added': tire_grip_results.get("success", False),
+                            'original_records_count': len(telemetry_records),
+                            'enriched_records_count': len(fully_enhanced_telemetry),
+                            'enrichment_timestamp': datetime.now().isoformat()
+                        }
+                    }
+                    
+                    enriched_telemetry_data.append(enriched_lap)
+                    
+                except Exception as e:
+                    print(f"[ERROR] Failed to process lap {lap_idx}: {str(e)}")
+                    # Add original lap data on failure
+                    enriched_telemetry_data.append(lap_data)
+            
+            print(f"[INFO] Contextual data enrichment completed: {len(enriched_telemetry_data)} laps processed")
+            
+            # Calculate enrichment statistics
+            total_original_records = sum(
+                len(lap.get('data', [])) if isinstance(lap.get('data'), list) else 1 
+                for lap in laps
+            )
+            total_enriched_records = sum(
+                len(lap.get('data', [])) if isinstance(lap.get('data'), list) else 1 
+                for lap in enriched_telemetry_data
+            )
+            
+            enrichment_summary = {
+                'total_laps_processed': len(enriched_telemetry_data),
+                'total_original_records': total_original_records,
+                'total_enriched_records': total_enriched_records,
+                'corner_identification_success': corner_results.get("success", False),
+                'tire_grip_analysis_success': tire_grip_results.get("success", False),
+                'track_name': track_name,
+                'car_name': car_name,
+                'training_laps_used': len(training_laps),
+                'extraction_laps_processed': len(extraction_laps)
+            }
+            
+            print(f"[INFO] Enrichment summary: {enrichment_summary}")
+            
+            return enriched_telemetry_data
+            
+        except Exception as e:
+            print(f"[ERROR] Failed to enrich contextual data: {str(e)}")
+            return laps  # Return original data on failure
+
           
 if __name__ == "__main__":
     # Example usage

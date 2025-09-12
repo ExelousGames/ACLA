@@ -719,6 +719,9 @@ class ImitateExpertLearningService:
 
         results['learning_summary'] = self._generate_learning_summary(results)
         
+        # Store the trained models in the class
+        self.trained_models = results
+        
         objects_serialized_data = self.serialize_object_inside(results)  
          
         return objects_serialized_data
@@ -939,6 +942,17 @@ class ImitateExpertLearningService:
             
         return results
     
+    def load_models_from_serialized(self, serialized_model_data: Dict[str, Any]) -> None:
+        """
+        Load models from serialized data into the class
+        
+        Args:
+            serialized_model_data: Dictionary containing serialized models
+        """
+        print("[INFO] Loading models from serialized data...")
+        self.trained_models = self.deserialize_object_inside(serialized_model_data)
+        print("[INFO] Models loaded successfully")
+    
     # Serialize models function
     def serialize_data(self, data: any) -> str:
         """
@@ -989,6 +1003,367 @@ class ImitateExpertLearningService:
             
         except Exception as e:
             raise Exception(f"Failed to deserialize imitation learning models: {str(e)}")
+    
+    def compare_telemetry_with_expert(self, 
+                                    incoming_telemetry: List[Dict[str, Any]], 
+                                    window_size: int = 5,
+                                    min_section_length: int = 10) -> Dict[str, Any]:
+        """
+        Compare incoming telemetry data with expert actions and identify performance sections
+        
+        Args:
+            incoming_telemetry: List of incoming telemetry data points (already cleaned)
+            window_size: Window size for smoothing score trends
+            min_section_length: Minimum length for a valid section
+            
+        Returns:
+            Dictionary containing:
+            - paired_data: List of incoming telemetry data paired with corresponding expert actions and similarity scores
+            - overall statistics and performance sections analysis
+            - score statistics for performance evaluation
+        """
+        print(f"[INFO] Comparing {len(incoming_telemetry)} telemetry points with expert model")
+        
+        # Check if we have trained models
+        if not self.trained_models:
+            raise ValueError("No trained models available. Please train models first using train_ai_model().")
+        
+        # Convert to DataFrame (data is already cleaned)
+        processed_df = pd.DataFrame(incoming_telemetry)
+        
+        if processed_df.empty:
+            raise ValueError("No telemetry data available")
+        
+        # Use the stored trained models
+        model_data = self.trained_models
+        
+        # Calculate scores for each row
+        scores = []
+        expert_predictions = []
+        
+        print("[INFO] Calculating similarity scores with expert actions...")
+        
+        for idx in range(len(processed_df)):
+            # Get current row as DataFrame (maintaining structure)
+            current_row = processed_df.iloc[idx:idx+1].copy()
+            
+            try:
+                # Get expert predictions for this state using stored models
+                expert_actions = self.predict_expert_actions(current_row, model_data)
+                expert_predictions.append(expert_actions)
+                
+                # Calculate similarity score between actual and predicted expert actions
+                score = self._calculate_similarity_score(current_row, expert_actions)
+                scores.append(score)
+                
+            except Exception as e:
+                print(f"[WARNING] Failed to process row {idx}: {e}")
+                scores.append(0.0)
+                expert_predictions.append({})
+        
+        # Convert scores to pandas Series for easier manipulation
+        scores_series = pd.Series(scores)
+        
+        # Smooth scores using rolling window
+        smoothed_scores = scores_series.rolling(window=min(window_size, len(scores)), center=True).mean()
+        smoothed_scores = smoothed_scores.fillna(scores_series)
+        
+        # Identify sections with different patterns
+        sections = self._identify_performance_sections(
+            smoothed_scores, 
+            window_size, 
+            min_section_length
+        )
+        
+        # Create paired data with incoming telemetry and expert actions
+        paired_data = []
+        for idx in range(len(processed_df)):
+            telemetry_point = processed_df.iloc[idx].to_dict()
+            expert_actions = expert_predictions[idx]
+            similarity_score = scores[idx]
+            
+            paired_point = {
+                'index': idx,
+                'telemetry_data': telemetry_point,
+                'expert_actions': expert_actions,
+                'similarity_score': similarity_score
+            }
+            paired_data.append(paired_point)
+        
+        # Identify sections with different patterns for additional analysis
+        sections = self._identify_performance_sections(
+            smoothed_scores, 
+            window_size, 
+            min_section_length
+        )
+        
+        # Main result structure with paired data
+        result = {
+            'total_data_points': len(processed_df),
+            'overall_score': float(np.mean(scores)),
+            'score_statistics': {
+                'mean': float(np.mean(scores)),
+                'std': float(np.std(scores)),
+                'min': float(np.min(scores)),
+                'max': float(np.max(scores)),
+                'median': float(np.median(scores))
+            },
+            'paired_data': paired_data,
+            'performance_sections': []
+        }
+        
+        print(f"[INFO] Identified {len(sections)} performance sections")
+        
+        # Process performance sections and create training pairs for transformer
+        transformer_training_pairs = []
+        
+        for section in sections:
+            start_idx = section['start_index']
+            end_idx = section['end_index']
+            section_scores = scores[start_idx:end_idx+1]
+            
+            # Extract telemetry and expert actions for this section
+            telemetry_section = []
+            expert_actions_section = []
+            
+            for idx in range(start_idx, end_idx + 1):
+                if idx < len(paired_data):
+                    telemetry_section.append(paired_data[idx]['telemetry_data'])
+                    expert_actions_section.append(paired_data[idx]['expert_actions'])
+            
+            # Create transformer training pair
+            if telemetry_section and expert_actions_section:
+                transformer_pair = {
+                    'telemetry_section': telemetry_section,
+                    'expert_actions': expert_actions_section,
+                    'pattern': section['pattern'],
+                    'section_stats': {
+                        'start_index': start_idx,
+                        'end_index': end_idx,
+                        'length': end_idx - start_idx + 1,
+                        'mean_score': float(np.mean(section_scores)),
+                        'trend_slope': section['trend_slope']
+                    }
+                }
+                transformer_training_pairs.append(transformer_pair)
+            
+            section_result = {
+                'pattern': section['pattern'],
+                'start_index': start_idx,
+                'end_index': end_idx,
+                'length': end_idx - start_idx + 1,
+                'score_statistics': {
+                    'mean': float(np.mean(section_scores)),
+                    'std': float(np.std(section_scores)),
+                    'min': float(np.min(section_scores)),
+                    'max': float(np.max(section_scores)),
+                    'trend_slope': section['trend_slope']
+                }
+            }
+            
+            result['performance_sections'].append(section_result)
+        
+        # Add transformer training pairs to the result
+        result['transformer_training_pairs'] = transformer_training_pairs
+        print(f"[INFO] Created {len(transformer_training_pairs)} transformer training pairs")
+        
+        return result
+    
+    def _calculate_similarity_score(self, 
+                                  actual_telemetry: pd.DataFrame, 
+                                  expert_actions: Dict[str, Any]) -> float:
+        """
+        Calculate similarity score between actual telemetry and expert predictions
+        
+        Args:
+            actual_telemetry: Single row of actual telemetry data
+            expert_actions: Predicted expert actions
+            
+        Returns:
+            Similarity score between 0 and 1 (1 being perfect match)
+        """
+        if not expert_actions:
+            return 0.0
+        
+        total_score = 0.0
+        comparison_count = 0
+        
+        # Compare optimal actions if available
+        if 'optimal_actions' in expert_actions:
+            optimal_actions = expert_actions['optimal_actions']
+            
+            # Compare speed
+            if 'optimal_speed' in optimal_actions and 'Physics_speed_kmh' in actual_telemetry.columns:
+                actual_speed = actual_telemetry['Physics_speed_kmh'].iloc[0]
+                predicted_speed = optimal_actions['optimal_speed']
+                if not (np.isnan(actual_speed) or np.isnan(predicted_speed)):
+                    speed_diff = abs(actual_speed - predicted_speed)
+                    max_speed = max(actual_speed, predicted_speed, 1)  # Avoid division by zero
+                    speed_score = max(0, 1 - (speed_diff / max_speed))
+                    total_score += speed_score
+                    comparison_count += 1
+            
+            # Compare throttle
+            if 'optimal_throttle' in optimal_actions and 'Physics_gas' in actual_telemetry.columns:
+                actual_throttle = actual_telemetry['Physics_gas'].iloc[0]
+                predicted_throttle = optimal_actions['optimal_throttle']
+                if not (np.isnan(actual_throttle) or np.isnan(predicted_throttle)):
+                    throttle_diff = abs(actual_throttle - predicted_throttle)
+                    throttle_score = max(0, 1 - throttle_diff)  # Assuming throttle is 0-1
+                    total_score += throttle_score
+                    comparison_count += 1
+            
+            # Compare brake
+            if 'optimal_brake' in optimal_actions and 'Physics_brake' in actual_telemetry.columns:
+                actual_brake = actual_telemetry['Physics_brake'].iloc[0]
+                predicted_brake = optimal_actions['optimal_brake']
+                if not (np.isnan(actual_brake) or np.isnan(predicted_brake)):
+                    brake_diff = abs(actual_brake - predicted_brake)
+                    brake_score = max(0, 1 - brake_diff)  # Assuming brake is 0-1
+                    total_score += brake_score
+                    comparison_count += 1
+            
+            # Compare steering
+            if 'optimal_steering' in optimal_actions and 'Physics_steer_angle' in actual_telemetry.columns:
+                actual_steering = actual_telemetry['Physics_steer_angle'].iloc[0]
+                predicted_steering = optimal_actions['optimal_steering']
+                if not (np.isnan(actual_steering) or np.isnan(predicted_steering)):
+                    steering_diff = abs(actual_steering - predicted_steering)
+                    max_steering = max(abs(actual_steering), abs(predicted_steering), 1)
+                    steering_score = max(0, 1 - (steering_diff / max_steering))
+                    total_score += steering_score
+                    comparison_count += 1
+            
+            # Compare gear
+            if 'optimal_gear' in optimal_actions and 'Physics_gear' in actual_telemetry.columns:
+                actual_gear = actual_telemetry['Physics_gear'].iloc[0]
+                predicted_gear = optimal_actions['optimal_gear']
+                if not (pd.isna(actual_gear) or pd.isna(predicted_gear)):
+                    gear_score = 1.0 if int(actual_gear) == int(predicted_gear) else 0.0
+                    total_score += gear_score
+                    comparison_count += 1
+        
+        # Compare behavior prediction if available
+        if 'driving_behavior' in expert_actions:
+            behavior_info = expert_actions['driving_behavior']
+            if 'confidence' in behavior_info:
+                # Use confidence as a score component
+                behavior_score = behavior_info['confidence']
+                total_score += behavior_score
+                comparison_count += 1
+        
+        # Return average score
+        return total_score / comparison_count if comparison_count > 0 else 0.0
+    
+    def _identify_performance_sections(self, 
+                                     scores: pd.Series, 
+                                     window_size: int,
+                                     min_section_length: int) -> List[Dict[str, Any]]:
+        """
+        Identify sections with consistently increasing, high, or decreasing scores
+        
+        Args:
+            scores: Series of similarity scores
+            window_size: Window size for trend analysis
+            min_section_length: Minimum length for a valid section
+            
+        Returns:
+            List of identified sections with patterns
+        """
+        sections = []
+        
+        # Calculate trend using rolling linear regression slope
+        trends = []
+        for i in range(len(scores)):
+            start_idx = max(0, i - window_size // 2)
+            end_idx = min(len(scores), i + window_size // 2)
+            
+            if end_idx - start_idx < 3:  # Need at least 3 points for trend
+                trends.append(0.0)
+                continue
+            
+            # Calculate slope using least squares
+            x = np.arange(start_idx, end_idx)
+            y = scores.iloc[start_idx:end_idx].values
+            
+            # Remove NaN values
+            valid_mask = ~np.isnan(y)
+            if np.sum(valid_mask) < 3:
+                trends.append(0.0)
+                continue
+            
+            x_clean = x[valid_mask]
+            y_clean = y[valid_mask]
+            
+            try:
+                slope = np.polyfit(x_clean, y_clean, 1)[0]
+                trends.append(slope)
+            except:
+                trends.append(0.0)
+        
+        trends = pd.Series(trends)
+        
+        # Define thresholds for pattern identification
+        increasing_threshold = 0.002  # Positive slope threshold
+        decreasing_threshold = -0.002  # Negative slope threshold
+        high_score_threshold = np.percentile(scores.dropna(), 75)  # Top 25% of scores
+        
+        # Identify sections
+        current_pattern = None
+        section_start = 0
+        
+        for i in range(len(scores)):
+            current_score = scores.iloc[i]
+            current_trend = trends.iloc[i]
+            
+            # Determine current pattern
+            if current_trend > increasing_threshold:
+                pattern = 'increasing'
+            elif current_trend < decreasing_threshold:
+                pattern = 'decreasing'
+            elif current_score > high_score_threshold:
+                pattern = 'high_performance'
+            else:
+                pattern = 'stable'
+            
+            # Check if pattern changed
+            if current_pattern != pattern:
+                # Close previous section if it exists and meets minimum length
+                if (current_pattern is not None and 
+                    i - section_start >= min_section_length and 
+                    current_pattern != 'stable'):
+                    
+                    # Calculate average trend slope for this section
+                    section_trends = trends.iloc[section_start:i]
+                    avg_slope = section_trends.mean() if len(section_trends) > 0 else 0.0
+                    
+                    sections.append({
+                        'pattern': current_pattern,
+                        'start_index': section_start,
+                        'end_index': i - 1,
+                        'trend_slope': float(avg_slope)
+                    })
+                
+                # Start new section
+                current_pattern = pattern
+                section_start = i
+        
+        # Close final section if it meets criteria
+        if (current_pattern is not None and 
+            len(scores) - section_start >= min_section_length and 
+            current_pattern != 'stable'):
+            
+            section_trends = trends.iloc[section_start:]
+            avg_slope = section_trends.mean() if len(section_trends) > 0 else 0.0
+            
+            sections.append({
+                'pattern': current_pattern,
+                'start_index': section_start,
+                'end_index': len(scores) - 1,
+                'trend_slope': float(avg_slope)
+            })
+        
+        return sections
         
     
     
@@ -996,9 +1371,14 @@ class ImitateExpertLearningService:
 if __name__ == "__main__":
     print("ImitationLearningService initialized. Ready for expert demonstration learning!")
     
-    # Example test
+    # Example workflow
     service = ImitateExpertLearningService()
     
-    # You can test with:
-    # results = service.learn_from_expert_demonstrations(expert_telemetry_data)
-    # predictions = service.predict_expert_actions(current_state, model_id)
+    # 1. Train the model (this stores models in the class)
+    # serialized_results = service.train_ai_model(expert_telemetry_data)
+    
+    # 2. Or load previously trained models
+    # service.load_models_from_serialized(serialized_model_data)
+    
+    # 3. Compare new telemetry with stored expert models
+    # comparison = service.compare_telemetry_with_expert(incoming_telemetry)

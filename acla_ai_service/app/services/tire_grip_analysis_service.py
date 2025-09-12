@@ -109,6 +109,7 @@ class TireGripAnalysisService:
         self.telemetry_features = TelemetryFeatures()
         self.trained_models = {}
         self.scalers = {}
+        self.model_metadata = {}  # Store model training metadata
         
         # Backend service integration
         self.backend_service = backend_service
@@ -353,63 +354,41 @@ class TireGripAnalysisService:
         
         return targets_df
 
-    async def train_tire_grip_model(self, trackName: str, carName: Optional[str] = None) -> Dict[str, Any]:
+    async def train_tire_grip_model(self, telemetry_data: List[Dict[str, Any]]) -> Dict[str, Any]:
         """
-        Train tire grip analysis models for a specific track/car combination
+        Train tire grip analysis models using provided cleaned telemetry data
         
         Args:
-            trackName: Name of the track
-            carName: Name of the car (optional)
+            telemetry_data: Pre-cleaned telemetry data for training
             
         Returns:
             Training results and model performance metrics
         """
-        print(f"[INFO] Training tire grip analysis model for track: {trackName}, car: {carName}")
+        print(f"[INFO] Training tire grip analysis model with provided telemetry data")
         
-        try:
-            # Retrieve telemetry data from backend
-            if carName:
-                sessions = await self.backend_service.get_all_racing_sessions(trackName, carName)
-            else:
-                sessions = await self.backend_service.get_all_racing_sessions(trackName)
-                
-        except Exception as e:
-            print(f"[ERROR] Failed to retrieve sessions: {str(e)}")
-            return {"error": f"Failed to retrieve sessions: {str(e)}"}
-
-        # Process session data
-        each_session_telemetry_data = []
-        for session in sessions.get("sessions", []):
-            session_data = session.get("data", [])
-            if session_data:
-                each_session_telemetry_data.append(session_data)
-
-        if not each_session_telemetry_data:
-            return {"error": "No telemetry data found for the specified track/car combination"}
-
-        # Flatten telemetry data
-        telemetry_data = [item for sublist in each_session_telemetry_data for item in sublist]
+        if not telemetry_data:
+            return {"error": "No telemetry data provided"}
         
-        if len(telemetry_data) < 100:
+        print(f"[INFO] Using provided telemetry data: {len(telemetry_data)} records")
+        flattened_telemetry_data = telemetry_data
+        
+        if len(flattened_telemetry_data) < 100:
             return {"error": "Insufficient telemetry data for training (minimum 100 samples required)"}
 
-        # Convert to DataFrame and process
-        df = pd.DataFrame(telemetry_data)
-        feature_processor = FeatureProcessor(df)
-        processed_df = feature_processor.general_cleaning_for_analysis()
-        
-        print(f"[INFO] Processing {len(processed_df)} telemetry records")
+        # Convert to DataFrame - data is already cleaned
+        df = pd.DataFrame(flattened_telemetry_data)
+        print(f"[INFO] Using cleaned telemetry data with {len(df)} records")
         
         # Prepare training data
-        X = self._prepare_training_features(processed_df)
-        y = self._create_target_variables(processed_df)
+        X = self._prepare_training_features(df)
+        y = self._create_target_variables(df)
         
         if len(X) == 0 or len(y) == 0:
             return {"error": "Failed to prepare training features or targets"}
         
         # Train models for different targets
         models_results = {}
-        model_key = f"{trackName}_{carName}" if carName else trackName
+        model_key = "tire_grip_model"  # Generic model key since no track/car specific training
         
         target_variables = [
             'friction_circle_utilization',
@@ -420,6 +399,9 @@ class TireGripAnalysisService:
             'slip_angle_efficiency',
             'slip_ratio_efficiency'
         ]
+        
+        # Store trained models in the class instance
+        self.trained_models = {}  # Reset models cache
         
         for target in target_variables:
             if target in y.columns:
@@ -436,12 +418,29 @@ class TireGripAnalysisService:
         successful_models = [r for r in models_results.values() if 'error' not in r]
         avg_r2 = np.mean([r.get('r2_score', 0) for r in successful_models]) if successful_models else 0
         
+        # Store model metadata in the class instance
+        self.model_metadata = {
+            "model_type": "tire_grip_analysis",
+            "track_name": "generic",
+            "car_name": "all_cars",
+            "models_results": models_results,
+            "feature_names": list(X.columns),
+            "target_variables": target_variables,
+            "training_samples": len(X),
+            "average_r2_score": avg_r2,
+            "successful_models": len(successful_models),
+            "total_models": len(target_variables),
+            "training_timestamp": datetime.now().isoformat()
+        }
+        
+        print(f"[INFO] Stored {len(self.trained_models)} trained models in class instance")
+        
         # Save models to backend
         try:
             ai_model_dto = {
                 "modelType": "tire_grip_analysis",
-                "trackName": trackName,
-                "carName": carName or "all_cars",
+                "trackName": "generic",
+                "carName": "all_cars",
                 "modelData": {
                     "models_results": models_results,
                     "feature_names": list(X.columns),
@@ -465,8 +464,8 @@ class TireGripAnalysisService:
 
         return {
             "success": True,
-            "track_name": trackName,
-            "car_name": carName,
+            "track_name": "generic",
+            "car_name": "all_cars",
             "models_trained": len(successful_models),
             "total_targets": len(target_variables),
             "average_r2_score": avg_r2,
@@ -518,9 +517,12 @@ class TireGripAnalysisService:
         test_mae = mean_absolute_error(y_test, y_pred_test)
         test_rmse = np.sqrt(mean_squared_error(y_test, y_pred_test))
         
-        # Store model
+        # Store model in class instance
         model_id = f"{model_key}_{target_name}"
         self.trained_models[model_id] = pipeline
+        
+        # Store scaler separately for easy access
+        self.scalers[model_id] = pipeline.named_steps['scaler']
         
         # Save to disk
         model_path = self.models_directory / f"{model_id}.pkl"
@@ -544,17 +546,12 @@ class TireGripAnalysisService:
             "test_samples": len(X_test)
         }
 
-    async def extract_tire_grip_features(self, 
-                                       telemetry_data: List[Dict[str, Any]], 
-                                       trackName: str,
-                                       carName: Optional[str] = None) -> List[Dict[str, Any]]:
+    async def extract_tire_grip_features(self, telemetry_data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
-        Extract tire grip features from telemetry data using trained models
+        Extract tire grip features from cleaned telemetry data using saved trained models
         
         Args:
-            telemetry_data: List of telemetry records
-            trackName: Track name for model selection
-            carName: Car name for model selection
+            telemetry_data: List of cleaned telemetry records to predict on
             
         Returns:
             Enhanced telemetry data with tire grip features
@@ -562,42 +559,46 @@ class TireGripAnalysisService:
         if not telemetry_data:
             return telemetry_data
         
-        print(f"[INFO] Extracting tire grip features for {len(telemetry_data)} records")
+        # Check if we have trained models available
+        if not self.trained_models:
+            print("[ERROR] No trained models available. Please run train_tire_grip_model first.")
+            return telemetry_data
         
-        # Convert to DataFrame
+        print(f"[INFO] Extracting tire grip features for {len(telemetry_data)} records using saved models")
+        print(f"[INFO] Available trained models: {list(self.trained_models.keys())}")
+        
+        # Convert to DataFrame - data is already cleaned
         df = pd.DataFrame(telemetry_data)
-        feature_processor = FeatureProcessor(df)
-        processed_df = feature_processor.general_cleaning_for_analysis()
         
-        # Prepare features for prediction
-        X = self._prepare_training_features(processed_df)
+        # Prepare features for prediction using the same feature preparation as training
+        X = self._prepare_training_features(df)
         
         if len(X) == 0:
             print("[WARNING] No features available for prediction")
             return telemetry_data
         
-        # Load trained models
-        model_key = f"{trackName}_{carName}" if carName else trackName
+        # Use the saved models to make predictions
         enhanced_data = []
+        model_key = "tire_grip_model"
         
         for i, (original_record, feature_row) in enumerate(zip(telemetry_data, X.to_dict('records'))):
             # Create enhanced record
             enhanced_record = original_record.copy()
             
             # Add basic calculated features
-            grip_features = self._calculate_basic_grip_features(processed_df.iloc[i] if i < len(processed_df) else pd.Series())
+            grip_features = self._calculate_basic_grip_features(df.iloc[i] if i < len(df) else pd.Series())
             enhanced_record.update(grip_features)
             
-            # Add ML-based predictions if models are available
+            # Add ML-based predictions using saved models
             try:
-                ml_features = self._predict_ml_features(feature_row, model_key)
+                ml_features = self._predict_with_saved_models(feature_row, model_key)
                 enhanced_record.update(ml_features)
             except Exception as e:
-                print(f"[WARNING] Failed to get ML predictions: {str(e)}")
+                print(f"[WARNING] Failed to get ML predictions for record {i}: {str(e)}")
             
             enhanced_data.append(enhanced_record)
         
-        print(f"[INFO] Successfully extracted tire grip features for {len(enhanced_data)} records")
+        print(f"[INFO] Successfully extracted tire grip features for {len(enhanced_data)} records using saved models")
         return enhanced_data
 
     def _calculate_basic_grip_features(self, row: pd.Series) -> Dict[str, float]:
@@ -652,6 +653,55 @@ class TireGripAnalysisService:
         
         return features
 
+    def _predict_with_saved_models(self, feature_row: Dict[str, Any], model_key: str) -> Dict[str, float]:
+        """
+        Predict tire grip features using the saved trained ML models in the class
+        
+        Args:
+            feature_row: Feature data for prediction
+            model_key: Key identifying the model set
+            
+        Returns:
+            Dictionary of ML-predicted features
+        """
+        ml_features = {}
+        
+        if not self.trained_models:
+            print("[WARNING] No trained models available for prediction")
+            return ml_features
+        
+        target_variables = [
+            'friction_circle_utilization',
+            'longitudinal_weight_transfer', 
+            'lateral_weight_transfer',
+            'dynamic_weight_distribution',
+            'optimal_grip_window',
+            'slip_angle_efficiency',
+            'slip_ratio_efficiency'
+        ]
+        
+        # Convert feature row to DataFrame for prediction
+        feature_df = pd.DataFrame([feature_row])
+        
+        for target in target_variables:
+            model_id = f"{model_key}_{target}"
+            
+            if model_id in self.trained_models:
+                try:
+                    # Use the saved model to make prediction
+                    prediction = self.trained_models[model_id].predict(feature_df)[0]
+                    ml_features[f"ml_{target}"] = float(prediction)
+                    
+                    # Also add the prediction as the main feature name for compatibility
+                    ml_features[target] = float(prediction)
+                    
+                except Exception as e:
+                    print(f"[WARNING] Prediction failed for {target} using saved model: {str(e)}")
+            else:
+                print(f"[WARNING] Model {model_id} not found in saved models")
+        
+        return ml_features
+    
     def _predict_ml_features(self, feature_row: Dict[str, Any], model_key: str) -> Dict[str, float]:
         """
         Predict tire grip features using trained ML models
@@ -701,22 +751,46 @@ class TireGripAnalysisService:
         
         return ml_features
 
-    def get_model_summary(self, trackName: str, carName: Optional[str] = None) -> Dict[str, Any]:
+    def has_trained_models(self) -> bool:
+        """
+        Check if the service has trained models available
+        
+        Returns:
+            True if models are available, False otherwise
+        """
+        return len(self.trained_models) > 0
+    
+    def get_available_model_targets(self) -> List[str]:
+        """
+        Get list of available model targets
+        
+        Returns:
+            List of target variable names that have trained models
+        """
+        if not self.trained_models:
+            return []
+        
+        targets = []
+        model_key = "tire_grip_model"
+        
+        for model_id in self.trained_models.keys():
+            if model_id.startswith(f"{model_key}_"):
+                target = model_id.replace(f"{model_key}_", "")
+                targets.append(target)
+        
+        return targets
+
+    def get_model_summary(self) -> Dict[str, Any]:
         """
         Get summary of trained tire grip models
         
-        Args:
-            trackName: Track name
-            carName: Car name (optional)
-            
         Returns:
             Model summary information
         """
-        model_key = f"{trackName}_{carName}" if carName else trackName
+        model_key = "tire_grip_model"
         
         summary = {
-            "track_name": trackName,
-            "car_name": carName,
+            "model_type": "tire_grip_analysis",
             "models_directory": str(self.models_directory),
             "cached_models": len(self.trained_models),
             "available_models": []
@@ -737,27 +811,13 @@ class TireGripAnalysisService:
         
         return summary
 
-    def clear_models_cache(self, trackName: Optional[str] = None, carName: Optional[str] = None):
+    def clear_models_cache(self):
         """
-        Clear cached models
-        
-        Args:
-            trackName: Track name to clear (if None, clears all)
-            carName: Car name to clear (if None, clears all for track)
+        Clear cached tire grip models
         """
-        if trackName is None:
-            # Clear all cached models
-            self.trained_models.clear()
-            print("[INFO] Cleared all cached tire grip models")
-        else:
-            # Clear specific models
-            model_key_pattern = f"{trackName}_{carName}" if carName else trackName
-            keys_to_remove = [k for k in self.trained_models.keys() if k.startswith(model_key_pattern)]
-            
-            for key in keys_to_remove:
-                del self.trained_models[key]
-            
-            print(f"[INFO] Cleared {len(keys_to_remove)} cached models for {model_key_pattern}")
+        # Clear all cached models
+        self.trained_models.clear()
+        print("[INFO] Cleared all cached tire grip models")
 
 
 # Create singleton instance for import

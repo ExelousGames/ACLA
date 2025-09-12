@@ -6,6 +6,7 @@ from pydantic import BaseModel
 from typing import Dict, List, Any, Optional
 import pandas as pd
 import math
+import numpy as np
 
 def _safe_float(value):
     """Convert value to float, handling NaN and infinity"""
@@ -870,15 +871,18 @@ class FeatureProcessor:
         except:
             return 0.0
 
-    def _filter_top_performance_laps(self, df: pd.DataFrame, keepTopLapsPercent: float=0.01) -> pd.DataFrame:
+    def _filter_top_performance_laps(self, df: pd.DataFrame, keepTopLapsPercent: float=0.01) -> tuple[pd.DataFrame, List[pd.DataFrame]]:
         """
         Filter for valid laps and select top 1% fastest laps for training
         
         Args:
             df: Processed telemetry DataFrame
+            keepTopLapsPercent: Percentage of fastest laps to keep (default 0.01 = 1%)
             
         Returns:
-            Filtered DataFrame containing only top 1% fastest valid laps
+            Tuple containing:
+            - Filtered DataFrame containing only top fastest valid laps combined
+            - List of individual lap DataFrames containing original telemetry data for each selected lap
         """
         print(f"[INFO] Starting lap filtering from {len(df)} telemetry records")
         
@@ -889,7 +893,7 @@ class FeatureProcessor:
         has_valid_lap_column = 'Graphics_is_valid_lap' in working_df.columns
         if not has_valid_lap_column:
             print("[WARNING] Graphics_is_valid_lap column not found, cannot validate lap quality - returning all data")
-            return working_df
+            return working_df, [working_df]
         else:
             print(f"[INFO] Found Graphics_is_valid_lap column, will filter laps by validity percentage")
         
@@ -901,7 +905,7 @@ class FeatureProcessor:
         # Only proceed if we have both fields - return empty data otherwise
         if not (has_completed_lap and has_position):
             print("[WARNING] Lap filtering requires both Graphics_completed_lap and Graphics_normalized_car_position - returning empty DataFrame")
-            return pd.DataFrame()
+            return pd.DataFrame(), []
         
         # Use both completed_lap counter and position data for most accurate lap detection
         print("[INFO] Using both Graphics_completed_lap and Graphics_normalized_car_position for lap detection")
@@ -956,7 +960,7 @@ class FeatureProcessor:
         
         if not lap_times:
             print(f"[WARNING] No valid full lap times found out of {total_laps_processed} processed laps, returning empty DataFrame")
-            return pd.DataFrame()
+            return pd.DataFrame(), []
         
         print(f"[INFO] Processed {total_laps_processed} potential laps")
         if has_valid_lap_column:
@@ -969,23 +973,26 @@ class FeatureProcessor:
         # Sort laps by time (fastest first)
         sorted_indices = np.argsort(lap_times)
 
-        # Calculate how many laps to keep (top 5%, minimum 1 lap)
+        # Calculate how many laps to keep (top n%, minimum 1 lap)
         num_laps_to_keep = max(1, int(np.ceil(len(lap_times) * keepTopLapsPercent)))
         print(f"[INFO] Selecting top {num_laps_to_keep} fastest laps out of {len(lap_times)} total laps")
         
         # Select top laps
         top_lap_indices = sorted_indices[:num_laps_to_keep]
         
-        # Combine data from selected laps
+        # Combine data from selected laps for the combined DataFrame
         filtered_data_frames = [lap_data[i] for i in top_lap_indices]
         filtered_df = pd.concat(filtered_data_frames, ignore_index=True)
+        
+        # Create list of individual lap DataFrames with original telemetry data
+        individual_laps = [lap_data[i].copy() for i in top_lap_indices]
         
         # Report selected lap times
         selected_lap_times = [lap_times[i] for i in top_lap_indices]
         print(f"[INFO] Selected lap times: {[f'{t:.3f}s' for t in selected_lap_times]}")
         print(f"[INFO] Filtered to {len(filtered_df)} records from top {num_laps_to_keep} fastest complete full laps")
         
-        return filtered_df
+        return filtered_df, individual_laps
     
     def _is_lap_mostly_valid(self, lap_df: pd.DataFrame, min_valid_percentage: float = 0.75) -> bool:
         """
