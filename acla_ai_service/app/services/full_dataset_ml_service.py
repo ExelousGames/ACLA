@@ -42,7 +42,7 @@ from sklearn.compose import ColumnTransformer
 from ..models.telemetry_models import TelemetryFeatures, FeatureProcessor, _safe_float
 
 # Import imitation learning service
-from .scikit_imitation_learning_service import ImitationLearningService
+from .old_scikit_imitation_learning_service import ImitationLearningService
 
 # Import backend service
 from .backend_service import backend_service
@@ -51,7 +51,7 @@ from .backend_service import backend_service
 from .model_cache_service import model_cache_service
 
 # Import cornering analysis
-from .identify_track_cornoring_phases import TrackCorneringAnalyzer
+from .old_identify_track_cornoring_phases import TrackCorneringAnalyzer
 
 # Suppress sklearn warnings
 warnings.filterwarnings('ignore', category=UserWarning)
@@ -172,6 +172,16 @@ class Full_dataset_TelemetryMLService:
         corner_shape_models_dir = self.models_directory / "corner_shapes"
         from .corner_shape_unsupervised_service import CornerShapeUnsupervisedService
         self.corner_shape_learning = CornerShapeUnsupervisedService(str(corner_shape_models_dir))
+        
+        # Initialize corner identification unsupervised service
+        corner_identification_models_dir = self.models_directory / "corner_identification"
+        from .corner_identification_unsupervised_service import CornerIdentificationUnsupervisedService
+        self.corner_identification = CornerIdentificationUnsupervisedService(str(corner_identification_models_dir))
+        
+        # Initialize tire grip analysis service
+        tire_grip_models_dir = self.models_directory / "tire_grip"
+        from .tire_grip_analysis_service import TireGripAnalysisService
+        self.tire_grip_analysis = TireGripAnalysisService(str(tire_grip_models_dir))
         
         # Backend service integration
         self.backend_service = backend_service
@@ -862,11 +872,160 @@ class Full_dataset_TelemetryMLService:
         """
         self.corner_shape_learning.clear_cache(trackName)
 
+    # Corner Identification Unsupervised Learning Methods
+    async def learn_corner_characteristics(self, trackName: str, carName: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Learn detailed corner characteristics for a track using unsupervised methods
+        
+        Args:
+            trackName: Track name for corner identification
+            carName: Optional car name filter
+            
+        Returns:
+            Dictionary with corner identification and feature extraction results
+        """
+        try:
+            results = await self.corner_identification.learn_track_corner_patterns(trackName, carName)
+            
+            # Save results to backend if successful
+            if results.get("success"):
+                model_data = {
+                    "modelType": "corner_identification",
+                    "trackName": trackName,
+                    "carName": carName or "all_cars",
+                    "modelData": results,
+                    "timestamp": datetime.now().isoformat()
+                }
+                
+                try:
+                    await self.backend_service.save_ai_model(
+                        AiModelDto(**model_data)
+                    )
+                    print(f"[INFO] Corner identification model saved to backend for {trackName}")
+                except Exception as save_error:
+                    print(f"[WARNING] Failed to save corner identification model to backend: {str(save_error)}")
+            
+            return results
+            
+        except Exception as e:
+            print(f"[ERROR] Failed to learn corner characteristics for {trackName}: {str(e)}")
+            return {
+                "success": False,
+                "error": str(e),
+                "corner_patterns": []
+            }
+    
+    async def enhance_telemetry_with_corner_features(self, 
+                                                    telemetry_data: List[Dict[str, Any]], 
+                                                    trackName: str,
+                                                    carName: Optional[str] = None) -> List[Dict[str, Any]]:
+        """
+        Enhance telemetry data with extracted corner features
+        
+        Args:
+            telemetry_data: List of telemetry records
+            trackName: Track name for corner pattern matching
+            carName: Optional car name
+            
+        Returns:
+            Enhanced telemetry data with corner identification features
+        """
+        try:
+            enhanced_telemetry = await self.corner_identification.extract_corner_features_for_telemetry(
+                telemetry_data, trackName, carName
+            )
+            
+            print(f"[INFO] Enhanced {len(enhanced_telemetry)} telemetry records with corner features")
+            return enhanced_telemetry
+            
+        except Exception as e:
+            print(f"[ERROR] Failed to enhance telemetry with corner features: {str(e)}")
+            return telemetry_data  # Return original data on failure
+    
+    def get_corner_identification_summary(self, trackName: str, carName: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Get summary of corner identification results for a track
+        
+        Args:
+            trackName: Track name
+            carName: Optional car name
+            
+        Returns:
+            Dictionary with corner identification summary
+        """
+        return self.corner_identification.get_corner_identification_summary(trackName, carName)
+    
+    def clear_corner_identification_cache(self, trackName: Optional[str] = None, carName: Optional[str] = None):
+        """
+        Clear corner identification cache
+        
+        Args:
+            trackName: Optional track name to clear specific cache
+            carName: Optional car name to clear specific cache
+        """
+        self.corner_identification.clear_corner_cache(trackName, carName)
+
+    # Tire Grip Analysis Methods
+    async def train_tire_grip_model(self, trackName: str, carName: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Train tire grip analysis models for a specific track/car combination
+        
+        Args:
+            trackName: Name of the track
+            carName: Name of the car (optional)
+            
+        Returns:
+            Training results and model performance metrics
+        """
+        return await self.tire_grip_analysis.train_tire_grip_model(trackName, carName)
+    
+    async def extract_tire_grip_features(self, 
+                                       telemetry_data: List[Dict[str, Any]], 
+                                       trackName: str,
+                                       carName: Optional[str] = None) -> List[Dict[str, Any]]:
+        """
+        Extract tire grip features from telemetry data using trained models
+        
+        Args:
+            telemetry_data: List of telemetry records
+            trackName: Track name for model selection
+            carName: Car name for model selection
+            
+        Returns:
+            Enhanced telemetry data with tire grip features
+        """
+        return await self.tire_grip_analysis.extract_tire_grip_features(telemetry_data, trackName, carName)
+    
+    def get_tire_grip_model_summary(self, trackName: str, carName: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Get summary of trained tire grip models
+        
+        Args:
+            trackName: Track name
+            carName: Car name (optional)
+            
+        Returns:
+            Model summary information
+        """
+        return self.tire_grip_analysis.get_model_summary(trackName, carName)
+    
+    def clear_tire_grip_cache(self, trackName: Optional[str] = None, carName: Optional[str] = None):
+        """
+        Clear tire grip analysis model cache
+        
+        Args:
+            trackName: Optional track name to clear specific cache
+            carName: Optional car name to clear specific cache
+        """
+        self.tire_grip_analysis.clear_models_cache(trackName, carName)
+
     def clear_all_cache(self):
-        """Clear all cached models including corner shapes"""
+        """Clear all cached models including corner shapes, corner identification, and tire grip analysis"""
         self.model_cache.clear()
         self.corner_shape_learning.clear_cache()
-        print("[INFO] All cached models cleared (including corner shapes)")
+        self.corner_identification.clear_corner_cache()
+        self.tire_grip_analysis.clear_models_cache()
+        print("[INFO] All cached models cleared (including corner shapes, corner identification, and tire grip analysis)")
     
     async def _get_cached_model_or_fetch(self,
                                         model_type: str,
