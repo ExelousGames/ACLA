@@ -1,0 +1,1032 @@
+"""
+Corner Identification Unsupervised Service for Assetto Corsa Competizione
+
+This service provides unsupervised corner identification and feature extraction from telemetry data.
+It extracts detailed corner characteristics including:
+- Entry phase duration and characteristics
+- Apex phase duration and characteristics  
+- Exit phase duration and characteristics
+- Curvature analysis
+- Speed profiles
+- G-force patterns
+- Brake/throttle patterns
+
+The extracted features are designed to be inserted back into telemetry data for enhanced AI analysis.
+"""
+
+import pandas as pd
+import numpy as np
+import joblib
+import warnings
+from typing import Dict, List, Any, Optional, Tuple
+from datetime import datetime
+from pathlib import Path
+from scipy.signal import find_peaks, savgol_filter
+from scipy import interpolate
+from scipy.spatial.distance import cdist
+from sklearn.cluster import DBSCAN, KMeans
+from sklearn.preprocessing import StandardScaler, RobustScaler
+from sklearn.decomposition import PCA
+from sklearn.metrics import silhouette_score
+
+# Import backend service and models
+from .backend_service import backend_service
+from ..models.telemetry_models import TelemetryFeatures, FeatureProcessor, _safe_float
+
+# Suppress warnings
+warnings.filterwarnings('ignore', category=UserWarning)
+
+
+class CornerCharacteristics:
+    """Data class for corner characteristics"""
+    
+    def __init__(self):
+        # Entry phase characteristics
+        self.entry_duration = 0.0
+        self.entry_speed_delta = 0.0
+        self.entry_brake_intensity = 0.0
+        self.entry_steering_rate = 0.0
+        self.entry_g_force_lat_max = 0.0
+        self.entry_g_force_long_max = 0.0
+        
+        # Apex phase characteristics
+        self.apex_duration = 0.0
+        self.apex_min_speed = 0.0
+        self.apex_max_steering = 0.0
+        self.apex_curvature = 0.0
+        self.apex_g_force_lat = 0.0
+        self.apex_track_position = 0.0
+        
+        # Exit phase characteristics
+        self.exit_duration = 0.0
+        self.exit_speed_delta = 0.0
+        self.exit_throttle_progression = 0.0
+        self.exit_steering_unwind_rate = 0.0
+        self.exit_g_force_lat_max = 0.0
+        self.exit_g_force_long_max = 0.0
+        
+        # Overall corner characteristics
+        self.total_corner_duration = 0.0
+        self.corner_severity = 0.0
+        self.corner_type = "unknown"  # hairpin, chicane, sweeper, etc.
+        self.corner_direction = "unknown"  # left, right
+        self.speed_efficiency = 0.0
+        self.racing_line_adherence = 0.0
+        
+        # Curvature analysis
+        self.avg_curvature = 0.0
+        self.max_curvature = 0.0
+        self.curvature_variance = 0.0
+        
+        # Advanced metrics
+        self.trail_braking_score = 0.0
+        self.throttle_discipline_score = 0.0
+        self.consistency_score = 0.0
+
+
+class CornerIdentificationUnsupervisedService:
+    """
+    Unsupervised corner identification and feature extraction service
+    
+    This service:
+    1. Identifies corners in telemetry data using unsupervised methods
+    2. Extracts detailed corner characteristics as features
+    3. Provides corner classification (hairpin, chicane, sweeper, etc.)
+    4. Generates new features to be inserted back into telemetry data
+    """
+    
+    def __init__(self, models_directory: str = "corner_models"):
+        """
+        Initialize the corner identification service
+        
+        Args:
+            models_directory: Directory to save/load corner identification models
+        """
+        self.models_directory = Path(models_directory)
+        self.models_directory.mkdir(exist_ok=True)
+        
+        self.telemetry_features = TelemetryFeatures()
+        self.corner_models = {}
+        self.scalers = {}
+        self.track_corner_profiles = {}
+        
+        # Backend service integration
+        self.backend_service = backend_service
+        
+        # Corner identification parameters
+        self.min_corner_duration = 15  # Minimum data points for a valid corner
+        self.corner_detection_sensitivity = 0.7
+        self.smoothing_window = 7
+        
+    async def learn_track_corner_patterns(self, trackName: str, carName: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Learn corner patterns for a specific track using unsupervised learning
+        
+        Args:
+            trackName: Name of the track
+            carName: Optional car name filter
+            
+        Returns:
+            Dictionary with learning results and extracted corner patterns
+        """
+        try:
+            print(f"[INFO] Starting unsupervised corner pattern learning for track: {trackName}")
+            
+            # Retrieve telemetry data from backend
+            if carName:
+                sessions = await self.backend_service.get_all_racing_sessions(trackName, carName)
+            else:
+                sessions = await self.backend_service.get_all_racing_sessions(trackName)
+            
+            if not sessions or "sessions" not in sessions:
+                return {
+                    "success": False,
+                    "error": "No telemetry sessions found",
+                    "corner_patterns": []
+                }
+            
+            # Collect telemetry data from all sessions
+            all_telemetry_data = []
+            for session in sessions.get("sessions", []):
+                session_telemetry = await self._extract_session_telemetry(session)
+                if session_telemetry:
+                    all_telemetry_data.extend(session_telemetry)
+            
+            if not all_telemetry_data:
+                return {
+                    "success": False,
+                    "error": "No valid telemetry data found in sessions",
+                    "corner_patterns": []
+                }
+            
+            # Convert to DataFrame and process
+            df = pd.DataFrame(all_telemetry_data)
+            feature_processor = FeatureProcessor(df)
+            processed_df = feature_processor.general_cleaning_for_analysis()
+            
+            # Filter for top performance laps
+            performance_df = self._filter_top_performance_data(processed_df)
+            
+            # Identify corner segments using unsupervised methods
+            corner_segments = self._identify_corner_segments_unsupervised(performance_df)
+            
+            # Extract corner characteristics for each segment
+            corner_patterns = []
+            for corner_id, segment_data in corner_segments.items():
+                characteristics = self._extract_corner_characteristics(
+                    performance_df.iloc[segment_data['start_idx']:segment_data['end_idx']+1]
+                )
+                
+                corner_patterns.append({
+                    "corner_id": corner_id,
+                    "track_position_start": segment_data.get('position_start', 0.0),
+                    "track_position_end": segment_data.get('position_end', 0.0),
+                    "characteristics": characteristics.__dict__,
+                    "data_points": segment_data['end_idx'] - segment_data['start_idx'] + 1
+                })
+            
+            # Cluster similar corners to identify corner types
+            corner_clusters = self._cluster_corner_types(corner_patterns)
+            
+            # Save learned patterns
+            track_model = {
+                "track_name": trackName,
+                "car_name": carName,
+                "corner_patterns": corner_patterns,
+                "corner_clusters": corner_clusters,
+                "total_corners": len(corner_patterns),
+                "learning_timestamp": datetime.now().isoformat()
+            }
+            
+            model_path = self.models_directory / f"corner_patterns_{trackName}_{carName or 'all_cars'}.pkl"
+            joblib.dump(track_model, model_path)
+            
+            self.track_corner_profiles[f"{trackName}_{carName or 'all_cars'}"] = track_model
+            
+            print(f"[INFO] Successfully learned {len(corner_patterns)} corner patterns for {trackName}")
+            
+            return {
+                "success": True,
+                "track_name": trackName,
+                "car_name": carName,
+                "total_corners_identified": len(corner_patterns),
+                "corner_patterns": corner_patterns,
+                "corner_clusters": corner_clusters,
+                "model_saved": str(model_path)
+            }
+            
+        except Exception as e:
+            print(f"[ERROR] Failed to learn corner patterns for {trackName}: {str(e)}")
+            return {
+                "success": False,
+                "error": str(e),
+                "corner_patterns": []
+            }
+    
+    async def extract_corner_features_for_telemetry(self, 
+                                                   telemetry_data: List[Dict[str, Any]], 
+                                                   trackName: str,
+                                                   carName: Optional[str] = None) -> List[Dict[str, Any]]:
+        """
+        Extract corner features and insert them back into telemetry data
+        
+        Args:
+            telemetry_data: List of telemetry records
+            trackName: Track name for corner pattern matching
+            carName: Optional car name
+            
+        Returns:
+            Enhanced telemetry data with corner features
+        """
+        try:
+            # Load or learn corner patterns for this track
+            model_key = f"{trackName}_{carName or 'all_cars'}"
+            if model_key not in self.track_corner_profiles:
+                await self.learn_track_corner_patterns(trackName, carName)
+            
+            # Convert telemetry data to DataFrame
+            df = pd.DataFrame(telemetry_data)
+            feature_processor = FeatureProcessor(df)
+            processed_df = feature_processor.general_cleaning_for_analysis()
+            
+            # Identify corners in current telemetry
+            corner_segments = self._identify_corner_segments_unsupervised(processed_df)
+            
+            # Initialize corner feature columns
+            corner_features = self._initialize_corner_feature_columns(len(processed_df))
+            
+            # Extract and assign corner features
+            for corner_id, segment_data in corner_segments.items():
+                start_idx = segment_data['start_idx']
+                end_idx = segment_data['end_idx']
+                
+                # Extract characteristics for this corner
+                corner_df = processed_df.iloc[start_idx:end_idx+1]
+                characteristics = self._extract_corner_characteristics(corner_df)
+                
+                # Assign corner features to all data points in this corner
+                self._assign_corner_features_to_segment(
+                    corner_features, 
+                    start_idx, 
+                    end_idx, 
+                    characteristics, 
+                    corner_id
+                )
+            
+            # Add corner features to original telemetry data
+            enhanced_telemetry = []
+            for i, record in enumerate(telemetry_data):
+                enhanced_record = record.copy()
+                
+                # Add all corner features
+                for feature_name, feature_values in corner_features.items():
+                    if i < len(feature_values):
+                        enhanced_record[feature_name] = feature_values[i]
+                
+                enhanced_telemetry.append(enhanced_record)
+            
+            print(f"[INFO] Enhanced {len(enhanced_telemetry)} telemetry records with corner features")
+            return enhanced_telemetry
+            
+        except Exception as e:
+            print(f"[ERROR] Failed to extract corner features: {str(e)}")
+            return telemetry_data  # Return original data if feature extraction fails
+    
+    def _identify_corner_segments_unsupervised(self, df: pd.DataFrame) -> Dict[int, Dict[str, Any]]:
+        """
+        Identify corner segments using unsupervised clustering of telemetry patterns
+        """
+        # Required columns for corner identification
+        required_cols = ['Physics_steer_angle', 'Physics_speed_kmh']
+        if not all(col in df.columns for col in required_cols):
+            print(f"[WARNING] Missing required columns for corner identification")
+            return {}
+        
+        # Create feature matrix for corner detection
+        features = self._create_corner_detection_features(df)
+        if features is None:
+            return {}
+        
+        # Apply clustering to identify corner regions
+        corner_labels = self._cluster_corner_regions(features)
+        
+        # Convert cluster labels to corner segments
+        corner_segments = self._extract_segments_from_clusters(df, corner_labels, features)
+        
+        return corner_segments
+    
+    def _create_corner_detection_features(self, df: pd.DataFrame) -> Optional[np.ndarray]:
+        """Create feature matrix for corner detection"""
+        try:
+            features = []
+            
+            # Steering angle features (absolute and smoothed)
+            steering_abs = np.abs(df['Physics_steer_angle'].fillna(0))
+            if len(steering_abs) >= self.smoothing_window:
+                steering_smooth = savgol_filter(steering_abs, self.smoothing_window, 2)
+            else:
+                steering_smooth = steering_abs.rolling(window=3, center=True).mean().fillna(steering_abs)
+            
+            features.append(steering_smooth)
+            
+            # Speed features
+            speed = df['Physics_speed_kmh'].fillna(0)
+            speed_smooth = speed.rolling(window=5).mean().fillna(speed)
+            features.append(speed_smooth)
+            
+            # Speed change rate
+            speed_change = speed_smooth.diff().fillna(0)
+            features.append(speed_change)
+            
+            # Lateral G-force (if available)
+            if 'Physics_g_force_x' in df.columns:
+                g_force_lat = np.abs(df['Physics_g_force_x'].fillna(0))
+                features.append(g_force_lat)
+            
+            # Brake and throttle (if available)
+            if 'Physics_brake' in df.columns:
+                brake = df['Physics_brake'].fillna(0)
+                features.append(brake)
+            
+            if 'Physics_gas' in df.columns:
+                throttle = df['Physics_gas'].fillna(0)
+                features.append(throttle)
+            
+            # Combine features
+            feature_matrix = np.column_stack(features)
+            
+            # Handle any remaining NaN values
+            feature_matrix = np.nan_to_num(feature_matrix, nan=0.0)
+            
+            return feature_matrix
+            
+        except Exception as e:
+            print(f"[ERROR] Failed to create corner detection features: {str(e)}")
+            return None
+    
+    def _cluster_corner_regions(self, features: np.ndarray) -> np.ndarray:
+        """Use clustering to identify corner regions vs straight sections"""
+        try:
+            # Normalize features
+            scaler = RobustScaler()
+            features_scaled = scaler.fit_transform(features)
+            
+            # Use DBSCAN for adaptive clustering
+            # Parameters tuned for racing telemetry patterns
+            dbscan = DBSCAN(
+                eps=0.5,
+                min_samples=max(5, self.min_corner_duration // 2),
+                metric='euclidean'
+            )
+            
+            labels = dbscan.fit_predict(features_scaled)
+            
+            # If DBSCAN finds too few clusters, fallback to KMeans
+            unique_labels = len(np.unique(labels))
+            if unique_labels < 3:  # At least need corner vs straight distinction
+                print("[INFO] DBSCAN found few clusters, trying KMeans fallback")
+                
+                # Try KMeans with different cluster numbers
+                best_score = -1
+                best_labels = labels
+                
+                for n_clusters in range(3, min(8, len(features) // 20)):
+                    if n_clusters >= len(features):
+                        break
+                        
+                    kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
+                    k_labels = kmeans.fit_predict(features_scaled)
+                    
+                    try:
+                        score = silhouette_score(features_scaled, k_labels)
+                        if score > best_score:
+                            best_score = score
+                            best_labels = k_labels
+                    except:
+                        continue
+                
+                labels = best_labels
+            
+            return labels
+            
+        except Exception as e:
+            print(f"[ERROR] Failed to cluster corner regions: {str(e)}")
+            # Fallback: use simple threshold-based detection
+            return self._fallback_threshold_detection(features)
+    
+    def _fallback_threshold_detection(self, features: np.ndarray) -> np.ndarray:
+        """Fallback method using simple thresholding"""
+        try:
+            # Use steering angle (first feature) for simple detection
+            steering = features[:, 0]
+            threshold = np.percentile(steering, 70)
+            
+            # Label high steering as corners (1), low steering as straights (0)
+            labels = (steering > threshold).astype(int)
+            
+            return labels
+            
+        except Exception as e:
+            print(f"[ERROR] Fallback detection failed: {str(e)}")
+            return np.zeros(len(features), dtype=int)
+    
+    def _extract_segments_from_clusters(self, df: pd.DataFrame, labels: np.ndarray, features: np.ndarray) -> Dict[int, Dict[str, Any]]:
+        """Extract corner segments from cluster labels"""
+        corner_segments = {}
+        corner_id = 0
+        
+        # Find transitions in labels to identify segments
+        label_changes = np.diff(labels, prepend=labels[0])
+        segment_starts = np.where(label_changes != 0)[0]
+        
+        # Add end of data as final segment boundary
+        segment_starts = np.append(segment_starts, len(labels))
+        
+        for i in range(len(segment_starts) - 1):
+            start_idx = segment_starts[i]
+            end_idx = segment_starts[i + 1] - 1
+            
+            segment_label = labels[start_idx]
+            segment_length = end_idx - start_idx + 1
+            
+            # Only consider segments that might be corners (non-zero labels or high activity)
+            is_corner_candidate = (
+                segment_label != 0 or  # Non-zero cluster label
+                segment_length >= self.min_corner_duration or  # Long enough duration
+                self._is_high_activity_segment(features[start_idx:end_idx+1])  # High activity
+            )
+            
+            if is_corner_candidate and segment_length >= self.min_corner_duration:
+                # Calculate track position if available
+                position_start = 0.0
+                position_end = 0.0
+                
+                if 'Graphics_normalized_car_position' in df.columns:
+                    pos_col = df['Graphics_normalized_car_position']
+                    if start_idx < len(pos_col) and not pd.isna(pos_col.iloc[start_idx]):
+                        position_start = float(pos_col.iloc[start_idx])
+                    if end_idx < len(pos_col) and not pd.isna(pos_col.iloc[end_idx]):
+                        position_end = float(pos_col.iloc[end_idx])
+                
+                corner_segments[corner_id] = {
+                    'start_idx': start_idx,
+                    'end_idx': end_idx,
+                    'position_start': position_start,
+                    'position_end': position_end,
+                    'cluster_label': int(segment_label),
+                    'segment_length': segment_length
+                }
+                
+                corner_id += 1
+        
+        print(f"[INFO] Extracted {len(corner_segments)} corner segments from clustering")
+        return corner_segments
+    
+    def _is_high_activity_segment(self, segment_features: np.ndarray) -> bool:
+        """Determine if a segment shows high cornering activity"""
+        if len(segment_features) == 0:
+            return False
+        
+        # Check steering activity (first feature)
+        steering_activity = np.mean(segment_features[:, 0])
+        steering_variance = np.var(segment_features[:, 0])
+        
+        # Check speed variance (second feature if available)
+        speed_variance = 0.0
+        if segment_features.shape[1] > 1:
+            speed_variance = np.var(segment_features[:, 1])
+        
+        # High activity if steering is above median with some variance
+        overall_steering_median = np.median(segment_features[:, 0]) if len(segment_features) > 0 else 0
+        
+        return (
+            steering_activity > overall_steering_median * 0.5 and
+            (steering_variance > 0.1 or speed_variance > 10.0)
+        )
+    
+    def _extract_corner_characteristics(self, corner_df: pd.DataFrame) -> CornerCharacteristics:
+        """Extract detailed characteristics from a corner segment"""
+        characteristics = CornerCharacteristics()
+        
+        if len(corner_df) == 0:
+            return characteristics
+        
+        try:
+            # Basic duration and position
+            characteristics.total_corner_duration = len(corner_df)
+            
+            # Speed analysis
+            if 'Physics_speed_kmh' in corner_df.columns:
+                speed = corner_df['Physics_speed_kmh'].fillna(0)
+                characteristics.apex_min_speed = float(speed.min())
+                
+                # Speed efficiency (how much speed is maintained)
+                if speed.max() > 0:
+                    characteristics.speed_efficiency = float(speed.min() / speed.max())
+            
+            # Steering analysis
+            if 'Physics_steer_angle' in corner_df.columns:
+                steering = corner_df['Physics_steer_angle'].fillna(0)
+                characteristics.apex_max_steering = float(np.abs(steering).max())
+                
+                # Determine corner direction
+                avg_steering = steering.mean()
+                characteristics.corner_direction = "right" if avg_steering > 0 else "left"
+                
+                # Calculate curvature metrics
+                characteristics.avg_curvature = float(np.abs(steering).mean())
+                characteristics.max_curvature = float(np.abs(steering).max())
+                characteristics.curvature_variance = float(np.var(np.abs(steering)))
+            
+            # G-force analysis
+            if 'Physics_g_force_x' in corner_df.columns:
+                g_lat = corner_df['Physics_g_force_x'].fillna(0)
+                characteristics.apex_g_force_lat = float(np.abs(g_lat).max())
+            
+            if 'Physics_g_force_z' in corner_df.columns:
+                g_long = corner_df['Physics_g_force_z'].fillna(0)
+                characteristics.entry_g_force_long_max = float(g_long.max())  # Braking
+                characteristics.exit_g_force_long_max = float(g_long.min())   # Acceleration
+            
+            # Phase analysis
+            self._analyze_corner_phases(corner_df, characteristics)
+            
+            # Corner type classification
+            characteristics.corner_type = self._classify_corner_type(characteristics)
+            
+            # Advanced scoring
+            self._calculate_advanced_scores(corner_df, characteristics)
+            
+        except Exception as e:
+            print(f"[WARNING] Error extracting corner characteristics: {str(e)}")
+        
+        return characteristics
+    
+    def _analyze_corner_phases(self, corner_df: pd.DataFrame, characteristics: CornerCharacteristics):
+        """Analyze entry, apex, and exit phases of the corner"""
+        try:
+            corner_length = len(corner_df)
+            if corner_length < 6:  # Too short for phase analysis
+                return
+            
+            # Find apex (minimum speed point)
+            if 'Physics_speed_kmh' in corner_df.columns:
+                speed = corner_df['Physics_speed_kmh'].fillna(0)
+                apex_idx = speed.idxmin() - corner_df.index[0]  # Relative to corner start
+                
+                # Define phases based on apex position
+                entry_end = max(0, apex_idx - 1)
+                exit_start = min(corner_length - 1, apex_idx + 1)
+                
+                # Entry phase (start to apex)
+                if entry_end > 0:
+                    entry_df = corner_df.iloc[0:entry_end+1]
+                    characteristics.entry_duration = len(entry_df)
+                    
+                    if len(entry_df) > 1:
+                        entry_speed_start = entry_df['Physics_speed_kmh'].iloc[0]
+                        entry_speed_end = entry_df['Physics_speed_kmh'].iloc[-1]
+                        characteristics.entry_speed_delta = float(entry_speed_end - entry_speed_start)
+                    
+                    # Entry brake analysis
+                    if 'Physics_brake' in entry_df.columns:
+                        characteristics.entry_brake_intensity = float(entry_df['Physics_brake'].max())
+                    
+                    # Entry steering rate
+                    if 'Physics_steer_angle' in entry_df.columns and len(entry_df) > 1:
+                        steering_diff = np.abs(np.diff(entry_df['Physics_steer_angle']))
+                        characteristics.entry_steering_rate = float(np.mean(steering_diff))
+                
+                # Apex phase (small region around minimum speed)
+                apex_start = max(0, apex_idx - 2)
+                apex_end = min(corner_length - 1, apex_idx + 2)
+                apex_df = corner_df.iloc[apex_start:apex_end+1]
+                characteristics.apex_duration = len(apex_df)
+                
+                # Exit phase (apex to end)
+                if exit_start < corner_length - 1:
+                    exit_df = corner_df.iloc[exit_start:]
+                    characteristics.exit_duration = len(exit_df)
+                    
+                    if len(exit_df) > 1:
+                        exit_speed_start = exit_df['Physics_speed_kmh'].iloc[0]
+                        exit_speed_end = exit_df['Physics_speed_kmh'].iloc[-1]
+                        characteristics.exit_speed_delta = float(exit_speed_end - exit_speed_start)
+                    
+                    # Exit throttle analysis
+                    if 'Physics_gas' in exit_df.columns:
+                        throttle = exit_df['Physics_gas'].fillna(0)
+                        if len(throttle) > 1:
+                            throttle_progression = np.diff(throttle).mean()
+                            characteristics.exit_throttle_progression = float(throttle_progression)
+                    
+                    # Exit steering unwind rate
+                    if 'Physics_steer_angle' in exit_df.columns and len(exit_df) > 1:
+                        steering_abs = np.abs(exit_df['Physics_steer_angle'])
+                        if len(steering_abs) > 1:
+                            unwind_rate = np.diff(steering_abs).mean()
+                            characteristics.exit_steering_unwind_rate = float(-unwind_rate)  # Negative because unwinding
+                        
+        except Exception as e:
+            print(f"[WARNING] Error analyzing corner phases: {str(e)}")
+    
+    def _classify_corner_type(self, characteristics: CornerCharacteristics) -> str:
+        """Classify the type of corner based on characteristics"""
+        try:
+            duration = characteristics.total_corner_duration
+            max_steering = characteristics.apex_max_steering
+            speed_efficiency = characteristics.speed_efficiency
+            avg_curvature = characteristics.avg_curvature
+            
+            # Hairpin: long duration, high steering, low speed efficiency
+            if duration > 30 and max_steering > 0.5 and speed_efficiency < 0.4:
+                return "hairpin"
+            
+            # Chicane: short duration, high steering variation
+            elif duration < 20 and characteristics.curvature_variance > 0.2:
+                return "chicane"
+            
+            # Sweeper: long duration, moderate steering, high speed efficiency  
+            elif duration > 25 and max_steering < 0.4 and speed_efficiency > 0.7:
+                return "sweeper"
+            
+            # Fast corner: short-medium duration, low-medium steering, high speed
+            elif duration < 25 and max_steering < 0.3 and speed_efficiency > 0.8:
+                return "fast_corner"
+            
+            # Tight corner: medium duration, high steering
+            elif max_steering > 0.4 and speed_efficiency < 0.6:
+                return "tight_corner"
+            
+            # Medium corner: default case
+            else:
+                return "medium_corner"
+                
+        except Exception as e:
+            print(f"[WARNING] Error classifying corner type: {str(e)}")
+            return "unknown"
+    
+    def _calculate_advanced_scores(self, corner_df: pd.DataFrame, characteristics: CornerCharacteristics):
+        """Calculate advanced performance scores"""
+        try:
+            # Trail braking score
+            if 'Physics_brake' in corner_df.columns and 'Physics_steer_angle' in corner_df.columns:
+                brake = corner_df['Physics_brake'].fillna(0)
+                steering = np.abs(corner_df['Physics_steer_angle'].fillna(0))
+                
+                # Trail braking is simultaneous braking and steering
+                overlap = (brake > 0.1) & (steering > 0.1)
+                characteristics.trail_braking_score = float(overlap.sum() / len(corner_df))
+            
+            # Throttle discipline score (smooth throttle application)
+            if 'Physics_gas' in corner_df.columns:
+                throttle = corner_df['Physics_gas'].fillna(0)
+                if len(throttle) > 1:
+                    throttle_smoothness = 1.0 - (np.var(np.diff(throttle)) / (np.mean(throttle) + 0.001))
+                    characteristics.throttle_discipline_score = max(0.0, min(1.0, throttle_smoothness))
+            
+            # Consistency score (how consistent the inputs are)
+            consistency_scores = []
+            
+            for col in ['Physics_steer_angle', 'Physics_speed_kmh', 'Physics_brake', 'Physics_gas']:
+                if col in corner_df.columns:
+                    data = corner_df[col].fillna(0)
+                    if len(data) > 1 and data.std() > 0:
+                        # Lower coefficient of variation = higher consistency
+                        cv = data.std() / (abs(data.mean()) + 0.001)
+                        consistency = 1.0 / (1.0 + cv)
+                        consistency_scores.append(consistency)
+            
+            if consistency_scores:
+                characteristics.consistency_score = float(np.mean(consistency_scores))
+                
+        except Exception as e:
+            print(f"[WARNING] Error calculating advanced scores: {str(e)}")
+    
+    def _cluster_corner_types(self, corner_patterns: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Cluster similar corners to identify common corner types on the track"""
+        if not corner_patterns:
+            return {"clusters": [], "cluster_labels": []}
+        
+        try:
+            # Create feature matrix from corner characteristics
+            feature_names = [
+                'total_corner_duration', 'apex_max_steering', 'speed_efficiency',
+                'avg_curvature', 'entry_duration', 'apex_duration', 'exit_duration'
+            ]
+            
+            features = []
+            for pattern in corner_patterns:
+                char = pattern['characteristics']
+                feature_row = [
+                    char.get(name, 0.0) for name in feature_names
+                ]
+                features.append(feature_row)
+            
+            features_array = np.array(features)
+            
+            # Normalize features
+            scaler = StandardScaler()
+            features_scaled = scaler.fit_transform(features_array)
+            
+            # Determine optimal number of clusters
+            max_clusters = min(6, len(corner_patterns) // 2)
+            if max_clusters < 2:
+                return {"clusters": [{"type": "single_type", "corners": list(range(len(corner_patterns)))}], "cluster_labels": [0] * len(corner_patterns)}
+            
+            best_score = -1
+            best_labels = None
+            best_n_clusters = 2
+            
+            for n in range(2, max_clusters + 1):
+                kmeans = KMeans(n_clusters=n, random_state=42, n_init=10)
+                labels = kmeans.fit_predict(features_scaled)
+                
+                try:
+                    score = silhouette_score(features_scaled, labels)
+                    if score > best_score:
+                        best_score = score
+                        best_labels = labels
+                        best_n_clusters = n
+                except:
+                    continue
+            
+            if best_labels is None:
+                best_labels = [0] * len(corner_patterns)
+            
+            # Create cluster descriptions
+            clusters = []
+            for cluster_id in range(best_n_clusters):
+                cluster_corners = [i for i, label in enumerate(best_labels) if label == cluster_id]
+                if not cluster_corners:
+                    continue
+                
+                # Analyze cluster characteristics
+                cluster_chars = [corner_patterns[i]['characteristics'] for i in cluster_corners]
+                avg_duration = np.mean([c.get('total_corner_duration', 0) for c in cluster_chars])
+                avg_steering = np.mean([c.get('apex_max_steering', 0) for c in cluster_chars])
+                avg_speed_eff = np.mean([c.get('speed_efficiency', 0) for c in cluster_chars])
+                
+                # Classify cluster type
+                if avg_duration > 30 and avg_steering > 0.5:
+                    cluster_type = "hairpins"
+                elif avg_duration < 20:
+                    cluster_type = "chicanes_tight_corners"
+                elif avg_speed_eff > 0.7:
+                    cluster_type = "fast_sweepers"
+                else:
+                    cluster_type = "medium_corners"
+                
+                clusters.append({
+                    "cluster_id": int(cluster_id),
+                    "type": cluster_type,
+                    "corner_count": len(cluster_corners),
+                    "corners": cluster_corners,
+                    "avg_characteristics": {
+                        "duration": float(avg_duration),
+                        "max_steering": float(avg_steering),
+                        "speed_efficiency": float(avg_speed_eff)
+                    }
+                })
+            
+            return {
+                "clusters": clusters,
+                "cluster_labels": best_labels.tolist(),
+                "silhouette_score": float(best_score)
+            }
+            
+        except Exception as e:
+            print(f"[ERROR] Failed to cluster corner types: {str(e)}")
+            return {"clusters": [], "cluster_labels": []}
+    
+    def _initialize_corner_feature_columns(self, data_length: int) -> Dict[str, List[float]]:
+        """Initialize corner feature columns with default values"""
+        feature_names = [
+            # Corner identification
+            'corner_id', 'is_in_corner', 'corner_phase',
+            
+            # Entry phase features
+            'corner_entry_duration', 'corner_entry_speed_delta', 'corner_entry_brake_intensity',
+            'corner_entry_steering_rate', 'corner_entry_g_force_lat_max', 'corner_entry_g_force_long_max',
+            
+            # Apex phase features  
+            'corner_apex_duration', 'corner_apex_min_speed', 'corner_apex_max_steering',
+            'corner_apex_curvature', 'corner_apex_g_force_lat',
+            
+            # Exit phase features
+            'corner_exit_duration', 'corner_exit_speed_delta', 'corner_exit_throttle_progression',
+            'corner_exit_steering_unwind_rate', 'corner_exit_g_force_lat_max', 'corner_exit_g_force_long_max',
+            
+            # Overall corner features
+            'corner_total_duration', 'corner_severity', 'corner_type_numeric', 'corner_direction_numeric',
+            'corner_speed_efficiency', 'corner_racing_line_adherence',
+            
+            # Curvature features
+            'corner_avg_curvature', 'corner_max_curvature', 'corner_curvature_variance',
+            
+            # Advanced features
+            'corner_trail_braking_score', 'corner_throttle_discipline_score', 'corner_consistency_score'
+        ]
+        
+        corner_features = {}
+        for feature_name in feature_names:
+            corner_features[feature_name] = [0.0] * data_length
+        
+        return corner_features
+    
+    def _assign_corner_features_to_segment(self, corner_features: Dict[str, List[float]], 
+                                          start_idx: int, end_idx: int, 
+                                          characteristics: CornerCharacteristics, 
+                                          corner_id: int):
+        """Assign corner characteristics as features to all data points in a corner segment"""
+        try:
+            # Convert corner type and direction to numeric
+            corner_type_map = {
+                'hairpin': 1, 'chicane': 2, 'sweeper': 3, 'fast_corner': 4, 
+                'tight_corner': 5, 'medium_corner': 6, 'unknown': 0
+            }
+            direction_map = {'left': -1, 'right': 1, 'unknown': 0}
+            
+            corner_type_numeric = corner_type_map.get(characteristics.corner_type, 0)
+            direction_numeric = direction_map.get(characteristics.corner_direction, 0)
+            
+            # Assign features to all points in the corner segment
+            for i in range(start_idx, min(end_idx + 1, len(corner_features['corner_id']))):
+                # Basic identification
+                corner_features['corner_id'][i] = float(corner_id)
+                corner_features['is_in_corner'][i] = 1.0
+                corner_features['corner_phase'][i] = self._determine_phase_for_point(
+                    i, start_idx, end_idx, characteristics
+                )
+                
+                # Entry phase features
+                corner_features['corner_entry_duration'][i] = characteristics.entry_duration
+                corner_features['corner_entry_speed_delta'][i] = characteristics.entry_speed_delta
+                corner_features['corner_entry_brake_intensity'][i] = characteristics.entry_brake_intensity
+                corner_features['corner_entry_steering_rate'][i] = characteristics.entry_steering_rate
+                corner_features['corner_entry_g_force_lat_max'][i] = characteristics.entry_g_force_lat_max
+                corner_features['corner_entry_g_force_long_max'][i] = characteristics.entry_g_force_long_max
+                
+                # Apex phase features
+                corner_features['corner_apex_duration'][i] = characteristics.apex_duration
+                corner_features['corner_apex_min_speed'][i] = characteristics.apex_min_speed
+                corner_features['corner_apex_max_steering'][i] = characteristics.apex_max_steering
+                corner_features['corner_apex_curvature'][i] = characteristics.apex_curvature
+                corner_features['corner_apex_g_force_lat'][i] = characteristics.apex_g_force_lat
+                
+                # Exit phase features
+                corner_features['corner_exit_duration'][i] = characteristics.exit_duration
+                corner_features['corner_exit_speed_delta'][i] = characteristics.exit_speed_delta
+                corner_features['corner_exit_throttle_progression'][i] = characteristics.exit_throttle_progression
+                corner_features['corner_exit_steering_unwind_rate'][i] = characteristics.exit_steering_unwind_rate
+                corner_features['corner_exit_g_force_lat_max'][i] = characteristics.exit_g_force_lat_max
+                corner_features['corner_exit_g_force_long_max'][i] = characteristics.exit_g_force_long_max
+                
+                # Overall corner features
+                corner_features['corner_total_duration'][i] = characteristics.total_corner_duration
+                corner_features['corner_severity'][i] = characteristics.corner_severity
+                corner_features['corner_type_numeric'][i] = float(corner_type_numeric)
+                corner_features['corner_direction_numeric'][i] = float(direction_numeric)
+                corner_features['corner_speed_efficiency'][i] = characteristics.speed_efficiency
+                corner_features['corner_racing_line_adherence'][i] = characteristics.racing_line_adherence
+                
+                # Curvature features
+                corner_features['corner_avg_curvature'][i] = characteristics.avg_curvature
+                corner_features['corner_max_curvature'][i] = characteristics.max_curvature
+                corner_features['corner_curvature_variance'][i] = characteristics.curvature_variance
+                
+                # Advanced features
+                corner_features['corner_trail_braking_score'][i] = characteristics.trail_braking_score
+                corner_features['corner_throttle_discipline_score'][i] = characteristics.throttle_discipline_score
+                corner_features['corner_consistency_score'][i] = characteristics.consistency_score
+        
+        except Exception as e:
+            print(f"[WARNING] Error assigning corner features: {str(e)}")
+    
+    def _determine_phase_for_point(self, point_idx: int, start_idx: int, end_idx: int, 
+                                  characteristics: CornerCharacteristics) -> float:
+        """Determine which phase (entry/apex/exit) a specific point belongs to"""
+        try:
+            corner_length = end_idx - start_idx + 1
+            relative_pos = (point_idx - start_idx) / corner_length if corner_length > 0 else 0
+            
+            # Phase mapping: 1 = entry, 2 = apex, 3 = exit
+            entry_fraction = characteristics.entry_duration / characteristics.total_corner_duration
+            apex_fraction = characteristics.apex_duration / characteristics.total_corner_duration
+            
+            if relative_pos <= entry_fraction:
+                return 1.0  # Entry
+            elif relative_pos >= (1.0 - apex_fraction / 2):
+                return 3.0  # Exit
+            else:
+                return 2.0  # Apex
+                
+        except Exception:
+            return 2.0  # Default to apex if calculation fails
+    
+    def _filter_top_performance_data(self, df: pd.DataFrame, percentile: float = 0.1) -> pd.DataFrame:
+        """Filter telemetry data to keep only top performance laps"""
+        try:
+            # If we have lap time information, filter by fastest laps
+            if 'Graphics_last_time' in df.columns:
+                lap_times = df.groupby('Graphics_completed_lap')['Graphics_last_time'].first()
+                lap_times = lap_times[lap_times > 0]  # Remove invalid times
+                
+                if len(lap_times) > 0:
+                    time_threshold = lap_times.quantile(percentile)
+                    fast_laps = lap_times[lap_times <= time_threshold].index
+                    
+                    # Keep only data from fast laps
+                    filtered_df = df[df['Graphics_completed_lap'].isin(fast_laps)].copy()
+                    print(f"[INFO] Filtered to {len(filtered_df)} records from {len(fast_laps)} top performance laps")
+                    return filtered_df
+            
+            # Fallback: filter by speed consistency
+            if 'Physics_speed_kmh' in df.columns:
+                # Keep data points with consistent high speeds in straight sections
+                speed_std = df.groupby(df.index // 100)['Physics_speed_kmh'].std()
+                consistent_groups = speed_std.quantile(0.3)  # Low variance = consistent
+                
+                mask = df.groupby(df.index // 100)['Physics_speed_kmh'].transform('std') <= consistent_groups
+                filtered_df = df[mask].copy()
+                print(f"[INFO] Filtered to {len(filtered_df)} records based on speed consistency")
+                return filtered_df
+                
+            # If no filtering possible, return original data
+            print("[INFO] No performance filtering applied - using all data")
+            return df
+            
+        except Exception as e:
+            print(f"[WARNING] Failed to filter performance data: {str(e)}")
+            return df
+    
+    async def _extract_session_telemetry(self, session: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Extract telemetry data from a session"""
+        try:
+            session_id = session.get("_id", {}).get("$oid")
+            if not session_id:
+                return []
+            
+            # Get telemetry data for this session
+            telemetry_data = await self.backend_service.get_session_telemetry_data(session_id)
+            
+            if not telemetry_data or "telemetryData" not in telemetry_data:
+                return []
+            
+            return telemetry_data["telemetryData"]
+            
+        except Exception as e:
+            print(f"[ERROR] Failed to extract session telemetry: {str(e)}")
+            return []
+    
+    def get_corner_identification_summary(self, trackName: str, carName: Optional[str] = None) -> Dict[str, Any]:
+        """Get summary of corner identification results for a track"""
+        model_key = f"{trackName}_{carName or 'all_cars'}"
+        
+        if model_key not in self.track_corner_profiles:
+            return {
+                "success": False,
+                "error": "No corner profile found for this track/car combination"
+            }
+        
+        profile = self.track_corner_profiles[model_key]
+        
+        return {
+            "success": True,
+            "track_name": trackName,
+            "car_name": carName,
+            "total_corners": profile.get("total_corners", 0),
+            "corner_types": self._summarize_corner_types(profile.get("corner_patterns", [])),
+            "corner_clusters": profile.get("corner_clusters", {}),
+            "learning_timestamp": profile.get("learning_timestamp")
+        }
+    
+    def _summarize_corner_types(self, corner_patterns: List[Dict[str, Any]]) -> Dict[str, int]:
+        """Summarize the types of corners found"""
+        type_counts = {}
+        
+        for pattern in corner_patterns:
+            corner_type = pattern.get("characteristics", {}).get("corner_type", "unknown")
+            type_counts[corner_type] = type_counts.get(corner_type, 0) + 1
+        
+        return type_counts
+    
+    def clear_corner_cache(self, trackName: Optional[str] = None, carName: Optional[str] = None):
+        """Clear cached corner identification models"""
+        if trackName and carName:
+            model_key = f"{trackName}_{carName}"
+            self.track_corner_profiles.pop(model_key, None)
+        elif trackName:
+            # Clear all models for this track
+            keys_to_remove = [k for k in self.track_corner_profiles.keys() if k.startswith(f"{trackName}_")]
+            for key in keys_to_remove:
+                self.track_corner_profiles.pop(key, None)
+        else:
+            # Clear all cached models
+            self.track_corner_profiles.clear()
+        
+        print(f"[INFO] Cleared corner identification cache for track: {trackName or 'all'}, car: {carName or 'all'}")
+
+
+# Create service instance
+corner_identification_service = CornerIdentificationUnsupervisedService()
