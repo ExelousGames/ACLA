@@ -736,8 +736,7 @@ class ImitationLearningService:
             Predicted expert actions and recommendations
         """
         predictions = {}
-        
-        print(f"[INFO] Predicting expert actions for current telemetry state")
+
         # Predict driving behavior
         if 'behavior_learning' in model_data:
             behavior_model = model_data['behavior_learning']['modelData']['model']

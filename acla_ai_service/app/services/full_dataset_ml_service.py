@@ -51,6 +51,7 @@ try:
     import torch
     import torch.nn as nn
     from torch.utils.data import DataLoader
+    from ..models.transformer_model import ExpertActionTransformer, ExpertActionTrainer, TelemetryActionDataset
     TORCH_AVAILABLE = True
 except ImportError:
     TORCH_AVAILABLE = False
@@ -332,6 +333,28 @@ class Full_dataset_TelemetryMLService:
                 self._emergency_cleanup_fetch_lock(model_key, track_name or 'any', car_name or 'any')
             
             raise e
+    
+    def _print_section_divider(self, title: str, width: int = 80):
+        """
+        Print a large, visually prominent section divider for console output
+        
+        Args:
+            title: Section title to display
+            width: Width of the divider (default 80 characters)
+        """
+        # Create the divider lines
+        border_line = "=" * width
+        title_line = f"║ {title.center(width - 4)} ║"
+        empty_line = f"║{' ' * (width - 2)}║"
+        
+        print()
+        print(border_line)
+        print(empty_line)
+        print(title_line)
+        print(empty_line)
+        print(border_line)
+        print()
+        
     
     def preload_models_for_session(self, 
                                    track_name: str, 
@@ -720,15 +743,22 @@ class Full_dataset_TelemetryMLService:
     
 
     async def transformerLearning(self, trackName: str):
+        
+        """
+        returns: success, transformer_training, expert_imitation_trained    , contextual_data_enriched, training_pairs_generated, comparison_results, track_name
+        """
+        self._print_section_divider("FETCHING TELEMETRY DATA FROM BACKEND")
+        #retrieve all racing session in database
         try:
-            sessions = await backend_service.get_all_racing_sessions(trackName)
+            sessions_summary = await backend_service.get_all_racing_sessions(trackName)
         except Exception as e:
             return {"error": str(e)}
 
+        #list of telemetry data for each session
         each_session_telemetry_data = []
   
-        for session in sessions.get("sessions", []):
-                each_session_telemetry_data.append(session.get("data", []))
+        for session_summary in sessions_summary.get("sessions", []):
+                each_session_telemetry_data.append(session_summary.get("data", []))
         if not each_session_telemetry_data:
             raise ValueError("No telemetry data found")
         
@@ -736,10 +766,7 @@ class Full_dataset_TelemetryMLService:
         # This ensures each telemetry record maintains its field names as dictionary keys
         flattened_telemetry_data = []
         for session_data in each_session_telemetry_data:
-            if isinstance(session_data, list):
                 flattened_telemetry_data.extend(session_data)
-            else:
-                flattened_telemetry_data.append(session_data)
         
         # make sure every ai model is using the same data for training
         # Convert to DataFrame from list of dictionaries (this preserves column names)
@@ -753,54 +780,55 @@ class Full_dataset_TelemetryMLService:
         telemetry_features = TelemetryFeatures()
         relevant_features = telemetry_features.get_features_for_imitate_expert()
         processed_df = feature_processor.filter_features_by_list(processed_df, relevant_features)
-        processed_df,laps = feature_processor._filter_top_performance_laps(processed_df,1)
-
+        processed_df,lap_df_list = feature_processor._filter_top_performance_laps(processed_df,1)
 
         if processed_df.empty:
             raise ValueError("No valid telemetry data available after filtering for training.")
         
         # Filter top 1% laps as expert demonstrations, but ensure at least 1 lap
-        top_laps_count = max(1, int(len(laps) * 0.01))
-        top_laps = laps[:top_laps_count]
+        top_laps_df_count = max(1, int(len(lap_df_list) * 0.01))
+        top_laps_df = lap_df_list[:top_laps_df_count]
         # get rest of laps
-        rest_laps = laps[top_laps_count:]
+        bottom_laps_df = lap_df_list[top_laps_df_count:]
 
-        # Flatten the DataFrames to list of dictionaries for imitation learning
-        flatten_laps = []
-        for lap_df in top_laps:
+        # Flatten the DataFrames to list of laps for imitation learning
+        top_laps_telemetry_list = []
+        for lap_df in top_laps_df:
             # Convert DataFrame to list of dictionaries
             lap_records = lap_df.to_dict('records')
-            flatten_laps.extend(lap_records)
+            top_laps_telemetry_list.extend(lap_records)
         
         
         # Learn from expert demonstrations
+        self._print_section_divider("TRAINING IMITATION LEARNING MODEL")
         imitation_learning = ImitateExpertLearningService()
-        imitation_learning.train_ai_model(flatten_laps)
+        imitation_learning.train_ai_model(top_laps_telemetry_list)
         
-        # Convert rest_laps DataFrames to the format expected by enriched_contextual_data
-        rest_laps_dict_format = []
-        for lap_df in rest_laps:
+        # Convert rest_laps DataFrames to list of lap records (dictionaries)
+        bottom_laps_telemetry_list = []
+        for lap_df in bottom_laps_df:
             # Convert DataFrame to list of dictionaries
             lap_records = lap_df.to_dict('records')
-            # Wrap in a dictionary with 'data' key to match expected format
-            rest_laps_dict_format.append({
-                'data': lap_records,
-                'lap_index': len(rest_laps_dict_format)
-            })
+            # Add lap records directly to the list
+            bottom_laps_telemetry_list.extend(lap_records)
         
         #enrich data
-        enriched_contextual_data = await self.enriched_contextual_data(rest_laps_dict_format)
+        self._print_section_divider("ENRICHING CONTEXTUAL DATA")
+        enriched_contextual_data = await self.enriched_contextual_data(bottom_laps_telemetry_list)
 
         #process enriched data, Generate training pairs with performance sections
-        comparison_results = imitation_learning.compare_telemetry_with_expert(enriched_contextual_data.get("data"), 5, 5)
+        self._print_section_divider("GENERATING TRAINING PAIRS")
+        comparison_results = imitation_learning.compare_telemetry_with_expert(enriched_contextual_data, 5, 5)
         training_and_expert_action = comparison_results.get('transformer_training_pairs', [])
         
         # train transformer model
+        self._print_section_divider("TRAINING TRANSFORMER MODEL")
         transformer_results = await self._train_expert_action_transformer(
             training_and_expert_action=training_and_expert_action,
             trackName=trackName
         )
         
+        self._print_section_divider("TRANSFORMER LEARNING COMPLETED")
         return {
             "success": True,
             "transformer_training": transformer_results,
@@ -835,14 +863,6 @@ class Full_dataset_TelemetryMLService:
                     "success": False,
                     "error": "PyTorch is not available - please install torch to use transformer functionality"
                 }
-            
-            # Import the transformer model (inside try block to handle import errors gracefully)
-            from ..models.transformer_model import (
-                ExpertActionTransformer, 
-                ExpertActionTrainer,
-                TelemetryActionDataset,
-                create_expert_action_transformer
-            )
             
             print(f"[INFO] Starting transformer training for {trackName} with {len(training_and_expert_action)} training pairs")
             
@@ -890,16 +910,29 @@ class Full_dataset_TelemetryMLService:
             
             print(f"[INFO] Extracted {len(telemetry_data)} telemetry records and {len(expert_actions)} expert actions")
             
-            # Determine input feature count from telemetry data
-            if isinstance(telemetry_data[0], dict):
-                input_features = len(telemetry_data[0])
-            else:
-                # Fallback to a reasonable number if structure is different
-                input_features = 32
+            # Create dataset first to determine actual feature count
+            temp_dataset = TelemetryActionDataset(
+                telemetry_data=telemetry_data,
+                expert_actions=expert_actions,
+                sequence_length=50,
+                prediction_horizon=20
+            )
             
-            # Create transformer model and trainer
-            model, trainer = create_expert_action_transformer(
-                telemetry_features=input_features,
+            if len(temp_dataset) == 0:
+                return {
+                    "success": False,
+                    "error": "Dataset creation resulted in 0 sequences - check data compatibility"
+                }
+            
+            # Get actual input features from processed data
+            sample_input, _ = temp_dataset[0]
+            input_features = sample_input.size(-1)  # Last dimension is feature dimension
+            
+            print(f"[INFO] Detected {input_features} input features from processed telemetry data")
+            
+            # Create transformer model and trainer with correct feature count
+            model = ExpertActionTransformer(
+                input_features=input_features,
                 action_features=3,  # steering, throttle, brake
                 d_model=256, # embedding dimension
                 nhead=8,
@@ -910,23 +943,15 @@ class Full_dataset_TelemetryMLService:
                 max_sequence_length=100
             )
             
+            trainer = ExpertActionTrainer(model)
+            
             print(f"[INFO] Created transformer model with {sum(p.numel() for p in model.parameters()):,} parameters")
             
-            # Create dataset and split into train/validation
-            dataset = TelemetryActionDataset(
-                telemetry_data=telemetry_data,
-                expert_actions=expert_actions,
-                sequence_length=50,
-                prediction_horizon=20
-            )
+            # Use the already created dataset
+            # Use the already created dataset
+            dataset = temp_dataset
             
-            print(f"[INFO] Created dataset with {len(dataset)} sequences")
-            
-            if len(dataset) == 0:
-                return {
-                    "success": False,
-                    "error": "Dataset creation resulted in 0 sequences - check data compatibility"
-                }
+            print(f"[INFO] Dataset contains {len(dataset)} sequences")
             
             # Split into train/validation sets
             train_size = int(0.8 * len(dataset))
@@ -958,15 +983,11 @@ class Full_dataset_TelemetryMLService:
             
             print(f"[INFO] Created data loaders: train_size={len(train_dataset)}, val_size={len(val_dataset)}")
             
-            # Train the model
-            model_save_path = str(self.models_directory / f"transformer_{trackName.replace(' ', '_')}.pth")
-            
             training_results = trainer.train(
                 train_dataloader=train_dataloader,
                 val_dataloader=val_dataloader,
                 num_epochs=50,  # Adjust based on data size
                 patience=10,
-                save_path=model_save_path
             )
             
             print(f"[INFO] Transformer training completed for {trackName}")
@@ -974,7 +995,6 @@ class Full_dataset_TelemetryMLService:
             # Save model metadata to backend
             try:
                 transformer_model_data = {
-                    "model_path": model_save_path,
                     "input_features": input_features,
                     "training_results": training_results,
                     "model_parameters": {
@@ -1010,7 +1030,6 @@ class Full_dataset_TelemetryMLService:
             
             return {
                 "success": True,
-                "model_path": model_save_path,
                 "training_results": training_results,
                 "dataset_info": {
                     "total_sequences": len(dataset),
@@ -1025,346 +1044,95 @@ class Full_dataset_TelemetryMLService:
             }
             
         except ImportError as import_error:
-            return {
-                "success": False,
-                "error": f"Failed to import transformer dependencies: {str(import_error)}. Please install PyTorch.",
-                "track_name": trackName
-            }
+            raise ImportError(f"Failed to import transformer dependencies: {str(import_error)}")
         except Exception as e:
-            print(f"[ERROR] Failed to train transformer model for {trackName}: {str(e)}")
-            return {
-                "success": False,
-                "error": str(e),
-                "track_name": trackName
-            }
+            raise RuntimeError(f"[ERROR] Failed to train transformer model for {trackName}: {str(e)}")
 
-    async def predict_expert_actions(self, 
-                                   current_telemetry: List[Dict[str, Any]],
-                                   trackName: str,
-                                   sequence_length: int = 20,
-                                   temperature: float = 1.0) -> Dict[str, Any]:
+
+    async def enriched_contextual_data(self, telemetry_list: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
-        Predict expert action sequence from current telemetry using trained transformer
+        Enrich telemetry data with contextual features using trained models
         
         Args:
-            current_telemetry: Current telemetry data
-            trackName: Track name for model selection
-            sequence_length: Number of future actions to predict
-            temperature: Sampling temperature (1.0 = normal, lower = more conservative)
-            
-        Returns:
-            Predicted expert actions and confidence scores
-        """
-        try:
-            # Check if PyTorch is available
-            if not TORCH_AVAILABLE:
-                return {
-                    "success": False,
-                    "error": "PyTorch is not available - cannot perform transformer predictions"
-                }
-            
-            # Load the trained model from backend
-            try:
-                model_response = await self.backend_service.getCompleteActiveModelData(
-                    trackName, None, "expert_action_transformer"
-                )
-                
-                if "error" in model_response:
-                    return {
-                        "success": False,
-                        "error": f"No trained transformer model found for track {trackName}"
-                    }
-                
-                model_data = model_response.get("data", {}).get("modelData", {})
-                if not model_data:
-                    return {
-                        "success": False,
-                        "error": f"No model data found for track {trackName}"
-                    }
-                
-            except Exception as backend_error:
-                return {
-                    "success": False,
-                    "error": f"Failed to load model from backend: {str(backend_error)}"
-                }
-            
-            # Import transformer model
-            from ..models.transformer_model import (
-                ExpertActionTransformer, 
-                create_expert_action_transformer
-            )
-            
-            # Extract model parameters
-            model_params = model_data.get("model_parameters", {})
-            input_features = model_data.get("input_features", 32)
-            model_path = model_data.get("model_path", "")
-            
-            # Create model with same architecture
-            model, trainer = create_expert_action_transformer(
-                telemetry_features=input_features,
-                action_features=3,
-                d_model=model_params.get("d_model", 256),
-                nhead=model_params.get("nhead", 8),
-                num_encoder_layers=model_params.get("num_encoder_layers", 6),
-                num_decoder_layers=model_params.get("num_decoder_layers", 6),
-                max_sequence_length=model_params.get("sequence_length", 50)
-            )
-            
-            # Load model weights if available
-            if model_path and os.path.exists(model_path):
-                trainer.load_model(model_path)
-                print(f"[INFO] Loaded transformer model from {model_path}")
-            else:
-                print("[WARNING] Model weights not found - using untrained model")
-            
-            # Prepare input telemetry data
-            if not current_telemetry:
-                return {
-                    "success": False,
-                    "error": "No telemetry data provided for prediction"
-                }
-            
-            # Convert telemetry to tensor format
-            telemetry_df = pd.DataFrame(current_telemetry)
-            
-            # Extract features (similar to training)
-            feature_columns = [
-                'Physics_speed_kmh', 'Physics_gear', 'Physics_rpm', 'Physics_brake',
-                'Physics_gas', 'Physics_steer_angle', 'Physics_slip_angle_front_left',
-                'Physics_slip_angle_front_right', 'Physics_g_force_x', 'Physics_g_force_y',
-                'Physics_g_force_z', 'Physics_tyre_core_temp_front_left',
-                'Physics_tyre_core_temp_front_right', 'Physics_brake_temp_front_left',
-                'Physics_brake_temp_front_right', 'Graphics_delta_lap_time'
-            ]
-            
-            available_features = [col for col in feature_columns if col in telemetry_df.columns]
-            if not available_features:
-                available_features = telemetry_df.select_dtypes(include=[np.number]).columns.tolist()
-            
-            if not available_features:
-                return {
-                    "success": False,
-                    "error": "No numeric features found in telemetry data"
-                }
-            
-            features = telemetry_df[available_features].fillna(0).values
-            
-            # Apply scaling if scaler data is available
-            scaler_data = model_data.get("scaler_data")
-            if scaler_data:
-                try:
-                    scaler = StandardScaler()
-                    # Restore scaler state
-                    scaler.mean_ = np.array(scaler_data.get("mean_", [0] * features.shape[1]))
-                    scaler.scale_ = np.array(scaler_data.get("scale_", [1] * features.shape[1]))
-                    scaler.var_ = np.array(scaler_data.get("var_", [1] * features.shape[1]))
-                    scaler.n_samples_seen_ = scaler_data.get("n_samples_seen_", 1)
-                    
-                    features = scaler.transform(features)
-                except Exception as scaling_error:
-                    print(f"[WARNING] Failed to apply scaling: {scaling_error}")
-            
-            # Convert to PyTorch tensor
-            telemetry_tensor = torch.FloatTensor(features).unsqueeze(1)  # [seq_len, batch_size=1, features]
-            
-            # Predict expert actions
-            predicted_actions, performance_scores = model.predict_expert_sequence(
-                telemetry_tensor, sequence_length, temperature
-            )
-            
-            # Convert predictions back to numpy/list format
-            actions_numpy = predicted_actions.squeeze(1).numpy()  # [seq_len, action_features]
-            performance_numpy = performance_scores.squeeze().numpy()  # [seq_len]
-            
-            # Format results
-            predicted_sequence = []
-            for i in range(len(actions_numpy)):
-                action_dict = {
-                    "timestep": i + 1,
-                    "steering_angle": float(actions_numpy[i, 0]),
-                    "throttle": float(actions_numpy[i, 1]) if len(actions_numpy[i]) > 1 else 0.0,
-                    "brake": float(actions_numpy[i, 2]) if len(actions_numpy[i]) > 2 else 0.0,
-                    "performance_score": float(performance_numpy[i]) if len(performance_numpy) > i else 0.0
-                }
-                predicted_sequence.append(action_dict)
-            
-            return {
-                "success": True,
-                "track_name": trackName,
-                "predicted_actions": predicted_sequence,
-                "prediction_info": {
-                    "sequence_length": sequence_length,
-                    "temperature": temperature,
-                    "input_features": len(available_features),
-                    "input_timesteps": len(current_telemetry)
-                },
-                "model_info": {
-                    "model_parameters": model_params,
-                    "input_features": input_features
-                }
-            }
-            
-        except ImportError as import_error:
-            return {
-                "success": False,
-                "error": f"Failed to import transformer dependencies: {str(import_error)}"
-            }
-        except Exception as e:
-            print(f"[ERROR] Failed to predict expert actions for {trackName}: {str(e)}")
-            return {
-                "success": False,
-                "error": str(e),
-                "track_name": trackName
-            }
-
-    async def enriched_contextual_data(self, laps: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """
-        Enrich laps data with contextual features using trained models
-        
-        Args:
-            laps: List of lap telemetry data dictionaries
+            telemetry_list: List of telemetry record dictionaries (flat list)
             
         Returns:
             Enriched telemetry data with corner identification and tire grip features
         """
-        print(f"[INFO] Starting contextual data enrichment for {len(laps)} laps")
+        print(f"[INFO] Starting contextual data enrichment for {len(telemetry_list)} telemetry records")
         
-        if not laps:
-            print("[WARNING] No laps data provided for enrichment")
+        if not telemetry_list:
+            print("[WARNING] No telemetry data provided for enrichment")
             return []
         
         try:
-            # Split laps for training and feature extraction (70% training, 30% extraction)
-            split_index = int(len(laps) * 0.7)
-            training_laps = laps[:split_index]
-            extraction_laps = laps[split_index:]
+            # Split telemetry records for training and feature extraction (70% training, 30% extraction)
+            split_index = int(len(telemetry_list) * 0.7)
+            training_telemetry_list = telemetry_list[:split_index]
+            extraction_telemetry_list = telemetry_list[split_index:]
             
-            print(f"[INFO] Split data: {len(training_laps)} laps for training both corner identification and tire grip analysis, {len(extraction_laps)} laps for extraction for both too")
-            
-            # Flatten training data for model training
-            training_telemetry = []
-            for lap_data in training_laps:
-                if isinstance(lap_data, dict) and 'data' in lap_data:
-                    training_telemetry.extend(lap_data['data'])
-                elif isinstance(lap_data, list):
-                    training_telemetry.extend(lap_data)
-                else:
-                    training_telemetry.append(lap_data)
+            print(f"[INFO] Split data: {len(training_telemetry_list)} records for training, {len(extraction_telemetry_list)} records for extraction")
             
             # Train corner identification model using training data
-            print("[INFO] Training corner identification model...")
+            self._print_section_divider("Training corner identification model...")
             try:
-                corner_results = await self.corner_identification.learn_track_corner_patterns(training_telemetry)
+                corner_model = await self.corner_identification.learn_track_corner_patterns(training_telemetry_list)
                 
-                if corner_results.get("success"):
-                    print(f"[INFO] Corner identification training successful: {corner_results.get('total_corners_identified', 0)} corners identified")
+                if corner_model.get("success"):
+                    print(f"[INFO] Corner identification training successful: {corner_model.get('total_corners_identified', 0)} corners identified")
                 else:
-                    print(f"[WARNING] Corner identification training failed: {corner_results.get('error', 'Unknown error')}")
+                    print(f"[WARNING] Corner identification training failed: {corner_model.get('error', 'Unknown error')}")
             except Exception as e:
                 print(f"[ERROR] Corner identification training failed: {str(e)}")
-                corner_results = {"success": False, "error": str(e)}
+                corner_model = {"success": False, "error": str(e)}
             
             # Train tire grip analysis model using training data
-            print("[INFO] Training tire grip analysis model...")
+            self._print_section_divider("Training tire grip analysis model...")
             try:
-                tire_grip_results = await self.tire_grip_analysis.train_tire_grip_model(training_telemetry)
-                if tire_grip_results.get("success"):
-                    print(f"[INFO] Tire grip model training successful: {tire_grip_results.get('models_trained', 0)} models trained")
+                tire_grip_model = await self.tire_grip_analysis.train_tire_grip_model(training_telemetry_list)
+                if tire_grip_model.get("success"):
+                    print(f"[INFO] Tire grip model training successful: {tire_grip_model.get('models_trained', 0)} models trained")
                 else:
-                    print(f"[WARNING] Tire grip model training failed: {tire_grip_results.get('error', 'Unknown error')}")
+                    print(f"[WARNING] Tire grip model training failed: {tire_grip_model.get('error', 'Unknown error')}")
             except Exception as e:
                 print(f"[ERROR] Tire grip analysis training failed: {str(e)}")
-                tire_grip_results = {"success": False, "error": str(e)}
+                tire_grip_model = {"success": False, "error": str(e)}
             
-            # Now extract features for extraction telemetry data only
-            enriched_telemetry_data = []
-            total_laps = len(extraction_laps)
+            # Now extract features from extraction telemetry data
+            enriched_telemetry_data = extraction_telemetry_list.copy()  # Start with original extraction data
             
-            for lap_idx, lap_data in enumerate(extraction_laps):
-                print(f"[INFO] Processing lap {lap_idx + 1}/{total_laps} for feature extraction...")
-                
+            # Extract corner features for extraction telemetry
+            if corner_model.get("success"):
                 try:
-                    # Extract telemetry records from lap
-                    if isinstance(lap_data, dict) and 'data' in lap_data:
-                        telemetry_records = lap_data['data']
-                        lap_metadata = {k: v for k, v in lap_data.items() if k != 'data'}
-                    elif isinstance(lap_data, list):
-                        telemetry_records = lap_data
-                        lap_metadata = {}
-                    else:
-                        telemetry_records = [lap_data]
-                        lap_metadata = {}
-                    
-                    if not telemetry_records:
-                        continue
-                    
-                    # Extract corner features for this lap's telemetry
-                    corner_enhanced_telemetry = telemetry_records
-                    if corner_results.get("success"):
-                        try:
-                            corner_enhanced_telemetry = await self.corner_identification.extract_corner_features_for_telemetry(
-                                telemetry_records      
-                            )
-                            print(f"[INFO] Added corner features to {len(corner_enhanced_telemetry)} records")
-                            
-                            cornerPrediction = self.corner_identification.predict_corner_count(pd.DataFrame(telemetry_records))
-                            print(f"[INFO] Predicted corner count for lap {lap_idx + 1}: predicted {cornerPrediction.predicted_corners} corners with confidence of {cornerPrediction.confidence}")
-                        except Exception as e:
-                            print(f"[WARNING] Failed to extract corner features for lap {lap_idx}: {str(e)}")
-                            corner_enhanced_telemetry = telemetry_records
-                    
-                    # Extract tire grip features for this lap's telemetry
-                    fully_enhanced_telemetry = corner_enhanced_telemetry
-                    if tire_grip_results.get("success"):
-                        try:
-                            fully_enhanced_telemetry = await self.tire_grip_analysis.extract_tire_grip_features(
-                                corner_enhanced_telemetry
-                            )
-                            print(f"[INFO] Added tire grip features to {len(fully_enhanced_telemetry)} records")
-                        except Exception as e:
-                            print(f"[WARNING] Failed to extract tire grip features for lap {lap_idx}: {str(e)}")
-                            fully_enhanced_telemetry = corner_enhanced_telemetry
-                    
-                    # Reconstruct lap data with enhanced telemetry
-                    enriched_lap = {
-                        **lap_metadata,
-                        'data': fully_enhanced_telemetry,
-                        'enrichment_info': {
-                            'corner_features_added': corner_results.get("success", False),
-                            'tire_grip_features_added': tire_grip_results.get("success", False),
-                            'original_records_count': len(telemetry_records),
-                            'enriched_records_count': len(fully_enhanced_telemetry),
-                            'enrichment_timestamp': datetime.now().isoformat()
-                        }
-                    }
-                    
-                    enriched_telemetry_data.append(enriched_lap)
-                    
+                    self._print_section_divider("Enriching corner features for telemetry data...")
+                    enriched_telemetry_data = await self.corner_identification.extract_corner_features_for_telemetry(
+                        enriched_telemetry_data      
+                    )
+                    print(f"[INFO] Added corner features to {len(enriched_telemetry_data)} records")
                 except Exception as e:
-                    print(f"[ERROR] Failed to process lap {lap_idx}: {str(e)}")
-                    # Add original lap data on failure
-                    enriched_telemetry_data.append(lap_data)
+                    raise ValueError(f"[WARNING] Failed to extract corner features: {str(e)}")
             
-            print(f"[INFO] Contextual data enrichment completed: {len(enriched_telemetry_data)} laps processed")
+            # Extract tire grip features for extraction telemetry
+            if tire_grip_model.get("success"):
+                try:
+                    self._print_section_divider("Enriching tire grip features for telemetry data...")
+                    enriched_telemetry_data = await self.tire_grip_analysis.extract_tire_grip_features(
+                        enriched_telemetry_data
+                    )
+                    print(f"[INFO] Added tire grip features to {len(enriched_telemetry_data)} records")
+                except Exception as e:
+                    raise ValueError(f"[WARNING] Failed to extract tire grip features: {str(e)}")
             
-            # Calculate enrichment statistics
-            total_original_records = sum(
-                len(lap.get('data', [])) if isinstance(lap.get('data'), list) else 1 
-                for lap in extraction_laps
-            )
-            total_enriched_records = sum(
-                len(lap.get('data', [])) if isinstance(lap.get('data'), list) else 1 
-                for lap in enriched_telemetry_data
-            )
+            print(f"[INFO] Contextual data enrichment completed: {len(enriched_telemetry_data)} records processed")
             
+            # Print enrichment summary
             enrichment_summary = {
-                'total_laps_processed': len(enriched_telemetry_data),
-                'total_original_records': total_original_records,
-                'total_enriched_records': total_enriched_records,
-                'corner_identification_success': corner_results.get("success", False),
-                'tire_grip_analysis_success': tire_grip_results.get("success", False),
-                'training_laps_used': len(training_laps),
-                'extraction_laps_processed': len(extraction_laps)
+                'total_records_processed': len(enriched_telemetry_data),
+                'total_original_records': len(extraction_telemetry_list),
+                'corner_identification_success': corner_model.get("success", False),
+                'tire_grip_analysis_success': tire_grip_model.get("success", False),
+                'training_records_used': len(training_telemetry_list),
+                'extraction_records_processed': len(extraction_telemetry_list)
             }
             
             print(f"[INFO] Enrichment summary: {enrichment_summary}")
@@ -1373,7 +1141,7 @@ class Full_dataset_TelemetryMLService:
             
         except Exception as e:
             print(f"[ERROR] Failed to enrich contextual data: {str(e)}")
-            return laps  # Return original data on failure
+            return telemetry_list  # Return original data on failure
 
           
 if __name__ == "__main__":

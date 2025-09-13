@@ -153,7 +153,28 @@ class BackendService:
             raise Exception(f"Backend function call failed: {str(e)}")
 
     async def get_all_racing_sessions(self, trackName: Optional[str] = None, carName: Optional[str] = None, chunk_size: int = 1000) -> Dict[str, Any]:
-        """Get all racing sessions from all users in the database"""
+        """
+        Get all racing sessions from all users in the database
+        
+        return structure:
+        {   "success": True,
+            "download_id": "string", 
+            "total_sessions": 10,
+            "sessions": [  # list of sessions
+                {
+                    "sessionId": "string",
+                    "metadata": { ... },  # session metadata
+                    "data": [ ... ],      # list of telemetry data points
+                    "total_telemetry_records": 1000
+                },
+                ...
+            ]
+            "summary": {
+                "total_sessions_retrieved": 10,
+                "total_telemetry_records": 10000
+            },
+        }
+        """
         try:
             # Initialize the download to get metadata about all sessions
             init_data = {
@@ -161,16 +182,17 @@ class BackendService:
                 "carName": carName,
                 "chunkSize": chunk_size
             }
-            
-            # inital the download the sessions
-            init_response = await self.call_backend_function("racing-session/download/init", "POST", init_data)
-            
-            if "error" in init_response:
-                return init_response
-            
+
+            try:
+                # inital the download the sessions
+                init_response = await self.call_backend_function("racing-session/download/init", "POST", init_data)
+
+            except Exception as e:
+                raise RuntimeError(f"Failed to initialize racing session download: {str(e)}")
+
             download_id = init_response.get("downloadId")
             if not download_id:
-                return {"error": "No download ID received from initialization"}
+                raise RuntimeError("No download ID received from initialization")
             
             # Get all session metadata
             session_metadata = init_response.get("sessionMetadata", [])
@@ -211,23 +233,23 @@ class BackendService:
                     "sessionId": session_id,
                     "metadata": session_meta,
                     "data": session_chunks,
-                    "total_records": len(session_chunks)
+                    "total_telemetry_records": len(session_chunks)
                 })
             
             return {
                 "success": True,
                 "download_id": download_id,
                 "total_sessions": total_sessions,
-                "sessions": all_sessions_data,
+                "sessions": all_sessions_data, # session id, metadata, data, total_data_points
                 "summary": {
                     "total_sessions_retrieved": len(all_sessions_data),
-                    "total_records": sum(len(session["data"]) for session in all_sessions_data)
+                    "total_telemetry_records": sum(session.get("total_telemetry_records", 0) for session in all_sessions_data)
                 }
             }
             
         except Exception as e:
             logger.error(f"Error retrieving all racing sessions: {str(e)}")
-            return {"error": f"Failed to retrieve all racing sessions: {str(e)}"}
+            raise Exception(f"Failed to retrieve racing sessions: {str(e)}")
 
     async def send_chunked_data(self, data: Dict[str, Any], endpoint: str, chunk_size: int = 1024 * 1024) -> Dict[str, Any]:
         """Send large data in chunks to a backend endpoint"""

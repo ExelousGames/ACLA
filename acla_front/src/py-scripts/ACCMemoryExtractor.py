@@ -22,8 +22,9 @@ class ACCRecording:
             self.write_object_to_csv(sm,full_path)
             #start to record the session
             my_scheduler = sched.scheduler(time.time, time.sleep)
-            #delay of 0.1 means call function times 10 per second
-            my_scheduler.enter(0.1, 1, self.recordOnce, (my_scheduler,full_path))
+            # 60 FPS = 1/60 seconds delay between calls
+            fps_delay = 1.0 / 60.0  # 0.0166... seconds for 60 FPS
+            my_scheduler.enter(fps_delay, 1, self.recordOnce, (my_scheduler,full_path))
             my_scheduler.run()
             
         else:
