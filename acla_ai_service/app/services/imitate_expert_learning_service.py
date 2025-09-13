@@ -668,20 +668,14 @@ class ImitateExpertLearningService:
         if learning_objectives is None:
             learning_objectives = ['behavior', 'trajectory']
         
-        print(f"[INFO] Learning from {len(telemetry_data)} expert demonstrations")
-        print(f"[INFO] Learning objectives: {learning_objectives}")
-        
+        print(f"[INFO {self.__class__.__name__}] Learning from {len(telemetry_data)} expert demonstrations")
+        print(f"[INFO {self.__class__.__name__}] Learning objectives: {learning_objectives}")
+
         # Convert to DataFrame
         telemetry_df = pd.DataFrame(telemetry_data)
         feature_processor = FeatureProcessor(telemetry_df)
         # Cleaned data
         processed_df = feature_processor.general_cleaning_for_analysis()
-        
-        
-        # Filter for valid laps and select top 5% fastest
-        processed_df = feature_processor._filter_top_performance_laps(processed_df, 0.05)
-        if processed_df.empty:
-            raise ValueError("No valid telemetry data available after filtering for training.")
         
         results = {}
         
@@ -1022,7 +1016,7 @@ class ImitateExpertLearningService:
             - overall statistics and performance sections analysis
             - score statistics for performance evaluation
         """
-        print(f"[INFO] Comparing {len(incoming_telemetry)} telemetry points with expert model")
+        print(f"[INFO {self.__class__.__name__}] Comparing {len(incoming_telemetry)} telemetry points with expert model")
         
         # Check if we have trained models
         if not self.trained_models:
