@@ -14,7 +14,6 @@ import io
 from app.models.telemetry_models import TelemetryFeatures, FeatureProcessor
 from app.models.ml_algorithms import AlgorithmConfiguration
 from app.services.river_ml_service import RiverMLService
-from app.analyzers import AdvancedRacingAnalyzer
 
 
 # Utility functions to replace sklearn functionality

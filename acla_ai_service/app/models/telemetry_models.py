@@ -586,7 +586,65 @@ class TelemetryFeatures:
             "Graphics_current_tyre_set"
         ]
         
-    
+    @classmethod
+    def get_features_for_imitate_expert(cls) -> List[str]:
+        """Get features specific to imitate expert learning - includes all features used in imitate_expert_learning_service, corner_identification_unsupervised_service, and tire_grip_analysis_service"""
+        return [
+            "Graphics_normalized_car_position",
+            "Graphics_player_pos_x",
+            "Graphics_player_pos_y", 
+            "Graphics_player_pos_z",
+            "Graphics_current_time",
+            "Graphics_last_time",
+            "Graphics_completed_lap",
+            "Physics_speed_kmh",
+            "Physics_gas",
+            "Physics_brake",
+            "Physics_steer_angle",
+            "Physics_gear",
+            "Physics_rpm",
+            "Physics_g_force_x",
+            "Physics_g_force_y",
+            "Physics_g_force_z",
+            "Physics_slip_angle_front_left",
+            "Physics_slip_angle_front_right",
+            "Physics_slip_angle_rear_left",
+            "Physics_slip_angle_rear_right",
+            "Physics_slip_ratio_front_left",
+            "Physics_slip_ratio_front_right",
+            "Physics_slip_ratio_rear_left",
+            "Physics_slip_ratio_rear_right",
+            "Physics_wheel_slip_front_left",
+            "Physics_wheel_slip_front_right",
+            "Physics_wheel_slip_rear_left",
+            "Physics_wheel_slip_rear_right",
+            "Physics_suspension_travel_front_left",
+            "Physics_suspension_travel_front_right",
+            "Physics_suspension_travel_rear_left",
+            "Physics_suspension_travel_rear_right",
+            "Physics_tyre_core_temp_front_left",
+            "Physics_tyre_core_temp_front_right",
+            "Physics_tyre_core_temp_rear_left",
+            "Physics_tyre_core_temp_rear_right",
+            "Physics_brake_temp_front_left",
+            "Physics_brake_temp_front_right",
+            "Physics_brake_temp_rear_left",
+            "Physics_brake_temp_rear_right",
+            "Physics_wheel_pressure_front_left",
+            "Physics_wheel_pressure_front_right",
+            "Physics_wheel_pressure_rear_left",
+            "Physics_wheel_pressure_rear_right",
+            "Physics_kerb_vibration",
+            "Physics_slip_vibration",
+            "Physics_velocity_x",
+            "Physics_velocity_y",
+            "Physics_velocity_z",
+            "Graphics_track_grip_status",
+            "Graphics_current_tyre_set",
+            "Graphics_is_valid_lap"
+        ]
+        
+        
     @classmethod
     def get_features_for_model_type(cls, model_type: str) -> List[str]:
         """
@@ -871,6 +929,44 @@ class FeatureProcessor:
         except:
             return 0.0
 
+    def filter_features_by_list(self, df: pd.DataFrame, feature_list: List[str]) -> pd.DataFrame:
+        """
+        Filter DataFrame to only include columns that exist in the provided feature list
+        
+        Args:
+            df: Input DataFrame with telemetry data
+            feature_list: List of feature names to keep (e.g., from get_racing_line_optimization_features)
+            
+        Returns:
+            Filtered DataFrame containing only the columns that exist in both the DataFrame and feature_list
+        """
+        if df.empty:
+            print("[WARNING] Input DataFrame is empty")
+            return df.copy()
+        
+        if not feature_list:
+            print("[WARNING] Feature list is empty, returning empty DataFrame")
+            return pd.DataFrame()
+        
+        # Get the intersection of DataFrame columns and the feature list
+        available_features = [col for col in feature_list if col in df.columns]
+        missing_features = [col for col in feature_list if col not in df.columns]
+        
+        if not available_features:
+            print(f"[WARNING] No features from the provided list are available in the DataFrame")
+            print(f"[INFO] Requested features: {feature_list[:10]}{'...' if len(feature_list) > 10 else ''}")
+            print(f"[INFO] Available columns: {list(df.columns)[:10]}{'...' if len(df.columns) > 10 else ''}")
+            return pd.DataFrame()
+        
+        # Filter DataFrame to include only the available features
+        filtered_df = df[available_features].copy()
+        
+        print(f"[INFO] Filtered DataFrame to {len(available_features)} features out of {len(feature_list)} requested")
+        if missing_features:
+            print(f"[INFO] Missing {len(missing_features)} features: {missing_features[:5]}{'...' if len(missing_features) > 5 else ''}")
+        
+        return filtered_df
+
     def _filter_top_performance_laps(self, df: pd.DataFrame, keepTopLapsPercent: float=0.01) -> tuple[pd.DataFrame, List[pd.DataFrame]]:
         """
         Filter for valid laps and select top 1% fastest laps for training
@@ -892,10 +988,7 @@ class FeatureProcessor:
         # Check if we have the required columns
         has_valid_lap_column = 'Graphics_is_valid_lap' in working_df.columns
         if not has_valid_lap_column:
-            print("[WARNING] Graphics_is_valid_lap column not found, cannot validate lap quality - returning all data")
-            return working_df, [working_df]
-        else:
-            print(f"[INFO] Found Graphics_is_valid_lap column, will filter laps by validity percentage")
+            raise ValueError("[WARNING] telemetry_models - Graphics_is_valid_lap column not found, cannot validate lap quality - returning all data")
         
         # Group by lap and calculate lap times
         # Use both Graphics_completed_lap and Graphics_normalized_car_position together for robust lap detection

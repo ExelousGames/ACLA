@@ -96,15 +96,10 @@ class TireGripAnalysisService:
     - Performance optimization opportunities
     """
     
-    def __init__(self, models_directory: str = "models/tire_grip"):
+    def __init__(self):
         """
         Initialize the tire grip analysis service
-        
-        Args:
-            models_directory: Directory to save/load trained models
         """
-        self.models_directory = Path(models_directory)
-        self.models_directory.mkdir(parents=True, exist_ok=True)
         
         self.telemetry_features = TelemetryFeatures()
         self.trained_models = {}
@@ -113,11 +108,6 @@ class TireGripAnalysisService:
         
         # Backend service integration
         self.backend_service = backend_service
-        
-        # Initialize models cache
-        self._models_cache = {}
-        
-        print(f"[INFO] TireGripAnalysisService initialized with models directory: {self.models_directory}")
 
     def _calculate_friction_circle_utilization(self, row: pd.Series) -> float:
         """
@@ -388,7 +378,6 @@ class TireGripAnalysisService:
         
         # Train models for different targets
         models_results = {}
-        model_key = "tire_grip_model"  # Generic model key since no track/car specific training
         
         target_variables = [
             'friction_circle_utilization',
@@ -406,7 +395,7 @@ class TireGripAnalysisService:
         for target in target_variables:
             if target in y.columns:
                 try:
-                    model_result = self._train_individual_model(X, y[target], target, model_key)
+                    model_result = self._train_individual_model(X, y[target], target)
                     models_results[target] = model_result
                     print(f"[INFO] Trained model for {target}: R² = {model_result.get('r2_score', 'N/A')}")
                     
@@ -475,7 +464,7 @@ class TireGripAnalysisService:
             "training_timestamp": datetime.now().isoformat()
         }
 
-    def _train_individual_model(self, X: pd.DataFrame, y: pd.Series, target_name: str, model_key: str) -> Dict[str, Any]:
+    def _train_individual_model(self, X: pd.DataFrame, y: pd.Series, target_name: str) -> Dict[str, Any]:
         """
         Train an individual model for a specific target variable
         
@@ -483,7 +472,6 @@ class TireGripAnalysisService:
             X: Feature DataFrame
             y: Target Series
             target_name: Name of the target variable
-            model_key: Key for model storage
             
         Returns:
             Model training results
@@ -518,21 +506,11 @@ class TireGripAnalysisService:
         test_rmse = np.sqrt(mean_squared_error(y_test, y_pred_test))
         
         # Store model in class instance
-        model_id = f"{model_key}_{target_name}"
+        model_id = f"tire_grip_model_{target_name}"
         self.trained_models[model_id] = pipeline
         
         # Store scaler separately for easy access
         self.scalers[model_id] = pipeline.named_steps['scaler']
-        
-        # Save to disk
-        model_path = self.models_directory / f"{model_id}.pkl"
-        joblib.dump({
-            'model': pipeline,
-            'feature_names': list(X.columns),
-            'target_name': target_name,
-            'model_key': model_key,
-            'created_at': datetime.now().isoformat()
-        }, model_path)
         
         return {
             "model_id": model_id,
@@ -579,7 +557,6 @@ class TireGripAnalysisService:
         
         # Use the saved models to make predictions
         enhanced_data = []
-        model_key = "tire_grip_model"
         
         for i, (original_record, feature_row) in enumerate(zip(telemetry_data, X.to_dict('records'))):
             # Create enhanced record
@@ -591,7 +568,7 @@ class TireGripAnalysisService:
             
             # Add ML-based predictions using saved models
             try:
-                ml_features = self._predict_with_saved_models(feature_row, model_key)
+                ml_features = self._predict_with_saved_models(feature_row)
                 enhanced_record.update(ml_features)
             except Exception as e:
                 print(f"[WARNING] Failed to get ML predictions for record {i}: {str(e)}")
@@ -653,13 +630,12 @@ class TireGripAnalysisService:
         
         return features
 
-    def _predict_with_saved_models(self, feature_row: Dict[str, Any], model_key: str) -> Dict[str, float]:
+    def _predict_with_saved_models(self, feature_row: Dict[str, Any]) -> Dict[str, float]:
         """
         Predict tire grip features using the saved trained ML models in the class
         
         Args:
             feature_row: Feature data for prediction
-            model_key: Key identifying the model set
             
         Returns:
             Dictionary of ML-predicted features
@@ -684,7 +660,7 @@ class TireGripAnalysisService:
         feature_df = pd.DataFrame([feature_row])
         
         for target in target_variables:
-            model_id = f"{model_key}_{target}"
+            model_id = f"tire_grip_model_{target}"
             
             if model_id in self.trained_models:
                 try:
@@ -702,13 +678,12 @@ class TireGripAnalysisService:
         
         return ml_features
     
-    def _predict_ml_features(self, feature_row: Dict[str, Any], model_key: str) -> Dict[str, float]:
+    def _predict_ml_features(self, feature_row: Dict[str, Any]) -> Dict[str, float]:
         """
         Predict tire grip features using trained ML models
         
         Args:
             feature_row: Feature data for prediction
-            model_key: Key identifying the model set
             
         Returns:
             Dictionary of ML-predicted features
@@ -729,7 +704,7 @@ class TireGripAnalysisService:
         feature_df = pd.DataFrame([feature_row])
         
         for target in target_variables:
-            model_id = f"{model_key}_{target}"
+            model_id = f"tire_grip_model_{target}"
             
             if model_id in self.trained_models:
                 try:
@@ -738,16 +713,7 @@ class TireGripAnalysisService:
                 except Exception as e:
                     print(f"[WARNING] Prediction failed for {target}: {str(e)}")
             else:
-                # Try to load from disk
-                try:
-                    model_path = self.models_directory / f"{model_id}.pkl"
-                    if model_path.exists():
-                        model_data = joblib.load(model_path)
-                        self.trained_models[model_id] = model_data['model']
-                        prediction = model_data['model'].predict(feature_df)[0]
-                        ml_features[f"ml_{target}"] = float(prediction)
-                except Exception as e:
-                    print(f"[WARNING] Failed to load and predict {target}: {str(e)}")
+                print(f"[WARNING] Model {model_id} not available in trained models")
         
         return ml_features
 
@@ -771,11 +737,10 @@ class TireGripAnalysisService:
             return []
         
         targets = []
-        model_key = "tire_grip_model"
         
         for model_id in self.trained_models.keys():
-            if model_id.startswith(f"{model_key}_"):
-                target = model_id.replace(f"{model_key}_", "")
+            if model_id.startswith("tire_grip_model_"):
+                target = model_id.replace("tire_grip_model_", "")
                 targets.append(target)
         
         return targets
@@ -787,37 +752,15 @@ class TireGripAnalysisService:
         Returns:
             Model summary information
         """
-        model_key = "tire_grip_model"
         
         summary = {
             "model_type": "tire_grip_analysis",
-            "models_directory": str(self.models_directory),
             "cached_models": len(self.trained_models),
-            "available_models": []
+            "available_targets": self.get_available_model_targets(),
+            "model_metadata": self.model_metadata
         }
         
-        # Check for available model files
-        for model_file in self.models_directory.glob(f"{model_key}_*.pkl"):
-            try:
-                model_data = joblib.load(model_file)
-                summary["available_models"].append({
-                    "model_id": model_file.stem,
-                    "target_name": model_data.get('target_name', 'unknown'),
-                    "created_at": model_data.get('created_at', 'unknown'),
-                    "feature_count": len(model_data.get('feature_names', []))
-                })
-            except Exception as e:
-                print(f"[WARNING] Failed to load model summary from {model_file}: {str(e)}")
-        
         return summary
-
-    def clear_models_cache(self):
-        """
-        Clear cached tire grip models
-        """
-        # Clear all cached models
-        self.trained_models.clear()
-        print("[INFO] Cleared all cached tire grip models")
 
 
 # Create singleton instance for import

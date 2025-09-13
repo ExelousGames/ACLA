@@ -322,8 +322,6 @@ class BackendService:
         except Exception as e:
             logger.error(f"❌ Failed to save imitation learning results: {str(e)}")
             raise
-
-        logger.info("✅ Imitation learning results saved successfully")
         return {"success": True}
 
     async def initGetActiveModelData(self, trackName: Optional[str], carName: Optional[str], modelType: str) -> Dict[str, Any]:

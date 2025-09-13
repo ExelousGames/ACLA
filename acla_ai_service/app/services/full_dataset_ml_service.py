@@ -7,7 +7,7 @@ using your TelemetryFeatures and FeatureProcessor classes.
 
 import os
 import pandas as pd
-from acla_ai_service.app.services.imitate_expert_learning_service import ImitateExpertLearningService
+from .imitate_expert_learning_service import ImitateExpertLearningService
 import numpy as np
 import joblib
 import warnings
@@ -91,14 +91,12 @@ class Full_dataset_TelemetryMLService:
         self.label_encoders = {}
         
         # Initialize corner identification unsupervised service
-        corner_identification_models_dir = self.models_directory / "corner_identification"
         from .corner_identification_unsupervised_service import CornerIdentificationUnsupervisedService
-        self.corner_identification = CornerIdentificationUnsupervisedService(str(corner_identification_models_dir))
+        self.corner_identification = CornerIdentificationUnsupervisedService()
         
         # Initialize tire grip analysis service
-        tire_grip_models_dir = self.models_directory / "tire_grip"
         from .tire_grip_analysis_service import TireGripAnalysisService
-        self.tire_grip_analysis = TireGripAnalysisService(str(tire_grip_models_dir))
+        self.tire_grip_analysis = TireGripAnalysisService()
 
         
         # Backend service integration
@@ -731,39 +729,70 @@ class Full_dataset_TelemetryMLService:
   
         for session in sessions.get("sessions", []):
                 each_session_telemetry_data.append(session.get("data", []))
-
         if not each_session_telemetry_data:
             raise ValueError("No telemetry data found")
         
+        # Flatten the list of lists into a single list of telemetry records (dictionaries)
+        # This ensures each telemetry record maintains its field names as dictionary keys
+        flattened_telemetry_data = []
+        for session_data in each_session_telemetry_data:
+            if isinstance(session_data, list):
+                flattened_telemetry_data.extend(session_data)
+            else:
+                flattened_telemetry_data.append(session_data)
+        
         # make sure every ai model is using the same data for training
-        # Convert to DataFrame
-        telemetry_df = pd.DataFrame(each_session_telemetry_data)
+        # Convert to DataFrame from list of dictionaries (this preserves column names)
+        telemetry_df = pd.DataFrame(flattened_telemetry_data)
         feature_processor = FeatureProcessor(telemetry_df)
+        
         # Cleaned data
         processed_df = feature_processor.general_cleaning_for_analysis()
         
+        # Filter to only relevant features for analysis
+        telemetry_features = TelemetryFeatures()
+        relevant_features = telemetry_features.get_features_for_imitate_expert()
+        processed_df = feature_processor.filter_features_by_list(processed_df, relevant_features)
         processed_df,laps = feature_processor._filter_top_performance_laps(processed_df,1)
+
 
         if processed_df.empty:
             raise ValueError("No valid telemetry data available after filtering for training.")
         
-        # Filter top 1% laps as expert demonstrations
-        top_laps = laps[:int(len(laps) * 0.01)]
+        # Filter top 1% laps as expert demonstrations, but ensure at least 1 lap
+        top_laps_count = max(1, int(len(laps) * 0.01))
+        top_laps = laps[:top_laps_count]
         # get rest of laps
-        rest_laps = laps[int(len(laps) * 0.01):]
+        rest_laps = laps[top_laps_count:]
 
-        # Flatten the list of lists into a single list of telemetry records
-        top_laps_telemetry_data = [item for sublist in top_laps for item in sublist]
-
+        # Flatten the DataFrames to list of dictionaries for imitation learning
+        flatten_laps = []
+        for lap_df in top_laps:
+            # Convert DataFrame to list of dictionaries
+            lap_records = lap_df.to_dict('records')
+            flatten_laps.extend(lap_records)
+        
+        
         # Learn from expert demonstrations
         imitation_learning = ImitateExpertLearningService()
-        imitation_learning.train_ai_model(top_laps_telemetry_data)
+        imitation_learning.train_ai_model(flatten_laps)
+        
+        # Convert rest_laps DataFrames to the format expected by enriched_contextual_data
+        rest_laps_dict_format = []
+        for lap_df in rest_laps:
+            # Convert DataFrame to list of dictionaries
+            lap_records = lap_df.to_dict('records')
+            # Wrap in a dictionary with 'data' key to match expected format
+            rest_laps_dict_format.append({
+                'data': lap_records,
+                'lap_index': len(rest_laps_dict_format)
+            })
         
         #enrich data
-        enriched_contextual_data = await self.enriched_contextual_data(rest_laps)
+        enriched_contextual_data = await self.enriched_contextual_data(rest_laps_dict_format)
 
         #process enriched data, Generate training pairs with performance sections
-        comparison_results = imitation_learning.compare_telemetry_with_expert(enriched_contextual_data, 5, 5)
+        comparison_results = imitation_learning.compare_telemetry_with_expert(enriched_contextual_data.get("data"), 5, 5)
         training_and_expert_action = comparison_results.get('transformer_training_pairs', [])
         
         # train transformer model
@@ -872,7 +901,7 @@ class Full_dataset_TelemetryMLService:
             model, trainer = create_expert_action_transformer(
                 telemetry_features=input_features,
                 action_features=3,  # steering, throttle, brake
-                d_model=256,
+                d_model=256, # embedding dimension
                 nhead=8,
                 num_encoder_layers=6,
                 num_decoder_layers=6,
@@ -1210,7 +1239,7 @@ class Full_dataset_TelemetryMLService:
             training_laps = laps[:split_index]
             extraction_laps = laps[split_index:]
             
-            print(f"[INFO] Split data: {len(training_laps)} laps for training, {len(extraction_laps)} laps for extraction")
+            print(f"[INFO] Split data: {len(training_laps)} laps for training both corner identification and tire grip analysis, {len(extraction_laps)} laps for extraction for both too")
             
             # Flatten training data for model training
             training_telemetry = []
@@ -1222,26 +1251,13 @@ class Full_dataset_TelemetryMLService:
                 else:
                     training_telemetry.append(lap_data)
             
-            # Extract track and car information from first lap
-            track_name = "unknown_track"
-            car_name = None
-            
-            if training_telemetry and len(training_telemetry) > 0:
-                first_record = training_telemetry[0]
-                if isinstance(first_record, dict):
-                    track_name = first_record.get('track', first_record.get('trackName', 'unknown_track'))
-                    car_name = first_record.get('car', first_record.get('carName'))
-            
-            print(f"[INFO] Detected track: {track_name}, car: {car_name}")
-            
             # Train corner identification model using training data
             print("[INFO] Training corner identification model...")
             try:
-                corner_results = await self.corner_identification.learn_track_corner_patterns(
-                    training_telemetry
-                )
+                corner_results = await self.corner_identification.learn_track_corner_patterns(training_telemetry)
+                
                 if corner_results.get("success"):
-                    print(f"[INFO] Corner identification training successful: {corner_results.get('total_corners', 0)} corners identified")
+                    print(f"[INFO] Corner identification training successful: {corner_results.get('total_corners_identified', 0)} corners identified")
                 else:
                     print(f"[WARNING] Corner identification training failed: {corner_results.get('error', 'Unknown error')}")
             except Exception as e:
@@ -1260,11 +1276,11 @@ class Full_dataset_TelemetryMLService:
                 print(f"[ERROR] Tire grip analysis training failed: {str(e)}")
                 tire_grip_results = {"success": False, "error": str(e)}
             
-            # Now extract features for all telemetry data (both training and extraction)
+            # Now extract features for extraction telemetry data only
             enriched_telemetry_data = []
-            total_laps = len(laps)
+            total_laps = len(extraction_laps)
             
-            for lap_idx, lap_data in enumerate(laps):
+            for lap_idx, lap_data in enumerate(extraction_laps):
                 print(f"[INFO] Processing lap {lap_idx + 1}/{total_laps} for feature extraction...")
                 
                 try:
@@ -1287,9 +1303,12 @@ class Full_dataset_TelemetryMLService:
                     if corner_results.get("success"):
                         try:
                             corner_enhanced_telemetry = await self.corner_identification.extract_corner_features_for_telemetry(
-                                telemetry_records
+                                telemetry_records      
                             )
                             print(f"[INFO] Added corner features to {len(corner_enhanced_telemetry)} records")
+                            
+                            cornerPrediction = self.corner_identification.predict_corner_count(pd.DataFrame(telemetry_records))
+                            print(f"[INFO] Predicted corner count for lap {lap_idx + 1}: predicted {cornerPrediction.predicted_corners} corners with confidence of {cornerPrediction.confidence}")
                         except Exception as e:
                             print(f"[WARNING] Failed to extract corner features for lap {lap_idx}: {str(e)}")
                             corner_enhanced_telemetry = telemetry_records
@@ -1331,7 +1350,7 @@ class Full_dataset_TelemetryMLService:
             # Calculate enrichment statistics
             total_original_records = sum(
                 len(lap.get('data', [])) if isinstance(lap.get('data'), list) else 1 
-                for lap in laps
+                for lap in extraction_laps
             )
             total_enriched_records = sum(
                 len(lap.get('data', [])) if isinstance(lap.get('data'), list) else 1 
@@ -1344,8 +1363,6 @@ class Full_dataset_TelemetryMLService:
                 'total_enriched_records': total_enriched_records,
                 'corner_identification_success': corner_results.get("success", False),
                 'tire_grip_analysis_success': tire_grip_results.get("success", False),
-                'track_name': track_name,
-                'car_name': car_name,
                 'training_laps_used': len(training_laps),
                 'extraction_laps_processed': len(extraction_laps)
             }

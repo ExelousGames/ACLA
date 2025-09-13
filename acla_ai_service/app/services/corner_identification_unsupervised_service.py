@@ -95,16 +95,11 @@ class CornerIdentificationUnsupervisedService:
     4. Generates new features to be inserted back into telemetry data
     """
     
-    def __init__(self, models_directory: str = "corner_models"):
+    def __init__(self):
         """
         Initialize the corner identification service
         
-        Args:
-            models_directory: Directory to save/load corner identification models
         """
-        self.models_directory = Path(models_directory)
-        self.models_directory.mkdir(exist_ok=True)
-        
         self.telemetry_features = TelemetryFeatures()
         self.corner_models = {}
         self.scalers = {}
@@ -115,9 +110,9 @@ class CornerIdentificationUnsupervisedService:
         self.backend_service = backend_service
         
         # Corner identification parameters
-        self.min_corner_duration = 15  # Minimum data points for a valid corner
+        self.min_corner_duration = 10  # Minimum data points for a valid corner
         self.corner_detection_sensitivity = 0.7
-        self.smoothing_window = 7
+        self.smoothing_window = 7  # Window size for smoothing telemetry data
         
     async def learn_track_corner_patterns(self, telemetry_data: List[Dict[str, Any]]) -> Dict[str, Any]:
         """
@@ -130,7 +125,7 @@ class CornerIdentificationUnsupervisedService:
             Dictionary with learning results and extracted corner patterns
         """
         try:
-            print(f"[INFO] Starting unsupervised corner pattern learning with cleaned data")
+            print(f"[INFO {self.__class__.__name__}] Starting unsupervised corner pattern learning with cleaned data")
             
             if not telemetry_data:
                 return {
@@ -144,18 +139,15 @@ class CornerIdentificationUnsupervisedService:
             
             # Convert to DataFrame - data is already clean
             df = pd.DataFrame(all_telemetry_data)
-            
-            # Filter for top performance laps
-            performance_df = self._filter_top_performance_data(df)
-            
+
             # Identify corner segments using unsupervised methods
-            corner_segments = self._identify_corner_segments_unsupervised(performance_df)
+            corner_segments = self._identify_corner_segments_unsupervised(df)
             
             # Extract corner characteristics for each segment
             corner_patterns = []
             for corner_id, segment_data in corner_segments.items():
                 characteristics = self._extract_corner_characteristics(
-                    performance_df.iloc[segment_data['start_idx']:segment_data['end_idx']+1]
+                    df.iloc[segment_data['start_idx']:segment_data['end_idx']+1]
                 )
                 
                 corner_patterns.append({
@@ -172,7 +164,7 @@ class CornerIdentificationUnsupervisedService:
             # Cluster similar corners to identify corner types
             corner_clusters = self._cluster_corner_types(corner_patterns)
             
-            # Save learned patterns
+            # Save learned patterns in memory
             track_model = {
                 "track_name": "generic",
                 "car_name": "all_cars",
@@ -182,12 +174,10 @@ class CornerIdentificationUnsupervisedService:
                 "learning_timestamp": datetime.now().isoformat()
             }
             
-            model_path = self.models_directory / f"corner_patterns_generic_all_cars.pkl"
-            joblib.dump(track_model, model_path)
-            
             self.track_corner_profiles["generic_all_cars"] = track_model
             
-            print(f"[INFO] Successfully learned {len(corner_patterns)} corner patterns")
+            print(f"[INFO {self.__class__.__name__}] Successfully learned {len(corner_patterns)} corner patterns")
+            print(f"[INFO {self.__class__.__name__}] Corner patterns clustered into {len(corner_clusters)} types")
             
             return {
                 "success": True,
@@ -195,17 +185,11 @@ class CornerIdentificationUnsupervisedService:
                 "car_name": "all_cars",
                 "total_corners_identified": len(corner_patterns),
                 "corner_patterns": corner_patterns,
-                "corner_clusters": corner_clusters,
-                "model_saved": str(model_path)
+                "corner_clusters": corner_clusters
             }
             
         except Exception as e:
-            print(f"[ERROR] Failed to learn corner patterns: {str(e)}")
-            return {
-                "success": False,
-                "error": str(e),
-                "corner_patterns": []
-            }
+            raise Exception(f"[ERROR] Failed to learn corner patterns: {str(e)}")
     
     async def extract_corner_features_for_telemetry(self, telemetry_data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
@@ -884,84 +868,7 @@ class CornerIdentificationUnsupervisedService:
                 
         except Exception:
             return 2.0  # Default to apex if calculation fails
-    
-    def _filter_top_performance_data(self, df: pd.DataFrame, percentile: float = 0.1) -> pd.DataFrame:
-        """Filter telemetry data to keep only top performance laps"""
-        try:
-            # If we have lap time information, filter by fastest laps
-            if 'Graphics_last_time' in df.columns:
-                lap_times = df.groupby('Graphics_completed_lap')['Graphics_last_time'].first()
-                lap_times = lap_times[lap_times > 0]  # Remove invalid times
-                
-                if len(lap_times) > 0:
-                    time_threshold = lap_times.quantile(percentile)
-                    fast_laps = lap_times[lap_times <= time_threshold].index
-                    
-                    # Keep only data from fast laps
-                    filtered_df = df[df['Graphics_completed_lap'].isin(fast_laps)].copy()
-                    print(f"[INFO] Filtered to {len(filtered_df)} records from {len(fast_laps)} top performance laps")
-                    return filtered_df
-            
-            # Fallback: filter by speed consistency
-            if 'Physics_speed_kmh' in df.columns:
-                # Keep data points with consistent high speeds in straight sections
-                speed_std = df.groupby(df.index // 100)['Physics_speed_kmh'].std()
-                consistent_groups = speed_std.quantile(0.3)  # Low variance = consistent
-                
-                mask = df.groupby(df.index // 100)['Physics_speed_kmh'].transform('std') <= consistent_groups
-                filtered_df = df[mask].copy()
-                print(f"[INFO] Filtered to {len(filtered_df)} records based on speed consistency")
-                return filtered_df
-                
-            # If no filtering possible, return original data
-            print("[INFO] No performance filtering applied - using all data")
-            return df
-            
-        except Exception as e:
-            print(f"[WARNING] Failed to filter performance data: {str(e)}")
-            return df
-    
-    async def _extract_session_telemetry(self, session: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Extract telemetry data from a session"""
-        try:
-            session_id = session.get("_id", {}).get("$oid")
-            if not session_id:
-                return []
-            
-            # Get telemetry data for this session
-            telemetry_data = await self.backend_service.get_session_telemetry_data(session_id)
-            
-            if not telemetry_data or "telemetryData" not in telemetry_data:
-                return []
-            
-            return telemetry_data["telemetryData"]
-            
-        except Exception as e:
-            print(f"[ERROR] Failed to extract session telemetry: {str(e)}")
-            return []
-    
-    def get_corner_identification_summary(self) -> Dict[str, Any]:
-        """Get summary of corner identification results"""
-        model_key = "generic_all_cars"
-        
-        if model_key not in self.track_corner_profiles:
-            return {
-                "success": False,
-                "error": "No corner profile found - please run learning first"
-            }
-        
-        profile = self.track_corner_profiles[model_key]
-        
-        return {
-            "success": True,
-            "track_name": "generic",
-            "car_name": "all_cars",
-            "total_corners": profile.get("total_corners", 0),
-            "corner_types": self._summarize_corner_types(profile.get("corner_patterns", [])),
-            "corner_clusters": profile.get("corner_clusters", {}),
-            "learning_timestamp": profile.get("learning_timestamp")
-        }
-    
+   
     def _summarize_corner_types(self, corner_patterns: List[Dict[str, Any]]) -> Dict[str, int]:
         """Summarize the types of corners found"""
         type_counts = {}
@@ -1155,9 +1062,380 @@ class CornerIdentificationUnsupervisedService:
     
     def clear_corner_cache(self):
         """Clear cached corner identification models"""
-        # Clear all cached models
         self.track_corner_profiles.clear()
+        self.corner_patterns.clear()
+        self.corner_models.clear()
+        self.scalers.clear()
         print(f"[INFO] Cleared corner identification cache")
+        
+    def get_corner_model_summary(self) -> Dict[str, Any]:
+        """
+        Get summary of loaded corner identification models
+        
+        Returns:
+            Model summary information
+        """
+        return {
+            "model_type": "corner_identification",
+            "cached_models": len(self.track_corner_profiles),
+            "available_models": list(self.track_corner_profiles.keys()),
+            "corner_patterns_count": len(self.corner_patterns),
+            "has_active_patterns": len(self.corner_patterns) > 0
+        }
+
+    def predict_corner_count(self, corner_df: pd.DataFrame) -> Dict[str, Any]:
+        """
+        Predict how many distinct corners are present in a corner DataFrame
+        
+        This function analyzes telemetry patterns to estimate the number of separate
+        corner sections, useful for understanding track layout and corner density.
+        
+        Args:
+            corner_df: DataFrame containing telemetry data from corner sections
+            
+        Returns:
+            Dictionary with predicted corner count and analysis details
+        """
+        try:
+            if len(corner_df) == 0:
+                return {
+                    "predicted_corners": 0,
+                    "confidence": 0.0,
+                    "analysis": "Empty DataFrame provided"
+                }
+            
+            # Required columns for corner prediction
+            required_cols = ['Physics_steer_angle', 'Physics_speed_kmh']
+            missing_cols = [col for col in required_cols if col not in corner_df.columns]
+            
+            if missing_cols:
+                return {
+                    "predicted_corners": 0,
+                    "confidence": 0.0,
+                    "analysis": f"Missing required columns: {missing_cols}"
+                }
+            
+            print(f"[INFO] Predicting corner count for DataFrame with {len(corner_df)} data points")
+            
+            # Method 1: Peak detection in steering angle
+            corners_from_steering = self._predict_corners_from_steering_peaks(corner_df)
+            
+            # Method 2: Speed valley detection
+            corners_from_speed = self._predict_corners_from_speed_valleys(corner_df)
+            
+            # Method 3: Track position analysis (if available)
+            corners_from_position = self._predict_corners_from_track_position(corner_df)
+            
+            # Method 4: G-force pattern analysis (if available)
+            corners_from_gforce = self._predict_corners_from_gforce_patterns(corner_df)
+            
+            # Combine predictions using weighted average
+            predictions = []
+            weights = []
+            
+            if corners_from_steering['confidence'] > 0.3:
+                predictions.append(corners_from_steering['count'])
+                weights.append(corners_from_steering['confidence'] * 0.4)  # High weight for steering
+            
+            if corners_from_speed['confidence'] > 0.3:
+                predictions.append(corners_from_speed['count'])
+                weights.append(corners_from_speed['confidence'] * 0.3)  # Medium weight for speed
+            
+            if corners_from_position['confidence'] > 0.3:
+                predictions.append(corners_from_position['count'])
+                weights.append(corners_from_position['confidence'] * 0.2)  # Lower weight for position
+            
+            if corners_from_gforce['confidence'] > 0.3:
+                predictions.append(corners_from_gforce['count'])
+                weights.append(corners_from_gforce['confidence'] * 0.1)  # Lowest weight for g-force
+            
+            # Calculate weighted prediction
+            if predictions and weights:
+                weighted_prediction = np.average(predictions, weights=weights)
+                final_prediction = max(1, round(weighted_prediction))  # At least 1 corner
+                confidence = min(1.0, sum(weights) / sum([0.4, 0.3, 0.2, 0.1]))
+            else:
+                # Fallback: assume at least 1 corner if we have corner data
+                final_prediction = 1
+                confidence = 0.2
+            
+            analysis_details = {
+                "data_length": len(corner_df),
+                "steering_analysis": corners_from_steering,
+                "speed_analysis": corners_from_speed,
+                "position_analysis": corners_from_position,
+                "gforce_analysis": corners_from_gforce,
+                "method_weights": {
+                    "steering": 0.4,
+                    "speed": 0.3,
+                    "position": 0.2,
+                    "gforce": 0.1
+                }
+            }
+            
+            print(f"[INFO] Predicted {final_prediction} corners with {confidence:.2f} confidence")
+            
+            return {
+                "predicted_corners": final_prediction,
+                "confidence": float(confidence),
+                "analysis": analysis_details
+            }
+            
+        except Exception as e:
+            print(f"[ERROR] Failed to predict corner count: {str(e)}")
+            return {
+                "predicted_corners": 1,
+                "confidence": 0.1,
+                "analysis": f"Error during prediction: {str(e)}"
+            }
+    
+    def _predict_corners_from_steering_peaks(self, df: pd.DataFrame) -> Dict[str, Any]:
+        """Predict corners based on steering angle peaks"""
+        try:
+            steering = np.abs(df['Physics_steer_angle'].fillna(0))
+            
+            if len(steering) < 5 or steering.max() < 0.05:  # Very little steering activity
+                return {"count": 0, "confidence": 0.0, "details": "Insufficient steering activity"}
+            
+            # Smooth the steering data
+            if len(steering) >= 7:
+                steering_smooth = savgol_filter(steering, 7, 2)
+            else:
+                steering_smooth = steering.rolling(window=3, center=True).mean().fillna(steering)
+            
+            # Find peaks in steering angle
+            # Use adaptive threshold based on data characteristics
+            threshold = np.percentile(steering_smooth, 60)  # 60th percentile as threshold
+            min_distance = max(5, len(steering) // 20)  # Minimum distance between peaks
+            
+            peaks, peak_properties = find_peaks(
+                steering_smooth,
+                height=threshold,
+                distance=min_distance,
+                prominence=threshold * 0.3
+            )
+            
+            # Filter out small peaks
+            significant_peaks = []
+            for peak in peaks:
+                if steering_smooth[peak] > np.mean(steering_smooth) * 1.5:
+                    significant_peaks.append(peak)
+            
+            corner_count = len(significant_peaks)
+            
+            # Calculate confidence based on peak characteristics
+            if corner_count > 0:
+                peak_heights = [steering_smooth[p] for p in significant_peaks]
+                peak_consistency = 1.0 - (np.std(peak_heights) / (np.mean(peak_heights) + 0.001))
+                confidence = min(0.9, max(0.3, peak_consistency))
+            else:
+                confidence = 0.1
+            
+            return {
+                "count": corner_count,
+                "confidence": float(confidence),
+                "details": {
+                    "total_peaks": len(peaks),
+                    "significant_peaks": len(significant_peaks),
+                    "threshold": float(threshold),
+                    "steering_max": float(steering.max())
+                }
+            }
+            
+        except Exception as e:
+            return {"count": 0, "confidence": 0.0, "details": f"Error: {str(e)}"}
+    
+    def _predict_corners_from_speed_valleys(self, df: pd.DataFrame) -> Dict[str, Any]:
+        """Predict corners based on speed valleys (low speed points)"""
+        try:
+            speed = df['Physics_speed_kmh'].fillna(0)
+            
+            if len(speed) < 5 or speed.std() < 5:  # Not much speed variation
+                return {"count": 0, "confidence": 0.0, "details": "Insufficient speed variation"}
+            
+            # Smooth the speed data
+            speed_smooth = speed.rolling(window=5).mean().fillna(speed)
+            
+            # Find valleys (minimum points) in speed
+            # Invert speed to find valleys as peaks
+            inverted_speed = speed_smooth.max() - speed_smooth
+            
+            threshold = np.percentile(inverted_speed, 70)  # Look for significant dips
+            min_distance = max(5, len(speed) // 15)
+            
+            valleys, valley_properties = find_peaks(
+                inverted_speed,
+                height=threshold,
+                distance=min_distance,
+                prominence=threshold * 0.2
+            )
+            
+            # Filter valleys that represent significant speed reduction
+            significant_valleys = []
+            for valley in valleys:
+                original_speed_at_valley = speed_smooth.iloc[valley]
+                if original_speed_at_valley < np.percentile(speed_smooth, 40):  # Bottom 40% of speeds
+                    significant_valleys.append(valley)
+            
+            corner_count = len(significant_valleys)
+            
+            # Calculate confidence
+            if corner_count > 0:
+                valley_depths = [inverted_speed[v] for v in significant_valleys]
+                depth_consistency = 1.0 - (np.std(valley_depths) / (np.mean(valley_depths) + 0.001))
+                confidence = min(0.8, max(0.2, depth_consistency))
+            else:
+                confidence = 0.1
+            
+            return {
+                "count": corner_count,
+                "confidence": float(confidence),
+                "details": {
+                    "total_valleys": len(valleys),
+                    "significant_valleys": len(significant_valleys),
+                    "speed_range": float(speed.max() - speed.min()),
+                    "speed_std": float(speed.std())
+                }
+            }
+            
+        except Exception as e:
+            return {"count": 0, "confidence": 0.0, "details": f"Error: {str(e)}"}
+    
+    def _predict_corners_from_track_position(self, df: pd.DataFrame) -> Dict[str, Any]:
+        """Predict corners based on track position changes"""
+        try:
+            if 'Graphics_normalized_car_position' not in df.columns:
+                return {"count": 0, "confidence": 0.0, "details": "Track position data not available"}
+            
+            position = df['Graphics_normalized_car_position'].fillna(method='ffill').fillna(method='bfill')
+            
+            if len(position) < 10 or position.nunique() < 5:
+                return {"count": 0, "confidence": 0.0, "details": "Insufficient position variation"}
+            
+            # Calculate position change rate
+            position_diff = position.diff().fillna(0)
+            
+            # Handle position wraparound (0 to 1 or 1 to 0)
+            wraparound_threshold = 0.5
+            position_diff[position_diff > wraparound_threshold] -= 1.0
+            position_diff[position_diff < -wraparound_threshold] += 1.0
+            
+            # Smooth position changes
+            if len(position_diff) >= 5:
+                position_smooth = position_diff.rolling(window=5).mean().fillna(position_diff)
+            else:
+                position_smooth = position_diff
+            
+            # Estimate corners based on position progression
+            # Corners typically show consistent position advancement
+            position_range = position.max() - position.min()
+            
+            if position_range < 0.05:  # Very small position range - likely single corner
+                corner_count = 1
+                confidence = 0.6
+            elif position_range > 0.8:  # Large range - likely multiple corners or full lap
+                # Estimate based on position segments
+                corner_count = max(1, int(position_range * 15))  # Rough estimate
+                confidence = 0.4
+            else:
+                # Medium range - estimate based on position variation
+                position_segments = int(position_range * 20)
+                corner_count = max(1, min(5, position_segments))
+                confidence = 0.5
+            
+            return {
+                "count": corner_count,
+                "confidence": float(confidence),
+                "details": {
+                    "position_range": float(position_range),
+                    "position_start": float(position.iloc[0]) if len(position) > 0 else 0.0,
+                    "position_end": float(position.iloc[-1]) if len(position) > 0 else 0.0,
+                    "unique_positions": position.nunique()
+                }
+            }
+            
+        except Exception as e:
+            return {"count": 0, "confidence": 0.0, "details": f"Error: {str(e)}"}
+    
+    def _predict_corners_from_gforce_patterns(self, df: pd.DataFrame) -> Dict[str, Any]:
+        """Predict corners based on G-force patterns"""
+        try:
+            g_force_cols = ['Physics_g_force_x', 'Physics_g_force_z']
+            available_g_cols = [col for col in g_force_cols if col in df.columns]
+            
+            if not available_g_cols:
+                return {"count": 0, "confidence": 0.0, "details": "G-force data not available"}
+            
+            # Combine lateral and longitudinal G-forces
+            g_combined = 0
+            g_details = {}
+            
+            if 'Physics_g_force_x' in df.columns:  # Lateral G-force
+                g_lat = np.abs(df['Physics_g_force_x'].fillna(0))
+                g_combined += g_lat
+                g_details['lateral_max'] = float(g_lat.max())
+                g_details['lateral_std'] = float(g_lat.std())
+            
+            if 'Physics_g_force_z' in df.columns:  # Longitudinal G-force  
+                g_long = np.abs(df['Physics_g_force_z'].fillna(0))
+                g_combined += g_long * 0.5  # Weight longitudinal less than lateral
+                g_details['longitudinal_max'] = float(g_long.max())
+                g_details['longitudinal_std'] = float(g_long.std())
+            
+            if isinstance(g_combined, int):  # No G-force data found
+                return {"count": 0, "confidence": 0.0, "details": "No usable G-force data"}
+            
+            # Find peaks in combined G-force
+            if len(g_combined) >= 7:
+                g_smooth = savgol_filter(g_combined, 7, 2)
+            else:
+                g_smooth = g_combined.rolling(window=3).mean().fillna(g_combined)
+            
+            threshold = np.percentile(g_smooth, 65)
+            min_distance = max(3, len(g_smooth) // 25)
+            
+            peaks, _ = find_peaks(
+                g_smooth,
+                height=threshold,
+                distance=min_distance
+            )
+            
+            corner_count = len(peaks)
+            
+            # Calculate confidence based on G-force activity
+            if corner_count > 0 and g_smooth.max() > 0.5:  # Reasonable G-force levels
+                g_force_range = g_smooth.max() - g_smooth.min()
+                confidence = min(0.7, max(0.2, g_force_range / 3.0))  # Scale with G-force range
+            else:
+                confidence = 0.1
+            
+            g_details.update({
+                "peaks_found": len(peaks),
+                "combined_max": float(g_smooth.max()),
+                "combined_mean": float(g_smooth.mean())
+            })
+            
+            return {
+                "count": corner_count,
+                "confidence": float(confidence),
+                "details": g_details
+            }
+            
+        except Exception as e:
+            return {"count": 0, "confidence": 0.0, "details": f"Error: {str(e)}"}
+
+    def export_corner_patterns(self) -> Dict[str, Any]:
+        """
+        Export current corner patterns for external saving
+        
+        Returns:
+            Dictionary containing corner patterns and related data
+        """
+        return {
+            "corner_patterns": self.corner_patterns,
+            "track_corner_profiles": self.track_corner_profiles,
+            "export_timestamp": datetime.now().isoformat()
+        }
 
 
 # Create service instance
