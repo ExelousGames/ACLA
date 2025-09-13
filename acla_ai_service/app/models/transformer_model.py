@@ -344,8 +344,11 @@ class TelemetryActionDataset(Dataset):
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
         sequence = self.sequences[idx]
         
-        telemetry = torch.FloatTensor(sequence['telemetry']).transpose(0, 1)  # [features, seq_len]
-        actions = torch.FloatTensor(sequence['actions']).transpose(0, 1)      # [action_features, pred_horizon]
+        # Keep original shape: [seq_len, features] and [pred_horizon, action_features]
+        # DataLoader will add batch dimension: [batch_size, seq_len, features]
+        # Then we'll transpose in training to get: [seq_len, batch_size, features]
+        telemetry = torch.FloatTensor(sequence['telemetry'])  # [seq_len, features]
+        actions = torch.FloatTensor(sequence['actions'])      # [pred_horizon, action_features]
         
         return telemetry, actions
 
@@ -399,10 +402,13 @@ class ExpertActionTrainer:
         num_batches = len(dataloader)
         
         for batch_idx, (telemetry, target_actions) in enumerate(dataloader):
-            telemetry = telemetry.to(self.device)
-            target_actions = target_actions.to(self.device)
+            # Transpose to get transformer-expected dimensions
+            # From [batch_size, seq_len, features] to [seq_len, batch_size, features]
+            telemetry = telemetry.transpose(0, 1).to(self.device)
+            target_actions = target_actions.transpose(0, 1).to(self.device)
             
             # Create decoder input (shifted target)
+            # target_actions shape: [pred_horizon, batch_size, action_features]
             decoder_input = torch.cat([
                 torch.zeros(1, target_actions.shape[1], target_actions.shape[2], device=self.device),
                 target_actions[:-1]
@@ -453,8 +459,10 @@ class ExpertActionTrainer:
         
         with torch.no_grad():
             for telemetry, target_actions in dataloader:
-                telemetry = telemetry.to(self.device)
-                target_actions = target_actions.to(self.device)
+                # Transpose to get transformer-expected dimensions
+                # From [batch_size, seq_len, features] to [seq_len, batch_size, features]
+                telemetry = telemetry.transpose(0, 1).to(self.device)
+                target_actions = target_actions.transpose(0, 1).to(self.device)
                 
                 # Create decoder input
                 decoder_input = torch.cat([
@@ -486,8 +494,7 @@ class ExpertActionTrainer:
               train_dataloader: DataLoader,
               val_dataloader: Optional[DataLoader] = None,
               num_epochs: int = 100,
-              patience: int = 10,
-              save_path: Optional[str] = None) -> Dict[str, Any]:
+              patience: int = 10) -> Tuple[ExpertActionTransformer, Dict[str, Any]]:
         """
         Train the model
         
@@ -496,10 +503,9 @@ class ExpertActionTrainer:
             val_dataloader: Validation data loader
             num_epochs: Number of epochs
             patience: Early stopping patience
-            save_path: Path to save the best model
             
         Returns:
-            Training results and metrics
+            Tuple of (trained_model, training_results_and_metrics)
         """
         best_val_loss = float('inf')
         patience_counter = 0
@@ -520,9 +526,6 @@ class ExpertActionTrainer:
                 if val_loss < best_val_loss:
                     best_val_loss = val_loss
                     patience_counter = 0
-                    
-                    if save_path:
-                        self.save_model(save_path)
                 else:
                     patience_counter += 1
                 
@@ -546,96 +549,9 @@ class ExpertActionTrainer:
             }
             self.training_history.append(epoch_history)
         
-        return {
+        return self.model, {
             'training_completed': True,
             'best_val_loss': best_val_loss if val_dataloader else None,
             'training_history': self.training_history,
             'total_epochs': len(self.training_history)
         }
-    
-    def save_model(self, path: str):
-        """Save model checkpoint"""
-        torch.save({
-            'model_state_dict': self.model.state_dict(),
-            'optimizer_state_dict': self.optimizer.state_dict(),
-            'scheduler_state_dict': self.scheduler.state_dict(),
-            'training_history': self.training_history
-        }, path)
-    
-    def load_model(self, path: str):
-        """Load model checkpoint"""
-        checkpoint = torch.load(path, map_location=self.device)
-        self.model.load_state_dict(checkpoint['model_state_dict'])
-        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
-        self.training_history = checkpoint.get('training_history', [])
-
-def create_expert_action_transformer(telemetry_features: int,
-                                   action_features: int = 3,
-                                   **kwargs) -> Tuple[ExpertActionTransformer, ExpertActionTrainer]:
-    """
-    Factory function to create transformer model and trainer
-    
-    Args:
-        telemetry_features: Number of input telemetry features
-        action_features: Number of action outputs
-        **kwargs: Additional arguments for model configuration
-        
-    Returns:
-        Tuple of (model, trainer)
-    """
-    model = ExpertActionTransformer(
-        input_features=telemetry_features,
-        action_features=action_features,
-        **kwargs
-    )
-    
-    trainer = ExpertActionTrainer(model)
-    
-    return model, trainer
-
-# Example usage function
-def example_usage():
-    """Example of how to use the Expert Action Transformer"""
-    
-    # Create dummy data
-    batch_size = 16
-    seq_len = 50
-    input_features = 32
-    action_features = 3
-    
-    # Create model
-    model, trainer = create_expert_action_transformer(
-        telemetry_features=input_features,
-        action_features=action_features,
-        d_model=128,
-        nhead=8,
-        num_encoder_layers=4,
-        num_decoder_layers=4
-    )
-    
-    print(f"Model created with {sum(p.numel() for p in model.parameters())} parameters")
-    
-    # Create dummy dataset
-    dummy_telemetry = [
-        {f'feature_{i}': np.random.randn() for i in range(input_features)}
-        for _ in range(1000)
-    ]
-    dummy_actions = [
-        {'Physics_steer_angle': np.random.randn(), 
-         'Physics_gas': np.random.rand(), 
-         'Physics_brake': np.random.rand()}
-        for _ in range(1000)
-    ]
-    
-    # Create dataset and dataloader
-    dataset = TelemetryActionDataset(dummy_telemetry, dummy_actions)
-    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
-    
-    print(f"Dataset created with {len(dataset)} sequences")
-    print("Ready for training!")
-    
-    return model, trainer, dataset
-
-if __name__ == "__main__":
-    example_usage()
