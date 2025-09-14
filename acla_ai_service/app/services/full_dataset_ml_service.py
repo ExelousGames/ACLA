@@ -699,7 +699,7 @@ class Full_dataset_TelemetryMLService:
     async def predict_expert_actions(self, 
                                    telemetry_dict: Dict[str, Any],
                                    trackName: str, 
-                                   carName: Optional[str] = None,
+                                   carName: Optional[str] = 'AllCars',
                                    sequence_length: int = 20,
                                    temperature: float = 1.0) -> Dict[str, Any]:
         """
@@ -730,45 +730,74 @@ class Full_dataset_TelemetryMLService:
             # Fetch and deserialize the transformer model
             print(f"[INFO] Fetching transformer model for {trackName}/{carName or 'any'}")
             transformer_model, model_metadata = await self._get_cached_model_or_fetch(
-                model_type="transformer_learning",
+                model_type="expert_action_transformer",
                 track_name=trackName,
                 car_name=carName,
                 model_subtype="transformer_model_data",
                 deserializer_func=self._deserialize_transformer_model
             )
+            # Specify the type for transformer_model (for type hints and IDEs)
+            transformer_model: ExpertActionTransformer
             
-            # Prepare telemetry data for the model
+            # Prepare telemetry data for the model using the same feature filtering as training
             telemetry_features = TelemetryFeatures()
             feature_names = telemetry_features.get_features_for_imitate_expert()
             
-            # Extract relevant features from the telemetry dictionary
+            print(f"[INFO] Using {len(feature_names)} features for prediction (same as training)")
+            print(f"[INFO] Expected input features: {len(feature_names)}")
+            
+            # Extract relevant features from the telemetry dictionary in the same order as training
             feature_values = []
+            missing_features = []
             for feature_name in feature_names:
                 value = telemetry_dict.get(feature_name, 0.0)
+                if feature_name not in telemetry_dict:
+                    missing_features.append(feature_name)
                 try:
                     feature_values.append(float(value))
                 except (ValueError, TypeError):
                     print(f"[WARNING] Invalid value for feature {feature_name}: {value}, using 0.0")
                     feature_values.append(0.0)
             
+            if missing_features:
+                print(f"[WARNING] {len(missing_features)} features missing from input, using defaults: {missing_features[:5]}...")
+            
             # Convert to tensor format expected by the transformer
             # Shape: [seq_len=1, batch_size=1, input_features]
             src_telemetry = torch.tensor(feature_values, dtype=torch.float32).unsqueeze(0).unsqueeze(1)
             
             print(f"[INFO] Input telemetry tensor shape: {src_telemetry.shape}")
+            print(f"[INFO] Model expects input_features: {transformer_model.input_features}")
+            
+            # Verify feature count consistency
+            if len(feature_values) != transformer_model.input_features:
+                print(f"[ERROR] Feature count mismatch! Expected: {transformer_model.input_features}, Got: {len(feature_values)}")
+                return {
+                    "error": f"Feature count mismatch: model expects {transformer_model.input_features} features, got {len(feature_values)}",
+                    "predicted_actions": [],
+                    "performance_scores": [],
+                    "metadata": {}
+                }
+            
             print(f"[INFO] Predicting {sequence_length} expert actions...")
             
             # Make prediction using the transformer model
             with torch.no_grad():
-                predicted_sequence, performance_sequence = transformer_model.predict_expert_sequence(
+                predicted_sequence, predicted_reasoning, performance_sequence = transformer_model.predict_expert_sequence(
                     src_telemetry=src_telemetry,
                     sequence_length=sequence_length,
                     temperature=temperature
                 )
             
             # Convert predictions back to lists for JSON serialization
-            predicted_actions = predicted_sequence.squeeze(1).tolist()  # Remove batch dimension
-            performance_scores = performance_sequence.squeeze(1).squeeze(2).tolist()  # Remove batch and feature dims
+            predicted_actions = predicted_sequence.squeeze(1).tolist()  # Remove batch dimension: [seq_len, batch_size, 3] -> [seq_len, 3]
+            predicted_reasoning_features = predicted_reasoning.squeeze(1).tolist()  # Remove batch dimension: [seq_len, batch_size, 43] -> [seq_len, 43]
+            
+            # Fix: For performance_sequence [seq_len, batch_size, 1], squeeze both batch and feature dimensions
+            performance_scores = performance_sequence.squeeze(1).squeeze(-1).tolist()  # [seq_len, batch_size, 1] -> [seq_len, 1] -> [seq_len]
+            
+            # Create interpretable reasoning labels
+            reasoning_labels = self._create_reasoning_labels(predicted_reasoning_features)
             
             # Calculate metadata
             avg_performance = sum(performance_scores) / len(performance_scores) if performance_scores else 0.0
@@ -781,6 +810,8 @@ class Full_dataset_TelemetryMLService:
             return {
                 "success": True,
                 "predicted_actions": predicted_actions,
+                "predicted_reasoning": predicted_reasoning_features,
+                "reasoning_explanations": reasoning_labels,
                 "performance_scores": performance_scores,
                 "metadata": {
                     "track_name": trackName,
@@ -788,6 +819,10 @@ class Full_dataset_TelemetryMLService:
                     "sequence_length": sequence_length,
                     "temperature": temperature,
                     "input_features_count": len(feature_values),
+                    "expected_input_features": transformer_model.input_features,
+                    "feature_filtering": "get_features_for_imitate_expert()",
+                    "missing_features_count": len(missing_features),
+                    "reasoning_features_count": len(predicted_reasoning_features[0]) if predicted_reasoning_features else 0,
                     "avg_predicted_performance": avg_performance,
                     "prediction_confidence": prediction_confidence,
                     "model_metadata": model_metadata,
@@ -796,20 +831,106 @@ class Full_dataset_TelemetryMLService:
             }
             
         except Exception as e:
-            error_msg = f"Failed to predict expert actions: {str(e)}"
-            print(f"[ERROR] {error_msg}")
-            return {
-                "success": False,
-                "error": error_msg,
-                "predicted_actions": [],
-                "performance_scores": [],
-                "metadata": {
-                    "track_name": trackName,
-                    "car_name": carName,
-                    "error_timestamp": datetime.now().isoformat()
-                }
-            }
+            error_msg = f"Failed to predict expert actions: \n\t{str(e)}"
+            raise Exception(error_msg)
     
+    def _create_reasoning_labels(self, predicted_reasoning_features: List[List[float]]) -> List[Dict[str, Any]]:
+        """
+        Create interpretable labels for predicted reasoning features
+        
+        Args:
+            predicted_reasoning_features: List of reasoning feature vectors for each prediction step
+            
+        Returns:
+            List of dictionaries containing interpretable reasoning explanations
+        """
+        reasoning_explanations = []
+        
+        for step_idx, features in enumerate(predicted_reasoning_features):
+            explanation = {
+                "step": step_idx + 1,
+                "reasoning": {}
+            }
+            
+            if len(features) >= 12:  # Basic reasoning features
+                # Speed-based reasoning (features 0-2)
+                speed_norm = features[0]
+                is_slow_corner = features[1] > 0.5
+                is_high_speed = features[2] > 0.5
+                
+                explanation["reasoning"]["speed_context"] = {
+                    "normalized_speed": round(speed_norm, 3),
+                    "is_slow_corner": is_slow_corner,
+                    "is_high_speed_section": is_high_speed,
+                    "interpretation": (
+                        "Approaching slow corner - prepare for heavy braking" if is_slow_corner
+                        else "High speed section - maintain momentum" if is_high_speed
+                        else "Medium speed section - balanced approach"
+                    )
+                }
+                
+                # G-force based reasoning (features 3-5)
+                g_lat_norm = features[3]
+                g_long_norm = features[4]
+                high_cornering = features[5] > 0.5
+                
+                explanation["reasoning"]["cornering_dynamics"] = {
+                    "lateral_g_load": round(g_lat_norm, 3),
+                    "longitudinal_g_load": round(g_long_norm, 3),
+                    "high_cornering_detected": high_cornering,
+                    "interpretation": (
+                        "High lateral forces - approaching or in corner" if high_cornering
+                        else "Moderate cornering forces" if g_lat_norm > 0.3
+                        else "Straight line or gentle curve"
+                    )
+                }
+                
+                # Steering reasoning (features 6-7)
+                steer_norm = features[6]
+                sharp_turn = features[7] > 0.5
+                
+                explanation["reasoning"]["steering_input"] = {
+                    "steering_demand": round(steer_norm, 3),
+                    "sharp_turn_detected": sharp_turn,
+                    "interpretation": (
+                        "Sharp steering input required" if sharp_turn
+                        else "Moderate steering correction" if steer_norm > 0.3
+                        else "Minimal steering input needed"
+                    )
+                }
+                
+                # Brake/throttle reasoning (features 8-11)
+                brake_level = features[8]
+                throttle_level = features[9]
+                heavy_braking = features[10] > 0.5
+                full_throttle = features[11] > 0.5
+                
+                explanation["reasoning"]["pedal_strategy"] = {
+                    "brake_demand": round(brake_level, 3),
+                    "throttle_demand": round(throttle_level, 3),
+                    "heavy_braking_zone": heavy_braking,
+                    "full_acceleration_zone": full_throttle,
+                    "interpretation": (
+                        "Heavy braking required - corner entry" if heavy_braking
+                        else "Full acceleration - corner exit or straight" if full_throttle
+                        else "Trail braking or throttle modulation" if brake_level > 0.2 and throttle_level > 0.2
+                        else "Coasting or maintenance throttle"
+                    )
+                }
+            
+            # Additional enriched features interpretation (if available)
+            if len(features) > 12:
+                explanation["reasoning"]["additional_context"] = {
+                    "enriched_features_detected": True,
+                    "corner_identification": "Available" if len(features) > 20 else "Limited",
+                    "tire_grip_analysis": "Available" if len(features) > 25 else "Limited",
+                    "interpretation": "Enhanced contextual analysis from corner and grip models"
+                }
+            
+            reasoning_explanations.append(explanation)
+        
+        return reasoning_explanations  
+
 
     async def StartImitateExpertPipeline(self, trackName: str):
         
@@ -848,7 +969,9 @@ class Full_dataset_TelemetryMLService:
         # Filter to only relevant features for analysis
         telemetry_features = TelemetryFeatures()
         relevant_features = telemetry_features.get_features_for_imitate_expert()
+        print(f"[INFO] Filtering to {len(relevant_features)} features for training using get_features_for_imitate_expert()")
         processed_df = feature_processor.filter_features_by_list(processed_df, relevant_features)
+        print(f"[INFO] DataFrame after filtering has {processed_df.shape[1]} columns")
         processed_df,lap_df_list = feature_processor._filter_top_performance_laps(processed_df,1)
 
         if processed_df.empty:
@@ -883,7 +1006,18 @@ class Full_dataset_TelemetryMLService:
         
         #enrich data
         self._print_section_divider("ENRICHING CONTEXTUAL DATA")
-        enriched_contextual_data = await self.enriched_contextual_data(bottom_laps_telemetry_list)
+        enrichment_result = await self.enriched_contextual_data(bottom_laps_telemetry_list)
+        
+        # Handle the new structure
+        if enrichment_result and enrichment_result.get("enriched_features"):
+            enriched_contextual_data = enrichment_result["original_telemetry"]  # Use original data for comparison
+            enrichment_count = len(enrichment_result["enriched_features"])
+            feature_metadata = enrichment_result["feature_metadata"]
+            print(f"[INFO] Enrichment successful: {enrichment_count} records with {feature_metadata.get('feature_count', 0)} enriched features")
+        else:
+            enriched_contextual_data = bottom_laps_telemetry_list  # Fallback to original data
+            enrichment_count = 0
+            print("[WARNING] Enrichment failed or returned no features, using original data")
 
         #process enriched data, Generate training pairs with performance sections
         self._print_section_divider("GENERATING TRAINING PAIRS")
@@ -894,7 +1028,8 @@ class Full_dataset_TelemetryMLService:
         self._print_section_divider("TRAINING TRANSFORMER MODEL")
         transformer_results = await self._train_expert_action_transformer(
             training_and_expert_action=training_and_expert_action,
-            trackName=trackName
+            trackName=trackName,
+            enrichment_result=enrichment_result  # Pass the already computed enrichment
         )
         
         self._print_section_divider("TRANSFORMER LEARNING COMPLETED")
@@ -902,7 +1037,7 @@ class Full_dataset_TelemetryMLService:
             "success": True,
             "transformer_training": transformer_results,
             "expert_imitation_trained": True,
-            "contextual_data_enriched": len(enriched_contextual_data),
+            "contextual_data_enriched": enrichment_count,
             "training_pairs_generated": len(training_and_expert_action),
             "comparison_results": {
                 "total_data_points": comparison_results.get('total_data_points', 0),
@@ -914,13 +1049,15 @@ class Full_dataset_TelemetryMLService:
 
     async def _train_expert_action_transformer(self, 
                                              training_and_expert_action: List[Dict[str, Any]],
-                                             trackName: str) -> Dict[str, Any]:
+                                             trackName: str,
+                                             enrichment_result: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
         Train the transformer model to predict expert actions from current telemetry
         
         Args:
             training_and_expert_action: List of training pairs with telemetry sections and expert actions
             trackName: Track name for model identification
+            enrichment_result: Pre-computed enrichment result to avoid re-training models
             
         Returns:
             Training results and model performance metrics
@@ -979,10 +1116,55 @@ class Full_dataset_TelemetryMLService:
             
             print(f"[INFO] Extracted {len(telemetry_data)} telemetry records and {len(expert_actions)} expert actions")
             
-            # Create dataset first to determine actual feature count
+            # Use pre-computed enriched contextual data if available
+            if enrichment_result and enrichment_result.get("enriched_features"):
+                print("[INFO] ✅ Using pre-computed enriched contextual features for transformer training...")
+                print("[INFO] ✅ Skipping re-training of corner identification and tire grip models")
+                # Extract the separated data from the pre-computed enrichment
+                original_telemetry = enrichment_result["original_telemetry"]
+                enriched_contextual_data = enrichment_result["enriched_features"]
+                feature_metadata = enrichment_result["feature_metadata"]
+                
+                print(f"[INFO] Using {len(enriched_contextual_data)} pre-computed enriched contextual records")
+                print(f"[INFO] Feature sources: {feature_metadata.get('sources', [])}")
+                print(f"[INFO] Total enriched features: {feature_metadata.get('feature_count', 0)}")
+                
+                # Ensure we have the same length as telemetry_data
+                min_len = min(len(telemetry_data), len(enriched_contextual_data))
+                telemetry_data = telemetry_data[:min_len]
+                expert_actions = expert_actions[:min_len]
+                enriched_contextual_data = enriched_contextual_data[:min_len]
+            else:
+                # Generate enriched contextual data for training (fallback)
+                print("[INFO] No pre-computed enrichment provided, generating enriched contextual features...")
+                enrichment_result = await self.enriched_contextual_data(telemetry_data)
+                
+                if not enrichment_result or not enrichment_result.get("enriched_features"):
+                    print("[WARNING] No enriched contextual data generated, proceeding without enriched features")
+                    enriched_contextual_data = None
+                    feature_metadata = {"sources": [], "feature_count": 0}
+                else:
+                    # Extract the separated data
+                    original_telemetry = enrichment_result["original_telemetry"]
+                    enriched_contextual_data = enrichment_result["enriched_features"]
+                    feature_metadata = enrichment_result["feature_metadata"]
+                    
+                    print(f"[INFO] Generated {len(enriched_contextual_data)} enriched contextual records")
+                    print(f"[INFO] Feature sources: {feature_metadata.get('sources', [])}")
+                    print(f"[INFO] Total enriched features: {feature_metadata.get('feature_count', 0)}")
+                    
+                    # Ensure we have the same length as telemetry_data
+                    min_len = min(len(telemetry_data), len(enriched_contextual_data))
+                    telemetry_data = telemetry_data[:min_len]
+                    expert_actions = expert_actions[:min_len]
+                    enriched_contextual_data = enriched_contextual_data[:min_len]
+            
+            # Create dataset with enriched contextual features  
+            # Note: For prediction, we use basic telemetry as input and enriched features as reasoning targets
             temp_dataset = TelemetryActionDataset(
-                telemetry_data=telemetry_data,
-                expert_actions=expert_actions,
+                telemetry_data=telemetry_data,  # Basic telemetry as input
+                expert_actions=expert_actions,  # Action targets
+                enriched_contextual_data=enriched_contextual_data,  # Reasoning targets (enriched features)
                 sequence_length=50,
                 prediction_horizon=20
             )
@@ -994,15 +1176,18 @@ class Full_dataset_TelemetryMLService:
                 }
             
             # Get actual input features from processed data
-            sample_input, _ = temp_dataset[0]
+            sample_input, sample_actions, sample_reasoning = temp_dataset[0]
             input_features = sample_input.size(-1)  # Last dimension is feature dimension
+            reasoning_features = sample_reasoning.size(-1)  # Last dimension is reasoning feature dimension
             
             print(f"[INFO] Detected {input_features} input features from processed telemetry data")
+            print(f"[INFO] Detected {reasoning_features} reasoning features from enriched contextual data")
             
-            # Create transformer model and trainer with correct feature count
+            # Create transformer model and trainer with correct feature counts
             model = ExpertActionTransformer(
                 input_features=input_features,
                 action_features=3,  # steering, throttle, brake
+                reasoning_features=reasoning_features,  # enriched contextual features
                 d_model=256, # embedding dimension
                 nhead=8,
                 num_encoder_layers=6,
@@ -1104,29 +1289,37 @@ class Full_dataset_TelemetryMLService:
             raise RuntimeError(f"[ERROR] Failed to train transformer model for {trackName}: {str(e)}")
 
 
-    async def enriched_contextual_data(self, telemetry_list: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    async def enriched_contextual_data(self, telemetry_list: List[Dict[str, Any]]) -> Dict[str, Any]:
         """
-        Enrich telemetry data with contextual features using trained models
+        Extract enriched contextual features from telemetry data using trained models
+        
+        This method keeps original telemetry separate from enriched features for clean training.
         
         Args:
             telemetry_list: List of telemetry record dictionaries (flat list)
             
         Returns:
-            Enriched telemetry data with corner identification and tire grip features
+            Dictionary containing:
+            - original_telemetry: Original telemetry data (unchanged)
+            - enriched_features: List of enriched feature dictionaries
+            - feature_metadata: Information about feature sources and types
         """
         print(f"[INFO] Starting contextual data enrichment for {len(telemetry_list)} telemetry records")
         
         if not telemetry_list:
             print("[WARNING] No telemetry data provided for enrichment")
-            return []
+            return {
+                "original_telemetry": [],
+                "enriched_features": [],
+                "feature_metadata": {"sources": [], "feature_count": 0}
+            }
         
         try:
-            # Split telemetry records for training and feature extraction (70% training, 30% extraction)
-            split_index = int(len(telemetry_list) * 0.7)
-            training_telemetry_list = telemetry_list[:split_index]
-            extraction_telemetry_list = telemetry_list[split_index:]
+            # Use all telemetry data for both training enrichment models and feature extraction
+            # This ensures consistency and maximizes available data
+            training_telemetry_list = telemetry_list.copy()
             
-            print(f"[INFO] Split data: {len(training_telemetry_list)} records for training, {len(extraction_telemetry_list)} records for extraction")
+            print(f"[INFO] Using all {len(training_telemetry_list)} records for enrichment model training and feature extraction")
             
             # Train corner identification model using training data
             self._print_section_divider("Training corner identification model...")
@@ -1153,50 +1346,156 @@ class Full_dataset_TelemetryMLService:
                 print(f"[ERROR] Tire grip analysis training failed: {str(e)}")
                 tire_grip_model = {"success": False, "error": str(e)}
             
-            # Now extract features from extraction telemetry data
-            enriched_telemetry_data = extraction_telemetry_list.copy()  # Start with original extraction data
+            # Now extract enriched features separately (don't mix back into original data)
+            enriched_features_data = []
+            feature_sources = []
             
-            # Extract corner features for extraction telemetry
+            # Initialize with empty enriched features for each telemetry record
+            for i in range(len(training_telemetry_list)):
+                enriched_features_data.append({})
+            
+            # Extract corner features as separate enriched data
             if corner_model.get("success"):
                 try:
-                    self._print_section_divider("Enriching corner features for telemetry data...")
-                    enriched_telemetry_data = await self.corner_identification.extract_corner_features_for_telemetry(
-                        enriched_telemetry_data      
-                    )
-                    print(f"[INFO] Added corner features to {len(enriched_telemetry_data)} records")
+                    self._print_section_divider("Extracting corner features...")
+                    corner_enriched_data = await self._extract_corner_features_only(training_telemetry_list)
+                    
+                    # Add corner features to enriched features data
+                    for i, corner_features in enumerate(corner_enriched_data):
+                        if i < len(enriched_features_data):
+                            enriched_features_data[i].update(corner_features)
+                    
+                    feature_sources.append("corner_identification")
+                    print(f"[INFO] Extracted corner features for {len(corner_enriched_data)} records")
                 except Exception as e:
-                    raise ValueError(f"[WARNING] Failed to extract corner features: {str(e)}")
+                    print(f"[WARNING] Failed to extract corner features: {str(e)}")
             
-            # Extract tire grip features for extraction telemetry
+            # Extract tire grip features as separate enriched data
             if tire_grip_model.get("success"):
                 try:
-                    self._print_section_divider("Enriching tire grip features for telemetry data...")
-                    enriched_telemetry_data = await self.tire_grip_analysis.extract_tire_grip_features(
-                        enriched_telemetry_data
-                    )
-                    print(f"[INFO] Added tire grip features to {len(enriched_telemetry_data)} records")
+                    self._print_section_divider("Extracting tire grip features...")
+                    grip_enriched_data = await self._extract_tire_grip_features_only(training_telemetry_list)
+                    
+                    # Add tire grip features to enriched features data
+                    for i, grip_features in enumerate(grip_enriched_data):
+                        if i < len(enriched_features_data):
+                            enriched_features_data[i].update(grip_features)
+                    
+                    feature_sources.append("tire_grip_analysis")
+                    print(f"[INFO] Extracted tire grip features for {len(grip_enriched_data)} records")
                 except Exception as e:
-                    raise ValueError(f"[WARNING] Failed to extract tire grip features: {str(e)}")
+                    print(f"[WARNING] Failed to extract tire grip features: {str(e)}")
             
-            print(f"[INFO] Contextual data enrichment completed: {len(enriched_telemetry_data)} records processed")
+            print(f"[INFO] Contextual data enrichment completed: {len(enriched_features_data)} enriched feature records created")
             
-            # Print enrichment summary
-            enrichment_summary = {
-                'total_records_processed': len(enriched_telemetry_data),
-                'total_original_records': len(extraction_telemetry_list),
+            # Create feature metadata
+            sample_enriched = enriched_features_data[0] if enriched_features_data else {}
+            feature_metadata = {
+                'sources': feature_sources,
+                'feature_count': len(sample_enriched),
+                'feature_names': list(sample_enriched.keys()),
+                'corner_features': [k for k in sample_enriched.keys() if 'corner' in k.lower()],
+                'grip_features': [k for k in sample_enriched.keys() if 'grip' in k.lower() or 'friction' in k.lower()],
+                'total_original_records': len(training_telemetry_list),
                 'corner_identification_success': corner_model.get("success", False),
-                'tire_grip_analysis_success': tire_grip_model.get("success", False),
-                'training_records_used': len(training_telemetry_list),
-                'extraction_records_processed': len(extraction_telemetry_list)
+                'tire_grip_analysis_success': tire_grip_model.get("success", False)
             }
             
-            print(f"[INFO] Enrichment summary: {enrichment_summary}")
+            print(f"[INFO] Feature metadata: {feature_metadata['feature_count']} enriched features from {len(feature_sources)} sources")
             
-            return enriched_telemetry_data
+            return {
+                "original_telemetry": training_telemetry_list,  # Keep original data unchanged
+                "enriched_features": enriched_features_data,    # Separate enriched features
+                "feature_metadata": feature_metadata           # Metadata about features
+            }
             
         except Exception as e:
             print(f"[ERROR] Failed to enrich contextual data: {str(e)}")
-            return telemetry_list  # Return original data on failure
+            return {
+                "original_telemetry": telemetry_list,  # Return original data on failure
+                "enriched_features": [],
+                "feature_metadata": {"sources": [], "feature_count": 0, "error": str(e)}
+            }
+    
+    async def _extract_corner_features_only(self, telemetry_data: List[Dict[str, Any]]) -> List[Dict[str, float]]:
+        """
+        Extract ONLY corner-related features without mixing them back into telemetry
+        
+        Args:
+            telemetry_data: List of telemetry records
+            
+        Returns:
+            List of dictionaries containing only corner-related features
+        """
+        try:
+            # Use the corner identification service to extract features
+            enhanced_data = await self.corner_identification.extract_corner_features_for_telemetry(telemetry_data)
+            
+            # Extract only the corner-related features (not original telemetry)
+            corner_features_only = []
+            
+            for enhanced_record in enhanced_data:
+                corner_features = {}
+                
+                # Extract only features that are corner-related
+                for key, value in enhanced_record.items():
+                    if any(corner_keyword in key.lower() for corner_keyword in [
+                        'corner', 'entry', 'apex', 'exit', 'curvature', 'steering', 
+                        'phase', 'severity', 'type', 'direction', 'racing_line'
+                    ]):
+                        try:
+                            corner_features[key] = float(value) if value is not None else 0.0
+                        except (ValueError, TypeError):
+                            corner_features[key] = 0.0
+                
+                corner_features_only.append(corner_features)
+            
+            return corner_features_only
+            
+        except Exception as e:
+            print(f"[ERROR] Failed to extract corner features only: {str(e)}")
+            # Return empty feature dictionaries
+            return [{}] * len(telemetry_data)
+    
+    async def _extract_tire_grip_features_only(self, telemetry_data: List[Dict[str, Any]]) -> List[Dict[str, float]]:
+        """
+        Extract ONLY tire grip-related features without mixing them back into telemetry
+        
+        Args:
+            telemetry_data: List of telemetry records
+            
+        Returns:
+            List of dictionaries containing only tire grip-related features
+        """
+        try:
+            # Use the tire grip analysis service to extract features
+            enhanced_data = await self.tire_grip_analysis.extract_tire_grip_features(telemetry_data)
+            
+            # Extract only the tire grip-related features (not original telemetry)
+            grip_features_only = []
+            
+            for enhanced_record in enhanced_data:
+                grip_features = {}
+                
+                # Extract only features that are tire grip-related
+                for key, value in enhanced_record.items():
+                    if any(grip_keyword in key.lower() for grip_keyword in [
+                        'friction', 'grip', 'utilization', 'weight_transfer', 'load', 
+                        'tire', 'saturation', 'degradation', 'slip_efficiency', 'optimal'
+                    ]):
+                        try:
+                            grip_features[key] = float(value) if value is not None else 0.0
+                        except (ValueError, TypeError):
+                            grip_features[key] = 0.0
+                
+                grip_features_only.append(grip_features)
+            
+            return grip_features_only
+            
+        except Exception as e:
+            print(f"[ERROR] Failed to extract tire grip features only: {str(e)}")
+            # Return empty feature dictionaries
+            return [{}] * len(telemetry_data)
 
     
 if __name__ == "__main__":
