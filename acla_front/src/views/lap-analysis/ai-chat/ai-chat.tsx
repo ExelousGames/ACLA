@@ -1287,26 +1287,21 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
 
     const startTrackGuide = (responseData: any) => {
 
-        const preloadSentences = parseGuidanceData(responseData.payload.answer);
-        const trackData = responseData.payload?.side_products?.track_detail_for_guide;
 
         // Add imitation guidance chart with the track data
-        if (preloadSentences && trackData) {
-            visualizationController.executeCommand({
-                action: 'add',
-                type: 'imitation-guidance-chart',
-                data: {
-                    preloadSentences: preloadSentences,
-                    trackData: trackData,
-                    sessionId: sessionId,
-                    autoManaged: true
-                },
-                config: {
-                    title: 'AI Track Guidance',
-                    autoUpdate: true
-                }
-            });
-        }
+
+        visualizationController.executeCommand({
+            action: 'add',
+            type: 'imitation-guidance-chart',
+            data: {
+
+            },
+            config: {
+                title: 'AI Track Guidance',
+                autoUpdate: true
+            }
+        });
+
 
         setTrackGuideEnabled(true);
     }

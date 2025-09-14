@@ -330,25 +330,12 @@ export class RacingSessionController {
         @Body() body: ImitationLearningGuidanceRequestDto
     ): Promise<ImitationLearningGuidanceResponseDto> {
         try {
-            // Validate guidance_type parameter
-            const validGuidanceTypes = ["actions", "behavior", "both"];
-            if (!validGuidanceTypes.includes(body.guidance_type)) {
-                throw new BadRequestException(
-                    `Invalid guidance_type '${body.guidance_type}'. Must be one of: ${validGuidanceTypes.join(', ')}`
-                );
-            }
-
-            // Validate that current_telemetry is provided
-            if (!body.current_telemetry || Object.keys(body.current_telemetry).length === 0) {
-                throw new BadRequestException('current_telemetry is required and cannot be empty');
-            }
 
             // Prepare request for AI service
             const guidanceRequest: ImitationLearningGuidanceRequest = {
                 current_telemetry: body.current_telemetry,
                 track_name: body.track_name,
                 car_name: body.car_name,
-                guidance_type: body.guidance_type,
                 user_id: body.user_id || req.user?.email // Use authenticated user's email if not provided
             };
 

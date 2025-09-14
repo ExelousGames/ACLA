@@ -50,7 +50,6 @@ class ImitationPredictRequest(BaseModel):
     current_telemetry: Dict[str, Any]
     track_name: str
     car_name: str   
-    guidance_type: str = "both"  # "actions", "behavior", or "both"
     user_id: Optional[str] = None
     
 # Initialize telemetry service
@@ -193,20 +192,11 @@ async def get_imitation_learning_expert_guidance(request: ImitationPredictReques
     """
     try:
         # Validate guidance_type parameter
-        valid_guidance_types = ["actions", "behavior", "both"]
-        if request.guidance_type not in valid_guidance_types:
-            raise HTTPException(
-                status_code=400, 
-                detail=f"Invalid guidance_type. Must be one of: {valid_guidance_types}"
-            )
-        
         try:
             # Call the telemetryMLService to get expert guidance
-            result = await telemetryMLService.get_imitation_learning_expert_guidance(
+            result = await telemetryMLService.predict_expert_actions(
                 current_telemetry=request.current_telemetry,
                 trackName=request.track_name,
-                carName=request.car_name,
-                guidance_type=request.guidance_type,
             )
 
         except Exception as e:

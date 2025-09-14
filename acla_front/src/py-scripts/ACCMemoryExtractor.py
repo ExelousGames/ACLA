@@ -38,7 +38,7 @@ class ACCRecording:
 
             flattened = self.flatten_object(sm)
             
-            self.append_object_to_csv(flattened,full_path)
+            #self.append_object_to_csv(flattened,full_path)
 
             # !!!!!! must keep this to communicate with frontend
             print(DataclassJSONUtility.to_json(flattened, indent=2).rstrip())

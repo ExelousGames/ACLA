@@ -1,3 +1,10 @@
+.imitationGuidanceChart {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    overflow: hidden;
+}
+
 .chartCard {
     padding: 16px;
     overflow: auto;

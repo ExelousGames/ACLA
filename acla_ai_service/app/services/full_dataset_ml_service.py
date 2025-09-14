@@ -7,7 +7,7 @@ using your TelemetryFeatures and FeatureProcessor classes.
 
 import os
 import pandas as pd
-from .imitate_expert_learning_service import ImitateExpertLearningService
+from .imitate_expert_learning_service import ExpertImitateLearningService
 import numpy as np
 import joblib
 import warnings
@@ -157,7 +157,7 @@ class Full_dataset_TelemetryMLService:
         if deserializer_func:
             deserialized_model_data = deserializer_func(model_data)
         elif model_type == "imitation_learning":
-            imitation_learning = ImitateExpertLearningService()
+            imitation_learning = ExpertImitateLearningService()
             deserialized_model_data = imitation_learning.deserialize_object_inside(model_data)
         else:
             # For other model types, you might need to add more deserializers
@@ -467,83 +467,7 @@ class Full_dataset_TelemetryMLService:
                 "cleared_count": len(cleared_locks),
                 "timestamp": datetime.now().isoformat()
             }
-    
-    def _generate_training_recommendations(self, metrics: Dict[str, Any], 
-                                         algorithm_name: str, task_type: str) -> List[str]:
-        """Generate recommendations based on training metrics and algorithm"""
-        recommendations = []
-        
-        # Performance-based recommendations
-        if task_type == "regression":
-            mae = metrics.get("mae", float('inf'))
-            rmse = metrics.get("mse", float('inf')) ** 0.5 if metrics.get("mse") else float('inf')
-            r2 = metrics.get("r2", 0)
-            
-            if r2 < 0.6:
-                recommendations.append("Consider feature engineering or trying a different algorithm")
-            if mae > 5.0:
-                recommendations.append("High prediction error - check data quality and feature relevance")
-            if r2 > 0.8:
-                recommendations.append("Excellent model performance - monitor for overfitting")
-                
-        else:  # classification
-            accuracy = metrics.get("accuracy", 0)
-            f1 = metrics.get("f1", 0)
-            
-            if accuracy < 0.7:
-                recommendations.append("Low classification accuracy - consider feature selection or different algorithm")
-            if f1 < 0.6:
-                recommendations.append("Poor F1 score - check class balance and feature quality")
-            if accuracy > 0.9:
-                recommendations.append("Excellent classification performance - validate on new data")
-        
-        # Algorithm-specific recommendations
-        if algorithm_name == "linear_regression" and metrics.get("r2", 0) < 0.6:
-            recommendations.append("Linear model may not capture complex patterns - try tree-based algorithms")
-        elif algorithm_name == "random_forest":
-            recommendations.append("Random Forest provides good baseline - tune hyperparameters for better performance")
-        elif algorithm_name == "gradient_boosting":
-            recommendations.append("Gradient Boosting can achieve high accuracy - monitor training time and overfitting")
-        elif algorithm_name == "ridge":
-            recommendations.append("Ridge regression prevents overfitting - good for many features")
-        
-        if not recommendations:
-            recommendations.append("Model training completed successfully - monitor performance over time")
-        
-        return recommendations
-
-    
-    def _save_model(self, 
-                   model, 
-                   scaler, 
-                   model_id: str, 
-                   feature_names: List[str], 
-                   model_type: str,
-                   label_encoder=None):
-        """Save trained model and associated components"""
-        model_info = {
-            'model_id': model_id,
-            'model': model,
-            'scaler': scaler,
-            'label_encoder': label_encoder,
-            'feature_names': feature_names,
-            'model_name': model.__class__.__name__,
-            'model_type': model_type,
-            'created_at': datetime.now().isoformat()
-        }
-        
-        model_path = self.models_directory / f"{model_id}.pkl"
-        joblib.dump(model_info, model_path)
-    
-    def _load_model(self, model_id: str) -> Optional[Dict[str, Any]]:
-        """Load a trained model"""
-        model_path = self.models_directory / f"{model_id}.pkl"
-        if not model_path.exists():
-            return None
-        
-        return joblib.load(model_path)
-    
-    
+   
     # Imitation Learning Methods
     async def train_imitation_model(self, trackName: str, carName: str) -> Dict[str, Any]:
         """
@@ -578,7 +502,7 @@ class Full_dataset_TelemetryMLService:
 
         # Learn from expert demonstrations
 
-        imitation_learning = ImitateExpertLearningService()
+        imitation_learning = ExpertImitateLearningService()
         results = imitation_learning.train_ai_model(telemetry_data)
             
         try:
@@ -741,8 +665,153 @@ class Full_dataset_TelemetryMLService:
         """
         return await self.tire_grip_analysis.extract_tire_grip_features(telemetry_data, trackName, carName)
     
+    
+    def _deserialize_transformer_model(self, model_data: Dict[str, Any]) -> 'ExpertActionTransformer':
+        """
+        Deserialize transformer model data specifically for transformer models
+        
+        Args:
+            model_data: Serialized transformer model data from backend
+            
+        Returns:
+            Deserialized ExpertActionTransformer instance
+        """
+        if not TORCH_AVAILABLE:
+            raise ImportError("PyTorch is not available - transformer functionality is disabled")
+        
+        try:
+            # Check if this is the expected transformer model data structure
+            if model_data.get('model_type') != 'ExpertActionTransformer':
+                raise ValueError(f"Expected ExpertActionTransformer, got {model_data.get('model_type', 'unknown')}")
+            
+            # Use the class method to deserialize
+            transformer_model = ExpertActionTransformer.deserialize_model(model_data)
+            transformer_model.eval()  # Set to evaluation mode
+            
+            print(f"[INFO] Successfully deserialized ExpertActionTransformer model")
+            return transformer_model
+            
+        except Exception as e:
+            print(f"[ERROR] Failed to deserialize transformer model: {str(e)}")
+            raise e
+    
+    
+    async def predict_expert_actions(self, 
+                                   telemetry_dict: Dict[str, Any],
+                                   trackName: str, 
+                                   carName: Optional[str] = None,
+                                   sequence_length: int = 20,
+                                   temperature: float = 1.0) -> Dict[str, Any]:
+        """
+        Fetch transformer model and predict expert actions from telemetry data
+        
+        Args:
+            telemetry_dict: Single telemetry data record as dictionary
+            trackName: Track name for model selection
+            carName: Optional car name for model selection
+            sequence_length: Length of action sequence to predict (default: 20)
+            temperature: Temperature for prediction sampling (1.0 = normal, lower = more conservative)
+            
+        Returns:
+            Dictionary containing:
+            - predicted_actions: List of predicted expert actions
+            - performance_scores: List of performance scores for each predicted action
+            - metadata: Additional prediction metadata
+        """
+        if not TORCH_AVAILABLE:
+            return {
+                "error": "PyTorch is not available - transformer functionality is disabled",
+                "predicted_actions": [],
+                "performance_scores": [],
+                "metadata": {}
+            }
+        
+        try:
+            # Fetch and deserialize the transformer model
+            print(f"[INFO] Fetching transformer model for {trackName}/{carName or 'any'}")
+            transformer_model, model_metadata = await self._get_cached_model_or_fetch(
+                model_type="transformer_learning",
+                track_name=trackName,
+                car_name=carName,
+                model_subtype="transformer_model_data",
+                deserializer_func=self._deserialize_transformer_model
+            )
+            
+            # Prepare telemetry data for the model
+            telemetry_features = TelemetryFeatures()
+            feature_names = telemetry_features.get_features_for_imitate_expert()
+            
+            # Extract relevant features from the telemetry dictionary
+            feature_values = []
+            for feature_name in feature_names:
+                value = telemetry_dict.get(feature_name, 0.0)
+                try:
+                    feature_values.append(float(value))
+                except (ValueError, TypeError):
+                    print(f"[WARNING] Invalid value for feature {feature_name}: {value}, using 0.0")
+                    feature_values.append(0.0)
+            
+            # Convert to tensor format expected by the transformer
+            # Shape: [seq_len=1, batch_size=1, input_features]
+            src_telemetry = torch.tensor(feature_values, dtype=torch.float32).unsqueeze(0).unsqueeze(1)
+            
+            print(f"[INFO] Input telemetry tensor shape: {src_telemetry.shape}")
+            print(f"[INFO] Predicting {sequence_length} expert actions...")
+            
+            # Make prediction using the transformer model
+            with torch.no_grad():
+                predicted_sequence, performance_sequence = transformer_model.predict_expert_sequence(
+                    src_telemetry=src_telemetry,
+                    sequence_length=sequence_length,
+                    temperature=temperature
+                )
+            
+            # Convert predictions back to lists for JSON serialization
+            predicted_actions = predicted_sequence.squeeze(1).tolist()  # Remove batch dimension
+            performance_scores = performance_sequence.squeeze(1).squeeze(2).tolist()  # Remove batch and feature dims
+            
+            # Calculate metadata
+            avg_performance = sum(performance_scores) / len(performance_scores) if performance_scores else 0.0
+            prediction_confidence = max(0.0, min(1.0, (avg_performance + 1.0) / 2.0))  # Normalize to 0-1 range
+            
+            print(f"[INFO] Successfully predicted {len(predicted_actions)} expert actions")
+            print(f"[INFO] Average predicted performance: {avg_performance:.4f}")
+            print(f"[INFO] Prediction confidence: {prediction_confidence:.2%}")
+            
+            return {
+                "success": True,
+                "predicted_actions": predicted_actions,
+                "performance_scores": performance_scores,
+                "metadata": {
+                    "track_name": trackName,
+                    "car_name": carName,
+                    "sequence_length": sequence_length,
+                    "temperature": temperature,
+                    "input_features_count": len(feature_values),
+                    "avg_predicted_performance": avg_performance,
+                    "prediction_confidence": prediction_confidence,
+                    "model_metadata": model_metadata,
+                    "prediction_timestamp": datetime.now().isoformat()
+                }
+            }
+            
+        except Exception as e:
+            error_msg = f"Failed to predict expert actions: {str(e)}"
+            print(f"[ERROR] {error_msg}")
+            return {
+                "success": False,
+                "error": error_msg,
+                "predicted_actions": [],
+                "performance_scores": [],
+                "metadata": {
+                    "track_name": trackName,
+                    "car_name": carName,
+                    "error_timestamp": datetime.now().isoformat()
+                }
+            }
+    
 
-    async def transformerLearning(self, trackName: str):
+    async def StartImitateExpertPipeline(self, trackName: str):
         
         """
         returns: success, transformer_training, expert_imitation_trained    , contextual_data_enriched, training_pairs_generated, comparison_results, track_name
@@ -801,7 +870,7 @@ class Full_dataset_TelemetryMLService:
         
         # Learn from expert demonstrations
         self._print_section_divider("TRAINING IMITATION LEARNING MODEL")
-        imitation_learning = ImitateExpertLearningService()
+        imitation_learning = ExpertImitateLearningService()
         imitation_learning.train_ai_model(top_laps_telemetry_list)
         
         # Convert rest_laps DataFrames to list of lap records (dictionaries)
@@ -983,7 +1052,7 @@ class Full_dataset_TelemetryMLService:
             
             print(f"[INFO] Created data loaders: train_size={len(train_dataset)}, val_size={len(val_dataset)}")
             
-            training_results = trainer.train(
+            transformer_model_data = trainer.train(
                 train_dataloader=train_dataloader,
                 val_dataloader=val_dataloader,
                 num_epochs=50,  # Adjust based on data size
@@ -994,29 +1063,15 @@ class Full_dataset_TelemetryMLService:
             
             # Save model metadata to backend
             try:
-                transformer_model_data = {
-                    "input_features": input_features,
-                    "training_results": training_results,
-                    "model_parameters": {
-                        "d_model": 256,
-                        "nhead": 8,
-                        "num_encoder_layers": 6,
-                        "num_decoder_layers": 6,
-                        "sequence_length": 50,
-                        "prediction_horizon": 20
-                    },
-                    "scaler_data": dataset.scaler.__dict__ if hasattr(dataset, 'scaler') else None
-                }
                 
                 ai_model_dto = {
                     "modelType": "expert_action_transformer",
                     "trackName": trackName,
-                    "carName": None,  # Track-specific model
-                    "modelData": transformer_model_data,
+                    "carName": 'AllCars',  # Track-specific model
+                    "modelData": model.serialize_model(),
                     "metadata": {
                         "training_pairs": len(training_and_expert_action),
                         "dataset_sequences": len(dataset),
-                        "training_results": training_results,
                         "training_timestamp": datetime.now().isoformat()
                     },
                     "isActive": True
@@ -1026,11 +1081,11 @@ class Full_dataset_TelemetryMLService:
                 print(f"[INFO] Saved transformer model data to backend for track: {trackName}")
                 
             except Exception as backend_error:
-                print(f"[WARNING] Failed to save transformer model to backend: {str(backend_error)}")
+                raise RuntimeError(f"[WARNING] Failed to save transformer model to backend: {str(backend_error)}")
             
             return {
                 "success": True,
-                "training_results": training_results,
+                "training_results": transformer_model_data,
                 "dataset_info": {
                     "total_sequences": len(dataset),
                     "train_sequences": len(train_dataset),
@@ -1143,7 +1198,7 @@ class Full_dataset_TelemetryMLService:
             print(f"[ERROR] Failed to enrich contextual data: {str(e)}")
             return telemetry_list  # Return original data on failure
 
-          
+    
 if __name__ == "__main__":
     # Example usage
     print("TelemetryMLService with Imitation Learning initialized. Ready for training!")

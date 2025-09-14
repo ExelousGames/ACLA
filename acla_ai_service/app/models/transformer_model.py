@@ -86,6 +86,11 @@ class ExpertActionTransformer(nn.Module):
         self.action_features = action_features
         self.d_model = d_model
         self.max_sequence_length = max_sequence_length
+        self.nhead = nhead
+        self.num_encoder_layers = num_encoder_layers
+        self.num_decoder_layers = num_decoder_layers
+        self.dim_feedforward = dim_feedforward
+        self.dropout_rate = dropout
         
         # Input embedding layers
         self.input_embedding = nn.Linear(input_features, d_model)
@@ -227,6 +232,137 @@ class ExpertActionTransformer(nn.Module):
         full_performance = torch.cat(performance_scores, dim=0)
         
         return full_sequence, full_performance
+    
+    def serialize_model(self) -> Dict[str, Any]:
+        """
+        Serialize the model to a JSON-serializable dictionary
+        
+        Returns:
+            Dictionary containing model state and configuration for JSON serialization
+        """
+        import base64
+        import io
+        
+        # Get model state dict
+        state_dict = self.state_dict()
+        
+        # Convert tensors to base64 encoded strings for JSON serialization
+        serialized_state_dict = {}
+        for key, tensor in state_dict.items():
+            # Convert tensor to bytes
+            buffer = io.BytesIO()
+            torch.save(tensor, buffer)
+            buffer.seek(0)
+            # Encode to base64 string
+            serialized_state_dict[key] = base64.b64encode(buffer.read()).decode('utf-8')
+        
+        # Create serializable model data
+        model_data = {
+            'model_type': 'ExpertActionTransformer',
+            'model_config': {
+                'input_features': self.input_features,
+                'action_features': self.action_features,
+                'd_model': self.d_model,
+                'max_sequence_length': self.max_sequence_length
+            },
+            'state_dict': serialized_state_dict,
+            'model_architecture': {
+                'nhead': self.nhead,
+                'num_encoder_layers': self.num_encoder_layers,
+                'num_decoder_layers': self.num_decoder_layers,
+                'dim_feedforward': self.dim_feedforward,
+                'dropout': self.dropout_rate
+            }
+        }
+        
+        return model_data
+    
+    @classmethod
+    def deserialize_model(cls, serialized_data: Dict[str, Any]) -> 'ExpertActionTransformer':
+        """
+        Deserialize a model from JSON-serializable data and create a new instance
+        
+        Args:
+            serialized_data: Dictionary containing serialized model data
+            
+        Returns:
+            New ExpertActionTransformer instance with loaded weights
+        """
+        import base64
+        import io
+        
+        # Extract configuration
+        config = serialized_data['model_config']
+        architecture = serialized_data['model_architecture']
+        
+        # Create new model instance with the same configuration
+        model = cls(
+            input_features=config['input_features'],
+            action_features=config['action_features'],
+            d_model=config['d_model'],
+            nhead=architecture['nhead'],
+            num_encoder_layers=architecture['num_encoder_layers'],
+            num_decoder_layers=architecture['num_decoder_layers'],
+            dim_feedforward=architecture['dim_feedforward'],
+            dropout=architecture['dropout'],
+            max_sequence_length=config['max_sequence_length']
+        )
+        
+        # Deserialize state dict
+        state_dict = {}
+        for key, encoded_tensor in serialized_data['state_dict'].items():
+            # Decode base64 string to bytes
+            tensor_bytes = base64.b64decode(encoded_tensor)
+            # Create buffer from bytes
+            buffer = io.BytesIO(tensor_bytes)
+            # Load tensor from buffer
+            tensor = torch.load(buffer, map_location='cpu')
+            state_dict[key] = tensor
+        
+        # Load state dict into model
+        model.load_state_dict(state_dict)
+        
+        return model
+    
+    def load_serialized_weights(self, serialized_data: Dict[str, Any]):
+        """
+        Load weights from serialized data into the current model instance
+        
+        Args:
+            serialized_data: Dictionary containing serialized model data
+        """
+        import base64
+        import io
+        
+        # Deserialize state dict
+        state_dict = {}
+        for key, encoded_tensor in serialized_data['state_dict'].items():
+            # Decode base64 string to bytes
+            tensor_bytes = base64.b64decode(encoded_tensor)
+            # Create buffer from bytes
+            buffer = io.BytesIO(tensor_bytes)
+            # Load tensor from buffer
+            tensor = torch.load(buffer, map_location='cpu')
+            state_dict[key] = tensor
+        
+        # Load state dict into current model
+        self.load_state_dict(state_dict)
+        
+        # Update model attributes if needed
+        if 'model_config' in serialized_data:
+            config = serialized_data['model_config']
+            self.input_features = config['input_features']
+            self.action_features = config['action_features']
+            self.d_model = config['d_model']
+            self.max_sequence_length = config['max_sequence_length']
+        
+        if 'model_architecture' in serialized_data:
+            architecture = serialized_data['model_architecture']
+            self.nhead = architecture['nhead']
+            self.num_encoder_layers = architecture['num_encoder_layers']
+            self.num_decoder_layers = architecture['num_decoder_layers']
+            self.dim_feedforward = architecture['dim_feedforward']
+            self.dropout_rate = architecture['dropout']
 
 class TelemetryActionDataset(Dataset):
     """
@@ -494,7 +630,7 @@ class ExpertActionTrainer:
               train_dataloader: DataLoader,
               val_dataloader: Optional[DataLoader] = None,
               num_epochs: int = 100,
-              patience: int = 10) -> Tuple[ExpertActionTransformer, Dict[str, Any]]:
+              patience: int = 10) ->  Dict[str, Any]:
         """
         Train the model
         
@@ -549,7 +685,7 @@ class ExpertActionTrainer:
             }
             self.training_history.append(epoch_history)
         
-        return self.model, {
+        return {
             'training_completed': True,
             'best_val_loss': best_val_loss if val_dataloader else None,
             'training_history': self.training_history,

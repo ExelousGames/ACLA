@@ -643,7 +643,7 @@ class ExpertTrajectoryLearner:
         return validation_results
 
 
-class ImitateExpertLearningService:
+class ExpertImitateLearningService:
     """Main imitation learning service that combines behavior learning and trajectory optimization"""
     
     def __init__(self, models_directory: str = "imitation_models"):
@@ -1466,7 +1466,7 @@ if __name__ == "__main__":
     print("ImitationLearningService initialized. Ready for expert demonstration learning!")
     
     # Example workflow
-    service = ImitateExpertLearningService()
+    service = ExpertImitateLearningService()
     
     # 1. Train the model (this stores models in the class)
     # serialized_results = service.train_ai_model(expert_telemetry_data)
