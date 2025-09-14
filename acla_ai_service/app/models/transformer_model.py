@@ -6,6 +6,7 @@ over a period of time. It analyzes current driver behavior and suggests step-by-
 improvements to match expert driving patterns.
 """
 
+import sys
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -21,6 +22,17 @@ from datetime import datetime
 from pathlib import Path
 from sklearn.preprocessing import StandardScaler, MinMaxScaler
 from sklearn.metrics import mean_squared_error, mean_absolute_error
+
+# Force unbuffered output for real-time print statements
+import os
+os.environ['PYTHONUNBUFFERED'] = '1'
+sys.stdout.reconfigure(line_buffering=True)
+
+def print_progress(message: str, force_flush: bool = True):
+    """Print with automatic flushing for real-time output during training"""
+    print(message, flush=force_flush)
+    # Also force flush to system stdout 
+    sys.stdout.flush()
 
 class PositionalEncoding(nn.Module):
     """
@@ -59,6 +71,7 @@ class ExpertActionTransformer(nn.Module):
     def __init__(self,
                  input_features: int,
                  action_features: int = 3,  # steering, throttle, brake
+                 reasoning_features: int = 30,  # contextual reasoning features (corners, grip, etc.)
                  d_model: int = 256,
                  nhead: int = 8,
                  num_encoder_layers: int = 6,
@@ -70,8 +83,9 @@ class ExpertActionTransformer(nn.Module):
         Initialize the Expert Action Transformer
         
         Args:
-            input_features: Number of input telemetry features
+            input_features: Number of input telemetry features (basic telemetry only)
             action_features: Number of action outputs (steering, throttle, brake)
+            reasoning_features: Number of contextual reasoning features (corners, grip, etc.)
             d_model: Model dimension
             nhead: Number of attention heads
             num_encoder_layers: Number of encoder layers
@@ -84,6 +98,7 @@ class ExpertActionTransformer(nn.Module):
         
         self.input_features = input_features
         self.action_features = action_features
+        self.reasoning_features = reasoning_features
         self.d_model = d_model
         self.max_sequence_length = max_sequence_length
         self.nhead = nhead
@@ -110,10 +125,9 @@ class ExpertActionTransformer(nn.Module):
             batch_first=False
         )
         
-        # Output projection
-        self.output_projection = nn.Linear(d_model, action_features)
-        
-        # Additional layers for performance prediction
+        # Multi-head output projections
+        self.action_projection = nn.Linear(d_model, action_features)  # Actions (steering, throttle, brake)
+        self.reasoning_projection = nn.Linear(d_model, reasoning_features)  # Contextual reasoning features
         self.performance_head = nn.Linear(d_model, 1)  # Performance score prediction
         
         # Initialize weights
@@ -140,7 +154,7 @@ class ExpertActionTransformer(nn.Module):
                 src_telemetry: torch.Tensor,
                 tgt_actions: torch.Tensor,
                 src_padding_mask: Optional[torch.Tensor] = None,
-                tgt_padding_mask: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor]:
+                tgt_padding_mask: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Forward pass
         
@@ -151,7 +165,7 @@ class ExpertActionTransformer(nn.Module):
             tgt_padding_mask: Padding mask for target
             
         Returns:
-            Tuple of (predicted_actions, performance_scores)
+            Tuple of (predicted_actions, predicted_reasoning, performance_scores)
         """
         seq_len = tgt_actions.shape[0]
         
@@ -175,13 +189,12 @@ class ExpertActionTransformer(nn.Module):
             tgt_key_padding_mask=tgt_padding_mask
         )
         
-        # Project to action space
-        predicted_actions = self.output_projection(transformer_output)
-        
-        # Predict performance scores
+        # Project to multiple output spaces
+        predicted_actions = self.action_projection(transformer_output)
+        predicted_reasoning = self.reasoning_projection(transformer_output)
         performance_scores = self.performance_head(transformer_output)
         
-        return predicted_actions, performance_scores
+        return predicted_actions, predicted_reasoning, performance_scores
     
     def predict_expert_sequence(self,
                                src_telemetry: torch.Tensor,
@@ -196,7 +209,7 @@ class ExpertActionTransformer(nn.Module):
             temperature: Temperature for sampling (1.0 = normal, lower = more conservative)
             
         Returns:
-            Tuple of (predicted_action_sequence, performance_scores)
+            Tuple of (predicted_action_sequence, predicted_reasoning_sequence, performance_scores)
         """
         self.eval()
         
@@ -206,15 +219,17 @@ class ExpertActionTransformer(nn.Module):
         # Initialize target sequence with zeros (or special start token)
         tgt_actions = torch.zeros(1, batch_size, self.action_features, device=device)
         predicted_sequence = []
+        predicted_reasoning_sequence = []
         performance_scores = []
         
         with torch.no_grad():
             for i in range(sequence_length):
                 # Forward pass
-                pred_actions, perf_scores = self.forward(src_telemetry, tgt_actions)
+                pred_actions, pred_reasoning, perf_scores = self.forward(src_telemetry, tgt_actions)
                 
-                # Get the last predicted action
+                # Get the last predicted values
                 last_action = pred_actions[-1:, :, :]  # [1, batch_size, action_features]
+                last_reasoning = pred_reasoning[-1:, :, :]  # [1, batch_size, reasoning_features]
                 last_perf = perf_scores[-1:, :, :]     # [1, batch_size, 1]
                 
                 # Apply temperature scaling
@@ -222,6 +237,7 @@ class ExpertActionTransformer(nn.Module):
                     last_action = last_action / temperature
                 
                 predicted_sequence.append(last_action)
+                predicted_reasoning_sequence.append(last_reasoning)
                 performance_scores.append(last_perf)
                 
                 # Update target sequence for next iteration
@@ -229,9 +245,10 @@ class ExpertActionTransformer(nn.Module):
         
         # Concatenate all predictions
         full_sequence = torch.cat(predicted_sequence, dim=0)
+        full_reasoning = torch.cat(predicted_reasoning_sequence, dim=0)
         full_performance = torch.cat(performance_scores, dim=0)
         
-        return full_sequence, full_performance
+        return full_sequence, full_reasoning, full_performance
     
     def serialize_model(self) -> Dict[str, Any]:
         """
@@ -262,6 +279,7 @@ class ExpertActionTransformer(nn.Module):
             'model_config': {
                 'input_features': self.input_features,
                 'action_features': self.action_features,
+                'reasoning_features': self.reasoning_features,
                 'd_model': self.d_model,
                 'max_sequence_length': self.max_sequence_length
             },
@@ -299,6 +317,7 @@ class ExpertActionTransformer(nn.Module):
         model = cls(
             input_features=config['input_features'],
             action_features=config['action_features'],
+            reasoning_features=config.get('reasoning_features', 30),  # Default for backward compatibility
             d_model=config['d_model'],
             nhead=architecture['nhead'],
             num_encoder_layers=architecture['num_encoder_layers'],
@@ -353,6 +372,7 @@ class ExpertActionTransformer(nn.Module):
             config = serialized_data['model_config']
             self.input_features = config['input_features']
             self.action_features = config['action_features']
+            self.reasoning_features = config.get('reasoning_features', 30)  # Default for backward compatibility
             self.d_model = config['d_model']
             self.max_sequence_length = config['max_sequence_length']
         
@@ -372,6 +392,7 @@ class TelemetryActionDataset(Dataset):
     def __init__(self,
                  telemetry_data: List[Dict[str, Any]],
                  expert_actions: List[Dict[str, Any]],
+                 enriched_contextual_data: Optional[List[Dict[str, Any]]] = None,
                  sequence_length: int = 50,
                  prediction_horizon: int = 20,
                  scaler: Optional[StandardScaler] = None):
@@ -379,8 +400,9 @@ class TelemetryActionDataset(Dataset):
         Initialize the dataset
         
         Args:
-            telemetry_data: List of telemetry records
+            telemetry_data: List of telemetry records (basic telemetry only)
             expert_actions: List of corresponding expert actions
+            enriched_contextual_data: List of enriched contextual features (corners, grip, etc.)
             sequence_length: Input sequence length
             prediction_horizon: Number of future actions to predict
             scaler: Optional scaler for telemetry data
@@ -392,14 +414,36 @@ class TelemetryActionDataset(Dataset):
         self.telemetry_df = pd.DataFrame(telemetry_data)
         self.actions_df = pd.DataFrame(expert_actions)
         
-        # Ensure same length
-        min_len = min(len(self.telemetry_df), len(self.actions_df))
+        # Handle enriched contextual data (now as separate feature dictionaries)
+        if enriched_contextual_data:
+            if isinstance(enriched_contextual_data[0], dict):
+                # New format: list of feature dictionaries
+                self.enriched_df = pd.DataFrame(enriched_contextual_data)
+                print(f"[INFO] Using enriched contextual data with {len(self.enriched_df.columns)} enriched features", flush=True)
+                print(f"[INFO] Enriched feature names: {list(self.enriched_df.columns)[:10]}..." + 
+                      (f" and {len(self.enriched_df.columns)-10} more" if len(self.enriched_df.columns) > 10 else ""), flush=True)
+            else:
+                # Old format: mixed telemetry data (for backward compatibility)
+                self.enriched_df = pd.DataFrame(enriched_contextual_data)
+                print(f"[INFO] Using enriched contextual data (legacy format) with {len(self.enriched_df.columns)} columns", flush=True)
+        else:
+            self.enriched_df = None
+            print("[INFO] No enriched contextual data provided - will use dummy reasoning targets", flush=True)
+        
+        # Ensure same length across all datasets
+        if self.enriched_df is not None:
+            min_len = min(len(self.telemetry_df), len(self.actions_df), len(self.enriched_df))
+            self.enriched_df = self.enriched_df.iloc[:min_len]
+        else:
+            min_len = min(len(self.telemetry_df), len(self.actions_df))
+        
         self.telemetry_df = self.telemetry_df.iloc[:min_len]
         self.actions_df = self.actions_df.iloc[:min_len]
         
         # Extract numeric features
         self.telemetry_features = self._extract_telemetry_features()
         self.action_features = self._extract_action_features()
+        self.reasoning_features = self._extract_reasoning_features()
         
         # Scale telemetry data
         if scaler is None:
@@ -413,24 +457,44 @@ class TelemetryActionDataset(Dataset):
         self.sequences = self._create_sequences()
     
     def _extract_telemetry_features(self) -> np.ndarray:
-        """Extract relevant telemetry features"""
-        feature_columns = [
-            'Physics_speed_kmh', 'Physics_gear', 'Physics_rpm', 'Physics_brake',
-            'Physics_gas', 'Physics_steer_angle', 'Physics_slip_angle_front_left',
-            'Physics_slip_angle_front_right', 'Physics_g_force_x', 'Physics_g_force_y',
-            'Physics_g_force_z', 'Physics_tyre_core_temp_front_left',
-            'Physics_tyre_core_temp_front_right', 'Physics_brake_temp_front_left',
-            'Physics_brake_temp_front_right', 'Graphics_delta_lap_time'
-        ]
+        """Extract telemetry features using the EXACT same list as get_features_for_imitate_expert()"""
+        # Import here to avoid circular imports
+        from ..models.telemetry_models import TelemetryFeatures
         
-        # Select available features
-        available_features = [col for col in feature_columns if col in self.telemetry_df.columns]
+        # Get the exact feature list used for training
+        telemetry_features = TelemetryFeatures()
+        expected_features = telemetry_features.get_features_for_imitate_expert()
+        
+        print(f"[INFO] Using EXACT {len(expected_features)} telemetry features from get_features_for_imitate_expert()", flush=True)
+        
+        # Filter to only the expected features
+        available_features = [col for col in expected_features if col in self.telemetry_df.columns]
+        missing_features = [col for col in expected_features if col not in self.telemetry_df.columns]
+        
+        if missing_features:
+            print(f"[WARNING] {len(missing_features)} expected features missing from dataset: {missing_features[:5]}{'...' if len(missing_features) > 5 else ''}", flush=True)
         
         if not available_features:
-            # Fallback to any numeric columns
-            available_features = self.telemetry_df.select_dtypes(include=[np.number]).columns.tolist()
+            print("[ERROR] No expected telemetry features found in dataset")
+            return np.zeros((len(self.telemetry_df), len(expected_features)))
         
-        features = self.telemetry_df[available_features].fillna(0).values
+        print(f"[INFO] Found {len(available_features)} of {len(expected_features)} expected features", flush=True)
+        print(f"[INFO] Feature columns: {available_features[:5]}..." + (f" and {len(available_features)-5} more" if len(available_features) > 5 else ""), flush=True)
+        
+        # Extract features in the same order as expected_features list for consistency
+        feature_data = []
+        for feature_name in expected_features:
+            if feature_name in self.telemetry_df.columns:
+                feature_values = self.telemetry_df[feature_name].fillna(0).values
+            else:
+                # Use zeros for missing features to maintain consistent shape
+                feature_values = np.zeros(len(self.telemetry_df))
+            feature_data.append(feature_values)
+        
+        # Transpose to get shape [n_samples, n_features]
+        features = np.column_stack(feature_data)
+        print(f"[INFO] Extracted telemetry features shape: {features.shape} (should be {len(expected_features)} features)", flush=True)
+        
         return features
     
     def _extract_action_features(self) -> np.ndarray:
@@ -453,6 +517,84 @@ class TelemetryActionDataset(Dataset):
         
         return actions
     
+    def _extract_reasoning_features(self) -> np.ndarray:
+        """Extract enriched contextual reasoning features (corners, grip, etc.)"""
+        if self.enriched_df is not None:
+            # Use all numeric columns from enriched data as reasoning features
+            numeric_columns = self.enriched_df.select_dtypes(include=[np.number]).columns.tolist()
+            
+            # Since enriched features are already separated, use all of them
+            enriched_columns = numeric_columns
+            
+            if enriched_columns:
+                reasoning_features = self.enriched_df[enriched_columns].fillna(0).values
+                print(f"[INFO] Extracted {len(enriched_columns)} reasoning features from enriched data", flush=True)
+                print(f"[INFO] Reasoning features: {enriched_columns[:5]}..." + 
+                      (f" and {len(enriched_columns)-5} more" if len(enriched_columns) > 5 else ""), flush=True)
+                return reasoning_features
+            else:
+                print("[WARNING] No numeric enriched features found, using basic reasoning features", flush=True)
+                # Fallback to basic derived features
+                return self._create_basic_reasoning_features()
+        else:
+            # Create dummy reasoning features when no enriched data is provided
+            print("[INFO] Creating basic reasoning features from telemetry (no enriched data provided)", flush=True)
+            return self._create_basic_reasoning_features()
+    
+    def _create_basic_reasoning_features(self) -> np.ndarray:
+        """Create basic reasoning features from telemetry when enriched data is not available"""
+        reasoning_data = []
+        
+        for _, row in self.telemetry_df.iterrows():
+            features = []
+            
+            # Speed-based reasoning
+            speed = row.get('Physics_speed_kmh', 0)
+            features.extend([
+                speed / 300.0,  # Normalized speed
+                1.0 if speed < 50 else 0.0,  # Slow corner indicator
+                1.0 if speed > 200 else 0.0,  # High speed indicator
+            ])
+            
+            # G-force based reasoning
+            g_lat = abs(row.get('Physics_g_force_y', 0))
+            g_long = row.get('Physics_g_force_x', 0)
+            features.extend([
+                g_lat / 3.0,  # Normalized lateral G
+                abs(g_long) / 3.0,  # Normalized longitudinal G
+                1.0 if g_lat > 1.5 else 0.0,  # High cornering indicator
+            ])
+            
+            # Steering reasoning
+            steer = abs(row.get('Physics_steer_angle', 0))
+            features.extend([
+                steer / 500.0,  # Normalized steering angle
+                1.0 if steer > 200 else 0.0,  # Sharp turn indicator
+            ])
+            
+            # Brake/throttle reasoning
+            brake = row.get('Physics_brake', 0)
+            throttle = row.get('Physics_gas', 0)
+            features.extend([
+                brake,  # Brake input
+                throttle,  # Throttle input
+                1.0 if brake > 0.5 else 0.0,  # Heavy braking indicator
+                1.0 if throttle > 0.8 else 0.0,  # Full throttle indicator
+            ])
+            
+            # Pad or truncate to ensure consistent size (30 features)
+            while len(features) < 30:
+                features.append(0.0)
+            features = features[:30]
+            
+            reasoning_data.append(features)
+        
+        return np.array(reasoning_data)
+    
+    def _create_dummy_reasoning_features(self) -> np.ndarray:
+        """Create dummy reasoning features filled with zeros"""
+        return np.zeros((len(self.telemetry_df), 30))  # 30 dummy reasoning features
+    
     def _create_sequences(self) -> List[Dict[str, np.ndarray]]:
         """Create input-output sequences for training"""
         sequences = []
@@ -461,15 +603,19 @@ class TelemetryActionDataset(Dataset):
         max_start = total_len - self.sequence_length - self.prediction_horizon
         
         for i in range(0, max_start, 5):  # Step by 5 for overlapping sequences
-            # Input telemetry sequence
+            # Input telemetry sequence (basic telemetry only)
             telemetry_seq = self.telemetry_features[i:i+self.sequence_length]
             
             # Target action sequence
             action_seq = self.action_features[i+self.sequence_length:i+self.sequence_length+self.prediction_horizon]
             
+            # Target reasoning sequence (enriched contextual features)
+            reasoning_seq = self.reasoning_features[i+self.sequence_length:i+self.sequence_length+self.prediction_horizon]
+            
             sequences.append({
                 'telemetry': telemetry_seq,
-                'actions': action_seq
+                'actions': action_seq,
+                'reasoning': reasoning_seq
             })
         
         return sequences
@@ -477,16 +623,17 @@ class TelemetryActionDataset(Dataset):
     def __len__(self) -> int:
         return len(self.sequences)
     
-    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
+    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         sequence = self.sequences[idx]
         
-        # Keep original shape: [seq_len, features] and [pred_horizon, action_features]
+        # Keep original shape: [seq_len, features] and [pred_horizon, features]
         # DataLoader will add batch dimension: [batch_size, seq_len, features]
         # Then we'll transpose in training to get: [seq_len, batch_size, features]
         telemetry = torch.FloatTensor(sequence['telemetry'])  # [seq_len, features]
         actions = torch.FloatTensor(sequence['actions'])      # [pred_horizon, action_features]
+        reasoning = torch.FloatTensor(sequence['reasoning'])  # [pred_horizon, reasoning_features]
         
-        return telemetry, actions
+        return telemetry, actions, reasoning
 
 class ExpertActionTrainer:
     """
@@ -519,6 +666,7 @@ class ExpertActionTrainer:
         
         # Loss functions
         self.action_loss_fn = nn.MSELoss()
+        self.reasoning_loss_fn = nn.MSELoss()
         self.performance_loss_fn = nn.MSELoss()
         
         # Learning rate scheduler
@@ -528,20 +676,29 @@ class ExpertActionTrainer:
         
         self.training_history = []
     
-    def train_epoch(self, dataloader: DataLoader, performance_weight: float = 0.1) -> Dict[str, float]:
+    def train_epoch(self, dataloader: DataLoader, 
+                    reasoning_weight: float = 0.5, 
+                    performance_weight: float = 0.1) -> Dict[str, float]:
         """Train for one epoch"""
         self.model.train()
         
         total_action_loss = 0
+        total_reasoning_loss = 0
         total_performance_loss = 0
         total_loss = 0
         num_batches = len(dataloader)
         
-        for batch_idx, (telemetry, target_actions) in enumerate(dataloader):
+        for batch_idx, (telemetry, target_actions, target_reasoning) in enumerate(dataloader):
+            # Print progress every 5 batches during training for more frequent updates
+            if batch_idx % 5 == 0:
+                progress_pct = (batch_idx / num_batches) * 100
+                print_progress(f"  Training batch {batch_idx+1}/{num_batches} ({progress_pct:.1f}%)")
+                
             # Transpose to get transformer-expected dimensions
             # From [batch_size, seq_len, features] to [seq_len, batch_size, features]
             telemetry = telemetry.transpose(0, 1).to(self.device)
             target_actions = target_actions.transpose(0, 1).to(self.device)
+            target_reasoning = target_reasoning.transpose(0, 1).to(self.device)
             
             # Create decoder input (shifted target)
             # target_actions shape: [pred_horizon, batch_size, action_features]
@@ -553,17 +710,18 @@ class ExpertActionTrainer:
             self.optimizer.zero_grad()
             
             # Forward pass
-            predicted_actions, performance_scores = self.model(telemetry, decoder_input)
+            predicted_actions, predicted_reasoning, performance_scores = self.model(telemetry, decoder_input)
             
             # Calculate losses
             action_loss = self.action_loss_fn(predicted_actions, target_actions)
+            reasoning_loss = self.reasoning_loss_fn(predicted_reasoning, target_reasoning)
             
             # Create dummy performance targets (could be based on lap times, sector times, etc.)
             performance_targets = torch.zeros_like(performance_scores)
             performance_loss = self.performance_loss_fn(performance_scores, performance_targets)
             
-            # Combined loss
-            loss = action_loss + performance_weight * performance_loss
+            # Combined loss with weights
+            loss = action_loss + reasoning_weight * reasoning_loss + performance_weight * performance_loss
             
             # Backward pass
             loss.backward()
@@ -575,30 +733,36 @@ class ExpertActionTrainer:
             
             # Accumulate losses
             total_action_loss += action_loss.item()
+            total_reasoning_loss += reasoning_loss.item()
             total_performance_loss += performance_loss.item()
             total_loss += loss.item()
         
         return {
             'action_loss': total_action_loss / num_batches,
+            'reasoning_loss': total_reasoning_loss / num_batches,
             'performance_loss': total_performance_loss / num_batches,
             'total_loss': total_loss / num_batches
         }
     
-    def validate(self, dataloader: DataLoader, performance_weight: float = 0.1) -> Dict[str, float]:
+    def validate(self, dataloader: DataLoader, 
+                 reasoning_weight: float = 0.5, 
+                 performance_weight: float = 0.1) -> Dict[str, float]:
         """Validate the model"""
         self.model.eval()
         
         total_action_loss = 0
+        total_reasoning_loss = 0
         total_performance_loss = 0
         total_loss = 0
         num_batches = len(dataloader)
         
         with torch.no_grad():
-            for telemetry, target_actions in dataloader:
+            for telemetry, target_actions, target_reasoning in dataloader:
                 # Transpose to get transformer-expected dimensions
                 # From [batch_size, seq_len, features] to [seq_len, batch_size, features]
                 telemetry = telemetry.transpose(0, 1).to(self.device)
                 target_actions = target_actions.transpose(0, 1).to(self.device)
+                target_reasoning = target_reasoning.transpose(0, 1).to(self.device)
                 
                 # Create decoder input
                 decoder_input = torch.cat([
@@ -607,21 +771,24 @@ class ExpertActionTrainer:
                 ], dim=0)
                 
                 # Forward pass
-                predicted_actions, performance_scores = self.model(telemetry, decoder_input)
+                predicted_actions, predicted_reasoning, performance_scores = self.model(telemetry, decoder_input)
                 
                 # Calculate losses
                 action_loss = self.action_loss_fn(predicted_actions, target_actions)
+                reasoning_loss = self.reasoning_loss_fn(predicted_reasoning, target_reasoning)
                 performance_targets = torch.zeros_like(performance_scores)
                 performance_loss = self.performance_loss_fn(performance_scores, performance_targets)
                 
-                loss = action_loss + performance_weight * performance_loss
+                loss = action_loss + reasoning_weight * reasoning_loss + performance_weight * performance_loss
                 
                 total_action_loss += action_loss.item()
+                total_reasoning_loss += reasoning_loss.item()
                 total_performance_loss += performance_loss.item()
                 total_loss += loss.item()
         
         return {
             'action_loss': total_action_loss / num_batches,
+            'reasoning_loss': total_reasoning_loss / num_batches,
             'performance_loss': total_performance_loss / num_batches,
             'total_loss': total_loss / num_batches
         }
@@ -647,12 +814,18 @@ class ExpertActionTrainer:
         patience_counter = 0
         
         for epoch in range(num_epochs):
+            print_progress(f"\nStarting Epoch {epoch+1}/{num_epochs}")
+            epoch_start_time = datetime.now()
+            
             # Train
-            train_metrics = self.train_epoch(train_dataloader)
+            train_metrics = self.train_epoch(train_dataloader, reasoning_weight=0.5)
+            
+            epoch_duration = (datetime.now() - epoch_start_time).total_seconds()
+            print_progress(f"Epoch {epoch+1} completed in {epoch_duration:.1f}s")
             
             # Validate
             if val_dataloader:
-                val_metrics = self.validate(val_dataloader)
+                val_metrics = self.validate(val_dataloader, reasoning_weight=0.5)
                 val_loss = val_metrics['total_loss']
                 
                 # Learning rate scheduling
@@ -665,15 +838,15 @@ class ExpertActionTrainer:
                 else:
                     patience_counter += 1
                 
-                print(f"Epoch {epoch+1}/{num_epochs} - "
+                print_progress(f"Epoch {epoch+1}/{num_epochs} - "
                       f"Train Loss: {train_metrics['total_loss']:.4f}, "
                       f"Val Loss: {val_loss:.4f}")
                 
                 if patience_counter >= patience:
-                    print(f"Early stopping at epoch {epoch+1}")
+                    print_progress(f"Early stopping at epoch {epoch+1}")
                     break
             else:
-                print(f"Epoch {epoch+1}/{num_epochs} - "
+                print_progress(f"Epoch {epoch+1}/{num_epochs} - "
                       f"Train Loss: {train_metrics['total_loss']:.4f}")
             
             # Store history

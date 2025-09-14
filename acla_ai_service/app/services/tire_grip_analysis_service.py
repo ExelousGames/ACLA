@@ -109,6 +109,97 @@ class TireGripAnalysisService:
         # Backend service integration
         self.backend_service = backend_service
 
+    # ============================= Performance Optimized (Vectorized) Helpers =============================
+    def _vectorized_basic_grip_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Vectorized computation of basic grip features for an entire dataframe.
+
+        This replaces the previous per-row Python loop in extract_tire_grip_features where
+        _calculate_basic_grip_features was invoked for every record. For thousands of rows this
+        results in large speedups by leveraging NumPy operations.
+
+        Args:
+            df: Telemetry dataframe (already cleaned)
+
+        Returns:
+            DataFrame with columns matching the keys previously returned by _calculate_basic_grip_features
+        """
+        if df.empty:
+            return pd.DataFrame()
+
+        # Helper to safely get numeric series (fallback to zeros if missing)
+        def col(name: str, default: float = 0.0):
+            return pd.to_numeric(df.get(name, default), errors='coerce').fillna(default)
+
+        g_x = col('Physics_g_force_x')
+        g_y = col('Physics_g_force_y')
+
+        # Friction circle utilization
+        total_g = (g_x**2 + g_y**2).pow(0.5)
+        friction_circle_utilization = (total_g / 2.5).clip(upper=1.0)
+
+        # Weight transfer (tanh scaled)
+        longitudinal_weight_transfer = (g_x / 1.5).clip(-10, 10).apply(np.tanh)  # clamp extreme outliers
+        lateral_weight_transfer = (g_y / 1.5).clip(-10, 10).apply(np.tanh)
+        dynamic_weight_distribution = (total_g / 2.0).clip(upper=1.0)
+
+        # Tire temps
+        t_fl = col('Physics_tyre_core_temp_front_left', 70)
+        t_fr = col('Physics_tyre_core_temp_front_right', 70)
+        t_rl = col('Physics_tyre_core_temp_rear_left', 70)
+        t_rr = col('Physics_tyre_core_temp_rear_right', 70)
+        avg_temp = (t_fl + t_fr + t_rl + t_rr) / 4.0
+        optimal_min, optimal_max = 80.0, 110.0
+        optimal_grip_window = pd.Series(np.where(
+            (avg_temp >= optimal_min) & (avg_temp <= optimal_max),
+            1.0,
+            np.where(
+                avg_temp < optimal_min,
+                (avg_temp / optimal_min).clip(lower=0.0),
+                (1 - ((avg_temp - optimal_max) / 50.0)).clip(lower=0.0)
+            )
+        ), index=df.index)
+
+        # Slip angles & ratios (use abs mean) front for angle, all for ratios
+        sa_fl = col('Physics_slip_angle_front_left')
+        sa_fr = col('Physics_slip_angle_front_right')
+        sa_rl = col('Physics_slip_angle_rear_left')
+        sa_rr = col('Physics_slip_angle_rear_right')
+        sr_fl = col('Physics_slip_ratio_front_left')
+        sr_fr = col('Physics_slip_ratio_front_right')
+        sr_rl = col('Physics_slip_ratio_rear_left')
+        sr_rr = col('Physics_slip_ratio_rear_right')
+
+        avg_slip_angle = (sa_fl.abs() + sa_fr.abs() + sa_rl.abs() + sa_rr.abs()) / 4.0
+        avg_slip_ratio = (sr_fl.abs() + sr_fr.abs() + sr_rl.abs() + sr_rr.abs()) / 4.0
+        optimal_slip_angle = 6.5
+        optimal_slip_ratio = 0.125
+        slip_angle_efficiency = (1 - (avg_slip_angle - optimal_slip_angle).abs() / optimal_slip_angle).clip(lower=0.0)
+        slip_ratio_efficiency = (1 - (avg_slip_ratio - optimal_slip_ratio).abs() / optimal_slip_ratio).clip(lower=0.0)
+
+        temp_factor = optimal_grip_window
+        slip_factor = (slip_angle_efficiency + slip_ratio_efficiency) / 2.0
+        utilization_penalty = (1 - (friction_circle_utilization * 0.3)).clip(lower=0.0)
+        overall_tire_grip = (temp_factor * slip_factor * utilization_penalty).fillna(0.0)
+        tire_saturation_level = (friction_circle_utilization * 1.2).clip(upper=1.0)
+
+        basic_df = pd.DataFrame({
+            'friction_circle_utilization': friction_circle_utilization,
+            'longitudinal_weight_transfer': longitudinal_weight_transfer,
+            'lateral_weight_transfer': lateral_weight_transfer,
+            'dynamic_weight_distribution': dynamic_weight_distribution,
+            'optimal_grip_window': optimal_grip_window,
+            'slip_angle_efficiency': slip_angle_efficiency,
+            'slip_ratio_efficiency': slip_ratio_efficiency,
+            'overall_tire_grip': overall_tire_grip,
+            'tire_saturation_level': tire_saturation_level
+        })
+
+        # Also include prefixed copies for comparison (optional consumers can ignore)
+        for col_name in list(basic_df.columns):
+            basic_df[f"basic_{col_name}"] = basic_df[col_name]
+
+        return basic_df
+
     def _calculate_friction_circle_utilization(self, row: pd.Series) -> float:
         """
         Calculate friction circle utilization based on G-forces
@@ -534,48 +625,87 @@ class TireGripAnalysisService:
         Returns:
             Enhanced telemetry data with tire grip features
         """
+        import time
+        start_time = time.time()
         if not telemetry_data:
             return telemetry_data
-        
-        # Check if we have trained models available
-        if not self.trained_models:
-            print("[ERROR] No trained models available. Please run train_tire_grip_model first.")
-            return telemetry_data
-        
-        print(f"[INFO] Extracting tire grip features for {len(telemetry_data)} records using saved models")
-        print(f"[INFO] Available trained models: {list(self.trained_models.keys())}")
-        
-        # Convert to DataFrame - data is already cleaned
+
+        # Allow extraction of heuristic (basic) features even if ML models not yet trained
+        models_available = bool(self.trained_models)
+        if not models_available:
+            print("[WARNING] No trained tire grip ML models found. Proceeding with heuristic features only.")
+
+        total_records = len(telemetry_data)
+        print(f"[INFO] Extracting tire grip features for {total_records} records (models_available={models_available})")
+
+        # DataFrame of incoming telemetry
         df = pd.DataFrame(telemetry_data)
-        
-        # Prepare features for prediction using the same feature preparation as training
-        X = self._prepare_training_features(df)
-        
-        if len(X) == 0:
-            print("[WARNING] No features available for prediction")
+
+        # Vectorized basic feature computation
+        basic_df = self._vectorized_basic_grip_features(df)
+        if basic_df.empty:
+            print("[WARNING] Vectorized basic feature frame is empty; returning original telemetry data")
             return telemetry_data
-        
-        # Use the saved models to make predictions
-        enhanced_data = []
-        
-        for i, (original_record, feature_row) in enumerate(zip(telemetry_data, X.to_dict('records'))):
-            # Create enhanced record
+
+        # Target columns potentially produced by ML models (to manage overlap)
+        target_variables = [
+            'friction_circle_utilization',
+            'longitudinal_weight_transfer', 
+            'lateral_weight_transfer',
+            'dynamic_weight_distribution',
+            'optimal_grip_window',
+            'slip_angle_efficiency',
+            'slip_ratio_efficiency'
+        ]
+
+        # Prepare ML feature matrix once (only if models are available)
+        ml_predictions_df = pd.DataFrame(index=df.index)
+        if models_available:
+            feature_matrix = self._prepare_training_features(df)
+            if feature_matrix.empty:
+                print("[WARNING] Prepared ML feature matrix is empty; skipping ML predictions")
+            else:
+                # Batch predict for each model target instead of per-row
+                for target in target_variables:
+                    model_id = f"tire_grip_model_{target}"
+                    if model_id in self.trained_models:
+                        try:
+                            preds = self.trained_models[model_id].predict(feature_matrix)
+                            ml_predictions_df[f"ml_{target}"] = preds
+                            # Also keep backward-compatible field (same as original _predict_with_saved_models)
+                            ml_predictions_df[target] = preds
+                        except Exception as e:
+                            print(f"[WARNING] Batch prediction failed for {target}: {e}")
+                    else:
+                        # Simply skip missing models; do not warn every time to reduce noise
+                        continue
+
+        # If ML predictions exist, drop overlapping heuristic (unprefixed) columns to avoid collision
+        if not ml_predictions_df.empty:
+            # We keep the basic_ prefixed columns for reference; drop original unprefixed heuristic versions
+            basic_df = basic_df.drop(columns=[c for c in target_variables if c in basic_df.columns], errors='ignore')
+
+        # Merge heuristic and ML predictions (no column name collisions now)
+        merged = basic_df.join(ml_predictions_df, how='left')
+
+        # If no ML predictions available, ensure backward compatibility by creating unprefixed columns
+        if ml_predictions_df.empty:
+            for t in target_variables:
+                if t not in merged.columns and f"basic_{t}" in merged.columns:
+                    merged[t] = merged[f"basic_{t}"]
+
+        # Build enhanced telemetry list
+        enhanced_data: List[Dict[str, Any]] = []
+        for idx, original_record in enumerate(telemetry_data):
+            record_features = merged.iloc[idx].to_dict()
             enhanced_record = original_record.copy()
-            
-            # Add basic calculated features
-            grip_features = self._calculate_basic_grip_features(df.iloc[i] if i < len(df) else pd.Series())
-            enhanced_record.update(grip_features)
-            
-            # Add ML-based predictions using saved models
-            try:
-                ml_features = self._predict_with_saved_models(feature_row)
-                enhanced_record.update(ml_features)
-            except Exception as e:
-                print(f"[WARNING] Failed to get ML predictions for record {i}: {str(e)}")
-            
+            enhanced_record.update(record_features)
             enhanced_data.append(enhanced_record)
-        
-        print(f"[INFO] Successfully extracted tire grip features for {len(enhanced_data)} records using saved models")
+
+        elapsed = time.time() - start_time
+        heuristic_cols = [c for c in merged.columns if c.startswith('basic_')]
+        ml_cols = [c for c in merged.columns if c.startswith('ml_')]
+        print(f"[INFO] Tire grip feature extraction completed in {elapsed:.3f}s | records={total_records} | per_record={elapsed/total_records:.6f}s | heuristic_cols={len(heuristic_cols)} | ml_cols={len(ml_cols)}")
         return enhanced_data
 
     def _calculate_basic_grip_features(self, row: pd.Series) -> Dict[str, float]:

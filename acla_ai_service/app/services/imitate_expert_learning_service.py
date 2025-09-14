@@ -1078,7 +1078,9 @@ class ExpertImitateLearningService:
     def compare_telemetry_with_expert(self, 
                                     incoming_telemetry: List[Dict[str, Any]], 
                                     window_size: int = 5,
-                                    min_section_length: int = 10) -> Dict[str, Any]:
+                                    min_section_length: int = 10,
+                                    use_fast: bool = True,
+                                    batch_size: int = 256) -> Dict[str, Any]:
         """
         Compare incoming telemetry data with expert actions and identify performance sections
         
@@ -1093,7 +1095,18 @@ class ExpertImitateLearningService:
             - overall statistics and performance sections analysis
             - score statistics for performance evaluation
         """
-        print(f"[INFO {self.__class__.__name__}] Comparing {len(incoming_telemetry)} telemetry points with expert model")
+        if use_fast:
+            try:
+                return self.fast_compare_telemetry_with_expert(
+                    incoming_telemetry,
+                    window_size=window_size,
+                    min_section_length=min_section_length,
+                    batch_size=batch_size
+                )
+            except Exception as fast_err:
+                print(f"[WARNING] Fast comparison failed, falling back to original method: {fast_err}")
+
+        print(f"[INFO {self.__class__.__name__}] (slow-path) Comparing {len(incoming_telemetry)} telemetry points with expert model")
         
         # Check if we have trained models
         if not self.trained_models:
@@ -1236,6 +1249,257 @@ class ExpertImitateLearningService:
         print(f"[INFO] Created {len(transformer_training_pairs)} transformer training pairs")
         
         return result
+
+    # ============================= Optimized Fast Path =============================
+    def fast_compare_telemetry_with_expert(self,
+                                           incoming_telemetry: List[Dict[str, Any]],
+                                           window_size: int = 5,
+                                           min_section_length: int = 10,
+                                           batch_size: int = 256) -> Dict[str, Any]:
+        """High-performance version of compare_telemetry_with_expert.
+
+        Goals:
+            - Preserve output schema (paired_data, performance_sections, transformer_training_pairs)
+            - Batch trajectory model predictions (RandomForest .predict accepts arrays)
+            - Vectorize similarity score computation for speed
+            - Avoid per-row DataFrame creation
+
+        Args:
+            incoming_telemetry: Cleaned telemetry list
+            window_size: Rolling window for smoothing & trend detection
+            min_section_length: Minimum length for a considered section
+            batch_size: Batch size for model inference
+
+        Returns:
+            Same structure as original compare_telemetry_with_expert
+        """
+        import time
+        t0 = time.time()
+        total = len(incoming_telemetry)
+        print(f"[INFO {self.__class__.__name__}] (fast) Comparing {total} telemetry points with expert model")
+
+        if not self.trained_models:
+            raise ValueError("No trained models available. Please train models first using train_ai_model().")
+        if total == 0:
+            return {
+                'total_data_points': 0,
+                'overall_score': 0.0,
+                'score_statistics': {},
+                'paired_data': [],
+                'performance_sections': [],
+                'transformer_training_pairs': []
+            }
+
+        df = pd.DataFrame(incoming_telemetry)
+
+        # ================= Behavior prediction batching =================
+        behavior_preds = [None] * total
+        if 'behavior_learning' in self.trained_models:
+            try:
+                behavior_model_raw = self.trained_models['behavior_learning']['modelData']['model']
+                behavior_model = behavior_model_raw if not isinstance(behavior_model_raw, str) else self.deserialize_data(behavior_model_raw)
+                feature_names = behavior_model['feature_names']
+                behavior_features_full = self.behavior_learner.generate_driving_style_features(df)
+                for missing in feature_names:
+                    if missing not in behavior_features_full.columns:
+                        behavior_features_full[missing] = 0.0
+                Xb = behavior_features_full[feature_names].fillna(0)
+                Xb_scaled = behavior_model['scaler'].transform(Xb)
+                style_preds = behavior_model['model'].predict(Xb_scaled)
+                style_proba = behavior_model['model'].predict_proba(Xb_scaled)
+                decoded = behavior_model['label_encoder'].inverse_transform(style_preds)
+                for i in range(total):
+                    behavior_preds[i] = {
+                        'predicted_style': decoded[i],
+                        'confidence': float(np.max(style_proba[i])),
+                        'style_probabilities': dict(zip(behavior_model['label_encoder'].classes_, style_proba[i]))
+                    }
+            except Exception as e:
+                print(f"[WARNING] Fast path behavior prediction failed: {e}")
+
+        # ================= Trajectory (optimal action) prediction batching =================
+        optimal_action_preds = [None] * total
+        if 'trajectory_learning' in self.trained_models:
+            try:
+                traj_data = self.trained_models['trajectory_learning']['modelData']
+                # Deserialize if needed
+                if 'models' in traj_data:
+                    models_dict = {}
+                    for name, m in traj_data['models'].items():
+                        models_dict[name] = self.deserialize_data(m) if isinstance(m, str) else m
+                else:
+                    models_dict = {}
+                scaler = traj_data['scaler'] if not isinstance(traj_data['scaler'], str) else self.deserialize_data(traj_data['scaler'])
+                pca_obj = traj_data.get('pca')
+                if pca_obj is not None and isinstance(pca_obj, str):
+                    pca_obj = self.deserialize_data(pca_obj)
+                input_features = traj_data['input_features']
+
+                # Build required feature frame once
+                traj_feat_df = self.trajectory_learner.extract_trajectory_features(df)
+                # Ensure all required features
+                for f in input_features:
+                    if f not in traj_feat_df.columns:
+                        traj_feat_df[f] = 0.0
+                Xt = traj_feat_df[input_features].fillna(0)
+                Xt_scaled = scaler.transform(Xt)
+                if pca_obj is not None and hasattr(pca_obj, 'components_'):
+                    Xt_scaled = pca_obj.transform(Xt_scaled)
+
+                # For each model, predict in batches and store columns
+                model_outputs = {}
+                for target_name, model in models_dict.items():
+                    try:
+                        model_outputs[target_name] = model.predict(Xt_scaled)
+                    except Exception as e:
+                        print(f"[WARNING] Fast path trajectory prediction failed for {target_name}: {e}")
+                        model_outputs[target_name] = np.zeros(total)
+
+                # Assemble per-row dicts
+                for i in range(total):
+                    row_actions = {}
+                    for target_name, arr in model_outputs.items():
+                        val = arr[i]
+                        if target_name == 'optimal_gear':
+                            row_actions[target_name] = int(val)
+                        else:
+                            row_actions[target_name] = float(val)
+                    optimal_action_preds[i] = row_actions
+            except Exception as e:
+                print(f"[WARNING] Fast path optimal action prediction failed: {e}")
+
+        # ================= Similarity scoring (vectorized) =================
+        # We'll approximate original scoring rules; for fields not present fall back to heuristic.
+        scores = np.zeros(total, dtype=float)
+        speed_actual = df.get('Physics_speed_kmh', pd.Series([np.nan]*total)).to_numpy()
+        throttle_actual = df.get('Physics_gas', pd.Series([np.nan]*total)).to_numpy()
+        brake_actual = df.get('Physics_brake', pd.Series([np.nan]*total)).to_numpy()
+        steer_actual = df.get('Physics_steer_angle', pd.Series([np.nan]*total)).to_numpy()
+        gear_actual = df.get('Physics_gear', pd.Series([np.nan]*total)).to_numpy()
+
+        comparison_counts = np.zeros(total, dtype=int)
+
+        for i in range(total):
+            # Optimal actions
+            oa = optimal_action_preds[i] or {}
+            if oa:
+                # Speed
+                if 'optimal_speed' in oa and not np.isnan(speed_actual[i]) and oa['optimal_speed'] > 0:
+                    diff = abs(speed_actual[i] - oa['optimal_speed'])
+                    max_val = max(speed_actual[i], oa['optimal_speed'], 1)
+                    scores[i] += max(0, 1 - diff / max_val)
+                    comparison_counts[i] += 1
+                if 'optimal_throttle' in oa and not np.isnan(throttle_actual[i]):
+                    diff = abs(throttle_actual[i] - oa['optimal_throttle'])
+                    scores[i] += max(0, 1 - diff)
+                    comparison_counts[i] += 1
+                if 'optimal_brake' in oa and not np.isnan(brake_actual[i]):
+                    diff = abs(brake_actual[i] - oa['optimal_brake'])
+                    scores[i] += max(0, 1 - diff)
+                    comparison_counts[i] += 1
+                if 'optimal_steering' in oa and not np.isnan(steer_actual[i]):
+                    diff = abs(steer_actual[i] - oa['optimal_steering'])
+                    max_s = max(abs(steer_actual[i]), abs(oa['optimal_steering']), 1)
+                    scores[i] += max(0, 1 - diff / max_s)
+                    comparison_counts[i] += 1
+                if 'optimal_gear' in oa and not np.isnan(gear_actual[i]):
+                    scores[i] += 1.0 if int(gear_actual[i]) == int(oa['optimal_gear']) else 0.0
+                    comparison_counts[i] += 1
+            # Behavior
+            beh = behavior_preds[i] or {}
+            if 'confidence' in beh:
+                scores[i] += beh['confidence']
+                comparison_counts[i] += 1
+
+            if comparison_counts[i] == 0:
+                # fallback heuristic
+                spd = speed_actual[i]
+                base = 0.3
+                if not np.isnan(spd):
+                    base = min(0.8, max(0.1, (spd % 30) / 100 + 0.2))
+                scores[i] = base
+                comparison_counts[i] = 1
+
+        scores = scores / np.maximum(comparison_counts, 1)
+        scores_series = pd.Series(scores)
+        smoothed_scores = scores_series.rolling(window=min(window_size, total), center=True).mean().fillna(scores_series)
+
+        sections = self._identify_performance_sections(smoothed_scores, window_size, min_section_length)
+
+        # Build paired_data
+        paired_data = []
+        for i in range(total):
+            paired_data.append({
+                'index': i,
+                'telemetry_data': incoming_telemetry[i],
+                'expert_actions': {
+                    'optimal_actions': optimal_action_preds[i] or {},
+                    'driving_behavior': behavior_preds[i] or {}
+                },
+                'similarity_score': float(scores[i])
+            })
+
+        # Build transformer training pairs (reuse original section logic)
+        transformer_training_pairs = []
+        for section in sections:
+            start_idx = section['start_index']
+            end_idx = section['end_index']
+            section_scores = scores[start_idx:end_idx+1]
+            telemetry_section = [incoming_telemetry[j] for j in range(start_idx, end_idx+1)]
+            expert_actions_section = [paired_data[j]['expert_actions'] for j in range(start_idx, end_idx+1)]
+            if telemetry_section and expert_actions_section:
+                transformer_training_pairs.append({
+                    'telemetry_section': telemetry_section,
+                    'expert_actions': expert_actions_section,
+                    'pattern': section['pattern'],
+                    'section_stats': {
+                        'start_index': start_idx,
+                        'end_index': end_idx,
+                        'length': end_idx - start_idx + 1,
+                        'mean_score': float(np.mean(section_scores)),
+                        'trend_slope': section['trend_slope']
+                    }
+                })
+
+        # Section summaries
+        performance_sections = []
+        for section in sections:
+            start_idx = section['start_index']
+            end_idx = section['end_index']
+            section_scores = scores[start_idx:end_idx+1]
+            performance_sections.append({
+                'pattern': section['pattern'],
+                'start_index': start_idx,
+                'end_index': end_idx,
+                'length': end_idx - start_idx + 1,
+                'score_statistics': {
+                    'mean': float(np.mean(section_scores)),
+                    'std': float(np.std(section_scores)),
+                    'min': float(np.min(section_scores)),
+                    'max': float(np.max(section_scores)),
+                    'trend_slope': section['trend_slope']
+                }
+            })
+
+        elapsed = time.time() - t0
+        print(f"[INFO {self.__class__.__name__}] (fast) Completed comparison in {elapsed:.3f}s | points={total} | per_point={elapsed/total:.6f}s")
+
+        return {
+            'total_data_points': total,
+            'overall_score': float(np.mean(scores)),
+            'score_statistics': {
+                'mean': float(np.mean(scores)),
+                'std': float(np.std(scores)),
+                'min': float(np.min(scores)),
+                'max': float(np.max(scores)),
+                'median': float(np.median(scores))
+            },
+            'paired_data': paired_data,
+            'performance_sections': performance_sections,
+            'transformer_training_pairs': transformer_training_pairs,
+            'fast_path': True,
+            'timing_seconds': elapsed
+        }
     
     def _calculate_similarity_score(self, 
                                   actual_telemetry: pd.DataFrame, 

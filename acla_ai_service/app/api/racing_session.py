@@ -195,11 +195,12 @@ async def get_imitation_learning_expert_guidance(request: ImitationPredictReques
         try:
             # Call the telemetryMLService to get expert guidance
             result = await telemetryMLService.predict_expert_actions(
-                current_telemetry=request.current_telemetry,
+                telemetry_dict=request.current_telemetry,
                 trackName=request.track_name,
             )
 
         except Exception as e:
+            print(f"[ERROR] Exception in expert guidance service: \n {str(e)}")
             raise HTTPException(status_code=500, detail=f"Error in expert guidance service: {str(e)}")
         
         return {

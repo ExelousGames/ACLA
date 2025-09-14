@@ -147,10 +147,8 @@ class BackendService:
                 response.raise_for_status()
                 return response.json()
                 
-        except httpx.HTTPStatusError as e:
-            raise Exception(f"Backend function call failed: {str(e)}")
         except Exception as e:
-            raise Exception(f"Backend function call failed: {str(e)}")
+            raise Exception(f"Backend function call failed: {str(e)}\n")
 
     async def get_all_racing_sessions(self, trackName: Optional[str] = None, carName: Optional[str] = None, chunk_size: int = 1000) -> Dict[str, Any]:
         """

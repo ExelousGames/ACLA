@@ -49,16 +49,6 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
     const trackName = analysisContext.recordedSessioStaticsData?.track || 'Unknown Track';
     const carName = analysisContext.recordedSessioStaticsData?.car_model || 'Unknown Car';
     const liveData = analysisContext.liveData as TelemetryData;
-    console.log('Live telemetry data:', analysisContext.recordedSessioStaticsData);
-    // Debug logging
-    console.log('Session data debug:', {
-        sessionSelected: analysisContext.sessionSelected,
-        mapSelected: analysisContext.mapSelected,
-        trackName,
-        carName,
-        mapValue: analysisContext.sessionSelected?.map,
-        carValue: analysisContext.sessionSelected?.car
-    });
 
     // Function to call the imitation learning guidance API
     const fetchGuidance = useCallback(async () => {
