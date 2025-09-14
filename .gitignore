@@ -74,3 +74,4 @@ report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 /session_recording
 /acla_ai_service/__pycache__
 /acla_ai_service/app/analyzers
+/acla_ai_service/app/api/__pycache__

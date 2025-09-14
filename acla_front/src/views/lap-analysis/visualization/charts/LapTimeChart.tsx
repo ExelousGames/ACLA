@@ -1,12 +1,31 @@
-import React, { useContext } from 'react';
+import React, { useContext, useEffect, useState } from 'react';
 import { Card, Text, Box } from '@radix-ui/themes';
 import { AnalysisContext } from '../../session-analysis';
 import { VisualizationProps } from '../VisualizationRegistry';
 
 const LapTimeChart: React.FC<VisualizationProps> = ({ id, data, config, width = '100%', height = 250 }) => {
     const analysisContext = useContext(AnalysisContext);
+    const [lapData, setLapData] = useState<any[]>([]);
 
-    const lapData = data || analysisContext.recordedSessionData?.filter((d: any) => d.lapTime);
+    useEffect(() => {
+        if (data) {
+            // Use provided data if available
+            setLapData(data.filter((d: any) => d.lapTime));
+        } else if (analysisContext.recordedSessionDataFilePath) {
+            // Load data from file
+            analysisContext.readRecordedSessionData()
+                .then(sessionData => {
+                    setLapData(sessionData.filter((d: any) => d.lapTime));
+                })
+                .catch(error => {
+                    console.error('Error loading lap time data:', error);
+                    setLapData([]);
+                });
+        } else {
+            setLapData([]);
+        }
+    }, [data, analysisContext.recordedSessionDataFilePath]);
+
     const maxLapTime = lapData?.reduce((max: number, current: any) => Math.max(max, current.lapTime || 0), 0) || 0;
     const minLapTime = lapData?.reduce((min: number, current: any) => Math.min(min, current.lapTime || Infinity), Infinity) || 0;
 

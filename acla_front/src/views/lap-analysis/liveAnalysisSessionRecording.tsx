@@ -44,6 +44,13 @@ const LiveAnalysisSessionRecording = () => {
     // Button state management
     const [buttonState, setButtonState] = useState<ButtonState>(ButtonState.CHECKING);
 
+    // Upload progress state
+    const [isUploading, setIsUploading] = useState(false);
+    const [uploadProgress, setUploadProgress] = useState(0);
+    const [uploadStatus, setUploadStatus] = useState<string>('');
+    const [uploadError, setUploadError] = useState<string | null>(null);
+    const [showRetryButton, setShowRetryButton] = useState(false);
+
     // Centralized button component generator
     const getPrimaryButtonComponent = (state: ButtonState): JSX.Element => {
         switch (state) {
@@ -60,7 +67,7 @@ const LiveAnalysisSessionRecording = () => {
             case ButtonState.RECORDING:
                 return (
                     <svg width="15" height="15" viewBox="0 0 15 15" fill="none" xmlns="http://www.w3.org/2000/svg">
-                        <path d="M7.5 11C4.80285 11 2.52952 9.62184 1.09622 7.50001C2.52952 5.37816 4.80285 4 7.5 4C10.1971 4 12.4705 5.37816 13.9038 7.50001C12.4705 9.62183 10.1971 11 7.5 11ZM7.5 3C4.30786 3 1.65639 4.70638 0.0760002 7.23501C-0.0253338 7.39715 -0.0253334 7.60288 0.0760014 7.76501C1.65639 10.2936 4.30786 12 7.5 12C10.6921 12 13.3436 10.2936 14.924 7.76501C15.0253 7.60288 15.0253 7.39715 14.924 7.23501C13.3436 4.70638 10.6921 3 7.5 3ZM7.5 9.5C8.60457 9.5 9.5 8.60457 9.5 7.5C9.5 6.39543 8.60457 5.5 7.5 5.5C6.39543 5.5 5.5 6.39543 5.5 7.5C5.5 8.60457 6.39543 9.5 7.5 9.5Z" fill="currentColor" fillRule="evenodd" clipRule="evenodd"></path>
+                        <path d="M2 2C1.44772 2 1 2.44772 1 3V12C1 12.5523 1.44772 13 2 13H13C13.5523 13 14 12.5523 14 12V3C14 2.44772 13.5523 2 13 2H2ZM3 3H12V12H3V3Z" fill="currentColor" fillRule="evenodd" clipRule="evenodd"></path>
                     </svg>
                 );
 
@@ -93,8 +100,14 @@ const LiveAnalysisSessionRecording = () => {
             if (intervalRef.current) {
                 clearInterval(intervalRef.current);
             }
+
+            // Only clean up telemetry file on component unmount (not on file path changes)
+            // This prevents cleaning during normal recording flow
+            if (analysisContext.recordedSessionDataFilePath && !isRecording) {
+                cleanupTelemetryFile(analysisContext.recordedSessionDataFilePath).catch(console.error);
+            }
         };
-    }, []);
+    }, []); // Remove dependency to prevent cleanup during recording
 
     /**
      * check acc memory once and see if there is a valid session running
@@ -260,15 +273,14 @@ const LiveAnalysisSessionRecording = () => {
             //running the script in the main process (electron.js) instead this renderer process
             const { shellId } = await window.electronAPI.runPythonScript(script, options);
 
-            const OnReceiveMesssage = window.electronAPI.onPythonMessage((incomingScriptShellId: number, message: string) => {
+            const messageCleanup = window.electronAPI.onPythonMessage((incomingScriptShellId: number, message: string) => {
 
                 if (shellId == incomingScriptShellId) { //check return result of recording script
                     try {
                         const obj = JSON.parse(message);
                         analysisContext.setLiveSessionData(obj);
-                        analysisContext.setRecordedSessionData((presState: any) => {
-                            return [...presState, obj];
-                        });
+                        // Write telemetry data to file instead of accumulating in memory
+                        analysisContext.writeRecordedLiveSessionData(obj);
 
                     } catch (error) {
                         console.error("Error parsing Python message:", error);
@@ -278,14 +290,17 @@ const LiveAnalysisSessionRecording = () => {
             });
 
             window.electronAPI.onPythonEnd((incomingScriptShellId: number) => {
-
                 if (shellId == incomingScriptShellId) {// session recording is terminated
+                    console.log("Recording script ended, stopping recording...");
                     setIsRecording(false);
                     setIsRecorEnded(true);
                     setButtonState(ButtonState.UPLOAD_READY);
-                    OnReceiveMesssage();
+                    // Clean up the message listener
+                    if (typeof messageCleanup === 'function') {
+                        messageCleanup();
+                    }
                 }
-            })
+            });
 
             setIsRecording(true);
 
@@ -308,6 +323,24 @@ const LiveAnalysisSessionRecording = () => {
                 return;
             }
 
+            // If we're currently recording, check if the session is still live
+            if (isRecording) {
+                try {
+                    await CheckSessionValid();
+                    // If session is no longer live during recording, stop recording
+                    if (hasValidLiveSession !== ACC_STATUS.ACC_LIVE) {
+                        console.log("Session no longer live during recording, stopping...");
+                        setIsRecording(false);
+                        setIsRecorEnded(true);
+                        setButtonState(ButtonState.UPLOAD_READY);
+                        // Note: We don't clean up the file here as user may want to upload
+                    }
+                } catch (error) {
+                    console.error("Error checking session during recording:", error);
+                }
+                return; // Skip normal session checking when recording
+            }
+
             try {
                 await CheckSessionValid();
             } catch (error) {
@@ -326,57 +359,138 @@ const LiveAnalysisSessionRecording = () => {
         }
     };
 
+    // Function to clean up telemetry file
+    const cleanupTelemetryFile = async (filePath: string) => {
+        try {
+            const options = {
+                mode: 'text',
+                pythonOptions: ['-u'],
+                scriptPath: 'src/py-scripts',
+                args: [filePath]
+            } as PythonShellOptions;
+
+            await window.electronAPI.runPythonScript('delete_telemetry_file.py', options);
+            console.log(`Cleaned up telemetry file: ${filePath}`);
+        } catch (error) {
+            console.error('Error cleaning up telemetry file:', error);
+            // Don't throw error as cleanup failure shouldn't block the main flow
+        }
+    };
+
     //after a session is determined as terminated, and user selected to upload the data, we do it here
     async function handleUpload() {
-
         if (!analysisContext.sessionSelected?.session_name || !analysisContext.mapSelected || !auth?.userEmail) {
-            return;
-        }
-        const data = analysisContext.recordedSessionData;;
-
-        //send by chunks
-        const chunks = [];
-        const chunkSize = 5;
-
-        const metadata = {
-            sessionName: analysisContext.sessionSelected?.session_name,
-            mapName: analysisContext.mapSelected,
-            carName: analysisContext.recordedSessioStaticsData.car_model || "Unknown Car",
-            userId: auth?.userProfile.id || "unknown",
-        } as UploadReacingSessionInitDto;
-
-        //separate recorded data into chunks
-        for (let i = 0; i < data.length; i += chunkSize) {
-            chunks.push(data.slice(i, i + chunkSize));
+            setUploadError('Missing required session or user information');
+            return false;
         }
 
-        // First send metadata
-        const initResponse = await apiService.post('/racing-session/upload/init', metadata);
+        setIsUploading(true);
+        setUploadProgress(0);
+        setUploadStatus('Reading telemetry data...');
+        setUploadError(null);
 
-        if (!initResponse.data) {
-            throw new Error('First response missing required data');
+        try {
+            // Read telemetry data from file instead of memory
+            console.log('Attempting to read telemetry data from:', analysisContext.recordedSessionDataFilePath);
+            console.log('Recorded telemetry data count:', analysisContext.recordedTelemetryDataCount);
+            const data = await analysisContext.readRecordedSessionData();
+            console.log('Read telemetry data:', data?.length, 'points');
+
+            if (!data || data.length === 0) {
+                console.log('No telemetry data found. File path:', analysisContext.recordedSessionDataFilePath, 'Count:', analysisContext.recordedTelemetryDataCount);
+                throw new Error('No telemetry data found to upload');
+            }
+
+            setUploadProgress(10);
+            setUploadStatus(`Processing ${data.length} telemetry points...`);
+
+            //send by chunks
+            const chunks = [];
+            const chunkSize = 5;
+            const metadata = {
+                sessionName: analysisContext.sessionSelected?.session_name,
+                mapName: analysisContext.mapSelected,
+                carName: analysisContext.recordedSessioStaticsData.car_model || "Unknown Car",
+                userId: auth?.userProfile.id || "unknown",
+            } as UploadReacingSessionInitDto;
+
+            //separate recorded data into chunks
+            for (let i = 0; i < data.length; i += chunkSize) {
+                chunks.push(data.slice(i, i + chunkSize));
+            }
+
+            setUploadProgress(20);
+            setUploadStatus('Initializing upload...');
+
+            // First send metadata
+            const initResponse = await apiService.post('/racing-session/upload/init', metadata);
+
+            if (!initResponse.data) {
+                throw new Error('Failed to initialize upload');
+            }
+            const { uploadId } = initResponse.data as UploadRacingSessionInitReturnDto;
+
+            setUploadProgress(30);
+            setUploadStatus(`Uploading ${chunks.length} chunks...`);
+
+            // Then send chunks with progress tracking
+            for (let i = 0; i < chunks.length; i++) {
+                const url = '/racing-session/upload/chunk';
+                const params = new URLSearchParams();
+                params.append('uploadId', uploadId);
+
+                await apiService.post(`${url}?${params.toString()}`, {
+                    chunk: chunks[i],
+                    chunkIndex: i
+                });
+
+                // Update progress based on chunk completion
+                const chunkProgress = Math.floor(40 + (i + 1) / chunks.length * 50);
+                setUploadProgress(chunkProgress);
+                setUploadStatus(`Uploading chunk ${i + 1} of ${chunks.length}...`);
+            }
+
+            setUploadProgress(90);
+            setUploadStatus('Finalizing upload...');
+
+            // Finalize
+            const finalUrl = '/racing-session/upload/complete';
+            const finalParams = new URLSearchParams();
+            finalParams.append('uploadId', uploadId);
+
+            await apiService.post(`${finalUrl}?${finalParams.toString()}`, {});
+
+            setUploadProgress(100);
+            setUploadStatus('Upload completed successfully!');
+
+            // Clean up the telemetry file after successful upload
+            if (analysisContext.recordedSessionDataFilePath) {
+                await cleanupTelemetryFile(analysisContext.recordedSessionDataFilePath);
+            }
+
+            // Clear the recording session state
+            analysisContext.clearRecordingSession();
+
+            // Wait a moment to show completion then reset
+            setTimeout(() => {
+                setIsUploading(false);
+                reEnterCheckingValidSession();
+            }, 1500);
+
+            return true;
+
+        } catch (error) {
+            console.error('Upload error:', error);
+            setUploadError(error instanceof Error ? error.message : 'Upload failed');
+            setIsUploading(false);
+            setShowRetryButton(true);
+            return false;
         }
-        const { uploadId } = initResponse.data as UploadRacingSessionInitReturnDto;
-
-        // Then send chunks
-        for (let i = 0; i < chunks.length; i++) {
-            const url = '/racing-session/upload/chunk';
-            const params = new URLSearchParams();
-            params.append('uploadId', uploadId);
-            const progress = await apiService.post(`${url}?${params.toString()}`, { chunk: chunks[i], chunkIndex: i });
-        }
-
-        // Finalize
-        const url = '/racing-session/upload/complete';
-        const params = new URLSearchParams();
-        params.append('uploadId', uploadId);
-
-        await apiService.post(`${url}?${params.toString()}`, {});
-        reEnterCheckingValidSession();
-        return true;
     }
 
     function reEnterCheckingValidSession() {
+        // Note: We don't clean up telemetry file here as it might be needed for upload
+
         // Reset all relevant state
         isCheckingLiveSession = false;
         setIsRecording(false);
@@ -385,13 +499,57 @@ const LiveAnalysisSessionRecording = () => {
         setCheckSessionScriptShellId(-1);
         setButtonState(ButtonState.CHECKING);
         analysisContext.setSession(null);
+        // Reset the telemetry file path for new session
+        analysisContext.setRecordedSessionDataFilePath(null);
+
+        // Reset upload states
+        setIsUploading(false);
+        setUploadProgress(0);
+        setUploadStatus('');
+        setUploadError(null);
+        setShowRetryButton(false);
 
         // Stop any existing interval before starting a new one
         stopCheckingLiveSessionInterval();
 
         // Start checking again
         startCheckingLiveSessionInterval();
-    }
+    }    // Function to manually stop recording
+    const stopRecording = () => {
+        console.log("Manually stopping recording...");
+        setIsRecording(false);
+        setIsRecorEnded(true);
+        setButtonState(ButtonState.UPLOAD_READY);
+
+        // Don't clear the recording session yet - we still need the file path for upload
+        // analysisContext.clearRecordingSession(); // This will be called after upload or cancel
+    };
+
+    // Function to handle cancel upload
+    const handleCancelUpload = async () => {
+        // Clean up the telemetry file when canceling
+        if (analysisContext.recordedSessionDataFilePath) {
+            await cleanupTelemetryFile(analysisContext.recordedSessionDataFilePath);
+        }
+
+        // Clear the recording session state
+        analysisContext.clearRecordingSession();
+
+        setIsUploading(false);
+        setUploadProgress(0);
+        setUploadStatus('');
+        setUploadError(null);
+        setShowRetryButton(false);
+        reEnterCheckingValidSession();
+    };
+
+    // Function to retry upload
+    const handleRetryUpload = () => {
+        setUploadError(null);
+        setShowRetryButton(false);
+        setUploadProgress(0);
+        handleUpload();
+    };
 
     return (
 
@@ -414,7 +572,12 @@ const LiveAnalysisSessionRecording = () => {
                 <Flex gap="4" align="center" p="3">
                     {!isRecordEnded ?
                         //if record hasnt been initilized or stil recording
-                        <IconButton radius="full" size="3" onClick={StartRecording}>
+                        <IconButton
+                            radius="full"
+                            size="3"
+                            onClick={isRecording ? stopRecording : StartRecording}
+                            color={isRecording ? "red" : "blue"}
+                        >
                             {primaryButton}
                         </IconButton> :
 
@@ -426,80 +589,115 @@ const LiveAnalysisSessionRecording = () => {
                                 </IconButton>
                             </AlertDialog.Trigger>
                             <AlertDialog.Content maxWidth="450px">
-                                <AlertDialog.Title>Revoke access</AlertDialog.Title>
+                                <AlertDialog.Title>Upload Racing Session</AlertDialog.Title>
                                 <AlertDialog.Description size="2">
-                                    Are you sure? This application will no longer be accessible and any
-                                    existing sessions will be expired.
+                                    Upload your recorded racing session data to the server for analysis and storage.
                                 </AlertDialog.Description>
 
+                                {/* Upload Progress Section */}
+                                {isUploading && (
+                                    <Box my="4">
+                                        <Flex justify="between" mb="2">
+                                            <Text size="2" weight="medium">{uploadStatus}</Text>
+                                            <Text size="2" color="gray">{uploadProgress}%</Text>
+                                        </Flex>
+                                        <Box
+                                            width="100%"
+                                            height="8px"
+                                            style={{
+                                                backgroundColor: "var(--gray-a5)",
+                                                borderRadius: "var(--radius-2)",
+                                                overflow: "hidden"
+                                            }}
+                                        >
+                                            <Box
+                                                height="100%"
+                                                style={{
+                                                    width: `${uploadProgress}%`,
+                                                    backgroundColor: uploadError ? "var(--red-9)" : "var(--blue-9)",
+                                                    borderRadius: "var(--radius-2)",
+                                                    transition: "width 0.3s ease"
+                                                }}
+                                            />
+                                        </Box>
+                                        {uploadError && (
+                                            <Text size="2" color="red" mt="2">
+                                                {uploadError}
+                                            </Text>
+                                        )}
+                                        {showRetryButton && (
+                                            <Flex mt="2" gap="2">
+                                                <Button size="1" variant="outline" onClick={handleRetryUpload}>
+                                                    Retry Upload
+                                                </Button>
+                                            </Flex>
+                                        )}
+                                    </Box>
+                                )}
 
                                 <Card size="4">
-
                                     <Heading as="h3" size="6" trim="start" mb="5">
                                         Session {" "}
                                         <Text as="div" size="3" weight="bold" color="blue">
-                                            June 21, 2023
+                                            {analysisContext.sessionSelected?.session_name || "Unknown Session"}
                                         </Text>
                                     </Heading>
 
                                     <Grid columns="2" gapX="4" gapY="5">
                                         <Box>
                                             <Text as="div" size="2" mb="1" color="gray">
-                                                Started at
-                                            </Text>
-                                            <Text as="div" size="3" weight="bold">
-                                                June 21, 2023
-                                            </Text>
-                                        </Box>
-
-                                        <Box>
-                                            <Text as="div" size="2" mb="1" color="gray">
-                                                Ended at
-                                            </Text>
-                                            <Text as="div" size="3" weight="bold">
-                                                July 21, 2023
-                                            </Text>
-                                        </Box>
-
-                                        <Box>
-                                            <Text as="div" size="2" mb="1" color="gray">
                                                 Map
                                             </Text>
                                             <Text as="div" size="3" mb="1" weight="bold">
-                                                Map name here
+                                                {analysisContext.mapSelected || "Unknown Map"}
                                             </Text>
                                             <Text as="div" size="2">
-                                                Pratice session
+                                                Practice session
                                             </Text>
                                         </Box>
 
+                                        <Box>
+                                            <Text as="div" size="2" mb="1" color="gray">
+                                                Car
+                                            </Text>
+                                            <Text as="div" size="3" weight="bold">
+                                                {analysisContext.recordedSessioStaticsData?.car_model || "Unknown Car"}
+                                            </Text>
+                                        </Box>
 
                                         <Flex direction="column" gap="1" gridColumn="1 / -1">
-
                                             <Flex justify="between">
                                                 <Text size="3" mb="1" weight="bold">
-                                                    Session length
+                                                    Status
                                                 </Text>
-                                                <Text size="2">00:20:00</Text>
-                                            </Flex>
-                                            <Flex justify="between">
-                                                <Text size="3" mb="1" weight="bold">
-                                                    Lap
+                                                <Text size="2" color={isUploading ? "blue" : "green"}>
+                                                    {isUploading ? "Uploading..." : "Ready to upload"}
                                                 </Text>
-                                                <Text size="2">4</Text>
                                             </Flex>
                                         </Flex>
                                     </Grid>
                                 </Card>
+
                                 <Flex gap="3" mt="4" justify="end">
-                                    <AlertDialog.Cancel>
-                                        <Button onClick={reEnterCheckingValidSession} variant="outline" color="red">
-                                            Reject
+                                    {!isUploading ? (
+                                        <>
+                                            <AlertDialog.Cancel>
+                                                <Button onClick={handleCancelUpload} variant="outline" color="red">
+                                                    Cancel
+                                                </Button>
+                                            </AlertDialog.Cancel>
+                                            <AlertDialog.Action>
+                                                <Button onClick={handleUpload} disabled={isUploading}>
+                                                    Upload Session
+                                                </Button>
+                                            </AlertDialog.Action>
+                                        </>
+                                    ) : (
+                                        <Button variant="outline" disabled>
+                                            <Spinner size="1" />
+                                            Uploading...
                                         </Button>
-                                    </AlertDialog.Cancel>
-                                    <AlertDialog.Action>
-                                        <Button onClick={handleUpload} >Approve</Button>
-                                    </AlertDialog.Action>
+                                    )}
                                 </Flex>
                             </AlertDialog.Content>
                         </AlertDialog.Root>

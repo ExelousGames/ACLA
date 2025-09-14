@@ -83,7 +83,6 @@ export interface ImitationLearningGuidanceRequest {
     current_telemetry: { [key: string]: any };
     track_name: string;
     car_name: string;
-    guidance_type: string; // "actions", "behavior", or "both"
     user_id?: string;
 }
 

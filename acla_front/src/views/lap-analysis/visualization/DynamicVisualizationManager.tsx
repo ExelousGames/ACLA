@@ -234,7 +234,7 @@ const DynamicVisualizationManager: React.FC<DynamicVisualizationManagerProps> = 
 
             return () => clearTimeout(timeoutId);
         }
-    }, [analysisContext.recordedSessionData]);
+    }, [analysisContext.recordedSessionDataFilePath, analysisContext.liveData]); // Watch file path and live data instead
 
     // Handle resize events with proper debouncing
     useEffect(() => {
