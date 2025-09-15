@@ -32,6 +32,7 @@ const LiveAnalysisSessionRecording = () => {
 
     // Persistent ref for tracking if a session check is in progress (avoids re-renders)
     const isCheckingLiveSessionRef = useRef(false);
+    const lastCheckStartRef = useRef<number | null>(null);
 
     //stores the state of a game session
     const [hasValidLiveSession, setValidLiveSession] = useState(ACC_STATUS.ACC_OFF);
@@ -115,7 +116,8 @@ const LiveAnalysisSessionRecording = () => {
         if (isCheckingLiveSessionRef.current) {
             return;
         }
-        isCheckingLiveSessionRef.current = true;
+    isCheckingLiveSessionRef.current = true;
+    lastCheckStartRef.current = Date.now();
 
         //setup for running a new python in main process
         let options = {
@@ -170,8 +172,22 @@ const LiveAnalysisSessionRecording = () => {
                                 //set the static data too, so we can use it later.
                                 console.log("Setting static data:", obj);
                                 analysisContext.setRecordedSessionStaticsData(obj.Static);
+                                // Resolve early and clear flag
+                                if (!isResolved) {
+                                    isResolved = true;
+                                    cleanup();
+                                    isCheckingLiveSessionRef.current = false;
+                                    resolve();
+                                }
                             } else {
                                 console.log("Session status is not live:", obj.Graphics?.status);
+                                // Not live; allow interval to trigger another check
+                                if (!isResolved) {
+                                    isResolved = true;
+                                    cleanup();
+                                    isCheckingLiveSessionRef.current = false;
+                                    resolve();
+                                }
                             }
                         } catch (error) {
                             console.error('Error parsing session data:', error);
@@ -222,6 +238,7 @@ const LiveAnalysisSessionRecording = () => {
             console.log("No valid live session, current status:", hasValidLiveSession);
             return;
         }
+        console.debug('[Recording] StartRecording invoked');
 
         // Check if we have valid static data
         if (!analysisContext.recordedSessioStaticsData) {
@@ -265,6 +282,7 @@ const LiveAnalysisSessionRecording = () => {
 
         // Set the primary button to the recording icon
         setButtonState(ButtonState.RECORDING);
+    console.debug('[Recording] Button state -> RECORDING');
 
         try {
             //running the script in the main process (electron.js) instead this renderer process
@@ -292,6 +310,7 @@ const LiveAnalysisSessionRecording = () => {
                     setIsRecording(false);
                     setIsRecorEnded(true);
                     setButtonState(ButtonState.UPLOAD_READY);
+                    console.debug('[Recording] Transition to UPLOAD_READY');
                     // Clean up the message listener
                     if (typeof messageCleanup === 'function') {
                         messageCleanup();
@@ -304,6 +323,7 @@ const LiveAnalysisSessionRecording = () => {
         } catch (error) {
             console.error("Error starting recording:", error);
             setButtonState(ButtonState.READY_TO_START); // Reset button state on error
+            console.debug('[Recording] Error, reverting to READY_TO_START');
         }
     }, [hasValidLiveSession, analysisContext]);
 
@@ -312,6 +332,7 @@ const LiveAnalysisSessionRecording = () => {
      */
     const startCheckingLiveSessionInterval = useCallback(() => {
         setButtonState(ButtonState.CHECKING);
+    console.debug('[SessionCheck] Interval tick');
 
         //check every 2 sec by using a python script
         intervalRef.current = setInterval(async () => {
@@ -340,10 +361,17 @@ const LiveAnalysisSessionRecording = () => {
 
             try {
                 await CheckSessionValid();
+                console.debug('[SessionCheck] CheckSessionValid executed while recording');
+                console.debug('[SessionCheck] CheckSessionValid executed');
             } catch (error) {
                 console.error("Error in CheckSessionValid:", error);
                 // Don't stop the interval on error, just log it and continue
                 isCheckingLiveSessionRef.current = false; // Reset the flag in case of error
+            }
+            // Stale guard: if flag stuck beyond timeout, reset
+            if (lastCheckStartRef.current && Date.now() - lastCheckStartRef.current > SESSION_CHECK_TIMEOUT_MS * 1.5) {
+                console.warn('Stale session check detected; resetting flag');
+                isCheckingLiveSessionRef.current = false;
             }
         }, CHECK_SESSION_INTERVAL_MS);
     }, [CheckSessionValid, hasValidLiveSession, isRecording]);
@@ -495,7 +523,9 @@ const LiveAnalysisSessionRecording = () => {
         // Note: We don't clean up telemetry file here as it might be needed for upload
 
         // Reset all relevant state
-    isCheckingLiveSessionRef.current = false;
+        console.debug('[ReEnter] resetting session state');
+        isCheckingLiveSessionRef.current = false;
+        lastCheckStartRef.current = null;
         setIsRecording(false);
         setIsRecorEnded(false);
         setValidLiveSession(ACC_STATUS.ACC_OFF);
@@ -523,6 +553,7 @@ const LiveAnalysisSessionRecording = () => {
         setIsRecording(false);
         setIsRecorEnded(true);
         setButtonState(ButtonState.UPLOAD_READY);
+    console.debug('[Recording] Manual stop -> UPLOAD_READY');
 
         // Don't clear the recording session yet - we still need the file path for upload
         // analysisContext.clearRecordingSession(); // This will be called after upload or cancel
