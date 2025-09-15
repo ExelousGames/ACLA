@@ -1,5 +1,5 @@
 import { Card, Flex, Box, TextField, IconButton, Heading, Grid, Text, Slider, Avatar, Spinner, AlertDialog, Button } from '@radix-ui/themes';
-import { JSX, useContext, useEffect, useRef, useState } from 'react';
+import { JSX, useContext, useEffect, useRef, useState, useMemo, useCallback } from 'react';
 
 import { Link } from 'react-router-dom';
 import { CallbackFunction, PythonShellOptions } from 'services/pythonService';
@@ -21,11 +21,17 @@ enum ButtonState {
 
 
 const LiveAnalysisSessionRecording = () => {
+    // Constants
+    const CHECK_SESSION_INTERVAL_MS = 2000;
+    const SESSION_CHECK_TIMEOUT_MS = 10000;
+    const UPLOAD_CHUNK_SIZE = 5;
+    const POST_UPLOAD_RESET_DELAY_MS = 1200;
+    const POST_SUCCESS_DIALOG_CLOSE_MS = 800;
     const analysisContext = useContext(AnalysisContext);
     const auth = useAuth();
 
-    //check if program is constantly checking a valid game session
-    let isCheckingLiveSession = false;
+    // Persistent ref for tracking if a session check is in progress (avoids re-renders)
+    const isCheckingLiveSessionRef = useRef(false);
 
     //stores the state of a game session
     const [hasValidLiveSession, setValidLiveSession] = useState(ACC_STATUS.ACC_OFF);
@@ -39,7 +45,6 @@ const LiveAnalysisSessionRecording = () => {
     //store the shell id of the script for checking game live session
     const [checkSessionScriptShellId, setCheckSessionScriptShellId] = useState(-1);
     const intervalRef = useRef<NodeJS.Timeout | null>(null);
-    const [primaryButton, setPrimaryButton] = useState<JSX.Element>();
 
     // Button state management
     const [buttonState, setButtonState] = useState<ButtonState>(ButtonState.CHECKING);
@@ -50,6 +55,8 @@ const LiveAnalysisSessionRecording = () => {
     const [uploadStatus, setUploadStatus] = useState<string>('');
     const [uploadError, setUploadError] = useState<string | null>(null);
     const [showRetryButton, setShowRetryButton] = useState(false);
+    // Keep upload dialog open until upload completes
+    const [uploadDialogOpen, setUploadDialogOpen] = useState(false);
 
     // Centralized button component generator
     const getPrimaryButtonComponent = (state: ButtonState): JSX.Element => {
@@ -83,42 +90,32 @@ const LiveAnalysisSessionRecording = () => {
         }
     };
 
-    // Update button whenever buttonState changes
-    useEffect(() => {
-        setPrimaryButton(getPrimaryButtonComponent(buttonState));
-    }, [buttonState]);
+    const primaryButton = useMemo(() => getPrimaryButtonComponent(buttonState), [buttonState]);
 
 
     useEffect(() => {
-
-        //start checking a valid live session at start
-        if (hasValidLiveSession != ACC_STATUS.ACC_LIVE && !isCheckingLiveSession) {
+        if (hasValidLiveSession !== ACC_STATUS.ACC_LIVE && !isCheckingLiveSessionRef.current) {
             startCheckingLiveSessionInterval();
         }
         return () => {
-            // Clean up listeners when component unmounts
-            if (intervalRef.current) {
-                clearInterval(intervalRef.current);
-            }
-
-            // Only clean up telemetry file on component unmount (not on file path changes)
-            // This prevents cleaning during normal recording flow
+            stopCheckingLiveSessionInterval();
             if (analysisContext.recordedSessionDataFilePath && !isRecording) {
                 cleanupTelemetryFile(analysisContext.recordedSessionDataFilePath).catch(console.error);
             }
         };
-    }, []); // Remove dependency to prevent cleanup during recording
+        // intentionally omitting dependencies to mimic componentDidMount while using stable callbacks
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
 
     /**
      * check acc memory once and see if there is a valid session running
      */
-    const CheckSessionValid = async () => {
+    const CheckSessionValid = useCallback(async () => {
 
-        if (isCheckingLiveSession) {
+        if (isCheckingLiveSessionRef.current) {
             return;
         }
-
-        isCheckingLiveSession = true;
+        isCheckingLiveSessionRef.current = true;
 
         //setup for running a new python in main process
         let options = {
@@ -144,10 +141,10 @@ const LiveAnalysisSessionRecording = () => {
                 const timeout = setTimeout(() => {
                     if (!isResolved) {
                         isResolved = true;
-                        isCheckingLiveSession = false;
+                        isCheckingLiveSessionRef.current = false;
                         reject(new Error('Session check timeout'));
                     }
-                }, 10000); // 10 second timeout
+                }, SESSION_CHECK_TIMEOUT_MS); // timeout
 
                 const cleanup = () => {
                     clearTimeout(timeout);
@@ -184,7 +181,7 @@ const LiveAnalysisSessionRecording = () => {
                             if (!isResolved) {
                                 isResolved = true;
                                 cleanup();
-                                isCheckingLiveSession = false;
+                                isCheckingLiveSessionRef.current = false;
                                 reject(error);
                             }
                         }
@@ -196,7 +193,7 @@ const LiveAnalysisSessionRecording = () => {
                     if (shellId === returnedShellId && !isResolved) {
                         isResolved = true;
                         cleanup();
-                        isCheckingLiveSession = false;
+                        isCheckingLiveSessionRef.current = false;
                         resolve();
                     }
                 };
@@ -210,16 +207,16 @@ const LiveAnalysisSessionRecording = () => {
 
         } catch (error) {
             console.error('Error running Python script:', error);
-            isCheckingLiveSession = false;
+            isCheckingLiveSessionRef.current = false;
             throw error;
         }
-    };
+    }, [analysisContext]);
 
     /**
      * run the python script and start record the session
      * @returns 
      */
-    const StartRecording = async () => {
+    const StartRecording = useCallback(async () => {
         //if no valid live sesssion, we dont do anything
         if (hasValidLiveSession != ACC_STATUS.ACC_LIVE) {
             console.log("No valid live session, current status:", hasValidLiveSession);
@@ -308,18 +305,18 @@ const LiveAnalysisSessionRecording = () => {
             console.error("Error starting recording:", error);
             setButtonState(ButtonState.READY_TO_START); // Reset button state on error
         }
-    };
+    }, [hasValidLiveSession, analysisContext]);
 
     /**
      * start checking the valid live session in a interval
      */
-    const startCheckingLiveSessionInterval = () => {
+    const startCheckingLiveSessionInterval = useCallback(() => {
         setButtonState(ButtonState.CHECKING);
 
         //check every 2 sec by using a python script
         intervalRef.current = setInterval(async () => {
             // Prevent overlapping checks
-            if (isCheckingLiveSession) {
+            if (isCheckingLiveSessionRef.current) {
                 return;
             }
 
@@ -346,18 +343,18 @@ const LiveAnalysisSessionRecording = () => {
             } catch (error) {
                 console.error("Error in CheckSessionValid:", error);
                 // Don't stop the interval on error, just log it and continue
-                isCheckingLiveSession = false; // Reset the flag in case of error
+                isCheckingLiveSessionRef.current = false; // Reset the flag in case of error
             }
-        }, 2000);
-    };
+        }, CHECK_SESSION_INTERVAL_MS);
+    }, [CheckSessionValid, hasValidLiveSession, isRecording]);
 
     // Stop the interval
-    const stopCheckingLiveSessionInterval = () => {
+    const stopCheckingLiveSessionInterval = useCallback(() => {
         if (intervalRef.current) {
             clearInterval(intervalRef.current);
             intervalRef.current = null;
         }
-    };
+    }, []);
 
     // Function to clean up telemetry file
     const cleanupTelemetryFile = async (filePath: string) => {
@@ -378,16 +375,18 @@ const LiveAnalysisSessionRecording = () => {
     };
 
     //after a session is determined as terminated, and user selected to upload the data, we do it here
-    async function handleUpload() {
+    const uploadInFlightRef = useRef(false);
+    const handleUpload = useCallback(async () => {
+        if (uploadInFlightRef.current) return false;
         if (!analysisContext.sessionSelected?.session_name || !analysisContext.mapSelected || !auth?.userEmail) {
             setUploadError('Missing required session or user information');
             return false;
         }
-
+        uploadInFlightRef.current = true;
         setIsUploading(true);
+        setUploadError(null);
         setUploadProgress(0);
         setUploadStatus('Reading telemetry data...');
-        setUploadError(null);
 
         try {
             // Read telemetry data from file instead of memory
@@ -405,8 +404,8 @@ const LiveAnalysisSessionRecording = () => {
             setUploadStatus(`Processing ${data.length} telemetry points...`);
 
             //send by chunks
-            const chunks = [];
-            const chunkSize = 5;
+            const chunks: any[] = [];
+            const chunkSize = UPLOAD_CHUNK_SIZE;
             const metadata = {
                 sessionName: analysisContext.sessionSelected?.session_name,
                 mapName: analysisContext.mapSelected,
@@ -474,8 +473,11 @@ const LiveAnalysisSessionRecording = () => {
             // Wait a moment to show completion then reset
             setTimeout(() => {
                 setIsUploading(false);
-                reEnterCheckingValidSession();
-            }, 1500);
+                setTimeout(() => {
+                    setUploadDialogOpen(false);
+                    reEnterCheckingValidSession();
+                }, POST_SUCCESS_DIALOG_CLOSE_MS);
+            }, POST_UPLOAD_RESET_DELAY_MS);
 
             return true;
 
@@ -484,15 +486,16 @@ const LiveAnalysisSessionRecording = () => {
             setUploadError(error instanceof Error ? error.message : 'Upload failed');
             setIsUploading(false);
             setShowRetryButton(true);
+            uploadInFlightRef.current = false;
             return false;
         }
-    }
+    }, [analysisContext, auth, cleanupTelemetryFile]);
 
     function reEnterCheckingValidSession() {
         // Note: We don't clean up telemetry file here as it might be needed for upload
 
         // Reset all relevant state
-        isCheckingLiveSession = false;
+    isCheckingLiveSessionRef.current = false;
         setIsRecording(false);
         setIsRecorEnded(false);
         setValidLiveSession(ACC_STATUS.ACC_OFF);
@@ -515,7 +518,7 @@ const LiveAnalysisSessionRecording = () => {
         // Start checking again
         startCheckingLiveSessionInterval();
     }    // Function to manually stop recording
-    const stopRecording = () => {
+    const stopRecording = useCallback(() => {
         console.log("Manually stopping recording...");
         setIsRecording(false);
         setIsRecorEnded(true);
@@ -523,10 +526,10 @@ const LiveAnalysisSessionRecording = () => {
 
         // Don't clear the recording session yet - we still need the file path for upload
         // analysisContext.clearRecordingSession(); // This will be called after upload or cancel
-    };
+    }, []);
 
     // Function to handle cancel upload
-    const handleCancelUpload = async () => {
+    const handleCancelUpload = useCallback(async () => {
         // Clean up the telemetry file when canceling
         if (analysisContext.recordedSessionDataFilePath) {
             await cleanupTelemetryFile(analysisContext.recordedSessionDataFilePath);
@@ -541,15 +544,15 @@ const LiveAnalysisSessionRecording = () => {
         setUploadError(null);
         setShowRetryButton(false);
         reEnterCheckingValidSession();
-    };
+    }, [analysisContext]);
 
     // Function to retry upload
-    const handleRetryUpload = () => {
+    const handleRetryUpload = useCallback(() => {
         setUploadError(null);
         setShowRetryButton(false);
         setUploadProgress(0);
         handleUpload();
-    };
+    }, [handleUpload]);
 
     return (
 
@@ -582,13 +585,19 @@ const LiveAnalysisSessionRecording = () => {
                         </IconButton> :
 
                         //record ended
-                        <AlertDialog.Root>
+                        <AlertDialog.Root
+                            open={uploadDialogOpen}
+                            onOpenChange={(open) => {
+                                if (isUploading) return; // prevent closing during upload
+                                setUploadDialogOpen(open);
+                            }}
+                        >
                             <AlertDialog.Trigger>
-                                <IconButton radius="full" size="3">
+                                <IconButton radius="full" size="3" onClick={() => setUploadDialogOpen(true)}>
                                     <svg width="15" height="15" viewBox="0 0 15 15" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M7.81825 1.18188C7.64251 1.00615 7.35759 1.00615 7.18185 1.18188L4.18185 4.18188C4.00611 4.35762 4.00611 4.64254 4.18185 4.81828C4.35759 4.99401 4.64251 4.99401 4.81825 4.81828L7.05005 2.58648V9.49996C7.05005 9.74849 7.25152 9.94996 7.50005 9.94996C7.74858 9.94996 7.95005 9.74849 7.95005 9.49996V2.58648L10.1819 4.81828C10.3576 4.99401 10.6425 4.99401 10.8182 4.81828C10.994 4.64254 10.994 4.35762 10.8182 4.18188L7.81825 1.18188ZM2.5 9.99997C2.77614 9.99997 3 10.2238 3 10.5V12C3 12.5538 3.44565 13 3.99635 13H11.0012C11.5529 13 12 12.5528 12 12V10.5C12 10.2238 12.2239 9.99997 12.5 9.99997C12.7761 9.99997 13 10.2238 13 10.5V12C13 13.104 12.1062 14 11.0012 14H3.99635C2.89019 14 2 13.103 2 12V10.5C2 10.2238 2.22386 9.99997 2.5 9.99997Z" fill="currentColor" fillRule="evenodd" clipRule="evenodd"></path></svg>
                                 </IconButton>
                             </AlertDialog.Trigger>
-                            <AlertDialog.Content maxWidth="450px">
+                            <AlertDialog.Content maxWidth="450px" onEscapeKeyDown={(e) => { if (isUploading) { e.preventDefault(); } }}>
                                 <AlertDialog.Title>Upload Racing Session</AlertDialog.Title>
                                 <AlertDialog.Description size="2">
                                     Upload your recorded racing session data to the server for analysis and storage.
@@ -679,23 +688,32 @@ const LiveAnalysisSessionRecording = () => {
                                 </Card>
 
                                 <Flex gap="3" mt="4" justify="end">
-                                    {!isUploading ? (
+                                    {!isUploading && uploadProgress < 100 && (
                                         <>
-                                            <AlertDialog.Cancel>
-                                                <Button onClick={handleCancelUpload} variant="outline" color="red">
-                                                    Cancel
-                                                </Button>
-                                            </AlertDialog.Cancel>
-                                            <AlertDialog.Action>
-                                                <Button onClick={handleUpload} disabled={isUploading}>
-                                                    Upload Session
-                                                </Button>
-                                            </AlertDialog.Action>
+                                            <Button
+                                                variant="outline"
+                                                color="red"
+                                                onClick={() => {
+                                                    handleCancelUpload();
+                                                    setUploadDialogOpen(false);
+                                                }}
+                                            >
+                                                Cancel
+                                            </Button>
+                                            <Button onClick={() => handleUpload()} disabled={isUploading}>
+                                                Upload Session
+                                            </Button>
                                         </>
-                                    ) : (
+                                    )}
+                                    {isUploading && uploadProgress < 100 && (
                                         <Button variant="outline" disabled>
                                             <Spinner size="1" />
                                             Uploading...
+                                        </Button>
+                                    )}
+                                    {!isUploading && uploadProgress === 100 && (
+                                        <Button onClick={() => setUploadDialogOpen(false)}>
+                                            Close
                                         </Button>
                                     )}
                                 </Flex>
