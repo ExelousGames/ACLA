@@ -623,7 +623,7 @@ class Full_dataset_TelemetryMLService:
         """
         try:
             enhanced_telemetry = await self.corner_identification.extract_corner_features_for_telemetry(
-                telemetry_data, trackName, carName
+                telemetry_data,True
             )
             
             print(f"[INFO] Enhanced {len(enhanced_telemetry)} telemetry records with corner features")
