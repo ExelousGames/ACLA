@@ -62,7 +62,8 @@ export class RacingSessionService {
                 session.map = data.map;
                 session.userId = data.user_id.toString();
                 session.points = data.points;
-                session.data = data.data || [];
+                // Telemetry data is stored in GridFS chunks; detailed endpoint returns empty array placeholder
+                session.data = [];
             }
 
             return session;
@@ -120,7 +121,6 @@ export class RacingSessionService {
             map,
             car_name,
             user_id: userId,
-            data: undefined,
             dataChunkFileIds: dataChunkFileIds,
             chunkSize: chunkSize,
             totalChunks: totalChunks,
