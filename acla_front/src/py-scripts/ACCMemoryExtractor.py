@@ -11,20 +11,22 @@ import enum
 recordedData = []
 
 class ACCRecording:
-    def __init__(self):
+    def __init__(self, target_fps: int = 60):
         self.asm = accSharedMemory()
+        self.target_fps = target_fps if target_fps > 0 else 60
+        self._frame_delay = 1.0 / float(self.target_fps)
         return
 
     def startRecording(self,full_path):
         sm = self.asm.read_shared_memory()
         if  (sm is not None):
             #record once to clean or create the file
-            self.write_object_to_csv(sm,full_path)
+            #self.write_object_to_csv(sm,full_path)
             #start to record the session
             my_scheduler = sched.scheduler(time.time, time.sleep)
             # 60 FPS = 1/60 seconds delay between calls
-            fps_delay = 1.0 / 60.0  # 0.0166... seconds for 60 FPS
-            my_scheduler.enter(fps_delay, 1, self.recordOnce, (my_scheduler,full_path))
+
+            my_scheduler.enter(self._frame_delay, 1, self.recordOnce, (my_scheduler,full_path))
             my_scheduler.run()
             
         else:
@@ -34,7 +36,7 @@ class ACCRecording:
         sm = self.asm.read_shared_memory()
         if  (sm is not None):
             # schedule the next call first
-            scheduler.enter(1, 1, self.recordOnce, (scheduler,full_path))
+            scheduler.enter(self._frame_delay, 1, self.recordOnce, (scheduler,full_path))
 
             flattened = self.flatten_object(sm)
             

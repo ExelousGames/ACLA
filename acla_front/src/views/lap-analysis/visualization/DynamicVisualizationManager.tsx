@@ -288,10 +288,14 @@ const DynamicVisualizationManager: React.FC<DynamicVisualizationManagerProps> = 
                     top: typeof position.y === 'number' ? `${position.y}px` : position.y,
                     width: typeof position.width === 'number' ? `${position.width}px` : position.width,
                     height: typeof position.height === 'number' ? `${position.height}px` : position.height,
-                    zIndex: 1
+                    zIndex: 1,
+                    display: 'flex',
+                    flexDirection: 'column',
+                    overflow: 'hidden',
+                    minHeight: 0
                 }}
             >
-                <Box className="visualization-header">
+                <Box className="visualization-header" style={{ flex: '0 0 auto' }}>
                     <Flex align="center" gap="2">
                         <DragHandleDots2Icon className="drag-handle" />
                         <Text size="2" weight="medium">{component.name}</Text>
@@ -304,13 +308,15 @@ const DynamicVisualizationManager: React.FC<DynamicVisualizationManagerProps> = 
                         <Cross2Icon />
                     </IconButton>
                 </Box>
-                <Component
-                    id={instance.id}
-                    data={instance.data}
-                    config={instance.config}
-                    width="100%"
-                    height="calc(100% - 40px)"
-                />
+                <Box style={{ flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden' }}>
+                    <Component
+                        id={instance.id}
+                        data={instance.data}
+                        config={instance.config}
+                        width="100%"
+                        height="100%"
+                    />
+                </Box>
             </Box>
         );
     };

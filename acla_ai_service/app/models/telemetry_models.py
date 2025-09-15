@@ -98,7 +98,7 @@ class TelemetryFeatures:
         "Physics_wheel_slip_rear_left",
         "Physics_slip_ratio_front_right",
         "Physics_tyre_contact_point_front_right_y",
-        "Physics_steer_angle",
+        "Physics_steer_angle", #From 0.0 to 1.0
         "Physics_is_ai_controlled",
         "Physics_car_damage_left",
         "Physics_wheel_pressure_rear_left",
