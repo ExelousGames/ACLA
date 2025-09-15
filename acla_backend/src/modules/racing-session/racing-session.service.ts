@@ -3,12 +3,26 @@ import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { RacingSessionDetailedInfoDto, SessionBasicInfoListDto, AllSessionsInitResponseDto, SessionChunkDto } from 'src/dto/racing-session.dto';
 import { RacingSession } from 'src/schemas/racing-session.schema';
+import { GridFSService, GRIDFS_BUCKETS } from '../gridfs/gridfs.service';
+import { ObjectId } from 'mongodb';
 import * as crypto from 'crypto';
 
 @Injectable()
 export class RacingSessionService {
-    constructor(@InjectModel(RacingSession.name) private racingSession: Model<RacingSession>) {
-    }
+    constructor(
+        @InjectModel(RacingSession.name) private racingSession: Model<RacingSession>,
+        private readonly gridfsService: GridFSService,
+    ) { }
+
+    /**
+     * Large telemetry datasets are stored exclusively in GridFS as chunked JSON files.
+     * Stored metadata per session document:
+     *  - dataChunkFileIds: ordered GridFS file IDs (JSON arrays of telemetry rows)
+     *  - chunkSize: size used for splitting when uploaded
+     *  - totalChunks: number of chunks
+     *  - totalDataPoints: total number of telemetry rows
+     * Public API surfaces (upload/init, upload/chunk, upload/complete, download/init, download/chunk) are unchanged.
+     */
 
     /**
      * Retrieves basic information about all racing sessions for a specific map and user.
@@ -48,7 +62,7 @@ export class RacingSessionService {
                 session.map = data.map;
                 session.userId = data.user_id.toString();
                 session.points = data.points;
-                session.data = data.data;
+                session.data = data.data || [];
             }
 
             return session;
@@ -68,13 +82,49 @@ export class RacingSessionService {
      * @param data 
      * @returns 
      */
-    async createRacingSession(session_name: string, map: string, car_name: string, userId: string, data: any[]) {
+    async createRacingSession(
+        session_name: string,
+        map: string,
+        car_name: string,
+        userId: string,
+        data: any[],
+        options?: { chunkSize?: number }
+    ) {
+        const chunkSize = options?.chunkSize || 1000;
+        const dataChunkFileIds: ObjectId[] = [];
+        const totalChunks = Math.ceil(data.length / chunkSize);
+        for (let i = 0; i < totalChunks; i++) {
+            const start = i * chunkSize;
+            const end = Math.min(start + chunkSize, data.length);
+            const chunk = data.slice(start, end);
+            const filename = `session_${session_name}_${map}_${car_name}_chunk_${i}_${Date.now()}.json`;
+            const fileId = await this.gridfsService.uploadJSON(
+                chunk,
+                filename,
+                {
+                    session_name,
+                    map,
+                    car_name,
+                    userId,
+                    chunkIndex: i,
+                    totalChunks,
+                    chunkSize,
+                    createdAt: new Date()
+                },
+                GRIDFS_BUCKETS.RACING_SESSIONS
+            );
+            dataChunkFileIds.push(fileId as unknown as ObjectId);
+        }
         return this.racingSession.create({
-            session_name: session_name,
-            map: map,
-            car_name: car_name,
+            session_name,
+            map,
+            car_name,
             user_id: userId,
-            data: data
+            data: undefined,
+            dataChunkFileIds: dataChunkFileIds,
+            chunkSize: chunkSize,
+            totalChunks: totalChunks,
+            totalDataPoints: data.length
         });
     }
 
@@ -96,13 +146,11 @@ export class RacingSessionService {
                 filter.car_name = carName;
             }
 
-            const sessions = await this.racingSession.find(filter)
-                .exec();
+            const sessions = await this.racingSession.find(filter).exec();
 
             const sessionMetadata = sessions.map(session => {
-                const dataSize = session.data ? session.data.length : 0;
-                const chunkCount = Math.ceil(dataSize / chunkSize);
-
+                const dataSize = session.totalDataPoints || 0;
+                const chunkCount = session.totalChunks || 0;
                 return {
                     sessionId: session._id.toString(),
                     session_name: session.session_name,
@@ -137,19 +185,22 @@ export class RacingSessionService {
     async getSessionChunk(sessionId: string, chunkIndex: number, chunkSize: number = 1000): Promise<SessionChunkDto> {
         try {
             const session = await this.racingSession.findById(sessionId)
-                .select('data')
+                .select('dataChunkFileIds chunkSize totalChunks')
                 .exec();
 
             if (!session) {
                 throw new Error('Session not found');
             }
-
-            const data = session.data || [];
-            const startIndex = chunkIndex * chunkSize;
-            const endIndex = Math.min(startIndex + chunkSize, data.length);
-            const chunkData = data.slice(startIndex, endIndex);
-            const totalChunks = Math.ceil(data.length / chunkSize);
-
+            const totalChunks = session.totalChunks || ((session as any).dataChunkFileIds?.length ?? 0);
+            if (chunkIndex < 0 || chunkIndex >= totalChunks) {
+                throw new Error('Chunk index out of range');
+            }
+            const fileId = (session as any).dataChunkFileIds[chunkIndex];
+            if (!fileId) {
+                throw new Error('Chunk file id missing');
+            }
+            const json = await this.gridfsService.downloadJSON(fileId, GRIDFS_BUCKETS.RACING_SESSIONS);
+            const chunkData = Array.isArray(json) ? json : [];
             return {
                 downloadId: '', // Will be set by controller
                 sessionId,

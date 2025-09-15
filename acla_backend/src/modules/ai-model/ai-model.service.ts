@@ -177,7 +177,7 @@ export class AiModelService {
     // Helper to get the currently active model for a given track, car, and type
     async getActiveModel(trackName?: string, carName?: string, modelType?: string): Promise<AIModel> {
         const query: any = { isActive: true };
-        
+
         if (trackName) query.trackName = trackName;
         if (carName) query.carName = carName;
         if (modelType) query.modelType = modelType;
@@ -191,7 +191,7 @@ export class AiModelService {
             if (trackName) filterParts.push(`track: ${trackName}`);
             if (carName) filterParts.push(`car: ${carName}`);
             if (modelType) filterParts.push(`type: ${modelType}`);
-            
+
             const filterDescription = filterParts.length > 0 ? ` for ${filterParts.join(', ')}` : '';
             throw new NotFoundException(`Active AI Model not found${filterDescription}`);
         }
@@ -335,49 +335,6 @@ export class AiModelService {
             },
             GRIDFS_BUCKETS.AI_MODELS
         );
-    }
-
-    // Additional methods for different GridFS collections
-
-    async saveTrainingDataset(data: any, filename: string, metadata?: any): Promise<ObjectId> {
-        return await this.gridfsService.uploadJSON(data, filename, metadata, GRIDFS_BUCKETS.TRAINING_DATASETS);
-    }
-
-    async getTrainingDataset(fileId: ObjectId): Promise<any> {
-        return await this.gridfsService.downloadJSON(fileId, GRIDFS_BUCKETS.TRAINING_DATASETS);
-    }
-
-    async saveTelemetryData(data: any, filename: string, metadata?: any): Promise<ObjectId> {
-        return await this.gridfsService.uploadJSON(data, filename, metadata, GRIDFS_BUCKETS.TELEMETRY_DATA);
-    }
-
-    async getTelemetryData(fileId: ObjectId): Promise<any> {
-        return await this.gridfsService.downloadJSON(fileId, GRIDFS_BUCKETS.TELEMETRY_DATA);
-    }
-
-    async createModelBackup(modelId: string): Promise<ObjectId> {
-        const model = await this.findOneWithModelData(modelId);
-        const filename = `backup_${model.trackName}_${model.carName}_${model.modelType}_${Date.now()}.json`;
-
-        return await this.gridfsService.uploadJSON(
-            model,
-            filename,
-            {
-                originalModelId: modelId,
-                backupDate: new Date(),
-                trackName: model.trackName,
-                carName: model.carName,
-                modelType: model.modelType
-            },
-            GRIDFS_BUCKETS.MODEL_BACKUPS
-        );
-    }
-
-    async restoreModelFromBackup(backupFileId: ObjectId): Promise<AIModel> {
-        const backupData = await this.gridfsService.downloadJSON(backupFileId, GRIDFS_BUCKETS.MODEL_BACKUPS);
-        const { _id, createdAt, updatedAt, ...modelData } = backupData;
-
-        return await this.create(modelData);
     }
 
     // Get GridFS statistics for different buckets

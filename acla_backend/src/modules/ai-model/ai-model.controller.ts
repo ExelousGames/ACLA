@@ -167,22 +167,4 @@ export class AiModelController {
             };
         }
     }
-
-    @Post(':id/backup')
-    async createBackup(@Param('id') id: string) {
-        const backupFileId = await this.aiModelService.createModelBackup(id);
-        return {
-            message: 'Backup created successfully',
-            backupFileId: backupFileId.toString()
-        };
-    }
-
-    @Post('restore/:backupFileId')
-    async restoreFromBackup(@Param('backupFileId') backupFileId: string) {
-        const restoredModel = await this.aiModelService.restoreModelFromBackup(new (require('mongodb').ObjectId)(backupFileId));
-        return {
-            message: 'Model restored successfully',
-            model: restoredModel
-        };
-    }
 }
