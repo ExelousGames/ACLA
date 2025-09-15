@@ -1194,14 +1194,13 @@ class Full_dataset_TelemetryMLService:
                 num_decoder_layers=6,
                 dim_feedforward=1024,
                 dropout=0.1,
-                max_sequence_length=100
+                max_sequence_length=256
             )
             
             trainer = ExpertActionTrainer(model)
             
             print(f"[INFO] Created transformer model with {sum(p.numel() for p in model.parameters()):,} parameters")
             
-            # Use the already created dataset
             # Use the already created dataset
             dataset = temp_dataset
             

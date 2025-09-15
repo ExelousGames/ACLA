@@ -2,7 +2,18 @@
     display: flex;
     flex-direction: column;
     height: 100%;
-    overflow: hidden;
+    /* Remove overflow hidden so children with their own scroll can extend */
+    overflow: visible;
+    min-height: 0;
+    /* Critical for nested flex scrolling */
+}
+
+/* Optional dedicated scroll container if needed elsewhere */
+.scrollContainer {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
 }
 
 .chartCard {

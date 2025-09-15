@@ -77,11 +77,6 @@ class CornerCharacteristics:
         self.avg_curvature = 0.0
         self.max_curvature = 0.0
         self.curvature_variance = 0.0
-        
-        # Advanced metrics
-        self.trail_braking_score = 0.0
-        self.throttle_discipline_score = 0.0
-        self.consistency_score = 0.0
 
 
 class CornerIdentificationUnsupervisedService:
@@ -113,6 +108,25 @@ class CornerIdentificationUnsupervisedService:
         self.min_corner_duration = 10  # Minimum data points for a valid corner
         self.corner_detection_sensitivity = 0.7
         self.smoothing_window = 7  # Window size for smoothing telemetry data
+        # Steering angle metadata: current physics feed provides 0..1 where 0.5 is neutral.
+        # We normalize to a symmetric -1..1 scale for downstream logic (direction, curvature).
+        self.steering_range = '0_to_1'  # allowed values: '0_to_1', 'minus1_to_1'
+        # NOTE:
+        #   RAW Physics_steer_angle: 0 (full left) -> 0.5 (center) -> 1 (full right)
+        #   NORMALIZED (_normalize_steering): -1 (full left) -> 0 (center) -> 1 (full right)
+        #   ABS NORMALIZED (np.abs(normalized)): 0 -> 1 magnitude irrespective of direction
+
+    def _normalize_steering(self, steering_series: pd.Series) -> pd.Series:
+        """Normalize raw steering angle to a symmetric -1..1 range.
+
+        If the source data is already -1..1 it is returned unchanged (with NaNs filled).
+        If the source data is 0..1 we map: norm = (value - 0.5) * 2.
+        """
+        s = steering_series.fillna(0.0)
+        if self.steering_range == '0_to_1':
+            s = (s - 0.5) * 2.0
+        # clip to guard against any slight overflow due to upstream noise
+        return s.clip(-1.0, 1.0)
         
     async def learn_track_corner_patterns(self, telemetry_data: List[Dict[str, Any]]) -> Dict[str, Any]:
         """
@@ -242,7 +256,7 @@ class CornerIdentificationUnsupervisedService:
         Identify corner segments using unsupervised clustering of telemetry patterns
         """
         # Required columns for corner identification
-        required_cols = ['Physics_steer_angle', 'Physics_speed_kmh']
+        required_cols = ['Physics_steer_angle', 'Physics_speed_kmh']  # Physics_steer_angle raw range: 0..1 (0.5 center) before normalization
         if not all(col in df.columns for col in required_cols):
             print(f"[WARNING] Missing required columns for corner identification")
             return {}
@@ -266,7 +280,9 @@ class CornerIdentificationUnsupervisedService:
             features = []
             
             # Steering angle features (absolute and smoothed)
-            steering_abs = np.abs(df['Physics_steer_angle'].fillna(0))
+            # Normalize steering (incoming physics provides 0..1 so center & scale)
+            steering_norm = self._normalize_steering(df['Physics_steer_angle'])  # normalized -1..1; magnitude used below (0..1 after abs)
+            steering_abs = np.abs(steering_norm)
             if len(steering_abs) >= self.smoothing_window:
                 steering_smooth = savgol_filter(steering_abs, self.smoothing_window, 2)
             else:
@@ -471,17 +487,18 @@ class CornerIdentificationUnsupervisedService:
             
             # Steering analysis
             if 'Physics_steer_angle' in corner_df.columns:
-                steering = corner_df['Physics_steer_angle'].fillna(0)
-                characteristics.apex_max_steering = float(np.abs(steering).max())
-                
-                # Determine corner direction
-                avg_steering = steering.mean()
+                steering_norm = self._normalize_steering(corner_df['Physics_steer_angle'])  # normalized -1..1; sign -> direction, abs -> curvature metrics
+                characteristics.apex_max_steering = float(np.abs(steering_norm).max())
+
+                # Determine corner direction (sign after normalization)
+                avg_steering = steering_norm.mean()
                 characteristics.corner_direction = "right" if avg_steering > 0 else "left"
-                
-                # Calculate curvature metrics
-                characteristics.avg_curvature = float(np.abs(steering).mean())
-                characteristics.max_curvature = float(np.abs(steering).max())
-                characteristics.curvature_variance = float(np.var(np.abs(steering)))
+
+                # Curvature metrics based on normalized magnitude
+                steering_abs = np.abs(steering_norm)
+                characteristics.avg_curvature = float(steering_abs.mean())
+                characteristics.max_curvature = float(steering_abs.max())
+                characteristics.curvature_variance = float(np.var(steering_abs))
             
             # G-force analysis
             if 'Physics_g_force_x' in corner_df.columns:
@@ -500,7 +517,7 @@ class CornerIdentificationUnsupervisedService:
             characteristics.corner_type = self._classify_corner_type(characteristics)
             
             # Advanced scoring
-            self._calculate_advanced_scores(corner_df, characteristics)
+                # _calculate_advanced_scores removed
             
         except Exception as e:
             print(f"[WARNING] Error extracting corner characteristics: {str(e)}")
@@ -539,7 +556,8 @@ class CornerIdentificationUnsupervisedService:
                     
                     # Entry steering rate
                     if 'Physics_steer_angle' in entry_df.columns and len(entry_df) > 1:
-                        steering_diff = np.abs(np.diff(entry_df['Physics_steer_angle']))
+                        steering_norm_entry = self._normalize_steering(entry_df['Physics_steer_angle'])  # entry steering rate computed on normalized -1..1
+                        steering_diff = np.abs(np.diff(steering_norm_entry))
                         characteristics.entry_steering_rate = float(np.mean(steering_diff))
                 
                 # Apex phase (small region around minimum speed)
@@ -567,9 +585,9 @@ class CornerIdentificationUnsupervisedService:
                     
                     # Exit steering unwind rate
                     if 'Physics_steer_angle' in exit_df.columns and len(exit_df) > 1:
-                        steering_abs = np.abs(exit_df['Physics_steer_angle'])
-                        if len(steering_abs) > 1:
-                            unwind_rate = np.diff(steering_abs).mean()
+                        steering_abs_exit = np.abs(self._normalize_steering(exit_df['Physics_steer_angle']))  # exit unwind rate uses |normalized| 0..1
+                        if len(steering_abs_exit) > 1:
+                            unwind_rate = np.diff(steering_abs_exit).mean()
                             characteristics.exit_steering_unwind_rate = float(-unwind_rate)  # Negative because unwinding
                         
         except Exception as e:
@@ -611,42 +629,7 @@ class CornerIdentificationUnsupervisedService:
             print(f"[WARNING] Error classifying corner type: {str(e)}")
             return "unknown"
     
-    def _calculate_advanced_scores(self, corner_df: pd.DataFrame, characteristics: CornerCharacteristics):
-        """Calculate advanced performance scores"""
-        try:
-            # Trail braking score
-            if 'Physics_brake' in corner_df.columns and 'Physics_steer_angle' in corner_df.columns:
-                brake = corner_df['Physics_brake'].fillna(0)
-                steering = np.abs(corner_df['Physics_steer_angle'].fillna(0))
-                
-                # Trail braking is simultaneous braking and steering
-                overlap = (brake > 0.1) & (steering > 0.1)
-                characteristics.trail_braking_score = float(overlap.sum() / len(corner_df))
-            
-            # Throttle discipline score (smooth throttle application)
-            if 'Physics_gas' in corner_df.columns:
-                throttle = corner_df['Physics_gas'].fillna(0)
-                if len(throttle) > 1:
-                    throttle_smoothness = 1.0 - (np.var(np.diff(throttle)) / (np.mean(throttle) + 0.001))
-                    characteristics.throttle_discipline_score = max(0.0, min(1.0, throttle_smoothness))
-            
-            # Consistency score (how consistent the inputs are)
-            consistency_scores = []
-            
-            for col in ['Physics_steer_angle', 'Physics_speed_kmh', 'Physics_brake', 'Physics_gas']:
-                if col in corner_df.columns:
-                    data = corner_df[col].fillna(0)
-                    if len(data) > 1 and data.std() > 0:
-                        # Lower coefficient of variation = higher consistency
-                        cv = data.std() / (abs(data.mean()) + 0.001)
-                        consistency = 1.0 / (1.0 + cv)
-                        consistency_scores.append(consistency)
-            
-            if consistency_scores:
-                characteristics.consistency_score = float(np.mean(consistency_scores))
-                
-        except Exception as e:
-            print(f"[WARNING] Error calculating advanced scores: {str(e)}")
+    # _calculate_advanced_scores method removed (advanced metrics deprecated)
     
     def _cluster_corner_types(self, corner_patterns: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Cluster similar corners to identify common corner types on the track"""
@@ -769,8 +752,7 @@ class CornerIdentificationUnsupervisedService:
             # Curvature features
             'corner_avg_curvature', 'corner_max_curvature', 'corner_curvature_variance',
             
-            # Advanced features
-            'corner_trail_braking_score', 'corner_throttle_discipline_score', 'corner_consistency_score'
+            # (Advanced features removed: trail braking, throttle discipline, consistency)
         ]
         
         corner_features = {}
@@ -840,10 +822,7 @@ class CornerIdentificationUnsupervisedService:
                 corner_features['corner_max_curvature'][i] = characteristics.max_curvature
                 corner_features['corner_curvature_variance'][i] = characteristics.curvature_variance
                 
-                # Advanced features
-                corner_features['corner_trail_braking_score'][i] = characteristics.trail_braking_score
-                corner_features['corner_throttle_discipline_score'][i] = characteristics.throttle_discipline_score
-                corner_features['corner_consistency_score'][i] = characteristics.consistency_score
+                # Advanced features removed
         
         except Exception as e:
             print(f"[WARNING] Error assigning corner features: {str(e)}")
