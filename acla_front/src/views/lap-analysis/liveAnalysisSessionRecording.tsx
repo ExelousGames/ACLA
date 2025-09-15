@@ -145,17 +145,32 @@ export default function LiveAnalysisSessionRecording() {
         if (!analysisContext.sessionSelected?.session_name || !analysisContext.mapSelected || !auth?.userEmail) { setUploadError('Missing required session or user information'); return false; }
         uploadInFlightRef.current = true; setIsUploading(true); setUploadProgress(0); setUploadStatus('Reading telemetry data...'); setUploadError(null);
         try {
-            const data = await analysisContext.readRecordedSessionData();
+            // Reserve progress ranges: 0-40% for reading, 40-90% for chunk upload, 90-100% finalize
+            let estimatedTotal: number | null = null;
+            let lastRead = 0;
+            const data = await analysisContext.readRecordedSessionData((read, total) => {
+                lastRead = read;
+                if (total && total > 0) estimatedTotal = total;
+                // If total known compute percentage otherwise logarithmic approximation
+                let pct: number;
+                if (estimatedTotal) {
+                    pct = Math.min( read / estimatedTotal, 1) * 40; // scale into 0-40
+                } else {
+                    // Unknown total: approach 40% asymptotically
+                    pct = 40 * (1 - Math.exp(-read / 500));
+                }
+                setUploadProgress(Math.max(0, Math.min(40, Math.floor(pct))));
+            });
             if (!data || data.length === 0) throw new Error('No telemetry data found to upload');
-            setUploadProgress(10); setUploadStatus(`Processing ${data.length} telemetry points...`);
+            setUploadProgress(45); setUploadStatus(`Processing ${data.length} telemetry points...`);
             const chunks: any[] = []; for (let i = 0; i < data.length; i += UPLOAD_CHUNK_SIZE) chunks.push(data.slice(i, i + UPLOAD_CHUNK_SIZE));
             const metadata: UploadReacingSessionInitDto = { sessionName: analysisContext.sessionSelected.session_name, mapName: analysisContext.mapSelected, carName: analysisContext.recordedSessioStaticsData.car_model || 'Unknown Car', userId: auth?.userProfile.id || 'unknown' };
-            setUploadProgress(20); setUploadStatus('Initializing upload...');
+            setUploadProgress(50); setUploadStatus('Initializing upload...');
             const initResp = await apiService.post('/racing-session/upload/init', metadata); if (!initResp.data) throw new Error('Failed to initialize upload');
             const { uploadId } = initResp.data as UploadRacingSessionInitReturnDto;
-            setUploadProgress(30); setUploadStatus(`Uploading ${chunks.length} chunks...`);
-            for (let i = 0; i < chunks.length; i++) { const params = new URLSearchParams(); params.append('uploadId', uploadId); await apiService.post(`/racing-session/upload/chunk?${params.toString()}`, { chunk: chunks[i], chunkIndex: i }); const pct = Math.floor(40 + (i + 1) / chunks.length * 50); setUploadProgress(pct); setUploadStatus(`Uploading chunk ${i + 1} of ${chunks.length}...`); }
-            setUploadProgress(90); setUploadStatus('Finalizing upload...');
+            setUploadProgress(55); setUploadStatus(`Uploading ${chunks.length} chunks...`);
+            for (let i = 0; i < chunks.length; i++) { const params = new URLSearchParams(); params.append('uploadId', uploadId); await apiService.post(`/racing-session/upload/chunk?${params.toString()}`, { chunk: chunks[i], chunkIndex: i }); const pct = Math.floor(55 + (i + 1) / chunks.length * 35); setUploadProgress(pct); setUploadStatus(`Uploading chunk ${i + 1} of ${chunks.length}...`); }
+            setUploadProgress(92); setUploadStatus('Finalizing upload...');
             const final = new URLSearchParams(); final.append('uploadId', uploadId); await apiService.post(`/racing-session/upload/complete?${final.toString()}`, {});
             setUploadProgress(100); setUploadStatus('Upload completed successfully!');
             if (analysisContext.recordedSessionDataFilePath) await cleanupTelemetryFile(analysisContext.recordedSessionDataFilePath);

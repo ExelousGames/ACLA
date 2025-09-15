@@ -58,7 +58,7 @@ interface AnalysisContextType {
     /**
      * Read all recorded session data from file
      */
-    readRecordedSessionData: () => Promise<any[]>;
+    readRecordedSessionData: (onProgress?: (read: number, total: number | null) => void) => Promise<any[]>;
 
     /**
      * Clear recording file path (call when recording stops)
@@ -178,15 +178,15 @@ const SessionAnalysis = () => {
         }
     };
 
-    const readRecordedSessionData = async (): Promise<any[]> => {
+    const readRecordedSessionData = async (onProgress?: (read: number, total: number | null) => void): Promise<any[]> => {
         const currentFilePath = recordingFilePathRef.current || recordedSessionDataFilePath;
         console.log('readRecordedSessionData called with file path:', currentFilePath);
 
         if (!currentFilePath) {
             console.log('No file path available for reading telemetry data');
             return [];
-        } try {
-            // Use Python script to read all data from file
+        }
+        try {
             const options = {
                 mode: 'text',
                 pythonOptions: ['-u'],
@@ -198,25 +198,43 @@ const SessionAnalysis = () => {
             const { shellId } = await window.electronAPI.runPythonScript('read_telemetry_data.py', options);
 
             return new Promise((resolve) => {
-                // Set a timeout to avoid hanging forever
-                const timeoutId = setTimeout(() => {
-                    console.log('Timeout reading telemetry data');
-                    resolve([]);
-                }, 10000); // 10 second timeout
+                let completeReceived = false;
+                const allData: any[] = [];
+
+                const cleanup = () => {
+                    // placeholder if need to detach listeners; depends on electronAPI API
+                };
 
                 window.electronAPI.onPythonMessage((returnedShellId: number, message: string) => {
-                    if (shellId === returnedShellId) {
-                        clearTimeout(timeoutId);
-                        try {
-                            console.log('Received telemetry data message:', message.substring(0, 200) + '...');
-                            const data = JSON.parse(message);
-                            console.log('Parsed telemetry data:', data.length, 'points');
-                            resolve(data);
-                        } catch (error) {
-                            console.error('Error parsing telemetry data:', error);
-                            console.error('Raw message:', message.substring(0, 500));
-                            resolve([]);
+                    if (returnedShellId !== shellId) return;
+                    try {
+                        const obj = JSON.parse(message);
+                        if (obj.type === 'progress') {
+                            if (onProgress) onProgress(obj.read, obj.total ?? null);
+                        } else if (obj.type === 'complete') {
+                            completeReceived = true;
+                            if (Array.isArray(obj.data)) {
+                                allData.push(...obj.data);
+                                console.log('Telemetry data complete. Points:', obj.data.length);
+                                resolve(allData);
+                            } else {
+                                resolve([]);
+                            }
+                            cleanup();
+                        } else if (obj.type === 'error') {
+                            console.error('Error from telemetry reader:', obj.message);
                         }
+                    } catch (e) {
+                        // Non JSON lines ignored
+                    }
+                });
+
+                window.electronAPI.onPythonEnd((returnedShellId: number) => {
+                    if (returnedShellId !== shellId) return;
+                    if (!completeReceived) {
+                        console.warn('Python process ended before complete event; returning collected data');
+                        resolve(allData);
+                        cleanup();
                     }
                 });
             });
