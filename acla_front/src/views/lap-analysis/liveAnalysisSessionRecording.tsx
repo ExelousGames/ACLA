@@ -7,7 +7,7 @@ import { useAuth } from 'hooks/AuthProvider';
 import apiService from 'services/api.service';
 import { PythonShellOptions } from 'services/pythonService';
 
-enum RecordingState { CHECKING='CHECKING', READY='READY', RECORDING='RECORDING', UPLOAD_READY='UPLOAD_READY' }
+enum RecordingState { CHECKING = 'CHECKING', READY = 'READY', RECORDING = 'RECORDING', UPLOAD_READY = 'UPLOAD_READY' }
 
 const CHECK_SESSION_INTERVAL_MS = 2000;
 const SESSION_CHECK_TIMEOUT_MS = 10000;

@@ -7,9 +7,7 @@ import { Readable } from 'stream';
 // Constants for GridFS bucket names
 export const GRIDFS_BUCKETS = {
     AI_MODELS: 'ai_models',
-    TELEMETRY_DATA: 'telemetry_data',
-    TRAINING_DATASETS: 'training_datasets',
-    MODEL_BACKUPS: 'model_backups'
+    RACING_SESSIONS: 'racing_sessions',
 } as const;
 
 @Injectable()
@@ -70,8 +68,9 @@ export class GridFSService implements OnModuleInit, OnModuleDestroy {
                 throw new Error('Database connection not established after connection ready');
             }
 
-            // Initialize default bucket
+            // Initialize default buckets
             this.initializeBucket(GRIDFS_BUCKETS.AI_MODELS);
+            this.initializeBucket(GRIDFS_BUCKETS.RACING_SESSIONS);
 
             this.isInitialized = true;
             console.log('GridFS initialized successfully');
