@@ -154,7 +154,7 @@ export default function LiveAnalysisSessionRecording() {
                 // If total known compute percentage otherwise logarithmic approximation
                 let pct: number;
                 if (estimatedTotal) {
-                    pct = Math.min( read / estimatedTotal, 1) * 40; // scale into 0-40
+                    pct = Math.min(read / estimatedTotal, 1) * 40; // scale into 0-40
                 } else {
                     // Unknown total: approach 40% asymptotically
                     pct = 40 * (1 - Math.exp(-read / 500));

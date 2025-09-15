@@ -16,25 +16,13 @@ The extracted features are designed to be inserted back into telemetry data for 
 
 import pandas as pd
 import numpy as np
-import joblib
 import warnings
 import math
-import asyncio
-import pickle
-import base64
-import io
+import asyncio  # retained if future async hooks needed
 from typing import Dict, List, Any, Optional, Tuple
 from datetime import datetime
 from pathlib import Path
-from scipy.signal import savgol_filter
-from scipy.stats import zscore
-
-# Scikit-learn imports
-from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
-from sklearn.preprocessing import StandardScaler, RobustScaler
-from sklearn.model_selection import train_test_split, cross_val_score
-from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
-from sklearn.pipeline import Pipeline
+# (Removed direct SciPy dependencies to keep environment minimal.)
 
 # Import backend service and models
 from .backend_service import backend_service
@@ -85,27 +73,55 @@ class TireGripFeatures:
 
 
 class TireGripAnalysisService:
-    """
-    Machine Learning Service for Tire Grip and Friction Circle Analysis
-    
-    This service analyzes telemetry data to estimate:
-    - Tire grip levels and utilization
-    - Friction circle utilization
-    - Weight transfer dynamics
-    - Predictive tire loading
-    - Performance optimization opportunities
+    """Heuristic Tire Grip & Friction Circle Analysis Service (Driver-Behavior Agnostic)
+
+    PURPOSE
+    -------
+    Provide purely physics-derived, driver-behavior neutral enrichment of telemetry data with
+    tire grip utilization, friction circle occupancy, weight transfer, slip efficiency, and
+    related indicators. These enriched features are intended to feed downstream generalized
+    models (e.g., transformers for imitation / reasoning) without leaking individual driver
+    control habits (throttle modulation, braking aggressiveness, steering style) or car identity.
+
+    DESIGN PRINCIPLES
+    -----------------
+    1. No supervised ML training inside this service (all ML code removed).
+    2. Only vehicle dynamics & tire state signals are used; control inputs (brake, gas, steer, gear)
+       are excluded to avoid encoding behavior profiles.
+    3. Deterministic, vectorized NumPy/Pandas computations for speed & reproducibility.
+    4. Safe defaults and bounded scaling (tanh, clipping) to stabilize downstream learning.
+
+    EXTENSIBILITY
+    -------------
+    Hooks remain for potential future optional model-based refinement, but any reintroduction must
+    maintain a strict separation between driver inputs and derived neutral features.
     """
     
     def __init__(self):
         """
         Initialize the tire grip analysis service
         """
-        
         self.telemetry_features = TelemetryFeatures()
-        self.trained_models = {}
-        self.scalers = {}
-        self.model_metadata = {}  # Store model training metadata
-        
+        # Heuristic-only mode (all ML removed). Kept flag for interface stability.
+        self.heuristic_only = True
+        # Allowlist of neutral, vehicle-dynamic oriented features safe for generalized heuristic enrichment.
+        self.ALLOWED_GENERAL_FEATURES = [
+            'Physics_speed_kmh', 'Physics_g_force_x', 'Physics_g_force_y', 'Physics_g_force_z',
+            'Physics_slip_angle_front_left', 'Physics_slip_angle_front_right',
+            'Physics_slip_angle_rear_left', 'Physics_slip_angle_rear_right',
+            'Physics_slip_ratio_front_left', 'Physics_slip_ratio_front_right',
+            'Physics_slip_ratio_rear_left', 'Physics_slip_ratio_rear_right',
+            'Physics_wheel_slip_front_left', 'Physics_wheel_slip_front_right',
+            'Physics_wheel_slip_rear_left', 'Physics_wheel_slip_rear_right',
+            'Physics_suspension_travel_front_left', 'Physics_suspension_travel_front_right',
+            'Physics_suspension_travel_rear_left', 'Physics_suspension_travel_rear_right',
+            'Physics_tyre_core_temp_front_left', 'Physics_tyre_core_temp_front_right',
+            'Physics_tyre_core_temp_rear_left', 'Physics_tyre_core_temp_rear_right',
+            'Physics_brake_temp_front_left', 'Physics_brake_temp_front_right',
+            'Physics_brake_temp_rear_left', 'Physics_brake_temp_rear_right',
+            'Physics_wheel_pressure_front_left', 'Physics_wheel_pressure_front_right',
+            'Physics_wheel_pressure_rear_left', 'Physics_wheel_pressure_rear_right'
+        ]
         # Backend service integration
         self.backend_service = backend_service
 
@@ -330,289 +346,13 @@ class TireGripAnalysisService:
         except Exception:
             return 0.5, 0.5  # Default moderate values
 
-    def _prepare_training_features(self, df: pd.DataFrame) -> pd.DataFrame:
-        """
-        Prepare features for ML model training
-        
-        Args:
-            df: Processed telemetry DataFrame
-            
-        Returns:
-            DataFrame with training features
-        """
-        print(f"[INFO] Preparing training features from {len(df)} telemetry records")
-        
-        # Create feature DataFrame
-        features_df = pd.DataFrame()
-        
-        # Basic physics features
-        physics_features = [
-            'Physics_speed_kmh', 'Physics_g_force_x', 'Physics_g_force_y', 'Physics_g_force_z',
-            'Physics_brake', 'Physics_gas', 'Physics_steer_angle',
-            'Physics_slip_angle_front_left', 'Physics_slip_angle_front_right',
-            'Physics_slip_angle_rear_left', 'Physics_slip_angle_rear_right',
-            'Physics_slip_ratio_front_left', 'Physics_slip_ratio_front_right',
-            'Physics_slip_ratio_rear_left', 'Physics_slip_ratio_rear_right',
-            'Physics_wheel_slip_front_left', 'Physics_wheel_slip_front_right',
-            'Physics_wheel_slip_rear_left', 'Physics_wheel_slip_rear_right',
-            'Physics_suspension_travel_front_left', 'Physics_suspension_travel_front_right',
-            'Physics_suspension_travel_rear_left', 'Physics_suspension_travel_rear_right',
-            'Physics_tyre_core_temp_front_left', 'Physics_tyre_core_temp_front_right',
-            'Physics_tyre_core_temp_rear_left', 'Physics_tyre_core_temp_rear_right',
-            'Physics_brake_temp_front_left', 'Physics_brake_temp_front_right',
-            'Physics_brake_temp_rear_left', 'Physics_brake_temp_rear_right',
-            'Physics_wheel_pressure_front_left', 'Physics_wheel_pressure_front_right',
-            'Physics_wheel_pressure_rear_left', 'Physics_wheel_pressure_rear_right'
-        ]
-        
-        # Add available physics features
-        for feature in physics_features:
-            if feature in df.columns:
-                features_df[feature] = df[feature].apply(_safe_float)
-        
-        # Calculate derived features
-        features_df['total_g_force'] = np.sqrt(
-            features_df.get('Physics_g_force_x', 0)**2 + 
-            features_df.get('Physics_g_force_y', 0)**2
-        )
-        
-        features_df['avg_tire_temp'] = (
-            features_df.get('Physics_tyre_core_temp_front_left', 70) +
-            features_df.get('Physics_tyre_core_temp_front_right', 70) +
-            features_df.get('Physics_tyre_core_temp_rear_left', 70) +
-            features_df.get('Physics_tyre_core_temp_rear_right', 70)
-        ) / 4
-        
-        features_df['avg_slip_angle'] = (
-            abs(features_df.get('Physics_slip_angle_front_left', 0)) +
-            abs(features_df.get('Physics_slip_angle_front_right', 0)) +
-            abs(features_df.get('Physics_slip_angle_rear_left', 0)) +
-            abs(features_df.get('Physics_slip_angle_rear_right', 0))
-        ) / 4
-        
-        features_df['avg_slip_ratio'] = (
-            abs(features_df.get('Physics_slip_ratio_front_left', 0)) +
-            abs(features_df.get('Physics_slip_ratio_front_right', 0)) +
-            abs(features_df.get('Physics_slip_ratio_rear_left', 0)) +
-            abs(features_df.get('Physics_slip_ratio_rear_right', 0))
-        ) / 4
-        
-        # Fill any remaining NaN values
-        features_df = features_df.fillna(0)
-        
-        print(f"[INFO] Prepared {len(features_df.columns)} training features")
-        return features_df
-
-    def _create_target_variables(self, df: pd.DataFrame) -> pd.DataFrame:
-        """
-        Create target variables for supervised learning
-        
-        Args:
-            df: Processed telemetry DataFrame
-            
-        Returns:
-            DataFrame with target variables
-        """
-        targets_df = pd.DataFrame()
-        
-        # Calculate friction circle utilization as primary target
-        for i, row in df.iterrows():
-            friction_util = self._calculate_friction_circle_utilization(row)
-            targets_df.loc[i, 'friction_circle_utilization'] = friction_util
-            
-            # Weight transfer targets
-            long_transfer, lat_transfer, dynamic_dist = self._calculate_weight_transfer(row)
-            targets_df.loc[i, 'longitudinal_weight_transfer'] = long_transfer
-            targets_df.loc[i, 'lateral_weight_transfer'] = lat_transfer
-            targets_df.loc[i, 'dynamic_weight_distribution'] = dynamic_dist
-            
-            # Tire performance targets
-            targets_df.loc[i, 'optimal_grip_window'] = self._estimate_tire_temperatures_optimal_window(row)
-            
-            slip_angle_eff, slip_ratio_eff = self._calculate_slip_efficiency(row)
-            targets_df.loc[i, 'slip_angle_efficiency'] = slip_angle_eff
-            targets_df.loc[i, 'slip_ratio_efficiency'] = slip_ratio_eff
-        
-        return targets_df
-
     async def train_tire_grip_model(self, telemetry_data: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """
-        Train tire grip analysis models using provided cleaned telemetry data
-        
-        Args:
-            telemetry_data: Pre-cleaned telemetry data for training
-            
-        Returns:
-            Training results and model performance metrics
-        """
-        print(f"[INFO] Training tire grip analysis model with provided telemetry data")
-        
-        if not telemetry_data:
-            return {"error": "No telemetry data provided"}
-        
-        print(f"[INFO] Using provided telemetry data: {len(telemetry_data)} records")
-        flattened_telemetry_data = telemetry_data
-        
-        if len(flattened_telemetry_data) < 100:
-            return {"error": "Insufficient telemetry data for training (minimum 100 samples required)"}
-
-        # Convert to DataFrame - data is already cleaned
-        df = pd.DataFrame(flattened_telemetry_data)
-        print(f"[INFO] Using cleaned telemetry data with {len(df)} records")
-        
-        # Prepare training data
-        X = self._prepare_training_features(df)
-        y = self._create_target_variables(df)
-        
-        if len(X) == 0 or len(y) == 0:
-            return {"error": "Failed to prepare training features or targets"}
-        
-        # Train models for different targets
-        models_results = {}
-        
-        target_variables = [
-            'friction_circle_utilization',
-            'longitudinal_weight_transfer', 
-            'lateral_weight_transfer',
-            'dynamic_weight_distribution',
-            'optimal_grip_window',
-            'slip_angle_efficiency',
-            'slip_ratio_efficiency'
-        ]
-        
-        # Store trained models in the class instance
-        self.trained_models = {}  # Reset models cache
-        
-        for target in target_variables:
-            if target in y.columns:
-                try:
-                    model_result = self._train_individual_model(X, y[target], target)
-                    models_results[target] = model_result
-                    print(f"[INFO] Trained model for {target}: R² = {model_result.get('r2_score', 'N/A')}")
-                    
-                except Exception as e:
-                    print(f"[ERROR] Failed to train model for {target}: {str(e)}")
-                    models_results[target] = {"error": str(e)}
-        
-        # Calculate overall performance summary
-        successful_models = [r for r in models_results.values() if 'error' not in r]
-        avg_r2 = np.mean([r.get('r2_score', 0) for r in successful_models]) if successful_models else 0
-        
-        # Store model metadata in the class instance
-        self.model_metadata = {
-            "model_type": "tire_grip_analysis",
-            "track_name": "generic",
-            "car_name": "all_cars",
-            "models_results": models_results,
-            "feature_names": list(X.columns),
-            "target_variables": target_variables,
-            "training_samples": len(X),
-            "average_r2_score": avg_r2,
-            "successful_models": len(successful_models),
-            "total_models": len(target_variables),
-            "training_timestamp": datetime.now().isoformat()
-        }
-        
-        print(f"[INFO] Stored {len(self.trained_models)} trained models in class instance")
-        
-        # Save models to backend
-        try:
-            ai_model_dto = {
-                "modelType": "tire_grip_analysis",
-                "trackName": "generic",
-                "carName": "all_cars",
-                "modelData": {
-                    "models_results": models_results,
-                    "feature_names": list(X.columns),
-                    "target_variables": target_variables,
-                    "training_samples": len(X)
-                },
-                "metadata": {
-                    "average_r2_score": avg_r2,
-                    "successful_models": len(successful_models),
-                    "total_models": len(target_variables),
-                    "training_timestamp": datetime.now().isoformat()
-                },
-                "isActive": True
-            }
-            
-            await self.backend_service.save_ai_model(ai_model_dto)
-            print(f"[INFO] Saved tire grip model to backend")
-            
-        except Exception as error:
-            print(f"[WARNING] Failed to save model to backend: {str(error)}")
-
+        """Deprecated: ML training removed. Returns informative message."""
         return {
-            "success": True,
-            "track_name": "generic",
-            "car_name": "all_cars",
-            "models_trained": len(successful_models),
-            "total_targets": len(target_variables),
-            "average_r2_score": avg_r2,
-            "training_samples": len(X),
-            "models_results": models_results,
-            "feature_names": list(X.columns),
-            "training_timestamp": datetime.now().isoformat()
-        }
-
-    def _train_individual_model(self, X: pd.DataFrame, y: pd.Series, target_name: str) -> Dict[str, Any]:
-        """
-        Train an individual model for a specific target variable
-        
-        Args:
-            X: Feature DataFrame
-            y: Target Series
-            target_name: Name of the target variable
-            
-        Returns:
-            Model training results
-        """
-        # Split data
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-        
-        # Create pipeline with scaling
-        pipeline = Pipeline([
-            ('scaler', RobustScaler()),
-            ('model', RandomForestRegressor(
-                n_estimators=100,
-                max_depth=20,
-                min_samples_split=5,
-                min_samples_leaf=2,
-                random_state=42,
-                n_jobs=-1
-            ))
-        ])
-        
-        # Train model
-        pipeline.fit(X_train, y_train)
-        
-        # Make predictions
-        y_pred_train = pipeline.predict(X_train)
-        y_pred_test = pipeline.predict(X_test)
-        
-        # Calculate metrics
-        train_r2 = r2_score(y_train, y_pred_train)
-        test_r2 = r2_score(y_test, y_pred_test)
-        test_mae = mean_absolute_error(y_test, y_pred_test)
-        test_rmse = np.sqrt(mean_squared_error(y_test, y_pred_test))
-        
-        # Store model in class instance
-        model_id = f"tire_grip_model_{target_name}"
-        self.trained_models[model_id] = pipeline
-        
-        # Store scaler separately for easy access
-        self.scalers[model_id] = pipeline.named_steps['scaler']
-        
-        return {
-            "model_id": model_id,
-            "target_name": target_name,
-            "r2_score": test_r2,
-            "train_r2_score": train_r2,
-            "mae": test_mae,
-            "rmse": test_rmse,
-            "feature_count": len(X.columns),
-            "training_samples": len(X_train),
-            "test_samples": len(X_test)
+            "skipped": True,
+            "reason": "ml_removed",
+            "message": "Training disabled. Service operates in heuristic-only mode.",
+            "models_trained": 0
         }
 
     async def extract_tire_grip_features(self, telemetry_data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -630,10 +370,8 @@ class TireGripAnalysisService:
         if not telemetry_data:
             return telemetry_data
 
-        # Allow extraction of heuristic (basic) features even if ML models not yet trained
-        models_available = bool(self.trained_models)
-        if not models_available:
-            print("[WARNING] No trained tire grip ML models found. Proceeding with heuristic features only.")
+        # Heuristic-only: no ML models
+        models_available = False
 
         total_records = len(telemetry_data)
         print(f"[INFO] Extracting tire grip features for {total_records} records (models_available={models_available})")
@@ -658,41 +396,11 @@ class TireGripAnalysisService:
             'slip_ratio_efficiency'
         ]
 
-        # Prepare ML feature matrix once (only if models are available)
-        ml_predictions_df = pd.DataFrame(index=df.index)
-        if models_available:
-            feature_matrix = self._prepare_training_features(df)
-            if feature_matrix.empty:
-                print("[WARNING] Prepared ML feature matrix is empty; skipping ML predictions")
-            else:
-                # Batch predict for each model target instead of per-row
-                for target in target_variables:
-                    model_id = f"tire_grip_model_{target}"
-                    if model_id in self.trained_models:
-                        try:
-                            preds = self.trained_models[model_id].predict(feature_matrix)
-                            ml_predictions_df[f"ml_{target}"] = preds
-                            # Also keep backward-compatible field (same as original _predict_with_saved_models)
-                            ml_predictions_df[target] = preds
-                        except Exception as e:
-                            print(f"[WARNING] Batch prediction failed for {target}: {e}")
-                    else:
-                        # Simply skip missing models; do not warn every time to reduce noise
-                        continue
-
-        # If ML predictions exist, drop overlapping heuristic (unprefixed) columns to avoid collision
-        if not ml_predictions_df.empty:
-            # We keep the basic_ prefixed columns for reference; drop original unprefixed heuristic versions
-            basic_df = basic_df.drop(columns=[c for c in target_variables if c in basic_df.columns], errors='ignore')
-
-        # Merge heuristic and ML predictions (no column name collisions now)
-        merged = basic_df.join(ml_predictions_df, how='left')
-
-        # If no ML predictions available, ensure backward compatibility by creating unprefixed columns
-        if ml_predictions_df.empty:
-            for t in target_variables:
-                if t not in merged.columns and f"basic_{t}" in merged.columns:
-                    merged[t] = merged[f"basic_{t}"]
+        # Merge is just heuristic in this mode
+        merged = basic_df.copy()
+        for t in target_variables:
+            if t not in merged.columns and f"basic_{t}" in merged.columns:
+                merged[t] = merged[f"basic_{t}"]
 
         # Build enhanced telemetry list
         enhanced_data: List[Dict[str, Any]] = []
@@ -704,9 +412,12 @@ class TireGripAnalysisService:
 
         elapsed = time.time() - start_time
         heuristic_cols = [c for c in merged.columns if c.startswith('basic_')]
-        ml_cols = [c for c in merged.columns if c.startswith('ml_')]
-        print(f"[INFO] Tire grip feature extraction completed in {elapsed:.3f}s | records={total_records} | per_record={elapsed/total_records:.6f}s | heuristic_cols={len(heuristic_cols)} | ml_cols={len(ml_cols)}")
+        ml_cols = 0
+        print(f"[INFO] Tire grip feature extraction completed in {elapsed:.3f}s | records={total_records} | per_record={elapsed/total_records:.6f}s | heuristic_cols={len(heuristic_cols)} | ml_cols={ml_cols}")
         return enhanced_data
+    # ============================= Compatibility / Summary =============================
+    def get_mode_configuration(self) -> Dict[str, Any]:
+        return {"heuristic_only": self.heuristic_only}
 
     def _calculate_basic_grip_features(self, row: pd.Series) -> Dict[str, float]:
         """
@@ -760,137 +471,20 @@ class TireGripAnalysisService:
         
         return features
 
-    def _predict_with_saved_models(self, feature_row: Dict[str, Any]) -> Dict[str, float]:
-        """
-        Predict tire grip features using the saved trained ML models in the class
-        
-        Args:
-            feature_row: Feature data for prediction
-            
-        Returns:
-            Dictionary of ML-predicted features
-        """
-        ml_features = {}
-        
-        if not self.trained_models:
-            print("[WARNING] No trained models available for prediction")
-            return ml_features
-        
-        target_variables = [
-            'friction_circle_utilization',
-            'longitudinal_weight_transfer', 
-            'lateral_weight_transfer',
-            'dynamic_weight_distribution',
-            'optimal_grip_window',
-            'slip_angle_efficiency',
-            'slip_ratio_efficiency'
-        ]
-        
-        # Convert feature row to DataFrame for prediction
-        feature_df = pd.DataFrame([feature_row])
-        
-        for target in target_variables:
-            model_id = f"tire_grip_model_{target}"
-            
-            if model_id in self.trained_models:
-                try:
-                    # Use the saved model to make prediction
-                    prediction = self.trained_models[model_id].predict(feature_df)[0]
-                    ml_features[f"ml_{target}"] = float(prediction)
-                    
-                    # Also add the prediction as the main feature name for compatibility
-                    ml_features[target] = float(prediction)
-                    
-                except Exception as e:
-                    print(f"[WARNING] Prediction failed for {target} using saved model: {str(e)}")
-            else:
-                print(f"[WARNING] Model {model_id} not found in saved models")
-        
-        return ml_features
-    
-    def _predict_ml_features(self, feature_row: Dict[str, Any]) -> Dict[str, float]:
-        """
-        Predict tire grip features using trained ML models
-        
-        Args:
-            feature_row: Feature data for prediction
-            
-        Returns:
-            Dictionary of ML-predicted features
-        """
-        ml_features = {}
-        
-        target_variables = [
-            'friction_circle_utilization',
-            'longitudinal_weight_transfer', 
-            'lateral_weight_transfer',
-            'dynamic_weight_distribution',
-            'optimal_grip_window',
-            'slip_angle_efficiency',
-            'slip_ratio_efficiency'
-        ]
-        
-        # Convert feature row to DataFrame for prediction
-        feature_df = pd.DataFrame([feature_row])
-        
-        for target in target_variables:
-            model_id = f"tire_grip_model_{target}"
-            
-            if model_id in self.trained_models:
-                try:
-                    prediction = self.trained_models[model_id].predict(feature_df)[0]
-                    ml_features[f"ml_{target}"] = float(prediction)
-                except Exception as e:
-                    print(f"[WARNING] Prediction failed for {target}: {str(e)}")
-            else:
-                print(f"[WARNING] Model {model_id} not available in trained models")
-        
-        return ml_features
-
     def has_trained_models(self) -> bool:
-        """
-        Check if the service has trained models available
-        
-        Returns:
-            True if models are available, False otherwise
-        """
-        return len(self.trained_models) > 0
-    
+        return False
+
     def get_available_model_targets(self) -> List[str]:
-        """
-        Get list of available model targets
-        
-        Returns:
-            List of target variable names that have trained models
-        """
-        if not self.trained_models:
-            return []
-        
-        targets = []
-        
-        for model_id in self.trained_models.keys():
-            if model_id.startswith("tire_grip_model_"):
-                target = model_id.replace("tire_grip_model_", "")
-                targets.append(target)
-        
-        return targets
+        return []
 
     def get_model_summary(self) -> Dict[str, Any]:
-        """
-        Get summary of trained tire grip models
-        
-        Returns:
-            Model summary information
-        """
-        
-        summary = {
+        return {
             "model_type": "tire_grip_analysis",
-            "cached_models": len(self.trained_models),
-            "available_targets": self.get_available_model_targets(),
-            "model_metadata": self.model_metadata
+            "mode": "heuristic_only",
+            "cached_models": 0,
+            "available_targets": [],
+            "notes": "ML training removed; outputs are deterministic physics-derived features."
         }
-        
-        return summary
 
 
 # Create singleton instance for import
