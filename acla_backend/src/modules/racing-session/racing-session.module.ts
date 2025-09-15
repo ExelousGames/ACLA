@@ -10,8 +10,8 @@ import { UserInfoModule } from '../user-info/user-info.module';
 @Module({
   imports: [
     MongooseModule.forFeature([{ name: RacingSession.name, schema: RacingSessionSchema }]),
-  forwardRef(() => AiModelModule),
-  GridFSModule,
+    forwardRef(() => AiModelModule),
+    GridFSModule,
     UserInfoModule,
   ],
   providers: [RacingSessionService],

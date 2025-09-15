@@ -29,20 +29,20 @@ export class RacingSession {
     }]
 
     // IDs of GridFS files for each chunk of session data (ordered).
-    @Prop({ type: [Object], default: [] })
-    dataChunkFileIds: ObjectId[];
+    @Prop({ type: [Object], required: false, default: [] })
+    dataChunkFileIds?: ObjectId[];
 
     // Size of chunks used when splitting and uploading (for reconstruction/download)
-    @Prop()
-    chunkSize: number;
+    @Prop({ required: false })
+    chunkSize?: number;
 
     // Total number of chunks stored in GridFS (redundant but speeds metadata queries)
-    @Prop()
-    totalChunks: number;
+    @Prop({ required: false })
+    totalChunks?: number;
 
     // Total number of telemetry records (allows clients to know data size quickly)
-    @Prop()
-    totalDataPoints: number;
+    @Prop({ required: false })
+    totalDataPoints?: number;
 }
 
 export const RacingSessionSchema = SchemaFactory.createForClass(RacingSession);
