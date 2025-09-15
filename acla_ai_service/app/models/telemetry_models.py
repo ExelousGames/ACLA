@@ -968,256 +968,92 @@ class FeatureProcessor:
         return filtered_df
 
     def _filter_top_performance_laps(self, df: pd.DataFrame, keepTopLapsPercent: float=0.01) -> tuple[pd.DataFrame, List[pd.DataFrame]]:
-        """
-        Filter for valid laps and select top 1% fastest laps for training
-        
-        Args:
-            df: Processed telemetry DataFrame
-            keepTopLapsPercent: Percentage of fastest laps to keep (default 0.01 = 1%)
-            
-        Returns:
-            Tuple containing:
-            - Filtered DataFrame containing only top fastest valid laps combined
-            - List of individual lap DataFrames containing original telemetry data for each selected lap
-        """
-        print(f"[INFO] Starting lap filtering from {len(df)} telemetry records")
-        
-        # We'll work with all data first, then filter by validity percentage per lap
-        working_df = df.copy()
-        
-        # Check if we have the required columns
-        has_valid_lap_column = 'Graphics_is_valid_lap' in working_df.columns
-        if not has_valid_lap_column:
-            raise ValueError("[WARNING] telemetry_models - Graphics_is_valid_lap column not found, cannot validate lap quality - returning all data")
-        
-        # Group by lap and calculate lap times
-        # Use both Graphics_completed_lap and Graphics_normalized_car_position together for robust lap detection
-        has_completed_lap = 'Graphics_completed_lap' in working_df.columns
-        has_position = 'Graphics_normalized_car_position' in working_df.columns
-        
-        # Only proceed if we have both fields - return empty data otherwise
-        if not (has_completed_lap and has_position):
-            print("[WARNING] Lap filtering requires both Graphics_completed_lap and Graphics_normalized_car_position - returning empty DataFrame")
-            return pd.DataFrame(), []
-        
-        # Use both completed_lap counter and position data for most accurate lap detection
-        print("[INFO] Using both Graphics_completed_lap and Graphics_normalized_car_position for lap detection")
-        
-        completed_laps = working_df['Graphics_completed_lap'].fillna(0)
-        position = working_df['Graphics_normalized_car_position'].fillna(0)
-        
-        # Primary method: detect when completed_lap increments (official lap completion)
-        completed_lap_changes = completed_laps.diff() > 0
-        
-        # Use completed_lap changes as primary lap boundary indicator
-        lap_boundaries = completed_lap_changes 
-        
-        # Create cumulative lap ID
-        working_df['lap_id'] = lap_boundaries.cumsum()
-        
-        # Group all telemetry data by these lap ids, allowing the code to process each lap individually
-        lap_groups = working_df.groupby('lap_id')
-        print(f"[INFO] Detected {len(lap_groups)} individual lap segments using completed_lap changes")
-        
-        # Calculate lap times for each lap
-        lap_times = []
-        lap_data = []
-        total_laps_processed = 0
-        full_laps_found = 0
-        
-        for lap_id, lap_df in lap_groups:
-            total_laps_processed += 1
-            
-            if len(lap_df) < 10:  # Skip very short laps (likely incomplete)
-                continue
-            
-            # Check validity percentage if is_valid_lap column is available
-            if has_valid_lap_column:
-                if not self._is_lap_mostly_valid(lap_df,0.95):  # Require at least 95% valid points
-                    continue
-            
-            # Validate that this is a full lap using normalized_car_position
-            if not self._is_full_lap(lap_df):
-                continue
-            
-            full_laps_found += 1
-                
-            # Calculate lap time
-            if 'Graphics_current_time' in lap_df.columns:
-                # Use the current lap time at the end of this lap (already in milliseconds)
-                lap_time = lap_df['Graphics_current_time'].iloc[-1] / 1000.0  # Convert to seconds
-            
-            if lap_time > 0:  # Only include laps with valid times
-                lap_times.append(lap_time)
-                lap_data.append(lap_df)
-        
-        if not lap_times:
-            print(f"[WARNING] No valid full lap times found out of {total_laps_processed} processed laps, returning empty DataFrame")
-            return pd.DataFrame(), []
-        
-        print(f"[INFO] Processed {total_laps_processed} potential laps")
-        if has_valid_lap_column:
-            print(f"[INFO] Found {full_laps_found} complete full laps with ≥95% valid data points")
-        else:
-            print(f"[INFO] Found {full_laps_found} complete full laps (validity checking skipped)")
-        print(f"[INFO] Calculated lap times for {len(lap_times)} qualifying laps")
-        print(f"[INFO] Best lap time: {min(lap_times):.3f}s, Worst: {max(lap_times):.3f}s")
-        
-        # Sort laps by time (fastest first)
-        sorted_indices = np.argsort(lap_times)
+        """Simpler fastest-lap filter.
 
-        # Calculate how many laps to keep (top n%, minimum 1 lap)
-        num_laps_to_keep = max(1, int(np.ceil(len(lap_times) * keepTopLapsPercent)))
-        print(f"[INFO] Selecting top {num_laps_to_keep} fastest laps out of {len(lap_times)} total laps")
-        
-        # Select top laps
-        top_lap_indices = sorted_indices[:num_laps_to_keep]
-        
-        # Combine data from selected laps for the combined DataFrame
-        filtered_data_frames = [lap_data[i] for i in top_lap_indices]
-        filtered_df = pd.concat(filtered_data_frames, ignore_index=True)
-        
-        # Create list of individual lap DataFrames with original telemetry data
-        individual_laps = [lap_data[i].copy() for i in top_lap_indices]
-        
-        # Report selected lap times
-        selected_lap_times = [lap_times[i] for i in top_lap_indices]
-        print(f"[INFO] Selected lap times: {[f'{t:.3f}s' for t in selected_lap_times]}")
-        print(f"[INFO] Filtered to {len(filtered_df)} records from top {num_laps_to_keep} fastest complete full laps")
-        
-        return filtered_df, individual_laps
-    
-    def _is_lap_mostly_valid(self, lap_df: pd.DataFrame, min_valid_percentage: float = 0.75) -> bool:
-        """
-        Check if a lap has a sufficient percentage of valid data points
-        
+        Steps:
+        1. Validate required columns.
+        2. Derive lap ids directly from the completed lap counter.
+        3. For each lap: ensure minimum rows, coverage of track, and validity ratio.
+        4. Compute lap time (uses last Graphics_current_time in ms -> seconds).
+        5. Keep the fastest top N percent (at least one lap).
+
         Args:
-            lap_df: DataFrame containing telemetry data for one lap
-            min_valid_percentage: Minimum percentage of valid points (default 75% in decimal)
-            
+            df: Telemetry DataFrame (already cleaned / processed).
+            keepTopLapsPercent: Fraction (0-1] of fastest laps to retain (default 0.01 = top 1%).
+
         Returns:
-            True if the lap has enough valid data points
+            (combined_df, list_of_lap_dfs)
         """
-        if 'Graphics_is_valid_lap' not in lap_df.columns:
-            return True  # Assume valid if we can't check
-        
-        valid_points = lap_df['Graphics_is_valid_lap'].fillna(False)
-        total_points = len(valid_points)
-        
-        if total_points == 0:
-            return False
-        
-        # Count boolean True values, handling different data types
-        if valid_points.dtype == 'bool':
-            valid_count = valid_points.sum()
+        if df.empty:
+            return pd.DataFrame(), []
+
+        required = [
+            'Graphics_is_valid_lap',
+            'Graphics_completed_lap',
+            'Graphics_normalized_car_position',
+            'Graphics_current_time'
+        ]
+        missing = [c for c in required if c not in df.columns]
+        if missing:
+            # If we cannot validate laps, just return everything as one block (backwards compatible fallback)
+            return df.copy(), [df.copy()] if not df.empty else []
+
+        work = df.copy()
+
+        # Ensure numeric types where possible
+        work['Graphics_completed_lap'] = pd.to_numeric(work['Graphics_completed_lap'], errors='coerce').fillna(method='ffill').fillna(0).astype(int)
+        work['Graphics_current_time'] = pd.to_numeric(work['Graphics_current_time'], errors='coerce').fillna(0)
+
+        # Treat any non-boolean as boolean-like
+        valid_col = work['Graphics_is_valid_lap']
+        if valid_col.dtype != 'bool':
+            work['Graphics_is_valid_lap'] = valid_col.apply(lambda v: 1 if str(v).lower() in ['1','true','t','yes'] else 0)
         else:
-            # Handle string or numeric representations
-            valid_count = (
-                (valid_points == True) | 
-                (valid_points == 'True') | 
-                (valid_points == 'true') | 
-                (valid_points == 1) | 
-                (valid_points == '1')
-            ).sum()
-        
-        valid_percentage = valid_count / total_points
-        
-        if valid_percentage < min_valid_percentage:
-            print(f"[DEBUG] Rejected lap: only {valid_percentage:.1%} valid points (need {min_valid_percentage:.1%})")
-            return False
-        
-        return True
-    
-    def _is_full_lap(self, lap_df: pd.DataFrame) -> bool:
-        """
-        Validate that a lap contains a complete track progression from start to finish
-        Uses both Graphics_normalized_car_position and Graphics_completed_lap when available
-        
-        Args:
-            lap_df: DataFrame containing telemetry data for one lap
-            
-        Returns:
-            True if the lap contains progression from ~0 to ~1 in normalized_car_position
-            and shows consistent completed lap counter behavior
-        """
-        has_position = 'Graphics_normalized_car_position' in lap_df.columns
-        has_completed_lap = 'Graphics_completed_lap' in lap_df.columns
-        
-        # If we have neither field, assume valid (fallback)
-        if not has_position and not has_completed_lap:
-            print("[WARNING] No position or completed lap data available, cannot validate full lap")
-            return True
-        
-        # Validate using normalized car position (primary validation)
-        position_valid = True
-        if has_position:
-            positions = lap_df['Graphics_normalized_car_position'].dropna()
-            
-            if len(positions) == 0:
-                position_valid = False
-            else:
-                min_position = positions.min()
-                max_position = positions.max()
-                
-                # Check if the lap covers most of the track
-                # Allow some tolerance: lap should go from close to 0 to close to 1
-                starts_near_beginning = min_position <= 0.15  # Starts at or before 15% of track
-                ends_near_finish = max_position >= 0.85       # Ends at or after 85% of track
-                
-                # Additional check: ensure good coverage of the track
-                position_range = max_position - min_position
-                good_coverage = position_range >= 0.7  # Covers at least 70% of track length
-                
-                position_valid = starts_near_beginning and ends_near_finish and good_coverage
-                
-                if not position_valid:
-                    print(f"[DEBUG] Position validation failed: min_pos={min_position:.3f}, max_pos={max_position:.3f}, range={position_range:.3f}")
-        
-        # Validate using completed lap counter (secondary validation)
-        completed_lap_valid = True
-        if has_completed_lap:
-            completed_laps = lap_df['Graphics_completed_lap'].fillna(0)
-            
-            # For a valid lap, the completed lap counter should either:
-            # 1. Stay constant throughout the lap (during lap progress)
-            # 2. Show exactly one increment at the end (lap completion)
-            unique_values = completed_laps.unique()
-            
-            if len(unique_values) == 1:
-                # Counter stayed constant - lap in progress, this is expected
-                completed_lap_valid = True
-            elif len(unique_values) == 2:
-                # Counter incremented once - should be at the end of the lap
-                # Check that the increment happens towards the end of the data
-                increment_positions = completed_laps.diff() > 0
-                if increment_positions.sum() == 1:  # Exactly one increment
-                    # Find where the increment occurred
-                    increment_index = increment_positions.idxmax()
-                    total_records = len(completed_laps)
-                    increment_position_ratio = (increment_index / total_records) if total_records > 0 else 0
-                    
-                    # Increment should happen in the latter part of the lap (after 70% completion)
-                    completed_lap_valid = increment_position_ratio >= 0.7
-                    if not completed_lap_valid:
-                        print(f"[DEBUG] Completed lap increment too early: {increment_position_ratio:.1%} through lap")
-                else:
-                    # Multiple increments - suspicious
-                    completed_lap_valid = False
-                    print(f"[DEBUG] Multiple completed lap increments detected: {increment_positions.sum()}")
-            else:
-                # Too many different values - suspicious
-                completed_lap_valid = False
-                print(f"[DEBUG] Too many completed lap values: {len(unique_values)} unique values")
-        
-        # Combine validations - both must pass if both fields are available
-        if has_position and has_completed_lap:
-            is_valid = position_valid and completed_lap_valid
-            if not is_valid:
-                print(f"[DEBUG] Rejected lap: position_valid={position_valid}, completed_lap_valid={completed_lap_valid}")
-        elif has_position:
-            is_valid = position_valid
-        else:  # has_completed_lap only
-            is_valid = completed_lap_valid
-        
-        return is_valid
-    
+            work['Graphics_is_valid_lap'] = work['Graphics_is_valid_lap'].astype(int)
+
+        # Lap id is simply the completed lap counter value (relative)
+        base = work['Graphics_completed_lap'].min()
+        work['lap_id'] = work['Graphics_completed_lap'] - base
+
+        laps = []  # (lap_id, lap_time_seconds, lap_df)
+        for lap_id, lap_df in work.groupby('lap_id'):
+            # Basic size filter
+            if len(lap_df) < 10:
+                continue
+
+            # Track coverage validation
+            pos = lap_df['Graphics_normalized_car_position'].dropna()
+            if pos.empty:
+                continue
+            min_p, max_p = pos.min(), pos.max()
+            coverage_ok = (min_p <= 0.15) and (max_p >= 0.85) and ((max_p - min_p) >= 0.7)
+            if not coverage_ok:
+                continue
+
+            # Validity ratio (>=95% like original stricter path)
+            valid_ratio = lap_df['Graphics_is_valid_lap'].mean()
+            if valid_ratio < 0.95:
+                continue
+
+            # Lap time: take last current_time (milliseconds) convert to seconds
+            lap_time_ms = lap_df['Graphics_current_time'].iloc[-1]
+            if lap_time_ms <= 0:
+                continue
+            lap_time_s = lap_time_ms / 1000.0
+
+            laps.append((lap_id, lap_time_s, lap_df))
+
+        if not laps:
+            return pd.DataFrame(), []
+
+        # Sort by lap time ascending
+        laps.sort(key=lambda x: x[1])
+
+        # Bound keepTopLapsPercent
+        pct = max(0.0, min(1.0, keepTopLapsPercent)) or 0.01
+        n_keep = max(1, int(np.ceil(len(laps) * pct)))
+        selected = laps[:n_keep]
+
+        individual = [l[2].copy() for l in selected]
+        combined = pd.concat(individual, ignore_index=True)
+        return combined, individual
