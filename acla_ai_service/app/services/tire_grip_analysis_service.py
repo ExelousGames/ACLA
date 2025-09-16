@@ -104,6 +104,16 @@ class TireGripAnalysisService:
         self.telemetry_features = TelemetryFeatures()
         # Heuristic-only mode (all ML removed). Kept flag for interface stability.
         self.heuristic_only = True
+        # Whether to exclude instantaneous driver-exploitation features (reduces action leakage into context inputs)
+        self.exclude_instantaneous_exploitation = True
+        # Features considered high-frequency reflections of current control exploitation; better as reasoning targets or excluded.
+        self.INSTANT_EXPLOIT_FEATURES = [
+            'friction_circle_utilization',
+            'longitudinal_weight_transfer',
+            'lateral_weight_transfer',
+            'dynamic_weight_distribution',
+            'tire_saturation_level'
+        ]
         # Allowlist of neutral, vehicle-dynamic oriented features safe for generalized heuristic enrichment.
         self.ALLOWED_GENERAL_FEATURES = [
             'Physics_speed_kmh', 'Physics_g_force_x', 'Physics_g_force_y', 'Physics_g_force_z',
@@ -124,6 +134,10 @@ class TireGripAnalysisService:
         ]
         # Backend service integration
         self.backend_service = backend_service
+        # Track runtime excluded features (if any future dynamic filtering is added)
+        self._excluded_runtime_features = []  # type: List[str]
+        # Cache last serialized artifact
+        self._last_serialized = None  # type: Optional[Dict[str, Any]]
 
     # ============================= Performance Optimized (Vectorized) Helpers =============================
     def _vectorized_basic_grip_features(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -209,6 +223,11 @@ class TireGripAnalysisService:
             'overall_tire_grip': overall_tire_grip,
             'tire_saturation_level': tire_saturation_level
         })
+
+        if self.exclude_instantaneous_exploitation:
+            drop_cols = [c for c in self.INSTANT_EXPLOIT_FEATURES if c in basic_df.columns]
+            if drop_cols:
+                basic_df.drop(columns=drop_cols, inplace=True)
 
         # Also include prefixed copies for comparison (optional consumers can ignore)
         for col_name in list(basic_df.columns):
@@ -413,7 +432,8 @@ class TireGripAnalysisService:
         elapsed = time.time() - start_time
         heuristic_cols = [c for c in merged.columns if c.startswith('basic_')]
         ml_cols = 0
-        print(f"[INFO] Tire grip feature extraction completed in {elapsed:.3f}s | records={total_records} | per_record={elapsed/total_records:.6f}s | heuristic_cols={len(heuristic_cols)} | ml_cols={ml_cols}")
+        removed = self.INSTANT_EXPLOIT_FEATURES if self.exclude_instantaneous_exploitation else []
+        print(f"[INFO] Tire grip feature extraction completed in {elapsed:.3f}s | records={total_records} | per_record={elapsed/total_records:.6f}s | heuristic_cols={len(heuristic_cols)} | ml_cols={ml_cols} | removed_instant={removed}")
         return enhanced_data
     # ============================= Compatibility / Summary =============================
     def get_mode_configuration(self) -> Dict[str, Any]:
@@ -485,6 +505,41 @@ class TireGripAnalysisService:
             "available_targets": [],
             "notes": "ML training removed; outputs are deterministic physics-derived features."
         }
+
+    # --------------------- Serialization ---------------------
+    def serialize_model(self, track_name: str, car_name: str, generated_feature_names: Optional[List[str]] = None) -> Dict[str, Any]:
+        """Produce a JSON-safe representation of the heuristic configuration.
+
+        Since this service is heuristic-only, 'serialization' means persisting
+        configuration flags and the list of produced feature names so inference
+        environments can validate presence / regenerate deterministically.
+        """
+        artifact = {
+            'model_type': 'tire_grip_analysis',
+            'track_name': track_name,
+            'car_name': car_name,
+            'heuristic_only': self.heuristic_only,
+            'exclude_instantaneous_exploitation': self.exclude_instantaneous_exploitation,
+            'instant_exploitation_features': list(self.INSTANT_EXPLOIT_FEATURES),
+            'allowed_general_features': list(self.ALLOWED_GENERAL_FEATURES),
+            'generated_feature_names': generated_feature_names or [],
+            'excluded_runtime_features': list(self._excluded_runtime_features),
+            'serialized_timestamp': datetime.now().isoformat()
+        }
+        self._last_serialized = artifact
+        return artifact
+
+    @classmethod
+    def deserialize_model(cls, payload: Dict[str, Any]) -> 'TireGripAnalysisService':
+        inst = cls()
+        inst.exclude_instantaneous_exploitation = payload.get('exclude_instantaneous_exploitation', True)
+        # Overwrite lists only if present
+        if 'instant_exploitation_features' in payload:
+            inst.INSTANT_EXPLOIT_FEATURES = payload['instant_exploitation_features']
+        if 'allowed_general_features' in payload:
+            inst.ALLOWED_GENERAL_FEATURES = payload['allowed_general_features']
+        inst._excluded_runtime_features = payload.get('excluded_runtime_features', [])
+        return inst
 
 
 # Create singleton instance for import

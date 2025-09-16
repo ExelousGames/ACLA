@@ -71,7 +71,10 @@ class ExpertActionTransformer(nn.Module):
     def __init__(self,
                  input_features: int,
                  action_features: int = 3,  # steering, throttle, brake
-                 reasoning_features: int = 30,  # contextual reasoning features (corners, grip, etc.)
+                 reasoning_features: int = 30,  # contextual reasoning features (targets for auxiliary reasoning head)
+                 context_features: int = 0,   # number of exogenous enriched context features provided as separate encoder stream
+                 context_feature_names: Optional[List[str]] = None,  # ordering for context features (stored for prediction)
+                 context_fusion: str = "add",  # one of: 'add', 'gate', 'concat' (concat not yet implemented)
                  d_model: int = 256,
                  nhead: int = 8,
                  num_encoder_layers: int = 6,
@@ -114,6 +117,11 @@ class ExpertActionTransformer(nn.Module):
         self.input_features = input_features
         self.action_features = action_features
         self.reasoning_features = reasoning_features
+        self.context_features = context_features
+        self.context_feature_names = context_feature_names or []
+        self.context_fusion = context_fusion.lower() if context_features > 0 else "none"
+        if self.context_fusion not in {"add", "gate", "concat", "none"}:
+            raise ValueError("context_fusion must be one of {'add','gate','concat','none'}")
         self.d_model = d_model
         self.max_sequence_length = max_sequence_length
         self.nhead = nhead
@@ -122,8 +130,20 @@ class ExpertActionTransformer(nn.Module):
         self.dim_feedforward = dim_feedforward
         self.dropout_rate = dropout
         
-        # Input embedding layers
+        # Input embedding layers (telemetry + optional context fused by addition after separate projection)
         self.input_embedding = nn.Linear(input_features, d_model)
+        if context_features and context_features > 0:
+            if self.context_fusion == "concat":
+                # For concat we increase dimension before projection
+                self.context_embedding = nn.Linear(context_features, d_model)
+                self.fusion_linear = nn.Linear(d_model * 2, d_model)
+            else:
+                self.context_embedding = nn.Linear(context_features, d_model)
+                if self.context_fusion == "gate":
+                    # gating network takes concatenated telemetry+context embeddings
+                    self.gate_linear = nn.Linear(d_model * 2, d_model)
+        else:
+            self.context_embedding = None
         self.action_embedding = nn.Linear(action_features, d_model)
         
         # Positional encoding
@@ -168,6 +188,7 @@ class ExpertActionTransformer(nn.Module):
     def forward(self,
                 src_telemetry: torch.Tensor,
                 tgt_actions: torch.Tensor,
+                src_context: Optional[torch.Tensor] = None,
                 src_padding_mask: Optional[torch.Tensor] = None,
                 tgt_padding_mask: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
@@ -184,8 +205,21 @@ class ExpertActionTransformer(nn.Module):
         """
         seq_len = tgt_actions.shape[0]
         
-        # Embed inputs
-        src_embedded = self.input_embedding(src_telemetry) * math.sqrt(self.d_model)
+        # Embed inputs (telemetry + optional context)
+        src_embedded = self.input_embedding(src_telemetry)
+        if self.context_embedding is not None and src_context is not None:
+            if src_context.shape[0] != src_telemetry.shape[0]:
+                raise ValueError("src_context must have same seq_len as src_telemetry")
+            ctx_emb = self.context_embedding(src_context)
+            if self.context_fusion == "add":
+                src_embedded = src_embedded + ctx_emb
+            elif self.context_fusion == "gate":
+                gate = torch.sigmoid(self.gate_linear(torch.cat([src_embedded, ctx_emb], dim=-1)))
+                src_embedded = src_embedded + gate * ctx_emb
+            elif self.context_fusion == "concat":
+                combined = torch.cat([src_embedded, ctx_emb], dim=-1)
+                src_embedded = self.fusion_linear(combined)
+        src_embedded = src_embedded * math.sqrt(self.d_model)
         tgt_embedded = self.action_embedding(tgt_actions) * math.sqrt(self.d_model)
         
         # Add positional encoding
@@ -218,7 +252,8 @@ class ExpertActionTransformer(nn.Module):
                                initial_action: Optional[torch.Tensor] = None,
                                early_stop_tolerance: float = 0.0,
                                early_stop_min_steps: int = 5,
-                               src_padding_mask: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+                               src_padding_mask: Optional[torch.Tensor] = None,
+                               src_context: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Autoregressively predict an expert action sequence with decoder-only steps.
 
         Maintains the original public behavior (returns full fixed-length sequences) while
@@ -249,7 +284,20 @@ class ExpertActionTransformer(nn.Module):
 
         with torch.no_grad():
             # Encode source once
-            src_emb = self.input_embedding(src_telemetry) * math.sqrt(self.d_model)
+            src_emb = self.input_embedding(src_telemetry)
+            if self.context_embedding is not None and src_context is not None:
+                if src_context.shape[0] != src_telemetry.shape[0]:
+                    raise ValueError("src_context must have same seq_len as src_telemetry")
+                ctx_emb = self.context_embedding(src_context)
+                if self.context_fusion == "add":
+                    src_emb = src_emb + ctx_emb
+                elif self.context_fusion == "gate":
+                    gate = torch.sigmoid(self.gate_linear(torch.cat([src_emb, ctx_emb], dim=-1)))
+                    src_emb = src_emb + gate * ctx_emb
+                elif self.context_fusion == "concat":
+                    combined = torch.cat([src_emb, ctx_emb], dim=-1)
+                    src_emb = self.fusion_linear(combined)
+            src_emb = src_emb * math.sqrt(self.d_model)
             src_emb = self.pos_encoder(src_emb)
             memory = self.transformer.encoder(src_emb, mask=None, src_key_padding_mask=src_padding_mask)
 
@@ -334,6 +382,9 @@ class ExpertActionTransformer(nn.Module):
                 'input_features': self.input_features,
                 'action_features': self.action_features,
                 'reasoning_features': self.reasoning_features,
+                'context_features': self.context_features,
+                'context_feature_names': self.context_feature_names,
+                'context_fusion': self.context_fusion,
                 'd_model': self.d_model,
                 'max_sequence_length': self.max_sequence_length
             },
@@ -371,7 +422,10 @@ class ExpertActionTransformer(nn.Module):
         model = cls(
             input_features=config['input_features'],
             action_features=config['action_features'],
-            reasoning_features=config.get('reasoning_features', 30),  # Default for backward compatibility
+            reasoning_features=config.get('reasoning_features', 30),
+            context_features=config.get('context_features', 0),
+            context_feature_names=config.get('context_feature_names', []),
+            context_fusion=config.get('context_fusion', 'none'),
             d_model=config['d_model'],
             nhead=architecture['nhead'],
             num_encoder_layers=architecture['num_encoder_layers'],
@@ -427,6 +481,9 @@ class ExpertActionTransformer(nn.Module):
             self.input_features = config['input_features']
             self.action_features = config['action_features']
             self.reasoning_features = config.get('reasoning_features', 30)  # Default for backward compatibility
+            self.context_features = config.get('context_features', 0)
+            self.context_feature_names = config.get('context_feature_names', [])
+            self.context_fusion = config.get('context_fusion', 'none')
             self.d_model = config['d_model']
             self.max_sequence_length = config['max_sequence_length']
         
@@ -734,7 +791,11 @@ class TelemetryActionDataset(Dataset):
                  enriched_contextual_data: Optional[List[Dict[str, Any]]] = None,
                  sequence_length: int = 50,
                  prediction_horizon: int = 20,
-                 scaler: Optional[StandardScaler] = None):
+                 scaler: Optional[StandardScaler] = None,
+                 context_feature_allowlist: Optional[List[str]] = None,
+                 reasoning_feature_allowlist: Optional[List[str]] = None,
+                 exclude_feature_substrings: Optional[List[str]] = None,
+                 context_scaler: Optional[StandardScaler] = None):
         """
         Initialize the dataset
         
@@ -782,15 +843,33 @@ class TelemetryActionDataset(Dataset):
         # Extract numeric features
         self.telemetry_features = self._extract_telemetry_features()
         self.action_features = self._extract_action_features()
-        self.reasoning_features = self._extract_reasoning_features()
+        self.context_feature_allowlist = context_feature_allowlist or []
+        self.reasoning_feature_allowlist = reasoning_feature_allowlist or []
+        self.exclude_feature_substrings = exclude_feature_substrings or ["brake", "throttle", "gas", "steer"]
+
+        self._context_feature_names: List[str] = []
+        self._reasoning_feature_names: List[str] = []
+
+        self.context_features_matrix, self.reasoning_features = self._extract_context_and_reasoning_features()
         
-        # Scale telemetry data
+        # Scale telemetry (primary) features
         if scaler is None:
             self.scaler = StandardScaler()
             self.telemetry_features = self.scaler.fit_transform(self.telemetry_features)
         else:
             self.scaler = scaler
             self.telemetry_features = self.scaler.transform(self.telemetry_features)
+
+        # Separate scaler for context features to avoid range distortion
+        if self.context_features_matrix.shape[1] > 0:
+            if context_scaler is None:
+                self.context_scaler = StandardScaler()
+                self.context_features_matrix = self.context_scaler.fit_transform(self.context_features_matrix)
+            else:
+                self.context_scaler = context_scaler
+                self.context_features_matrix = self.context_scaler.transform(self.context_features_matrix)
+        else:
+            self.context_scaler = None
         
         # Create sequences
         self.sequences = self._create_sequences()
@@ -863,29 +942,57 @@ class TelemetryActionDataset(Dataset):
         
         return actions
     
-    def _extract_reasoning_features(self) -> np.ndarray:
-        """Extract enriched contextual reasoning features (corners, grip, etc.)"""
-        if self.enriched_df is not None:
-            # Use all numeric columns from enriched data as reasoning features
-            numeric_columns = self.enriched_df.select_dtypes(include=[np.number]).columns.tolist()
-            
-            # Since enriched features are already separated, use all of them
-            enriched_columns = numeric_columns
-            
-            if enriched_columns:
-                reasoning_features = self.enriched_df[enriched_columns].fillna(0).values
-                print(f"[INFO] Extracted {len(enriched_columns)} reasoning features from enriched data", flush=True)
-                print(f"[INFO] Reasoning features: {enriched_columns[:5]}..." + 
-                      (f" and {len(enriched_columns)-5} more" if len(enriched_columns) > 5 else ""), flush=True)
-                return reasoning_features
+    def _extract_context_and_reasoning_features(self) -> Tuple[np.ndarray, np.ndarray]:
+        """Split enriched features into context (inputs) vs reasoning (targets)."""
+        if self.enriched_df is None:
+            print("[INFO] No enriched data; using basic reasoning only and empty context", flush=True)
+            basic = self._create_basic_reasoning_features()
+            return np.zeros((basic.shape[0], 0)), basic
+
+        numeric_columns = self.enriched_df.select_dtypes(include=[np.number]).columns.tolist()
+        if not numeric_columns:
+            print("[WARNING] No numeric enriched features; falling back to basic reasoning", flush=True)
+            basic = self._create_basic_reasoning_features()
+            return np.zeros((basic.shape[0], 0)), basic
+
+        ctx_cols: List[str] = []
+        reasoning_cols: List[str] = []
+
+        def excluded(col: str) -> bool:
+            return any(substr.lower() in col.lower() for substr in self.exclude_feature_substrings)
+
+        for col in numeric_columns:
+            if self.context_feature_allowlist and col in self.context_feature_allowlist:
+                ctx_cols.append(col)
+                continue
+            if self.reasoning_feature_allowlist and col in self.reasoning_feature_allowlist:
+                reasoning_cols.append(col)
+                continue
+            # Heuristic: geometry / grip / corner classification -> context; performance-like or action-like -> reasoning
+            lc = col.lower()
+            if excluded(col):
+                continue  # drop action-correlated leak features
+            if any(k in lc for k in ["corner_id", "corner_type", "corner_direction", "curvature", "grip", "friction", "track_position", "distance_to_next_corner", "distance_to_prev_corner"]):
+                ctx_cols.append(col)
             else:
-                print("[WARNING] No numeric enriched features found, using basic reasoning features", flush=True)
-                # Fallback to basic derived features
-                return self._create_basic_reasoning_features()
-        else:
-            # Create dummy reasoning features when no enriched data is provided
-            print("[INFO] Creating basic reasoning features from telemetry (no enriched data provided)", flush=True)
-            return self._create_basic_reasoning_features()
+                reasoning_cols.append(col)
+
+        ctx_cols = sorted(set(ctx_cols))
+        reasoning_cols = sorted(set(reasoning_cols))
+
+        context_matrix = self.enriched_df[ctx_cols].fillna(0).values if ctx_cols else np.zeros((len(self.enriched_df), 0))
+        reasoning_matrix = self.enriched_df[reasoning_cols].fillna(0).values if reasoning_cols else self._create_basic_reasoning_features()
+
+        self._context_feature_names = ctx_cols
+        self._reasoning_feature_names = reasoning_cols
+
+        print(f"[INFO] Context features selected ({len(ctx_cols)}): {ctx_cols[:5]}" + (f" ... and {len(ctx_cols)-5} more" if len(ctx_cols) > 5 else ""), flush=True)
+        print(f"[INFO] Reasoning target features selected ({len(reasoning_cols)}): {reasoning_cols[:5]}" + (f" ... and {len(reasoning_cols)-5} more" if len(reasoning_cols) > 5 else ""), flush=True)
+        dropped = [c for c in numeric_columns if c not in ctx_cols and c not in reasoning_cols]
+        if dropped:
+            print(f"[INFO] Dropped {len(dropped)} enriched features (considered action-leak / excluded): {dropped[:5]}" + (f" ... and {len(dropped)-5} more" if len(dropped) > 5 else ""), flush=True)
+
+        return context_matrix, reasoning_matrix
     
     def _create_basic_reasoning_features(self) -> np.ndarray:
         """Create basic reasoning features from telemetry when enriched data is not available"""
@@ -971,11 +1078,14 @@ class TelemetryActionDataset(Dataset):
             
             # Target reasoning sequence (enriched contextual features)
             reasoning_seq = self.reasoning_features[i+self.sequence_length:i+self.sequence_length+self.prediction_horizon]
+            # Context sequence aligned with encoder portion only
+            context_seq = self.context_features_matrix[i:i+self.sequence_length] if self.context_features_matrix.shape[1] > 0 else None
             
             sequences.append({
                 'telemetry': telemetry_seq,
                 'actions': action_seq,
-                'reasoning': reasoning_seq
+                'reasoning': reasoning_seq,
+                'context': context_seq
             })
         
         return sequences
@@ -983,17 +1093,41 @@ class TelemetryActionDataset(Dataset):
     def __len__(self) -> int:
         return len(self.sequences)
     
-    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
         sequence = self.sequences[idx]
         
         # Keep original shape: [seq_len, features] and [pred_horizon, features]
         # DataLoader will add batch dimension: [batch_size, seq_len, features]
         # Then we'll transpose in training to get: [seq_len, batch_size, features]
-        telemetry = torch.FloatTensor(sequence['telemetry'])  # [seq_len, features]
-        actions = torch.FloatTensor(sequence['actions'])      # [pred_horizon, action_features]
-        reasoning = torch.FloatTensor(sequence['reasoning'])  # [pred_horizon, reasoning_features]
-        
-        return telemetry, actions, reasoning
+        telemetry = torch.FloatTensor(sequence['telemetry'])
+        actions = torch.FloatTensor(sequence['actions'])
+        reasoning = torch.FloatTensor(sequence['reasoning'])
+        context = torch.FloatTensor(sequence['context']) if sequence.get('context') is not None else torch.empty(0)
+        return telemetry, actions, reasoning, context
+
+    @property
+    def context_feature_names(self) -> List[str]:
+        return self._context_feature_names
+
+    @property
+    def reasoning_feature_names(self) -> List[str]:
+        return self._reasoning_feature_names
+
+    def export_scalers(self) -> Dict[str, Any]:
+        """Return scaler parameters for persistence (means/vars) without serializing full objects."""
+        def pack(s: Optional[StandardScaler]):
+            if s is None:
+                return None
+            return {
+                'mean': s.mean_.tolist(),
+                'scale': s.scale_.tolist(),
+                'var': s.var_.tolist(),
+                'n_features': len(s.mean_)
+            }
+        return {
+            'telemetry_scaler': pack(self.scaler),
+            'context_scaler': pack(self.context_scaler)
+        }
 
 class ExpertActionTrainer:
     """
@@ -1048,7 +1182,13 @@ class ExpertActionTrainer:
         total_loss = 0
         num_batches = len(dataloader)
         
-        for batch_idx, (telemetry, target_actions, target_reasoning) in enumerate(dataloader):
+        for batch_idx, batch in enumerate(dataloader):
+            # Support legacy 3-tuple (telemetry, actions, reasoning) or new 4-tuple with context
+            if len(batch) == 4:
+                telemetry, target_actions, target_reasoning, context = batch
+            else:  # backward compatibility
+                telemetry, target_actions, target_reasoning = batch
+                context = torch.empty(0)
             # Print progress every 5 batches during training for more frequent updates
             if batch_idx % 5 == 0:
                 progress_pct = (batch_idx / num_batches) * 100
@@ -1059,6 +1199,10 @@ class ExpertActionTrainer:
             telemetry = telemetry.transpose(0, 1).to(self.device)
             target_actions = target_actions.transpose(0, 1).to(self.device)
             target_reasoning = target_reasoning.transpose(0, 1).to(self.device)
+            src_context = None
+            if context is not None and context.numel() > 0:
+                # context shape: [batch, seq_len, ctx_features] -> transpose to [seq_len, batch, ctx_features]
+                src_context = context.transpose(0, 1).to(self.device)
             
             # Create decoder input (shifted target)
             # target_actions shape: [pred_horizon, batch_size, action_features]
@@ -1070,7 +1214,7 @@ class ExpertActionTrainer:
             self.optimizer.zero_grad()
             
             # Forward pass
-            predicted_actions, predicted_reasoning, performance_scores = self.model(telemetry, decoder_input)
+            predicted_actions, predicted_reasoning, performance_scores = self.model(telemetry, decoder_input, src_context=src_context)
             
             # Calculate losses
             action_loss = self.action_loss_fn(predicted_actions, target_actions)
@@ -1117,12 +1261,20 @@ class ExpertActionTrainer:
         num_batches = len(dataloader)
         
         with torch.no_grad():
-            for telemetry, target_actions, target_reasoning in dataloader:
+            for batch in dataloader:
+                if len(batch) == 4:
+                    telemetry, target_actions, target_reasoning, context = batch
+                else:
+                    telemetry, target_actions, target_reasoning = batch
+                    context = torch.empty(0)
                 # Transpose to get transformer-expected dimensions
                 # From [batch_size, seq_len, features] to [seq_len, batch_size, features]
                 telemetry = telemetry.transpose(0, 1).to(self.device)
                 target_actions = target_actions.transpose(0, 1).to(self.device)
                 target_reasoning = target_reasoning.transpose(0, 1).to(self.device)
+                src_context = None
+                if context is not None and context.numel() > 0:
+                    src_context = context.transpose(0, 1).to(self.device)
                 
                 # Create decoder input
                 decoder_input = torch.cat([
@@ -1131,7 +1283,7 @@ class ExpertActionTrainer:
                 ], dim=0)
                 
                 # Forward pass
-                predicted_actions, predicted_reasoning, performance_scores = self.model(telemetry, decoder_input)
+                predicted_actions, predicted_reasoning, performance_scores = self.model(telemetry, decoder_input, src_context=src_context)
                 
                 # Calculate losses
                 action_loss = self.action_loss_fn(predicted_actions, target_actions)
