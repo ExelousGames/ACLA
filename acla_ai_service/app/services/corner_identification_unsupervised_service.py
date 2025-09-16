@@ -38,45 +38,24 @@ warnings.filterwarnings('ignore', category=UserWarning)
 
 
 class CornerCharacteristics:
-    """Data class for corner characteristics"""
-    
+    """Geometry-focused, driver-agnostic corner characteristics."""
     def __init__(self):
-        # Entry phase characteristics
-        self.entry_duration = 0.0
-        self.entry_speed_delta = 0.0
-        self.entry_brake_intensity = 0.0
-        self.entry_steering_rate = 0.0
-        self.entry_g_force_lat_max = 0.0
-        self.entry_g_force_long_max = 0.0
-        
-        # Apex phase characteristics
-        self.apex_duration = 0.0
-        self.apex_min_speed = 0.0
-        self.apex_max_steering = 0.0
-        self.apex_curvature = 0.0
-        self.apex_g_force_lat = 0.0
-        self.apex_track_position = 0.0
-        
-        # Exit phase characteristics
-        self.exit_duration = 0.0
-        self.exit_speed_delta = 0.0
-        self.exit_throttle_progression = 0.0
-        self.exit_steering_unwind_rate = 0.0
-        self.exit_g_force_lat_max = 0.0
-        self.exit_g_force_long_max = 0.0
-        
-        # Overall corner characteristics
+        # Temporal
         self.total_corner_duration = 0.0
-        self.corner_severity = 0.0
-        self.corner_type = "unknown"  # hairpin, chicane, sweeper, etc.
-        self.corner_direction = "unknown"  # left, right
-        self.speed_efficiency = 0.0
-        self.racing_line_adherence = 0.0
-        
-        # Curvature analysis
+        # Geometry / direction
+        self.corner_type = "unknown"  # hairpin, fast_sweep, etc.
+        self.corner_direction = "unknown"  # left/right
+        # Curvature stats (from heading or steering proxy)
         self.avg_curvature = 0.0
         self.max_curvature = 0.0
         self.curvature_variance = 0.0
+        # Derived geometric metrics
+        self.total_angle_deg = 0.0
+        self.arc_length_m = 0.0
+        self.radius_est_m = 0.0
+        self.curvature_energy = 0.0  # avg_curvature * total_angle_deg
+        # Confidence (filled when segment created)
+        self.confidence = 0.0
 
 
 class CornerIdentificationUnsupervisedService:
@@ -90,21 +69,13 @@ class CornerIdentificationUnsupervisedService:
     4. Generates new features to be inserted back into telemetry data
     """
     
-    def __init__(self, geometry_only: bool = True):
-        """Initialize the corner identification service.
-
-        Args:
-            geometry_only: If True only geometry / shape & relational descriptors are produced
-                (driver-dependent timing/braking/speed deltas excluded). This makes the
-                features stable across different drivers so the transformer can condition
-                on track geometry instead of overfitting to a specific driver's entry/exit.
-        """
+    def __init__(self):
+        """Initialize the corner identification service (pure geometry mode)."""
         self.telemetry_features = TelemetryFeatures()
         self.corner_models = {}
         self.scalers = {}
         self.track_corner_profiles = {}
         self.corner_patterns = []  # Store learned corner patterns for reuse
-        self.geometry_only = geometry_only
         
         # Backend service integration
         self.backend_service = backend_service
@@ -122,6 +93,12 @@ class CornerIdentificationUnsupervisedService:
         #   ABS NORMALIZED (np.abs(normalized)): 0 -> 1 magnitude irrespective of direction
         # Serialization cache
         self._last_serialized: Optional[Dict[str, Any]] = None
+        # Advanced segmentation tuning (new)
+        self.segment_label_smoothing = 3  # median filter width for label smoothing (odd, >=1)
+        self.max_merge_gap = 3            # max gap (points) to merge adjacent candidate segments
+        self.min_activity_ratio = 0.35    # min mean(|steer|) / global_mean(|steer|) to consider activity
+        self.corner_energy_threshold = 0.15  # threshold on combined normalized steering+gforce energy
+        self.require_brake_or_speed_delta = False  # optionally demand decel / brake evidence
 
     # --------------------- Serialization ---------------------
     def _to_python(self, obj: Any) -> Any:
@@ -143,12 +120,11 @@ class CornerIdentificationUnsupervisedService:
         return str(obj)
 
     def serialize_model(self, track_name: str, car_name: str) -> Dict[str, Any]:
-        """Return JSON-safe representation of learned corner patterns & config."""
+        """Return JSON-safe representation of learned corner patterns & config (geometry-only)."""
         data = {
             'model_type': 'corner_identification',
             'track_name': track_name,
             'car_name': car_name,
-            'geometry_only': self.geometry_only,
             'parameters': {
                 'min_corner_duration': self.min_corner_duration,
                 'corner_detection_sensitivity': self.corner_detection_sensitivity,
@@ -165,7 +141,7 @@ class CornerIdentificationUnsupervisedService:
 
     @classmethod
     def deserialize_model(cls, payload: Dict[str, Any]) -> 'CornerIdentificationUnsupervisedService':
-        inst = cls(geometry_only=payload.get('geometry_only', True))
+        inst = cls()
         inst.corner_patterns = payload.get('corner_patterns', [])
         inst.track_corner_profiles["generic_all_cars"] = {
             'corner_patterns': inst.corner_patterns,
@@ -263,7 +239,7 @@ class CornerIdentificationUnsupervisedService:
         except Exception as e:
             raise Exception(f"[ERROR] Failed to learn corner patterns: {str(e)}")
     
-    async def extract_corner_features_for_telemetry(self, telemetry_data: List[Dict[str, Any]], geometry_only: Optional[bool] = None) -> List[Dict[str, Any]]:
+    async def extract_corner_features_for_telemetry(self, telemetry_data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
         Extract corner features and insert them back into clean telemetry data using the saved model
         
@@ -275,8 +251,6 @@ class CornerIdentificationUnsupervisedService:
             Enhanced telemetry data with corner features
         """
         try:
-            if geometry_only is None:
-                geometry_only = self.geometry_only
             # Check if we have a learned model
             if not self.corner_patterns:
                 print("[ERROR] No corner patterns model available. Please run learn_track_corner_patterns first.")
@@ -288,14 +262,13 @@ class CornerIdentificationUnsupervisedService:
             df = pd.DataFrame(telemetry_data)
             
             # Initialize corner feature columns
-            corner_features = self._initialize_corner_feature_columns(len(df), geometry_only=geometry_only)
+            corner_features = self._initialize_corner_feature_columns(len(df))
             
             # Use the saved corner patterns to match and assign features
-            self._match_corners_with_learned_patterns(df, corner_features, geometry_only=geometry_only)
+            self._match_corners_with_learned_patterns(df, corner_features)
 
             # Post-process geometry-only relational metrics
-            if geometry_only:
-                self._finalize_geometry_relations(df, corner_features)
+            self._finalize_geometry_relations(df, corner_features)
             
             # Add corner features to original telemetry data
             enhanced_telemetry = []
@@ -318,10 +291,11 @@ class CornerIdentificationUnsupervisedService:
     
     def _identify_corner_segments_unsupervised(self, df: pd.DataFrame) -> Dict[int, Dict[str, Any]]:
         """
-        Identify corner segments using unsupervised clustering of telemetry patterns
+        Identify corner segments using unsupervised clustering of telemetry patterns without inheriting driver behavior
         """
         # Required columns for corner identification
-        required_cols = ['Physics_steer_angle', 'Physics_speed_kmh']  # Physics_steer_angle raw range: 0..1 (0.5 center) before normalization
+        # TODO: should identify corner height change, inner location
+        required_cols = ['Physics_steer_angle', 'Physics_speed_kmh','Physics_speed_kmh', 'Physics_g_force_x', 'Physics_brake', 'Physics_gas' ]  # Physics_steer_angle raw range: 0..1 (0.5 center) before normalization
         if not all(col in df.columns for col in required_cols):
             print(f"[WARNING] Missing required columns for corner identification")
             return {}
@@ -364,19 +338,17 @@ class CornerIdentificationUnsupervisedService:
             speed_change = speed_smooth.diff().fillna(0)
             features.append(speed_change)
             
-            # Lateral G-force (if available)
-            if 'Physics_g_force_x' in df.columns:
-                g_force_lat = np.abs(df['Physics_g_force_x'].fillna(0))
-                features.append(g_force_lat)
+
+            g_force_lat = np.abs(df['Physics_g_force_x'].fillna(0))
+            features.append(g_force_lat)
             
-            # Brake and throttle (if available)
-            if 'Physics_brake' in df.columns:
-                brake = df['Physics_brake'].fillna(0)
-                features.append(brake)
-            
-            if 'Physics_gas' in df.columns:
-                throttle = df['Physics_gas'].fillna(0)
-                features.append(throttle)
+            # Brake and throttle
+            brake = df['Physics_brake'].fillna(0)
+            features.append(brake)
+
+            # Throttle
+            throttle = df['Physics_gas'].fillna(0)
+            features.append(throttle)
             
             # Combine features
             feature_matrix = np.column_stack(features)
@@ -457,55 +429,172 @@ class CornerIdentificationUnsupervisedService:
             return np.zeros(len(features), dtype=int)
     
     def _extract_segments_from_clusters(self, df: pd.DataFrame, labels: np.ndarray, features: np.ndarray) -> Dict[int, Dict[str, Any]]:
-        """Extract corner segments from cluster labels"""
-        corner_segments = {}
-        corner_id = 0
-        
-        # Find transitions in labels to identify segments
-        label_changes = np.diff(labels, prepend=labels[0])
-        segment_starts = np.where(label_changes != 0)[0]
-        
-        # Add end of data as final segment boundary
-        segment_starts = np.append(segment_starts, len(labels))
-        
-        for i in range(len(segment_starts) - 1):
-            start_idx = segment_starts[i]
-            end_idx = segment_starts[i + 1] - 1
-            
-            segment_label = labels[start_idx]
-            segment_length = end_idx - start_idx + 1
-            
-            # Only consider segments that might be corners (non-zero labels or high activity)
-            is_corner_candidate = (
-                segment_label != 0 or  # Non-zero cluster label
-                segment_length >= self.min_corner_duration or  # Long enough duration
-                self._is_high_activity_segment(features[start_idx:end_idx+1])  # High activity
+        """Extract corner segments from cluster labels with improved heuristics & merging.
+
+        Steps:
+          1. Optional median smoothing of labels to reduce flicker.
+          2. Initial segmentation on label transitions (including index 0).
+          3. Compute per-segment activity/energy metrics.
+          4. Filter by multi-factor corner candidacy (label, activity, duration, energy, decel).
+          5. Merge adjacent segments separated by small gaps if combined qualifies.
+          6. Produce final dict with confidence score & metrics.
+        """
+        if len(labels) == 0:
+            return {}
+
+        labels_proc = labels.copy()
+        # 1. Label smoothing (median filter) if window >1
+        try:
+            if self.segment_label_smoothing and self.segment_label_smoothing > 1:
+                k = int(self.segment_label_smoothing)
+                if k % 2 == 0:
+                    k += 1  # enforce odd
+                # simple rolling median over labels
+                padded = np.pad(labels_proc, (k//2, k//2), mode='edge')
+                smoothed = []
+                for i in range(len(labels_proc)):
+                    window = padded[i:i+k]
+                    smoothed.append(int(np.median(window)))
+                labels_proc = np.array(smoothed)
+        except Exception:
+            pass  # fall back to raw labels
+
+        # 2. Boundaries (ensure start 0 included)
+        change_idx = np.where(np.diff(labels_proc) != 0)[0] + 1
+        boundaries = np.concatenate(([0], change_idx, [len(labels_proc)]))
+
+        # Pre-compute global statistics for activity normalization
+        steer_abs_global = np.abs(features[:, 0]) if features.shape[1] > 0 else np.zeros(len(labels_proc))
+        global_mean_steer = steer_abs_global.mean() + 1e-6
+        speed_series = features[:, 1] if features.shape[1] > 1 else np.zeros(len(labels_proc))
+        gforce_lat_series = features[:, 3] if features.shape[1] > 3 else np.zeros(len(labels_proc))
+
+        segments_raw = []
+        for b_start, b_end in zip(boundaries[:-1], boundaries[1:]):
+            start_idx = b_start
+            end_idx = b_end - 1
+            if end_idx < start_idx:
+                continue
+            seg_len = end_idx - start_idx + 1
+            seg_label = int(labels_proc[start_idx])
+            seg_slice = slice(start_idx, end_idx + 1)
+            steer_seg = steer_abs_global[seg_slice]
+            speed_seg = speed_series[seg_slice]
+            g_lat_seg = gforce_lat_series[seg_slice]
+            mean_steer = steer_seg.mean()
+            steer_ratio = mean_steer / global_mean_steer
+            steer_var = steer_seg.var()
+            speed_drop = 0.0
+            if seg_len > 2:
+                speed_drop = float(max(0.0, speed_seg.max() - speed_seg.min()))
+            g_lat_peak = float(g_lat_seg.max()) if seg_len > 0 else 0.0
+            # corner energy: normalized steering + weighted g-force
+            corner_energy = mean_steer + 0.5 * g_lat_peak
+            segments_raw.append({
+                'start': start_idx,
+                'end': end_idx,
+                'length': seg_len,
+                'label': seg_label,
+                'steer_ratio': steer_ratio,
+                'steer_var': float(steer_var),
+                'speed_drop': speed_drop,
+                'g_lat_peak': g_lat_peak,
+                'corner_energy': float(corner_energy)
+            })
+
+        # 3/4. Determine candidacy
+        candidates = []
+        for seg in segments_raw:
+            if seg['length'] < self.min_corner_duration:
+                # allow short segments to be merged later; keep but mark not corner yet
+                seg['is_candidate'] = False
+            # treat DBSCAN noise (-1) as baseline unless high energy
+            baseline_label = 0
+            is_noise = seg['label'] == -1
+            label_support = (seg['label'] != baseline_label and not is_noise)
+            activity_support = seg['steer_ratio'] >= self.min_activity_ratio or seg['steer_var'] > 0.05
+            energy_support = seg['corner_energy'] >= self.corner_energy_threshold
+            decel_support = True
+            if self.require_brake_or_speed_delta:
+                decel_support = seg['speed_drop'] > 3.0  # km/h delta heuristic
+            seg['is_candidate'] = (
+                seg['length'] >= self.min_corner_duration and
+                (label_support or (activity_support and energy_support)) and
+                decel_support
             )
-            
-            if is_corner_candidate and segment_length >= self.min_corner_duration:
-                # Calculate track position if available
-                position_start = 0.0
-                position_end = 0.0
-                
-                if 'Graphics_normalized_car_position' in df.columns:
-                    pos_col = df['Graphics_normalized_car_position']
-                    if start_idx < len(pos_col) and not pd.isna(pos_col.iloc[start_idx]):
-                        position_start = float(pos_col.iloc[start_idx])
-                    if end_idx < len(pos_col) and not pd.isna(pos_col.iloc[end_idx]):
-                        position_end = float(pos_col.iloc[end_idx])
-                
-                corner_segments[corner_id] = {
-                    'start_idx': start_idx,
-                    'end_idx': end_idx,
-                    'position_start': position_start,
-                    'position_end': position_end,
-                    'cluster_label': int(segment_label),
-                    'segment_length': segment_length
-                }
-                
-                corner_id += 1
-        
-        print(f"[INFO] Extracted {len(corner_segments)} corner segments from clustering")
+            candidates.append(seg)
+
+        # 5. Merge pass: merge adjacent candidate or near-candidate segments if small gap
+        merged = []
+        i = 0
+        while i < len(candidates):
+            current = candidates[i].copy()
+            j = i + 1
+            while j < len(candidates):
+                gap = candidates[j]['start'] - current['end'] - 1
+                if gap < 0:
+                    break
+                if gap <= self.max_merge_gap:
+                    # prospective merged metrics
+                    combined_len = candidates[j]['end'] - current['start'] + 1
+                    combined_energy = (current['corner_energy'] * current['length'] + candidates[j]['corner_energy'] * candidates[j]['length']) / combined_len
+                    combined_steer_ratio = (current['steer_ratio'] * current['length'] + candidates[j]['steer_ratio'] * candidates[j]['length']) / combined_len
+                    # if merging improves chance to be candidate
+                    if combined_len >= self.min_corner_duration and combined_energy >= self.corner_energy_threshold:
+                        current['end'] = candidates[j]['end']
+                        current['length'] = combined_len
+                        current['corner_energy'] = combined_energy
+                        current['steer_ratio'] = combined_steer_ratio
+                        current['label'] = max(current['label'], candidates[j]['label'])  # keep stronger label
+                        current['is_candidate'] = True
+                        j += 1
+                        continue
+                break
+            merged.append(current)
+            i = j
+
+        # Re-evaluate candidacy after merging
+        final_segments = []
+        for seg in merged:
+            if not seg['is_candidate']:
+                # second chance based on updated metrics
+                seg['is_candidate'] = (
+                    seg['length'] >= self.min_corner_duration and
+                    (seg['steer_ratio'] >= self.min_activity_ratio and seg['corner_energy'] >= self.corner_energy_threshold)
+                )
+            if seg['is_candidate']:
+                final_segments.append(seg)
+
+        # 6. Build output dict with confidence
+        corner_segments: Dict[int, Dict[str, Any]] = {}
+        for cid, seg in enumerate(final_segments):
+            start_idx, end_idx = seg['start'], seg['end']
+            position_start = 0.0
+            position_end = 0.0
+            if 'Graphics_normalized_car_position' in df.columns:
+                pos_col = df['Graphics_normalized_car_position']
+                if start_idx < len(pos_col) and not pd.isna(pos_col.iloc[start_idx]):
+                    position_start = float(pos_col.iloc[start_idx])
+                if end_idx < len(pos_col) and not pd.isna(pos_col.iloc[end_idx]):
+                    position_end = float(pos_col.iloc[end_idx])
+            # confidence: blend of steer_ratio & normalized energy & length factor
+            length_factor = min(1.0, seg['length'] / (self.min_corner_duration * 2))
+            conf = 0.4 * min(1.0, seg['steer_ratio']) + 0.4 * min(1.0, seg['corner_energy'] / (self.corner_energy_threshold * 3)) + 0.2 * length_factor
+            corner_segments[cid] = {
+                'start_idx': start_idx,
+                'end_idx': end_idx,
+                'position_start': position_start,
+                'position_end': position_end,
+                'cluster_label': int(seg['label']),
+                'segment_length': int(seg['length']),
+                'steer_ratio': float(seg['steer_ratio']),
+                'corner_energy': float(seg['corner_energy']),
+                'g_lat_peak': float(seg['g_lat_peak']),
+                'speed_drop': float(seg['speed_drop']),
+                'confidence': float(conf)
+            }
+
+        print(f"[INFO] Extracted {len(corner_segments)} corner segments from clustering (improved)")
         return corner_segments
     
     def _is_high_activity_segment(self, segment_features: np.ndarray) -> bool:
@@ -531,63 +620,44 @@ class CornerIdentificationUnsupervisedService:
         )
     
     def _extract_corner_characteristics(self, corner_df: pd.DataFrame) -> CornerCharacteristics:
-        """Extract detailed characteristics from a corner segment"""
-        characteristics = CornerCharacteristics()
-        
+        """Extract geometry-only corner characteristics (no driver behavior)."""
+        ch = CornerCharacteristics()
         if len(corner_df) == 0:
-            return characteristics
-        
+            return ch
         try:
-            # Basic duration and position
-            characteristics.total_corner_duration = len(corner_df)
-            
-            # Speed analysis
-            if 'Physics_speed_kmh' in corner_df.columns:
-                speed = corner_df['Physics_speed_kmh'].fillna(0)
-                characteristics.apex_min_speed = float(speed.min())
-                
-                # Speed efficiency (how much speed is maintained)
-                if speed.max() > 0:
-                    characteristics.speed_efficiency = float(speed.min() / speed.max())
-            
-            # Steering analysis
-            if 'Physics_steer_angle' in corner_df.columns:
-                steering_norm = self._normalize_steering(corner_df['Physics_steer_angle'])  # normalized -1..1; sign -> direction, abs -> curvature metrics
-                characteristics.apex_max_steering = float(np.abs(steering_norm).max())
-
-                # Determine corner direction (sign after normalization)
-                avg_steering = steering_norm.mean()
-                characteristics.corner_direction = "right" if avg_steering > 0 else "left"
-
-                # Curvature metrics based on normalized magnitude
-                steering_abs = np.abs(steering_norm)
-                characteristics.avg_curvature = float(steering_abs.mean())
-                characteristics.max_curvature = float(steering_abs.max())
-                characteristics.curvature_variance = float(np.var(steering_abs))
-            
-            # G-force analysis
-            if 'Physics_g_force_x' in corner_df.columns:
-                g_lat = corner_df['Physics_g_force_x'].fillna(0)
-                characteristics.apex_g_force_lat = float(np.abs(g_lat).max())
-            
-            if 'Physics_g_force_z' in corner_df.columns:
-                g_long = corner_df['Physics_g_force_z'].fillna(0)
-                characteristics.entry_g_force_long_max = float(g_long.max())  # Braking
-                characteristics.exit_g_force_long_max = float(g_long.min())   # Acceleration
-            
-            # Phase analysis
-            self._analyze_corner_phases(corner_df, characteristics)
-            
-            # Corner type classification
-            characteristics.corner_type = self._classify_corner_type(characteristics)
-            
-            # Advanced scoring
-                # _calculate_advanced_scores removed
-            
+            ch.total_corner_duration = len(corner_df)
+            # Arc length from positional data
+            if all(c in corner_df.columns for c in ['car_pos_x', 'car_pos_y']) and len(corner_df) > 1:
+                x = corner_df['car_pos_x'].astype(float).to_numpy()
+                y = corner_df['car_pos_y'].astype(float).to_numpy()
+                ch.arc_length_m = float(np.sum(np.sqrt(np.diff(x)**2 + np.diff(y)**2)))
+            # Heading / direction
+            if 'Physics_heading' in corner_df.columns and len(corner_df) > 1:
+                heading = corner_df['Physics_heading'].astype(float).to_numpy()
+                total_angle = heading[-1] - heading[0]
+                ch.total_angle_deg = float(abs(total_angle))
+                ch.corner_direction = 'right' if total_angle > 0 else 'left'
+                hd_diff = np.abs(np.diff(heading))
+                if len(hd_diff) > 0:
+                    ch.avg_curvature = float(hd_diff.mean())
+                    ch.max_curvature = float(hd_diff.max())
+                    ch.curvature_variance = float(np.var(hd_diff))
+            elif 'Physics_steer_angle' in corner_df.columns:
+                # Fallback curvature proxy using steering normalization
+                steering_norm = self._normalize_steering(corner_df['Physics_steer_angle'])
+                st_abs = np.abs(steering_norm)
+                ch.avg_curvature = float(st_abs.mean())
+                ch.max_curvature = float(st_abs.max())
+                ch.curvature_variance = float(np.var(st_abs))
+                avg_sign = steering_norm.mean()
+                ch.corner_direction = 'right' if avg_sign > 0 else 'left'
+            if ch.avg_curvature > 1e-6:
+                ch.radius_est_m = 1.0 / ch.avg_curvature
+            ch.curvature_energy = ch.avg_curvature * ch.total_angle_deg
+            ch.corner_type = self._classify_corner_type(ch)
         except Exception as e:
-            print(f"[WARNING] Error extracting corner characteristics: {str(e)}")
-        
-        return characteristics
+            print(f"[WARNING] Error extracting geometry characteristics: {e}")
+        return ch
     
     def _analyze_corner_phases(self, corner_df: pd.DataFrame, characteristics: CornerCharacteristics):
         """Analyze entry, apex, and exit phases of the corner"""
@@ -658,294 +728,135 @@ class CornerIdentificationUnsupervisedService:
         except Exception as e:
             print(f"[WARNING] Error analyzing corner phases: {str(e)}")
     
-    def _classify_corner_type(self, characteristics: CornerCharacteristics) -> str:
-        """Classify the type of corner based on characteristics"""
+    def _classify_corner_type(self, ch: CornerCharacteristics) -> str:
+        """Geometry-only corner classification using angle & radius heuristics."""
         try:
-            duration = characteristics.total_corner_duration
-            max_steering = characteristics.apex_max_steering
-            speed_efficiency = characteristics.speed_efficiency
-            avg_curvature = characteristics.avg_curvature
-            
-            # Hairpin: long duration, high steering, low speed efficiency
-            if duration > 30 and max_steering > 0.5 and speed_efficiency < 0.4:
-                return "hairpin"
-            
-            # Chicane: short duration, high steering variation
-            elif duration < 20 and characteristics.curvature_variance > 0.2:
-                return "chicane"
-            
-            # Sweeper: long duration, moderate steering, high speed efficiency  
-            elif duration > 25 and max_steering < 0.4 and speed_efficiency > 0.7:
-                return "sweeper"
-            
-            # Fast corner: short-medium duration, low-medium steering, high speed
-            elif duration < 25 and max_steering < 0.3 and speed_efficiency > 0.8:
-                return "fast_corner"
-            
-            # Tight corner: medium duration, high steering
-            elif max_steering > 0.4 and speed_efficiency < 0.6:
-                return "tight_corner"
-            
-            # Medium corner: default case
-            else:
-                return "medium_corner"
-                
-        except Exception as e:
-            print(f"[WARNING] Error classifying corner type: {str(e)}")
-            return "unknown"
+            angle = ch.total_angle_deg
+            radius = ch.radius_est_m if ch.radius_est_m > 0 else 1e9
+            if angle > 120 and radius < 60:
+                return 'hairpin'
+            if angle < 40 and radius > 120:
+                return 'fast_sweep'
+            if 40 <= angle <= 100 and radius < 80:
+                return 'medium_tight'
+            if angle >= 100 and radius >= 80:
+                return 'long_sweeper'
+            return 'medium_corner'
+        except Exception:
+            return 'unknown'
     
     # _calculate_advanced_scores method removed (advanced metrics deprecated)
     
     def _cluster_corner_types(self, corner_patterns: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """Cluster similar corners to identify common corner types on the track"""
+        """Cluster similar corners using geometry-only features."""
         if not corner_patterns:
             return {"clusters": [], "cluster_labels": []}
-        
         try:
-            # Create feature matrix from corner characteristics
-            feature_names = [
-                'total_corner_duration', 'apex_max_steering', 'speed_efficiency',
-                'avg_curvature', 'entry_duration', 'apex_duration', 'exit_duration'
-            ]
-            
-            features = []
-            for pattern in corner_patterns:
-                char = pattern['characteristics']
-                feature_row = [
-                    char.get(name, 0.0) for name in feature_names
-                ]
-                features.append(feature_row)
-            
-            features_array = np.array(features)
-            
-            # Normalize features
+            feature_names = ['total_angle_deg', 'radius_est_m', 'avg_curvature', 'total_corner_duration']
+            X = []
+            for p in corner_patterns:
+                ch = p.get('characteristics', {})
+                X.append([ch.get(n, 0.0) for n in feature_names])
+            X = np.array(X)
             scaler = StandardScaler()
-            features_scaled = scaler.fit_transform(features_array)
-            
-            # Determine optimal number of clusters
-            max_clusters = min(6, len(corner_patterns) // 2)
+            Xs = scaler.fit_transform(X)
+            max_clusters = min(6, len(corner_patterns)//2)
             if max_clusters < 2:
-                return {"clusters": [{"type": "single_type", "corners": list(range(len(corner_patterns)))}], "cluster_labels": [0] * len(corner_patterns)}
-            
-            best_score = -1
-            best_labels = None
-            best_n_clusters = 2
-            
-            for n in range(2, max_clusters + 1):
-                kmeans = KMeans(n_clusters=n, random_state=42, n_init=10)
-                labels = kmeans.fit_predict(features_scaled)
-                
+                return {"clusters": [{"type": "single_type", "corners": list(range(len(corner_patterns)))}], "cluster_labels": [0]*len(corner_patterns)}
+            best_score=-1; best_labels=None; best_n=2
+            for k in range(2, max_clusters+1):
+                km=KMeans(n_clusters=k, random_state=42, n_init=10)
+                lbl=km.fit_predict(Xs)
                 try:
-                    score = silhouette_score(features_scaled, labels)
-                    if score > best_score:
-                        best_score = score
-                        best_labels = labels
-                        best_n_clusters = n
-                except:
+                    sc=silhouette_score(Xs,lbl)
+                    if sc>best_score:
+                        best_score=sc; best_labels=lbl; best_n=k
+                except Exception:
                     continue
-            
             if best_labels is None:
-                best_labels = [0] * len(corner_patterns)
-            
-            # Create cluster descriptions
-            clusters = []
-            for cluster_id in range(best_n_clusters):
-                cluster_corners = [i for i, label in enumerate(best_labels) if label == cluster_id]
-                if not cluster_corners:
+                best_labels=np.zeros(len(corner_patterns),dtype=int)
+            clusters=[]
+            for cid in range(best_n):
+                members=[i for i,l in enumerate(best_labels) if l==cid]
+                if not members:
                     continue
-                
-                # Analyze cluster characteristics
-                cluster_chars = [corner_patterns[i]['characteristics'] for i in cluster_corners]
-                avg_duration = np.mean([c.get('total_corner_duration', 0) for c in cluster_chars])
-                avg_steering = np.mean([c.get('apex_max_steering', 0) for c in cluster_chars])
-                avg_speed_eff = np.mean([c.get('speed_efficiency', 0) for c in cluster_chars])
-                
-                # Classify cluster type
-                if avg_duration > 30 and avg_steering > 0.5:
-                    cluster_type = "hairpins"
-                elif avg_duration < 20:
-                    cluster_type = "chicanes_tight_corners"
-                elif avg_speed_eff > 0.7:
-                    cluster_type = "fast_sweepers"
+                sub=[corner_patterns[i]['characteristics'] for i in members]
+                avg_angle=float(np.mean([c.get('total_angle_deg',0) for c in sub]))
+                avg_radius=float(np.mean([c.get('radius_est_m',0) for c in sub]))
+                if avg_angle>120 and avg_radius<60:
+                    ctype='hairpins'
+                elif avg_radius>150:
+                    ctype='fast'
+                elif avg_angle>90:
+                    ctype='long'
                 else:
-                    cluster_type = "medium_corners"
-                
+                    ctype='mixed'
                 clusters.append({
-                    "cluster_id": int(cluster_id),
-                    "type": cluster_type,
-                    "corner_count": len(cluster_corners),
-                    "corners": cluster_corners,
-                    "avg_characteristics": {
-                        "duration": float(avg_duration),
-                        "max_steering": float(avg_steering),
-                        "speed_efficiency": float(avg_speed_eff)
+                    'cluster_id': int(cid),
+                    'type': ctype,
+                    'corner_count': len(members),
+                    'corners': members,
+                    'avg_characteristics': {
+                        'angle_deg': avg_angle,
+                        'radius_m': avg_radius
                     }
                 })
-            
-            return {
-                "clusters": clusters,
-                "cluster_labels": best_labels.tolist(),
-                "silhouette_score": float(best_score)
-            }
-            
+            return {'clusters': clusters, 'cluster_labels': np.array(best_labels).tolist(), 'silhouette_score': float(best_score)}
         except Exception as e:
-            print(f"[ERROR] Failed to cluster corner types: {str(e)}")
+            print(f"[ERROR] Failed to cluster corner types: {e}")
             return {"clusters": [], "cluster_labels": []}
     
-    def _initialize_corner_feature_columns(self, data_length: int, geometry_only: Optional[bool] = None) -> Dict[str, List[float]]:
-        """Initialize corner feature columns.
-
-        geometry_only mode yields a lean, driver-agnostic set.
-        """
-        if geometry_only is None:
-            geometry_only = self.geometry_only
-        if geometry_only:
-            feature_names = [
-                'corner_id', 'is_in_corner', 'corner_progress', 'corner_sequence_index',
-                'corner_direction_numeric', 'corner_type_numeric',
-                'corner_total_angle_deg', 'corner_arc_length_m', 'corner_radius_est_m',
-                'corner_avg_curvature', 'corner_max_curvature', 'corner_curvature_variance',
-                'corner_complexity_index', 'distance_to_next_corner_m', 'straight_after_exit_length_m'
-            ]
-        else:
-            feature_names = [
-                'corner_id', 'is_in_corner', 'corner_phase',
-                'corner_entry_duration', 'corner_entry_speed_delta', 'corner_entry_brake_intensity',
-                'corner_entry_steering_rate', 'corner_entry_g_force_lat_max', 'corner_entry_g_force_long_max',
-                'corner_apex_duration', 'corner_apex_min_speed', 'corner_apex_max_steering',
-                'corner_apex_curvature', 'corner_apex_g_force_lat',
-                'corner_exit_duration', 'corner_exit_speed_delta', 'corner_exit_throttle_progression',
-                'corner_exit_steering_unwind_rate', 'corner_exit_g_force_lat_max', 'corner_exit_g_force_long_max',
-                'corner_total_duration', 'corner_severity', 'corner_type_numeric', 'corner_direction_numeric',
-                'corner_speed_efficiency', 'corner_racing_line_adherence',
-                'corner_avg_curvature', 'corner_max_curvature', 'corner_curvature_variance'
-            ]
-        return {f: [0.0] * data_length for f in feature_names}
+    def _initialize_corner_feature_columns(self, data_length: int) -> Dict[str, List[float]]:
+        """Initialize geometry-only feature columns."""
+        feature_names = [
+            'corner_id','is_in_corner','corner_progress','corner_sequence_index',
+            'corner_direction_numeric','corner_type_numeric','corner_total_angle_deg','corner_arc_length_m',
+            'corner_radius_est_m','corner_avg_curvature','corner_max_curvature','corner_curvature_variance',
+            'corner_complexity_index','distance_to_next_corner_m','straight_after_exit_length_m','corner_confidence'
+        ]
+        return {f: [0.0]*data_length for f in feature_names}
     
-    def _assign_corner_features_to_segment(self, corner_features: Dict[str, List[float]], 
-                                          start_idx: int, end_idx: int, 
-                                          characteristics: CornerCharacteristics, 
+    def _assign_corner_features_to_segment(self, corner_features: Dict[str, List[float]],
+                                          start_idx: int, end_idx: int,
+                                          ch: CornerCharacteristics,
                                           corner_id: int,
-                                          geometry_only: Optional[bool] = None,
                                           corner_df: Optional[pd.DataFrame] = None,
-                                          sequence_index: Optional[int] = None):
-        """Assign corner characteristics (full or geometry-only) to a segment."""
-        if geometry_only is None:
-            geometry_only = self.geometry_only
+                                          sequence_index: Optional[int] = None,
+                                          confidence: float = 0.0):
+        """Assign geometry-only metrics to a segment."""
         try:
-            if geometry_only:
-                # Basic geometry metrics (robust fallbacks if columns missing)
-                arc_length = 0.0
-                total_angle_deg = 0.0
-                radius_est_m = 0.0
-                if corner_df is not None and len(corner_df) > 1:
-                    if all(c in corner_df.columns for c in ['car_pos_x', 'car_pos_y']):
-                        x = corner_df['car_pos_x'].to_numpy()
-                        y = corner_df['car_pos_y'].to_numpy()
-                        arc_length = float(np.sum(np.sqrt(np.diff(x)**2 + np.diff(y)**2)))
-                    if 'Physics_heading' in corner_df.columns:
-                        total_angle_deg = float(abs(corner_df['Physics_heading'].iloc[-1] - corner_df['Physics_heading'].iloc[0]))
-                avg_curv = characteristics.avg_curvature or 0.0
-                if avg_curv > 1e-6:
-                    radius_est_m = 1.0 / avg_curv
-                complexity_index = (characteristics.curvature_variance or 0.0) * (total_angle_deg or 0.0)
-                direction_numeric = 1.0 if getattr(characteristics, 'corner_direction', 'right') == 'right' else -1.0
-                corner_type_numeric = float(hash(getattr(characteristics, 'corner_type', 'unknown')) % 1000)
-                length = max(1, end_idx - start_idx)
-                for local_i, i in enumerate(range(start_idx, min(end_idx + 1, len(corner_features['corner_id'])))):
-                    progress = local_i / (length - 1) if length > 1 else 0.0
-                    corner_features['corner_id'][i] = float(corner_id)
-                    corner_features['is_in_corner'][i] = 1.0
-                    if 'corner_progress' in corner_features:
-                        corner_features['corner_progress'][i] = progress
-                    if 'corner_sequence_index' in corner_features:
-                        corner_features['corner_sequence_index'][i] = float(sequence_index if sequence_index is not None else corner_id)
-                    if 'corner_direction_numeric' in corner_features:
-                        corner_features['corner_direction_numeric'][i] = direction_numeric
-                    if 'corner_type_numeric' in corner_features:
-                        corner_features['corner_type_numeric'][i] = corner_type_numeric
-                    if 'corner_total_angle_deg' in corner_features:
-                        corner_features['corner_total_angle_deg'][i] = total_angle_deg
-                    if 'corner_arc_length_m' in corner_features:
-                        corner_features['corner_arc_length_m'][i] = arc_length
-                    if 'corner_radius_est_m' in corner_features:
-                        corner_features['corner_radius_est_m'][i] = radius_est_m
-                    if 'corner_avg_curvature' in corner_features:
-                        corner_features['corner_avg_curvature'][i] = characteristics.avg_curvature or 0.0
-                    if 'corner_max_curvature' in corner_features:
-                        corner_features['corner_max_curvature'][i] = characteristics.max_curvature or 0.0
-                    if 'corner_curvature_variance' in corner_features:
-                        corner_features['corner_curvature_variance'][i] = characteristics.curvature_variance or 0.0
-                    if 'corner_complexity_index' in corner_features:
-                        corner_features['corner_complexity_index'][i] = complexity_index
-                return
-            # --- Legacy full feature path ---
-            corner_type_map = {
-                'hairpin': 1, 'chicane': 2, 'sweeper': 3, 'fast_corner': 4,
-                'tight_corner': 5, 'medium_corner': 6, 'unknown': 0
-            }
-            direction_map = {'left': -1, 'right': 1, 'unknown': 0}
-            corner_type_numeric = corner_type_map.get(characteristics.corner_type, 0)
-            direction_numeric = direction_map.get(characteristics.corner_direction, 0)
-            for i in range(start_idx, min(end_idx + 1, len(corner_features['corner_id']))):
+            # Allow recomputation if arc/angle missing
+            total_angle_deg = ch.total_angle_deg
+            arc_length = ch.arc_length_m
+            if corner_df is not None and len(corner_df) > 1 and (total_angle_deg == 0 or arc_length == 0):
+                if all(c in corner_df.columns for c in ['car_pos_x','car_pos_y']):
+                    x = corner_df['car_pos_x'].astype(float).to_numpy(); y = corner_df['car_pos_y'].astype(float).to_numpy()
+                    arc_length = float(np.sum(np.sqrt(np.diff(x)**2 + np.diff(y)**2)))
+                if 'Physics_heading' in corner_df.columns:
+                    h = corner_df['Physics_heading'].astype(float).to_numpy(); total_angle_deg = float(abs(h[-1]-h[0]))
+            complexity_index = (ch.curvature_variance or 0.0) * (total_angle_deg or 0.0)
+            direction_numeric = 1.0 if ch.corner_direction == 'right' else -1.0
+            corner_type_numeric = float(hash(ch.corner_type) % 1000)
+            length = max(1, end_idx - start_idx)
+            for local_i, i in enumerate(range(start_idx, min(end_idx + 1, len(corner_features['corner_id'])))):
+                progress = local_i / (length - 1) if length > 1 else 0.0
                 corner_features['corner_id'][i] = float(corner_id)
                 corner_features['is_in_corner'][i] = 1.0
-                if 'corner_phase' in corner_features:
-                    corner_features['corner_phase'][i] = self._determine_phase_for_point(i, start_idx, end_idx, characteristics)
-                if 'corner_entry_duration' in corner_features:
-                    corner_features['corner_entry_duration'][i] = characteristics.entry_duration
-                if 'corner_entry_speed_delta' in corner_features:
-                    corner_features['corner_entry_speed_delta'][i] = characteristics.entry_speed_delta
-                if 'corner_entry_brake_intensity' in corner_features:
-                    corner_features['corner_entry_brake_intensity'][i] = characteristics.entry_brake_intensity
-                if 'corner_entry_steering_rate' in corner_features:
-                    corner_features['corner_entry_steering_rate'][i] = characteristics.entry_steering_rate
-                if 'corner_entry_g_force_lat_max' in corner_features:
-                    corner_features['corner_entry_g_force_lat_max'][i] = characteristics.entry_g_force_lat_max
-                if 'corner_entry_g_force_long_max' in corner_features:
-                    corner_features['corner_entry_g_force_long_max'][i] = characteristics.entry_g_force_long_max
-                if 'corner_apex_duration' in corner_features:
-                    corner_features['corner_apex_duration'][i] = characteristics.apex_duration
-                if 'corner_apex_min_speed' in corner_features:
-                    corner_features['corner_apex_min_speed'][i] = characteristics.apex_min_speed
-                if 'corner_apex_max_steering' in corner_features:
-                    corner_features['corner_apex_max_steering'][i] = characteristics.apex_max_steering
-                if 'corner_apex_curvature' in corner_features:
-                    corner_features['corner_apex_curvature'][i] = characteristics.apex_curvature
-                if 'corner_apex_g_force_lat' in corner_features:
-                    corner_features['corner_apex_g_force_lat'][i] = characteristics.apex_g_force_lat
-                if 'corner_exit_duration' in corner_features:
-                    corner_features['corner_exit_duration'][i] = characteristics.exit_duration
-                if 'corner_exit_speed_delta' in corner_features:
-                    corner_features['corner_exit_speed_delta'][i] = characteristics.exit_speed_delta
-                if 'corner_exit_throttle_progression' in corner_features:
-                    corner_features['corner_exit_throttle_progression'][i] = characteristics.exit_throttle_progression
-                if 'corner_exit_steering_unwind_rate' in corner_features:
-                    corner_features['corner_exit_steering_unwind_rate'][i] = characteristics.exit_steering_unwind_rate
-                if 'corner_exit_g_force_lat_max' in corner_features:
-                    corner_features['corner_exit_g_force_lat_max'][i] = characteristics.exit_g_force_lat_max
-                if 'corner_exit_g_force_long_max' in corner_features:
-                    corner_features['corner_exit_g_force_long_max'][i] = characteristics.exit_g_force_long_max
-                if 'corner_total_duration' in corner_features:
-                    corner_features['corner_total_duration'][i] = characteristics.total_corner_duration
-                if 'corner_severity' in corner_features:
-                    corner_features['corner_severity'][i] = characteristics.corner_severity
-                if 'corner_type_numeric' in corner_features:
-                    corner_features['corner_type_numeric'][i] = float(corner_type_numeric)
-                if 'corner_direction_numeric' in corner_features:
-                    corner_features['corner_direction_numeric'][i] = float(direction_numeric)
-                if 'corner_speed_efficiency' in corner_features:
-                    corner_features['corner_speed_efficiency'][i] = characteristics.speed_efficiency
-                if 'corner_racing_line_adherence' in corner_features:
-                    corner_features['corner_racing_line_adherence'][i] = characteristics.racing_line_adherence
-                if 'corner_avg_curvature' in corner_features:
-                    corner_features['corner_avg_curvature'][i] = characteristics.avg_curvature
-                if 'corner_max_curvature' in corner_features:
-                    corner_features['corner_max_curvature'][i] = characteristics.max_curvature
-                if 'corner_curvature_variance' in corner_features:
-                    corner_features['corner_curvature_variance'][i] = characteristics.curvature_variance
+                corner_features['corner_progress'][i] = progress
+                corner_features['corner_sequence_index'][i] = float(sequence_index if sequence_index is not None else corner_id)
+                corner_features['corner_direction_numeric'][i] = direction_numeric
+                corner_features['corner_type_numeric'][i] = corner_type_numeric
+                corner_features['corner_total_angle_deg'][i] = total_angle_deg
+                corner_features['corner_arc_length_m'][i] = arc_length
+                corner_features['corner_radius_est_m'][i] = ch.radius_est_m
+                corner_features['corner_avg_curvature'][i] = ch.avg_curvature
+                corner_features['corner_max_curvature'][i] = ch.max_curvature
+                corner_features['corner_curvature_variance'][i] = ch.curvature_variance
+                corner_features['corner_complexity_index'][i] = complexity_index
+                if 'corner_confidence' in corner_features:
+                    corner_features['corner_confidence'][i] = confidence
         except Exception as e:
-            print(f"[WARNING] Error assigning corner features: {str(e)}")
+            print(f"[WARNING] Error assigning geometry corner features: {e}")
 
     def _finalize_geometry_relations(self, df: pd.DataFrame, corner_features: Dict[str, List[float]]):
         """Compute relational geometry metrics after all corners processed."""
@@ -1008,7 +919,7 @@ class CornerIdentificationUnsupervisedService:
         
         return type_counts
     
-    def _match_corners_with_learned_patterns(self, df: pd.DataFrame, corner_features: Dict[str, List[float]], geometry_only: Optional[bool] = None):
+    def _match_corners_with_learned_patterns(self, df: pd.DataFrame, corner_features: Dict[str, List[float]]):
         """
         Match corners in new telemetry data with learned corner patterns and assign features
         
@@ -1031,33 +942,18 @@ class CornerIdentificationUnsupervisedService:
             for corner_id, segment_data in corner_segments.items():
                 start_idx = segment_data['start_idx']
                 end_idx = segment_data['end_idx']
-                
-                # Extract characteristics for this detected corner
                 corner_df = df.iloc[start_idx:end_idx+1]
                 detected_characteristics = self._extract_corner_characteristics(corner_df)
-                
-                # Find the best matching learned pattern
-                best_match_pattern = self._find_best_matching_pattern(detected_characteristics, segment_data)
-                
-                if best_match_pattern:
-                    # Use the learned pattern's characteristics
-                    learned_characteristics = self._create_characteristics_from_pattern(best_match_pattern)
-                    print(f"[INFO] Corner {corner_id} matched with learned pattern (type: {learned_characteristics.corner_type})")
-                else:
-                    # Fallback to detected characteristics if no good match found
-                    learned_characteristics = detected_characteristics
-                    print(f"[INFO] Corner {corner_id} using detected characteristics (no good pattern match)")
-                
-                # Assign corner features to all data points in this corner
+                confidence = segment_data.get('confidence', 0.0)
                 self._assign_corner_features_to_segment(
                     corner_features,
                     start_idx,
                     end_idx,
-                    learned_characteristics,
+                    detected_characteristics,
                     corner_id,
-                    geometry_only=geometry_only,
                     corner_df=corner_df,
-                    sequence_index=seq_counter
+                    sequence_index=seq_counter,
+                    confidence=confidence
                 )
                 seq_counter += 1
                 
@@ -1129,38 +1025,25 @@ class CornerIdentificationUnsupervisedService:
         try:
             score = 0.0
             
-            # Position similarity (weight: 30%)
+            # Position similarity (weight 25%)
             position_diff = abs(detected_position - pattern_position)
-            # Handle wraparound for normalized position (0-1)
             position_diff = min(position_diff, 1.0 - position_diff) if position_diff > 0.5 else position_diff
-            score += position_diff * 0.3
-            
-            # Duration similarity (weight: 20%)
-            detected_duration = detected_chars.total_corner_duration
-            pattern_duration = pattern_chars.get('total_corner_duration', 0)
-            if pattern_duration > 0:
-                duration_diff = abs(detected_duration - pattern_duration) / max(detected_duration, pattern_duration)
-                score += duration_diff * 0.2
-            
-            # Steering similarity (weight: 25%)
-            detected_steering = detected_chars.apex_max_steering
-            pattern_steering = pattern_chars.get('apex_max_steering', 0)
-            if max(detected_steering, pattern_steering) > 0:
-                steering_diff = abs(detected_steering - pattern_steering) / max(detected_steering, pattern_steering)
-                score += steering_diff * 0.25
-            
-            # Speed efficiency similarity (weight: 15%)
-            detected_speed_eff = detected_chars.speed_efficiency
-            pattern_speed_eff = pattern_chars.get('speed_efficiency', 0)
-            if max(detected_speed_eff, pattern_speed_eff) > 0:
-                speed_diff = abs(detected_speed_eff - pattern_speed_eff) / max(detected_speed_eff, pattern_speed_eff)
-                score += speed_diff * 0.15
-            
-            # Corner type similarity (weight: 10%)
-            detected_type = detected_chars.corner_type
-            pattern_type = pattern_chars.get('corner_type', 'unknown')
-            if detected_type != pattern_type:
-                score += 0.1
+            score += position_diff * 0.25
+            # Angle similarity (30%)
+            da = detected_chars.total_angle_deg
+            pa = pattern_chars.get('total_angle_deg', 0)
+            if max(da, pa) > 0:
+                score += (abs(da - pa) / max(da, pa)) * 0.30
+            # Radius similarity (25%)
+            dr = detected_chars.radius_est_m
+            pr = pattern_chars.get('radius_est_m', 0)
+            if max(dr, pr) > 0:
+                score += (abs(dr - pr) / max(dr, pr)) * 0.25
+            # Curvature similarity (20%)
+            dc = detected_chars.avg_curvature
+            pc = pattern_chars.get('avg_curvature', 0)
+            if max(dc, pc) > 0:
+                score += (abs(dc - pc) / max(dc, pc)) * 0.20
             
             return score
             
