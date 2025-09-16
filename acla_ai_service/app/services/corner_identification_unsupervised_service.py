@@ -36,6 +36,30 @@ from ..models.telemetry_models import TelemetryFeatures, FeatureProcessor, _safe
 # Suppress warnings
 warnings.filterwarnings('ignore', category=UserWarning)
 
+class CornerFeatureCatalog:
+    """Canonical corner-geometry features for downstream models.
+
+    These are geometry/direction/curvature features suitable as encoder context.
+    Keep in sync with _initialize_corner_feature_columns and assignment logic.
+    """
+    CONTEXT_FEATURES: List[str] = [
+        'corner_id',
+        'is_in_corner',
+        'corner_progress',
+        'corner_sequence_index',
+        'corner_direction_numeric',
+        'corner_type_numeric',
+        'corner_total_angle_deg',
+        'corner_arc_length_m',
+        'corner_radius_est_m',
+        'corner_avg_curvature',
+        'corner_max_curvature',
+        'corner_curvature_variance',
+        'corner_complexity_index',
+        'distance_to_next_corner_m',
+        'straight_after_exit_length_m',
+        'corner_confidence'
+    ]
 
 class CornerCharacteristics:
     """Geometry-focused, driver-agnostic corner characteristics."""

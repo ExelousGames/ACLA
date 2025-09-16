@@ -386,7 +386,8 @@ class ExpertActionTransformer(nn.Module):
                 'context_feature_names': self.context_feature_names,
                 'context_fusion': self.context_fusion,
                 'd_model': self.d_model,
-                'max_sequence_length': self.max_sequence_length
+                'max_sequence_length': self.max_sequence_length,
+                'targets_are_deltas': getattr(self, 'targets_are_deltas', False)
             },
             'state_dict': serialized_state_dict,
             'model_architecture': {
@@ -434,6 +435,7 @@ class ExpertActionTransformer(nn.Module):
             dropout=architecture['dropout'],
             max_sequence_length=config['max_sequence_length']
         )
+        setattr(model, 'targets_are_deltas', bool(config.get('targets_are_deltas', False)))
         
         # Deserialize state dict
         state_dict = {}
@@ -486,6 +488,7 @@ class ExpertActionTransformer(nn.Module):
             self.context_fusion = config.get('context_fusion', 'none')
             self.d_model = config['d_model']
             self.max_sequence_length = config['max_sequence_length']
+            setattr(self, 'targets_are_deltas', bool(config.get('targets_are_deltas', False)))
         
         if 'model_architecture' in serialized_data:
             architecture = serialized_data['model_architecture']
@@ -505,280 +508,312 @@ class ExpertActionTransformer(nn.Module):
                                             thresholds: Optional[Dict[str, float]] = None,
                                             steering_range: Tuple[float, float] = (0.0, 1.0),
                                             steering_left_negative: bool = True,
-                                            normalized_steering_0_1: bool = True,  # True => decoder/model steering values are already 0..1 with 0.5 center; we internally convert to signed [-1,1]
+                                            normalized_steering_0_1: bool = True,
                                             split_large_changes: bool = True,
                                             max_substeps: int = 3,
-                                            device: Optional[str] = None) -> Dict[str, Any]:
-        """Predict an expert action sequence and convert significant changes into
-        human-readable step instructions.
+                                            device: Optional[str] = None,
+                                            seconds_per_step: float = 0.1,
+                                            src_context: Optional[torch.Tensor] = None) -> Dict[str, Any]:
+        """Predict sequence and produce baseline-relative action steps.
 
-        Args:
-            src_telemetry: Tensor [src_seq_len, batch_size, input_features]
-            sequence_length: Number of future steps to predict
-            temperature: Sampling temperature for predictions
-            thresholds: Dict overriding significance thresholds. Keys:
-                - steer_deg: absolute steering angle change (degrees) to trigger
-                - steer_pct: fraction of full steering (|angle| / max_abs) change
-                - throttle: absolute throttle delta (0..1)
-                - brake: absolute brake delta (0..1)
-                - min_combined_change_score: minimal combined normalized change
-            steering_range: (min,max) steering physical range used for percent conversion (deprecated when normalized_steering_0_1=True)
-            steering_left_negative: If True, negative steering => left turn (only applies if data contains signed values)
-            normalized_steering_0_1: If True, model steering output is assumed already normalized in [0,1] with 0.5 = center. We convert internally to signed [-1,1].
-            split_large_changes: If True, very large changes are decomposed into substeps
-            max_substeps: Max substeps for a single large change per control
-            device: Optional override device
-
-        Returns:
-            Dict with keys:
-                - predicted_actions: list[dict] raw per-step predictions
-                - steps: list[dict] human readable steps for significant changes
-                - text_instructions: list[str] human readable sentences
-                - metadata: auxiliary info
+        Returns a dict with predicted per-step actions, recommended absolute actions,
+        and human-readable steps computed relative to the current driver inputs.
         """
         device = device or next(self.parameters()).device
         self.eval()
         with torch.no_grad():
             if src_telemetry.dim() != 3:
                 raise ValueError("src_telemetry must have shape [seq_len, batch, features]")
-            batch_size = src_telemetry.shape[1]
-            if batch_size != 1:
-                # For simplicity we only generate instructions for first sample
+            if src_telemetry.shape[1] != 1:
                 src_telemetry = src_telemetry[:, :1, :]
-                batch_size = 1
             src_telemetry = src_telemetry.to(device)
 
-            # ---------------------------------------------------------
-            # Determine starting normalized car position from telemetry
-            # Feature name: 'Graphics_normalized_car_position'
-            # We replicate the feature ordering used in dataset construction
-            # so we can locate the correct index. Fallback to 0.0 if unavailable.
-            # ---------------------------------------------------------
+            # Extract position/speed for metadata
             start_norm_pos = 0.0
-            feature_index = None
+            start_speed_kmh: Optional[float] = None
+            feature_index: Optional[int] = None
             try:
                 from ..models.telemetry_models import TelemetryFeatures  # type: ignore
                 tf = TelemetryFeatures()
-                feature_list = tf.get_features_for_imitate_expert()
-                if 'Graphics_normalized_car_position' in feature_list:
-                    feature_index = feature_list.index('Graphics_normalized_car_position')
-                    # Use the LAST time step (most recent) in the provided source sequence
-                    raw_val = src_telemetry[-1, 0, feature_index].item()
-                    # Clamp to [0,1] just in case
-                    start_norm_pos = float(max(0.0, min(1.0, raw_val)))
-            except Exception as e:  # pragma: no cover - defensive
-                print(f"[WARNING] Could not extract 'Graphics_normalized_car_position': {e}", flush=True)
+                feat_list = tf.get_features_for_imitate_expert()
+                if 'Graphics_normalized_car_position' in feat_list:
+                    feature_index = feat_list.index('Graphics_normalized_car_position')
+                    start_norm_pos = float(max(0.0, min(1.0, src_telemetry[-1, 0, feature_index].item())))
+                if 'Physics_speed_kmh' in feat_list:
+                    sp = feat_list.index('Physics_speed_kmh')
+                    start_speed_kmh = float(max(0.0, src_telemetry[-1, 0, sp].item()))
+            except Exception:
+                pass
 
-            # Predict sequence
-            pred_actions, pred_reasoning, pred_perf = self.predict_expert_sequence(
+            # Predict action tokens
+            actions_tok, _, _ = self.predict_expert_sequence(
                 src_telemetry,
                 sequence_length=sequence_length,
-                temperature=temperature
+                temperature=temperature,
+                src_context=src_context
             )
-            # Detach -> cpu
-            pred_actions = pred_actions.squeeze(1).cpu().numpy()  # [T, 3]
+            preds = actions_tok.squeeze(1).cpu().numpy()  # [T,3]
 
-        # (Thresholds & helper functions defined earlier in original implementation were
-        # removed during refactor; reintroduce them once here.)
-        default_thresholds = {
-            'steer_deg': 0.1,
-            'steer_pct': 0.05,
-            'throttle': 0.15,
-            'brake': 0.10,
-            'min_combined_change_score': 0.15
-        }
-        if thresholds:
-            default_thresholds.update(thresholds)
-        thr = default_thresholds
+            # Baseline (current driver inputs at last encoder step)
+            predictions_are_deltas = bool(getattr(self, 'targets_are_deltas', False))
+            baseline = np.zeros(3, dtype=np.float32)
+            try:
+                from ..models.telemetry_models import TelemetryFeatures  # type: ignore
+                tf2 = TelemetryFeatures()
+                names = tf2.get_features_for_imitate_expert()
+                def idx(n: str) -> Optional[int]:
+                    return names.index(n) if n in names else None
+                si, gi, bi = idx('Physics_steer_angle'), idx('Physics_gas'), idx('Physics_brake')
+                if si is not None:
+                    baseline[0] = float(src_telemetry[-1, 0, si].item())
+                if gi is not None:
+                    baseline[1] = float(src_telemetry[-1, 0, gi].item())
+                if bi is not None:
+                    baseline[2] = float(src_telemetry[-1, 0, bi].item())
+            except Exception:
+                pass
 
-        steer_min, steer_max = steering_range
-        steer_abs_max = max(abs(steer_min), abs(steer_max)) or 1.0
+            # Thresholds and helpers
+            thr = {
+                'steer_deg': 0.1,
+                'steer_pct': 0.05,
+                'throttle': 0.15,
+                'brake': 0.10,
+                'min_combined_change_score': 0.15
+            }
+            if thresholds:
+                thr.update(thresholds)
 
-        def decode_normalized_steering(val: float) -> float:
-            # Input: steering in normalized MODEL space [0,1] (0.5 center)
-            # Output: signed steering in [-1,1]. This signed form is ONLY for interpretation
-            # / reporting; the model internally continues to work with 0..1 tokens.
-            v = max(0.0, min(1.0, val))
-            return (v - 0.5) * 2.0
+            steer_min, steer_max = steering_range
+            steer_abs_max = max(abs(steer_min), abs(steer_max)) or 1.0
 
-        def steering_direction(angle_signed: float) -> str:
-            if abs(angle_signed) < 1e-3:
-                return "straight"
-            if steering_left_negative:
-                return "left" if angle_signed < 0 else "right"
-            return "left" if angle_signed > 0 else "right"
+            def decode_normalized_steering(val: float) -> float:
+                v = max(0.0, min(1.0, val))
+                return (v - 0.5) * 2.0
 
-        def steering_percent(angle_signed: float) -> float:
-            if normalized_steering_0_1:
-                return min(1.0, max(0.0, abs(angle_signed)))
-            return abs(angle_signed) / steer_abs_max
+            def steering_direction(angle_signed: float) -> str:
+                if abs(angle_signed) < 1e-3:
+                    return 'straight'
+                if steering_left_negative:
+                    return 'left' if angle_signed < 0 else 'right'
+                return 'left' if angle_signed > 0 else 'right'
 
-        def format_percent(frac: float, digits: int = 0) -> str:
-            return f"{max(0.0, min(1.0, frac)) * 100:.{digits}f}%"
+            def steering_percent(angle_signed: float) -> float:
+                return min(1.0, max(0.0, abs(angle_signed))) if normalized_steering_0_1 else abs(angle_signed) / steer_abs_max
 
-        predicted_actions_list: List[Dict[str, Any]] = []
-        for t, (steer_val, throttle, brake) in enumerate(pred_actions):
-            if sequence_length <= 1:
-                norm_pos = start_norm_pos
-            else:
-                progression = (t / (sequence_length - 1))
-                norm_pos = start_norm_pos + progression * (1.0 - start_norm_pos)
-            norm_pos = max(0.0, min(1.0, norm_pos))
-            if normalized_steering_0_1:
-                # steer_val currently in [0,1]; convert to signed [-1,1] for direction & percent metrics
-                steer_signed = decode_normalized_steering(float(steer_val))
-                steer_pct = steering_percent(steer_signed)
-                steer_dir = steering_direction(steer_signed)
-                steering_raw_norm = float(max(0.0, min(1.0, steer_val)))
-                steering_angle_report = steer_signed  # NOTE: Field name 'steering_angle_deg' below is legacy; here it stores signed [-1,1] when normalized_steering_0_1=True
-            else:
-                # Legacy branch: steer_val already signed or in degrees; we assume caller provided correct scale
-                steering_raw_norm = float(steer_val)
-                steer_signed = float(steer_val)
-                steer_pct = steering_percent(steer_signed)
-                steer_dir = steering_direction(steer_signed)
-                steering_angle_report = float(steer_val)
-            predicted_actions_list.append({
-                't': t,
-                'normalized_position': norm_pos,
-                'steering_angle_deg': steering_angle_report,
-                'steering_direction': steer_dir,
-                'steering_percent': steer_pct,
-                'steering_raw_norm_0_1': steering_raw_norm,
-                'steering_signed_-1_1': steer_signed,
-                'throttle': float(throttle),
-                'brake': float(brake)
-            })
+            def format_percent(frac: float, digits: int = 0) -> str:
+                return f"{max(0.0, min(1.0, frac)) * 100:.{digits}f}%"
 
-        steps: List[Dict[str, Any]] = []
-        text_instructions: List[str] = []
+            # Optional context-derived notes
+            ctx_vector: Optional[np.ndarray] = None
+            ctx_name_list: List[str] = self.context_feature_names if hasattr(self, 'context_feature_names') else []
+            if src_context is not None and src_context.numel() > 0 and len(ctx_name_list) == int(src_context.shape[-1]):
+                try:
+                    ctx_vector = src_context.squeeze().detach().cpu().numpy()
+                except Exception:
+                    ctx_vector = None
 
-        def create_step(t_idx: int, prev_action: Dict[str, Any], curr_action: Dict[str, Any],
-                         steer_delta: float, throttle_delta: float, brake_delta: float,
-                         substep_index: Optional[int] = None, total_substeps: Optional[int] = None):
-            norm_pos = curr_action['normalized_position']
-            steer_pct_curr = curr_action['steering_percent']
-            steer_dir_curr = curr_action['steering_direction']
-            parts = []
-            # Steering description
-            if abs(steer_delta) >= max(thr['steer_deg'], thr['steer_pct'] * steer_abs_max):
-                steer_change_pct = abs(steer_delta) / steer_abs_max
-                parts.append(
-                    f"wheel turn {steer_dir_curr} {format_percent(steer_pct_curr, 0)}" +
-                    (f" (Δ {format_percent(steer_change_pct, 0)})" if steer_change_pct >= 0.02 else "")
+            def context_notes_for_step(step_idx: int) -> List[str]:
+                notes: List[str] = []
+                if ctx_vector is None or not ctx_name_list:
+                    return notes
+                ctx_map = {name: float(ctx_vector[i]) for i, name in enumerate(ctx_name_list)}
+                corner_keys = [k for k in ctx_map.keys() if any(x in k.lower() for x in ['corner', 'curvature', 'apex', 'entry', 'exit'])]
+                if corner_keys:
+                    curv_vals = [ctx_map[k] for k in corner_keys if 'curv' in k.lower()]
+                    if curv_vals and max(curv_vals) > 0.6:
+                        notes.append('tight corner ahead')
+                    dir_keys = [k for k in corner_keys if 'direction' in k.lower()]
+                    if dir_keys:
+                        val = ctx_map[dir_keys[0]]
+                        if val > 0.5:
+                            notes.append('right-hand turn upcoming')
+                        elif val < -0.5:
+                            notes.append('left-hand turn upcoming')
+                grip_like = {k: v for k, v in ctx_map.items() if any(x in k.lower() for x in ['grip', 'friction', 'saturation'])}
+                if grip_like:
+                    overall_keys = [k for k in grip_like if 'overall' in k.lower() or 'grip' in k.lower()]
+                    metric = grip_like[overall_keys[0]] if overall_keys else (max(grip_like.values()) if grip_like else None)
+                    if metric is not None:
+                        if metric < 0.3:
+                            notes.append('very low tire grip; be cautious')
+                        elif metric < 0.6:
+                            notes.append('moderate grip; avoid aggressive inputs')
+                lat_keys = [k for k in ctx_map if 'lateral_weight_transfer' in k]
+                if lat_keys:
+                    lat = abs(ctx_map[lat_keys[0]])
+                    if lat > 0.6:
+                        notes.append('high lateral load; maintain stability')
+                return notes
+
+            predicted_actions_list: List[Dict[str, Any]] = []
+            recommended_actions_abs: List[List[float]] = []
+            for t, (steer_val, throttle, brake) in enumerate(preds):
+                if sequence_length <= 1:
+                    norm_pos = start_norm_pos
+                else:
+                    progression = (t / (sequence_length - 1))
+                    norm_pos = start_norm_pos + progression * (1.0 - start_norm_pos)
+                norm_pos = max(0.0, min(1.0, norm_pos))
+                future_time_s = max(0.0, t * seconds_per_step)
+
+                # Reconstruct absolute recommendation if model outputs deltas
+                s_abs = float(baseline[0] + steer_val) if predictions_are_deltas else float(steer_val)
+                g_abs = float(baseline[1] + throttle) if predictions_are_deltas else float(throttle)
+                b_abs = float(baseline[2] + brake) if predictions_are_deltas else float(brake)
+                recommended_actions_abs.append([s_abs, g_abs, b_abs])
+
+                if normalized_steering_0_1:
+                    steer_signed = decode_normalized_steering(float(s_abs))
+                    steer_pct = steering_percent(steer_signed)
+                    steer_dir = steering_direction(steer_signed)
+                    steering_raw_norm = float(max(0.0, min(1.0, s_abs)))
+                    steering_angle_report = steer_signed
+                else:
+                    steering_raw_norm = float(s_abs)
+                    steer_signed = float(s_abs)
+                    steer_pct = steering_percent(steer_signed)
+                    steer_dir = steering_direction(steer_signed)
+                    steering_angle_report = float(s_abs)
+
+                predicted_actions_list.append({
+                    't': t,
+                    'normalized_position': norm_pos,
+                    'time_s': future_time_s,
+                    'steering_angle_deg': steering_angle_report,
+                    'steering_direction': steer_dir,
+                    'steering_percent': steer_pct,
+                    'steering_raw_norm_0_1': steering_raw_norm,
+                    'steering_signed_-1_1': steer_signed,
+                    'throttle': float(g_abs),
+                    'brake': float(b_abs),
+                    'context_notes': context_notes_for_step(t)
+                })
+
+            steps: List[Dict[str, Any]] = []
+            text_instructions: List[str] = []
+
+            def create_step(t_idx: int, _prev_action: Dict[str, Any], curr_action: Dict[str, Any],
+                            steer_delta: float, throttle_delta: float, brake_delta: float,
+                            substep_index: Optional[int] = None, total_substeps: Optional[int] = None):
+                norm_pos = curr_action['normalized_position']
+                steer_pct_curr = curr_action['steering_percent']
+                steer_dir_curr = curr_action['steering_direction']
+                parts: List[str] = []
+                if abs(steer_delta) >= max(thr['steer_deg'], thr['steer_pct'] * steer_abs_max):
+                    steer_change_pct = abs(steer_delta) / steer_abs_max
+                    parts.append(
+                        f"wheel turn {steer_dir_curr} {format_percent(steer_pct_curr, 0)}" +
+                        (f" (Δ {format_percent(steer_change_pct, 0)})" if steer_change_pct >= 0.02 else "")
+                    )
+                if abs(throttle_delta) >= thr['throttle']:
+                    parts.append(
+                        f"increase throttle to {format_percent(curr_action['throttle'],0)}" if throttle_delta > 0
+                        else f"reduce throttle to {format_percent(curr_action['throttle'],0)}"
+                    )
+                if abs(brake_delta) >= thr['brake']:
+                    parts.append(
+                        f"apply brake {format_percent(curr_action['brake'],0)}" if brake_delta > 0
+                        else f"release brake to {format_percent(curr_action['brake'],0)}"
+                    )
+                if not parts:
+                    return
+                substep_note = f" (step {substep_index+1}/{total_substeps})" if (substep_index is not None and total_substeps and total_substeps > 1) else ""
+                text = f"At {norm_pos:.2f} position (~{max(0.0, t_idx * seconds_per_step):.1f}s){substep_note}, " + ", ".join(parts) + "."
+                steps.append({
+                    't': t_idx,
+                    'normalized_position': norm_pos,
+                    'time_s': max(0.0, t_idx * seconds_per_step),
+                    'steering_angle_deg': curr_action['steering_angle_deg'],
+                    'steering_percent': curr_action['steering_percent'],
+                    'steering_direction': curr_action['steering_direction'],
+                    'throttle': curr_action['throttle'],
+                    'brake': curr_action['brake'],
+                    'deltas': {
+                        'steer_delta_deg': steer_delta,
+                        'throttle_delta': throttle_delta,
+                        'brake_delta': brake_delta
+                    },
+                    'instruction_text': text,
+                    'substep_index': substep_index,
+                    'total_substeps': total_substeps
+                })
+                text_instructions.append(text)
+
+            # Compare each recommendation to baseline
+            for idx in range(len(predicted_actions_list)):
+                curr_a = predicted_actions_list[idx]
+                steer_delta = curr_a['steering_angle_deg'] - float(baseline[0])
+                throttle_delta = curr_a['throttle'] - float(baseline[1])
+                brake_delta = curr_a['brake'] - float(baseline[2])
+
+                steer_score = abs(steer_delta) / max(thr['steer_deg'], 1e-6)
+                throttle_score = abs(throttle_delta) / max(thr['throttle'], 1e-6)
+                brake_score = abs(brake_delta) / max(thr['brake'], 1e-6)
+                combined_score = (steer_score + throttle_score + brake_score) / 3.0
+
+                significant = (
+                    abs(steer_delta) >= thr['steer_deg'] or
+                    abs(steer_delta) / steer_abs_max >= thr['steer_pct'] or
+                    abs(throttle_delta) >= thr['throttle'] or
+                    abs(brake_delta) >= thr['brake'] or
+                    combined_score >= thr['min_combined_change_score']
                 )
-            # Throttle description
-            if abs(throttle_delta) >= thr['throttle']:
-                if throttle_delta > 0:
-                    parts.append(f"increase throttle to {format_percent(curr_action['throttle'],0)}")
+                if not significant:
+                    continue
+
+                if split_large_changes:
+                    steer_parts = 1
+                    if abs(steer_delta) > 2 * thr['steer_deg']:
+                        steer_parts = min(max_substeps, int(round(abs(steer_delta) / thr['steer_deg'])))
+                    throttle_parts = 1
+                    if abs(throttle_delta) > 2 * thr['throttle']:
+                        throttle_parts = min(max_substeps, int(round(abs(throttle_delta) / thr['throttle'])))
+                    brake_parts = 1
+                    if abs(brake_delta) > 2 * thr['brake']:
+                        brake_parts = min(max_substeps, int(round(abs(brake_delta) / thr['brake'])))
+                    total_parts = max(steer_parts, throttle_parts, brake_parts)
+                    if total_parts > 1:
+                        for sub_i in range(total_parts):
+                            alpha = (sub_i + 1) / total_parts
+                            interm = {
+                                't': curr_a['t'],
+                                'normalized_position': curr_a['normalized_position'],
+                                'steering_angle_deg': float(baseline[0]) + steer_delta * alpha,
+                                'steering_percent': steering_percent(float(baseline[0]) + steer_delta * alpha),
+                                'steering_direction': steering_direction(float(baseline[0]) + steer_delta * alpha),
+                                'throttle': float(baseline[1]) + throttle_delta * alpha,
+                                'brake': float(baseline[2]) + brake_delta * alpha
+                            }
+                            create_step(curr_a['t'], curr_a, interm,
+                                        steer_delta * (1 / total_parts),
+                                        throttle_delta * (1 / total_parts),
+                                        brake_delta * (1 / total_parts),
+                                        substep_index=sub_i, total_substeps=total_parts)
+                    else:
+                        create_step(curr_a['t'], curr_a, curr_a, steer_delta, throttle_delta, brake_delta)
                 else:
-                    parts.append(f"reduce throttle to {format_percent(curr_action['throttle'],0)}")
-            # Brake description
-            if abs(brake_delta) >= thr['brake']:
-                if brake_delta > 0:
-                    parts.append(f"apply brake {format_percent(curr_action['brake'],0)}")
-                else:
-                    parts.append(f"release brake to {format_percent(curr_action['brake'],0)}")
-            if not parts:
-                return
-            substep_note = ""
-            if substep_index is not None and total_substeps and total_substeps > 1:
-                substep_note = f" (step {substep_index+1}/{total_substeps})"
-            text = f"At {norm_pos:.2f} normalized position{substep_note}, " + ", ".join(parts) + "."
-            step_dict = {
-                't': t_idx,
-                'normalized_position': norm_pos,
-                'steering_angle_deg': curr_action['steering_angle_deg'],
-                'steering_percent': curr_action['steering_percent'],
-                'steering_direction': curr_action['steering_direction'],
-                'throttle': curr_action['throttle'],
-                'brake': curr_action['brake'],
-                'deltas': {
-                    'steer_delta_deg': steer_delta,
-                    'throttle_delta': throttle_delta,
-                    'brake_delta': brake_delta
-                },
-                'instruction_text': text,
-                'substep_index': substep_index,
-                'total_substeps': total_substeps
+                    create_step(curr_a['t'], curr_a, curr_a, steer_delta, throttle_delta, brake_delta)
+
+            return {
+                'predicted_actions': predicted_actions_list,
+                'recommended_actions': recommended_actions_abs,
+                'steps': steps,
+                'text_instructions': text_instructions,
+                'metadata': {
+                    'sequence_length': sequence_length,
+                    'thresholds_used': thr,
+                    'steering_range': steering_range,
+                    'temperature': temperature,
+                    'split_large_changes': split_large_changes,
+                    'starting_normalized_position': start_norm_pos,
+                    'normalized_position_feature_index': feature_index,
+                    'seconds_per_step': seconds_per_step,
+                    'start_speed_kmh': start_speed_kmh,
+                    'context_feature_names_used': (self.context_feature_names[:10] + (['...'] if len(self.context_feature_names) > 10 else [])) if hasattr(self, 'context_feature_names') else [],
+                    'predictions_are_deltas': bool(getattr(self, 'targets_are_deltas', False))
+                }
             }
-            steps.append(step_dict)
-            text_instructions.append(text)
-
-        # Iterate and detect changes
-        for idx in range(1, len(predicted_actions_list)):
-            prev_a = predicted_actions_list[idx - 1]
-            curr_a = predicted_actions_list[idx]
-            steer_delta = curr_a['steering_angle_deg'] - prev_a['steering_angle_deg']
-            throttle_delta = curr_a['throttle'] - prev_a['throttle']
-            brake_delta = curr_a['brake'] - prev_a['brake']
-
-            # Normalized change score (0..1+)
-            steer_score = abs(steer_delta) / max(thr['steer_deg'], 1e-6)
-            throttle_score = abs(throttle_delta) / max(thr['throttle'], 1e-6)
-            brake_score = abs(brake_delta) / max(thr['brake'], 1e-6)
-            combined_score = (steer_score + throttle_score + brake_score) / 3.0
-
-            significant = (
-                abs(steer_delta) >= thr['steer_deg'] or
-                abs(steer_delta) / steer_abs_max >= thr['steer_pct'] or
-                abs(throttle_delta) >= thr['throttle'] or
-                abs(brake_delta) >= thr['brake'] or
-                combined_score >= thr['min_combined_change_score']
-            )
-
-            if not significant:
-                continue
-
-            if split_large_changes:
-                # Determine if we should split steering change
-                steer_parts = 1
-                if abs(steer_delta) > 2 * thr['steer_deg']:
-                    steer_parts = min(max_substeps, int(round(abs(steer_delta) / thr['steer_deg'])))
-                throttle_parts = 1
-                if abs(throttle_delta) > 2 * thr['throttle']:
-                    throttle_parts = min(max_substeps, int(round(abs(throttle_delta) / thr['throttle'])))
-                brake_parts = 1
-                if abs(brake_delta) > 2 * thr['brake']:
-                    brake_parts = min(max_substeps, int(round(abs(brake_delta) / thr['brake'])))
-                total_parts = max(steer_parts, throttle_parts, brake_parts)
-                if total_parts > 1:
-                    # Create interpolated substeps between prev and current
-                    for sub_i in range(total_parts):
-                        alpha = (sub_i + 1) / total_parts
-                        interm = {
-                            't': curr_a['t'],  # use current index
-                            'normalized_position': curr_a['normalized_position'],
-                            'steering_angle_deg': prev_a['steering_angle_deg'] + steer_delta * alpha,
-                            'steering_percent': steering_percent(prev_a['steering_angle_deg'] + steer_delta * alpha),
-                            'steering_direction': steering_direction(prev_a['steering_angle_deg'] + steer_delta * alpha),
-                            'throttle': prev_a['throttle'] + throttle_delta * alpha,
-                            'brake': prev_a['brake'] + brake_delta * alpha
-                        }
-                        create_step(curr_a['t'], prev_a, interm,
-                                    steer_delta * (1 / total_parts),
-                                    throttle_delta * (1 / total_parts),
-                                    brake_delta * (1 / total_parts),
-                                    substep_index=sub_i, total_substeps=total_parts)
-                else:
-                    create_step(curr_a['t'], prev_a, curr_a, steer_delta, throttle_delta, brake_delta)
-            else:
-                create_step(curr_a['t'], prev_a, curr_a, steer_delta, throttle_delta, brake_delta)
-
-        return {
-            'predicted_actions': predicted_actions_list,
-            'steps': steps,
-            'text_instructions': text_instructions,
-            'metadata': {
-                'sequence_length': sequence_length,
-                'thresholds_used': thr,
-                'steering_range': steering_range,
-                'temperature': temperature,
-                'split_large_changes': split_large_changes,
-                'starting_normalized_position': start_norm_pos,
-                'normalized_position_feature_index': feature_index
-            }
-        }
 
 class TelemetryActionDataset(Dataset):
     """
@@ -792,10 +827,8 @@ class TelemetryActionDataset(Dataset):
                  sequence_length: int = 50,
                  prediction_horizon: int = 20,
                  scaler: Optional[StandardScaler] = None,
-                 context_feature_allowlist: Optional[List[str]] = None,
-                 reasoning_feature_allowlist: Optional[List[str]] = None,
-                 exclude_feature_substrings: Optional[List[str]] = None,
-                 context_scaler: Optional[StandardScaler] = None):
+                 context_scaler: Optional[StandardScaler] = None,
+                 predict_action_deltas: bool = False):
         """
         Initialize the dataset
         
@@ -806,26 +839,28 @@ class TelemetryActionDataset(Dataset):
             sequence_length: Input sequence length
             prediction_horizon: Number of future actions to predict
             scaler: Optional scaler for telemetry data
+            context_feature_allowlist: Optional list of context feature names to include
+            reasoning_feature_allowlist: Optional list of reasoning feature names to include
+            context_scaler: Optional scaler for context features
+            predict_action_deltas: If True, model predicts changes (deltas) from current actions
         """
         self.sequence_length = sequence_length
         self.prediction_horizon = prediction_horizon
+        self.predict_action_deltas = predict_action_deltas
         
         # Convert to DataFrames
         self.telemetry_df = pd.DataFrame(telemetry_data)
         self.actions_df = pd.DataFrame(expert_actions)
         
-        # Handle enriched contextual data (now as separate feature dictionaries)
+        # Handle enriched contextual data (must be list of dicts or None)
         if enriched_contextual_data:
-            if isinstance(enriched_contextual_data[0], dict):
-                # New format: list of feature dictionaries
-                self.enriched_df = pd.DataFrame(enriched_contextual_data)
-                print(f"[INFO] Using enriched contextual data with {len(self.enriched_df.columns)} enriched features", flush=True)
-                print(f"[INFO] Enriched feature names: {list(self.enriched_df.columns)[:10]}..." + 
-                      (f" and {len(self.enriched_df.columns)-10} more" if len(self.enriched_df.columns) > 10 else ""), flush=True)
-            else:
-                # Old format: mixed telemetry data (for backward compatibility)
-                self.enriched_df = pd.DataFrame(enriched_contextual_data)
-                print(f"[INFO] Using enriched contextual data (legacy format) with {len(self.enriched_df.columns)} columns", flush=True)
+            # Require new format: list of feature dictionaries
+            if not isinstance(enriched_contextual_data[0], dict):
+                raise ValueError("enriched_contextual_data must be a list of dicts; legacy mixed formats are no longer supported")
+            self.enriched_df = pd.DataFrame(enriched_contextual_data)
+            print(f"[INFO] Using enriched contextual data with {len(self.enriched_df.columns)} enriched features", flush=True)
+            print(f"[INFO] Enriched feature names: {list(self.enriched_df.columns)[:10]}..." + 
+                  (f" and {len(self.enriched_df.columns)-10} more" if len(self.enriched_df.columns) > 10 else ""), flush=True)
         else:
             self.enriched_df = None
             print("[INFO] No enriched contextual data provided - will use dummy reasoning targets", flush=True)
@@ -843,9 +878,6 @@ class TelemetryActionDataset(Dataset):
         # Extract numeric features
         self.telemetry_features = self._extract_telemetry_features()
         self.action_features = self._extract_action_features()
-        self.context_feature_allowlist = context_feature_allowlist or []
-        self.reasoning_feature_allowlist = reasoning_feature_allowlist or []
-        self.exclude_feature_substrings = exclude_feature_substrings or ["brake", "throttle", "gas", "steer"]
 
         self._context_feature_names: List[str] = []
         self._reasoning_feature_names: List[str] = []
@@ -958,21 +990,34 @@ class TelemetryActionDataset(Dataset):
         ctx_cols: List[str] = []
         reasoning_cols: List[str] = []
 
-        def excluded(col: str) -> bool:
-            return any(substr.lower() in col.lower() for substr in self.exclude_feature_substrings)
+        # Import canonical catalogs
+        try:
+            from ..services.tire_grip_analysis_service import TireGripFeatureCatalog
+        except Exception:
+            TireGripFeatureCatalog = None  # type: ignore
+        try:
+            from ..services.corner_identification_unsupervised_service import CornerFeatureCatalog
+        except Exception:
+            CornerFeatureCatalog = None  # type: ignore
+
+        catalog_ctx = set()
+        catalog_reason = set()
+        if TireGripFeatureCatalog is not None:
+            catalog_ctx.update(getattr(TireGripFeatureCatalog, 'CONTEXT_FEATURES', []))
+            catalog_reason.update(getattr(TireGripFeatureCatalog, 'REASONING_FEATURES', []))
+        if CornerFeatureCatalog is not None:
+            catalog_ctx.update(getattr(CornerFeatureCatalog, 'CONTEXT_FEATURES', []))
 
         for col in numeric_columns:
-            if self.context_feature_allowlist and col in self.context_feature_allowlist:
+            if col in catalog_ctx:
                 ctx_cols.append(col)
                 continue
-            if self.reasoning_feature_allowlist and col in self.reasoning_feature_allowlist:
+            if col in catalog_reason:
                 reasoning_cols.append(col)
                 continue
-            # Heuristic: geometry / grip / corner classification -> context; performance-like or action-like -> reasoning
+            # Fallback heuristic for any remaining numeric enriched features
             lc = col.lower()
-            if excluded(col):
-                continue  # drop action-correlated leak features
-            if any(k in lc for k in ["corner_id", "corner_type", "corner_direction", "curvature", "grip", "friction", "track_position", "distance_to_next_corner", "distance_to_prev_corner"]):
+            if any(k in lc for k in ["corner", "curvature", "radius", "arc_length", "distance_to_next_corner", "straight_after_exit", "direction", "type_numeric"]):
                 ctx_cols.append(col)
             else:
                 reasoning_cols.append(col)
@@ -988,10 +1033,6 @@ class TelemetryActionDataset(Dataset):
 
         print(f"[INFO] Context features selected ({len(ctx_cols)}): {ctx_cols[:5]}" + (f" ... and {len(ctx_cols)-5} more" if len(ctx_cols) > 5 else ""), flush=True)
         print(f"[INFO] Reasoning target features selected ({len(reasoning_cols)}): {reasoning_cols[:5]}" + (f" ... and {len(reasoning_cols)-5} more" if len(reasoning_cols) > 5 else ""), flush=True)
-        dropped = [c for c in numeric_columns if c not in ctx_cols and c not in reasoning_cols]
-        if dropped:
-            print(f"[INFO] Dropped {len(dropped)} enriched features (considered action-leak / excluded): {dropped[:5]}" + (f" ... and {len(dropped)-5} more" if len(dropped) > 5 else ""), flush=True)
-
         return context_matrix, reasoning_matrix
     
     def _create_basic_reasoning_features(self) -> np.ndarray:
@@ -1075,6 +1116,18 @@ class TelemetryActionDataset(Dataset):
             
             # Target action sequence
             action_seq = self.action_features[i+self.sequence_length:i+self.sequence_length+self.prediction_horizon]
+            if self.predict_action_deltas:
+                # Baseline: current driver's last input at encoder end time
+                base_idx = i + self.sequence_length - 1
+                # Extract from telemetry_df if available, else zeros
+                steer_b = float(self.telemetry_df.iloc[base_idx].get('Physics_steer_angle', 0.0)) if base_idx < len(self.telemetry_df) else 0.0
+                gas_b = float(self.telemetry_df.iloc[base_idx].get('Physics_gas', 0.0)) if base_idx < len(self.telemetry_df) else 0.0
+                brake_b = float(self.telemetry_df.iloc[base_idx].get('Physics_brake', 0.0)) if base_idx < len(self.telemetry_df) else 0.0
+                baseline = np.array([steer_b, gas_b, brake_b], dtype=np.float32)
+                # Broadcast subtract baseline from each future step to form delta targets
+                if action_seq.shape[1] >= 3:
+                    action_seq = action_seq.copy()
+                    action_seq[:, :3] = action_seq[:, :3] - baseline[None, :3]
             
             # Target reasoning sequence (enriched contextual features)
             reasoning_seq = self.reasoning_features[i+self.sequence_length:i+self.sequence_length+self.prediction_horizon]
@@ -1183,12 +1236,8 @@ class ExpertActionTrainer:
         num_batches = len(dataloader)
         
         for batch_idx, batch in enumerate(dataloader):
-            # Support legacy 3-tuple (telemetry, actions, reasoning) or new 4-tuple with context
-            if len(batch) == 4:
-                telemetry, target_actions, target_reasoning, context = batch
-            else:  # backward compatibility
-                telemetry, target_actions, target_reasoning = batch
-                context = torch.empty(0)
+            # Expect 4-tuple: (telemetry, actions, reasoning, context)
+            telemetry, target_actions, target_reasoning, context = batch
             # Print progress every 5 batches during training for more frequent updates
             if batch_idx % 5 == 0:
                 progress_pct = (batch_idx / num_batches) * 100
@@ -1262,11 +1311,7 @@ class ExpertActionTrainer:
         
         with torch.no_grad():
             for batch in dataloader:
-                if len(batch) == 4:
-                    telemetry, target_actions, target_reasoning, context = batch
-                else:
-                    telemetry, target_actions, target_reasoning = batch
-                    context = torch.empty(0)
+                telemetry, target_actions, target_reasoning, context = batch
                 # Transpose to get transformer-expected dimensions
                 # From [batch_size, seq_len, features] to [seq_len, batch_size, features]
                 telemetry = telemetry.transpose(0, 1).to(self.device)
