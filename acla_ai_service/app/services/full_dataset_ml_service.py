@@ -7,6 +7,9 @@ using your TelemetryFeatures and FeatureProcessor classes.
 
 import os
 import pandas as pd
+
+from .corner_identification_unsupervised_service import CornerIdentificationUnsupervisedService
+from .tire_grip_analysis_service import TireGripAnalysisService
 from .imitate_expert_learning_service import ExpertImitateLearningService
 import numpy as np
 import joblib
@@ -1601,7 +1604,7 @@ class Full_dataset_TelemetryMLService:
             if corner_model.get("success"):
                 try:
                     self._print_section_divider("Extracting corner features...")
-                    corner_enriched_data = await self._extract_corner_features_only(training_telemetry_list)
+                    corner_enriched_data = await self._extract_corner_features_only(training_telemetry_list, corner_service)
                     
                     # Add corner features to enriched features data
                     for i, corner_features in enumerate(corner_enriched_data):
@@ -1617,7 +1620,7 @@ class Full_dataset_TelemetryMLService:
             if tire_grip_model.get("success"):
                 try:
                     self._print_section_divider("Extracting tire grip features...")
-                    grip_enriched_data = await self._extract_tire_grip_features_only(training_telemetry_list)
+                    grip_enriched_data = await self._extract_tire_grip_features_only(training_telemetry_list, tire_service)
                     
                     # Add tire grip features to enriched features data
                     for i, grip_features in enumerate(grip_enriched_data):
@@ -1659,8 +1662,8 @@ class Full_dataset_TelemetryMLService:
                 "enriched_features": [],
                 "feature_metadata": {"sources": [], "feature_count": 0, "error": str(e)}
             }
-    
-    async def _extract_corner_features_only(self, telemetry_data: List[Dict[str, Any]]) -> List[Dict[str, float]]:
+
+    async def _extract_corner_features_only(self, telemetry_data: List[Dict[str, Any]], corner_service: CornerIdentificationUnsupervisedService) -> List[Dict[str, float]]:
         """
         Extract ONLY corner-related features without mixing them back into telemetry
         
@@ -1672,8 +1675,6 @@ class Full_dataset_TelemetryMLService:
         """
         try:
             # Use the corner identification service to extract features
-            from .corner_identification_unsupervised_service import CornerIdentificationUnsupervisedService
-            corner_service = CornerIdentificationUnsupervisedService()
             enhanced_data = await corner_service.extract_corner_features_for_telemetry(telemetry_data)
             
             # Extract only the corner-related features (not original telemetry)
@@ -1701,8 +1702,8 @@ class Full_dataset_TelemetryMLService:
             print(f"[ERROR] Failed to extract corner features only: {str(e)}")
             # Return empty feature dictionaries
             return [{}] * len(telemetry_data)
-    
-    async def _extract_tire_grip_features_only(self, telemetry_data: List[Dict[str, Any]]) -> List[Dict[str, float]]:
+
+    async def _extract_tire_grip_features_only(self, telemetry_data: List[Dict[str, Any]], tire_service: TireGripAnalysisService) -> List[Dict[str, float]]:
         """
         Extract ONLY tire grip-related features without mixing them back into telemetry
         
@@ -1714,8 +1715,6 @@ class Full_dataset_TelemetryMLService:
         """
         try:
             # Use the tire grip analysis service to extract features
-            from .tire_grip_analysis_service import TireGripAnalysisService
-            tire_service = TireGripAnalysisService()
             enhanced_data = await tire_service.extract_tire_grip_features(telemetry_data)
             
             # Extract only the tire grip-related features (not original telemetry)
