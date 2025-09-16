@@ -120,6 +120,59 @@ class CornerIdentificationUnsupervisedService:
         #   RAW Physics_steer_angle: 0 (full left) -> 0.5 (center) -> 1 (full right)
         #   NORMALIZED (_normalize_steering): -1 (full left) -> 0 (center) -> 1 (full right)
         #   ABS NORMALIZED (np.abs(normalized)): 0 -> 1 magnitude irrespective of direction
+        # Serialization cache
+        self._last_serialized: Optional[Dict[str, Any]] = None
+
+    # --------------------- Serialization ---------------------
+    def _to_python(self, obj: Any) -> Any:
+        """Recursively convert numpy / pandas dtypes to plain Python for JSON serialization."""
+        import numpy as _np
+        if isinstance(obj, (str, int, float, bool)) or obj is None:
+            return obj
+        if isinstance(obj, (list, tuple)):
+            return [self._to_python(x) for x in obj]
+        if isinstance(obj, dict):
+            return {str(k): self._to_python(v) for k, v in obj.items()}
+        if isinstance(obj, _np.ndarray):
+            return obj.tolist()
+        if hasattr(obj, 'item') and callable(getattr(obj, 'item')):
+            try:
+                return obj.item()
+            except Exception:
+                return str(obj)
+        return str(obj)
+
+    def serialize_model(self, track_name: str, car_name: str) -> Dict[str, Any]:
+        """Return JSON-safe representation of learned corner patterns & config."""
+        data = {
+            'model_type': 'corner_identification',
+            'track_name': track_name,
+            'car_name': car_name,
+            'geometry_only': self.geometry_only,
+            'parameters': {
+                'min_corner_duration': self.min_corner_duration,
+                'corner_detection_sensitivity': self.corner_detection_sensitivity,
+                'smoothing_window': self.smoothing_window,
+                'steering_range': self.steering_range
+            },
+            'corner_patterns': self._to_python(self.corner_patterns),
+            'corner_clusters': self._to_python(self._cluster_corner_types(self.corner_patterns) if self.corner_patterns else []),
+            'total_corners': len(self.corner_patterns),
+            'serialized_timestamp': datetime.now().isoformat()
+        }
+        self._last_serialized = data
+        return data
+
+    @classmethod
+    def deserialize_model(cls, payload: Dict[str, Any]) -> 'CornerIdentificationUnsupervisedService':
+        inst = cls(geometry_only=payload.get('geometry_only', True))
+        inst.corner_patterns = payload.get('corner_patterns', [])
+        inst.track_corner_profiles["generic_all_cars"] = {
+            'corner_patterns': inst.corner_patterns,
+            'corner_clusters': payload.get('corner_clusters', []),
+            'total_corners': payload.get('total_corners', len(inst.corner_patterns))
+        }
+        return inst
 
     def _normalize_steering(self, steering_series: pd.Series) -> pd.Series:
         """Normalize raw steering angle to a symmetric -1..1 range.
