@@ -72,6 +72,32 @@ class TireGripFeatures:
         self.acceleration_grip_utilization = 0.0  # Specific to acceleration forces
 
 
+class TireGripFeatureCatalog:
+    """Canonical tire-grip feature names for downstream models.
+
+    Split into features safe to use as encoder context (exogenous inputs)
+    vs. features better framed as auxiliary reasoning targets.
+
+    Keep this list in sync with TireGripAnalysisService outputs.
+    """
+
+    # Context inputs: geometry/physics-derived, less action-exploitative
+    CONTEXT_FEATURES: List[str] = [
+        'longitudinal_weight_transfer',
+        'lateral_weight_transfer',
+        'dynamic_weight_distribution',
+        'optimal_grip_window'
+    ]
+
+    # Reasoning targets: utilization/performance-like metrics prone to exploitation
+    REASONING_FEATURES: List[str] = [
+        'friction_circle_utilization',
+        'slip_angle_efficiency',
+        'slip_ratio_efficiency',
+        'overall_tire_grip',
+        'tire_saturation_level'
+    ]
+    
 class TireGripAnalysisService:
     """Heuristic Tire Grip & Friction Circle Analysis Service (Driver-Behavior Agnostic)
 

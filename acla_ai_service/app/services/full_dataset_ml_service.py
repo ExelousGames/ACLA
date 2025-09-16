@@ -949,9 +949,16 @@ class Full_dataset_TelemetryMLService:
             print(f"[INFO] Predicting {sequence_length} expert actions...")
             t_infer = perf_counter()
             
-            # Make prediction using the transformer model
+            # Make prediction using the transformer model and also generate human-readable steps
             with torch.no_grad():
                 predicted_sequence, predicted_reasoning, performance_sequence = transformer_model.predict_expert_sequence(
+                    src_telemetry=src_telemetry,
+                    sequence_length=sequence_length,
+                    temperature=(0.01 if deterministic else temperature),
+                    src_context=src_context
+                )
+                # Generate expert plan steps (use same context)
+                instructions = transformer_model.generate_expert_action_instructions(
                     src_telemetry=src_telemetry,
                     sequence_length=sequence_length,
                     temperature=(0.01 if deterministic else temperature),
@@ -961,7 +968,8 @@ class Full_dataset_TelemetryMLService:
             
             # Convert predictions back to lists for JSON serialization
             predicted_actions = predicted_sequence.squeeze(1).tolist()  # Remove batch dimension
-            if clamp_actions:
+            predictions_are_deltas_flag = bool(instructions.get('metadata', {}).get('predictions_are_deltas', False))
+            if clamp_actions and not predictions_are_deltas_flag:
                 # Simple safety clamp: steering [-1,1], throttle/brake [0,1] if shapes align (assumes 3 dims)
                 clamped = []
                 for step in predicted_actions:
@@ -997,6 +1005,9 @@ class Full_dataset_TelemetryMLService:
                 "predicted_reasoning": predicted_reasoning_features,
                 "reasoning_explanations": reasoning_labels,
                 "performance_scores": performance_scores,
+                "expert_action_steps": instructions.get('steps', []),
+                "expert_action_text": instructions.get('text_instructions', []),
+                "recommended_actions": instructions.get('recommended_actions', []),
                 "metadata": {
                     "track_name": trackName,
                     "car_name": carName,
@@ -1023,7 +1034,8 @@ class Full_dataset_TelemetryMLService:
                     "timings_ms": timings,
                     "added_context_feature_count": added_context_feature_count,
                     "deterministic": deterministic,
-                    "clamp_actions": clamp_actions
+                    "clamp_actions": clamp_actions,
+                    "instructions_meta": instructions.get('metadata', {})
                 }
             }
             
@@ -1310,16 +1322,9 @@ class Full_dataset_TelemetryMLService:
                     "success": False,
                     "error": "No valid telemetry-action pairs found in training data"
                 }
-            
-            print(f"[INFO] Extracted {len(telemetry_data)} telemetry records and {len(expert_actions)} expert actions")
-            # ALWAYS re-train / regenerate enrichment for transformer training (ignore any passed enrichment_result)
-            print("[INFO] 🔄 Forcing retraining of corner identification and tire grip models for this transformer training run.")
-            enrichment_result = await self.enriched_contextual_data(telemetry_data)
 
             if not enrichment_result or not enrichment_result.get("enriched_features"):
-                print("[WARNING] No enriched contextual data generated, proceeding without enriched features")
-                enriched_contextual_data = None
-                feature_metadata = {"sources": [], "feature_count": 0}
+                raise ValueError("[Error] No enriched contextual data generated, proceeding without enriched features")
             else:
                 # Extract the separated data
                 original_telemetry = enrichment_result["original_telemetry"]
@@ -1330,7 +1335,7 @@ class Full_dataset_TelemetryMLService:
                 print(f"[INFO] Feature sources (forced): {feature_metadata.get('sources', [])}")
                 print(f"[INFO] Total enriched features (forced): {feature_metadata.get('feature_count', 0)}")
 
-                # Ensure matching lengths
+                # Ensure matching lengths. They’re parallel sequences that must line up 1:1 per timestep
                 min_len = min(len(telemetry_data), len(enriched_contextual_data))
                 telemetry_data = telemetry_data[:min_len]
                 expert_actions = expert_actions[:min_len]
@@ -1344,9 +1349,7 @@ class Full_dataset_TelemetryMLService:
                 enriched_contextual_data=enriched_contextual_data,
                 sequence_length=50,
                 prediction_horizon=20,
-                context_feature_allowlist=None,  # Could be configured externally
-                reasoning_feature_allowlist=None,
-                exclude_feature_substrings=["brake", "throttle", "gas", "steer", "pedal"],
+                predict_action_deltas=True,
             )
             
             if len(temp_dataset) == 0:
@@ -1356,13 +1359,7 @@ class Full_dataset_TelemetryMLService:
                 }
             
             # Get actual input features from processed data
-            sample = temp_dataset[0]
-            # Backward compatibility: dataset now returns 4-tuple (telemetry, actions, reasoning, context)
-            if len(sample) == 4:
-                sample_input, sample_actions, sample_reasoning, sample_context = sample
-            else:
-                sample_input, sample_actions, sample_reasoning = sample
-                sample_context = torch.empty(0)
+            sample_input, sample_actions, sample_reasoning, sample_context = temp_dataset[0]
             input_features = sample_input.size(-1)
             reasoning_features = sample_reasoning.size(-1)
             context_feature_count = sample_context.size(-1) if sample_context is not None and sample_context.numel() > 0 else 0
@@ -1393,6 +1390,7 @@ class Full_dataset_TelemetryMLService:
                 dropout=0.1,
                 max_sequence_length=256
             )
+            setattr(model, 'targets_are_deltas', True)
             
             trainer = ExpertActionTrainer(model)
             
@@ -1482,7 +1480,8 @@ class Full_dataset_TelemetryMLService:
                 },
                 "model_info": {
                     "parameters": sum(p.numel() for p in model.parameters()),
-                    "model_size_mb": sum(p.numel() * p.element_size() for p in model.parameters()) / (1024 * 1024)
+                    "model_size_mb": sum(p.numel() * p.element_size() for p in model.parameters()) / (1024 * 1024),
+                    "targets_are_deltas": True
                 }
             }
             
