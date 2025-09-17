@@ -1215,7 +1215,7 @@ class Full_dataset_TelemetryMLService:
         
         #enrich data
         self._print_section_divider("ENRICHING CONTEXTUAL DATA")
-        enrichment_result = await self.enriched_contextual_data(bottom_laps_telemetry_list)
+        enrichment_result = await self.enriched_contextual_data(bottom_laps_telemetry_list,trackName)
         
         # Handle the new structure
         if enrichment_result and enrichment_result.get("enriched_features"):
@@ -1306,7 +1306,7 @@ class Full_dataset_TelemetryMLService:
                             # Extract optimal actions if available
                             optimal_actions = expert_action.get('optimal_actions', {})
                             
-                            # Create action dictionary with steering, throttle, brake
+                            # Create action dictionary with steering, throttle, brake TODO must have optimal position, speeed
                             action_dict = {
                                 'Physics_steer_angle': optimal_actions.get('optimal_steering', 0.0),
                                 'Physics_gas': optimal_actions.get('optimal_throttle', 0.0),
@@ -1491,7 +1491,7 @@ class Full_dataset_TelemetryMLService:
             raise RuntimeError(f"[ERROR] Failed to train transformer model for {trackName}: {str(e)}")
 
 
-    async def enriched_contextual_data(self, telemetry_list: List[Dict[str, Any]]) -> Dict[str, Any]:
+    async def enriched_contextual_data(self, telemetry_list: List[Dict[str, Any]], track_name: str) -> Dict[str, Any]:
         """
         Extract enriched contextual features from telemetry data using trained models
         
@@ -1534,7 +1534,7 @@ class Full_dataset_TelemetryMLService:
                     print(f"[INFO] Corner identification training successful: {corner_model.get('total_corners_identified', 0)} corners identified")
                     # Serialize and persist corner model artifact
                     try:
-                        corner_serialized = corner_service.serialize_model(track_name="generic", car_name="all_cars")
+                        corner_serialized = corner_service.serialize_model(track_name=track_name, car_name="all_cars")
                         corner_model_dto = {
                             "modelType": "corner_identification",
                             "trackName": corner_serialized.get("track_name"),
@@ -1547,49 +1547,25 @@ class Full_dataset_TelemetryMLService:
                             },
                             "isActive": True
                         }
+                        
                         await self.backend_service.save_ai_model(corner_model_dto)
                         print("[INFO] Saved serialized corner identification model to backend")
                     except Exception as ser_err:
-                        print(f"[WARNING] Failed to serialize/save corner model: {ser_err}")
+                        raise Exception(f"[WARNING] Failed to serialize/save corner model: {ser_err}")
                 else:
-                    print(f"[WARNING] Corner identification training failed: {corner_model.get('error', 'Unknown error')}")
+                    raise Exception(f"[WARNING] Corner identification training failed: {corner_model.get('error', 'Unknown error')}")
             except Exception as e:
-                print(f"[ERROR] Corner identification training failed: {str(e)}")
-                corner_model = {"success": False, "error": str(e)}
+                raise Exception(f"[ERROR] Corner identification training failed: {str(e)}")
             
             # Train tire grip analysis model using training data
             self._print_section_divider("Training tire grip analysis model...")
             try:
+                # The tire grip service is now heuristic-only: it computes features deterministically from physics telemetry
                 from .tire_grip_analysis_service import TireGripAnalysisService
                 tire_service = TireGripAnalysisService()
                 tire_grip_model = await tire_service.train_tire_grip_model(training_telemetry_list)
-                if tire_grip_model.get("success"):
-                    print(f"[INFO] Tire grip model training successful: {tire_grip_model.get('models_trained', 0)} models trained")
-                    # Serialize and persist tire grip heuristic configuration
-                    try:
-                        # We don't yet have generated feature names at this stage; will infer later
-                        tire_serialized = tire_service.serialize_model(track_name="generic", car_name="all_cars")
-                        tire_model_dto = {
-                            "modelType": "tire_grip_analysis",
-                            "trackName": tire_serialized.get("track_name"),
-                            "carName": tire_serialized.get("car_name"),
-                            "modelData": tire_serialized,
-                            "metadata": {
-                                "heuristic_only": tire_serialized.get("heuristic_only"),
-                                "exclude_instantaneous_exploitation": tire_serialized.get("exclude_instantaneous_exploitation"),
-                                "serialization_timestamp": tire_serialized.get("serialized_timestamp")
-                            },
-                            "isActive": True
-                        }
-                        await self.backend_service.save_ai_model(tire_model_dto)
-                        print("[INFO] Saved serialized tire grip analysis model to backend")
-                    except Exception as ser_err:
-                        print(f"[WARNING] Failed to serialize/save tire grip model: {ser_err}")
-                else:
-                    print(f"[WARNING] Tire grip model training failed: {tire_grip_model.get('error', 'Unknown error')}")
             except Exception as e:
-                print(f"[ERROR] Tire grip analysis training failed: {str(e)}")
-                tire_grip_model = {"success": False, "error": str(e)}
+                raise Exception(f"[ERROR] Tire grip analysis training failed: {str(e)}")
             
             # Now extract enriched features separately (don't mix back into original data)
             enriched_features_data = []
@@ -1616,20 +1592,20 @@ class Full_dataset_TelemetryMLService:
                     print(f"[WARNING] Failed to extract corner features: {str(e)}")
             
             # Extract tire grip features as separate enriched data
-            if tire_grip_model.get("success"):
-                try:
-                    self._print_section_divider("Extracting tire grip features...")
-                    grip_enriched_data = await self._extract_tire_grip_features_only(training_telemetry_list, tire_service)
+
+            try:
+                self._print_section_divider("Extracting tire grip features...")
+                grip_enriched_data = await tire_service.extract_tire_grip_features(training_telemetry_list)
                     
-                    # Add tire grip features to enriched features data
-                    for i, grip_features in enumerate(grip_enriched_data):
-                        if i < len(enriched_features_data):
-                            enriched_features_data[i].update(grip_features)
+                # Add tire grip features to enriched features data
+                for i, grip_features in enumerate(grip_enriched_data):
+                    if i < len(enriched_features_data):
+                        enriched_features_data[i].update(grip_features)
                     
-                    feature_sources.append("tire_grip_analysis")
-                    print(f"[INFO] Extracted tire grip features for {len(grip_enriched_data)} records")
-                except Exception as e:
-                    print(f"[WARNING] Failed to extract tire grip features: {str(e)}")
+                feature_sources.append("tire_grip_analysis")
+                print(f"[INFO] Extracted tire grip features for {len(grip_enriched_data)} records")
+            except Exception as e:
+                raise Exception(f"[WARNING] Failed to extract tire grip features: {str(e)}")
             
             print(f"[INFO] Contextual data enrichment completed: {len(enriched_features_data)} enriched feature records created")
             
@@ -1701,47 +1677,6 @@ class Full_dataset_TelemetryMLService:
             print(f"[ERROR] Failed to extract corner features only: {str(e)}")
             # Return empty feature dictionaries
             return [{}] * len(telemetry_data)
-
-    async def _extract_tire_grip_features_only(self, telemetry_data: List[Dict[str, Any]], tire_service: TireGripAnalysisService) -> List[Dict[str, float]]:
-        """
-        Extract ONLY tire grip-related features without mixing them back into telemetry
-        
-        Args:
-            telemetry_data: List of telemetry records
-            
-        Returns:
-            List of dictionaries containing only tire grip-related features
-        """
-        try:
-            # Use the tire grip analysis service to extract features
-            enhanced_data = await tire_service.extract_tire_grip_features(telemetry_data)
-            
-            # Extract only the tire grip-related features (not original telemetry)
-            grip_features_only = []
-            
-            for enhanced_record in enhanced_data:
-                grip_features = {}
-                
-                # Extract only features that are tire grip-related
-                for key, value in enhanced_record.items():
-                    if any(grip_keyword in key.lower() for grip_keyword in [
-                        'friction', 'grip', 'utilization', 'weight_transfer', 'load', 
-                        'tire', 'saturation', 'degradation', 'slip_efficiency', 'optimal'
-                    ]):
-                        try:
-                            grip_features[key] = float(value) if value is not None else 0.0
-                        except (ValueError, TypeError):
-                            grip_features[key] = 0.0
-                
-                grip_features_only.append(grip_features)
-            
-            return grip_features_only
-            
-        except Exception as e:
-            print(f"[ERROR] Failed to extract tire grip features only: {str(e)}")
-            # Return empty feature dictionaries
-            return [{}] * len(telemetry_data)
-
     
 if __name__ == "__main__":
     # Example usage
