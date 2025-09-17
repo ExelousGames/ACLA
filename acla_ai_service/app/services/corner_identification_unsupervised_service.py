@@ -273,20 +273,21 @@ class CornerIdentificationUnsupervisedService:
     
     async def extract_corner_features_for_telemetry(self, telemetry_data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
-        Extract corner features and insert them back into clean telemetry data using the saved model
-        
+        Extract corner features using the saved model and return feature-only data.
+
         Args:
             telemetry_data: List of clean telemetry records to predict on
-            geometry_only: Optional override; if provided supersedes service default.
-            
+
         Returns:
-            Enhanced telemetry data with corner features
+            List of dictionaries containing ONLY corner-related features per record
+            (no original telemetry fields).
         """
         try:
             # Check if we have a learned model
             if not self.corner_patterns:
                 print("[ERROR] No corner patterns model available. Please run learn_track_corner_patterns first.")
-                return telemetry_data
+                # Return list of empty feature dicts maintaining input length
+                return [{} for _ in range(len(telemetry_data))]
             
             print(f"[INFO] Using saved corner model with {len(self.corner_patterns)} learned corner patterns")
             
@@ -302,24 +303,24 @@ class CornerIdentificationUnsupervisedService:
             # Post-process geometry-only relational metrics
             self._finalize_geometry_relations(df, corner_features)
             
-            # Add corner features to original telemetry data
-            enhanced_telemetry = []
-            for i, record in enumerate(telemetry_data):
-                enhanced_record = record.copy()
-                
-                # Add all corner features
-                for feature_name, feature_values in corner_features.items():
-                    if i < len(feature_values):
-                        enhanced_record[feature_name] = feature_values[i]
-                
-                enhanced_telemetry.append(enhanced_record)
-            
-            print(f"[INFO] Enhanced {len(enhanced_telemetry)} telemetry records with corner features using saved model")
-            return enhanced_telemetry
+            # Build feature-only output per record (do not insert into telemetry)
+            feature_only_data: List[Dict[str, Any]] = []
+            feature_names = list(corner_features.keys())
+            for i in range(len(df)):
+                feature_row: Dict[str, Any] = {}
+                for fname in feature_names:
+                    values = corner_features.get(fname, [])
+                    if i < len(values):
+                        feature_row[fname] = values[i]
+                feature_only_data.append(feature_row)
+
+            print(f"[INFO] Extracted corner features for {len(feature_only_data)} records (feature-only output)")
+            return feature_only_data
             
         except Exception as e:
             print(f"[ERROR] Failed to extract corner features: {str(e)}")
-            return telemetry_data  # Return original data if feature extraction fails
+            # Return list of empty feature dicts to match requested contract
+            return [{} for _ in range(len(telemetry_data))]
     
     def _identify_corner_segments_unsupervised(self, df: pd.DataFrame) -> Dict[int, Dict[str, Any]]:
         """

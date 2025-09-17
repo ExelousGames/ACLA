@@ -1079,7 +1079,6 @@ class ExpertImitateLearningService:
                                     incoming_telemetry: List[Dict[str, Any]], 
                                     window_size: int = 5,
                                     min_section_length: int = 10,
-                                    use_fast: bool = True,
                                     batch_size: int = 256) -> Dict[str, Any]:
         """
         Compare incoming telemetry data with expert actions and identify performance sections
@@ -1088,6 +1087,8 @@ class ExpertImitateLearningService:
             incoming_telemetry: List of incoming telemetry data points (already cleaned)
             window_size: Window size for smoothing score trends
             min_section_length: Minimum length for a valid section
+            use_fast: Whether to use the fast comparison method if available
+            batch_size: Batch size for processing in fast method
             
         Returns:
             Dictionary containing:
@@ -1095,160 +1096,15 @@ class ExpertImitateLearningService:
             - overall statistics and performance sections analysis
             - score statistics for performance evaluation
         """
-        if use_fast:
-            try:
-                return self.fast_compare_telemetry_with_expert(
-                    incoming_telemetry,
-                    window_size=window_size,
-                    min_section_length=min_section_length,
-                    batch_size=batch_size
-                )
-            except Exception as fast_err:
-                print(f"[WARNING] Fast comparison failed, falling back to original method: {fast_err}")
-
-        print(f"[INFO {self.__class__.__name__}] (slow-path) Comparing {len(incoming_telemetry)} telemetry points with expert model")
-        
-        # Check if we have trained models
-        if not self.trained_models:
-            raise ValueError("No trained models available. Please train models first using train_ai_model().")
-        
-        # Convert to DataFrame (data is already cleaned)
-        processed_df = pd.DataFrame(incoming_telemetry)
-        
-        if processed_df.empty:
-            raise ValueError("No telemetry data available")
-        
-        # Calculate scores for each row
-        scores = []
-        expert_predictions = []
-        
-        print("[INFO] Calculating similarity scores with expert actions...")
-        
-        for idx in range(len(processed_df)):
-            # Get current row as DataFrame (maintaining structure)
-            current_row = processed_df.iloc[idx:idx+1].copy()
-            
-            try:
-                # Get expert predictions for this state using stored models
-                expert_actions = self.predict_expert_actions(current_row)
-                expert_predictions.append(expert_actions)
-                
-                # Calculate similarity score between actual and predicted expert actions
-                score = self._calculate_similarity_score(current_row, expert_actions)
-                scores.append(score)
-                
-            except Exception as e:
-                print(f"[WARNING] Failed to process row {idx}: {e}")
-                scores.append(0.0)
-                expert_predictions.append({})
-        
-        # Convert scores to pandas Series for easier manipulation
-        scores_series = pd.Series(scores)
-        
-        # Smooth scores using rolling window
-        smoothed_scores = scores_series.rolling(window=min(window_size, len(scores)), center=True).mean()
-        smoothed_scores = smoothed_scores.fillna(scores_series)
-        
-        # Identify sections with different patterns
-        sections = self._identify_performance_sections(
-            smoothed_scores, 
-            window_size, 
-            min_section_length
-        )
-        
-        # Create paired data with incoming telemetry and expert actions
-        paired_data = []
-        for idx in range(len(processed_df)):
-            telemetry_point = processed_df.iloc[idx].to_dict()
-            expert_actions = expert_predictions[idx]
-            similarity_score = scores[idx]
-            
-            paired_point = {
-                'index': idx,
-                'telemetry_data': telemetry_point,
-                'expert_actions': expert_actions,
-                'similarity_score': similarity_score
-            }
-            paired_data.append(paired_point)
-        
-        # Identify sections with different patterns for additional analysis
-        sections = self._identify_performance_sections(
-            smoothed_scores, 
-            window_size, 
-            min_section_length
-        )
-        
-        # Main result structure with paired data
-        result = {
-            'total_data_points': len(processed_df),
-            'overall_score': float(np.mean(scores)),
-            'score_statistics': {
-                'mean': float(np.mean(scores)),
-                'std': float(np.std(scores)),
-                'min': float(np.min(scores)),
-                'max': float(np.max(scores)),
-                'median': float(np.median(scores))
-            },
-            'paired_data': paired_data,
-            'performance_sections': []
-        }
-        
-        print(f"[INFO] Identified {len(sections)} performance sections")
-        
-        # Process performance sections and create training pairs for transformer
-        transformer_training_pairs = []
-        
-        for section in sections:
-            start_idx = section['start_index']
-            end_idx = section['end_index']
-            section_scores = scores[start_idx:end_idx+1]
-            
-            # Extract telemetry and expert actions for this section
-            telemetry_section = []
-            expert_actions_section = []
-            
-            for idx in range(start_idx, end_idx + 1):
-                if idx < len(paired_data):
-                    telemetry_section.append(paired_data[idx]['telemetry_data'])
-                    expert_actions_section.append(paired_data[idx]['expert_actions'])
-            
-            # Create transformer training pair
-            if telemetry_section and expert_actions_section:
-                transformer_pair = {
-                    'telemetry_section': telemetry_section,
-                    'expert_actions': expert_actions_section,
-                    'pattern': section['pattern'],
-                    'section_stats': {
-                        'start_index': start_idx,
-                        'end_index': end_idx,
-                        'length': end_idx - start_idx + 1,
-                        'mean_score': float(np.mean(section_scores)),
-                        'trend_slope': section['trend_slope']
-                    }
-                }
-                transformer_training_pairs.append(transformer_pair)
-            
-            section_result = {
-                'pattern': section['pattern'],
-                'start_index': start_idx,
-                'end_index': end_idx,
-                'length': end_idx - start_idx + 1,
-                'score_statistics': {
-                    'mean': float(np.mean(section_scores)),
-                    'std': float(np.std(section_scores)),
-                    'min': float(np.min(section_scores)),
-                    'max': float(np.max(section_scores)),
-                    'trend_slope': section['trend_slope']
-                }
-            }
-            
-            result['performance_sections'].append(section_result)
-        
-        # Add transformer training pairs to the result
-        result['transformer_training_pairs'] = transformer_training_pairs
-        print(f"[INFO] Created {len(transformer_training_pairs)} transformer training pairs")
-        
-        return result
+        try:
+            return self.fast_compare_telemetry_with_expert(
+                incoming_telemetry,
+                window_size=window_size,
+                min_section_length=min_section_length,
+                batch_size=batch_size
+            )
+        except Exception as fast_err:
+            raise RuntimeError(f"[WARNING] Fast comparison failed, falling back to original method: {fast_err}")
 
     # ============================= Optimized Fast Path =============================
     def fast_compare_telemetry_with_expert(self,
@@ -1299,14 +1155,26 @@ class ExpertImitateLearningService:
                 behavior_model_raw = self.trained_models['behavior_learning']['modelData']['model']
                 behavior_model = behavior_model_raw if not isinstance(behavior_model_raw, str) else self.deserialize_data(behavior_model_raw)
                 feature_names = behavior_model['feature_names']
+
+                # Extract behavior features dataframe
                 behavior_features_full = self.behavior_learner.generate_driving_style_features(df)
+
+                # Ensure all required features are present
                 for missing in feature_names:
                     if missing not in behavior_features_full.columns:
                         behavior_features_full[missing] = 0.0
+                
+                # zero-fill missing values for each feature
                 Xb = behavior_features_full[feature_names].fillna(0)
+
+                # Raw inputs have very different units/ranges (e.g., speed in km/h vs throttle in [0,1]). Scaling prevents large-range features from dominating linear and distance-based models.
                 Xb_scaled = behavior_model['scaler'].transform(Xb)
+                
+                # vectorized inference: eeding a whole batch (matrix) of samples to the model in one call
                 style_preds = behavior_model['model'].predict(Xb_scaled)
                 style_proba = behavior_model['model'].predict_proba(Xb_scaled)
+
+                # converts those integer predictions back to original string style labels (e.g., "aggressive", "smooth").
                 decoded = behavior_model['label_encoder'].inverse_transform(style_preds)
                 for i in range(total):
                     behavior_preds[i] = {
@@ -1366,11 +1234,15 @@ class ExpertImitateLearningService:
                             row_actions[target_name] = float(val)
                     optimal_action_preds[i] = row_actions
             except Exception as e:
-                print(f"[WARNING] Fast path optimal action prediction failed: {e}")
+                raise RuntimeError(f"[WARNING] Fast path optimal action prediction failed: {e}")
 
         # ================= Similarity scoring (vectorized) =================
         # We'll approximate original scoring rules; for fields not present fall back to heuristic.
+
+
         scores = np.zeros(total, dtype=float)
+
+        # Extract actual action arrays
         speed_actual = df.get('Physics_speed_kmh', pd.Series([np.nan]*total)).to_numpy()
         throttle_actual = df.get('Physics_gas', pd.Series([np.nan]*total)).to_numpy()
         brake_actual = df.get('Physics_brake', pd.Series([np.nan]*total)).to_numpy()

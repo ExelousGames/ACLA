@@ -875,13 +875,14 @@ class TelemetryActionDataset(Dataset):
         self.telemetry_df = self.telemetry_df.iloc[:min_len]
         self.actions_df = self.actions_df.iloc[:min_len]
         
-        # Extract numeric features
+        # Extract numeric features again for good measure
         self.telemetry_features = self._extract_telemetry_features()
         self.action_features = self._extract_action_features()
 
         self._context_feature_names: List[str] = []
         self._reasoning_feature_names: List[str] = []
 
+        # split enriched features into context vs reasoning
         self.context_features_matrix, self.reasoning_features = self._extract_context_and_reasoning_features()
         
         # Scale telemetry (primary) features

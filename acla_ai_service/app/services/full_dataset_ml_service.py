@@ -1216,21 +1216,14 @@ class Full_dataset_TelemetryMLService:
         #enrich data
         self._print_section_divider("ENRICHING CONTEXTUAL DATA")
         enrichment_result = await self.enriched_contextual_data(bottom_laps_telemetry_list,trackName)
-        
-        # Handle the new structure
-        if enrichment_result and enrichment_result.get("enriched_features"):
-            enriched_contextual_data = enrichment_result["original_telemetry"]  # Use original data for comparison
-            enrichment_count = len(enrichment_result["enriched_features"])
-            feature_metadata = enrichment_result["feature_metadata"]
-            print(f"[INFO] Enrichment successful: {enrichment_count} records with {feature_metadata.get('feature_count', 0)} enriched features")
-        else:
-            enriched_contextual_data = bottom_laps_telemetry_list  # Fallback to original data
-            enrichment_count = 0
-            print("[WARNING] Enrichment failed or returned no features, using original data")
+        original_telemetry_list = enrichment_result["original_telemetry"]  # Use original data for comparison
+        enrichment_count = len(enrichment_result["enriched_features"])
+        feature_metadata = enrichment_result["feature_metadata"]
+        print(f"[INFO] Enrichment successful: {enrichment_count} records with {feature_metadata.get('feature_count', 0)} enriched features")
 
         #process enriched data, Generate training pairs with performance sections
         self._print_section_divider("GENERATING TRAINING PAIRS")
-        comparison_results = imitation_learning.compare_telemetry_with_expert(enriched_contextual_data, 5, 5)
+        comparison_results = imitation_learning.compare_telemetry_with_expert(original_telemetry_list, 5, 5)
         training_and_expert_action = comparison_results.get('transformer_training_pairs', [])
         
         # train transformer model
@@ -1306,7 +1299,7 @@ class Full_dataset_TelemetryMLService:
                             # Extract optimal actions if available
                             optimal_actions = expert_action.get('optimal_actions', {})
                             
-                            # Create action dictionary with steering, throttle, brake TODO must have optimal position, speeed
+                            # Create action dictionary with steering, throttle, brake TODO must have optimal position, speed
                             action_dict = {
                                 'Physics_steer_angle': optimal_actions.get('optimal_steering', 0.0),
                                 'Physics_gas': optimal_actions.get('optimal_throttle', 0.0),
@@ -1318,10 +1311,7 @@ class Full_dataset_TelemetryMLService:
                             expert_actions.append(expert_action)
             
             if not telemetry_data or not expert_actions:
-                return {
-                    "success": False,
-                    "error": "No valid telemetry-action pairs found in training data"
-                }
+                raise ValueError("Insufficient telemetry or expert action data for training")
 
             if not enrichment_result or not enrichment_result.get("enriched_features"):
                 raise ValueError("[Error] No enriched contextual data generated, proceeding without enriched features")
@@ -1579,7 +1569,7 @@ class Full_dataset_TelemetryMLService:
             if corner_model.get("success"):
                 try:
                     self._print_section_divider("Extracting corner features...")
-                    corner_enriched_data = await self._extract_corner_features_only(training_telemetry_list, corner_service)
+                    corner_enriched_data = await corner_service.extract_corner_features_for_telemetry(training_telemetry_list)
                     
                     # Add corner features to enriched features data
                     for i, corner_features in enumerate(corner_enriched_data):
@@ -1589,13 +1579,24 @@ class Full_dataset_TelemetryMLService:
                     feature_sources.append("corner_identification")
                     print(f"[INFO] Extracted corner features for {len(corner_enriched_data)} records")
                 except Exception as e:
-                    print(f"[WARNING] Failed to extract corner features: {str(e)}")
+                    raise Exception(f"[WARNING] Failed to extract corner features: {str(e)}")
             
             # Extract tire grip features as separate enriched data
 
             try:
                 self._print_section_divider("Extracting tire grip features...")
                 grip_enriched_data = await tire_service.extract_tire_grip_features(training_telemetry_list)
+                # Validate expected keys exist in at least one record
+                try:
+                    from .tire_grip_analysis_service import TireGripFeatureCatalog
+                    expected_keys = set(TireGripFeatureCatalog.CONTEXT_FEATURES + TireGripFeatureCatalog.REASONING_FEATURES)
+                    if grip_enriched_data:
+                        sample_keys = set(grip_enriched_data[0].keys())
+                        missing = expected_keys - sample_keys
+                        if missing:
+                            print(f"[WARNING] Tire grip features missing keys: {sorted(list(missing))}")
+                except Exception as v_err:
+                    raise Exception(f"[WARNING] Tire grip feature validation skipped: {v_err}")
                     
                 # Add tire grip features to enriched features data
                 for i, grip_features in enumerate(grip_enriched_data):
@@ -1611,12 +1612,14 @@ class Full_dataset_TelemetryMLService:
             
             # Create feature metadata
             sample_enriched = enriched_features_data[0] if enriched_features_data else {}
+            grip_sample_enriched = grip_enriched_data[0] if grip_enriched_data else {}
+            corner_sample_enriched = corner_enriched_data[0] if corner_enriched_data else {}
             feature_metadata = {
                 'sources': feature_sources,
                 'feature_count': len(sample_enriched),
                 'feature_names': list(sample_enriched.keys()),
-                'corner_features': [k for k in sample_enriched.keys() if 'corner' in k.lower()],
-                'grip_features': [k for k in sample_enriched.keys() if 'grip' in k.lower() or 'friction' in k.lower()],
+                'corner_features': list(corner_sample_enriched.keys()),
+                'grip_features': list(grip_sample_enriched.keys()),
                 'total_original_records': len(training_telemetry_list),
                 'corner_identification_success': corner_model.get("success", False),
                 'tire_grip_analysis_success': tire_grip_model.get("success", False)
@@ -1637,46 +1640,6 @@ class Full_dataset_TelemetryMLService:
                 "enriched_features": [],
                 "feature_metadata": {"sources": [], "feature_count": 0, "error": str(e)}
             }
-
-    async def _extract_corner_features_only(self, telemetry_data: List[Dict[str, Any]], corner_service: CornerIdentificationUnsupervisedService) -> List[Dict[str, float]]:
-        """
-        Extract ONLY corner-related features without mixing them back into telemetry
-        
-        Args:
-            telemetry_data: List of telemetry records
-            
-        Returns:
-            List of dictionaries containing only corner-related features
-        """
-        try:
-            # Use the corner identification service to extract features
-            enhanced_data = await corner_service.extract_corner_features_for_telemetry(telemetry_data)
-            
-            # Extract only the corner-related features (not original telemetry)
-            corner_features_only = []
-            
-            for enhanced_record in enhanced_data:
-                corner_features = {}
-                
-                # Extract only features that are corner-related
-                for key, value in enhanced_record.items():
-                    if any(corner_keyword in key.lower() for corner_keyword in [
-                        'corner', 'entry', 'apex', 'exit', 'curvature', 'steering', 
-                        'phase', 'severity', 'type', 'direction', 'racing_line'
-                    ]):
-                        try:
-                            corner_features[key] = float(value) if value is not None else 0.0
-                        except (ValueError, TypeError):
-                            corner_features[key] = 0.0
-                
-                corner_features_only.append(corner_features)
-            
-            return corner_features_only
-            
-        except Exception as e:
-            print(f"[ERROR] Failed to extract corner features only: {str(e)}")
-            # Return empty feature dictionaries
-            return [{}] * len(telemetry_data)
     
 if __name__ == "__main__":
     # Example usage
