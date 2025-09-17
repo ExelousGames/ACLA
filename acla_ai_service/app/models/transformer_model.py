@@ -994,20 +994,30 @@ class TelemetryActionDataset(Dataset):
         try:
             from ..services.tire_grip_analysis_service import TireGripFeatureCatalog
         except Exception:
-            TireGripFeatureCatalog = None  # type: ignore
+            raise RuntimeError("TireGripFeatureCatalog import failed; ensure acla_ai_service is installed correctly")
         try:
             from ..services.corner_identification_unsupervised_service import CornerFeatureCatalog
         except Exception:
-            CornerFeatureCatalog = None  # type: ignore
+            raise RuntimeError("CornerFeatureCatalog import failed; ensure acla_ai_service is installed correctly")
 
         catalog_ctx = set()
         catalog_reason = set()
-        if TireGripFeatureCatalog is not None:
-            catalog_ctx.update(getattr(TireGripFeatureCatalog, 'CONTEXT_FEATURES', []))
-            catalog_reason.update(getattr(TireGripFeatureCatalog, 'REASONING_FEATURES', []))
-        if CornerFeatureCatalog is not None:
-            catalog_ctx.update(getattr(CornerFeatureCatalog, 'CONTEXT_FEATURES', []))
 
+        # Helper to get Enum values or raise a clear error
+        def enum_values(catalog: Any, enum_attr: str) -> List[str]:
+            EnumType = getattr(catalog, enum_attr, None)
+            if EnumType is None:
+                name = getattr(catalog, '__name__', str(catalog))
+                raise RuntimeError(f"{name}.{enum_attr} Enum not found; this Enum is required as the sole source of feature names")
+            return [f.value for f in EnumType]
+
+        # Strict: use Enums as the single source of truth (no fallback lists)
+        catalog_ctx.update(enum_values(TireGripFeatureCatalog, 'ContextFeature'))
+        catalog_reason.update(enum_values(TireGripFeatureCatalog, 'ReasoningFeature'))
+        # Strict: use Enum as the single source of truth (no fallback lists)
+        catalog_ctx.update(enum_values(CornerFeatureCatalog, 'ContextFeature'))
+        
+        # collect features based on catalog membership
         for col in numeric_columns:
             if col in catalog_ctx:
                 ctx_cols.append(col)
@@ -1022,12 +1032,16 @@ class TelemetryActionDataset(Dataset):
             else:
                 reasoning_cols.append(col)
 
+        # scalers and saved models see a stable feature order across runs
         ctx_cols = sorted(set(ctx_cols))
         reasoning_cols = sorted(set(reasoning_cols))
-
+        
+        # Context features are optional (model can run without them), so we return a zero-column matrix when none are selected.
         context_matrix = self.enriched_df[ctx_cols].fillna(0).values if ctx_cols else np.zeros((len(self.enriched_df), 0))
+        
+        # Reasoning features are required; if none are found we fall back to basic reasoning features.
         reasoning_matrix = self.enriched_df[reasoning_cols].fillna(0).values if reasoning_cols else self._create_basic_reasoning_features()
-
+        print(f"{catalog_reason} reasoning features from catalog, reasoning_cols is {len(reasoning_cols)}", flush=True)
         self._context_feature_names = ctx_cols
         self._reasoning_feature_names = reasoning_cols
 

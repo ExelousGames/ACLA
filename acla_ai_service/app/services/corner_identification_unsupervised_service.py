@@ -21,6 +21,7 @@ import warnings
 from typing import Dict, List, Any, Optional, Tuple
 from datetime import datetime
 from pathlib import Path
+from enum import Enum
 from scipy.signal import find_peaks, savgol_filter
 from scipy import interpolate
 from scipy.spatial.distance import cdist
@@ -42,24 +43,31 @@ class CornerFeatureCatalog:
     These are geometry/direction/curvature features suitable as encoder context.
     Keep in sync with _initialize_corner_feature_columns and assignment logic.
     """
-    CONTEXT_FEATURES: List[str] = [
-        'corner_id',
-        'is_in_corner',
-        'corner_progress',
-        'corner_sequence_index',
-        'corner_direction_numeric',
-        'corner_type_numeric',
-        'corner_total_angle_deg',
-        'corner_arc_length_m',
-        'corner_radius_est_m',
-        'corner_avg_curvature',
-        'corner_max_curvature',
-        'corner_curvature_variance',
-        'corner_complexity_index',
-        'distance_to_next_corner_m',
-        'straight_after_exit_length_m',
-        'corner_confidence'
-    ]
+    class ContextFeature(str, Enum):
+        """Single source of truth for corner context feature keys.
+
+        Values are the exact keys inserted into telemetry/enriched features.
+        Subclassing str ensures seamless use as dict keys and JSON serialization.
+        """
+        CORNER_ID = 'corner_id'
+        IS_IN_CORNER = 'is_in_corner'
+        CORNER_PROGRESS = 'corner_progress'
+        CORNER_SEQUENCE_INDEX = 'corner_sequence_index'
+        CORNER_DIRECTION_NUMERIC = 'corner_direction_numeric'
+        CORNER_TYPE_NUMERIC = 'corner_type_numeric'
+        CORNER_TOTAL_ANGLE_DEG = 'corner_total_angle_deg'
+        CORNER_ARC_LENGTH_M = 'corner_arc_length_m'
+        CORNER_RADIUS_EST_M = 'corner_radius_est_m'
+        CORNER_AVG_CURVATURE = 'corner_avg_curvature'
+        CORNER_MAX_CURVATURE = 'corner_max_curvature'
+        CORNER_CURVATURE_VARIANCE = 'corner_curvature_variance'
+        CORNER_COMPLEXITY_INDEX = 'corner_complexity_index'
+        DISTANCE_TO_NEXT_CORNER_M = 'distance_to_next_corner_m'
+        STRAIGHT_AFTER_EXIT_LENGTH_M = 'straight_after_exit_length_m'
+        CORNER_CONFIDENCE = 'corner_confidence'
+
+    # Back-compat: keep a list view derived from the Enum (do not hand-edit).
+    CONTEXT_FEATURES: List[str] = [f.value for f in ContextFeature]
 
 class CornerCharacteristics:
     """Geometry-focused, driver-agnostic corner characteristics."""
@@ -831,14 +839,9 @@ class CornerIdentificationUnsupervisedService:
             return {"clusters": [], "cluster_labels": []}
     
     def _initialize_corner_feature_columns(self, data_length: int) -> Dict[str, List[float]]:
-        """Initialize geometry-only feature columns."""
-        feature_names = [
-            'corner_id','is_in_corner','corner_progress','corner_sequence_index',
-            'corner_direction_numeric','corner_type_numeric','corner_total_angle_deg','corner_arc_length_m',
-            'corner_radius_est_m','corner_avg_curvature','corner_max_curvature','corner_curvature_variance',
-            'corner_complexity_index','distance_to_next_corner_m','straight_after_exit_length_m','corner_confidence'
-        ]
-        return {f: [0.0]*data_length for f in feature_names}
+        """Initialize geometry-only feature columns based on the ContextFeature enum."""
+        feature_names = [f.value for f in CornerFeatureCatalog.ContextFeature]
+        return {f: [0.0] * data_length for f in feature_names}
     
     def _assign_corner_features_to_segment(self, corner_features: Dict[str, List[float]],
                                           start_idx: int, end_idx: int,
@@ -849,6 +852,7 @@ class CornerIdentificationUnsupervisedService:
                                           confidence: float = 0.0):
         """Assign geometry-only metrics to a segment."""
         try:
+            CF = CornerFeatureCatalog.ContextFeature
             # Allow recomputation if arc/angle missing
             total_angle_deg = ch.total_angle_deg
             arc_length = ch.arc_length_m
@@ -862,31 +866,32 @@ class CornerIdentificationUnsupervisedService:
             direction_numeric = 1.0 if ch.corner_direction == 'right' else -1.0
             corner_type_numeric = float(hash(ch.corner_type) % 1000)
             length = max(1, end_idx - start_idx)
-            for local_i, i in enumerate(range(start_idx, min(end_idx + 1, len(corner_features['corner_id'])))):
+            for local_i, i in enumerate(range(start_idx, min(end_idx + 1, len(corner_features[CF.CORNER_ID.value])))):
                 progress = local_i / (length - 1) if length > 1 else 0.0
-                corner_features['corner_id'][i] = float(corner_id)
-                corner_features['is_in_corner'][i] = 1.0
-                corner_features['corner_progress'][i] = progress
-                corner_features['corner_sequence_index'][i] = float(sequence_index if sequence_index is not None else corner_id)
-                corner_features['corner_direction_numeric'][i] = direction_numeric
-                corner_features['corner_type_numeric'][i] = corner_type_numeric
-                corner_features['corner_total_angle_deg'][i] = total_angle_deg
-                corner_features['corner_arc_length_m'][i] = arc_length
-                corner_features['corner_radius_est_m'][i] = ch.radius_est_m
-                corner_features['corner_avg_curvature'][i] = ch.avg_curvature
-                corner_features['corner_max_curvature'][i] = ch.max_curvature
-                corner_features['corner_curvature_variance'][i] = ch.curvature_variance
-                corner_features['corner_complexity_index'][i] = complexity_index
-                if 'corner_confidence' in corner_features:
-                    corner_features['corner_confidence'][i] = confidence
+                corner_features[CF.CORNER_ID.value][i] = float(corner_id)
+                corner_features[CF.IS_IN_CORNER.value][i] = 1.0
+                corner_features[CF.CORNER_PROGRESS.value][i] = progress
+                corner_features[CF.CORNER_SEQUENCE_INDEX.value][i] = float(sequence_index if sequence_index is not None else corner_id)
+                corner_features[CF.CORNER_DIRECTION_NUMERIC.value][i] = direction_numeric
+                corner_features[CF.CORNER_TYPE_NUMERIC.value][i] = corner_type_numeric
+                corner_features[CF.CORNER_TOTAL_ANGLE_DEG.value][i] = total_angle_deg
+                corner_features[CF.CORNER_ARC_LENGTH_M.value][i] = arc_length
+                corner_features[CF.CORNER_RADIUS_EST_M.value][i] = ch.radius_est_m
+                corner_features[CF.CORNER_AVG_CURVATURE.value][i] = ch.avg_curvature
+                corner_features[CF.CORNER_MAX_CURVATURE.value][i] = ch.max_curvature
+                corner_features[CF.CORNER_CURVATURE_VARIANCE.value][i] = ch.curvature_variance
+                corner_features[CF.CORNER_COMPLEXITY_INDEX.value][i] = complexity_index
+                if CF.CORNER_CONFIDENCE.value in corner_features:
+                    corner_features[CF.CORNER_CONFIDENCE.value][i] = confidence
         except Exception as e:
             print(f"[WARNING] Error assigning geometry corner features: {e}")
 
     def _finalize_geometry_relations(self, df: pd.DataFrame, corner_features: Dict[str, List[float]]):
         """Compute relational geometry metrics after all corners processed."""
-        if 'corner_id' not in corner_features or 'is_in_corner' not in corner_features:
+        CF = CornerFeatureCatalog.ContextFeature
+        if CF.CORNER_ID.value not in corner_features or CF.IS_IN_CORNER.value not in corner_features:
             return
-        ids = np.array(corner_features['corner_id'])
+        ids = np.array(corner_features[CF.CORNER_ID.value])
         if len(ids) == 0:
             return
         unique_ids = [int(i) for i in sorted(set(ids)) if i >= 0]
@@ -907,10 +912,10 @@ class CornerIdentificationUnsupervisedService:
             if next_start_distance is not None:
                 straight_after = float(max(0.0, next_start_distance - end_distance))
             for p in range(s, e + 1):
-                if 'distance_to_next_corner_m' in corner_features:
-                    corner_features['distance_to_next_corner_m'][p] = straight_after
-                if 'straight_after_exit_length_m' in corner_features:
-                    corner_features['straight_after_exit_length_m'][p] = straight_after
+                if CF.DISTANCE_TO_NEXT_CORNER_M.value in corner_features:
+                    corner_features[CF.DISTANCE_TO_NEXT_CORNER_M.value][p] = straight_after
+                if CF.STRAIGHT_AFTER_EXIT_LENGTH_M.value in corner_features:
+                    corner_features[CF.STRAIGHT_AFTER_EXIT_LENGTH_M.value][p] = straight_after
     
     def _determine_phase_for_point(self, point_idx: int, start_idx: int, end_idx: int, 
                                   characteristics: CornerCharacteristics) -> float:
