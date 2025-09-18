@@ -32,21 +32,8 @@ from ..models.telemetry_models import TelemetryFeatures, FeatureProcessor, _safe
 # Suppress warnings
 warnings.filterwarnings('ignore', category=UserWarning)
 
-
-class TireGripFeatures:
-    """Data class for tire grip analysis features"""
-    
-    def __init__(self):
-        # Currently unused; kept for compatibility. Features are computed
-        # directly in TireGripAnalysisService._compute_features.
-        pass
-
-
 class TireGripFeatureCatalog:
     """Canonical tire-grip feature names for downstream models.
-
-    Split into features safe to use as encoder context (exogenous inputs)
-    vs. features better framed as auxiliary reasoning targets.
 
     Keep this list in sync with TireGripAnalysisService outputs.
     """
@@ -57,17 +44,10 @@ class TireGripFeatureCatalog:
         DYNAMIC_WEIGHT_DISTRIBUTION = 'dynamic_weight_distribution'
         OPTIMAL_GRIP_WINDOW = 'optimal_grip_window'
 
-    class ReasoningFeature(str, Enum):
-        """Authoritative reasoning/target feature keys for tire grip analysis."""
-        FRICTION_CIRCLE_UTILIZATION = 'friction_circle_utilization'
-        SLIP_ANGLE_EFFICIENCY = 'slip_angle_efficiency'
-        SLIP_RATIO_EFFICIENCY = 'slip_ratio_efficiency'
-        OVERALL_TIRE_GRIP = 'overall_tire_grip'
-        TIRE_SATURATION_LEVEL = 'tire_saturation_level'
 
     # Derived compatibility lists – keep for consumers expecting plain strings
     CONTEXT_FEATURES: List[str] = [f.value for f in ContextFeature]
-    REASONING_FEATURES: List[str] = [f.value for f in ReasoningFeature]
+
     
 class TireGripAnalysisService:
     """Tire Grip & Friction Circle Analysis Service (Driver-Behavior Agnostic)
@@ -271,11 +251,6 @@ class TireGripAnalysisService:
             self.feature_catalog.ContextFeature.LATERAL_WEIGHT_TRANSFER.value: lat_wt.values,
             self.feature_catalog.ContextFeature.DYNAMIC_WEIGHT_DISTRIBUTION.value: dyn_wdist.values,
             self.feature_catalog.ContextFeature.OPTIMAL_GRIP_WINDOW.value: grip_window.values,
-            self.feature_catalog.ReasoningFeature.FRICTION_CIRCLE_UTILIZATION.value: fr_util.values,
-            self.feature_catalog.ReasoningFeature.SLIP_ANGLE_EFFICIENCY.value: sa_eff.values,
-            self.feature_catalog.ReasoningFeature.SLIP_RATIO_EFFICIENCY.value: sr_eff.values,
-            self.feature_catalog.ReasoningFeature.OVERALL_TIRE_GRIP.value: overall.values,
-            self.feature_catalog.ReasoningFeature.TIRE_SATURATION_LEVEL.value: saturation.values,
         })
         # Ensure float dtype and fill NaNs
         for c in out.columns:

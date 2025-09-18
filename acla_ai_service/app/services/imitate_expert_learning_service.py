@@ -12,6 +12,7 @@ import pickle
 import warnings
 import io
 import base64
+from enum import Enum
 from typing import Dict, List, Any, Optional, Tuple, Union
 from datetime import datetime
 from pathlib import Path
@@ -31,6 +32,62 @@ from sklearn.decomposition import PCA
 from ..models.telemetry_models import TelemetryFeatures, FeatureProcessor
 
 warnings.filterwarnings('ignore', category=UserWarning)
+
+class ExpertFeatureCatalog:
+    """Canonical expert feature names for downstream models.
+    All expert state feature keys must be declared here and referenced via the Enum
+    to avoid drifting string literals across the codebase.
+    """
+
+    class ContextFeature(str, Enum):
+        # Optimal action predictions (expert targets)
+        EXPERT_OPTIMAL_SPEED = 'expert_optimal_speed'
+        EXPERT_OPTIMAL_STEERING = 'expert_optimal_steering'
+        EXPERT_OPTIMAL_THROTTLE = 'expert_optimal_throttle'
+        EXPERT_OPTIMAL_BRAKE = 'expert_optimal_brake'
+        EXPERT_OPTIMAL_GEAR = 'expert_optimal_gear'
+        EXPERT_OPTIMAL_PLAYER_POS_X = 'expert_optimal_player_pos_x'
+        EXPERT_OPTIMAL_PLAYER_POS_Y = 'expert_optimal_player_pos_y'
+        EXPERT_OPTIMAL_PLAYER_POS_Z = 'expert_optimal_player_pos_z'
+        EXPERT_OPTIMAL_TRACK_POSITION = 'expert_optimal_track_position'
+
+        # Derived composite cues
+        EXPERT_CONTROL_OVERLAP = 'expert_control_overlap'
+        EXPERT_NET_ACCEL_COMMAND = 'expert_net_accel_command'
+
+    class TrajectoryFeature(str, Enum):
+        TRACK_POSITION = 'track_position'
+        TRACK_POSITION_RATE = 'track_position_rate'
+        PLAYER_POS_X = 'player_pos_x'
+        PLAYER_POS_X_VELOCITY = 'player_pos_x_velocity'
+        PLAYER_POS_Y = 'player_pos_y'
+        PLAYER_POS_Y_VELOCITY = 'player_pos_y_velocity'
+        PLAYER_POS_Z = 'player_pos_z'
+        PLAYER_POS_Z_VELOCITY = 'player_pos_z_velocity'
+        SPEED = 'speed'
+        SPEED_CHANGE = 'speed_change'
+        ACCELERATION = 'acceleration'
+        GEAR = 'gear'
+        GEAR_CHANGE = 'gear_change'
+        SPEED_PER_GEAR = 'speed_per_gear'
+        STEERING_ANGLE = 'steering_angle'
+        STEERING_RATE = 'steering_rate'
+        CORNERING_FORCE = 'cornering_force'
+        THROTTLE = 'throttle'
+        THROTTLE_RATE = 'throttle_rate'
+        BRAKE = 'brake'
+        BRAKE_RATE = 'brake_rate'
+        CURRENT_TIME = 'current_time'
+        TIME_RATE = 'time_rate'
+        VELOCITY_X = 'velocity_x'
+        VELOCITY_X_RATE = 'velocity_x_rate'
+        VELOCITY_Y = 'velocity_y'
+        VELOCITY_Y_RATE = 'velocity_y_rate'
+        VELOCITY_Z = 'velocity_z'
+        VELOCITY_Z_RATE = 'velocity_z_rate'
+
+    # Flat list for convenience (now only expert optimal + derived)
+    CONTEXT_FEATURES: List[str] = [f.value for f in ContextFeature]
 
 
 class BehaviorLearner:
@@ -241,65 +298,62 @@ class ExpertTrajectoryLearner:
             DataFrame with trajectory features
         """
         features = pd.DataFrame()
-        
-        # Position and track features
+        TF = ExpertFeatureCatalog.TrajectoryFeature
+
         if 'Graphics_normalized_car_position' in df.columns:
-            features['track_position'] = df['Graphics_normalized_car_position']
-            features['track_position_rate'] = df['Graphics_normalized_car_position'].diff()
-        
-        # 3D Player position features for precise trajectory analysis
+            features[TF.TRACK_POSITION.value] = df['Graphics_normalized_car_position']
+            features[TF.TRACK_POSITION_RATE.value] = df['Graphics_normalized_car_position'].diff()
+
         if 'Graphics_player_pos_x' in df.columns:
-            features['player_pos_x'] = df['Graphics_player_pos_x']
-            features['player_pos_x_velocity'] = features['player_pos_x'].diff().rolling(window=3).mean()
-            
+            features[TF.PLAYER_POS_X.value] = df['Graphics_player_pos_x']
+            features[TF.PLAYER_POS_X_VELOCITY.value] = features[TF.PLAYER_POS_X.value].diff().rolling(window=3).mean()
         if 'Graphics_player_pos_y' in df.columns:
-            features['player_pos_y'] = df['Graphics_player_pos_y']
-            features['player_pos_y_velocity'] = features['player_pos_y'].diff().rolling(window=3).mean()
-            
+            features[TF.PLAYER_POS_Y.value] = df['Graphics_player_pos_y']
+            features[TF.PLAYER_POS_Y_VELOCITY.value] = features[TF.PLAYER_POS_Y.value].diff().rolling(window=3).mean()
         if 'Graphics_player_pos_z' in df.columns:
-            features['player_pos_z'] = df['Graphics_player_pos_z']
-            features['player_pos_z_velocity'] = features['player_pos_z'].diff().rolling(window=3).mean()
-            
-        # Speed and racing line
+            features[TF.PLAYER_POS_Z.value] = df['Graphics_player_pos_z']
+            features[TF.PLAYER_POS_Z_VELOCITY.value] = features[TF.PLAYER_POS_Z.value].diff().rolling(window=3).mean()
+
         if 'Physics_speed_kmh' in df.columns:
-            features['speed'] = df['Physics_speed_kmh']
-            features['speed_change'] = df['Physics_speed_kmh'].diff()
-            features['acceleration'] = features['speed_change'] / 0.016  # Assuming ~60fps
-        
-        # Gear information for optimal shifting and trajectory optimization
+            features[TF.SPEED.value] = df['Physics_speed_kmh']
+            features[TF.SPEED_CHANGE.value] = df['Physics_speed_kmh'].diff()
+            features[TF.ACCELERATION.value] = features[TF.SPEED_CHANGE.value] / 0.016
+
         if 'Physics_gear' in df.columns:
-            features['gear'] = df['Physics_gear']
-            features['gear_change'] = df['Physics_gear'].diff()
-            # Gear-speed ratio for optimization
+            features[TF.GEAR.value] = df['Physics_gear']
+            features[TF.GEAR_CHANGE.value] = df['Physics_gear'].diff()
             if 'Physics_speed_kmh' in df.columns:
-                features['speed_per_gear'] = df['Physics_speed_kmh'] / (df['Physics_gear'] + 1)  # +1 to avoid division by zero
-        
-        # Steering and line choice
+                features[TF.SPEED_PER_GEAR.value] = df['Physics_speed_kmh'] / (df['Physics_gear'] + 1)
+
         if 'Physics_steer_angle' in df.columns:
-            features['steering_angle'] = df['Physics_steer_angle']
-            features['steering_rate'] = df['Physics_steer_angle'].diff()
-        
-        # Cornering metrics
+            features[TF.STEERING_ANGLE.value] = df['Physics_steer_angle']
+            features[TF.STEERING_RATE.value] = df['Physics_steer_angle'].diff()
+
         if all(col in df.columns for col in ['Physics_steer_angle', 'Physics_speed_kmh']):
-            features['cornering_force'] = np.abs(df['Physics_steer_angle']) * df['Physics_speed_kmh']
-        
-        # Throttle and brake application timing
+            features[TF.CORNERING_FORCE.value] = np.abs(df['Physics_steer_angle']) * df['Physics_speed_kmh']
+
         if 'Physics_gas' in df.columns:
-            features['throttle'] = df['Physics_gas']
-            features['throttle_rate'] = df['Physics_gas'].diff()
-        
+            features[TF.THROTTLE.value] = df['Physics_gas']
+            features[TF.THROTTLE_RATE.value] = df['Physics_gas'].diff()
         if 'Physics_brake' in df.columns:
-            features['brake'] = df['Physics_brake']
-            features['brake_rate'] = df['Physics_brake'].diff()
-        
-        # Lap time optimization features
+            features[TF.BRAKE.value] = df['Physics_brake']
+            features[TF.BRAKE_RATE.value] = df['Physics_brake'].diff()
+
         if 'Graphics_current_time' in df.columns:
-            features['current_time'] = df['Graphics_current_time']
-            features['time_rate'] = df['Graphics_current_time'].diff()
-        
-        # Fill missing values
+            features[TF.CURRENT_TIME.value] = df['Graphics_current_time']
+            features[TF.TIME_RATE.value] = df['Graphics_current_time'].diff()
+
+        if 'Physics_velocity_x' in df.columns:
+            features[TF.VELOCITY_X.value] = df['Physics_velocity_x']
+            features[TF.VELOCITY_X_RATE.value] = df['Physics_velocity_x'].diff()
+        if 'Physics_velocity_y' in df.columns:
+            features[TF.VELOCITY_Y.value] = df['Physics_velocity_y']
+            features[TF.VELOCITY_Y_RATE.value] = df['Physics_velocity_y'].diff()
+        if 'Physics_velocity_z' in df.columns:
+            features[TF.VELOCITY_Z.value] = df['Physics_velocity_z']
+            features[TF.VELOCITY_Z_RATE.value] = df['Physics_velocity_z'].diff()
+
         features = features.bfill().fillna(0)
-        
         return features
     
     def learn_optimal_trajectory(self, 
@@ -319,47 +373,44 @@ class ExpertTrajectoryLearner:
         # Extract trajectory features
         trajectory_features = self.extract_trajectory_features(expert_df)
         
-        # Define target variables (what we want to optimize)
-        targets = {}
-        
-        # Speed optimization target
-        if 'speed' in trajectory_features.columns:
-            targets['optimal_speed'] = trajectory_features['speed']
-        
-        # Steering optimization target
-        if 'steering_angle' in trajectory_features.columns:
-            targets['optimal_steering'] = trajectory_features['steering_angle']
-        
-        # Throttle optimization target
-        if 'throttle' in trajectory_features.columns:
-            targets['optimal_throttle'] = trajectory_features['throttle']
-        
-        # Brake optimization target
-        if 'brake' in trajectory_features.columns:
-            targets['optimal_brake'] = trajectory_features['brake']
-        
-        # Gear optimization target
-        if 'gear' in trajectory_features.columns:
-            targets['optimal_gear'] = trajectory_features['gear']
-        
-        # Position optimization targets (3D position for precise trajectory learning)
-        if 'player_pos_x' in trajectory_features.columns:
-            targets['optimal_player_pos_x'] = trajectory_features['player_pos_x']
-        
-        if 'player_pos_y' in trajectory_features.columns:
-            targets['optimal_player_pos_y'] = trajectory_features['player_pos_y']
-            
-        if 'player_pos_z' in trajectory_features.columns:
-            targets['optimal_player_pos_z'] = trajectory_features['player_pos_z']
-        
-        # Track position optimization target (fallback if 3D positions not available)
-        if 'track_position' in trajectory_features.columns:
-            targets['optimal_track_position'] = trajectory_features['track_position']
+        # Define target variables (what we want to optimize) using enum feature names
+        from .imitate_expert_learning_service import ExpertFeatureCatalog  # local import to avoid circular for typing tools
+        CF = ExpertFeatureCatalog.ContextFeature
+        targets: Dict[str, pd.Series] = {}
+
+        TF = ExpertFeatureCatalog.TrajectoryFeature
+        if TF.SPEED.value in trajectory_features.columns:
+            targets[CF.EXPERT_OPTIMAL_SPEED.value] = trajectory_features[TF.SPEED.value]
+        if TF.STEERING_ANGLE.value in trajectory_features.columns:
+            targets[CF.EXPERT_OPTIMAL_STEERING.value] = trajectory_features[TF.STEERING_ANGLE.value]
+        if TF.THROTTLE.value in trajectory_features.columns:
+            targets[CF.EXPERT_OPTIMAL_THROTTLE.value] = trajectory_features[TF.THROTTLE.value]
+        if TF.BRAKE.value in trajectory_features.columns:
+            targets[CF.EXPERT_OPTIMAL_BRAKE.value] = trajectory_features[TF.BRAKE.value]
+        if TF.GEAR.value in trajectory_features.columns:
+            targets[CF.EXPERT_OPTIMAL_GEAR.value] = trajectory_features[TF.GEAR.value]
+        if TF.PLAYER_POS_X.value in trajectory_features.columns:
+            targets[CF.EXPERT_OPTIMAL_PLAYER_POS_X.value] = trajectory_features[TF.PLAYER_POS_X.value]
+        if TF.PLAYER_POS_Y.value in trajectory_features.columns:
+            targets[CF.EXPERT_OPTIMAL_PLAYER_POS_Y.value] = trajectory_features[TF.PLAYER_POS_Y.value]
+        if TF.PLAYER_POS_Z.value in trajectory_features.columns:
+            targets[CF.EXPERT_OPTIMAL_PLAYER_POS_Z.value] = trajectory_features[TF.PLAYER_POS_Z.value]
+        if TF.TRACK_POSITION.value in trajectory_features.columns:
+            targets[CF.EXPERT_OPTIMAL_TRACK_POSITION.value] = trajectory_features[TF.TRACK_POSITION.value]
         
         # Prepare input features (current state)
-        input_features = ['track_position', 'speed', 'steering_angle', 'gear', 
-                         'player_pos_x', 'player_pos_y', 'player_pos_z',
-                         'player_pos_x_velocity', 'player_pos_y_velocity', 'player_pos_z_velocity']
+        input_features = [
+            TF.TRACK_POSITION.value,
+            TF.SPEED.value,
+            TF.STEERING_ANGLE.value,
+            TF.GEAR.value,
+            TF.PLAYER_POS_X.value,
+            TF.PLAYER_POS_Y.value,
+            TF.PLAYER_POS_Z.value,
+            TF.PLAYER_POS_X_VELOCITY.value,
+            TF.PLAYER_POS_Y_VELOCITY.value,
+            TF.PLAYER_POS_Z_VELOCITY.value
+        ]
         available_input_features = [f for f in input_features if f in trajectory_features.columns]
         
         if len(available_input_features) < 2:
@@ -385,7 +436,7 @@ class ExpertTrajectoryLearner:
                 continue  # Skip targets with too many missing values
             
             # Clean target values based on type
-            if target_name == 'optimal_gear':
+            if target_name == CF.EXPERT_OPTIMAL_GEAR.value:
                 # For gear, fill missing values with mode (most common gear) and keep as integer
                 mode_value = target_values.mode().iloc[0] if not target_values.mode().empty else 1
                 y = target_values.fillna(mode_value).astype(int)
@@ -399,7 +450,7 @@ class ExpertTrajectoryLearner:
             )
             
             # Use different model types based on target variable
-            if target_name == 'optimal_gear':
+            if target_name == CF.EXPERT_OPTIMAL_GEAR.value:
                 # Use classifier for discrete gear values, you cant have 3.5 gear   
                 model = RandomForestClassifier(
                     n_estimators=100, 
@@ -437,7 +488,7 @@ class ExpertTrajectoryLearner:
             performance_metrics[target_name] = metrics
             
             # Log metrics based on model type
-            if target_name == 'optimal_gear':
+            if target_name == CF.EXPERT_OPTIMAL_GEAR.value:
                 print(f"[INFO] {target_name} model - Accuracy: {metrics['accuracy']:.3f}, F1: {metrics['f1_score']:.3f}")
             else:
                 print(f"[INFO] {target_name} model - R²: {metrics['r2']:.3f}, MAE: {metrics['mae']:.3f}")
@@ -496,17 +547,19 @@ class ExpertTrajectoryLearner:
         
         # Make predictions
         predictions = {}
+        from .imitate_expert_learning_service import ExpertFeatureCatalog as _EFC  # local import to avoid name issues
+        gear_key = _EFC.ContextFeature.EXPERT_OPTIMAL_GEAR.value
         for target_name, model in self.trajectory_model['models'].items():
             try:
                 pred = model.predict(X_scaled)
                 # Handle gear predictions as integers
-                if target_name == 'optimal_gear':
+                if target_name == gear_key:
                     predictions[target_name] = int(pred[0] if len(pred) == 1 else int(pred.mean()))
                 else:
                     predictions[target_name] = float(pred[0] if len(pred) == 1 else pred.mean())
             except Exception as e:
                 print(f"[WARNING] Failed to predict {target_name}: {e}")
-                predictions[target_name] = 1 if target_name == 'optimal_gear' else 0.0
+                predictions[target_name] = 1 if target_name == gear_key else 0.0
         
         return predictions
 
@@ -830,25 +883,11 @@ class ExpertImitateLearningService:
                 optimal_actions = self.trajectory_learner.predict_optimal_actions(processed_df)
                 predictions['optimal_actions'] = optimal_actions
             except Exception as e:
-                print(f"[WARNING] Could not predict optimal actions: {e}")
-                predictions['optimal_actions'] = {}
+                raise Exception(f"[WARNING] Could not predict optimal actions: {e}")
         
         # If no specific models are available, provide basic estimates based on telemetry
         if not predictions or all('error' in v for v in predictions.values() if isinstance(v, dict)):
-            # Provide basic expert estimates based on current telemetry
-            try:
-                row = processed_df.iloc[0]
-                basic_actions = {
-                    'optimal_speed': row.get('Physics_speed_kmh', 0) * 1.05,  # Slightly higher speed
-                    'optimal_throttle': min(1.0, row.get('Physics_gas', 0) * 1.1),  # Slightly more throttle
-                    'optimal_brake': max(0.0, row.get('Physics_brake', 0) * 0.9),  # Slightly less brake
-                    'optimal_steering': row.get('Physics_steer_angle', 0)  # Similar steering
-                }
-                predictions['optimal_actions'] = basic_actions
-                print("[INFO] Used basic expert action estimates")
-            except Exception as e:
-                print(f"[WARNING] Could not generate basic expert actions: {e}")
-                predictions['optimal_actions'] = {}
+            raise Exception("[Error] No valid model available for predictions")
         
         return predictions
     
@@ -894,6 +933,91 @@ class ExpertImitateLearningService:
         
         return summary
  
+    async def extract_expert_state_for_telemetry(self, telemetry_data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+         in the input telemetry data, extract expert states features using the saved model and return related expert feature-only data. the returned data and
+        the original telemetry data will be used for training a transformer model to predict steps needed to reach expert state 
+        at a given normalized lap distance. The training data for transformer model will be non-expert data. the purpose of the returned features is to provide
+        expert state as target for the transformer model and guide to differentiate driver actions which lead to expert state and which doesnt.
+        Args:
+            telemetry_data: List of cleaned telemetry records to predict on
+
+        Returns:
+            List of dictionaries containing ONLY expert-related features per record
+            (no original telemetry fields).
+        """
+        ContextFeature = ExpertFeatureCatalog.ContextFeature
+        if not telemetry_data:
+            return []
+        if not self.trained_models:
+            raise ValueError("No trained imitation models available. Train or load models before calling extract_expert_state_for_telemetry().")
+
+        processed_df = pd.DataFrame(telemetry_data)
+
+        expert_feature_rows: List[Dict[str, Any]] = []
+
+    # Trajectory models only (behavior intentionally excluded)
+        trajectory_bundle = None
+        if 'trajectory_learning' in self.trained_models:
+            try:
+                trajectory_bundle = self.trained_models['trajectory_learning']['modelData']
+                if isinstance(trajectory_bundle.get('scaler'), str):
+                    trajectory_bundle['scaler'] = self.deserialize_data(trajectory_bundle['scaler'])
+                if trajectory_bundle.get('pca') is not None and isinstance(trajectory_bundle.get('pca'), str):
+                    trajectory_bundle['pca'] = self.deserialize_data(trajectory_bundle['pca'])
+                deserialized_models = {}
+                for name, mdl in trajectory_bundle.get('models', {}).items():
+                    deserialized_models[name] = self.deserialize_data(mdl) if isinstance(mdl, str) else mdl
+                trajectory_bundle['models'] = deserialized_models
+                self.trajectory_learner.trajectory_model = trajectory_bundle
+            except Exception as e:
+                print(f"[WARNING] Could not prepare trajectory models: {e}")
+                trajectory_bundle = None
+
+        def predict_optimal_for_index(idx: int) -> Dict[str, float]:
+            if trajectory_bundle is None:
+                return {}
+            try:
+                row_df = processed_df.iloc[[idx]]
+                return self.trajectory_learner.predict_optimal_actions(row_df)
+            except Exception as e:
+                print(f"[WARNING] Optimal action prediction failed idx={idx}: {e}")
+                return {}
+
+        # Collect only expert optimal keys from predictions (identity mapping no longer needed)
+        optimal_context_keys = {
+            ContextFeature.EXPERT_OPTIMAL_SPEED.value,
+            ContextFeature.EXPERT_OPTIMAL_STEERING.value,
+            ContextFeature.EXPERT_OPTIMAL_THROTTLE.value,
+            ContextFeature.EXPERT_OPTIMAL_BRAKE.value,
+            ContextFeature.EXPERT_OPTIMAL_GEAR.value,
+            ContextFeature.EXPERT_OPTIMAL_PLAYER_POS_X.value,
+            ContextFeature.EXPERT_OPTIMAL_PLAYER_POS_Y.value,
+            ContextFeature.EXPERT_OPTIMAL_PLAYER_POS_Z.value,
+            ContextFeature.EXPERT_OPTIMAL_TRACK_POSITION.value
+        }
+
+        total_rows = len(processed_df)
+        for i in range(total_rows):
+            row_features: Dict[str, Any] = {}
+            # Optimal action predictions
+            optimal_preds = predict_optimal_for_index(i)
+            for k, v in optimal_preds.items():
+                if k in optimal_context_keys:
+                    row_features[k] = v
+
+            # Derived cues
+            if (ContextFeature.EXPERT_OPTIMAL_THROTTLE.value in row_features and
+                ContextFeature.EXPERT_OPTIMAL_BRAKE.value in row_features):
+                throttle = row_features[ContextFeature.EXPERT_OPTIMAL_THROTTLE.value]
+                brake = row_features[ContextFeature.EXPERT_OPTIMAL_BRAKE.value]
+                row_features[ContextFeature.EXPERT_CONTROL_OVERLAP.value] = float(throttle > 0.1 and brake > 0.1)
+                row_features[ContextFeature.EXPERT_NET_ACCEL_COMMAND.value] = float(throttle - brake)
+
+            expert_feature_rows.append(row_features)
+
+        return expert_feature_rows
+        
     def serialize_object_inside(self, results: any) -> str:
         # Create a deep copy of results to avoid modifying the original
         import copy
@@ -1074,528 +1198,6 @@ class ExpertImitateLearningService:
             
         except Exception as e:
             raise Exception(f"Failed to deserialize imitation learning models: {str(e)}")
-    
-    def compare_telemetry_with_expert(self, 
-                                    incoming_telemetry: List[Dict[str, Any]], 
-                                    window_size: int = 5,
-                                    min_section_length: int = 10,
-                                    batch_size: int = 256) -> Dict[str, Any]:
-        """
-        Compare incoming telemetry data with expert actions and identify performance sections
-        
-        Args:
-            incoming_telemetry: List of incoming telemetry data points (already cleaned)
-            window_size: Window size for smoothing score trends
-            min_section_length: Minimum length for a valid section
-            use_fast: Whether to use the fast comparison method if available
-            batch_size: Batch size for processing in fast method
-            
-        Returns:
-            Dictionary containing:
-            - paired_data: List of incoming telemetry data paired with corresponding expert actions and similarity scores
-            - overall statistics and performance sections analysis
-            - score statistics for performance evaluation
-        """
-        try:
-            return self.fast_compare_telemetry_with_expert(
-                incoming_telemetry,
-                window_size=window_size,
-                min_section_length=min_section_length,
-                batch_size=batch_size
-            )
-        except Exception as fast_err:
-            raise RuntimeError(f"[WARNING] Fast comparison failed, falling back to original method: {fast_err}")
-
-    # ============================= Optimized Fast Path =============================
-    def fast_compare_telemetry_with_expert(self,
-                                           incoming_telemetry: List[Dict[str, Any]],
-                                           window_size: int = 5,
-                                           min_section_length: int = 10,
-                                           batch_size: int = 256) -> Dict[str, Any]:
-        """High-performance version of compare_telemetry_with_expert.
-
-        Goals:
-            - Preserve output schema (paired_data, performance_sections, transformer_training_pairs)
-            - Batch trajectory model predictions (RandomForest .predict accepts arrays)
-            - Vectorize similarity score computation for speed
-            - Avoid per-row DataFrame creation
-
-        Args:
-            incoming_telemetry: Cleaned telemetry list
-            window_size: Rolling window for smoothing & trend detection
-            min_section_length: Minimum length for a considered section
-            batch_size: Batch size for model inference
-
-        Returns:
-            Same structure as original compare_telemetry_with_expert
-        """
-        import time
-        t0 = time.time()
-        total = len(incoming_telemetry)
-        print(f"[INFO {self.__class__.__name__}] (fast) Comparing {total} telemetry points with expert model")
-
-        if not self.trained_models:
-            raise ValueError("No trained models available. Please train models first using train_ai_model().")
-        if total == 0:
-            return {
-                'total_data_points': 0,
-                'overall_score': 0.0,
-                'score_statistics': {},
-                'paired_data': [],
-                'performance_sections': [],
-                'transformer_training_pairs': []
-            }
-
-        df = pd.DataFrame(incoming_telemetry)
-
-        # ================= Behavior prediction batching =================
-        behavior_preds = [None] * total
-        if 'behavior_learning' in self.trained_models:
-            try:
-                behavior_model_raw = self.trained_models['behavior_learning']['modelData']['model']
-                behavior_model = behavior_model_raw if not isinstance(behavior_model_raw, str) else self.deserialize_data(behavior_model_raw)
-                feature_names = behavior_model['feature_names']
-
-                # Extract behavior features dataframe
-                behavior_features_full = self.behavior_learner.generate_driving_style_features(df)
-
-                # Ensure all required features are present
-                for missing in feature_names:
-                    if missing not in behavior_features_full.columns:
-                        behavior_features_full[missing] = 0.0
-                
-                # zero-fill missing values for each feature
-                Xb = behavior_features_full[feature_names].fillna(0)
-
-                # Raw inputs have very different units/ranges (e.g., speed in km/h vs throttle in [0,1]). Scaling prevents large-range features from dominating linear and distance-based models.
-                Xb_scaled = behavior_model['scaler'].transform(Xb)
-                
-                # vectorized inference: eeding a whole batch (matrix) of samples to the model in one call
-                style_preds = behavior_model['model'].predict(Xb_scaled)
-                style_proba = behavior_model['model'].predict_proba(Xb_scaled)
-
-                # converts those integer predictions back to original string style labels (e.g., "aggressive", "smooth").
-                decoded = behavior_model['label_encoder'].inverse_transform(style_preds)
-                for i in range(total):
-                    behavior_preds[i] = {
-                        'predicted_style': decoded[i],
-                        'confidence': float(np.max(style_proba[i])),
-                        'style_probabilities': dict(zip(behavior_model['label_encoder'].classes_, style_proba[i]))
-                    }
-            except Exception as e:
-                print(f"[WARNING] Fast path behavior prediction failed: {e}")
-
-        # ================= Trajectory (optimal action) prediction batching =================
-        optimal_action_preds = [None] * total
-        if 'trajectory_learning' in self.trained_models:
-            try:
-                traj_data = self.trained_models['trajectory_learning']['modelData']
-                # Deserialize if needed
-                if 'models' in traj_data:
-                    models_dict = {}
-                    for name, m in traj_data['models'].items():
-                        models_dict[name] = self.deserialize_data(m) if isinstance(m, str) else m
-                else:
-                    models_dict = {}
-                scaler = traj_data['scaler'] if not isinstance(traj_data['scaler'], str) else self.deserialize_data(traj_data['scaler'])
-                pca_obj = traj_data.get('pca')
-                if pca_obj is not None and isinstance(pca_obj, str):
-                    pca_obj = self.deserialize_data(pca_obj)
-                input_features = traj_data['input_features']
-
-                # Build required feature frame once
-                traj_feat_df = self.trajectory_learner.extract_trajectory_features(df)
-                # Ensure all required features
-                for f in input_features:
-                    if f not in traj_feat_df.columns:
-                        traj_feat_df[f] = 0.0
-                Xt = traj_feat_df[input_features].fillna(0)
-                Xt_scaled = scaler.transform(Xt)
-                if pca_obj is not None and hasattr(pca_obj, 'components_'):
-                    Xt_scaled = pca_obj.transform(Xt_scaled)
-
-                # For each model, predict in batches and store columns
-                model_outputs = {}
-                for target_name, model in models_dict.items():
-                    try:
-                        model_outputs[target_name] = model.predict(Xt_scaled)
-                    except Exception as e:
-                        print(f"[WARNING] Fast path trajectory prediction failed for {target_name}: {e}")
-                        model_outputs[target_name] = np.zeros(total)
-
-                # Assemble per-row dicts
-                for i in range(total):
-                    row_actions = {}
-                    for target_name, arr in model_outputs.items():
-                        val = arr[i]
-                        if target_name == 'optimal_gear':
-                            row_actions[target_name] = int(val)
-                        else:
-                            row_actions[target_name] = float(val)
-                    optimal_action_preds[i] = row_actions
-            except Exception as e:
-                raise RuntimeError(f"[WARNING] Fast path optimal action prediction failed: {e}")
-
-        # ================= Similarity scoring (vectorized) =================
-        # We'll approximate original scoring rules; for fields not present fall back to heuristic.
-
-
-        scores = np.zeros(total, dtype=float)
-
-        # Extract actual action arrays
-        speed_actual = df.get('Physics_speed_kmh', pd.Series([np.nan]*total)).to_numpy()
-        throttle_actual = df.get('Physics_gas', pd.Series([np.nan]*total)).to_numpy()
-        brake_actual = df.get('Physics_brake', pd.Series([np.nan]*total)).to_numpy()
-        steer_actual = df.get('Physics_steer_angle', pd.Series([np.nan]*total)).to_numpy()
-        gear_actual = df.get('Physics_gear', pd.Series([np.nan]*total)).to_numpy()
-
-        comparison_counts = np.zeros(total, dtype=int)
-
-        for i in range(total):
-            # Optimal actions
-            oa = optimal_action_preds[i] or {}
-            if oa:
-                # Speed
-                if 'optimal_speed' in oa and not np.isnan(speed_actual[i]) and oa['optimal_speed'] > 0:
-                    diff = abs(speed_actual[i] - oa['optimal_speed'])
-                    max_val = max(speed_actual[i], oa['optimal_speed'], 1)
-                    scores[i] += max(0, 1 - diff / max_val)
-                    comparison_counts[i] += 1
-                if 'optimal_throttle' in oa and not np.isnan(throttle_actual[i]):
-                    diff = abs(throttle_actual[i] - oa['optimal_throttle'])
-                    scores[i] += max(0, 1 - diff)
-                    comparison_counts[i] += 1
-                if 'optimal_brake' in oa and not np.isnan(brake_actual[i]):
-                    diff = abs(brake_actual[i] - oa['optimal_brake'])
-                    scores[i] += max(0, 1 - diff)
-                    comparison_counts[i] += 1
-                if 'optimal_steering' in oa and not np.isnan(steer_actual[i]):
-                    diff = abs(steer_actual[i] - oa['optimal_steering'])
-                    max_s = max(abs(steer_actual[i]), abs(oa['optimal_steering']), 1)
-                    scores[i] += max(0, 1 - diff / max_s)
-                    comparison_counts[i] += 1
-                if 'optimal_gear' in oa and not np.isnan(gear_actual[i]):
-                    scores[i] += 1.0 if int(gear_actual[i]) == int(oa['optimal_gear']) else 0.0
-                    comparison_counts[i] += 1
-            # Behavior
-            beh = behavior_preds[i] or {}
-            if 'confidence' in beh:
-                scores[i] += beh['confidence']
-                comparison_counts[i] += 1
-
-            if comparison_counts[i] == 0:
-                # fallback heuristic
-                spd = speed_actual[i]
-                base = 0.3
-                if not np.isnan(spd):
-                    base = min(0.8, max(0.1, (spd % 30) / 100 + 0.2))
-                scores[i] = base
-                comparison_counts[i] = 1
-
-        scores = scores / np.maximum(comparison_counts, 1)
-        scores_series = pd.Series(scores)
-        smoothed_scores = scores_series.rolling(window=min(window_size, total), center=True).mean().fillna(scores_series)
-
-        sections = self._identify_performance_sections(smoothed_scores, window_size, min_section_length)
-
-        # Build paired_data
-        paired_data = []
-        for i in range(total):
-            paired_data.append({
-                'index': i,
-                'telemetry_data': incoming_telemetry[i],
-                'expert_actions': {
-                    'optimal_actions': optimal_action_preds[i] or {},
-                    'driving_behavior': behavior_preds[i] or {}
-                },
-                'similarity_score': float(scores[i])
-            })
-
-        # Build transformer training pairs (reuse original section logic)
-        transformer_training_pairs = []
-        for section in sections:
-            start_idx = section['start_index']
-            end_idx = section['end_index']
-            section_scores = scores[start_idx:end_idx+1]
-            telemetry_section = [incoming_telemetry[j] for j in range(start_idx, end_idx+1)]
-            expert_actions_section = [paired_data[j]['expert_actions'] for j in range(start_idx, end_idx+1)]
-            if telemetry_section and expert_actions_section:
-                transformer_training_pairs.append({
-                    'telemetry_section': telemetry_section,
-                    'expert_actions': expert_actions_section,
-                    'pattern': section['pattern'],
-                    'section_stats': {
-                        'start_index': start_idx,
-                        'end_index': end_idx,
-                        'length': end_idx - start_idx + 1,
-                        'mean_score': float(np.mean(section_scores)),
-                        'trend_slope': section['trend_slope']
-                    }
-                })
-
-        # Section summaries
-        performance_sections = []
-        for section in sections:
-            start_idx = section['start_index']
-            end_idx = section['end_index']
-            section_scores = scores[start_idx:end_idx+1]
-            performance_sections.append({
-                'pattern': section['pattern'],
-                'start_index': start_idx,
-                'end_index': end_idx,
-                'length': end_idx - start_idx + 1,
-                'score_statistics': {
-                    'mean': float(np.mean(section_scores)),
-                    'std': float(np.std(section_scores)),
-                    'min': float(np.min(section_scores)),
-                    'max': float(np.max(section_scores)),
-                    'trend_slope': section['trend_slope']
-                }
-            })
-
-        elapsed = time.time() - t0
-        print(f"[INFO {self.__class__.__name__}] (fast) Completed comparison in {elapsed:.3f}s | points={total} | per_point={elapsed/total:.6f}s")
-
-        return {
-            'total_data_points': total,
-            'overall_score': float(np.mean(scores)),
-            'score_statistics': {
-                'mean': float(np.mean(scores)),
-                'std': float(np.std(scores)),
-                'min': float(np.min(scores)),
-                'max': float(np.max(scores)),
-                'median': float(np.median(scores))
-            },
-            'paired_data': paired_data,
-            'performance_sections': performance_sections,
-            'transformer_training_pairs': transformer_training_pairs,
-            'fast_path': True,
-            'timing_seconds': elapsed
-        }
-    
-    def _calculate_similarity_score(self, 
-                                  actual_telemetry: pd.DataFrame, 
-                                  expert_actions: Dict[str, Any]) -> float:
-        """
-        Calculate similarity score between actual telemetry and expert predictions
-        
-        Args:
-            actual_telemetry: Single row of actual telemetry data
-            expert_actions: Predicted expert actions
-            
-        Returns:
-            Similarity score between 0 and 1 (1 being perfect match)
-        """
-        if not expert_actions or 'error' in expert_actions:
-            return 0.1  # Give a small score rather than 0 to avoid all sections being filtered out
-        
-        total_score = 0.0
-        comparison_count = 0
-        
-        # Compare optimal actions if available
-        if 'optimal_actions' in expert_actions and expert_actions['optimal_actions']:
-            optimal_actions = expert_actions['optimal_actions']
-            
-            # Compare speed
-            if 'optimal_speed' in optimal_actions and 'Physics_speed_kmh' in actual_telemetry.columns:
-                actual_speed = actual_telemetry['Physics_speed_kmh'].iloc[0]
-                predicted_speed = optimal_actions['optimal_speed']
-                if not (pd.isna(actual_speed) or pd.isna(predicted_speed)) and predicted_speed > 0:
-                    speed_diff = abs(actual_speed - predicted_speed)
-                    max_speed = max(actual_speed, predicted_speed, 1)  # Avoid division by zero
-                    speed_score = max(0, 1 - (speed_diff / max_speed))
-                    total_score += speed_score
-                    comparison_count += 1
-            
-            # Compare throttle
-            if 'optimal_throttle' in optimal_actions and 'Physics_gas' in actual_telemetry.columns:
-                actual_throttle = actual_telemetry['Physics_gas'].iloc[0]
-                predicted_throttle = optimal_actions['optimal_throttle']
-                if not (pd.isna(actual_throttle) or pd.isna(predicted_throttle)):
-                    throttle_diff = abs(actual_throttle - predicted_throttle)
-                    throttle_score = max(0, 1 - throttle_diff)  # Assuming throttle is 0-1
-                    total_score += throttle_score
-                    comparison_count += 1
-            
-            # Compare brake
-            if 'optimal_brake' in optimal_actions and 'Physics_brake' in actual_telemetry.columns:
-                actual_brake = actual_telemetry['Physics_brake'].iloc[0]
-                predicted_brake = optimal_actions['optimal_brake']
-                if not (pd.isna(actual_brake) or pd.isna(predicted_brake)):
-                    brake_diff = abs(actual_brake - predicted_brake)
-                    brake_score = max(0, 1 - brake_diff)  # Assuming brake is 0-1
-                    total_score += brake_score
-                    comparison_count += 1
-        
-        # Compare driving behavior if available
-        if 'driving_behavior' in expert_actions and 'confidence' in expert_actions['driving_behavior']:
-            behavior_score = expert_actions['driving_behavior']['confidence']
-            total_score += behavior_score
-            comparison_count += 1
-        
-        # Return average score if we made comparisons, otherwise return a default score
-        if comparison_count > 0:
-            return total_score / comparison_count
-        else:
-            # Return a random-like score based on telemetry to create some variation
-            try:
-                row = actual_telemetry.iloc[0]
-                # Create a pseudo-random score based on speed and position
-                speed = row.get('Physics_speed_kmh', 50)
-                base_score = min(0.8, max(0.1, (speed % 30) / 100 + 0.2))
-                return base_score
-            except:
-                return 0.3  # Default moderate score
-                predicted_brake = optimal_actions['optimal_brake']
-                if not (np.isnan(actual_brake) or np.isnan(predicted_brake)):
-                    brake_diff = abs(actual_brake - predicted_brake)
-                    brake_score = max(0, 1 - brake_diff)  # Assuming brake is 0-1
-                    total_score += brake_score
-                    comparison_count += 1
-            
-            # Compare steering
-            if 'optimal_steering' in optimal_actions and 'Physics_steer_angle' in actual_telemetry.columns:
-                actual_steering = actual_telemetry['Physics_steer_angle'].iloc[0]
-                predicted_steering = optimal_actions['optimal_steering']
-                if not (np.isnan(actual_steering) or np.isnan(predicted_steering)):
-                    steering_diff = abs(actual_steering - predicted_steering)
-                    max_steering = max(abs(actual_steering), abs(predicted_steering), 1)
-                    steering_score = max(0, 1 - (steering_diff / max_steering))
-                    total_score += steering_score
-                    comparison_count += 1
-            
-            # Compare gear
-            if 'optimal_gear' in optimal_actions and 'Physics_gear' in actual_telemetry.columns:
-                actual_gear = actual_telemetry['Physics_gear'].iloc[0]
-                predicted_gear = optimal_actions['optimal_gear']
-                if not (pd.isna(actual_gear) or pd.isna(predicted_gear)):
-                    gear_score = 1.0 if int(actual_gear) == int(predicted_gear) else 0.0
-                    total_score += gear_score
-                    comparison_count += 1
-        
-        # Compare behavior prediction if available
-        if 'driving_behavior' in expert_actions:
-            behavior_info = expert_actions['driving_behavior']
-            if 'confidence' in behavior_info:
-                # Use confidence as a score component
-                behavior_score = behavior_info['confidence']
-                total_score += behavior_score
-                comparison_count += 1
-        
-        # Return average score
-        return total_score / comparison_count if comparison_count > 0 else 0.0
-    
-    def _identify_performance_sections(self, 
-                                     scores: pd.Series, 
-                                     window_size: int,
-                                     min_section_length: int) -> List[Dict[str, Any]]:
-        """
-        Identify sections with consistently increasing, high, or decreasing scores
-        
-        Args:
-            scores: Series of similarity scores
-            window_size: Window size for trend analysis
-            min_section_length: Minimum length for a valid section
-            
-        Returns:
-            List of identified sections with patterns
-        """
-        sections = []
-        
-        # Calculate trend using rolling linear regression slope
-        trends = []
-        for i in range(len(scores)):
-            start_idx = max(0, i - window_size // 2)
-            end_idx = min(len(scores), i + window_size // 2)
-            
-            if end_idx - start_idx < 3:  # Need at least 3 points for trend
-                trends.append(0.0)
-                continue
-            
-            # Calculate slope using least squares
-            x = np.arange(start_idx, end_idx)
-            y = scores.iloc[start_idx:end_idx].values
-            
-            # Remove NaN values
-            valid_mask = ~np.isnan(y)
-            if np.sum(valid_mask) < 3:
-                trends.append(0.0)
-                continue
-            
-            x_clean = x[valid_mask]
-            y_clean = y[valid_mask]
-            
-            try:
-                slope = np.polyfit(x_clean, y_clean, 1)[0]
-                trends.append(slope)
-            except:
-                trends.append(0.0)
-        
-        trends = pd.Series(trends)
-        
-        # Define thresholds for pattern identification
-        increasing_threshold = 0.002  # Positive slope threshold
-        decreasing_threshold = -0.002  # Negative slope threshold
-        high_score_threshold = np.percentile(scores.dropna(), 75)  # Top 25% of scores
-        
-        # Identify sections
-        current_pattern = None
-        section_start = 0
-        
-        for i in range(len(scores)):
-            current_score = scores.iloc[i]
-            current_trend = trends.iloc[i]
-            
-            # Determine current pattern
-            if current_trend > increasing_threshold:
-                pattern = 'increasing'
-            elif current_trend < decreasing_threshold:
-                pattern = 'decreasing'
-            elif current_score > high_score_threshold:
-                pattern = 'high_performance'
-            else:
-                pattern = 'stable'
-            
-            # Check if pattern changed
-            if current_pattern != pattern:
-                # Close previous section if it exists and meets minimum length
-                if (current_pattern is not None and 
-                    i - section_start >= min_section_length and 
-                    current_pattern != 'stable'):
-                    
-                    # Calculate average trend slope for this section
-                    section_trends = trends.iloc[section_start:i]
-                    avg_slope = section_trends.mean() if len(section_trends) > 0 else 0.0
-                    
-                    sections.append({
-                        'pattern': current_pattern,
-                        'start_index': section_start,
-                        'end_index': i - 1,
-                        'trend_slope': float(avg_slope)
-                    })
-                
-                # Start new section
-                current_pattern = pattern
-                section_start = i
-        
-        # Close final section if it meets criteria
-        if (current_pattern is not None and 
-            len(scores) - section_start >= min_section_length and 
-            current_pattern != 'stable'):
-            
-            section_trends = trends.iloc[section_start:]
-            avg_slope = section_trends.mean() if len(section_trends) > 0 else 0.0
-            
-            sections.append({
-                'pattern': current_pattern,
-                'start_index': section_start,
-                'end_index': len(scores) - 1,
-                'trend_slope': float(avg_slope)
-            })
-        
-        return sections
-        
-    
     
 # Example usage and testing
 if __name__ == "__main__":
