@@ -92,13 +92,13 @@ class CornerCharacteristics:
 
 class CornerIdentificationUnsupervisedService:
     """
-    Unsupervised corner identification and feature extraction service
+    Unsupervised corner identification and feature extraction service, reflect positive or negative effects that may arise from certain geometric constraints.
     
     This service:
     1. Identifies corners in telemetry data using unsupervised methods
     2. Extracts detailed corner characteristics as features
     3. Provides corner classification (hairpin, chicane, sweeper, etc.)
-    4. Generates new features to be inserted back into telemetry data
+    4. Generates new features that hardly reflect through original telemetry data, give AI more information about corners
     """
     
     def __init__(self):
