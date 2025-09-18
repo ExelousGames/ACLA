@@ -76,7 +76,7 @@ class TireGripAnalysisService:
     -------
     Provide purely physics-derived, driver-behavior neutral enrichment of telemetry data with
     tire grip utilization, friction circle occupancy, weight transfer, slip efficiency, and
-    related indicators. transformer models use the output features to reflect positive or negative effects that may arise from certain car states.
+    related indicators. transformer models use the output features to reflect positive or negative effects that may arise from certain physics constraints.
     Examples include high slip angles, excessive braking, or understeer/oversteer conditions.
     These enriched features are intended to process training telemetry data and used during predicting of transformer models,
     feed downstream generalized models (e.g., transformers for imitation / reasoning) without leaking individual driver
