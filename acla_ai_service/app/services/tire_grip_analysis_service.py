@@ -43,6 +43,7 @@ class TireGripFeatureCatalog:
         LATERAL_WEIGHT_TRANSFER = 'lateral_weight_transfer'
         DYNAMIC_WEIGHT_DISTRIBUTION = 'dynamic_weight_distribution'
         OPTIMAL_GRIP_WINDOW = 'optimal_grip_window'
+        TURNING_GRIP_UTILIZATION = 'turning_grip_utilization'
 
 
     # Derived compatibility lists – keep for consumers expecting plain strings
@@ -183,6 +184,12 @@ class TireGripAnalysisService:
         stats['temp_med'] = pct(temps, 50)
         stats['temp_iqr'] = max(pct(temps, 75) - pct(temps, 25), 1e-6)
 
+        # Statistics for turning grip utilization
+        # Use lateral g-force and slip angles to estimate maximum grip capability
+        combined_slip = pd.concat([slip_angles, slip_ratios], axis=0)
+        stats['combined_slip_p85'] = max(pct(combined_slip, 85), 1e-6)
+        stats['lateral_g_max'] = max(pct(gy, 95), 1e-6)
+
         return stats
 
     def _bounded(self, x: pd.Series | np.ndarray, lo: float = 0.0, hi: float = 1.0) -> pd.Series:
@@ -238,6 +245,17 @@ class TireGripAnalysisService:
         t_avg = (t_fl + t_fr + t_rl + t_rr) / 4.0
         grip_window = self._gaussian_efficiency(t_avg, stats['temp_med'], stats['temp_iqr'])
 
+        # Turning grip utilization: estimate grip usage during cornering
+        # Combines lateral g-force demand with slip angle efficiency
+        # 0 = no utilization, 1 = max grip, >1 = slipping beyond max grip
+        lateral_demand = gy.abs() / stats['lateral_g_max']  # Normalized lateral demand
+        slip_factor = sa_all / stats['combined_slip_p85']   # Normalized slip usage
+        
+        # Turning grip utilization: higher values indicate more grip being used
+        # When slip increases faster than lateral g, it indicates exceeding optimal grip
+        turning_grip_util = lateral_demand + 0.5 * slip_factor
+        turning_grip_util = turning_grip_util.clip(0.0, 2.0)  # Allow values >1 to indicate over-utilization
+
         # Overall tire grip: combine friction utilization and efficiencies
         overall = self._bounded(0.5 * fr_util + 0.25 * sa_eff + 0.25 * sr_eff, 0.0, 1.0)
 
@@ -251,6 +269,7 @@ class TireGripAnalysisService:
             self.feature_catalog.ContextFeature.LATERAL_WEIGHT_TRANSFER.value: lat_wt.values,
             self.feature_catalog.ContextFeature.DYNAMIC_WEIGHT_DISTRIBUTION.value: dyn_wdist.values,
             self.feature_catalog.ContextFeature.OPTIMAL_GRIP_WINDOW.value: grip_window.values,
+            self.feature_catalog.ContextFeature.TURNING_GRIP_UTILIZATION.value: turning_grip_util.values,
         })
         # Ensure float dtype and fill NaNs
         for c in out.columns:

@@ -1303,16 +1303,16 @@ class Full_dataset_TelemetryMLService:
             
             # Get feature dimensions from dataset
             telemetry_features, action_features = dataset.get_feature_names()
-            context_features = len(contextual_data[0]) if contextual_data else 0
+            context_features_count = len(contextual_data[0]) if contextual_data else 0
             
             print(f"[INFO] Dataset info: {len(telemetry_features)} telemetry features, "
-                  f"{len(action_features)} action features, {context_features} context features")
+                  f"{len(action_features)} action features, {context_features_count} context features")
             
             # Create model
             model = ExpertActionTransformer(
-                input_features=len(telemetry_features),
-                context_features=context_features,
-                action_features=len(action_features),
+                telemetry_features_count=len(telemetry_features),
+                context_features_count=context_features_count,
+                action_features_count=len(action_features),
                 d_model=256,
                 nhead=8,
                 num_layers=4,  # Smaller model for faster training
