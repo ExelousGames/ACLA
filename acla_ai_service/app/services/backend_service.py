@@ -256,6 +256,12 @@ class BackendService:
         from math import ceil
         import numpy as np
         
+        # Temporarily suppress httpx INFO logging for chunked uploads
+        httpx_logger = logging.getLogger("httpx")
+        original_level = httpx_logger.level
+        httpx_logger.setLevel(logging.WARNING)
+        
+
         def convert_numpy_types(obj):
             """Convert numpy types to native Python types for JSON serialization"""
             if isinstance(obj, np.integer):
@@ -270,7 +276,8 @@ class BackendService:
                 return [convert_numpy_types(item) for item in obj]
             else:
                 return obj
-        
+
+            
         # Convert numpy types to native Python types
         serializable_data = convert_numpy_types(data)
         
@@ -321,7 +328,10 @@ class BackendService:
             
         except Exception as e:
             logger.error(f"❌ Failed to send chunked data: {str(e)}")
-            raise
+            raise Exception(f"Failed to send chunked data: {str(e)}")
+        finally:
+            # Restore original httpx logging level
+            httpx_logger.setLevel(original_level)   
 
     async def save_ai_model(self, results: Dict[str, Any]) -> Dict[str, Any]:
         """Save AI model results to backend using chunked transfer"""

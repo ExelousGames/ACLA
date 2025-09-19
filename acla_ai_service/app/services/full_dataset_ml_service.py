@@ -351,13 +351,7 @@ class Full_dataset_TelemetryMLService:
         title_line = f"║ {title.center(width - 4)} ║"
         empty_line = f"║{' ' * (width - 2)}║"
         
-        print()
-        print(border_line)
-        print(empty_line)
-        print(title_line)
-        print(empty_line)
-        print(border_line)
-        print()
+        print("\n" + border_line + "\n" + empty_line + "\n" + title_line + "\n" + empty_line + "\n" + border_line + "\n", flush=True)
         
     
     def preload_models_for_session(self, 
@@ -1191,6 +1185,7 @@ class Full_dataset_TelemetryMLService:
         top_laps_df_count = max(1, int(len(lap_df_list) * 0.01))
         top_laps_df = lap_df_list[:top_laps_df_count]
         # get rest of laps
+        
         bottom_laps_df = lap_df_list[top_laps_df_count:]
 
         # Flatten the DataFrames to list of laps for imitation learning
@@ -1215,6 +1210,7 @@ class Full_dataset_TelemetryMLService:
         enrichment_count = len(enrichment_result["enriched_features"])
         feature_metadata = enrichment_result["feature_metadata"]
         print(f"[INFO] Enrichment successful: {enrichment_count} records with {feature_metadata.get('feature_count', 0)} enriched features")
+        print(f"[INFO] Enrichment details: {feature_metadata.get('feature_names', [])}")
 
         # Generate training pairs for transformer model
         self._print_section_divider("GENERATING TRAINING PAIRS")
@@ -1299,14 +1295,11 @@ class Full_dataset_TelemetryMLService:
                 sequence_length=20
             )
             
-            # Split dataset into train/val
-            train_size = int(0.8 * len(dataset))
-            val_size = len(dataset) - train_size
-            train_dataset, val_dataset = torch.utils.data.random_split(dataset, [train_size, val_size])
+            # Create data loader for training - IMPORTANT: shuffle=False for time series to preserve temporal order
+            train_loader = DataLoader(dataset, batch_size=16, shuffle=False, num_workers=0)
             
-            # Create data loaders
-            train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True, num_workers=0)
-            val_loader = DataLoader(val_dataset, batch_size=16, shuffle=False, num_workers=0)
+            print(f"[INFO] Using all {len(dataset)} samples for training")
+            print(f"[INFO] No validation split - using full dataset for training")
             
             # Get feature dimensions from dataset
             telemetry_features, action_features = dataset.get_feature_names()
@@ -1330,16 +1323,16 @@ class Full_dataset_TelemetryMLService:
             device = 'cuda' if torch.cuda.is_available() else 'cpu'
             trainer = ExpertActionTrainer(model, device=device, learning_rate=1e-4)
             
-            # Train model
+            # Train model (without validation)
             training_history = trainer.train(
                 train_dataloader=train_loader,
-                val_dataloader=val_loader,
+                val_dataloader=None,
                 epochs=30,
                 patience=10
             )
             
-            # Evaluate model
-            test_metrics = trainer.evaluate(val_loader)
+            # Evaluate model on training data
+            test_metrics = trainer.evaluate(train_loader)
             
             # Serialize model
             serialized_model = model.serialize_model()
@@ -1430,9 +1423,12 @@ class Full_dataset_TelemetryMLService:
             }
             
             await backend_service.save_ai_model(ai_model_dto)
+            
             # Extract expert state features for each bottom (non-expert) telemetry record
+            
+            self._print_section_divider("EXTRACT FROM IMITATION LEARNING MODEL")
             try:
-                expert_state_features = await imitation_learning.extract_expert_state_for_telemetry(bottom_training_telemetry_list)
+                expert_state_features = imitation_learning.extract_expert_state_for_telemetry(bottom_training_telemetry_list)
                 print(f"[INFO] Extracted expert state features for {len(expert_state_features)} non-expert records")
             except Exception as e:
                 print(f"[WARNING] Failed to extract expert state features: {e}")
@@ -1520,7 +1516,7 @@ class Full_dataset_TelemetryMLService:
                 # Validate expected keys exist in at least one record
                 try:
                     from .tire_grip_analysis_service import TireGripFeatureCatalog
-                    expected_keys = set(TireGripFeatureCatalog.CONTEXT_FEATURES + TireGripFeatureCatalog.REASONING_FEATURES)
+                    expected_keys = set(TireGripFeatureCatalog.CONTEXT_FEATURES)
                     if grip_enriched_data:
                         sample_keys = set(grip_enriched_data[0].keys())
                         missing = expected_keys - sample_keys

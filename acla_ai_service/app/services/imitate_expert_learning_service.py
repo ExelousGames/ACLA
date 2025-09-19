@@ -52,8 +52,8 @@ class ExpertFeatureCatalog:
         EXPERT_OPTIMAL_TRACK_POSITION = 'expert_optimal_track_position'
 
         # Derived composite cues
-        EXPERT_CONTROL_OVERLAP = 'expert_control_overlap'
-        EXPERT_NET_ACCEL_COMMAND = 'expert_net_accel_command'
+        EXPERT_CONTROL_OVERLAP = 'expert_control_overlap' # Trail Braking, Weight Transfer Control, Smooth Transitions
+        EXPERT_NET_ACCEL_COMMAND = 'expert_net_accel_command' # a derived composite feature that represents the net acceleration command from an expert driver by calculating the difference between throttle and brake inputs.
 
     class TrajectoryFeature(str, Enum):
         TRACK_POSITION = 'track_position'
@@ -516,15 +516,15 @@ class ExpertTrajectoryLearner:
         Predict optimal actions given current state
         
         Args:
-            current_state: Current telemetry state
+            current_state: Current telemetry state (single or multiple rows)
             
         Returns:
-            Dictionary with optimal action predictions
+            Dictionary with optimal action predictions (averaged if multiple rows)
         """
         if not self.trajectory_model:
             raise ValueError("No trajectory model trained. Call learn_optimal_trajectory first.")
         
-        # Extract features from current state
+        # Extract features from current state (this handles multiple rows efficiently)
         trajectory_features = self.extract_trajectory_features(current_state)
         
         # Prepare input
@@ -537,7 +537,7 @@ class ExpertTrajectoryLearner:
             
         X = trajectory_features[input_features].fillna(0)
         
-        # Scale features
+        # Scale features (handles multiple rows)
         X_scaled = self.trajectory_model['scaler'].transform(X)
         
         # Apply PCA if it was used during training and is fitted
@@ -545,7 +545,7 @@ class ExpertTrajectoryLearner:
             hasattr(self.trajectory_model['pca'], 'components_')):
             X_scaled = self.trajectory_model['pca'].transform(X_scaled)
         
-        # Make predictions
+        # Make predictions (batch prediction is much faster)
         predictions = {}
         from .imitate_expert_learning_service import ExpertFeatureCatalog as _EFC  # local import to avoid name issues
         gear_key = _EFC.ContextFeature.EXPERT_OPTIMAL_GEAR.value
@@ -554,14 +554,80 @@ class ExpertTrajectoryLearner:
                 pred = model.predict(X_scaled)
                 # Handle gear predictions as integers
                 if target_name == gear_key:
-                    predictions[target_name] = int(pred[0] if len(pred) == 1 else int(pred.mean()))
+                    predictions[target_name] = int(pred[0])
                 else:
-                    predictions[target_name] = float(pred[0] if len(pred) == 1 else pred.mean())
+                    # For continuous values, take first prediction
+                    predictions[target_name] = float(pred[0])
             except Exception as e:
                 print(f"[WARNING] Failed to predict {target_name}: {e}")
                 predictions[target_name] = 1 if target_name == gear_key else 0.0
         
         return predictions
+
+    def predict_optimal_actions_batch(self, current_state: pd.DataFrame) -> List[Dict[str, float]]:
+        """
+        Predict optimal actions for multiple rows, returning individual predictions per row
+        
+        Args:
+            current_state: Current telemetry state (multiple rows)
+            
+        Returns:
+            List of dictionaries, one prediction dict per row
+        """
+        if not self.trajectory_model:
+            raise ValueError("No trajectory model trained. Call learn_optimal_trajectory first.")
+        
+        if len(current_state) == 0:
+            return []
+        
+        # Extract features from current state (handles multiple rows efficiently)
+        trajectory_features = self.extract_trajectory_features(current_state)
+        
+        # Prepare input
+        input_features = self.trajectory_model['input_features']
+        
+        # Ensure all required features are available
+        missing_features = [f for f in input_features if f not in trajectory_features.columns]
+        if missing_features:
+            raise ValueError(f"Missing required features for prediction: {missing_features}")
+            
+        X = trajectory_features[input_features].fillna(0)
+        
+        # Scale features (handles multiple rows)
+        X_scaled = self.trajectory_model['scaler'].transform(X)
+        
+        # Apply PCA if it was used during training and is fitted
+        if (self.trajectory_model['pca'] is not None and 
+            hasattr(self.trajectory_model['pca'], 'components_')):
+            X_scaled = self.trajectory_model['pca'].transform(X_scaled)
+        
+        # Make predictions for all models at once (batch prediction)
+        all_predictions = {}
+        from .imitate_expert_learning_service import ExpertFeatureCatalog as _EFC
+        gear_key = _EFC.ContextFeature.EXPERT_OPTIMAL_GEAR.value
+        
+        for target_name, model in self.trajectory_model['models'].items():
+            try:
+                pred = model.predict(X_scaled)  # Shape: (n_rows,)
+                all_predictions[target_name] = pred
+            except Exception as e:
+                print(f"[WARNING] Failed to predict {target_name}: {e}")
+                # Create default predictions for all rows
+                default_value = 1 if target_name == gear_key else 0.0
+                all_predictions[target_name] = np.full(len(current_state), default_value)
+        
+        # Convert to list of dictionaries (one per row)
+        row_predictions = []
+        for i in range(len(current_state)):
+            row_pred = {}
+            for target_name, predictions_array in all_predictions.items():
+                if target_name == gear_key:
+                    row_pred[target_name] = int(predictions_array[i])
+                else:
+                    row_pred[target_name] = float(predictions_array[i])
+            row_predictions.append(row_pred)
+        
+        return row_predictions
 
     def debug_trajectory_model(self) -> Dict[str, Any]:
         """
@@ -933,7 +999,7 @@ class ExpertImitateLearningService:
         
         return summary
  
-    async def extract_expert_state_for_telemetry(self, telemetry_data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def extract_expert_state_for_telemetry(self, telemetry_data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
          in the input telemetry data, extract expert states features using the saved model and return related expert feature-only data. the returned data and
         the original telemetry data will be used for training a transformer model to predict steps needed to reach expert state 
@@ -946,42 +1012,69 @@ class ExpertImitateLearningService:
             List of dictionaries containing ONLY expert-related features per record
             (no original telemetry fields).
         """
+        print(f"[INFO] Starting expert state extraction for {len(telemetry_data)} telemetry records")
+        
         ContextFeature = ExpertFeatureCatalog.ContextFeature
         if not telemetry_data:
+            print("[INFO] No telemetry data provided, returning empty list")
             return []
         if not self.trained_models:
             raise ValueError("No trained imitation models available. Train or load models before calling extract_expert_state_for_telemetry().")
 
-        processed_df = pd.DataFrame(telemetry_data)
+        print("[INFO] Converting telemetry data to DataFrame...")
+        try:
+            processed_df = pd.DataFrame(telemetry_data)
+            print(f"[INFO] DataFrame created with shape: {processed_df.shape}")
+        except Exception as e:
+            print(f"[ERROR] Failed to create DataFrame: {e}")
+            raise
 
         expert_feature_rows: List[Dict[str, Any]] = []
 
-    # Trajectory models only (behavior intentionally excluded)
+        # Trajectory models only (behavior intentionally excluded)
+        print("[INFO] Preparing trajectory models...")
         trajectory_bundle = None
         if 'trajectory_learning' in self.trained_models:
             try:
                 trajectory_bundle = self.trained_models['trajectory_learning']['modelData']
+                print("[INFO] Deserializing trajectory models...")
                 if isinstance(trajectory_bundle.get('scaler'), str):
                     trajectory_bundle['scaler'] = self.deserialize_data(trajectory_bundle['scaler'])
                 if trajectory_bundle.get('pca') is not None and isinstance(trajectory_bundle.get('pca'), str):
                     trajectory_bundle['pca'] = self.deserialize_data(trajectory_bundle['pca'])
                 deserialized_models = {}
                 for name, mdl in trajectory_bundle.get('models', {}).items():
+                    print(f"[INFO] Deserializing model: {name}")
                     deserialized_models[name] = self.deserialize_data(mdl) if isinstance(mdl, str) else mdl
                 trajectory_bundle['models'] = deserialized_models
                 self.trajectory_learner.trajectory_model = trajectory_bundle
+                print(f"[INFO] Successfully prepared {len(deserialized_models)} trajectory models")
             except Exception as e:
                 print(f"[WARNING] Could not prepare trajectory models: {e}")
                 trajectory_bundle = None
 
+        def predict_optimal_batch(batch_df: pd.DataFrame) -> List[Dict[str, float]]:
+            """Predict optimal actions for a batch of rows - much faster than row-by-row"""
+            if trajectory_bundle is None:
+                return [{} for _ in range(len(batch_df))]
+            try:
+                # Use the new batch prediction method
+                batch_predictions = self.trajectory_learner.predict_optimal_actions_batch(batch_df)
+                return batch_predictions
+            except Exception as e:
+                print(f"[WARNING] Batch optimal action prediction failed: {e}")
+                return [{} for _ in range(len(batch_df))]
+        
         def predict_optimal_for_index(idx: int) -> Dict[str, float]:
+            """Fallback single-row prediction (kept for compatibility)"""
             if trajectory_bundle is None:
                 return {}
             try:
                 row_df = processed_df.iloc[[idx]]
                 return self.trajectory_learner.predict_optimal_actions(row_df)
             except Exception as e:
-                print(f"[WARNING] Optimal action prediction failed idx={idx}: {e}")
+                if idx % 1000 == 0:  # Only log every 1000th error to avoid spam
+                    print(f"[WARNING] Optimal action prediction failed idx={idx}: {e}")
                 return {}
 
         # Collect only expert optimal keys from predictions (identity mapping no longer needed)
@@ -998,24 +1091,56 @@ class ExpertImitateLearningService:
         }
 
         total_rows = len(processed_df)
-        for i in range(total_rows):
-            row_features: Dict[str, Any] = {}
-            # Optimal action predictions
-            optimal_preds = predict_optimal_for_index(i)
-            for k, v in optimal_preds.items():
-                if k in optimal_context_keys:
-                    row_features[k] = v
+        print(f"[INFO] Processing {total_rows} rows for expert state extraction...")
+        
+        # Add progress tracking for large datasets
+        progress_interval = max(1, total_rows // 10)  # Report progress every 10%
+        
+        # OPTIMIZATION: Process in batches instead of row-by-row for massive speedup
+        batch_size = min(1000, total_rows)  # Process up to 1000 rows at once
+        print(f"[INFO] Using batch processing with batch size: {batch_size}")
+        
+        # Process all data in batches
+        for batch_start in range(0, total_rows, batch_size):
+            batch_end = min(batch_start + batch_size, total_rows)
+            
+            # Progress reporting
+            progress_pct = (batch_end) / total_rows * 100
+            print(f"[INFO] Processing batch {batch_start+1}-{batch_end}/{total_rows} ({progress_pct:.1f}%)")
+            
+            try:
+                # Get batch DataFrame
+                batch_df = processed_df.iloc[batch_start:batch_end]
+                
+                # Get predictions for entire batch at once
+                batch_predictions = predict_optimal_batch(batch_df)
+                
+                # Process each row in the batch
+                for i, row_predictions in enumerate(batch_predictions):
+                    row_features: Dict[str, Any] = {}
+                    
+                    # Extract optimal action predictions
+                    for k, v in row_predictions.items():
+                        if k in optimal_context_keys:
+                            row_features[k] = v
 
-            # Derived cues
-            if (ContextFeature.EXPERT_OPTIMAL_THROTTLE.value in row_features and
-                ContextFeature.EXPERT_OPTIMAL_BRAKE.value in row_features):
-                throttle = row_features[ContextFeature.EXPERT_OPTIMAL_THROTTLE.value]
-                brake = row_features[ContextFeature.EXPERT_OPTIMAL_BRAKE.value]
-                row_features[ContextFeature.EXPERT_CONTROL_OVERLAP.value] = float(throttle > 0.1 and brake > 0.1)
-                row_features[ContextFeature.EXPERT_NET_ACCEL_COMMAND.value] = float(throttle - brake)
+                    # Derived cues
+                    if (ContextFeature.EXPERT_OPTIMAL_THROTTLE.value in row_features and
+                        ContextFeature.EXPERT_OPTIMAL_BRAKE.value in row_features):
+                        throttle = row_features[ContextFeature.EXPERT_OPTIMAL_THROTTLE.value]
+                        brake = row_features[ContextFeature.EXPERT_OPTIMAL_BRAKE.value]
+                        row_features[ContextFeature.EXPERT_CONTROL_OVERLAP.value] = float(throttle > 0.1 and brake > 0.1)
+                        row_features[ContextFeature.EXPERT_NET_ACCEL_COMMAND.value] = float(throttle - brake)
 
-            expert_feature_rows.append(row_features)
+                    expert_feature_rows.append(row_features)
+                    
+            except Exception as e:
+                print(f"[WARNING] Failed to process batch {batch_start}-{batch_end}: {e}")
+                # Add empty features for failed batch to maintain index alignment
+                batch_size_actual = batch_end - batch_start
+                expert_feature_rows.extend([{} for _ in range(batch_size_actual)])
 
+        print(f"[INFO] Completed expert state extraction. Extracted features for {len(expert_feature_rows)} records")
         return expert_feature_rows
         
     def serialize_object_inside(self, results: any) -> str:
