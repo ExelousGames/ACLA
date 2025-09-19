@@ -55,6 +55,15 @@ class ExpertFeatureCatalog:
         EXPERT_CONTROL_OVERLAP = 'expert_control_overlap' # Trail Braking, Weight Transfer Control, Smooth Transitions
         EXPERT_NET_ACCEL_COMMAND = 'expert_net_accel_command' # a derived composite feature that represents the net acceleration command from an expert driver by calculating the difference between throttle and brake inputs.
 
+        # Delta-to-expert signals (teach non-expert how to reach expert over time)
+        EXPERT_GAP_THROTTLE = 'expert_gap_throttle'   # expert_throttle - current_throttle
+        EXPERT_GAP_BRAKE = 'expert_gap_brake'         # expert_brake - current_brake
+        EXPERT_GAP_STEERING = 'expert_gap_steering'   # expert_steering - current_steering
+        EXPERT_GAP_GEAR = 'expert_gap_gear'           # expert_gear - current_gear
+        EXPERT_GAP_SPEED = 'expert_gap_speed'         # expert_speed - current_speed
+        EXPERT_GAP_MAGNITUDE = 'expert_gap_magnitude' # overall gap magnitude (euclidean)
+        EXPERT_GAP_PROGRESS = 'expert_gap_progress'   # fraction of gap closed vs initial (0..1)
+
     class TrajectoryFeature(str, Enum):
         TRACK_POSITION = 'track_position'
         TRACK_POSITION_RATE = 'track_position_rate'
@@ -1001,16 +1010,21 @@ class ExpertImitateLearningService:
  
     def extract_expert_state_for_telemetry(self, telemetry_data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
-         in the input telemetry data, extract expert states features using the saved model and return related expert feature-only data. the returned data and
-        the original telemetry data will be used for training a transformer model to predict steps needed to reach expert state 
-        at a given normalized lap distance. The training data for transformer model will be non-expert data. the purpose of the returned features is to provide
-        expert state as target for the transformer model and guide to differentiate driver actions which lead to expert state and which doesnt.
+        Extract expert state targets AND delta-to-expert context for each telemetry row.
+
+        Purpose:
+        - Produces expert-optimal targets (speed, throttle, brake, steering, gear, pose, track_position)
+        - Adds "delta-to-expert" gap features that quantify how far the current non-expert state
+          is from the expert target at each step, and a progress metric indicating gap closure over time.
+        - The returned list is designed to be passed as `enriched_contextual_data` to
+          `TelemetryActionDataset`, enabling the transformer to learn how a non-expert can reach
+          expert performance over time (gap-aware learning).
+
         Args:
             telemetry_data: List of cleaned telemetry records to predict on
 
         Returns:
-            List of dictionaries containing ONLY expert-related features per record
-            (no original telemetry fields).
+            List of dictionaries, one per record, containing expert targets and delta-to-expert context only.
         """
         print(f"[INFO] Starting expert state extraction for {len(telemetry_data)} telemetry records")
         
@@ -1093,13 +1107,13 @@ class ExpertImitateLearningService:
         total_rows = len(processed_df)
         print(f"[INFO] Processing {total_rows} rows for expert state extraction...")
         
-        # Add progress tracking for large datasets
-        progress_interval = max(1, total_rows // 10)  # Report progress every 10%
-        
         # OPTIMIZATION: Process in batches instead of row-by-row for massive speedup
         batch_size = min(1000, total_rows)  # Process up to 1000 rows at once
         print(f"[INFO] Using batch processing with batch size: {batch_size}")
         
+        # Track initial gap magnitude (first available) for progress computation
+        initial_gap_magnitude: Optional[float] = None
+
         # Process all data in batches
         for batch_start in range(0, total_rows, batch_size):
             batch_end = min(batch_start + batch_size, total_rows)
@@ -1131,6 +1145,57 @@ class ExpertImitateLearningService:
                         brake = row_features[ContextFeature.EXPERT_OPTIMAL_BRAKE.value]
                         row_features[ContextFeature.EXPERT_CONTROL_OVERLAP.value] = float(throttle > 0.1 and brake > 0.1)
                         row_features[ContextFeature.EXPERT_NET_ACCEL_COMMAND.value] = float(throttle - brake)
+
+                    # Delta-to-expert gap features (compare expert target vs current telemetry)
+                    try:
+                        current_row = batch_df.iloc[i]
+                        # Current telemetry values (non-expert)
+                        curr_throttle = float(current_row.get('Physics_gas', 0.0))
+                        curr_brake = float(current_row.get('Physics_brake', 0.0))
+                        curr_steering = float(current_row.get('Physics_steer_angle', 0.0))
+                        curr_gear = float(current_row.get('Physics_gear', 1.0))
+                        curr_speed = float(current_row.get('Physics_speed_kmh', 0.0))
+
+                        # Expert targets
+                        exp_throttle = float(row_features.get(ContextFeature.EXPERT_OPTIMAL_THROTTLE.value, curr_throttle))
+                        exp_brake = float(row_features.get(ContextFeature.EXPERT_OPTIMAL_BRAKE.value, curr_brake))
+                        exp_steering = float(row_features.get(ContextFeature.EXPERT_OPTIMAL_STEERING.value, curr_steering))
+                        exp_gear = float(row_features.get(ContextFeature.EXPERT_OPTIMAL_GEAR.value, curr_gear))
+                        exp_speed = float(row_features.get(ContextFeature.EXPERT_OPTIMAL_SPEED.value, curr_speed))
+
+                        # Gaps (expert - current)
+                        gap_throttle = exp_throttle - curr_throttle
+                        gap_brake = exp_brake - curr_brake
+                        gap_steering = exp_steering - curr_steering
+                        gap_gear = exp_gear - curr_gear
+                        gap_speed = exp_speed - curr_speed
+
+                        # Magnitude of gap
+                        gap_components = np.array([gap_throttle, gap_brake, gap_steering, gap_gear, gap_speed], dtype=np.float32)
+                        gap_magnitude = float(np.linalg.norm(gap_components))
+
+                        # Establish initial gap magnitude from first valid sample
+                        absolute_index = batch_start + i
+                        if initial_gap_magnitude is None and gap_magnitude > 0:
+                            initial_gap_magnitude = gap_magnitude
+
+                        # Progress: fraction of gap closed vs initial (0..1). If no baseline, 0.
+                        if initial_gap_magnitude is not None and initial_gap_magnitude > 1e-6:
+                            gap_progress = float(max(0.0, min(1.0, 1.0 - (gap_magnitude / initial_gap_magnitude))))
+                        else:
+                            gap_progress = 0.0
+
+                        # Store gap features
+                        row_features[ContextFeature.EXPERT_GAP_THROTTLE.value] = float(gap_throttle)
+                        row_features[ContextFeature.EXPERT_GAP_BRAKE.value] = float(gap_brake)
+                        row_features[ContextFeature.EXPERT_GAP_STEERING.value] = float(gap_steering)
+                        row_features[ContextFeature.EXPERT_GAP_GEAR.value] = float(gap_gear)
+                        row_features[ContextFeature.EXPERT_GAP_SPEED.value] = float(gap_speed)
+                        row_features[ContextFeature.EXPERT_GAP_MAGNITUDE.value] = float(gap_magnitude)
+                        row_features[ContextFeature.EXPERT_GAP_PROGRESS.value] = float(gap_progress)
+                    except Exception as _e:
+                        # Keep going if any field is missing
+                        pass
 
                     expert_feature_rows.append(row_features)
                     

@@ -69,11 +69,11 @@ class ExpertActionTransformer(nn.Module):
     - Motorsport Analysis: Identifies performance optimization opportunities for race teams
     
     HOW IT WORKS:
-    The model processes current driver telemetry (speed, position, forces, inputs) along with 
-    contextual information (track layout, tire conditions, weather) to understand the current 
-    racing situation. Using transformer attention mechanisms, it identifies the most relevant 
-    patterns from expert driving data and generates a sequence of optimal actions (throttle, 
-    brake, steering, gear changes) that will guide the current driver toward expert performance.
+    The model processes current driver telemetry (speed, position, forces, inputs) and enriched
+    context that includes track/corner info as well as delta-to-expert signals (the gap between
+    the current non-expert state and expert-optimal targets). Using transformer attention
+    mechanisms, it learns how to close this gap over time and generates a sequence of actions
+    (throttle, brake, steering, gear changes) that move the driver toward expert performance.
     
     KEY TECHNICAL FEATURES:
     - Transformer Architecture: Uses multi-head attention to focus on relevant driving patterns
@@ -84,9 +84,8 @@ class ExpertActionTransformer(nn.Module):
     
     INPUT DATA:
     - Current telemetry: Speed, position, G-forces, steering angle, throttle/brake inputs
-    - Track context: Corner geometry, racing line, elevation changes, surface conditions
-    - Vehicle state: Tire grip levels, aerodynamic settings, mechanical setup
-    - Expert reference: Target velocities, optimal racing lines, braking/acceleration points
+    - Enriched context: Corner/track cues and delta-to-expert gap features
+    - Expert reference: Expert-optimal targets are used to form gap features (via service)
     
     OUTPUT PREDICTIONS:
     - Throttle control: Optimal accelerator pedal positions (0-100%)
@@ -96,10 +95,10 @@ class ExpertActionTransformer(nn.Module):
     - Target speed: Optimal velocity targets for upcoming track sections
     
     TRAINING PROCESS:
-    The model learns by analyzing thousands of laps from expert drivers, understanding the 
-    relationship between track conditions, vehicle state, and optimal control inputs. It 
-    develops an internal representation of racing physics and strategy that allows it to 
-    provide expert-level guidance for any track/vehicle combination.
+    The model is trained on non-expert telemetry with expert targets and gap-aware context.
+    It minimizes error to expert actions while conditioning on delta-to-expert features,
+    effectively learning the sequence of adjustments a non-expert should make to reach
+    expert performance over time.
     
     Architecture:
     - Input: Current telemetry features + contextual data (corner info, tire grip, etc.)
@@ -108,21 +107,22 @@ class ExpertActionTransformer(nn.Module):
     """
     
     def __init__(self, 
-                 input_features: int = 42,  # Telemetry features from get_features_for_imitate_expert()
-                 context_features: int = 31,  # Corner (16) + tire grip (4) + expert state (11)
-                 action_features: int = 5,  # throttle, brake, steering, gear, speed
+                 telemetry_features_count: int = 42,  # Telemetry features from get_features_for_imitate_expert()
+                 context_features_count: int = 31,  # Enriched context (e.g., corners + expert targets + delta-to-expert)
+                 action_features_count: int = 5,  # throttle, brake, steering, gear, speed
                  d_model: int = 256,
                  nhead: int = 8,
                  num_layers: int = 6,
                  dim_feedforward: int = 1024,
                  sequence_length: int = 20,
-                 dropout: float = 0.1):
+                 dropout: float = 0.1,
+                 time_step_seconds: float = 0.1):
         """
         Initialize the Expert Action Transformer
         
         Args:
             input_features: Number of telemetry input features 
-            context_features: Number of enriched contextual features (corners, grip, expert state)
+            context_features: Number of enriched contextual features (corners, expert targets, delta-to-expert gaps)
             action_features: Number of action outputs to predict (throttle, brake, steer, gear, speed)
             d_model: Transformer model dimension
             nhead: Number of attention heads
@@ -130,19 +130,21 @@ class ExpertActionTransformer(nn.Module):
             dim_feedforward: Feedforward network dimension
             sequence_length: Maximum sequence length for predictions
             dropout: Dropout rate
+            time_step_seconds: Time duration (in seconds) that each prediction step represents (default: 0.1s)
         """
         super(ExpertActionTransformer, self).__init__()
         
         # Store configuration
-        self.input_features = input_features
-        self.context_features = context_features 
-        self.action_features = action_features
+        self.input_features = telemetry_features_count
+        self.context_features = context_features_count 
+        self.action_features = action_features_count
         self.d_model = d_model
         self.sequence_length = sequence_length
+        self.time_step_seconds = time_step_seconds  # Control how much real time each step represents
         
         # Input embeddings
-        self.telemetry_embedding = nn.Linear(input_features, d_model)
-        self.context_embedding = nn.Linear(context_features, d_model) if context_features > 0 else None
+        self.telemetry_embedding = nn.Linear(telemetry_features_count, d_model)
+        self.context_embedding = nn.Linear(context_features_count, d_model) if context_features_count > 0 else None
 
         # Positional encoding : Without positional encoding: The transformer can't distinguish between [brake, throttle, steer] and [steer, brake, throttle], it adds unique positional information
         self.pos_encoding = PositionalEncoding(d_model, dropout, max_len=sequence_length * 2)
@@ -168,10 +170,10 @@ class ExpertActionTransformer(nn.Module):
         self.transformer_decoder = nn.TransformerDecoder(decoder_layer, num_layers=num_layers)
         
         # Action sequence embedding (for decoder inputs during training)
-        self.action_embedding = nn.Linear(action_features, d_model)
+        self.action_embedding = nn.Linear(action_features_count, d_model)
         
         # Output projection to action space
-        self.action_projection = nn.Linear(d_model, action_features)
+        self.action_projection = nn.Linear(d_model, action_features_count)
         
         # Layer normalization
         self.layer_norm = nn.LayerNorm(d_model)
@@ -191,23 +193,21 @@ class ExpertActionTransformer(nn.Module):
                 target_actions: Optional[torch.Tensor] = None,
                 target_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
-        Forward pass - the main computation pipeline of the Expert Action Transformer.
+        Forward pass - In PyTorch, nn.Module.forward is called implicitly, the main computation pipeline of the Expert Action Transformer.
         
         This method implements the complete forward pass through the transformer model,
-        transforming input telemetry data into predicted expert action sequences. The forward
-        pass operates in two distinct modes depending on whether target_actions are provided:
+        transforming input telemetry data and gap-aware context into predicted expert action sequences.
+        The model learns not only to imitate expert actions but also how to reduce the
+        delta-to-expert over time for non-expert drivers.
         
-        1. TRAINING MODE (target_actions provided):
-           - Uses teacher forcing for stable training
-           - Decoder receives ground truth actions as input
-           - Enables parallel processing of entire sequences
-           - Optimized for learning from expert demonstrations
+        MODIFIED TRAINING APPROACH - NO TEACHER FORCING:
+        Unlike traditional sequence-to-sequence models, this implementation uses autoregressive 
+        generation for both training and inference. This means:
         
-        2. INFERENCE MODE (target_actions=None):
-           - Uses autoregressive generation
-           - Decoder generates actions one step at a time
-           - Each predicted action feeds into next time step
-           - Simulates real-time driving decision making
+        - TRAINING: Model generates actions step-by-step using its own predictions
+        - INFERENCE: Same autoregressive generation process
+        - More realistic training that matches inference behavior
+        - Potentially slower training but better real-world performance
         
         ARCHITECTURAL FLOW:
         
@@ -217,8 +217,9 @@ class ExpertActionTransformer(nn.Module):
         - Creates rich feature representations for transformer processing
         
         Step 2: FEATURE FUSION
-        - Combines telemetry + contextual information via element-wise addition
+        - Combines telemetry + enriched contextual information (including delta-to-expert) via element-wise addition
         - Allows model to correlate current state with track/tire conditions
+        - Gap-aware signals help the model plan adjustments over the horizon
         - Creates unified input representation for encoder
         
         Step 3: POSITIONAL ENCODING
@@ -232,16 +233,12 @@ class ExpertActionTransformer(nn.Module):
         - Creates contextualized representation of current racing situation
         - Output "memory" contains encoded understanding of current state
         
-        Step 5: TRANSFORMER DECODER (Mode-dependent)
-        - TRAINING: Uses shifted target actions with causal masking
-          * Learns to predict next action given current state + previous actions
-          * Teacher forcing ensures stable gradients during training
-          * Causal mask prevents "looking ahead" at future actions
-        
-        - INFERENCE: Autoregressive generation step-by-step
-          * Starts with zero/start token, generates actions sequentially  
-          * Each predicted action becomes input for next prediction
-          * Simulates real-time expert decision making process
+        Step 5: AUTOREGRESSIVE DECODER
+        - Always uses autoregressive generation (no teacher forcing)
+        - Starts with zero/start token, generates actions sequentially
+        - Each predicted action becomes input for next prediction
+        - Simulates real-time expert decision making process
+        - Same behavior during training and inference
         
         Step 6: ACTION PROJECTION
         - Maps high-dimensional decoder output back to action space
@@ -250,7 +247,7 @@ class ExpertActionTransformer(nn.Module):
         
         RACING-SPECIFIC CONSIDERATIONS:
         - Telemetry sequence represents racing line progression over time
-        - Context includes corner geometry, tire grip, expert target states
+        - Context includes corner geometry, expert targets, and delta-to-expert gap signals
         - Actions must be physically realizable and optimal for car/track
         - Sequential dependencies critical: braking→turning→accelerating
         
@@ -260,7 +257,7 @@ class ExpertActionTransformer(nn.Module):
             context: Contextual features [batch_size, seq_len, context_features] 
                     Contains track info, tire grip, expert reference trajectory
             target_actions: Target action sequence for training [batch_size, seq_len, action_features]
-                          Expert demonstration actions for supervised learning
+                          Expert demonstration actions for supervised learning (used for loss calculation only)
             target_mask: Mask for target sequence [batch_size, seq_len]
                         Currently unused, reserved for variable-length sequences
             
@@ -288,24 +285,8 @@ class ExpertActionTransformer(nn.Module):
         # Encode current state
         memory = self.transformer_encoder(encoder_input)  # [B, L, d_model]
         
-        if target_actions is not None:
-            # Training mode: use teacher forcing
-            # Embed target actions (shifted right for decoder input)
-            target_embedded = self.action_embedding(target_actions)  # [B, L, d_model]
-            target_embedded = self.pos_encoding(target_embedded)
-            
-            # Create causal mask for decoder
-            tgt_mask = self._generate_square_subsequent_mask(seq_len)
-            
-            # Decode action sequence
-            decoder_output = self.transformer_decoder(
-                tgt=target_embedded,
-                memory=memory,
-                tgt_mask=tgt_mask
-            )  # [B, L, d_model]
-        else:
-            # Inference mode: autoregressive generation
-            decoder_output = self._generate_actions_autoregressive(memory, seq_len)
+        # Always use autoregressive generation (no teacher forcing)
+        decoder_output = self._generate_actions_autoregressive(memory, seq_len)
         
         # Project to action space
         output = self.action_projection(decoder_output)  # [B, L, action_features]
@@ -319,7 +300,101 @@ class ExpertActionTransformer(nn.Module):
         return mask
     
     def _generate_actions_autoregressive(self, memory: torch.Tensor, seq_len: int) -> torch.Tensor:
-        """Generate actions autoregressively during inference"""
+        """
+        Generate expert racing actions autoregressively during real-time inference.
+        
+        WHAT IS AUTOREGRESSIVE GENERATION?
+        Autoregressive generation is a sequential prediction approach where each new prediction
+        depends on all previously generated predictions. In racing terms, this means:
+        - Step 1: Predict immediate action based on current telemetry
+        - Step 2: Predict next action based on current telemetry + predicted action from Step 1
+        - Step 3: Predict next action based on current telemetry + actions from Steps 1-2
+        - Continue until full racing sequence is generated
+        
+        This mirrors how human racing drivers think: each driving decision influences the next,
+        creating a chain of interdependent actions that form an optimal racing strategy.
+        
+        WHY AUTOREGRESSIVE FOR RACING?
+        Racing actions are highly sequential and interdependent:
+        1. PHYSICS CAUSALITY: Current throttle affects next corner speed, which affects next braking
+        2. STRATEGIC PLANNING: Early braking enables later acceleration, optimizing overall lap time
+        3. REAL-TIME CONSTRAINTS: Driver must make decisions without knowing future exact conditions
+        4. TEMPORAL DEPENDENCIES: Racing line decisions now affect racing line options later
+        
+        IMPLEMENTATION ARCHITECTURE:
+        
+        Phase 1: INITIALIZATION
+        - Creates "start token" (zero tensor) representing beginning of action sequence
+        - This acts like a driver sitting in car before taking any actions
+        
+        Phase 2: ITERATIVE GENERATION LOOP (for each future time step)
+        Step A: POSITIONAL ENCODING
+          - Injects temporal position information into current sequence
+          - Tells model "this is action at time T+1, T+2, etc."
+          - Critical for understanding action timing and sequence order
+        
+        Step B: CAUSAL MASKING
+          - Creates attention mask preventing "looking ahead" at future actions
+          - Simulates real-time racing: driver can't see future decisions
+          - Ensures each prediction uses only current telemetry + past actions
+        
+        Step C: TRANSFORMER DECODING
+          - Feeds current sequence + encoded telemetry through decoder
+          - Decoder attends to relevant patterns from training (expert demonstrations)
+          - Produces high-dimensional representation of optimal next action
+        
+        Step D: ACTION PROJECTION
+          - Converts high-dimensional decoder output to concrete racing actions
+          - Maps internal representation → [throttle, brake, steering, gear, speed]
+          - These are the actual control inputs driver/car should execute
+        
+        Step E: SEQUENCE EXTENSION
+          - Embeds predicted action back into model's internal representation
+          - Appends to growing sequence of predicted actions
+          - This prediction becomes input for next time step's decision
+        
+        Phase 3: SEQUENCE COMPLETION
+        - Concatenates all individual predictions into full action sequence
+        - Returns complete racing strategy: immediate through future actions
+        
+        RACING-SPECIFIC EXAMPLES:
+        
+        Corner Approach Sequence:
+        T=0: Model sees "approaching corner at 180 km/h"
+        → Predicts: "Start braking, 60% brake pressure" 
+        T=1: Model sees "approaching corner + predicted braking"
+        → Predicts: "Continue braking, 80% brake pressure, slight left turn"
+        T=2: Model sees "corner entry + previous braking/turning"
+        → Predicts: "Release brake, increase steering, prepare for apex"
+        T=3: Model sees "at apex + full turning sequence"
+        → Predicts: "Begin throttle application, reduce steering"
+        
+        This creates coherent racing strategy where each action logically follows from
+        previous actions, just like expert human drivers plan ahead.
+        
+        TECHNICAL ADVANTAGES:
+        1. COHERENT SEQUENCES: Each action considers full context of previous decisions
+        2. ADAPTIVE PLANNING: Can adjust strategy based on predicted outcomes
+        3. TEMPORAL CONSISTENCY: Maintains logical action flow over time
+        4. EXPERT MIMICKING: Replicates how expert drivers think sequentially
+        
+        PERFORMANCE CHARACTERISTICS:
+        - Computational: O(seq_len²) due to growing attention sequence
+        - Memory: O(seq_len * d_model) for maintaining decoder state
+        - Quality: High coherence but potential error accumulation over long sequences
+        - Real-time: Suitable for real-time racing applications (millisecond latency)
+        
+        Args:
+            memory: Encoded current telemetry state [batch_size, input_seq_len, d_model]
+                   Contains transformer encoder's understanding of current racing situation
+            seq_len: Number of future action steps to predict (typically 10-20 for racing)
+                    Represents prediction horizon: how far ahead to plan
+        
+        Returns:
+            Complete action sequence [batch_size, seq_len, action_features]
+            Sequential racing actions from immediate next step through prediction horizon
+            Format: [throttle%, brake%, steering_angle, gear, target_speed] per time step
+        """
         batch_size = memory.shape[0]
         device = memory.device
         
@@ -361,11 +436,12 @@ class ExpertActionTransformer(nn.Module):
                                temperature: float = 1.0,
                                deterministic: bool = False) -> torch.Tensor:
         """
-        Predict a sequence of actions to reach expert state
+        Predict a sequence of actions to reach expert state (gap-aware)
         
         Args:
             telemetry: Input telemetry features [batch_size, input_seq_len, input_features]
-            context: Optional contextual features [batch_size, input_seq_len, context_features]  
+            context: Optional contextual features [batch_size, input_seq_len, context_features]
+                     Should include delta-to-expert features to condition on the improvement goal.
             sequence_length: Length of action sequence to predict (default: self.sequence_length)
             temperature: Temperature for sampling (higher = more random)
             deterministic: If True, use greedy decoding instead of sampling
@@ -443,7 +519,7 @@ class ExpertActionTransformer(nn.Module):
                               sequence_length: int = 10,
                               include_confidence: bool = True) -> Dict[str, Any]:
         """
-        Generate human-readable expert driving predictions from current telemetry data.
+    Generate human-readable expert driving predictions from current telemetry data.
         
         This function serves as the main interface for real-time racing guidance, converting
         raw telemetry data into actionable driving advice that can be easily understood
@@ -452,7 +528,8 @@ class ExpertActionTransformer(nn.Module):
         Process Flow:
         1. Validate and preprocess input telemetry data
         2. Convert telemetry to model input format (normalization, feature extraction)
-        3. Generate expert action sequence predictions using the trained model
+    3. Generate expert action sequence predictions using the trained model
+       (optionally conditioned on delta-to-expert gap context)
         4. Convert raw numerical predictions to human-readable advice
         5. Calculate confidence scores and contextual information
         6. Format everything into structured JSON response
@@ -738,7 +815,7 @@ class ExpertActionTransformer(nn.Module):
             
             sequence.append({
                 "step": i + 1,
-                "time_ahead": f"{(i + 1) * 0.1:.1f}s",
+                "time_ahead": f"{(i + 1) * self.time_step_seconds:.1f}s",
                 "action": action,
                 "throttle": round(float(throttle), 2),
                 "brake": round(float(brake), 2), 
@@ -844,6 +921,7 @@ class ExpertActionTransformer(nn.Module):
                 'action_features': self.action_features,
                 'd_model': self.d_model,
                 'sequence_length': self.sequence_length,
+                'time_step_seconds': self.time_step_seconds,  # Include time step configuration
                 'nhead': getattr(self.transformer_encoder.layers[0].self_attn, 'num_heads', 8),
                 'num_layers': len(self.transformer_encoder.layers),
                 'dim_feedforward': getattr(self.transformer_encoder.layers[0].linear1, 'out_features', 1024),
@@ -880,7 +958,8 @@ class ExpertActionTransformer(nn.Module):
             num_layers=config['num_layers'],
             dim_feedforward=config['dim_feedforward'],
             sequence_length=config['sequence_length'],
-            dropout=config.get('dropout', 0.1)
+            dropout=config.get('dropout', 0.1),
+            time_step_seconds=config.get('time_step_seconds', 0.1)  # Include time step configuration
         )
         
         # Load state dict from base64 encoded bytes
@@ -894,6 +973,11 @@ class ExpertActionTransformer(nn.Module):
 class TelemetryActionDataset(Dataset):
     """
     Dataset class for telemetry-to-action sequence learning
+
+    This dataset pairs non-expert telemetry with expert action targets and optional
+    enriched context (including delta-to-expert gap features). The model learns
+    how a non-expert can reach expert performance over time by conditioning on
+    these gap-aware contextual signals.
     """
     
     def __init__(self,
@@ -909,7 +993,7 @@ class TelemetryActionDataset(Dataset):
         Args:
             telemetry_data: List of telemetry records (basic telemetry only), drivers have different skill sets
             expert_actions: List of corresponding expert actions
-            enriched_contextual_data: List of enriched contextual features (corners, grip, etc.)
+            enriched_contextual_data: List of enriched contextual features (e.g., expert targets and delta-to-expert)
             sequence_length: Length of sequences to generate
             telemetry_features: List of feature names to extract from telemetry_data
             action_features: List of action feature names to extract from expert_actions
@@ -943,7 +1027,7 @@ class TelemetryActionDataset(Dataset):
         ]
     
     def _get_default_action_features(self) -> List[str]:
-        """Get default action features to predict"""
+        """Get default action features to predict """ 
         return [
             "expert_optimal_throttle", "expert_optimal_brake", "expert_optimal_steering",
             "expert_optimal_gear", "expert_optimal_speed"
@@ -1132,7 +1216,7 @@ class ExpertActionTrainer:
         self.best_model_state = None
     
     def train_epoch(self, dataloader: DataLoader) -> float:
-        """Train for one epoch"""
+        """Train for one epoch using autoregressive generation (no teacher forcing)"""
         self.model.train()
         total_loss = 0.0
         num_batches = 0
@@ -1151,18 +1235,15 @@ class ExpertActionTrainer:
             
             self.optimizer.zero_grad()
             
-            # Forward pass with teacher forcing
-            # For transformer decoder, we shift target actions right for input
-            decoder_input = torch.zeros_like(target_actions)
-            decoder_input[:, 1:] = target_actions[:, :-1]  # Shift right
-            
+            # Forward pass with autoregressive generation (no teacher forcing)
+            # Model will generate actions step by step using its own predictions
             predictions = self.model(
                 telemetry=telemetry,
                 context=context,
-                target_actions=decoder_input
+                target_actions=None  # No teacher forcing
             )
             
-            # Compute loss
+            # Compute loss against target actions
             loss = self.criterion(predictions, target_actions)
             
             # Backward pass
@@ -1179,7 +1260,7 @@ class ExpertActionTrainer:
         return total_loss / num_batches if num_batches > 0 else 0.0
     
     def validate_epoch(self, dataloader: DataLoader) -> float:
-        """Validate for one epoch"""
+        """Validate for one epoch using autoregressive generation (no teacher forcing)"""
         self.model.eval()
         total_loss = 0.0
         num_batches = 0
@@ -1197,14 +1278,11 @@ class ExpertActionTrainer:
                     target_actions = target_actions.to(self.device)
                     context = None
                 
-                # Forward pass with teacher forcing  
-                decoder_input = torch.zeros_like(target_actions)
-                decoder_input[:, 1:] = target_actions[:, :-1]
-                
+                # Forward pass with autoregressive generation (no teacher forcing)
                 predictions = self.model(
                     telemetry=telemetry,
                     context=context,
-                    target_actions=decoder_input
+                    target_actions=None  # No teacher forcing
                 )
                 
                 loss = self.criterion(predictions, target_actions)
@@ -1367,12 +1445,11 @@ class ExpertActionTrainer:
                     target_actions = target_actions.to(self.device)
                     context = None
                 
-                # Use model's prediction method (no teacher forcing)
-                predictions = self.model.predict_expert_sequence(
+                # Use standard forward method (autoregressive generation)
+                predictions = self.model(
                     telemetry=telemetry,
                     context=context,
-                    sequence_length=target_actions.shape[1],
-                    deterministic=True
+                    target_actions=None  # No teacher forcing
                 )
                 
                 loss = self.criterion(predictions, target_actions)
