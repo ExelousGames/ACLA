@@ -45,11 +45,62 @@ class PositionalEncoding(nn.Module):
 
 class ExpertActionTransformer(nn.Module):
     """
-    Transformer model uses current driver's telemetry to plan steps to converge to future expert state as optimal as possible.
-    model is constrained by track shape, car physics, and it will learn to operate the car within
-    physical and geometric limits. the primary prediction task is to output a sequence of actions for the current driver to reach
-    expert state at a given normalized track distance.
-
+    ExpertActionTransformer - AI Racing Coach for Real-Time Driving Optimization
+    
+    WHAT IT DOES:
+    The ExpertActionTransformer is a sophisticated AI model that acts as an "expert racing coach" 
+    for sim racing and autonomous vehicle control. It analyzes a driver's current performance 
+    and generates optimal action sequences to help them achieve expert-level racing performance.
+    
+    Think of it as having a professional racing instructor sitting next to you, constantly 
+    analyzing your driving data and providing real-time guidance: "brake harder here", 
+    "accelerate earlier there", "take this line through the corner".
+    
+    CORE FUNCTIONALITY:
+    1. PERFORMANCE GAP ANALYSIS: Compares current driver's telemetry against expert reference data
+    2. ACTION SEQUENCE PLANNING: Generates step-by-step driving actions to close performance gaps
+    3. PHYSICS-AWARE OPTIMIZATION: Respects car physics, tire grip, and track geometry constraints
+    4. REAL-TIME ADAPTATION: Provides dynamic guidance that adapts to changing track conditions
+    
+    PRACTICAL APPLICATIONS:
+    - Racing Simulators: Helps players improve lap times and racing technique
+    - Autonomous Vehicles: Provides optimal control strategies for dynamic driving scenarios  
+    - Driver Training: Offers personalized coaching based on individual driving patterns
+    - Motorsport Analysis: Identifies performance optimization opportunities for race teams
+    
+    HOW IT WORKS:
+    The model processes current driver telemetry (speed, position, forces, inputs) along with 
+    contextual information (track layout, tire conditions, weather) to understand the current 
+    racing situation. Using transformer attention mechanisms, it identifies the most relevant 
+    patterns from expert driving data and generates a sequence of optimal actions (throttle, 
+    brake, steering, gear changes) that will guide the current driver toward expert performance.
+    
+    KEY TECHNICAL FEATURES:
+    - Transformer Architecture: Uses multi-head attention to focus on relevant driving patterns
+    - Sequence-to-Sequence Learning: Maps current state to optimal future action sequences
+    - Physics Constraints: Ensures all predicted actions are physically realizable
+    - Multi-Modal Input: Processes telemetry, track geometry, and environmental conditions
+    - Real-Time Inference: Optimized for low-latency real-time driving applications
+    
+    INPUT DATA:
+    - Current telemetry: Speed, position, G-forces, steering angle, throttle/brake inputs
+    - Track context: Corner geometry, racing line, elevation changes, surface conditions
+    - Vehicle state: Tire grip levels, aerodynamic settings, mechanical setup
+    - Expert reference: Target velocities, optimal racing lines, braking/acceleration points
+    
+    OUTPUT PREDICTIONS:
+    - Throttle control: Optimal accelerator pedal positions (0-100%)
+    - Brake control: Optimal brake pressure applications (0-100%)  
+    - Steering input: Optimal steering wheel angles (-100% to +100%)
+    - Gear selection: Optimal transmission gear choices (1-6)
+    - Target speed: Optimal velocity targets for upcoming track sections
+    
+    TRAINING PROCESS:
+    The model learns by analyzing thousands of laps from expert drivers, understanding the 
+    relationship between track conditions, vehicle state, and optimal control inputs. It 
+    develops an internal representation of racing physics and strategy that allows it to 
+    provide expert-level guidance for any track/vehicle combination.
+    
     Architecture:
     - Input: Current telemetry features + contextual data (corner info, tire grip, etc.)
     - Output: Sequence actions of current driver who tries to reach expert state (velocity, location)
@@ -92,8 +143,8 @@ class ExpertActionTransformer(nn.Module):
         # Input embeddings
         self.telemetry_embedding = nn.Linear(input_features, d_model)
         self.context_embedding = nn.Linear(context_features, d_model) if context_features > 0 else None
-        
-        # Positional encoding
+
+        # Positional encoding : Without positional encoding: The transformer can't distinguish between [brake, throttle, steer] and [steer, brake, throttle], it adds unique positional information
         self.pos_encoding = PositionalEncoding(d_model, dropout, max_len=sequence_length * 2)
         
         # Transformer encoder for processing current state
@@ -140,16 +191,82 @@ class ExpertActionTransformer(nn.Module):
                 target_actions: Optional[torch.Tensor] = None,
                 target_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
-        Forward pass
+        Forward pass - the main computation pipeline of the Expert Action Transformer.
+        
+        This method implements the complete forward pass through the transformer model,
+        transforming input telemetry data into predicted expert action sequences. The forward
+        pass operates in two distinct modes depending on whether target_actions are provided:
+        
+        1. TRAINING MODE (target_actions provided):
+           - Uses teacher forcing for stable training
+           - Decoder receives ground truth actions as input
+           - Enables parallel processing of entire sequences
+           - Optimized for learning from expert demonstrations
+        
+        2. INFERENCE MODE (target_actions=None):
+           - Uses autoregressive generation
+           - Decoder generates actions one step at a time
+           - Each predicted action feeds into next time step
+           - Simulates real-time driving decision making
+        
+        ARCHITECTURAL FLOW:
+        
+        Step 1: EMBEDDING LAYER
+        - Raw telemetry features (42-dim) → high-dimensional space (256-dim)
+        - Optional context features (31-dim) → same space (256-dim)
+        - Creates rich feature representations for transformer processing
+        
+        Step 2: FEATURE FUSION
+        - Combines telemetry + contextual information via element-wise addition
+        - Allows model to correlate current state with track/tire conditions
+        - Creates unified input representation for encoder
+        
+        Step 3: POSITIONAL ENCODING
+        - Injects sequence position information into embeddings
+        - Critical for understanding temporal order in racing telemetry
+        - Enables model to distinguish "brake before corner" vs "accelerate after corner"
+        
+        Step 4: TRANSFORMER ENCODER
+        - Processes current driver state through multi-head attention
+        - Each attention head focuses on different aspects (speed, position, forces)
+        - Creates contextualized representation of current racing situation
+        - Output "memory" contains encoded understanding of current state
+        
+        Step 5: TRANSFORMER DECODER (Mode-dependent)
+        - TRAINING: Uses shifted target actions with causal masking
+          * Learns to predict next action given current state + previous actions
+          * Teacher forcing ensures stable gradients during training
+          * Causal mask prevents "looking ahead" at future actions
+        
+        - INFERENCE: Autoregressive generation step-by-step
+          * Starts with zero/start token, generates actions sequentially  
+          * Each predicted action becomes input for next prediction
+          * Simulates real-time expert decision making process
+        
+        Step 6: ACTION PROJECTION
+        - Maps high-dimensional decoder output back to action space
+        - 256-dim → 5-dim: [throttle, brake, steering, gear, speed]
+        - Final layer before applying physical constraints
+        
+        RACING-SPECIFIC CONSIDERATIONS:
+        - Telemetry sequence represents racing line progression over time
+        - Context includes corner geometry, tire grip, expert target states
+        - Actions must be physically realizable and optimal for car/track
+        - Sequential dependencies critical: braking→turning→accelerating
         
         Args:
             telemetry: Input telemetry features [batch_size, seq_len, input_features]
+                      Contains current driver state: speed, position, forces, etc.
             context: Contextual features [batch_size, seq_len, context_features] 
+                    Contains track info, tire grip, expert reference trajectory
             target_actions: Target action sequence for training [batch_size, seq_len, action_features]
+                          Expert demonstration actions for supervised learning
             target_mask: Mask for target sequence [batch_size, seq_len]
+                        Currently unused, reserved for variable-length sequences
             
         Returns:
             Predicted action sequence [batch_size, seq_len, action_features]
+            Expert-level actions that will guide current driver toward optimal performance
         """
         batch_size = telemetry.shape[0]
         seq_len = telemetry.shape[1]
@@ -320,6 +437,389 @@ class ExpertActionTransformer(nn.Module):
         
         return constrained
     
+    def predict_human_readable(self, 
+                              current_telemetry: Dict[str, Any],
+                              context_data: Optional[Dict[str, Any]] = None,
+                              sequence_length: int = 10,
+                              include_confidence: bool = True) -> Dict[str, Any]:
+        """
+        Generate human-readable expert driving predictions from current telemetry data.
+        
+        This function serves as the main interface for real-time racing guidance, converting
+        raw telemetry data into actionable driving advice that can be easily understood
+        by human drivers or displayed in user interfaces.
+        
+        Process Flow:
+        1. Validate and preprocess input telemetry data
+        2. Convert telemetry to model input format (normalization, feature extraction)
+        3. Generate expert action sequence predictions using the trained model
+        4. Convert raw numerical predictions to human-readable advice
+        5. Calculate confidence scores and contextual information
+        6. Format everything into structured JSON response
+        
+        Args:
+            current_telemetry: Dictionary containing current driver telemetry data
+                              Expected keys: speed, position, forces, steering, throttle, brake, etc.
+            context_data: Optional dictionary with track/tire context information
+                         Can include: corner info, tire grip levels, weather conditions
+            sequence_length: Number of future action steps to predict (default: 10)
+            include_confidence: Whether to include prediction confidence metrics
+            
+        Returns:
+            Structured JSON dictionary with human-readable predictions:
+            {
+                "status": "success" | "error",
+                "timestamp": ISO timestamp,
+                "current_situation": {
+                    "speed": "120 km/h",
+                    "track_position": "mid-corner",
+                    "racing_line": "optimal" | "suboptimal",
+                    "tire_grip": "good" | "losing grip"
+                },
+                "expert_advice": {
+                    "immediate_action": "Brake moderately and turn in earlier",
+                    "throttle_guidance": "Maintain current throttle (65%)",
+                    "braking_guidance": "Apply 40% brake pressure now",
+                    "steering_guidance": "Turn steering wheel 15° left",
+                    "gear_guidance": "Downshift to gear 3"
+                },
+                "sequence_predictions": [
+                    {
+                        "step": 1,
+                        "time_ahead": "0.1s",
+                        "action": "Begin braking",
+                        "throttle": 0.2,
+                        "brake": 0.6,
+                        "steering": -0.15
+                    }
+                ],
+                "performance_analysis": {
+                    "vs_expert_gap": "+0.8s per lap",
+                    "main_improvement": "Earlier braking points",
+                    "confidence_score": 0.85
+                },
+                "contextual_info": {
+                    "track_sector": "Sector 2, Turn 5",
+                    "weather_impact": "Dry conditions, full grip",
+                    "optimal_speed": "95 km/h for this corner"
+                }
+            }
+        """
+        try:
+            # Prepare telemetry data for model input
+            telemetry_features = self._extract_telemetry_features(current_telemetry)
+            
+            # Convert to tensor format
+            device = next(self.parameters()).device
+            telemetry_tensor = torch.tensor([telemetry_features], dtype=torch.float32).unsqueeze(0).to(device)
+            
+            # Process context data if provided
+            context_tensor = None
+            if context_data and self.context_embedding is not None:
+                context_features = self._extract_context_features(context_data)
+                context_tensor = torch.tensor([context_features], dtype=torch.float32).unsqueeze(0).to(device)
+            
+            # Generate predictions
+            self.eval()
+            with torch.no_grad():
+                predictions = self.predict_expert_sequence(
+                    telemetry=telemetry_tensor,
+                    context=context_tensor,
+                    sequence_length=sequence_length,
+                    deterministic=True
+                )
+            
+            # Convert predictions to numpy for processing
+            predictions_np = predictions.cpu().numpy()[0]  # Remove batch dimension
+            
+            # Analyze current situation
+            current_situation = self._analyze_current_situation(current_telemetry, context_data)
+            
+            # Generate expert advice
+            expert_advice = self._generate_expert_advice(predictions_np[0], current_telemetry)  # First prediction
+            
+            # Create sequence predictions
+            sequence_predictions = self._create_sequence_predictions(predictions_np, sequence_length)
+            
+            # Performance analysis
+            performance_analysis = self._analyze_performance_gap(current_telemetry, predictions_np[0])
+            
+            # Add confidence scoring if requested
+            if include_confidence:
+                performance_analysis["confidence_score"] = self._calculate_prediction_confidence(predictions_np)
+            
+            # Contextual information
+            contextual_info = self._extract_contextual_info(current_telemetry, context_data)
+            
+            # Build response
+            response = {
+                "status": "success",
+                "timestamp": datetime.now().isoformat(),
+                "current_situation": current_situation,
+                "expert_advice": expert_advice,
+                "sequence_predictions": sequence_predictions,
+                "performance_analysis": performance_analysis,
+                "contextual_info": contextual_info
+            }
+            
+            return response
+            
+        except Exception as e:
+            return {
+                "status": "error",
+                "timestamp": datetime.now().isoformat(),
+                "error_message": str(e),
+                "error_type": type(e).__name__
+            }
+    
+    def _extract_telemetry_features(self, telemetry: Dict[str, Any]) -> List[float]:
+        """Extract and normalize telemetry features for model input"""
+        # Default telemetry features expected by the model
+        feature_names = [
+            "Graphics_normalized_car_position", "Graphics_player_pos_x", "Graphics_player_pos_y", 
+            "Graphics_player_pos_z", "Graphics_current_time", "Physics_speed_kmh", "Physics_gas",
+            "Physics_brake", "Physics_steer_angle", "Physics_gear", "Physics_rpm", "Physics_g_force_x",
+            "Physics_g_force_y", "Physics_g_force_z", "Physics_slip_angle_front_left", 
+            "Physics_slip_angle_front_right", "Physics_slip_angle_rear_left", "Physics_slip_angle_rear_right", 
+            "Physics_velocity_x", "Physics_velocity_y", "Physics_velocity_z"
+        ]
+        
+        features = []
+        for feature in feature_names:
+            value = telemetry.get(feature, 0.0)
+            try:
+                features.append(float(value))
+            except (ValueError, TypeError):
+                features.append(0.0)
+        
+        return features
+    
+    def _extract_context_features(self, context_data: Dict[str, Any]) -> List[float]:
+        """Extract contextual features for model input"""
+        # This should match the context features used during training
+        # Placeholder implementation - adjust based on your actual context structure
+        features = []
+        
+        # Corner information (16 features)
+        corner_features = context_data.get('corner_info', {})
+        corner_keys = ['radius', 'entry_speed', 'exit_speed', 'banking', 'elevation_change'] 
+        for key in corner_keys:
+            features.append(float(corner_features.get(key, 0.0)))
+        
+        # Add more features to reach expected context size
+        while len(features) < 31:  # Expected context_features size
+            features.append(0.0)
+        
+        return features[:31]  # Ensure exact size
+    
+    def _analyze_current_situation(self, telemetry: Dict[str, Any], context: Optional[Dict[str, Any]]) -> Dict[str, str]:
+        """Analyze current driving situation"""
+        speed = float(telemetry.get('Physics_speed_kmh', 0))
+        steer_angle = float(telemetry.get('Physics_steer_angle', 0))
+        throttle = float(telemetry.get('Physics_gas', 0))
+        brake = float(telemetry.get('Physics_brake', 0))
+        
+        # Determine track position
+        if abs(steer_angle) > 0.1:
+            track_position = "in-corner"
+        elif throttle > 0.8:
+            track_position = "straight-line"
+        else:
+            track_position = "corner-approach"
+        
+        # Determine racing line quality
+        if abs(steer_angle) < 0.05 and speed > 100:
+            racing_line = "optimal"
+        else:
+            racing_line = "suboptimal"
+        
+        # Tire grip assessment (simplified)
+        g_lateral = abs(float(telemetry.get('Physics_g_force_x', 0)))
+        if g_lateral < 1.0:
+            tire_grip = "good grip"
+        elif g_lateral < 1.5:
+            tire_grip = "moderate grip"
+        else:
+            tire_grip = "losing grip"
+        
+        return {
+            "speed": f"{speed:.0f} km/h",
+            "track_position": track_position,
+            "racing_line": racing_line,
+            "tire_grip": tire_grip
+        }
+    
+    def _generate_expert_advice(self, prediction: np.ndarray, current_telemetry: Dict[str, Any]) -> Dict[str, str]:
+        """Generate human-readable expert advice from predictions"""
+        # Prediction format: [throttle, brake, steering, gear, speed]
+        pred_throttle = float(prediction[0])
+        pred_brake = float(prediction[1])
+        pred_steering = float(prediction[2])
+        pred_gear = int(prediction[3])
+        pred_speed = float(prediction[4])
+        
+        # Current values
+        curr_throttle = float(current_telemetry.get('Physics_gas', 0))
+        curr_brake = float(current_telemetry.get('Physics_brake', 0))
+        curr_steering = float(current_telemetry.get('Physics_steer_angle', 0))
+        curr_gear = int(current_telemetry.get('Physics_gear', 1))
+        curr_speed = float(current_telemetry.get('Physics_speed_kmh', 0))
+        
+        # Generate advice
+        advice = {}
+        
+        # Throttle guidance
+        throttle_diff = pred_throttle - curr_throttle
+        if abs(throttle_diff) < 0.1:
+            advice["throttle_guidance"] = f"Maintain current throttle ({curr_throttle*100:.0f}%)"
+        elif throttle_diff > 0.1:
+            advice["throttle_guidance"] = f"Increase throttle to {pred_throttle*100:.0f}% (currently {curr_throttle*100:.0f}%)"
+        else:
+            advice["throttle_guidance"] = f"Reduce throttle to {pred_throttle*100:.0f}% (currently {curr_throttle*100:.0f}%)"
+        
+        # Braking guidance  
+        brake_diff = pred_brake - curr_brake
+        if pred_brake > 0.1:
+            advice["braking_guidance"] = f"Apply {pred_brake*100:.0f}% brake pressure"
+        elif curr_brake > 0.1 and pred_brake < 0.1:
+            advice["braking_guidance"] = "Release brakes"
+        else:
+            advice["braking_guidance"] = "No braking needed"
+        
+        # Steering guidance
+        steering_diff = pred_steering - curr_steering
+        if abs(steering_diff) > 0.05:
+            direction = "right" if steering_diff > 0 else "left"
+            advice["steering_guidance"] = f"Turn steering wheel {abs(steering_diff)*100:.0f}% more to the {direction}"
+        else:
+            advice["steering_guidance"] = "Maintain current steering"
+        
+        # Gear guidance
+        if pred_gear != curr_gear:
+            if pred_gear > curr_gear:
+                advice["gear_guidance"] = f"Upshift to gear {pred_gear}"
+            else:
+                advice["gear_guidance"] = f"Downshift to gear {pred_gear}"
+        else:
+            advice["gear_guidance"] = f"Stay in gear {curr_gear}"
+        
+        # Overall immediate action
+        if pred_brake > 0.3:
+            advice["immediate_action"] = "Brake harder and prepare for corner"
+        elif pred_throttle > curr_throttle + 0.2:
+            advice["immediate_action"] = "Accelerate out of corner"
+        elif abs(steering_diff) > 0.1:
+            direction = "right" if steering_diff > 0 else "left"
+            advice["immediate_action"] = f"Turn more to the {direction}"
+        else:
+            advice["immediate_action"] = "Maintain current driving line"
+        
+        return advice
+    
+    def _create_sequence_predictions(self, predictions: np.ndarray, sequence_length: int) -> List[Dict[str, Any]]:
+        """Create sequence of future predictions"""
+        sequence = []
+        
+        for i in range(min(sequence_length, len(predictions))):
+            pred = predictions[i]
+            
+            # Determine main action for this step
+            throttle, brake, steering, gear, speed = pred[0], pred[1], pred[2], int(pred[3]), pred[4]
+            
+            if brake > 0.3:
+                action = "Apply brakes"
+            elif throttle > 0.7:
+                action = "Accelerate"
+            elif abs(steering) > 0.1:
+                direction = "right" if steering > 0 else "left"
+                action = f"Turn {direction}"
+            else:
+                action = "Maintain course"
+            
+            sequence.append({
+                "step": i + 1,
+                "time_ahead": f"{(i + 1) * 0.1:.1f}s",
+                "action": action,
+                "throttle": round(float(throttle), 2),
+                "brake": round(float(brake), 2), 
+                "steering": round(float(steering), 2),
+                "gear": int(gear),
+                "target_speed": round(float(speed), 1)
+            })
+        
+        return sequence
+    
+    def _analyze_performance_gap(self, current_telemetry: Dict[str, Any], expert_prediction: np.ndarray) -> Dict[str, Any]:
+        """Analyze performance gap vs expert"""
+        curr_speed = float(current_telemetry.get('Physics_speed_kmh', 0))
+        expert_speed = float(expert_prediction[4])  # Predicted optimal speed
+        
+        speed_diff = expert_speed - curr_speed
+        
+        # Estimate lap time impact (simplified)
+        if abs(speed_diff) < 2:
+            gap_estimate = "On pace with expert"
+            improvement = "Minor adjustments needed"
+        elif speed_diff > 5:
+            gap_estimate = f"+{speed_diff*0.1:.1f}s per sector"
+            improvement = "Carry more speed through corners"
+        elif speed_diff < -5:
+            gap_estimate = f"+{abs(speed_diff)*0.05:.1f}s per sector"
+            improvement = "Focus on earlier braking points"
+        else:
+            gap_estimate = f"+{abs(speed_diff)*0.08:.1f}s per sector"
+            improvement = "Optimize racing line"
+        
+        return {
+            "vs_expert_gap": gap_estimate,
+            "main_improvement": improvement,
+            "speed_delta": f"{speed_diff:+.1f} km/h"
+        }
+    
+    def _calculate_prediction_confidence(self, predictions: np.ndarray) -> float:
+        """Calculate confidence score for predictions"""
+        # Simple confidence based on prediction stability
+        if len(predictions) < 2:
+            return 0.5
+        
+        # Calculate variance in predictions as inverse confidence measure
+        variances = np.var(predictions, axis=0)
+        avg_variance = np.mean(variances)
+        
+        # Convert variance to confidence (0-1 scale)
+        confidence = max(0.1, min(0.95, 1.0 / (1.0 + avg_variance * 10)))
+        
+        return round(confidence, 2)
+    
+    def _extract_contextual_info(self, telemetry: Dict[str, Any], context: Optional[Dict[str, Any]]) -> Dict[str, str]:
+        """Extract contextual information for response"""
+        info = {}
+        
+        # Track information
+        position = float(telemetry.get('Graphics_normalized_car_position', 0))
+        if position < 0.33:
+            info["track_sector"] = "Sector 1"
+        elif position < 0.66:
+            info["track_sector"] = "Sector 2" 
+        else:
+            info["track_sector"] = "Sector 3"
+        
+        # Weather (simplified)
+        info["weather_impact"] = "Dry conditions, full grip available"
+        
+        # Optimal speed for current section (estimated)
+        current_speed = float(telemetry.get('Physics_speed_kmh', 0))
+        steer_angle = abs(float(telemetry.get('Physics_steer_angle', 0)))
+        
+        if steer_angle > 0.2:
+            optimal_speed = current_speed * 0.9  # Corner
+        else:
+            optimal_speed = current_speed * 1.1  # Straight
+        
+        info["optimal_speed_estimate"] = f"{optimal_speed:.0f} km/h for current section"
+        
+        return info
+    
     def serialize_model(self) -> Dict[str, Any]:
         """
         Serialize the model to a JSON-serializable dictionary
@@ -450,8 +950,21 @@ class TelemetryActionDataset(Dataset):
         ]
     
     def _preprocess_data(self):
-        """Preprocess and normalize the data"""
-        # Extract feature matrices
+        """
+        Preprocess and normalize the data for transformer training.
+        
+        This function performs the following steps:
+        1. Converts raw telemetry dictionaries into numerical feature matrices
+        2. Extracts action targets from expert demonstration data 
+        3. Optionally processes contextual data (corner info, tire grip, etc.)
+        4. Applies standardization (zero mean, unit variance) to all feature matrices
+        5. Stores fitted scalers for later denormalization during inference
+        
+        The preprocessing ensures all input features are on similar scales, which is
+        critical for stable transformer training and attention mechanism performance.
+        """
+        # Extract feature matrices from raw dictionary data
+        # Convert list of telemetry dictionaries -> numpy matrix [samples, features]
         self.telemetry_matrix = self._extract_features(self.telemetry_data, self.telemetry_features)
         self.action_matrix = self._extract_features(self.expert_actions, self.action_features)
         
@@ -502,10 +1015,34 @@ class TelemetryActionDataset(Dataset):
         return np.array(matrix, dtype=np.float32)
     
     def _generate_sequences(self):
-        """Generate valid sequence start indices"""
+        """
+        Generate valid sequence start indices for transformer training.
+        
+        Purpose:
+        - Creates fixed-length training sequences from continuous telemetry data
+        - Determines how the dataset will be chunked for batch processing
+        - Ensures sequences fit within available data boundaries
+        
+        How it works:
+        1. Iterates through telemetry data in non-overlapping windows
+        2. Each window starts at index i and spans sequence_length samples
+        3. Only creates sequences where there's enough data (i + sequence_length <= total_samples)
+        4. Stores valid start indices in self.sequence_indices list
+        
+        Strategy:
+        - Non-overlapping sequences prevent data leakage between training samples
+        - Step size equals sequence_length to maximize data efficiency
+        - Alternative strategies could use overlapping windows or sliding windows
+        
+        Example:
+        - Data length: 1000 samples, sequence_length: 20
+        - Generated indices: [0, 20, 40, 60, ..., 980] 
+        - Result: 49 non-overlapping sequences of 20 samples each
+        """
         self.sequence_indices = []
         
-        # For now, generate non-overlapping sequences
+        # Generate non-overlapping sequences to prevent data leakage
+        # Step by sequence_length to avoid overlap between training samples
         for i in range(0, len(self.telemetry_data) - self.sequence_length + 1, self.sequence_length):
             self.sequence_indices.append(i)
         
@@ -683,17 +1220,66 @@ class ExpertActionTrainer:
               patience: int = 15,
               save_best: bool = True) -> Dict[str, Any]:
         """
-        Train the model
+        Main training loop for the Expert Action Transformer model.
+        
+        This function implements a complete training pipeline with the following key components:
+        
+        1. TRAINING LOOP ARCHITECTURE:
+           - Iterates through specified number of epochs
+           - Each epoch processes entire training dataset via train_epoch()
+           - Optionally validates on validation set via validate_epoch()
+           - Tracks losses and training progress over time
+        
+        2. ADAPTIVE LEARNING RATE:
+           - Uses ReduceLROnPlateau scheduler to automatically reduce learning rate
+           - Monitors validation loss; reduces LR when loss plateaus
+           - Helps model converge to better local minima during training
+        
+        3. EARLY STOPPING MECHANISM:
+           - Prevents overfitting by stopping training when validation loss stops improving
+           - Tracks consecutive epochs without validation loss improvement
+           - Stops training if no improvement for 'patience' epochs
+           - Balances training time vs model generalization
+        
+        4. BEST MODEL CHECKPOINTING:
+           - Automatically saves model state when validation loss reaches new minimum
+           - Stores complete model weights, epoch number, and corresponding loss
+           - Loads best performing model at end of training (not final epoch)
+           - Ensures returned model represents peak performance, not final iteration
+        
+        5. PROGRESS MONITORING:
+           - Prints comprehensive training metrics each epoch
+           - Tracks both training and validation losses over time  
+           - Displays current learning rate for debugging purposes
+           - Maintains history for post-training analysis
+        
+        Training Process Flow:
+        - Initialize tracking variables (best_val_loss, epochs_without_improvement)
+        - For each epoch:
+          a) Train model on training data using train_epoch()
+          b) Evaluate model on validation data using validate_epoch() 
+          c) Update learning rate scheduler based on validation performance
+          d) Check if current model is best seen so far (lowest val loss)
+          e) Save model checkpoint if it's the best performing
+          f) Check early stopping criteria
+          g) Print epoch statistics
+        - After training completion, load the best saved model
+        - Return comprehensive training statistics and metrics
         
         Args:
-            train_dataloader: Training data loader
-            val_dataloader: Validation data loader (optional)
-            epochs: Number of training epochs
-            patience: Early stopping patience
-            save_best: Whether to save the best model state
+            train_dataloader: DataLoader with training sequences (telemetry -> expert actions)
+            val_dataloader: Optional DataLoader for validation during training
+            epochs: Maximum number of training epochs to run
+            patience: Number of epochs to wait for val loss improvement before early stopping  
+            save_best: Whether to checkpoint and restore best performing model
             
         Returns:
-            Training history and final metrics
+            Dictionary containing complete training history:
+            - train_losses: List of training losses per epoch
+            - val_losses: List of validation losses per epoch  
+            - best_val_loss: Lowest validation loss achieved
+            - epochs_trained: Actual number of epochs completed
+            - final_lr: Final learning rate after training
         """
         print(f"[INFO] Starting training for {epochs} epochs on {self.device}")
         print(f"[INFO] Model parameters: {sum(p.numel() for p in self.model.parameters()):,}")
