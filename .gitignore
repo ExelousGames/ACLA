@@ -76,3 +76,4 @@ report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 /acla_ai_service/app/analyzers
 /acla_ai_service/app/api/__pycache__
 /acla_ai_service/app/api/__pycache__
+/acla_ai_service/app/analyzers/__pycache__

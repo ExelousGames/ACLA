@@ -39,8 +39,8 @@ class ExpertFeatureCatalog:
     to avoid drifting string literals across the codebase.
     """
 
-    class ContextFeature(str, Enum):
-        # Optimal action predictions (expert targets)
+    class ExpertOptimalFeature(str, Enum):
+        # Optimal action predictions 
         EXPERT_OPTIMAL_SPEED = 'expert_optimal_speed'
         EXPERT_OPTIMAL_STEERING = 'expert_optimal_steering'
         EXPERT_OPTIMAL_THROTTLE = 'expert_optimal_throttle'
@@ -50,19 +50,12 @@ class ExpertFeatureCatalog:
         EXPERT_OPTIMAL_PLAYER_POS_Y = 'expert_optimal_player_pos_y'
         EXPERT_OPTIMAL_PLAYER_POS_Z = 'expert_optimal_player_pos_z'
         EXPERT_OPTIMAL_TRACK_POSITION = 'expert_optimal_track_position'
+        EXPERT_OPTIMAL_VELOCITY_X = 'expert_optimal_velocity_x'
+        EXPERT_OPTIMAL_VELOCITY_Y = 'expert_optimal_velocity_y'
 
-        # Derived composite cues
-        EXPERT_CONTROL_OVERLAP = 'expert_control_overlap' # Trail Braking, Weight Transfer Control, Smooth Transitions
-        EXPERT_NET_ACCEL_COMMAND = 'expert_net_accel_command' # a derived composite feature that represents the net acceleration command from an expert driver by calculating the difference between throttle and brake inputs.
-
-        # Delta-to-expert signals (teach non-expert how to reach expert over time)
-        EXPERT_GAP_THROTTLE = 'expert_gap_throttle'   # expert_throttle - current_throttle
-        EXPERT_GAP_BRAKE = 'expert_gap_brake'         # expert_brake - current_brake
-        EXPERT_GAP_STEERING = 'expert_gap_steering'   # expert_steering - current_steering
-        EXPERT_GAP_GEAR = 'expert_gap_gear'           # expert_gear - current_gear
-        EXPERT_GAP_SPEED = 'expert_gap_speed'         # expert_speed - current_speed
-        EXPERT_GAP_MAGNITUDE = 'expert_gap_magnitude' # overall gap magnitude (euclidean)
-        EXPERT_GAP_PROGRESS = 'expert_gap_progress'   # fraction of gap closed vs initial (0..1)
+    class ContextFeature(str, Enum):
+        # Velocity direction alignment with expert
+        EXPERT_VELOCITY_ALIGNMENT = 'expert_velocity_alignment' # 1.0 if moving toward expert velocity, 0.0 otherwise
 
     class TrajectoryFeature(str, Enum):
         TRACK_POSITION = 'track_position'
@@ -384,28 +377,32 @@ class ExpertTrajectoryLearner:
         
         # Define target variables (what we want to optimize) using enum feature names
         from .imitate_expert_learning_service import ExpertFeatureCatalog  # local import to avoid circular for typing tools
-        CF = ExpertFeatureCatalog.ContextFeature
+        EO = ExpertFeatureCatalog.ExpertOptimalFeature
         targets: Dict[str, pd.Series] = {}
 
         TF = ExpertFeatureCatalog.TrajectoryFeature
         if TF.SPEED.value in trajectory_features.columns:
-            targets[CF.EXPERT_OPTIMAL_SPEED.value] = trajectory_features[TF.SPEED.value]
+            targets[EO.EXPERT_OPTIMAL_SPEED.value] = trajectory_features[TF.SPEED.value]
         if TF.STEERING_ANGLE.value in trajectory_features.columns:
-            targets[CF.EXPERT_OPTIMAL_STEERING.value] = trajectory_features[TF.STEERING_ANGLE.value]
+            targets[EO.EXPERT_OPTIMAL_STEERING.value] = trajectory_features[TF.STEERING_ANGLE.value]
         if TF.THROTTLE.value in trajectory_features.columns:
-            targets[CF.EXPERT_OPTIMAL_THROTTLE.value] = trajectory_features[TF.THROTTLE.value]
+            targets[EO.EXPERT_OPTIMAL_THROTTLE.value] = trajectory_features[TF.THROTTLE.value]
         if TF.BRAKE.value in trajectory_features.columns:
-            targets[CF.EXPERT_OPTIMAL_BRAKE.value] = trajectory_features[TF.BRAKE.value]
+            targets[EO.EXPERT_OPTIMAL_BRAKE.value] = trajectory_features[TF.BRAKE.value]
         if TF.GEAR.value in trajectory_features.columns:
-            targets[CF.EXPERT_OPTIMAL_GEAR.value] = trajectory_features[TF.GEAR.value]
+            targets[EO.EXPERT_OPTIMAL_GEAR.value] = trajectory_features[TF.GEAR.value]
         if TF.PLAYER_POS_X.value in trajectory_features.columns:
-            targets[CF.EXPERT_OPTIMAL_PLAYER_POS_X.value] = trajectory_features[TF.PLAYER_POS_X.value]
+            targets[EO.EXPERT_OPTIMAL_PLAYER_POS_X.value] = trajectory_features[TF.PLAYER_POS_X.value]
         if TF.PLAYER_POS_Y.value in trajectory_features.columns:
-            targets[CF.EXPERT_OPTIMAL_PLAYER_POS_Y.value] = trajectory_features[TF.PLAYER_POS_Y.value]
+            targets[EO.EXPERT_OPTIMAL_PLAYER_POS_Y.value] = trajectory_features[TF.PLAYER_POS_Y.value]
         if TF.PLAYER_POS_Z.value in trajectory_features.columns:
-            targets[CF.EXPERT_OPTIMAL_PLAYER_POS_Z.value] = trajectory_features[TF.PLAYER_POS_Z.value]
+            targets[EO.EXPERT_OPTIMAL_PLAYER_POS_Z.value] = trajectory_features[TF.PLAYER_POS_Z.value]
         if TF.TRACK_POSITION.value in trajectory_features.columns:
-            targets[CF.EXPERT_OPTIMAL_TRACK_POSITION.value] = trajectory_features[TF.TRACK_POSITION.value]
+            targets[EO.EXPERT_OPTIMAL_TRACK_POSITION.value] = trajectory_features[TF.TRACK_POSITION.value]
+        if TF.VELOCITY_X.value in trajectory_features.columns:
+            targets[EO.EXPERT_OPTIMAL_VELOCITY_X.value] = trajectory_features[TF.VELOCITY_X.value]
+        if TF.VELOCITY_Y.value in trajectory_features.columns:
+            targets[EO.EXPERT_OPTIMAL_VELOCITY_Y.value] = trajectory_features[TF.VELOCITY_Y.value]
         
         # Prepare input features (current state)
         input_features = [
@@ -445,7 +442,7 @@ class ExpertTrajectoryLearner:
                 continue  # Skip targets with too many missing values
             
             # Clean target values based on type
-            if target_name == CF.EXPERT_OPTIMAL_GEAR.value:
+            if target_name == EO.EXPERT_OPTIMAL_GEAR.value:
                 # For gear, fill missing values with mode (most common gear) and keep as integer
                 mode_value = target_values.mode().iloc[0] if not target_values.mode().empty else 1
                 y = target_values.fillna(mode_value).astype(int)
@@ -459,7 +456,7 @@ class ExpertTrajectoryLearner:
             )
             
             # Use different model types based on target variable
-            if target_name == CF.EXPERT_OPTIMAL_GEAR.value:
+            if target_name == EO.EXPERT_OPTIMAL_GEAR.value:
                 # Use classifier for discrete gear values, you cant have 3.5 gear   
                 model = RandomForestClassifier(
                     n_estimators=100, 
@@ -497,7 +494,7 @@ class ExpertTrajectoryLearner:
             performance_metrics[target_name] = metrics
             
             # Log metrics based on model type
-            if target_name == CF.EXPERT_OPTIMAL_GEAR.value:
+            if target_name == EO.EXPERT_OPTIMAL_GEAR.value:
                 print(f"[INFO] {target_name} model - Accuracy: {metrics['accuracy']:.3f}, F1: {metrics['f1_score']:.3f}")
             else:
                 print(f"[INFO] {target_name} model - R²: {metrics['r2']:.3f}, MAE: {metrics['mae']:.3f}")
@@ -557,7 +554,7 @@ class ExpertTrajectoryLearner:
         # Make predictions (batch prediction is much faster)
         predictions = {}
         from .imitate_expert_learning_service import ExpertFeatureCatalog as _EFC  # local import to avoid name issues
-        gear_key = _EFC.ContextFeature.EXPERT_OPTIMAL_GEAR.value
+        gear_key = _EFC.ExpertOptimalFeature.EXPERT_OPTIMAL_GEAR.value
         for target_name, model in self.trajectory_model['models'].items():
             try:
                 pred = model.predict(X_scaled)
@@ -613,7 +610,7 @@ class ExpertTrajectoryLearner:
         # Make predictions for all models at once (batch prediction)
         all_predictions = {}
         from .imitate_expert_learning_service import ExpertFeatureCatalog as _EFC
-        gear_key = _EFC.ContextFeature.EXPERT_OPTIMAL_GEAR.value
+        gear_key = _EFC.ExpertOptimalFeature.EXPERT_OPTIMAL_GEAR.value
         
         for target_name, model in self.trajectory_model['models'].items():
             try:
@@ -1010,15 +1007,11 @@ class ExpertImitateLearningService:
  
     def extract_expert_state_for_telemetry(self, telemetry_data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
-        Extract expert state targets AND delta-to-expert context for each telemetry row.
+        Extract the comparsion between current state and expert optimal state. it helps transformer model to understand the gap between non-expert and expert driver.
 
         Purpose:
-        - Produces expert-optimal targets (speed, throttle, brake, steering, gear, pose, track_position)
-        - Adds "delta-to-expert" gap features that quantify how far the current non-expert state
-          is from the expert target at each step, and a progress metric indicating gap closure over time.
-        - The returned list is designed to be passed as `enriched_contextual_data` to
-          `TelemetryActionDataset`, enabling the transformer to learn how a non-expert can reach
-          expert performance over time (gap-aware learning).
+            - Provide a clear comparison between the current telemetry state and the expert's optimal state.
+            - Enable the transformer model to learn from the differences and improve non-expert driving behavior.
 
         Args:
             telemetry_data: List of cleaned telemetry records to predict on
@@ -1091,28 +1084,12 @@ class ExpertImitateLearningService:
                     print(f"[WARNING] Optimal action prediction failed idx={idx}: {e}")
                 return {}
 
-        # Collect only expert optimal keys from predictions (identity mapping no longer needed)
-        optimal_context_keys = {
-            ContextFeature.EXPERT_OPTIMAL_SPEED.value,
-            ContextFeature.EXPERT_OPTIMAL_STEERING.value,
-            ContextFeature.EXPERT_OPTIMAL_THROTTLE.value,
-            ContextFeature.EXPERT_OPTIMAL_BRAKE.value,
-            ContextFeature.EXPERT_OPTIMAL_GEAR.value,
-            ContextFeature.EXPERT_OPTIMAL_PLAYER_POS_X.value,
-            ContextFeature.EXPERT_OPTIMAL_PLAYER_POS_Y.value,
-            ContextFeature.EXPERT_OPTIMAL_PLAYER_POS_Z.value,
-            ContextFeature.EXPERT_OPTIMAL_TRACK_POSITION.value
-        }
-
         total_rows = len(processed_df)
         print(f"[INFO] Processing {total_rows} rows for expert state extraction...")
         
         # OPTIMIZATION: Process in batches instead of row-by-row for massive speedup
         batch_size = min(1000, total_rows)  # Process up to 1000 rows at once
         print(f"[INFO] Using batch processing with batch size: {batch_size}")
-        
-        # Track initial gap magnitude (first available) for progress computation
-        initial_gap_magnitude: Optional[float] = None
 
         # Process all data in batches
         for batch_start in range(0, total_rows, batch_size):
@@ -1133,77 +1110,42 @@ class ExpertImitateLearningService:
                 for i, row_predictions in enumerate(batch_predictions):
                     row_features: Dict[str, Any] = {}
                     
-                    # Extract optimal action predictions
-                    for k, v in row_predictions.items():
-                        if k in optimal_context_keys:
-                            row_features[k] = v
-
-                    # Derived cues
-                    if (ContextFeature.EXPERT_OPTIMAL_THROTTLE.value in row_features and
-                        ContextFeature.EXPERT_OPTIMAL_BRAKE.value in row_features):
-                        throttle = row_features[ContextFeature.EXPERT_OPTIMAL_THROTTLE.value]
-                        brake = row_features[ContextFeature.EXPERT_OPTIMAL_BRAKE.value]
-                        row_features[ContextFeature.EXPERT_CONTROL_OVERLAP.value] = float(throttle > 0.1 and brake > 0.1)
-                        row_features[ContextFeature.EXPERT_NET_ACCEL_COMMAND.value] = float(throttle - brake)
-
-                    # Delta-to-expert gap features (compare expert target vs current telemetry)
+                    # Only calculate velocity alignment with expert (no other features)
                     try:
                         current_row = batch_df.iloc[i]
-                        # Current telemetry values (non-expert)
-                        curr_throttle = float(current_row.get('Physics_gas', 0.0))
-                        curr_brake = float(current_row.get('Physics_brake', 0.0))
-                        curr_steering = float(current_row.get('Physics_steer_angle', 0.0))
-                        curr_gear = float(current_row.get('Physics_gear', 1.0))
-                        curr_speed = float(current_row.get('Physics_speed_kmh', 0.0))
+                        # Current velocity values from telemetry
+                        curr_velocity_x = float(current_row.get('Physics_velocity_x', 0.0))
+                        curr_velocity_y = float(current_row.get('Physics_velocity_y', 0.0))
 
-                        # Expert targets
-                        exp_throttle = float(row_features.get(ContextFeature.EXPERT_OPTIMAL_THROTTLE.value, curr_throttle))
-                        exp_brake = float(row_features.get(ContextFeature.EXPERT_OPTIMAL_BRAKE.value, curr_brake))
-                        exp_steering = float(row_features.get(ContextFeature.EXPERT_OPTIMAL_STEERING.value, curr_steering))
-                        exp_gear = float(row_features.get(ContextFeature.EXPERT_OPTIMAL_GEAR.value, curr_gear))
-                        exp_speed = float(row_features.get(ContextFeature.EXPERT_OPTIMAL_SPEED.value, curr_speed))
+                        # Expert optimal velocities from predictions (using ExpertOptimalFeature mapping)
+                        EO = ExpertFeatureCatalog.ExpertOptimalFeature
+                        exp_velocity_x = float(row_predictions.get(EO.EXPERT_OPTIMAL_VELOCITY_X.value, curr_velocity_x))
+                        exp_velocity_y = float(row_predictions.get(EO.EXPERT_OPTIMAL_VELOCITY_Y.value, curr_velocity_y))
 
-                        # Gaps (expert - current)
-                        gap_throttle = exp_throttle - curr_throttle
-                        gap_brake = exp_brake - curr_brake
-                        gap_steering = exp_steering - curr_steering
-                        gap_gear = exp_gear - curr_gear
-                        gap_speed = exp_speed - curr_speed
-
-                        # Magnitude of gap
-                        gap_components = np.array([gap_throttle, gap_brake, gap_steering, gap_gear, gap_speed], dtype=np.float32)
-                        gap_magnitude = float(np.linalg.norm(gap_components))
-
-                        # Establish initial gap magnitude from first valid sample
-                        absolute_index = batch_start + i
-                        if initial_gap_magnitude is None and gap_magnitude > 0:
-                            initial_gap_magnitude = gap_magnitude
-
-                        # Progress: fraction of gap closed vs initial (0..1). If no baseline, 0.
-                        if initial_gap_magnitude is not None and initial_gap_magnitude > 1e-6:
-                            gap_progress = float(max(0.0, min(1.0, 1.0 - (gap_magnitude / initial_gap_magnitude))))
+                        # Calculate velocity alignment (dot product normalized)
+                        # If moving in same direction as expert, alignment = 1.0, otherwise 0.0
+                        curr_velocity_magnitude = np.sqrt(curr_velocity_x**2 + curr_velocity_y**2)
+                        exp_velocity_magnitude = np.sqrt(exp_velocity_x**2 + exp_velocity_y**2)
+                        
+                        if curr_velocity_magnitude > 1e-6 and exp_velocity_magnitude > 1e-6:
+                            # Normalize vectors and calculate dot product
+                            curr_velocity_norm = np.array([curr_velocity_x / curr_velocity_magnitude, curr_velocity_y / curr_velocity_magnitude])
+                            exp_velocity_norm = np.array([exp_velocity_x / exp_velocity_magnitude, exp_velocity_y / exp_velocity_magnitude])
+                            dot_product = np.dot(curr_velocity_norm, exp_velocity_norm)
+                            # Convert to 0.0 or 1.0 (1.0 if moving toward expert direction, threshold at 0.5)
+                            velocity_alignment = 1.0 if dot_product > 0.5 else 0.0
                         else:
-                            gap_progress = 0.0
+                            velocity_alignment = 0.0
 
-                        # Store gap features
-                        row_features[ContextFeature.EXPERT_GAP_THROTTLE.value] = float(gap_throttle)
-                        row_features[ContextFeature.EXPERT_GAP_BRAKE.value] = float(gap_brake)
-                        row_features[ContextFeature.EXPERT_GAP_STEERING.value] = float(gap_steering)
-                        row_features[ContextFeature.EXPERT_GAP_GEAR.value] = float(gap_gear)
-                        row_features[ContextFeature.EXPERT_GAP_SPEED.value] = float(gap_speed)
-                        row_features[ContextFeature.EXPERT_GAP_MAGNITUDE.value] = float(gap_magnitude)
-                        row_features[ContextFeature.EXPERT_GAP_PROGRESS.value] = float(gap_progress)
+                        # Store only velocity alignment feature
+                        row_features[ContextFeature.EXPERT_VELOCITY_ALIGNMENT.value] = float(velocity_alignment)
                     except Exception as _e:
-                        # Keep going if any field is missing
-                        pass
+                        raise Exception(f"Velocity alignment calculation failed: {_e}")
 
                     expert_feature_rows.append(row_features)
                     
             except Exception as e:
-                print(f"[WARNING] Failed to process batch {batch_start}-{batch_end}: {e}")
-                # Add empty features for failed batch to maintain index alignment
-                batch_size_actual = batch_end - batch_start
-                expert_feature_rows.extend([{} for _ in range(batch_size_actual)])
+                raise Exception(f"[WARNING] Failed to process batch {batch_start}-{batch_end}: {e}")
 
         print(f"[INFO] Completed expert state extraction. Extracted features for {len(expert_feature_rows)} records")
         return expert_feature_rows

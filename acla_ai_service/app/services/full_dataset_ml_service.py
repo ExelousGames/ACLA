@@ -607,64 +607,6 @@ class Full_dataset_TelemetryMLService:
                 "corner_patterns": []
             }
     
-    async def extract_corner_features_for_telemetry(self, 
-                                                    telemetry_data: List[Dict[str, Any]], 
-                                                    trackName: str,
-                                                    carName: Optional[str] = None) -> List[Dict[str, Any]]:
-        """
-        Enhance telemetry data with extracted corner features
-        
-        Args:
-            telemetry_data: List of telemetry records
-            trackName: Track name for corner pattern matching
-            carName: Optional car name
-            
-        Returns:
-            Enhanced telemetry data with corner identification features
-        """
-        try:
-            # Fetch serialized corner model (first try car-specific then fallback to all_cars)
-            model_payload = None
-            metadata_used = None
-            fetch_attempts = []
-            for attempt_car in [carName, 'all_cars']:
-                try:
-                    model_payload, metadata_used = await self._get_cached_model_or_fetch(
-                        model_type="corner_identification",
-                        track_name=trackName,
-                        car_name=attempt_car,
-                        model_subtype="complete_model_data"
-                    )
-                    fetch_attempts.append(f"success:{attempt_car}")
-                    if model_payload:
-                        break
-                except Exception as fetch_err:
-                    fetch_attempts.append(f"fail:{attempt_car}:{fetch_err}")
-                    continue
-
-            if not model_payload:
-                print(f"[WARNING] No corner identification model available for {trackName} ({fetch_attempts}); returning original telemetry")
-                return telemetry_data
-
-            # Deserialize model using service class
-            from .corner_identification_unsupervised_service import CornerIdentificationUnsupervisedService
-            try:
-                corner_service = CornerIdentificationUnsupervisedService.deserialize_model(model_payload if isinstance(model_payload, dict) else model_payload.get('modelData', {}))
-            except Exception as deser_err:
-                print(f"[WARNING] Failed to deserialize corner model payload: {deser_err}; returning original telemetry")
-                return telemetry_data
-
-            # Extract features (geometry_only flag inside serialized payload)
-            enhanced_telemetry = await corner_service.extract_corner_features_for_telemetry(
-                telemetry_data,
-                geometry_only=model_payload.get('geometry_only', True) if isinstance(model_payload, dict) else True
-            )
-            print(f"[INFO] Enhanced {len(enhanced_telemetry)} telemetry records with corner features (model fetch attempts: {fetch_attempts})")
-            return enhanced_telemetry
-        except Exception as e:
-            print(f"[ERROR] Failed to enhance telemetry with corner features: {str(e)}")
-            return telemetry_data  # Return original data on failure
-    
 
     # Tire Grip Analysis Methods
     async def train_tire_grip_model(self, trackName: str, carName: Optional[str] = None) -> Dict[str, Any]:
@@ -682,88 +624,6 @@ class Full_dataset_TelemetryMLService:
         tire_service = TireGripAnalysisService()
         return await tire_service.train_tire_grip_model(trackName, carName)
     
-    async def extract_tire_grip_features(self, 
-                                       telemetry_data: List[Dict[str, Any]], 
-                                       trackName: str,
-                                       carName: Optional[str] = None) -> List[Dict[str, Any]]:
-        """
-        Extract tire grip features from telemetry data using trained models
-        
-        Args:
-            telemetry_data: List of telemetry records
-            trackName: Track name for model selection
-            carName: Car name for model selection
-            
-        Returns:
-            Enhanced telemetry data with tire grip features
-        """
-        try:
-            # Attempt to fetch serialized tire grip heuristic config (car-specific then fallback)
-            model_payload = None
-            metadata_used = None
-            fetch_attempts = []
-            for attempt_car in [carName, 'all_cars']:
-                try:
-                    model_payload, metadata_used = await self._get_cached_model_or_fetch(
-                        model_type="tire_grip_analysis",
-                        track_name=trackName,
-                        car_name=attempt_car,
-                        model_subtype="complete_model_data"
-                    )
-                    fetch_attempts.append(f"success:{attempt_car}")
-                    if model_payload:
-                        break
-                except Exception as fetch_err:
-                    fetch_attempts.append(f"fail:{attempt_car}:{fetch_err}")
-                    continue
-
-            from .tire_grip_analysis_service import TireGripAnalysisService
-            if model_payload:
-                try:
-                    tire_service = TireGripAnalysisService.deserialize_model(model_payload if isinstance(model_payload, dict) else model_payload.get('modelData', {}))
-                except Exception as deser_err:
-                    print(f"[WARNING] Failed to deserialize tire grip model payload: {deser_err}; using fresh instance")
-                    tire_service = TireGripAnalysisService()
-            else:
-                print(f"[INFO] No serialized tire grip artifact found ({fetch_attempts}); using fresh heuristic instance")
-                tire_service = TireGripAnalysisService()
-
-            enhanced = await tire_service.extract_tire_grip_features(telemetry_data, trackName, carName)
-            print(f"[INFO] Enhanced {len(enhanced)} telemetry records with tire grip features (model fetch attempts: {fetch_attempts})")
-            return enhanced
-        except Exception as e:
-            print(f"[ERROR] Failed to extract tire grip features: {str(e)}")
-            return telemetry_data
-    
-    
-    def _deserialize_transformer_model(self, model_data: Dict[str, Any]) -> 'ExpertActionTransformer':
-        """
-        Deserialize transformer model data specifically for transformer models
-        
-        Args:
-            model_data: Serialized transformer model data from backend
-            
-        Returns:
-            Deserialized ExpertActionTransformer instance
-        """
-        if not TORCH_AVAILABLE:
-            raise ImportError("PyTorch is not available - transformer functionality is disabled")
-        
-        try:
-            # Check if this is the expected transformer model data structure
-            if model_data.get('model_type') != 'ExpertActionTransformer':
-                raise ValueError(f"Expected ExpertActionTransformer, got {model_data.get('model_type', 'unknown')}")
-            
-            # Use the class method to deserialize
-            transformer_model = ExpertActionTransformer.deserialize_model(model_data)
-            transformer_model.eval()  # Set to evaluation mode
-            
-            print(f"[INFO] Successfully deserialized ExpertActionTransformer model")
-            return transformer_model
-            
-        except Exception as e:
-            print(f"[ERROR] Failed to deserialize transformer model: {str(e)}")
-            raise e
     
     
     async def predict_expert_actions(self, 
@@ -799,241 +659,36 @@ class Full_dataset_TelemetryMLService:
             }
         
         try:
-            from time import perf_counter
-            t_start_total = perf_counter()
-            timings = {}
-            def _mark(name, start):
-                timings[name] = round((perf_counter() - start)*1000.0, 3)
-            t0 = perf_counter()
             # Fetch and deserialize the transformer model
             print(f"[INFO] Fetching transformer model for {trackName}/{carName or 'any'}")
-            transformer_model, model_metadata = await self._get_cached_model_or_fetch(
+            
+            transformer_model = ExpertActionTransformer()
+            transformer_model_data, model_metadata = await self._get_cached_model_or_fetch(
                 model_type="expert_action_transformer",
                 track_name=trackName,
                 car_name=carName,
                 model_subtype="transformer_model_data",
-                deserializer_func=self._deserialize_transformer_model
+                deserializer_func=transformer_model.deserialize_model(transformer_model_data)
             )
-            _mark('model_fetch_ms', t0)
-            # Specify the type for transformer_model (for type hints and IDEs)
-            transformer_model: ExpertActionTransformer
-            
-            # Prepare telemetry data for the model using the same feature filtering as training
-            # Use cached feature names (fallback to dynamic if empty)
-            feature_names = self._imitate_expert_feature_names or TelemetryFeatures().get_features_for_imitate_expert()
-            
-            print(f"[INFO] Using {len(feature_names)} features for prediction (same as training)")
-            print(f"[INFO] Expected input features: {len(feature_names)}")
-            
-            # Extract relevant features from the telemetry dictionary in the same order as training
-            t_feat = perf_counter()
-            missing_features = [fn for fn in feature_names if fn not in telemetry_dict]
-            def _coerce_float(v):
-                try:
-                    return float(v)
-                except (ValueError, TypeError):
-                    return 0.0
-            feature_values = [_coerce_float(telemetry_dict.get(fn, 0.0)) for fn in feature_names]
-            
-            if missing_features:
-                print(f"[WARNING] {len(missing_features)} features missing from input, using defaults: {missing_features[:5]}...")
-            _mark('feature_vector_build_ms', t_feat)
-            
-            # Convert to tensor format expected by the transformer
-            # Shape: [seq_len=1, batch_size=1, input_features]
-            src_telemetry = torch.tensor(feature_values, dtype=torch.float32).unsqueeze(0).unsqueeze(1)
 
-            # ================= Inference-time enrichment for corner + tire grip =================
-            t_enrich = perf_counter()
-            enriched_context_source = dict(telemetry_dict)
-            corner_enrichment_applied = False
-            tire_enrichment_applied = False
-            enrichment_errors: List[str] = []
-            pre_context_keys = set(enriched_context_source.keys())
-            if transformer_model.context_features and getattr(transformer_model, 'context_feature_names', []):
-                try:
-                    # Run corner and tire enrichment concurrently
-                    import asyncio as _asyncio
-                    corner_task = self.extract_corner_features_for_telemetry([enriched_context_source], trackName, carName)
-                    tire_task = self.extract_tire_grip_features([enriched_context_source], trackName, carName)
-                    corner_result, tire_result = await _asyncio.gather(corner_task, tire_task, return_exceptions=True)
-                    if isinstance(corner_result, list) and corner_result:
-                        enriched_context_source.update(corner_result[0])
-                        corner_enrichment_applied = True
-                    elif isinstance(corner_result, Exception):
-                        enrichment_errors.append(f"corner:{corner_result}")
-                    if isinstance(tire_result, list) and tire_result:
-                        enriched_context_source.update(tire_result[0])
-                        tire_enrichment_applied = True
-                    elif isinstance(tire_result, Exception):
-                        enrichment_errors.append(f"tire:{tire_result}")
-                except Exception as enrich_err:
-                    enrichment_errors.append(f"parallel_enrich:{enrich_err}")
-                if enrichment_errors:
-                    print(f"[WARNING] Inference enrichment partial failures: {enrichment_errors}")
-            post_context_keys = set(enriched_context_source.keys())
-            added_context_feature_count = len(post_context_keys - pre_context_keys)
-            _mark('context_enrichment_ms', t_enrich)
-            # ===============================================================================
+            corner_service = CornerIdentificationUnsupervisedService()
+            corner_service_data, corner_service_metadata = await self._get_cached_model_or_fetch(
+                model_type="corner_identification_unsupervised",
+                track_name=trackName,
+                car_name=carName,
+                model_subtype="corner_model_data",
+                deserializer_func=corner_service.deserialize_corner_identification_model(corner_service_data)
+            )
 
-            # Attempt to reconstruct context features if model expects them
-            src_context = None
-            ctx_build_start = perf_counter()
-            try:
-                model_cfg = getattr(transformer_model, 'context_feature_names', [])
-                context_feature_names = model_cfg if isinstance(model_cfg, list) else []
-                if transformer_model.context_features and transformer_model.context_features > 0 and context_feature_names:
-                    # Retrieve scaler stats from cached metadata if available
-                    cached = self.model_cache.get(
-                        model_type="expert_action_transformer",
-                        track_name=trackName,
-                        car_name=carName,
-                        model_subtype="transformer_model_data"
-                    )
-                    telemetry_context_scaler = None
-                    if cached:
-                        _, cached_meta = cached
-                        scalers_meta = cached_meta.get('metadata', {}).get('scalers') if cached_meta.get('metadata') else None
-                        if scalers_meta and scalers_meta.get('context_scaler'):
-                            telemetry_context_scaler = scalers_meta['context_scaler']
-                    context_values = []
-                    missing_ctx = []
-                    for cname in context_feature_names:
-                        # Prefer enriched source (which may now include corner/grip features)
-                        val = enriched_context_source.get(cname, 0.0)
-                        if cname not in enriched_context_source:
-                            missing_ctx.append(cname)
-                        try:
-                            context_values.append(float(val))
-                        except (ValueError, TypeError):
-                            context_values.append(0.0)
-                    ctx_tensor = torch.from_numpy(np.array(context_values, dtype=np.float32)) if 'np' in globals() else torch.tensor(context_values, dtype=torch.float32)
-                    # Apply scaling if stats available
-                    if telemetry_context_scaler and telemetry_context_scaler.get('mean') and telemetry_context_scaler.get('scale'):
-                        try:
-                            import numpy as np
-                            mean = np.array(telemetry_context_scaler['mean'])
-                            scale = np.array(telemetry_context_scaler['scale'])
-                            if mean.shape[0] == ctx_tensor.numel():
-                                ctx_tensor = (ctx_tensor - torch.tensor(mean, dtype=torch.float32)) / torch.tensor(scale, dtype=torch.float32)
-                        except Exception as scale_err:
-                            print(f"[WARNING] Failed to scale context features: {scale_err}")
-                    src_context = ctx_tensor.unsqueeze(0).unsqueeze(1)  # [1,1,ctx_features]
-                    if missing_ctx:
-                        print(f"[INFO] Missing {len(missing_ctx)} context features (filled with 0): {missing_ctx[:5]}{'...' if len(missing_ctx)>5 else ''}")
-                elif transformer_model.context_features == 0:
-                    # No context path: skip building/scaling entirely
-                    src_context = None
-            except Exception as ctx_err:
-                print(f"[WARNING] Context reconstruction failed, proceeding without context: {ctx_err}")
-            _mark('context_tensor_build_ms', ctx_build_start)
-            
-            print(f"[INFO] Input telemetry tensor shape: {src_telemetry.shape}")
-            print(f"[INFO] Model expects input_features: {transformer_model.input_features}")
-            
-            # Verify feature count consistency
-            if len(feature_values) != transformer_model.input_features:
-                print(f"[ERROR] Feature count mismatch! Expected: {transformer_model.input_features}, Got: {len(feature_values)}")
-                return {
-                    "error": f"Feature count mismatch: model expects {transformer_model.input_features} features, got {len(feature_values)}",
-                    "predicted_actions": [],
-                    "performance_scores": [],
-                    "metadata": {}
-                }
-            
-            print(f"[INFO] Predicting {sequence_length} expert actions...")
-            t_infer = perf_counter()
-            
-            # Make prediction using the transformer model and also generate human-readable steps
-            with torch.no_grad():
-                predicted_sequence, predicted_reasoning, performance_sequence = transformer_model.predict_expert_sequence(
-                    src_telemetry=src_telemetry,
-                    sequence_length=sequence_length,
-                    temperature=(0.01 if deterministic else temperature),
-                    src_context=src_context
-                )
-                # Generate expert plan steps (use same context)
-                instructions = transformer_model.generate_expert_action_instructions(
-                    src_telemetry=src_telemetry,
-                    sequence_length=sequence_length,
-                    temperature=(0.01 if deterministic else temperature),
-                    src_context=src_context
-                )
-            _mark('inference_ms', t_infer)
-            
-            # Convert predictions back to lists for JSON serialization
-            predicted_actions = predicted_sequence.squeeze(1).tolist()  # Remove batch dimension
-            predictions_are_deltas_flag = bool(instructions.get('metadata', {}).get('predictions_are_deltas', False))
-            if clamp_actions and not predictions_are_deltas_flag:
-                # Simple safety clamp: steering [-1,1], throttle/brake [0,1] if shapes align (assumes 3 dims)
-                clamped = []
-                for step in predicted_actions:
-                    if isinstance(step, list) and len(step) >= 3:
-                        steer = max(-1.0, min(1.0, step[0]))
-                        throttle = max(0.0, min(1.0, step[1]))
-                        brake = max(0.0, min(1.0, step[2]))
-                        clamped.append([steer, throttle, brake] + step[3:])
-                    else:
-                        clamped.append(step)
-                predicted_actions = clamped
-            predicted_reasoning_features = predicted_reasoning.squeeze(1).tolist()  # Remove batch dimension: [seq_len, batch_size, 43] -> [seq_len, 43]
-            
-            # Fix: For performance_sequence [seq_len, batch_size, 1], squeeze both batch and feature dimensions
-            performance_scores = performance_sequence.squeeze(1).squeeze(-1).tolist()  # [seq_len, batch_size, 1] -> [seq_len, 1] -> [seq_len]
-            
-            # Create interpretable reasoning labels
-            reasoning_labels = self._create_reasoning_labels(predicted_reasoning_features)
-            
-            # Calculate metadata
-            avg_performance = sum(performance_scores) / len(performance_scores) if performance_scores else 0.0
-            prediction_confidence = max(0.0, min(1.0, (avg_performance + 1.0) / 2.0))  # Normalize to 0-1 range
-            
-            print(f"[INFO] Successfully predicted {len(predicted_actions)} expert actions")
-            print(f"[INFO] Average predicted performance: {avg_performance:.4f}")
-            print(f"[INFO] Prediction confidence: {prediction_confidence:.2%}")
-            _mark('post_processing_ms', t_infer)
-            _mark('total_ms', t_start_total)
-            
-            return {
-                "success": True,
-                "predicted_actions": predicted_actions,
-                "predicted_reasoning": predicted_reasoning_features,
-                "reasoning_explanations": reasoning_labels,
-                "performance_scores": performance_scores,
-                "expert_action_steps": instructions.get('steps', []),
-                "expert_action_text": instructions.get('text_instructions', []),
-                "recommended_actions": instructions.get('recommended_actions', []),
-                "metadata": {
-                    "track_name": trackName,
-                    "car_name": carName,
-                    "sequence_length": sequence_length,
-                    "temperature": temperature,
-                    "input_features_count": len(feature_values),
-                    "expected_input_features": transformer_model.input_features,
-                    "feature_filtering": "get_features_for_imitate_expert()",
-                    "context_features_expected": transformer_model.context_features,
-                    "context_features_provided": int(src_context.size(-1)) if src_context is not None else 0,
-                    "context_applied": bool(src_context is not None and src_context.size(-1) == transformer_model.context_features),
-                    "context_missing_count": (
-                        (transformer_model.context_features - int(src_context.size(-1))) if src_context is not None else transformer_model.context_features
-                    ) if transformer_model.context_features else 0,
-                    "corner_enrichment_applied": corner_enrichment_applied,
-                    "tire_grip_enrichment_applied": tire_enrichment_applied,
-                    "enrichment_error_count": len(enrichment_errors),
-                    "missing_features_count": len(missing_features),
-                    "reasoning_features_count": len(predicted_reasoning_features[0]) if predicted_reasoning_features else 0,
-                    "avg_predicted_performance": avg_performance,
-                    "prediction_confidence": prediction_confidence,
-                    "model_metadata": model_metadata,
-                    "prediction_timestamp": datetime.now().isoformat(),
-                    "timings_ms": timings,
-                    "added_context_feature_count": added_context_feature_count,
-                    "deterministic": deterministic,
-                    "clamp_actions": clamp_actions,
-                    "instructions_meta": instructions.get('metadata', {})
-                }
-            }
-            
+            tire_grip_service = TireGripAnalysisService()
+            tire_grip_service_data, tire_grip_service_metadata = await self._get_cached_model_or_fetch(
+                model_type="tire_grip_analysis",
+                track_name=trackName,
+                car_name=carName,
+                model_subtype="tire_grip_model_data",
+                deserializer_func=tire_grip_service.deserialize_tire_grip_model(tire_grip_service_data)
+            )
+
         except Exception as e:
             error_msg = f"Failed to predict expert actions: \n\t{str(e)}"
             raise Exception(error_msg)
@@ -1139,7 +794,7 @@ class Full_dataset_TelemetryMLService:
     async def StartImitateExpertPipeline(self, trackName: str):
         
         """
-        returns: success, transformer_training, expert_imitation_trained    , contextual_data_enriched, training_pairs_generated, comparison_results, track_name
+        returns: success, transformer_training, expert_imitation_trained    , contextual_data_enriched, comparison_results, track_name
         """
         self._print_section_divider("FETCHING TELEMETRY DATA FROM BACKEND")
         #retrieve all racing session in database
@@ -1206,32 +861,17 @@ class Full_dataset_TelemetryMLService:
         #enrich data
         self._print_section_divider("ENRICHING CONTEXTUAL DATA")
         enrichment_result = await self.enriched_contextual_data(top_laps_telemetry_list, bottom_laps_telemetry_list,trackName)
-        original_telemetry_list = enrichment_result["original_telemetry"]  # Use original data for comparison
         enrichment_count = len(enrichment_result["enriched_features"])
         feature_metadata = enrichment_result["feature_metadata"]
+        print(f"[INFO] Bottom laps telemetry has {len(bottom_laps_telemetry_list[0].keys())} keys which are: {bottom_laps_telemetry_list[0].keys()}")
         print(f"[INFO] Enrichment successful: {enrichment_count} records with {feature_metadata.get('feature_count', 0)} enriched features")
         print(f"[INFO] Enrichment details: {feature_metadata.get('feature_names', [])}")
-
-        # Generate training pairs for transformer model
-        self._print_section_divider("GENERATING TRAINING PAIRS")
-        training_and_expert_action = self._generate_training_pairs(
-            bottom_telemetry=original_telemetry_list,
-            enriched_features=enrichment_result["enriched_features"]
-        )
-        print(f"[INFO] Generated {len(training_and_expert_action)} training pairs for transformer model")
         
-        # Generate comparison results
-        self._print_section_divider("COMPARING EXPERT VS NON-EXPERT PERFORMANCE")
-        comparison_results = self._compare_telemetry_performance(
-            expert_telemetry=top_laps_telemetry_list,
-            non_expert_telemetry=original_telemetry_list
-        )
-        print(f"[INFO] Performance comparison completed: {comparison_results.get('total_data_points', 0)} points analyzed")
-
         # train transformer model
         self._print_section_divider("TRAINING TRANSFORMER MODEL")
         transformer_results = await self._train_expert_action_transformer(
-            training_and_expert_action=training_and_expert_action,
+            original_telemetry=enrichment_result["original_telemetry"],
+            enriched_contextual_data=enrichment_result["enriched_features"],
             trackName=trackName,
             enrichment_result=enrichment_result  # Pass the already computed enrichment
         )
@@ -1242,24 +882,20 @@ class Full_dataset_TelemetryMLService:
             "transformer_training": transformer_results,
             "expert_imitation_trained": True,
             "contextual_data_enriched": enrichment_count,
-            "training_pairs_generated": len(training_and_expert_action),
-            "comparison_results": {
-                "total_data_points": comparison_results.get('total_data_points', 0),
-                "overall_score": comparison_results.get('overall_score', 0.0),
-                "performance_sections_count": len(comparison_results.get('performance_sections', []))
-            },
             "track_name": trackName
         }
 
     async def _train_expert_action_transformer(self, 
-                                             training_and_expert_action: List[Dict[str, Any]],
+                                             original_telemetry: List[Dict[str, Any]],
+                                             enriched_contextual_data: List[Dict[str, Any]],
                                              trackName: str,
                                              enrichment_result: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
-        Train the transformer model to predict expert actions from current telemetry
+        Train the transformer model to learn non-expert driver progression toward expert performance
         
         Args:
-            training_and_expert_action: List of training pairs with telemetry sections and expert actions
+            original_telemetry: List of non-expert telemetry records (contains telemetry and non-expert actions)
+            enriched_contextual_data: List of enriched contextual features (expert targets, gaps, corner/tire features)
             trackName: Track name for model identification
             enrichment_result: Pre-computed enrichment result to avoid re-training models
             
@@ -1274,23 +910,21 @@ class Full_dataset_TelemetryMLService:
                     "success": False   
                 }
             
-            print(f"[INFO] Starting transformer training with {len(training_and_expert_action)} training pairs")
+            print(f"[INFO] Starting transformer training with {len(original_telemetry)} telemetry records")
             
-            # Extract telemetry, actions, and contextual data from training pairs
-            telemetry_data = []
-            expert_actions = []
-            contextual_data = []
+            # Verify data consistency
+            if len(original_telemetry) != len(enriched_contextual_data):
+                raise ValueError(f"Data length mismatch: {len(original_telemetry)} telemetry records vs {len(enriched_contextual_data)} enriched records")
             
-            for training_pair in training_and_expert_action:
-                telemetry_data.append(training_pair['telemetry'])
-                expert_actions.append(training_pair['expert_actions'])
-                if 'contextual_features' in training_pair:
-                    contextual_data.append(training_pair['contextual_features'])
+            # Data is already prepared:
+            # - original_telemetry: Non-expert telemetry data
+            # - enriched_contextual_data: Expert targets, delta-to-expert gaps, corner/tire features (context)
+            telemetry_data = original_telemetry
+            contextual_data = enriched_contextual_data
             
             # Create dataset
             dataset = TelemetryActionDataset(
                 telemetry_data=telemetry_data,
-                expert_actions=expert_actions,
                 enriched_contextual_data=contextual_data if contextual_data else None,
                 sequence_length=20
             )
@@ -1302,17 +936,17 @@ class Full_dataset_TelemetryMLService:
             print(f"[INFO] No validation split - using full dataset for training")
             
             # Get feature dimensions from dataset
-            telemetry_features, action_features = dataset.get_feature_names()
+            telemetry_features, non_expert_action_features = dataset.get_feature_names()
             context_features_count = len(contextual_data[0]) if contextual_data else 0
             
             print(f"[INFO] Dataset info: {len(telemetry_features)} telemetry features, "
-                  f"{len(action_features)} action features, {context_features_count} context features")
+                  f"{len(non_expert_action_features)} non-expert action features (from telemetry), {context_features_count} context features")
+            print(f"[INFO] Model will output fixed 5 action features: throttle, brake, steering, gear, speed")
             
             # Create model
             model = ExpertActionTransformer(
                 telemetry_features_count=len(telemetry_features),
                 context_features_count=context_features_count,
-                action_features_count=len(action_features),
                 d_model=256,
                 nhead=8,
                 num_layers=4,  # Smaller model for faster training
@@ -1348,7 +982,6 @@ class Full_dataset_TelemetryMLService:
                     "test_metrics": test_metrics,
                     "feature_names": {
                         "telemetry": telemetry_features,
-                        "actions": action_features
                     },
                     "training_timestamp": datetime.now().isoformat()
                 },
@@ -1447,7 +1080,7 @@ class Full_dataset_TelemetryMLService:
                     print(f"[INFO] Corner identification training successful: {corner_model.get('total_corners_identified', 0)} corners identified")
                     # Serialize and persist corner model artifact
                     try:
-                        corner_serialized = corner_service.serialize_model(track_name=track_name, car_name="all_cars")
+                        corner_serialized = corner_service.serialize_corner_identification_model(track_name=track_name, car_name="all_cars")
                         corner_model_dto = {
                             "modelType": "corner_identification",
                             "trackName": corner_serialized.get("track_name"),
@@ -1477,6 +1110,21 @@ class Full_dataset_TelemetryMLService:
                 from .tire_grip_analysis_service import TireGripAnalysisService
                 tire_service = TireGripAnalysisService()
                 tire_grip_model = await tire_service.train_tire_grip_model(bottom_training_telemetry_list)
+                
+                tire_service_serialized = tire_service.serialize_tire_grip_model(track_name=track_name, car_name="all_cars")
+                tire_grip_model_dto = {
+                    "modelType": "tire_grip_analysis",
+                    "trackName": tire_service_serialized.get("track_name"),
+                    "carName": tire_service_serialized.get("car_name"),
+                    "modelData": tire_service_serialized,
+                    "metadata": {
+                        "model_info": tire_service_serialized.get("model_info", {}),
+                        "serialization_timestamp": tire_service_serialized.get("serialized_timestamp")
+                    },
+                    "isActive": True
+                }
+                await self.backend_service.save_ai_model(tire_grip_model_dto)
+                print("[INFO] Saved serialized tire grip analysis model to backend")
             except Exception as e:
                 raise Exception(f"[ERROR] Tire grip analysis training failed: {str(e)}")
             
@@ -1567,57 +1215,6 @@ class Full_dataset_TelemetryMLService:
                 "enriched_features": [],
                 "feature_metadata": {"sources": [], "feature_count": 0, "error": str(e)}
             }
-    
-    def _generate_training_pairs(self, 
-                                bottom_telemetry: List[Dict[str, Any]], 
-                                enriched_features: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """
-        Generate training pairs combining non-expert telemetry with enriched contextual features
-        
-        Args:
-            bottom_telemetry: Non-expert telemetry records
-            enriched_features: Enriched contextual features (expert state, corners, tire grip)
-            
-        Returns:
-            List of training pairs for transformer model
-        """
-        training_pairs = []
-        
-        # Ensure we have matching lengths
-        min_length = min(len(bottom_telemetry), len(enriched_features))
-        
-        for i in range(min_length):
-            telemetry_record = bottom_telemetry[i]
-            enriched_record = enriched_features[i]
-            
-            # Extract expert actions from enriched features as targets
-            expert_actions = {}
-            for key, value in enriched_record.items():
-                if key.startswith('expert_optimal_'):
-                    # Map expert feature names to action names
-                    action_key = key.replace('expert_optimal_', '').replace('player_pos_', 'pos_')
-                    expert_actions[action_key] = value
-            
-            # If we don't have enough expert actions, create defaults
-            if len(expert_actions) < 5:  # Need at least 5 action features
-                expert_actions.update({
-                    'throttle': telemetry_record.get('Physics_gas', 0.0),
-                    'brake': telemetry_record.get('Physics_brake', 0.0),
-                    'steering': telemetry_record.get('Physics_steer_angle', 0.0),
-                    'gear': telemetry_record.get('Physics_gear', 1.0),
-                    'speed': telemetry_record.get('Physics_speed_kmh', 0.0)
-                })
-            
-            training_pair = {
-                'telemetry': telemetry_record,
-                'expert_actions': expert_actions,
-                'contextual_features': enriched_record
-            }
-            
-            training_pairs.append(training_pair)
-        
-        print(f"[INFO] Generated {len(training_pairs)} training pairs from {min_length} records")
-        return training_pairs
     
     def _compare_telemetry_performance(self, 
                                       expert_telemetry: List[Dict[str, Any]], 

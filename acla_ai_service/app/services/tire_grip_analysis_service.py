@@ -43,7 +43,7 @@ class TireGripFeatureCatalog:
         LATERAL_WEIGHT_TRANSFER = 'lateral_weight_transfer'
         DYNAMIC_WEIGHT_DISTRIBUTION = 'dynamic_weight_distribution'
         OPTIMAL_GRIP_WINDOW = 'optimal_grip_window'
-        TURNING_GRIP_UTILIZATION = 'turning_grip_utilization'
+        TURNING_GRIP_UTILIZATION = 'turning_grip_utilization' # Turning grip utilization: higher values indicate more grip being used
 
 
     # Derived compatibility lists – keep for consumers expecting plain strings
@@ -277,6 +277,79 @@ class TireGripAnalysisService:
         return out
 
 
+    def serialize_tire_grip_model(self) -> Dict[str, Any]:
+        """Return JSON-safe representation of computed stats which can be stored and reloaded later for inference.
+        
+        Returns:
+            Dict containing the model state including stats and training status
+        """
+        if not self._trained:
+            raise ValueError("Cannot serialize tire grip model: model has not been trained yet")
+        
+        # Ensure all stats values are JSON-serializable (convert numpy types to Python types)
+        serializable_stats = {}
+        for key, value in self.stats_.items():
+            if isinstance(value, (np.integer, np.floating)):
+                serializable_stats[key] = float(value)
+            elif isinstance(value, np.ndarray):
+                serializable_stats[key] = value.tolist()
+            else:
+                serializable_stats[key] = value
+        
+        return {
+            "stats": serializable_stats,
+            "trained": self._trained,
+            "version": "1.0",  # For future compatibility
+            "feature_count": len(self.feature_catalog.CONTEXT_FEATURES)
+        }
+        
+    def deserialize_tire_grip_model(self, model_data: Dict[str, Any]) -> None:
+        """Load previously computed stats from JSON-safe dict and restore class instance state.
+        
+        Args:
+            model_data: Dictionary containing serialized model state from serialize_tire_grip_model()
+            
+        Raises:
+            ValueError: If model_data is invalid or incompatible
+        """
+        if not isinstance(model_data, dict):
+            raise ValueError("Model data must be a dictionary")
+        
+        if "stats" not in model_data:
+            raise ValueError("Model data missing required 'stats' field")
+            
+        if "trained" not in model_data:
+            raise ValueError("Model data missing required 'trained' field")
+        
+        # Validate version compatibility if present
+        if "version" in model_data:
+            version = model_data["version"]
+            if version != "1.0":
+                print(f"Warning: Loading model version {version}, expected 1.0. Compatibility not guaranteed.")
+        
+        # Validate feature count if present
+        if "feature_count" in model_data:
+            expected_count = len(self.feature_catalog.CONTEXT_FEATURES)
+            actual_count = model_data["feature_count"]
+            if actual_count != expected_count:
+                print(f"Warning: Model was trained with {actual_count} features, current version expects {expected_count}")
+        
+        # Restore the model state
+        self.stats_ = model_data["stats"].copy()
+        self._trained = bool(model_data["trained"])
+        
+        # Validate required statistics are present
+        required_stats = [
+            'gmag_p95', 'gx_p90', 'gy_p90',
+            'slip_angle_med', 'slip_angle_iqr',
+            'slip_ratio_med', 'slip_ratio_iqr', 
+            'temp_med', 'temp_iqr',
+            'combined_slip_p85', 'lateral_g_max'
+        ]
+        
+        missing_stats = [stat for stat in required_stats if stat not in self.stats_]
+        if missing_stats:
+            raise ValueError(f"Model data missing required statistics: {missing_stats}")
 
 # Create singleton instance for import
 tire_grip_analysis_service = TireGripAnalysisService()
