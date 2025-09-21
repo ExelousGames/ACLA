@@ -17,10 +17,115 @@ from pathlib import Path
 from sklearn.preprocessing import StandardScaler, MinMaxScaler
 from sklearn.metrics import mean_squared_error, mean_absolute_error
 
+# Import contextual feature catalogs for quality weighting
+from ..services.tire_grip_analysis_service import TireGripFeatureCatalog
+from ..services.corner_identification_unsupervised_service import CornerFeatureCatalog
+from ..services.imitate_expert_learning_service import ExpertFeatureCatalog
+
 # Force unbuffered output for real-time print statements
 import os
 os.environ['PYTHONUNBUFFERED'] = '1'
 sys.stdout.reconfigure(line_buffering=True)
+
+
+# -----------------------------
+# JSON-safe serialization utils
+# -----------------------------
+def _safe_number(value: Union[int, float], round_floats: Optional[int] = 6, replace_invalid_with: Any = None) -> Any:
+    """Convert a numeric value to a JSON-safe Python primitive.
+
+    - Finite floats are rounded to a configurable precision
+    - NaN/Inf/-Inf are replaced with provided fallback (default None)
+    - Integers are returned as-is
+    """
+    try:
+        # bool is subclass of int, keep it as-is
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, int) and not isinstance(value, bool):
+            return int(value)
+        if isinstance(value, float):
+            if math.isfinite(value):
+                return round(value, round_floats) if round_floats is not None else value
+            return replace_invalid_with
+    except Exception:
+        return replace_invalid_with
+    return value
+
+
+def make_json_safe(obj: Any, round_floats: Optional[int] = 6, replace_invalid_with: Any = None) -> Any:
+    """Recursively convert objects to JSON-safe structures.
+
+    Handles:
+    - torch.Tensor -> list of numbers (JSON-safe, with NaN/Inf replaced)
+    - numpy scalars/arrays -> Python scalars/lists
+    - pandas Series/DataFrame -> list/dict
+    - bytes -> base64-encoded string
+    - datetime -> ISO string
+    - Path -> str
+    - dict/list/tuple/set -> recursively processed, sets converted to lists
+    - float NaN/Inf -> replaced with `replace_invalid_with` (default None)
+    """
+    # Short-circuit common primitives
+    if obj is None or isinstance(obj, (str, bool)):
+        return obj
+
+    # Numbers
+    if isinstance(obj, (int, float)):
+        return _safe_number(obj, round_floats, replace_invalid_with)
+
+    # Datetime and Paths
+    if isinstance(obj, datetime):
+        return obj.isoformat()
+    if isinstance(obj, Path):
+        return str(obj)
+
+    # Bytes -> base64 string
+    if isinstance(obj, (bytes, bytearray)):
+        import base64 as _b64
+        return _b64.b64encode(bytes(obj)).decode('utf-8')
+
+    # Torch tensors
+    try:
+        import torch as _torch  # local import to avoid issues at import time in some environments
+        if isinstance(obj, _torch.Tensor):
+            obj = obj.detach().cpu().numpy()
+    except Exception:
+        pass
+
+    # Numpy scalar/array
+    try:
+        import numpy as _np
+        if isinstance(obj, _np.generic):
+            return _safe_number(obj.item(), round_floats, replace_invalid_with)
+        if isinstance(obj, _np.ndarray):
+            return make_json_safe(obj.tolist(), round_floats, replace_invalid_with)
+    except Exception:
+        pass
+
+    # Pandas
+    try:
+        import pandas as _pd
+        if isinstance(obj, _pd.DataFrame):
+            return make_json_safe(obj.to_dict(orient='records'), round_floats, replace_invalid_with)
+        if isinstance(obj, _pd.Series):
+            return make_json_safe(obj.tolist(), round_floats, replace_invalid_with)
+    except Exception:
+        pass
+
+    # Mappings
+    if isinstance(obj, dict):
+        return {str(k): make_json_safe(v, round_floats, replace_invalid_with) for k, v in obj.items()}
+
+    # Iterables (list/tuple/set)
+    if isinstance(obj, (list, tuple, set)):
+        return [make_json_safe(v, round_floats, replace_invalid_with) for v in obj]
+
+    # Fallback to string representation
+    try:
+        return str(obj)
+    except Exception:
+        return None
 
 
 class PositionalEncoding(nn.Module):
@@ -45,71 +150,62 @@ class PositionalEncoding(nn.Module):
 
 class ExpertActionTransformer(nn.Module):
     """
-    ExpertActionTransformer - AI Racing Coach for Real-Time Driving Optimization
+    ExpertActionTransformer - AI Model for Non-Expert Driver Progression Learning
     
-    WHAT IT DOES:
-    The ExpertActionTransformer is a sophisticated AI model that acts as an "expert racing coach" 
-    for sim racing and autonomous vehicle control. It analyzes a driver's current performance 
-    and generates optimal action sequences to help them achieve expert-level racing performance.
+    WHAT IT ACTUALLY DOES:
+    This model learns how a NON-EXPERT DRIVER progressively improves their driving actions 
+    over time to reach expert-level performance. It does NOT directly predict expert actions.
+    Instead, it models the learning trajectory of a non-expert driver as they receive 
+    guidance and improve toward expert-level performance.
     
-    Think of it as having a professional racing instructor sitting next to you, constantly 
-    analyzing your driving data and providing real-time guidance: "brake harder here", 
-    "accelerate earlier there", "take this line through the corner".
+    Think of it as modeling the "learning curve" of a student driver who is getting coaching
+    from an expert instructor. The model learns: "Given where I am now (non-expert state) 
+    and what the expert target looks like (contextual guidance), what should my next 
+    improved action be?"
     
     CORE FUNCTIONALITY:
-    1. PERFORMANCE GAP ANALYSIS: Compares current driver's telemetry against expert reference data
-    2. ACTION SEQUENCE PLANNING: Generates step-by-step driving actions to close performance gaps
-    3. PHYSICS-AWARE OPTIMIZATION: Respects car physics, tire grip, and track geometry constraints
-    4. REAL-TIME ADAPTATION: Provides dynamic guidance that adapts to changing track conditions
+    1. PROGRESSION MODELING: Models how non-expert actions evolve toward expert performance
+    2. GAP-AWARE LEARNING: Uses delta-to-expert features to understand improvement direction
+    3. CONTEXTUAL GUIDANCE: Uses expert targets as contextual guidance, not direct output
+    4. SEQUENTIAL IMPROVEMENT: Learns step-by-step improvement sequences over time
     
     PRACTICAL APPLICATIONS:
-    - Racing Simulators: Helps players improve lap times and racing technique
-    - Autonomous Vehicles: Provides optimal control strategies for dynamic driving scenarios  
-    - Driver Training: Offers personalized coaching based on individual driving patterns
-    - Motorsport Analysis: Identifies performance optimization opportunities for race teams
+    - Driver Training Systems: Models how students progress during training sessions
+    - Adaptive Racing Coaching: Provides personalized improvement trajectories
+    - Performance Analysis: Understands learning patterns and improvement rates
+    - Skill Development: Models how drivers acquire expert-level techniques
     
     HOW IT WORKS:
-    The model processes current driver telemetry (speed, position, forces, inputs) and enriched
-    context that includes track/corner info as well as delta-to-expert signals (the gap between
-    the current non-expert state and expert-optimal targets). Using transformer attention
-    mechanisms, it learns how to close this gap over time and generates a sequence of actions
-    (throttle, brake, steering, gear changes) that move the driver toward expert performance.
+    The model takes non-expert telemetry and enriched contextual data that includes:
+    - Expert optimal targets (what the expert would do)
+    - Delta-to-expert gap features (how far off the non-expert currently is)
+    - Track/corner contextual information
     
-    KEY TECHNICAL FEATURES:
-    - Transformer Architecture: Uses multi-head attention to focus on relevant driving patterns
-    - Sequence-to-Sequence Learning: Maps current state to optimal future action sequences
-    - Physics Constraints: Ensures all predicted actions are physically realizable
-    - Multi-Modal Input: Processes telemetry, track geometry, and environmental conditions
-    - Real-Time Inference: Optimized for low-latency real-time driving applications
+    It then predicts what the non-expert driver's NEXT IMPROVED ACTIONS should be,
+    not what the expert would do. This models the gradual improvement process.
     
     INPUT DATA:
-    - Current telemetry: Speed, position, G-forces, steering angle, throttle/brake inputs
-    - Enriched context: Corner/track cues and delta-to-expert gap features
-    - Expert reference: Expert-optimal targets are used to form gap features (via service)
+    - Non-expert telemetry: Current non-expert driver's state and actions
+    - Enriched context: Expert targets + gap features + track/environmental context
     
     OUTPUT PREDICTIONS:
-    - Throttle control: Optimal accelerator pedal positions (0-100%)
-    - Brake control: Optimal brake pressure applications (0-100%)  
-    - Steering input: Optimal steering wheel angles (-100% to +100%)
-    - Gear selection: Optimal transmission gear choices (1-6)
-    - Target speed: Optimal velocity targets for upcoming track sections
+    - Non-expert's next improved actions: The driver's improved throttle, brake, steering, etc.
+    - These represent the driver's evolving actions as they learn, NOT expert actions
     
     TRAINING PROCESS:
-    The model is trained on non-expert telemetry with expert targets and gap-aware context.
-    It minimizes error to expert actions while conditioning on delta-to-expert features,
-    effectively learning the sequence of adjustments a non-expert should make to reach
-    expert performance over time.
+    The model is trained on sequences of non-expert telemetry data where drivers are 
+    progressively improving over time. Expert targets are provided as contextual guidance
+    through the enriched_contextual_data, helping the model understand the improvement direction.
     
     Architecture:
-    - Input: Current telemetry features + contextual data (corner info, tire grip, etc.)
-    - Output: Sequence actions of current driver who tries to reach expert state (velocity, location)
-    - Uses attention mechanism to focus on relevant past patterns
+    - Input: Non-expert telemetry + enriched context (expert targets, gaps, track info)
+    - Output: Non-expert's improved action sequences (learning trajectory)
+    - Uses attention mechanism to focus on relevant improvement patterns
     """
     
     def __init__(self, 
                  telemetry_features_count: int = 42,  # Telemetry features from get_features_for_imitate_expert()
-                 context_features_count: int = 31,  # Enriched context (e.g., corners + expert targets + delta-to-expert)
-                 action_features_count: int = 5,  # throttle, brake, steering, gear, speed
+                 context_features_count: int = 31,  # Enriched context (e.g., corners + grip + expert diff )
                  d_model: int = 256,
                  nhead: int = 8,
                  num_layers: int = 6,
@@ -121,9 +217,8 @@ class ExpertActionTransformer(nn.Module):
         Initialize the Expert Action Transformer
         
         Args:
-            input_features: Number of telemetry input features 
-            context_features: Number of enriched contextual features (corners, expert targets, delta-to-expert gaps)
-            action_features: Number of action outputs to predict (throttle, brake, steer, gear, speed)
+            telemetry_features_count: Number of telemetry input features 
+            context_features_count: Number of enriched contextual features (corners, expert targets, delta-to-expert gaps)
             d_model: Transformer model dimension
             nhead: Number of attention heads
             num_layers: Number of transformer layers
@@ -135,9 +230,9 @@ class ExpertActionTransformer(nn.Module):
         super(ExpertActionTransformer, self).__init__()
         
         # Store configuration
-        self.input_features = telemetry_features_count
-        self.context_features = context_features_count 
-        self.action_features = action_features_count
+        self.input_features_count = telemetry_features_count
+        self.context_features_count = context_features_count 
+        self.output_features_count = 5  # Fixed output size: throttle, brake, steering, gear, speed
         self.d_model = d_model
         self.sequence_length = sequence_length
         self.time_step_seconds = time_step_seconds  # Control how much real time each step represents
@@ -170,10 +265,10 @@ class ExpertActionTransformer(nn.Module):
         self.transformer_decoder = nn.TransformerDecoder(decoder_layer, num_layers=num_layers)
         
         # Action sequence embedding (for decoder inputs during training)
-        self.action_embedding = nn.Linear(action_features_count, d_model)
+        self.action_embedding = nn.Linear(self.output_features_count, d_model)
         
         # Output projection to action space
-        self.action_projection = nn.Linear(d_model, action_features_count)
+        self.action_projection = nn.Linear(d_model, self.output_features_count)
         
         # Layer normalization
         self.layer_norm = nn.LayerNorm(d_model)
@@ -193,33 +288,38 @@ class ExpertActionTransformer(nn.Module):
                 target_actions: Optional[torch.Tensor] = None,
                 target_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
-        Forward pass - In PyTorch, nn.Module.forward is called implicitly, the main computation pipeline of the Expert Action Transformer.
+        Forward pass - Non-Expert Driver Progression Learning Pipeline
         
         This method implements the complete forward pass through the transformer model,
-        transforming input telemetry data and gap-aware context into predicted expert action sequences.
-        The model learns not only to imitate expert actions but also how to reduce the
-        delta-to-expert over time for non-expert drivers.
+        transforming non-expert telemetry and enriched context into predicted non-expert 
+        action sequences that show progression toward expert performance over time.
+        
+        CRITICAL UNDERSTANDING:
+        The model does NOT predict what an expert would do. Instead, it predicts what 
+        the non-expert driver should do next as they progressively improve toward expert 
+        performance. Expert targets are provided as contextual guidance within the 
+        enriched context data.
         
         MODIFIED TRAINING APPROACH - NO TEACHER FORCING:
         Unlike traditional sequence-to-sequence models, this implementation uses autoregressive 
         generation for both training and inference. This means:
         
-        - TRAINING: Model generates actions step-by-step using its own predictions
+        - TRAINING: Model generates non-expert's next improved actions step-by-step
         - INFERENCE: Same autoregressive generation process
         - More realistic training that matches inference behavior
-        - Potentially slower training but better real-world performance
+        - Models the actual learning progression of a non-expert driver
         
         ARCHITECTURAL FLOW:
         
         Step 1: EMBEDDING LAYER
-        - Raw telemetry features (42-dim) → high-dimensional space (256-dim)
-        - Optional context features (31-dim) → same space (256-dim)
+        - Non-expert telemetry features (42-dim) → high-dimensional space (256-dim)
+        - Enriched context features (31-dim) → same space (256-dim)
         - Creates rich feature representations for transformer processing
         
         Step 2: FEATURE FUSION
-        - Combines telemetry + enriched contextual information (including delta-to-expert) via element-wise addition
-        - Allows model to correlate current state with track/tire conditions
-        - Gap-aware signals help the model plan adjustments over the horizon
+        - Combines non-expert telemetry + enriched context (expert targets, gap features, track info)
+        - Allows model to correlate current non-expert state with improvement targets
+        - Gap-aware signals help the model understand how to improve over time
         - Creates unified input representation for encoder
         
         Step 3: POSITIONAL ENCODING
@@ -243,27 +343,20 @@ class ExpertActionTransformer(nn.Module):
         Step 6: ACTION PROJECTION
         - Maps high-dimensional decoder output back to action space
         - 256-dim → 5-dim: [throttle, brake, steering, gear, speed]
-        - Final layer before applying physical constraints
-        
-        RACING-SPECIFIC CONSIDERATIONS:
-        - Telemetry sequence represents racing line progression over time
-        - Context includes corner geometry, expert targets, and delta-to-expert gap signals
-        - Actions must be physically realizable and optimal for car/track
-        - Sequential dependencies critical: braking→turning→accelerating
         
         Args:
-            telemetry: Input telemetry features [batch_size, seq_len, input_features]
-                      Contains current driver state: speed, position, forces, etc.
-            context: Contextual features [batch_size, seq_len, context_features] 
-                    Contains track info, tire grip, expert reference trajectory
-            target_actions: Target action sequence for training [batch_size, seq_len, action_features]
-                          Expert demonstration actions for supervised learning (used for loss calculation only)
+            telemetry: Non-expert telemetry features [batch_size, seq_len, input_features]
+                      Contains non-expert driver's current state: speed, position, forces, actions, etc.
+            context: Enriched contextual features [batch_size, seq_len, context_features] 
+                    Contains expert targets, gap features, track info, environmental conditions
+            target_actions: Non-expert's target action sequences for training [batch_size, seq_len, action_features]
+                          The non-expert's actual improved actions for supervised learning
             target_mask: Mask for target sequence [batch_size, seq_len]
                         Currently unused, reserved for variable-length sequences
             
         Returns:
             Predicted action sequence [batch_size, seq_len, action_features]
-            Expert-level actions that will guide current driver toward optimal performance
+            Non-expert's predicted improved actions as they progress toward expert performance
         """
         batch_size = telemetry.shape[0]
         seq_len = telemetry.shape[1]
@@ -287,11 +380,153 @@ class ExpertActionTransformer(nn.Module):
         
         # Always use autoregressive generation (no teacher forcing)
         decoder_output = self._generate_actions_autoregressive(memory, seq_len)
+
+        # decoder_output is already in action space [B, L, action_features]
+        return decoder_output
+    
+    def contextual_weighted_loss(self, 
+                                predictions: torch.Tensor, 
+                                target_actions: torch.Tensor, 
+                                context: Optional[torch.Tensor] = None,
+                                context_feature_names: Optional[List[str]] = None) -> torch.Tensor:
+        """
+        Contextual weighted loss that emphasizes learning from high-quality examples
         
-        # Project to action space
-        output = self.action_projection(decoder_output)  # [B, L, action_features]
+        This loss function weights the standard MSE loss based on contextual quality indicators:
+        - Higher weight for samples with good grip utilization (close to optimal)
+        - Higher weight for samples with good expert alignment
+        - Lower weight for samples showing poor physics utilization
         
-        return output
+        Args:
+            predictions: Model predictions [batch_size, seq_len, action_features]
+            target_actions: Target actions [batch_size, seq_len, action_features]  
+            context: Contextual features [batch_size, seq_len, context_features]
+            context_feature_names: Names of context features for indexing
+            
+        Returns:
+            Weighted loss tensor (scalar)
+        """
+        # Base MSE loss (element-wise, not reduced)
+        base_loss = F.mse_loss(predictions, target_actions, reduction='none')  # [B, L, A]
+        
+        if context is None or context_feature_names is None:
+            # Fallback to standard MSE if no context available
+            return base_loss.mean()
+        
+        # Initialize quality weight as ones (neutral weighting)
+        quality_weight = torch.ones(context.shape[0], context.shape[1], device=context.device)  # [B, L]
+        
+        try:
+            # Extract contextual quality indicators by feature name
+            context_indices = {}
+            
+            # Tire grip features
+            grip_features = TireGripFeatureCatalog.ContextFeature
+            if grip_features.TURNING_GRIP_UTILIZATION.value in context_feature_names:
+                context_indices['grip_util'] = context_feature_names.index(grip_features.TURNING_GRIP_UTILIZATION.value)
+            if grip_features.OPTIMAL_GRIP_WINDOW.value in context_feature_names:
+                context_indices['grip_window'] = context_feature_names.index(grip_features.OPTIMAL_GRIP_WINDOW.value)
+            
+            # Expert alignment features  
+            expert_features = ExpertFeatureCatalog.ContextFeature
+            if expert_features.EXPERT_VELOCITY_ALIGNMENT.value in context_feature_names:
+                context_indices['expert_alignment'] = context_feature_names.index(expert_features.EXPERT_VELOCITY_ALIGNMENT.value)
+            
+            # Corner context features (for additional weighting)
+            corner_features = CornerFeatureCatalog.ContextFeature
+            if corner_features.CORNER_CONFIDENCE.value in context_feature_names:
+                context_indices['corner_confidence'] = context_feature_names.index(corner_features.CORNER_CONFIDENCE.value)
+            
+            weight_components = []
+            
+            # 1. Grip utilization quality (peak at ~1.0, lower at extremes)
+            if 'grip_util' in context_indices:
+                grip_util = context[:, :, context_indices['grip_util']]  # [B, L]
+                # Quality peaks at 1.0 (optimal grip), decreases as we move away
+                grip_quality = 1.0 - torch.abs(grip_util - 1.0).clamp(0, 1)
+                weight_components.append(grip_quality)
+            
+            # 2. Grip window quality (higher is better)  
+            if 'grip_window' in context_indices:
+                grip_window = context[:, :, context_indices['grip_window']]  # [B, L]
+                weight_components.append(grip_window)
+            
+            # 3. Expert alignment quality (higher is better)
+            if 'expert_alignment' in context_indices:
+                expert_alignment = context[:, :, context_indices['expert_alignment']]  # [B, L]
+                weight_components.append(expert_alignment)
+            
+            # 4. Corner confidence (higher is better)
+            if 'corner_confidence' in context_indices:
+                corner_confidence = context[:, :, context_indices['corner_confidence']]  # [B, L]
+                weight_components.append(corner_confidence)
+            
+            # Combine weight components if any were found
+            if weight_components:
+                # Average all quality components
+                quality_weight = torch.stack(weight_components, dim=-1).mean(dim=-1)  # [B, L]
+                
+                # Add small epsilon to prevent zero weights
+                quality_weight = quality_weight + 0.1
+                
+                # Normalize to prevent extreme weighting
+                quality_weight = quality_weight.clamp(0.1, 2.0)
+            
+        except Exception as e:
+            print(f"[WARNING] Error in contextual weighting: {e}. Using standard loss.")
+            quality_weight = torch.ones_like(quality_weight)
+        
+        # Apply quality weights to loss (expand dims to match action dimensions)
+        weighted_loss = base_loss * quality_weight.unsqueeze(-1)  # [B, L, A]
+        
+        # Return mean weighted loss
+        return weighted_loss.mean()
+    
+    def get_contextual_features_summary(self, context_feature_names: List[str]) -> Dict[str, Any]:
+        """
+        Get a summary of which contextual features are available for quality weighting
+        
+        Args:
+            context_feature_names: List of available context feature names
+            
+        Returns:
+            Dictionary summarizing available contextual guidance features
+        """
+        summary = {
+            'total_context_features': len(context_feature_names) if context_feature_names else 0,
+            'available_for_weighting': [],
+            'tire_grip_features': [],
+            'expert_features': [],
+            'corner_features': []
+        }
+        
+        if not context_feature_names:
+            return summary
+        
+        # Check tire grip features
+        grip_features = TireGripFeatureCatalog.ContextFeature
+        for feature in grip_features:
+            if feature.value in context_feature_names:
+                summary['tire_grip_features'].append(feature.value)
+                summary['available_for_weighting'].append(feature.value)
+        
+        # Check expert alignment features
+        expert_features = ExpertFeatureCatalog.ContextFeature
+        for feature in expert_features:
+            if feature.value in context_feature_names:
+                summary['expert_features'].append(feature.value)
+                summary['available_for_weighting'].append(feature.value)
+        
+        # Check corner features
+        corner_features = CornerFeatureCatalog.ContextFeature
+        for feature in corner_features:
+            if feature.value in context_feature_names:
+                summary['corner_features'].append(feature.value)
+                summary['available_for_weighting'].append(feature.value)
+        
+        summary['weighting_enabled'] = len(summary['available_for_weighting']) > 0
+        
+        return summary
     
     def _generate_square_subsequent_mask(self, sz: int) -> torch.Tensor:
         """Generate causal mask for decoder"""
@@ -429,25 +664,30 @@ class ExpertActionTransformer(nn.Module):
         # Concatenate all outputs
         return torch.cat(outputs, dim=1)  # [B, seq_len, action_features]
     
-    def predict_expert_sequence(self, 
+    def predict_non_expert_progression_sequence(self, 
                                telemetry: torch.Tensor,
                                context: Optional[torch.Tensor] = None,
                                sequence_length: Optional[int] = None,
                                temperature: float = 1.0,
                                deterministic: bool = False) -> torch.Tensor:
         """
-        Predict a sequence of actions to reach expert state (gap-aware)
+        Predict a sequence of non-expert driver actions showing progression toward expert performance
+        
+        IMPORTANT: This method predicts what the NON-EXPERT driver should do next as they 
+        progressively improve, NOT what an expert would do. Expert targets are provided 
+        in the context to guide the improvement direction.
         
         Args:
-            telemetry: Input telemetry features [batch_size, input_seq_len, input_features]
-            context: Optional contextual features [batch_size, input_seq_len, context_features]
-                     Should include delta-to-expert features to condition on the improvement goal.
+            telemetry: Non-expert telemetry features [batch_size, input_seq_len, input_features]
+            context: Enriched contextual features [batch_size, input_seq_len, context_features]
+                     Must include expert targets and delta-to-expert features to guide improvement.
             sequence_length: Length of action sequence to predict (default: self.sequence_length)
             temperature: Temperature for sampling (higher = more random)
             deterministic: If True, use greedy decoding instead of sampling
             
         Returns:
-            Predicted action sequence [batch_size, sequence_length, action_features]
+            Predicted non-expert progression sequence [batch_size, sequence_length, action_features]
+            Shows how the non-expert driver should improve their actions over time
         """
         self.eval()
         if sequence_length is None:
@@ -528,8 +768,8 @@ class ExpertActionTransformer(nn.Module):
         Process Flow:
         1. Validate and preprocess input telemetry data
         2. Convert telemetry to model input format (normalization, feature extraction)
-    3. Generate expert action sequence predictions using the trained model
-       (optionally conditioned on delta-to-expert gap context)
+        3. Generate expert action sequence predictions using the trained model
+            (optionally conditioned on delta-to-expert gap context)
         4. Convert raw numerical predictions to human-readable advice
         5. Calculate confidence scores and contextual information
         6. Format everything into structured JSON response
@@ -599,7 +839,7 @@ class ExpertActionTransformer(nn.Module):
             # Generate predictions
             self.eval()
             with torch.no_grad():
-                predictions = self.predict_expert_sequence(
+                predictions = self.predict_non_expert_progression_sequence(
                     telemetry=telemetry_tensor,
                     context=context_tensor,
                     sequence_length=sequence_length,
@@ -639,15 +879,15 @@ class ExpertActionTransformer(nn.Module):
                 "contextual_info": contextual_info
             }
             
-            return response
+            return make_json_safe(response)
             
         except Exception as e:
-            return {
+            return make_json_safe({
                 "status": "error",
                 "timestamp": datetime.now().isoformat(),
                 "error_message": str(e),
                 "error_type": type(e).__name__
-            }
+            })
     
     def _extract_telemetry_features(self, telemetry: Dict[str, Any]) -> List[float]:
         """Extract and normalize telemetry features for model input"""
@@ -916,9 +1156,9 @@ class ExpertActionTransformer(nn.Module):
             'model_type': 'ExpertActionTransformer',
             'state_dict': base64.b64encode(state_dict_bytes).decode('utf-8'),
             'config': {
-                'input_features': self.input_features,
-                'context_features': self.context_features,
-                'action_features': self.action_features,
+                'input_features': self.input_features_count,
+                'context_features': self.context_features_count,
+                'action_features': self.output_features_count,
                 'd_model': self.d_model,
                 'sequence_length': self.sequence_length,
                 'time_step_seconds': self.time_step_seconds,  # Include time step configuration
@@ -929,85 +1169,140 @@ class ExpertActionTransformer(nn.Module):
             },
             'serialization_timestamp': datetime.now().isoformat()
         }
-        
-        return model_data
+        # Ensure the entire payload is JSON-safe (no NaN/Inf, tensors, numpy, etc.)
+        return make_json_safe(model_data)
     
-    @classmethod
-    def deserialize_model(cls, serialized_data: Dict[str, Any]) -> 'ExpertActionTransformer':
+
+    def deserialize_transformer_model(self, serialized_data: Dict[str, Any]) -> 'ExpertActionTransformer':
         """
-        Deserialize a model from JSON-serializable data and create a new instance
+        Deserialize model from JSON-serializable dictionary and restore state to current instance
+        
+        This method restores a trained ExpertActionTransformer model from serialized data
+        created by serialize_model(). It updates the current instance's configuration and
+        loads the trained weights, making the model ready for inference.
         
         Args:
-            serialized_data: Dictionary containing serialized model data
-            
+            serialized_data: Dictionary containing serialized model data with keys:
+                           - 'model_type': Should be 'ExpertActionTransformer'
+                           - 'state_dict': Base64-encoded model weights and biases
+                           - 'config': Model architecture configuration
+                           - 'serialization_timestamp': When model was serialized
+        
         Returns:
-            New ExpertActionTransformer instance with loaded weights
+            Self (ExpertActionTransformer): The current instance with restored state
+        
+        Raises:
+            ValueError: If serialized data format is invalid or incompatible
+            RuntimeError: If model state restoration fails
         """
         import base64
         import io
         
-        config = serialized_data['config']
-        
-        # Create new model instance with saved configuration
-        model = cls(
-            input_features=config['input_features'],
-            context_features=config['context_features'], 
-            action_features=config['action_features'],
-            d_model=config['d_model'],
-            nhead=config['nhead'],
-            num_layers=config['num_layers'],
-            dim_feedforward=config['dim_feedforward'],
-            sequence_length=config['sequence_length'],
-            dropout=config.get('dropout', 0.1),
-            time_step_seconds=config.get('time_step_seconds', 0.1)  # Include time step configuration
-        )
-        
-        # Load state dict from base64 encoded bytes
-        state_dict_bytes = base64.b64decode(serialized_data['state_dict'].encode('utf-8'))
-        buffer = io.BytesIO(state_dict_bytes)
-        state_dict = torch.load(buffer, map_location='cpu')
-        model.load_state_dict(state_dict)
-        
-        return model
+        try:
+            # Validate serialized data format
+            required_keys = ['model_type', 'state_dict', 'config']
+            for key in required_keys:
+                if key not in serialized_data:
+                    raise ValueError(f"Missing required key '{key}' in serialized data")
+            
+            # Verify this is the correct model type
+            if serialized_data['model_type'] != 'ExpertActionTransformer':
+                raise ValueError(f"Invalid model type: {serialized_data['model_type']}. Expected 'ExpertActionTransformer'")
+            
+            # Extract configuration
+            config = serialized_data['config']
+            
+            # Validate current model configuration matches serialized model
+            config_checks = [
+                ('input_features', self.input_features_count),
+                ('context_features', self.context_features_count),
+                ('action_features', self.output_features_count),
+                ('d_model', self.d_model),
+                ('sequence_length', self.sequence_length)
+            ]
+            
+            for config_key, current_value in config_checks:
+                if config_key in config and config[config_key] != current_value:
+                    print(f"[WARNING] Configuration mismatch for {config_key}: "
+                          f"serialized={config[config_key]}, current={current_value}")
+            
+            # Update model configuration from serialized data
+            self.input_features_count = config.get('input_features', self.input_features_count)
+            self.context_features_count = config.get('context_features', self.context_features_count) 
+            self.output_features_count = config.get('action_features', self.output_features_count)
+            self.d_model = config.get('d_model', self.d_model)
+            self.sequence_length = config.get('sequence_length', self.sequence_length)
+            self.time_step_seconds = config.get('time_step_seconds', self.time_step_seconds)
+            
+            # Decode and restore model state
+            state_dict_base64 = serialized_data['state_dict']
+            state_dict_bytes = base64.b64decode(state_dict_base64)
+            
+            # Load state dict from bytes
+            buffer = io.BytesIO(state_dict_bytes)
+            state_dict = torch.load(buffer, map_location='cpu')  # Load to CPU first
+            
+            # Load the state dict into current model
+            self.load_state_dict(state_dict)
+            
+            # Set model to evaluation mode (ready for inference)
+            self.eval()
+            
+            # Log successful restoration
+            serialization_time = serialized_data.get('serialization_timestamp', 'unknown')
+            print(f"[INFO] Successfully restored ExpertActionTransformer model")
+            print(f"[INFO] - Model features: {self.input_features_count} telemetry, "
+                  f"{self.context_features_count} context, {self.output_features_count} actions")
+            print(f"[INFO] - Architecture: d_model={self.d_model}, seq_len={self.sequence_length}")
+            print(f"[INFO] - Originally serialized: {serialization_time}")
+            print(f"[INFO] - Model ready for inference")
+            
+            return self
+            
+        except Exception as e:
+            error_msg = f"Failed to deserialize ExpertActionTransformer model: {str(e)}"
+            print(f"[ERROR] {error_msg}")
+            raise RuntimeError(error_msg) from e
+
 
 class TelemetryActionDataset(Dataset):
     """
-    Dataset class for telemetry-to-action sequence learning
+    Dataset class for learning non-expert driver progression toward expert performance
 
-    This dataset pairs non-expert telemetry with expert action targets and optional
-    enriched context (including delta-to-expert gap features). The model learns
-    how a non-expert can reach expert performance over time by conditioning on
-    these gap-aware contextual signals.
+    This dataset uses non-expert telemetry and actions, with enriched contextual data that includes
+    expert targets and delta-to-expert gap features. The model learns how a non-expert driver
+    should adjust their actions over time to progressively reach expert performance levels.
+    
+    Key insight: The model output represents the non-expert driver's actual actions as they
+    improve over time, NOT the expert's actions. Expert actions are provided as contextual
+    guidance within enriched_contextual_data.
     """
     
     def __init__(self,
                  telemetry_data: List[Dict[str, Any]],
-                 expert_actions: List[Dict[str, Any]],
-                 enriched_contextual_data: Optional[List[Dict[str, Any]]] = None,
-                 sequence_length: int = 20,
-                 telemetry_features: Optional[List[str]] = None,
-                 action_features: Optional[List[str]] = None):
+                 enriched_contextual_data: List[Dict[str, Any]],
+                 sequence_length: int = 20):
         """
         Initialize the dataset
         
         Args:
-            telemetry_data: List of telemetry records (basic telemetry only), drivers have different skill sets
-            expert_actions: List of corresponding expert actions
-            enriched_contextual_data: List of enriched contextual features (e.g., expert targets and delta-to-expert)
+            telemetry_data: List of non-expert telemetry records (includes both telemetry and actions)
+            enriched_contextual_data: List of enriched contextual features including:
+                                    - Expert optimal targets (expert_optimal_*)
+                                    - Delta-to-expert gap features (expert_gap_*, expert_velocity_alignment)  
+                                    - Corner/track/tire contextual information
+                                    - Target actions for training (now included in enriched contextual data)
             sequence_length: Length of sequences to generate
-            telemetry_features: List of feature names to extract from telemetry_data
-            action_features: List of action feature names to extract from expert_actions
+            telemetry_features: List of telemetry feature names to extract (position, speed, forces, etc.)
         """
-        assert len(telemetry_data) == len(expert_actions), "Telemetry and expert actions must have same length"
+        assert len(telemetry_data) == len(enriched_contextual_data), "Telemetry and contextual data must have same length"
         
         self.telemetry_data = telemetry_data
-        self.expert_actions = expert_actions  
-        self.enriched_contextual_data = enriched_contextual_data or []
+        self.enriched_contextual_data = enriched_contextual_data
         self.sequence_length = sequence_length
         
         # Default feature lists
-        self.telemetry_features = telemetry_features or self._get_default_telemetry_features()
-        self.action_features = action_features or self._get_default_action_features()
+        self.telemetry_features = list(telemetry_data[0].keys())
         
         # Preprocessing
         self._preprocess_data()
@@ -1015,22 +1310,10 @@ class TelemetryActionDataset(Dataset):
         # Generate sequence indices
         self._generate_sequences()
     
-    def _get_default_telemetry_features(self) -> List[str]:
-        """Get default telemetry features for input"""
-        return [
-            "Graphics_normalized_car_position", "Graphics_player_pos_x", "Graphics_player_pos_y", 
-            "Graphics_player_pos_z", "Graphics_current_time", "Physics_speed_kmh", "Physics_gas",
-            "Physics_brake", "Physics_steer_angle", "Physics_gear", "Physics_rpm", "Physics_g_force_x",
-            "Physics_g_force_y", "Physics_g_force_z", "Physics_slip_angle_front_left", "Physics_slip_angle_front_right",
-            "Physics_slip_angle_rear_left", "Physics_slip_angle_rear_right", "Physics_velocity_x",
-            "Physics_velocity_y", "Physics_velocity_z"
-        ]
-    
     def _get_default_action_features(self) -> List[str]:
-        """Get default action features to predict """ 
+        """Get default action features to predict (non-expert driver's actual actions)""" 
         return [
-            "expert_optimal_throttle", "expert_optimal_brake", "expert_optimal_steering",
-            "expert_optimal_gear", "expert_optimal_speed"
+            "Physics_gas", "Physics_brake", "Physics_steer_angle", "Physics_gear", "Physics_speed_kmh"
         ]
     
     def _preprocess_data(self):
@@ -1039,8 +1322,8 @@ class TelemetryActionDataset(Dataset):
         
         This function performs the following steps:
         1. Converts raw telemetry dictionaries into numerical feature matrices
-        2. Extracts action targets from expert demonstration data 
-        3. Optionally processes contextual data (corner info, tire grip, etc.)
+        2. Extracts non-expert action targets from the same telemetry data 
+        3. Processes enriched contextual data (corner info, expert targets, delta-to-expert features)
         4. Applies standardization (zero mean, unit variance) to all feature matrices
         5. Stores fitted scalers for later denormalization during inference
         
@@ -1049,36 +1332,31 @@ class TelemetryActionDataset(Dataset):
         """
         # Extract feature matrices from raw dictionary data
         # Convert list of telemetry dictionaries -> numpy matrix [samples, features]
-        self.telemetry_matrix = self._extract_features(self.telemetry_data, self.telemetry_features)
-        self.action_matrix = self._extract_features(self.expert_actions, self.action_features)
+        self.telemetry_matrix = self._build_matrix(self.telemetry_data, self.telemetry_features)
         
-        # Extract contextual features if available
+        # Extract contextual features if available (includes expert targets and gap features)
         if self.enriched_contextual_data:
-            context_features = list(self.enriched_contextual_data[0].keys()) if self.enriched_contextual_data else []
-            self.context_matrix = self._extract_features(self.enriched_contextual_data, context_features)
+            self.context_features = list(self.enriched_contextual_data[0].keys()) if self.enriched_contextual_data else []
+            self.context_matrix = self._build_matrix(self.enriched_contextual_data, self.context_features)
         else:
+            self.context_features = []
             self.context_matrix = None
         
-        # Normalize features
+        # Normalize features, because features have vastly different scales
         self.telemetry_scaler = StandardScaler()
-        self.action_scaler = StandardScaler()
         self.context_scaler = StandardScaler() if self.context_matrix is not None else None
-        
         self.telemetry_matrix = self.telemetry_scaler.fit_transform(self.telemetry_matrix)
-        self.action_matrix = self.action_scaler.fit_transform(self.action_matrix)
-        
         if self.context_matrix is not None:
             self.context_matrix = self.context_scaler.fit_transform(self.context_matrix)
         
         print(f"[INFO] Preprocessed dataset: {self.telemetry_matrix.shape[0]} samples, "
-              f"{self.telemetry_matrix.shape[1]} telemetry features, "
-              f"{self.action_matrix.shape[1]} action features")
+              f"{self.telemetry_matrix.shape[1]} telemetry features")
         
         if self.context_matrix is not None:
             print(f"[INFO] Context matrix: {self.context_matrix.shape[1]} contextual features")
     
-    def _extract_features(self, data_list: List[Dict[str, Any]], feature_names: List[str]) -> np.ndarray:
-        """Extract features from list of dictionaries"""
+    def _build_matrix(self, data_list: List[Dict[str, Any]], feature_names: List[str]) -> np.ndarray:
+        """Extract features and build a matrix from list of dictionaries"""
         matrix = []
         for record in data_list:
             row = []
@@ -1148,7 +1426,21 @@ class TelemetryActionDataset(Dataset):
         
         # Extract sequences
         telemetry_seq = torch.tensor(self.telemetry_matrix[start_idx:end_idx], dtype=torch.float32)
-        action_seq = torch.tensor(self.action_matrix[start_idx:end_idx], dtype=torch.float32)
+        
+        # Extract action features from telemetry data (actions are already included in telemetry)
+        # Get action feature indices from telemetry features
+        action_feature_names = self._get_default_action_features()
+        action_indices = []
+        for action_feature in action_feature_names:
+            if action_feature in self.telemetry_features:
+                action_indices.append(self.telemetry_features.index(action_feature))
+        
+        # Extract action sequence from telemetry matrix using the identified indices
+        if action_indices:
+            action_seq = torch.tensor(self.telemetry_matrix[start_idx:end_idx, action_indices], dtype=torch.float32)
+        else:
+            # Fallback: create zeros if no action features found
+            action_seq = torch.zeros(self.sequence_length, len(action_feature_names), dtype=torch.float32)
         
         if self.context_matrix is not None:
             context_seq = torch.tensor(self.context_matrix[start_idx:end_idx], dtype=torch.float32)
@@ -1158,13 +1450,23 @@ class TelemetryActionDataset(Dataset):
     
     def get_feature_names(self) -> Tuple[List[str], List[str]]:
         """Get telemetry and action feature names"""
-        return self.telemetry_features, self.action_features
+        action_features = self._get_default_action_features()
+        return self.telemetry_features, action_features
+    
+    def get_context_feature_names(self) -> Optional[List[str]]:
+        """Get context feature names if available"""
+        if not hasattr(self, 'context_features') or not self.context_features:
+            # Try to reconstruct from enriched_contextual_data if available
+            if self.enriched_contextual_data and len(self.enriched_contextual_data) > 0:
+                self.context_features = list(self.enriched_contextual_data[0].keys())
+            else:
+                return None
+        return self.context_features if hasattr(self, 'context_features') else None
     
     def get_scalers(self) -> Dict[str, StandardScaler]:
         """Get the fitted scalers for denormalization"""
         scalers = {
-            'telemetry': self.telemetry_scaler,
-            'action': self.action_scaler
+            'telemetry': self.telemetry_scaler
         }
         if self.context_scaler is not None:
             scalers['context'] = self.context_scaler
@@ -1206,8 +1508,8 @@ class ExpertActionTrainer:
             self.optimizer, mode='min', factor=0.5, patience=10, verbose=True
         )
         
-        # Loss function - MSE for regression
-        self.criterion = nn.MSELoss()
+        # Loss function - will be contextual weighted loss if context available
+        self.criterion = nn.MSELoss()  # Fallback for when no context is available
         
         # Training history
         self.train_losses = []
@@ -1216,10 +1518,15 @@ class ExpertActionTrainer:
         self.best_model_state = None
     
     def train_epoch(self, dataloader: DataLoader) -> float:
-        """Train for one epoch using autoregressive generation (no teacher forcing)"""
+        """Train for one epoch using contextual weighted loss"""
         self.model.train()
         total_loss = 0.0
         num_batches = 0
+        
+        # Get context feature names from the dataset if available
+        context_feature_names = None
+        if hasattr(dataloader.dataset, 'get_context_feature_names'):
+            context_feature_names = dataloader.dataset.get_context_feature_names()
         
         for batch in dataloader:
             if len(batch) == 3:  # telemetry, context, actions
@@ -1239,12 +1546,22 @@ class ExpertActionTrainer:
             # Model will generate actions step by step using its own predictions
             predictions = self.model(
                 telemetry=telemetry,
-                context=context,
-                target_actions=None  # No teacher forcing
+                context=context
             )
             
-            # Compute loss against target actions
-            loss = self.criterion(predictions, target_actions)
+            # Use contextual weighted loss if context is available
+            if context is not None and context_feature_names is not None:
+                loss = self.model.contextual_weighted_loss(
+                    predictions=predictions, 
+                    target_actions=target_actions,
+                    context=context,
+                    context_feature_names=context_feature_names
+                )
+            else:
+                # Fallback to standard MSE loss
+                loss = self.criterion(predictions, target_actions)
+                if num_batches == 0:
+                    print(f"[INFO] Using standard MSE loss (no context features available)")
             
             # Backward pass
             loss.backward()
@@ -1260,10 +1577,15 @@ class ExpertActionTrainer:
         return total_loss / num_batches if num_batches > 0 else 0.0
     
     def validate_epoch(self, dataloader: DataLoader) -> float:
-        """Validate for one epoch using autoregressive generation (no teacher forcing)"""
+        """Validate for one epoch using contextual weighted loss"""
         self.model.eval()
         total_loss = 0.0
         num_batches = 0
+        
+        # Get context feature names from the dataset if available
+        context_feature_names = None
+        if hasattr(dataloader.dataset, 'get_context_feature_names'):
+            context_feature_names = dataloader.dataset.get_context_feature_names()
         
         with torch.no_grad():
             for batch in dataloader:
@@ -1281,11 +1603,21 @@ class ExpertActionTrainer:
                 # Forward pass with autoregressive generation (no teacher forcing)
                 predictions = self.model(
                     telemetry=telemetry,
-                    context=context,
-                    target_actions=None  # No teacher forcing
+                    context=context
                 )
                 
-                loss = self.criterion(predictions, target_actions)
+                # Use contextual weighted loss if context is available
+                if context is not None and context_feature_names is not None:
+                    loss = self.model.contextual_weighted_loss(
+                        predictions=predictions, 
+                        target_actions=target_actions,
+                        context=context,
+                        context_feature_names=context_feature_names
+                    )
+                else:
+                    # Fallback to standard MSE loss
+                    loss = self.criterion(predictions, target_actions)
+                
                 total_loss += loss.item()
                 num_batches += 1
         
@@ -1362,6 +1694,21 @@ class ExpertActionTrainer:
         print(f"[INFO] Starting training for {epochs} epochs on {self.device}")
         print(f"[INFO] Model parameters: {sum(p.numel() for p in self.model.parameters()):,}")
         
+        # Display contextual feature information
+        if hasattr(train_dataloader.dataset, 'get_context_feature_names'):
+            context_feature_names = train_dataloader.dataset.get_context_feature_names()
+            if context_feature_names:
+                context_summary = self.model.get_contextual_features_summary(context_feature_names)
+                print(f"[INFO] Contextual weighted loss enabled with {len(context_summary['available_for_weighting'])} weighting features:")
+                if context_summary['tire_grip_features']:
+                    print(f"[INFO]   - Tire grip features: {context_summary['tire_grip_features']}")
+                if context_summary['expert_features']:
+                    print(f"[INFO]   - Expert alignment features: {context_summary['expert_features']}")
+                if context_summary['corner_features']:
+                    print(f"[INFO]   - Corner context features: {context_summary['corner_features']}")
+            else:
+                print(f"[INFO] No contextual features available - using standard MSE loss")
+        
         best_val_loss = float('inf')
         epochs_without_improvement = 0
         
@@ -1408,17 +1755,17 @@ class ExpertActionTrainer:
             self.model.load_state_dict(self.best_model_state['state_dict'])
             print(f"[INFO] Loaded best model from epoch {self.best_model_state['epoch']+1}")
         
-        return {
+        return make_json_safe({
             'train_losses': self.train_losses,
             'val_losses': self.val_losses,
             'best_val_loss': best_val_loss,
             'epochs_trained': epoch + 1,
             'final_lr': self.optimizer.param_groups[0]['lr']
-        }
+        })
     
     def evaluate(self, dataloader: DataLoader) -> Dict[str, float]:
         """
-        Evaluate the model on test data
+        Evaluate the model on test data using contextual weighted loss
         
         Args:
             dataloader: Test data loader
@@ -1431,6 +1778,11 @@ class ExpertActionTrainer:
         total_samples = 0
         all_predictions = []
         all_targets = []
+        
+        # Get context feature names from the dataset if available
+        context_feature_names = None
+        if hasattr(dataloader.dataset, 'get_context_feature_names'):
+            context_feature_names = dataloader.dataset.get_context_feature_names()
         
         with torch.no_grad():
             for batch in dataloader:
@@ -1448,11 +1800,21 @@ class ExpertActionTrainer:
                 # Use standard forward method (autoregressive generation)
                 predictions = self.model(
                     telemetry=telemetry,
-                    context=context,
-                    target_actions=None  # No teacher forcing
+                    context=context
                 )
                 
-                loss = self.criterion(predictions, target_actions)
+                # Use contextual weighted loss if context is available
+                if context is not None and context_feature_names is not None:
+                    loss = self.model.contextual_weighted_loss(
+                        predictions=predictions, 
+                        target_actions=target_actions,
+                        context=context,
+                        context_feature_names=context_feature_names
+                    )
+                else:
+                    # Fallback to standard MSE loss
+                    loss = self.criterion(predictions, target_actions)
+                
                 total_loss += loss.item() * target_actions.shape[0]
                 total_samples += target_actions.shape[0]
                 
@@ -1475,21 +1837,21 @@ class ExpertActionTrainer:
         ss_tot = np.sum((target_flat - np.mean(target_flat)) ** 2)
         r2 = 1 - (ss_res / ss_tot) if ss_tot != 0 else 0
         
-        return {
+        return make_json_safe({
             'test_loss': total_loss / total_samples if total_samples > 0 else 0.0,
             'mse': mse,
             'mae': mae,
             'r2': r2,
             'num_samples': total_samples
-        }
+        })
     
     def get_model_info(self) -> Dict[str, Any]:
         """Get model information and training state"""
-        return {
+        return make_json_safe({
             'model_config': {
-                'input_features': self.model.input_features,
-                'context_features': self.model.context_features,
-                'action_features': self.model.action_features,
+                'input_features': self.model.input_features_count,
+                'context_features': self.model.context_features_count,
+                'action_features': self.model.output_features_count,
                 'd_model': self.model.d_model,
                 'sequence_length': self.model.sequence_length
             },
@@ -1505,4 +1867,4 @@ class ExpertActionTrainer:
             },
             'model_parameters': sum(p.numel() for p in self.model.parameters()),
             'trainable_parameters': sum(p.numel() for p in self.model.parameters() if p.requires_grad)
-        }
+        })
