@@ -1114,8 +1114,8 @@ class Full_dataset_TelemetryMLService:
                 tire_service_serialized = tire_service.serialize_tire_grip_model(track_name=track_name, car_name="all_cars")
                 tire_grip_model_dto = {
                     "modelType": "tire_grip_analysis",
-                    "trackName": tire_service_serialized.get("track_name"),
-                    "carName": tire_service_serialized.get("car_name"),
+                    "trackName": "generic",
+                    "carName": "all_cars",
                     "modelData": tire_service_serialized,
                     "metadata": {
                         "model_info": tire_service_serialized.get("model_info", {}),
