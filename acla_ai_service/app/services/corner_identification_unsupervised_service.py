@@ -151,36 +151,154 @@ class CornerIdentificationUnsupervisedService:
                 return str(obj)
         return str(obj)
 
-    def serialize_model(self, track_name: str, car_name: str) -> Dict[str, Any]:
-        """Return JSON-safe representation of learned corner patterns & config (geometry-only)."""
-        data = {
-            'model_type': 'corner_identification',
-            'track_name': track_name,
-            'car_name': car_name,
-            'parameters': {
-                'min_corner_duration': self.min_corner_duration,
-                'corner_detection_sensitivity': self.corner_detection_sensitivity,
-                'smoothing_window': self.smoothing_window,
-                'steering_range': self.steering_range
-            },
-            'corner_patterns': self._to_python(self.corner_patterns),
-            'corner_clusters': self._to_python(self._cluster_corner_types(self.corner_patterns) if self.corner_patterns else []),
-            'total_corners': len(self.corner_patterns),
-            'serialized_timestamp': datetime.now().isoformat()
-        }
-        self._last_serialized = data
-        return data
+    def serialize_corner_identification_model(self, track_name: str, car_name: str) -> Dict[str, Any]:
+        """Return JSON-safe representation of learned corner patterns & configuration."""
+        try:
+            # Build the model key
+            model_key = f"{track_name}_{car_name}"
+            
+            # Get the track profile if it exists
+            track_profile = self.track_corner_profiles.get(model_key, {})
+            
+            # Create the serialization payload
+            payload = {
+                "model_version": "1.0",
+                "track_name": track_name,
+                "car_name": car_name,
+                "model_key": model_key,
+                "export_timestamp": datetime.now().isoformat(),
+                
+                # Core patterns and clusters
+                "corner_patterns": self._to_python(self.corner_patterns),
+                "corner_clusters": self._to_python(track_profile.get('corner_clusters', [])),
+                "total_corners": len(self.corner_patterns),
+                
+                # Track corner profiles
+                "track_corner_profiles": self._to_python(self.track_corner_profiles),
+                
+                # Configuration parameters
+                "config": {
+                    "min_corner_duration": self.min_corner_duration,
+                    "corner_detection_sensitivity": self.corner_detection_sensitivity,
+                    "smoothing_window": self.smoothing_window,
+                    "steering_range": self.steering_range,
+                    "segment_label_smoothing": self.segment_label_smoothing,
+                    "max_merge_gap": self.max_merge_gap,
+                    "min_activity_ratio": self.min_activity_ratio,
+                    "corner_energy_threshold": self.corner_energy_threshold,
+                    "require_brake_or_speed_delta": self.require_brake_or_speed_delta
+                },
+                
+                # Additional metadata
+                "has_learned_patterns": len(self.corner_patterns) > 0,
+                "available_profiles": list(self.track_corner_profiles.keys())
+            }
+            
+            # Cache the serialization
+            self._last_serialized = payload
+            
+            return payload
+            
+        except Exception as e:
+            print(f"[ERROR] Failed to serialize corner identification model: {str(e)}")
+            return {
+                "model_version": "1.0",
+                "track_name": track_name,
+                "car_name": car_name,
+                "error": str(e),
+                "corner_patterns": [],
+                "corner_clusters": [],
+                "total_corners": 0
+            }
 
-    @classmethod
-    def deserialize_model(cls, payload: Dict[str, Any]) -> 'CornerIdentificationUnsupervisedService':
-        inst = cls()
-        inst.corner_patterns = payload.get('corner_patterns', [])
-        inst.track_corner_profiles["generic_all_cars"] = {
-            'corner_patterns': inst.corner_patterns,
-            'corner_clusters': payload.get('corner_clusters', []),
-            'total_corners': payload.get('total_corners', len(inst.corner_patterns))
-        }
-        return inst
+    def deserialize_corner_identification_model(self, payload: Dict[str, Any]) -> 'CornerIdentificationUnsupervisedService':
+        """
+        Deserialize a corner identification model payload and restore class instance state.
+        
+        This method takes a payload from serialize_corner_identification_model and restores
+        all the learned patterns, configurations, and track profiles to make the instance
+        ready for feature extraction.
+        
+        Args:
+            payload: Dictionary containing serialized corner identification model data
+            
+        Returns:
+            Self (this instance) with restored state
+        """
+        try:
+            print(f"[INFO] Deserializing corner identification model...")
+            
+            # Validate payload structure
+            if not isinstance(payload, dict):
+                raise ValueError("Payload must be a dictionary")
+            
+            # Check for error in payload
+            if "error" in payload:
+                print(f"[WARNING] Payload contains error: {payload['error']}")
+                return self
+            
+            # Restore configuration parameters
+            if "config" in payload:
+                config = payload["config"]
+                self.min_corner_duration = config.get("min_corner_duration", self.min_corner_duration)
+                self.corner_detection_sensitivity = config.get("corner_detection_sensitivity", self.corner_detection_sensitivity)
+                self.smoothing_window = config.get("smoothing_window", self.smoothing_window)
+                self.steering_range = config.get("steering_range", self.steering_range)
+                self.segment_label_smoothing = config.get("segment_label_smoothing", self.segment_label_smoothing)
+                self.max_merge_gap = config.get("max_merge_gap", self.max_merge_gap)
+                self.min_activity_ratio = config.get("min_activity_ratio", self.min_activity_ratio)
+                self.corner_energy_threshold = config.get("corner_energy_threshold", self.corner_energy_threshold)
+                self.require_brake_or_speed_delta = config.get("require_brake_or_speed_delta", self.require_brake_or_speed_delta)
+                print(f"[INFO] Restored configuration parameters")
+            
+            # Restore corner patterns
+            if "corner_patterns" in payload:
+                self.corner_patterns = payload["corner_patterns"]
+                print(f"[INFO] Restored {len(self.corner_patterns)} corner patterns")
+            else:
+                self.corner_patterns = []
+                print(f"[WARNING] No corner patterns found in payload")
+            
+            # Restore track corner profiles
+            if "track_corner_profiles" in payload:
+                self.track_corner_profiles = payload["track_corner_profiles"]
+                print(f"[INFO] Restored track corner profiles: {list(self.track_corner_profiles.keys())}")
+            else:
+                self.track_corner_profiles = {}
+                print(f"[WARNING] No track corner profiles found in payload")
+            
+            # Cache the deserialized payload
+            self._last_serialized = payload
+            
+            # Log model information
+            track_name = payload.get("track_name", "unknown")
+            car_name = payload.get("car_name", "unknown")
+            model_key = payload.get("model_key", f"{track_name}_{car_name}")
+            total_corners = payload.get("total_corners", len(self.corner_patterns))
+            
+            print(f"[INFO] Successfully deserialized corner identification model:")
+            print(f"       - Track: {track_name}")
+            print(f"       - Car: {car_name}")
+            print(f"       - Model Key: {model_key}")
+            print(f"       - Total Corners: {total_corners}")
+            print(f"       - Has Learned Patterns: {len(self.corner_patterns) > 0}")
+            print(f"       - Available Profiles: {len(self.track_corner_profiles)}")
+            
+            # Validate that the instance is ready for feature extraction
+            if len(self.corner_patterns) == 0:
+                print(f"[WARNING] No corner patterns available - feature extraction may return empty results")
+            else:
+                print(f"[INFO] Model is ready for corner feature extraction")
+            
+            return self
+            
+        except Exception as e:
+            print(f"[ERROR] Failed to deserialize corner identification model: {str(e)}")
+            # Reset to clean state on error
+            self.corner_patterns = []
+            self.track_corner_profiles = {}
+            self._last_serialized = None
+            return self
 
     def _normalize_steering(self, steering_series: pd.Series) -> pd.Series:
         """Normalize raw steering angle to a symmetric -1..1 range.
