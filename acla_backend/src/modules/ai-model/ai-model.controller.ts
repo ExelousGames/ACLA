@@ -127,13 +127,33 @@ export class AiModelController {
 
     @Post('save')
     async save_one_ai_model(@Body() chunkData: ChunkData) {
-        return this.chunkService.handleIncomingChunk(
-            chunkData,
-            async (completeData: UpdateAiModelDto) => {
-                console.log("Processing complete imitation learning data");
-                return this.aiModelService.save_ai_model(completeData);
-            }
-        );
+        try {
+            return this.chunkService.handleIncomingChunk(
+                chunkData,
+                async (assembledPathOrData: any) => {
+                    // If streaming/file mode is used, assembledPathOrData will be a file path.
+                    // The service expects UpdateAiModelDto with modelData; for very large JSON, parse in a streaming manner if possible.
+                    // For simplicity here, we will load from file in chunks and JSON.parse at the service layer if needed.
+                    // However, to avoid memory spikes, let the service provide a file-based saver.
+                    if (typeof assembledPathOrData === 'string') {
+                        // Provide the file path to service to handle streaming upload to GridFS
+                        return this.aiModelService.save_ai_model_from_file(
+                            assembledPathOrData
+                        );
+                    }
+                    // Legacy small payload path (assembled JSON object)
+                    return this.aiModelService.save_ai_model(assembledPathOrData as UpdateAiModelDto);
+                },
+                { assemblyMode: 'file' }
+            );
+        } catch (error) {
+            console.error(`Error saving AI model from file: ${error.message}`);
+            return {
+                success: false,
+                message: `Failed to save AI model from file: ${error.message}`
+            };
+        }
+
     }
 
     // New GridFS-related endpoints

@@ -114,7 +114,7 @@ class CornerIdentificationUnsupervisedService:
         
         # Corner identification parameters
         self.min_corner_duration = 10  # Minimum data points for a valid corner
-        self.corner_detection_sensitivity = 0.7
+        self.corner_detection_sensitivity = 1.0  # Sensitivity multiplier for corner detection
         self.smoothing_window = 7  # Window size for smoothing telemetry data
         # Steering angle metadata: current physics feed provides 0..1 where 0.5 is neutral.
         # We normalize to a symmetric -1..1 scale for downstream logic (direction, curvature).
@@ -158,7 +158,43 @@ class CornerIdentificationUnsupervisedService:
             model_key = f"{track_name}_{car_name}"
             
             # Get the track profile if it exists
-            track_profile = self.track_corner_profiles.get(model_key, {})
+            track_profile = self.track_corner_profiles.get(model_key, {}).copy()
+
+            # Ensure the profile entry for this key is up to date with current patterns/clusters
+            # If we don't have clusters for this key, try to reuse or compute from current patterns
+            current_patterns = self._to_python(self.corner_patterns)
+            existing_clusters = track_profile.get('corner_clusters')
+            if not existing_clusters and current_patterns:
+                try:
+                    existing_clusters = self._cluster_corner_types(current_patterns)
+                except Exception:
+                    existing_clusters = {"clusters": [], "cluster_labels": []}
+
+            # Prepare/refresh the profile snapshot for this model key
+            profile_snapshot = {
+                "track_name": track_name,
+                "car_name": car_name,
+                "model_key": model_key,
+                "corner_patterns": current_patterns,
+                "corner_clusters": self._to_python(existing_clusters),
+                "total_corners": len(current_patterns),
+                "learning_timestamp": track_profile.get("learning_timestamp") or datetime.now().isoformat(),
+                "config": {
+                    "min_corner_duration": self.min_corner_duration,
+                    "corner_detection_sensitivity": self.corner_detection_sensitivity,
+                    "smoothing_window": self.smoothing_window,
+                    "steering_range": self.steering_range,
+                    "segment_label_smoothing": self.segment_label_smoothing,
+                    "max_merge_gap": self.max_merge_gap,
+                    "min_activity_ratio": self.min_activity_ratio,
+                    "corner_energy_threshold": self.corner_energy_threshold,
+                    "require_brake_or_speed_delta": self.require_brake_or_speed_delta
+                },
+            }
+
+            # Persist the refreshed snapshot back into profiles map
+            self.track_corner_profiles[model_key] = profile_snapshot
+            track_profile = profile_snapshot
             
             # Create the serialization payload
             payload = {
@@ -169,12 +205,19 @@ class CornerIdentificationUnsupervisedService:
                 "export_timestamp": datetime.now().isoformat(),
                 
                 # Core patterns and clusters
-                "corner_patterns": self._to_python(self.corner_patterns),
+                "corner_patterns": current_patterns,
                 "corner_clusters": self._to_python(track_profile.get('corner_clusters', [])),
-                "total_corners": len(self.corner_patterns),
+                "total_corners": len(current_patterns),
                 
                 # Track corner profiles
                 "track_corner_profiles": self._to_python(self.track_corner_profiles),
+                
+                # Feature schema and service metadata
+                "feature_catalog": list(CornerFeatureCatalog.CONTEXT_FEATURES),
+                "service_metadata": {
+                    "class": self.__class__.__name__,
+                    "serializer_version": "1.0",
+                },
                 
                 # Configuration parameters
                 "config": {
@@ -190,7 +233,7 @@ class CornerIdentificationUnsupervisedService:
                 },
                 
                 # Additional metadata
-                "has_learned_patterns": len(self.corner_patterns) > 0,
+                "has_learned_patterns": len(current_patterns) > 0,
                 "available_profiles": list(self.track_corner_profiles.keys())
             }
             
@@ -253,27 +296,69 @@ class CornerIdentificationUnsupervisedService:
             
             # Restore corner patterns
             if "corner_patterns" in payload:
-                self.corner_patterns = payload["corner_patterns"]
-                print(f"[INFO] Restored {len(self.corner_patterns)} corner patterns")
+                self.corner_patterns = payload["corner_patterns"] or []
+                print(f"[INFO] Restored {len(self.corner_patterns)} corner patterns (top-level)")
             else:
                 self.corner_patterns = []
                 print(f"[WARNING] No corner patterns found in payload")
             
             # Restore track corner profiles
             if "track_corner_profiles" in payload:
-                self.track_corner_profiles = payload["track_corner_profiles"]
+                self.track_corner_profiles = payload["track_corner_profiles"] or {}
                 print(f"[INFO] Restored track corner profiles: {list(self.track_corner_profiles.keys())}")
             else:
                 self.track_corner_profiles = {}
                 print(f"[WARNING] No track corner profiles found in payload")
+
+            # If no patterns present at top-level, try to derive from the appropriate profile
+            track_name = payload.get("track_name", "unknown")
+            car_name = payload.get("car_name", "unknown")
+            model_key = payload.get("model_key", f"{track_name}_{car_name}")
+
+            if not self.corner_patterns:
+                profile = self.track_corner_profiles.get(model_key)
+                if isinstance(profile, dict) and profile.get("corner_patterns"):
+                    self.corner_patterns = profile.get("corner_patterns", [])
+                    print(f"[INFO] Filled corner patterns from profile '{model_key}': {len(self.corner_patterns)}")
+                elif self.track_corner_profiles:
+                    # Fallback: use first available profile
+                    first_key = next(iter(self.track_corner_profiles.keys()))
+                    first_profile = self.track_corner_profiles[first_key]
+                    if isinstance(first_profile, dict) and first_profile.get("corner_patterns"):
+                        self.corner_patterns = first_profile.get("corner_patterns", [])
+                        print(f"[INFO] Filled corner patterns from first profile '{first_key}': {len(self.corner_patterns)}")
+
+            # Ensure the model_key entry exists and mirrors top-level in-memory state
+            if self.corner_patterns:
+                prof = self.track_corner_profiles.get(model_key, {})
+                if not isinstance(prof, dict):
+                    prof = {}
+                prof.update({
+                    "track_name": track_name,
+                    "car_name": car_name,
+                    "model_key": model_key,
+                    "corner_patterns": self.corner_patterns,
+                    "corner_clusters": payload.get("corner_clusters", prof.get("corner_clusters", {})),
+                    "total_corners": len(self.corner_patterns),
+                    "learning_timestamp": prof.get("learning_timestamp", datetime.now().isoformat()),
+                    "config": {
+                        "min_corner_duration": self.min_corner_duration,
+                        "corner_detection_sensitivity": self.corner_detection_sensitivity,
+                        "smoothing_window": self.smoothing_window,
+                        "steering_range": self.steering_range,
+                        "segment_label_smoothing": self.segment_label_smoothing,
+                        "max_merge_gap": self.max_merge_gap,
+                        "min_activity_ratio": self.min_activity_ratio,
+                        "corner_energy_threshold": self.corner_energy_threshold,
+                        "require_brake_or_speed_delta": self.require_brake_or_speed_delta
+                    },
+                })
+                self.track_corner_profiles[model_key] = prof
             
             # Cache the deserialized payload
             self._last_serialized = payload
             
             # Log model information
-            track_name = payload.get("track_name", "unknown")
-            car_name = payload.get("car_name", "unknown")
-            model_key = payload.get("model_key", f"{track_name}_{car_name}")
             total_corners = payload.get("total_corners", len(self.corner_patterns))
             
             print(f"[INFO] Successfully deserialized corner identification model:")
@@ -286,7 +371,7 @@ class CornerIdentificationUnsupervisedService:
             
             # Validate that the instance is ready for feature extraction
             if len(self.corner_patterns) == 0:
-                print(f"[WARNING] No corner patterns available - feature extraction may return empty results")
+                print(f"[WARNING] No corner patterns available after deserialization - feature extraction may return empty results")
             else:
                 print(f"[INFO] Model is ready for corner feature extraction")
             

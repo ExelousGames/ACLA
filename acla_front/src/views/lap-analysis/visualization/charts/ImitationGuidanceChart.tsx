@@ -5,55 +5,46 @@ import { VisualizationProps } from '../VisualizationRegistry';
 import apiService from 'services/api.service';
 import styles from './ImitationGuidanceChart.module.css';
 
-// New backend response structure after switching to generate_expert_action_instructions()
-interface PredictedAction {
-    t: number;
-    normalized_position: number; // 0..1 along predicted horizon
-    steering_angle_deg: number;
-    steering_direction: string; // left/right/straight
-    steering_percent: number;   // 0..1 fraction of max steering
-    throttle: number;           // 0..1
-    brake: number;              // 0..1
+// New backend response structure
+interface SequencePrediction {
+    step: number;
+    time_ahead: string; // e.g., "0.1s"
+    action: string; // e.g., "Begin braking"
+    throttle: number; // 0..1
+    brake: number; // 0..1
+    steering: number; // -1..1
+    // New optional fields from backend
+    gear?: number;
+    target_speed?: number;
 }
 
-interface InstructionStep extends PredictedAction {
-    deltas: {
-        steer_delta_deg: number;
-        throttle_delta: number;
-        brake_delta: number;
-    };
-    instruction_text: string;
-    substep_index?: number;
-    total_substeps?: number;
+interface CurrentSituation {
+    speed: string; // e.g., "120 km/h"
+    track_position: string; // e.g., "mid-corner"
+    // Relax types to accept arbitrary strings from backend (e.g., "good grip")
+    racing_line: string;
+    tire_grip: string;
 }
 
-interface GuidanceResult {
-    success: boolean;
-    predicted_actions: PredictedAction[];
-    steps: InstructionStep[];
-    instructions: string[]; // human readable lines
-    metadata: {
-        track_name: string;
-        car_name: string;
-        sequence_length: number;
-        temperature: number;
-        input_features_count: number;
-        expected_input_features?: number;
-        feature_filtering?: string;
-        missing_features_count?: number;
-        instruction_generation?: any;
-        prediction_timestamp: string;
-        // Legacy fields may or may not exist
-        avg_predicted_performance?: number;
-        prediction_confidence?: number;
-    };
-    error?: string;
+interface ContextualInfo {
+    track_sector: string; // e.g., "Sector 2, Turn 5"
+    weather_impact: string; // e.g., "Dry conditions, full grip"
+    optimal_speed_estimate: string; // e.g., "95 km/h for current section"
+}
+
+interface GuidanceResponse {
+    status: "success" | "error";
+    timestamp: string; // ISO timestamp
+    current_situation: CurrentSituation;
+    sequence_predictions: SequencePrediction[];
+    contextual_info: ContextualInfo;
 }
 
 interface GuidanceData {
     message?: string;
-    guidance_result: GuidanceResult;
+    guidance_result?: GuidanceResponse; // keeping old property name for compatibility
     timestamp?: string;
+    success?: boolean; // envelope compatibility
 }
 
 interface TelemetryData {
@@ -73,7 +64,7 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
     const [loading, setLoading] = useState<boolean>(false);
     const [error, setError] = useState<string | null>(null);
     const [autoUpdate, setAutoUpdate] = useState<boolean>(false);
-    const intervalRef = useRef<NodeJS.Timeout | null>(null);
+    const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
     // Extract track and car information from session data
     const trackName = analysisContext.recordedSessioStaticsData?.track || 'Unknown Track';
@@ -96,19 +87,29 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
                 track_name: trackName,
                 car_name: carName
             });
-
             if (response.data) {
-                const data = response.data as GuidanceData;
-                if (data.guidance_result?.success) {
-                    setGuidanceData(data);
+                // Support both legacy (GuidanceResponse at root) and new envelope
+                const raw = response.data as any;
+                const maybeEnvelope = (raw && (raw.guidance_result || raw.success !== undefined)) ? raw : null;
+                const result: GuidanceResponse | null = maybeEnvelope ? raw.guidance_result : raw;
+
+                if (result && result.status === 'success') {
+                    setGuidanceData({
+                        guidance_result: result,
+                        timestamp: result.timestamp,
+                        success: maybeEnvelope ? raw.success : undefined,
+                        message: maybeEnvelope ? raw.message : undefined,
+                    });
 
                     // Send guidance message to AI chat if available
-                    if (data.guidance_result?.predicted_actions && data.guidance_result.predicted_actions.length > 0) {
-                        const guidanceText = formatGuidanceForChat(data.guidance_result);
+                    if (result.sequence_predictions && result.sequence_predictions.length > 0) {
+                        const guidanceText = formatGuidanceForChat(result);
                         analysisContext.sendGuidanceToChat(guidanceText);
                     }
+                } else if (result) {
+                    setError('Failed to get guidance: API returned error status');
                 } else {
-                    setError('Failed to get guidance: ' + (data.guidance_result?.error || data.message || 'Unknown error'));
+                    setError('Malformed response: missing guidance_result');
                 }
             } else {
                 setError('No response data received');
@@ -122,22 +123,22 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
     }, [liveData, trackName, carName, analysisContext]);
 
     // Format guidance data for AI chat
-    const formatGuidanceForChat = (guidanceResult: any): string => {
-        if (!guidanceResult || !guidanceResult.predicted_actions) return 'AI guidance received';
+    const formatGuidanceForChat = (guidanceResult: GuidanceResponse): string => {
+        if (!guidanceResult || !guidanceResult.sequence_predictions) return 'AI guidance received';
 
-        const metadata = guidanceResult.metadata || {};
-        const confidence = metadata.prediction_confidence;
-        const actionsCount = guidanceResult.predicted_actions.length;
-        const stepsCount = guidanceResult.steps ? guidanceResult.steps.length : 0;
-        const firstInstruction = guidanceResult.instructions && guidanceResult.instructions.length > 0
-            ? guidanceResult.instructions[0]
-            : undefined;
-        let base = `AI Guidance: ${actionsCount} action points, ${stepsCount} significant adjustments`;
-        if (typeof confidence === 'number') {
-            base += ` (confidence ${(confidence * 100).toFixed(1)}%)`;
+        const { current_situation, sequence_predictions, contextual_info } = guidanceResult;
+        const predictionsCount = sequence_predictions.length;
+        const firstAction = sequence_predictions.length > 0 ? sequence_predictions[0].action : undefined;
+
+        let base = `AI Guidance: ${predictionsCount} predictions`;
+        if (current_situation?.racing_line) {
+            base += ` (racing line: ${current_situation.racing_line})`;
         }
-        if (firstInstruction) {
-            base += `. First: ${firstInstruction}`;
+        if (firstAction) {
+            base += `. First: ${firstAction}`;
+        }
+        if (contextual_info?.track_sector) {
+            base += ` at ${contextual_info.track_sector}`;
         }
         return base;
     };
@@ -207,112 +208,169 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
         );
     };
 
-    // Render guidance predictions and performance
-    const renderGuidancePredictions = () => {
-        if (!guidanceData?.guidance_result?.predicted_actions || !guidanceData.guidance_result.success) {
+    // Render current situation section
+    const renderCurrentSituation = () => {
+        if (!guidanceData?.guidance_result?.current_situation) {
             return null;
         }
-        const { predicted_actions, steps, instructions, metadata } = guidanceData.guidance_result;
-        const confidence = metadata?.prediction_confidence; // may be undefined now
+
+        const { current_situation } = guidanceData.guidance_result;
 
         return (
             <Box p="3">
-                <Text size="2" weight="bold" mb="2">AI Predicted Expert Actions</Text>
-
-                {/* Summary stats */}
-                <Grid columns="2" gap="2" mb="3">
+                <Text size="2" weight="bold" mb="2">Current Situation</Text>
+                <Grid columns="2" gap="3">
                     <Box>
-                        <Text size="1" color="gray">Predicted Actions</Text>
-                        <Text size="2" weight="medium">{predicted_actions.length}</Text>
+                        <Text size="1" color="gray">Speed</Text>
+                        <Text size="2" weight="medium">{current_situation.speed}</Text>
                     </Box>
-                    {steps && (
-                        <Box>
-                            <Text size="1" color="gray">Significant Steps</Text>
-                            <Text size="2" weight="medium">{steps.length}</Text>
-                        </Box>
-                    )}
+                    <Box>
+                        <Text size="1" color="gray">Track Position</Text>
+                        <Text size="2" weight="medium">{current_situation.track_position}</Text>
+                    </Box>
+                    <Box>
+                        <Text size="1" color="gray">Racing Line</Text>
+                        <Badge
+                            color={/optimal/i.test(current_situation.racing_line) ? 'green' : 'orange'}
+                            size="1"
+                        >
+                            {current_situation.racing_line}
+                        </Badge>
+                    </Box>
+                    <Box>
+                        <Text size="1" color="gray">Tire Grip</Text>
+                        <Badge
+                            color={/good/i.test(current_situation.tire_grip) ? 'green' : 'red'}
+                            size="1"
+                        >
+                            {current_situation.tire_grip}
+                        </Badge>
+                    </Box>
                 </Grid>
-                {/* Confidence indicator (legacy / optional) */}
-                {typeof confidence === 'number' && (
-                    <Box mb="3">
-                        <Text size="1" color="gray">Prediction Confidence</Text>
-                        <Flex align="center" gap="2" mt="1">
-                            <Progress
-                                value={confidence * 100}
-                                max={100}
-                                size="2"
-                                style={{ flex: 1 }}
-                                color={confidence > 0.7 ? 'green' : confidence > 0.5 ? 'yellow' : 'red'}
-                            />
-                            <Text size="2" weight="medium">
-                                {(confidence * 100).toFixed(1)}%
-                            </Text>
-                        </Flex>
-                    </Box>
-                )}
+            </Box>
+        );
+    };
 
-                {/* First few predicted action points */}
-                {predicted_actions.length > 0 && (
-                    <Box mb="3">
-                        <Text size="1" color="gray" mb="2">Sample Predicted Action Points</Text>
-                        <Grid gap="2">
-                            {predicted_actions.slice(0, 3).map((pa, index) => (
-                                <Box key={index} p="2" style={{ border: '1px solid var(--gray-6)', borderRadius: '4px' }}>
-                                    <Flex justify="between" align="center" mb="1">
-                                        <Badge color="blue" size="1">Pt {index + 1}</Badge>
-                                        <Text size="1" color="gray">pos {(pa.normalized_position * 100).toFixed(0)}%</Text>
-                                    </Flex>
-                                    <Text size="1" style={{ fontFamily: 'monospace' }}>
-                                        steer {pa.steering_direction} {(pa.steering_percent * 100).toFixed(0)}% • thr {(pa.throttle * 100).toFixed(0)}% • brk {(pa.brake * 100).toFixed(0)}%
+    // Render sequence predictions section
+    const renderSequencePredictions = () => {
+        if (!guidanceData?.guidance_result?.sequence_predictions) {
+            return null;
+        }
+
+        const { sequence_predictions } = guidanceData.guidance_result;
+
+        return (
+            <Box p="3">
+                <Text size="2" weight="bold" mb="2">Action Sequence ({sequence_predictions.length} steps)</Text>
+                <Grid gap="2">
+                    {sequence_predictions.slice(0, 5).map((prediction) => (
+                        <Box key={prediction.step} p="3" style={{
+                            border: '1px solid var(--gray-6)',
+                            borderRadius: '6px',
+                            backgroundColor: 'var(--gray-1)'
+                        }}>
+                            <Flex justify="between" align="center" mb="2">
+                                <Badge color="blue" size="1">Step {prediction.step}</Badge>
+                                <Text size="1" color="gray">{prediction.time_ahead}</Text>
+                            </Flex>
+
+                            <Text size="2" weight="medium" mb="2" style={{ display: 'block' }}>
+                                {prediction.action}
+                            </Text>
+
+                            <Grid columns="3" gap="2">
+                                <Box style={{ textAlign: 'center' }}>
+                                    <Text size="1" color="gray">Throttle</Text>
+                                    <Text size="2" weight="bold" color={prediction.throttle > 0.5 ? 'green' : 'gray'}>
+                                        {(prediction.throttle * 100).toFixed(0)}%
                                     </Text>
                                 </Box>
-                            ))}
-                        </Grid>
-                        {predicted_actions.length > 3 && (
-                            <Text size="1" color="gray" mt="2" style={{ textAlign: 'center' }}>
-                                ... and {predicted_actions.length - 3} more points
-                            </Text>
-                        )}
-                    </Box>
-                )}
-
-                {/* Significant instruction steps */}
-                {steps && steps.length > 0 && (
-                    <Box>
-                        <Text size="1" color="gray" mb="2">Significant Action Adjustments</Text>
-                        <Grid gap="2">
-                            {steps.slice(0, 5).map((st, i) => (
-                                <Box key={i} p="2" style={{ border: '1px solid var(--gray-6)', borderRadius: '4px' }}>
-                                    <Flex justify="between" align="center" mb="1">
-                                        <Badge color="green" size="1">Step {i + 1}</Badge>
-                                        <Text size="1" color="gray">Δ steer {st.deltas.steer_delta_deg.toFixed(1)}°</Text>
-                                    </Flex>
-                                    <Text size="1">{st.instruction_text}</Text>
+                                <Box style={{ textAlign: 'center' }}>
+                                    <Text size="1" color="gray">Brake</Text>
+                                    <Text size="2" weight="bold" color={prediction.brake > 0.1 ? 'red' : 'gray'}>
+                                        {(prediction.brake * 100).toFixed(0)}%
+                                    </Text>
                                 </Box>
-                            ))}
-                        </Grid>
-                        {steps.length > 5 && (
-                            <Text size="1" color="gray" mt="2" style={{ textAlign: 'center' }}>
-                                ... and {steps.length - 5} more steps
-                            </Text>
-                        )}
-                    </Box>
+                                <Box style={{ textAlign: 'center' }}>
+                                    <Text size="1" color="gray">Steering</Text>
+                                    <Text size="2" weight="bold" color={Math.abs(prediction.steering) > 0.1 ? 'blue' : 'gray'}>
+                                        {(prediction.steering * 100).toFixed(0)}%
+                                    </Text>
+                                </Box>
+                            </Grid>
+                            {(prediction.gear !== undefined || prediction.target_speed !== undefined) && (
+                                <Grid columns="2" gap="2" mt="2">
+                                    {prediction.gear !== undefined && (
+                                        <Box style={{ textAlign: 'center' }}>
+                                            <Text size="1" color="gray">Gear</Text>
+                                            <Text size="2" weight="bold">{prediction.gear}</Text>
+                                        </Box>
+                                    )}
+                                    {prediction.target_speed !== undefined && (
+                                        <Box style={{ textAlign: 'center' }}>
+                                            <Text size="1" color="gray">Target Speed</Text>
+                                            <Text size="2" weight="bold">{prediction.target_speed}</Text>
+                                        </Box>
+                                    )}
+                                </Grid>
+                            )}
+                        </Box>
+                    ))}
+                </Grid>
+                {sequence_predictions.length > 5 && (
+                    <Text size="1" color="gray" mt="2" style={{ textAlign: 'center' }}>
+                        ... and {sequence_predictions.length - 5} more steps
+                    </Text>
                 )}
+            </Box>
+        );
+    };
 
-                {/* Raw instruction text list (collapsed version) */}
-                {instructions && instructions.length > 0 && (
-                    <Box mt="3">
-                        <Text size="1" color="gray" mb="1">Instruction Summary</Text>
-                        <Text size="1" style={{ display: 'block', whiteSpace: 'pre-wrap' }}>
-                            {instructions.slice(0, 3).join('\n')}
+    // Render contextual information section  
+    const renderContextualInfo = () => {
+        if (!guidanceData?.guidance_result?.contextual_info) {
+            return null;
+        }
+
+        const { contextual_info } = guidanceData.guidance_result;
+
+        return (
+            <Box p="3">
+                <Text size="2" weight="bold" mb="2">Track Context</Text>
+                <Grid gap="2">
+                    <Box p="2" style={{
+                        border: '1px solid var(--blue-6)',
+                        borderRadius: '4px',
+                        backgroundColor: 'var(--blue-1)'
+                    }}>
+                        <Text size="1" color="gray">Location</Text>
+                        <Text size="2" weight="medium" style={{ display: 'block' }}>
+                            {contextual_info.track_sector}
                         </Text>
-                        {instructions.length > 3 && (
-                            <Text size="1" color="gray" mt="1" style={{ textAlign: 'center' }}>
-                                ... {instructions.length - 3} more instructions
-                            </Text>
-                        )}
                     </Box>
-                )}
+
+                    <Box p="2" style={{
+                        border: '1px solid var(--green-6)',
+                        borderRadius: '4px',
+                        backgroundColor: 'var(--green-1)'
+                    }}>
+                        <Text size="1" color="gray">Weather Conditions</Text>
+                        <Text size="2" weight="medium" style={{ display: 'block' }}>
+                            {contextual_info.weather_impact}
+                        </Text>
+                    </Box>
+
+                    <Box p="2" style={{
+                        border: '1px solid var(--orange-6)',
+                        borderRadius: '4px',
+                        backgroundColor: 'var(--orange-1)'
+                    }}>
+                        <Text size="1" color="gray">Optimal Speed Estimate</Text>
+                        <Text size="2" weight="medium" style={{ display: 'block' }}>
+                            {contextual_info.optimal_speed_estimate}
+                        </Text>
+                    </Box>
+                </Grid>
             </Box>
         );
     };
@@ -369,19 +427,25 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
 
                     {renderTelemetryData()}
 
-                    {guidanceData && (
+                    {guidanceData?.guidance_result?.status === 'success' && (
                         <>
                             <Separator size="4" />
-                            {renderGuidancePredictions()}
+                            {renderCurrentSituation()}
 
-                            {guidanceData.timestamp && (
-                                <Box p="3" pt="2">
-                                    <Text size="1" color="gray">
-                                        Last updated: {new Date(guidanceData.timestamp).toLocaleTimeString()}
-                                    </Text>
-                                </Box>
-                            )}
+                            <Separator size="4" />
+                            {renderSequencePredictions()}
+
+                            <Separator size="4" />
+                            {renderContextualInfo()}
                         </>
+                    )}
+
+                    {guidanceData?.guidance_result?.timestamp && (
+                        <Box p="3" pt="2">
+                            <Text size="1" color="gray">
+                                Last updated: {new Date(guidanceData.guidance_result.timestamp).toLocaleTimeString()}
+                            </Text>
+                        </Box>
                     )}
 
                     {!guidanceData && !loading && !error && (

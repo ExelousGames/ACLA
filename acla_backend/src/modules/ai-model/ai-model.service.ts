@@ -6,6 +6,9 @@ import { ObjectId } from 'mongodb';
 import { AIModel } from '../../schemas/ai-model.schema';
 import { CreateAiModelDto, UpdateAiModelDto } from './dto/ai-model.dto';
 import { GridFSService, GRIDFS_BUCKETS } from '../gridfs/gridfs.service';
+import * as fs from 'fs';
+import * as path from 'path';
+import { Readable } from 'stream';
 
 @Injectable()
 export class AiModelService {
@@ -238,13 +241,89 @@ export class AiModelService {
 
 
     async save_ai_model(updateAiModelDto: UpdateAiModelDto): Promise<any> {
-        const existingEntry = await this.findActiveModel(updateAiModelDto);
+        try {
+            const existingEntry = await this.findActiveModel(updateAiModelDto);
 
-        if (existingEntry) {
-            return await this.updateExistingModel(existingEntry, updateAiModelDto);
-        } else {
-            return await this.createNewModel(updateAiModelDto);
+            if (existingEntry) {
+                return await this.updateExistingModel(existingEntry, updateAiModelDto);
+            } else {
+                return await this.createNewModel(updateAiModelDto);
+            }
+        } catch (error) {
+            console.error("Error in save_ai_model:", error);
+            throw error;
         }
+    }
+
+    /**
+     * Save AI model when model data has been assembled into a file on disk.
+     * This avoids loading huge JSON into memory.
+     * Expected file content: JSON with fields trackName, carName, modelType, modelData, metadata.
+     * If the file is too large to parse safely, we stream-upload the raw file to GridFS as JSON.
+     */
+    async save_ai_model_from_file(filePath: string): Promise<any> {
+        // Basic sanity check
+        const stat = await fs.promises.stat(filePath);
+        const isHuge = stat.size > 100 * 1024 * 1024; // >100MB
+
+        // Strategy:
+        // - If reasonably small (<100MB), read and JSON.parse to preserve current DTO flow and validation
+        // - If huge, stream upload the file as-is to GridFS and create/update model using minimal metadata extracted lazily
+
+        if (!isHuge) {
+            const fileContent = await fs.promises.readFile(filePath, 'utf8');
+            const dto = JSON.parse(fileContent) as UpdateAiModelDto;
+            return this.save_ai_model(dto);
+        }
+
+        // Huge file path: attempt to minimally parse header fields if they exist near the start.
+        // If not feasible, fall back to unknown placeholders and require metadata later.
+        let trackName = 'unknown';
+        let carName = 'unknown';
+        let modelType = 'unknown';
+        let metadata: any = undefined;
+
+        try {
+            // Read first 2MB and try partial parse for metadata fields
+            const fd = await fs.promises.open(filePath, 'r');
+            const buf = Buffer.alloc(Math.min(2 * 1024 * 1024, stat.size));
+            await fd.read(buf, 0, buf.length, 0);
+            await fd.close();
+            const head = buf.toString('utf8');
+            // naive field extraction
+            const tn = head.match(/"trackName"\s*:\s*"([^"]+)"/);
+            const cn = head.match(/"carName"\s*:\s*"([^"]+)"/);
+            const mt = head.match(/"modelType"\s*:\s*"([^"]+)"/);
+            trackName = tn?.[1] || trackName;
+            carName = cn?.[1] || carName;
+            modelType = mt?.[1] || modelType;
+        } catch {
+            // ignore extraction errors
+        }
+
+        const filename = `model_${trackName}_${carName}_${modelType}_${Date.now()}.json`;
+        const readStream = fs.createReadStream(filePath);
+        const fileId = await this.gridfsService.uploadStream(
+            readStream as unknown as Readable,
+            filename,
+            { trackName, carName, modelType },
+            GRIDFS_BUCKETS.AI_MODELS
+        );
+
+        // Upsert active model for the triple (trackName, carName, modelType)
+        const existing = await this.findActiveModel({ trackName, carName, modelType } as any);
+        if (existing) {
+            await this.aiModelModel.updateOne(
+                { _id: (existing as any)._id },
+                { $set: { modelDataFileId: fileId, metadata } }
+            );
+            return { updated: true, fileId };
+        }
+        const created = new this.aiModelModel({
+            trackName, carName, modelType, modelDataFileId: fileId, metadata, isActive: true
+        });
+        const saved = await created.save();
+        return saved;
     }
 
     private async findActiveModel(dto: UpdateAiModelDto): Promise<AIModel | null> {
