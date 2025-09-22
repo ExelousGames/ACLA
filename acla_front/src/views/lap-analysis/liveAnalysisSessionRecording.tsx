@@ -106,13 +106,19 @@ export default function LiveAnalysisSessionRecording() {
         const folder = '../session_recording';
         const options: PythonShellOptions = { mode: 'text', pythonOptions: ['-u'], scriptPath: 'src/py-scripts', args: [folder, filename] };
         const script = 'ACCMemoryExtractor.py';
-        analysisContext.setSession(prev => {
-            if (!prev) {
-                return { session_name: new Date().toString(), SessionId: '', map: analysisContext.mapSelected || 'Unknown Track', user_id: '', points: [], data: [], car: analysisContext.recordedSessioStaticsData.car_model || 'Unknown Car' } as RacingSessionDetailedInfoDto as any;
-            }
-            prev.session_name = new Date().toString();
-            return prev;
-        });
+
+        // Always create a new session with a fresh timestamp-based name
+        const newSessionName = `Racing Session ${new Date().toLocaleString()}`;
+        analysisContext.setSession({
+            session_name: newSessionName,
+            SessionId: '',
+            map: analysisContext.mapSelected || 'Unknown Track',
+            user_id: '',
+            points: [],
+            data: [],
+            car: analysisContext.recordedSessioStaticsData.car_model || 'Unknown Car'
+        } as RacingSessionDetailedInfoDto as any);
+
         setState(RecordingState.RECORDING);
         try {
             const { shellId } = await window.electronAPI.runPythonScript(script, options);
@@ -135,6 +141,8 @@ export default function LiveAnalysisSessionRecording() {
 
     const resetToChecking = useCallback(() => {
         analysisContext.clearRecordingSession();
+        // Clear the current session to ensure a fresh one is created for the next recording
+        analysisContext.setSession(null);
         uploadInFlightRef.current = false;
         setUploadProgress(0); setUploadStatus(''); setUploadError(null); setShowRetryButton(false); setUploadDialogOpen(false); setIsUploading(false);
         isCheckingRef.current = false; lastCheckRef.current = null; setState(RecordingState.CHECKING);

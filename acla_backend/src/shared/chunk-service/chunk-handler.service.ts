@@ -1,4 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
+import * as path from 'path';
 import { v4 as uuidv4 } from 'uuid';
 import {
     ChunkData,
@@ -85,7 +86,8 @@ export class ChunkHandlerService {
      */
     async processChunkedData<T>(
         chunkData: ChunkData,
-        processCallback: (assembledData: any) => Promise<T>
+        processCallback: (assembledData: any) => Promise<T>,
+        options?: { assemblyMode?: 'json' | 'buffer' | 'stream' | 'file'; outputPath?: string }
     ): Promise<ChunkProcessResult> {
         try {
 
@@ -95,16 +97,35 @@ export class ChunkHandlerService {
             // If all chunks are received, assemble and process the data
             if (result.response.isComplete) {
                 try {
-                    const assembledChunks = this.handleChunkSessionService.getAssembledData(chunkData.sessionId);
+                    const mode = options?.assemblyMode || 'json';
+                    let processedResult: T;
 
-                    // Reconstruct the original content
-                    const reconstructedContent = assembledChunks.join('');
-                    const originalData = JSON.parse(reconstructedContent);
-
-                    this.logger.log(`Successfully assembled data for session ${chunkData.sessionId}`);
-
-                    // Execute the callback with the assembled data
-                    const processedResult = await processCallback(originalData);
+                    if (mode === 'stream') {
+                        const stream = this.handleChunkSessionService.getAssembledStream(chunkData.sessionId);
+                        this.logger.log(`Assembling session ${chunkData.sessionId} as stream`);
+                        processedResult = await processCallback(stream);
+                    } else if (mode === 'file') {
+                        const outputPath = options?.outputPath || path.resolve(process.cwd(), 'session_recording', 'temp', 'assembled', `${chunkData.sessionId}.bin`);
+                        const finalPath = await this.handleChunkSessionService.assembleToFile(chunkData.sessionId, outputPath);
+                        this.logger.log(`Assembled session ${chunkData.sessionId} to file ${finalPath}`);
+                        processedResult = await processCallback(finalPath);
+                    } else if (mode === 'buffer') {
+                        // Caution: may consume significant memory for very large payloads
+                        const readStream = this.handleChunkSessionService.getAssembledStream(chunkData.sessionId);
+                        const chunks: Buffer[] = [];
+                        for await (const c of readStream) {
+                            chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(String(c)));
+                        }
+                        const buf = Buffer.concat(chunks);
+                        processedResult = await processCallback(buf);
+                    } else {
+                        // Default JSON path (legacy behavior). May fail for extremely large strings.
+                        const assembledChunks = this.handleChunkSessionService.getAssembledData(chunkData.sessionId);
+                        const reconstructedContent = assembledChunks.join('');
+                        const originalData = JSON.parse(reconstructedContent);
+                        this.logger.log(`Successfully assembled JSON data for session ${chunkData.sessionId}`);
+                        processedResult = await processCallback(originalData);
+                    }
 
                     // Clean up the session after successful processing
                     this.handleChunkSessionService.cleanupSession(chunkData.sessionId);
@@ -115,6 +136,13 @@ export class ChunkHandlerService {
                     };
                 } catch (error) {
                     this.logger.error(`Error processing assembled data for session ${chunkData.sessionId}:`, error.message);
+                    // Provide guidance if default JSON path failed due to size
+                    if (String(error?.message || '').includes('disk-backed') || String(error?.message || '').includes('Invalid string length')) {
+                        throw new Error(
+                            `Failed to process assembled data: ${error.message}. ` +
+                            `For very large payloads, call processChunkedData with options { assemblyMode: 'stream' } or { assemblyMode: 'file' } to avoid loading content into memory as a single string.`
+                        );
+                    }
                     throw new Error(`Failed to process assembled data: ${error.message}`);
                 }
             }

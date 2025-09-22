@@ -7,6 +7,8 @@ import httpx
 import asyncio
 import logging
 import json
+import os
+import tempfile
 from app.core import settings
 
 logger = logging.getLogger(__name__)
@@ -250,11 +252,12 @@ class BackendService:
             raise Exception(f"Failed to retrieve racing sessions: {str(e)}")
 
     async def send_chunked_data(self, data: Dict[str, Any], endpoint: str, chunk_size: int = 1024 * 1024) -> Dict[str, Any]:
-        """Send large data in chunks to a backend endpoint"""
+        """Send large data in chunks to a backend endpoint, streaming from a temp file to avoid huge in-memory strings."""
         import json
         import uuid
         from math import ceil
         import numpy as np
+        from httpx import Timeout
         
         # Temporarily suppress httpx INFO logging for chunked uploads
         httpx_logger = logging.getLogger("httpx")
@@ -280,58 +283,88 @@ class BackendService:
             
         # Convert numpy types to native Python types
         serializable_data = convert_numpy_types(data)
-        
-        # Serialize data to JSON string to calculate size
-        json_data = json.dumps(serializable_data)
-        data_size = len(json_data.encode('utf-8'))
-        
-        # Calculate number of chunks needed
-        total_chunks = max(1, ceil(data_size / chunk_size))
+
+        # Serialize to a temp file to avoid building the entire JSON string in memory
+        tmp_file_path = None
         session_id = str(uuid.uuid4())
-        
+        fd, tmp_file_path = tempfile.mkstemp(prefix=f"chunk-upload-{session_id}-", suffix=".json")
+        os.close(fd)
+        # Write JSON to file (compact separators reduce size)
+        with open(tmp_file_path, 'w', encoding='utf-8') as f:
+            json.dump(serializable_data, f, ensure_ascii=False, separators=(',', ':'))
+
+        data_size = os.path.getsize(tmp_file_path)
+        # First pass: count chunks by characters to match the sending loop
+        total_chunks = 0
+        with open(tmp_file_path, 'r', encoding='utf-8') as f:
+            while True:
+                c = f.read(chunk_size)
+                if not c:
+                    break
+                total_chunks += 1
         print(f"Sending data in {total_chunks} chunks (total size: {data_size} bytes, session: {session_id})")
         
         try:
-            # Split data into chunks
-            for chunk_index in range(total_chunks):
-                start_pos = chunk_index * chunk_size
-                end_pos = min(start_pos + chunk_size, len(json_data))
-                chunk_data = json_data[start_pos:end_pos]
+            # Ensure connection and build auth headers once
+            if not await self.ensure_connection():
+                raise Exception("Failed to establish backend connection")
+            headers = self.get_auth_headers()
 
-                # Always send the JSON string chunk, never the raw object
-                chunk_payload = chunk_data
-                
-                # Create chunk data structure matching ChunkData interface
-                chunk_request = {
-                    "sessionId": session_id,
-                    "chunkIndex": chunk_index,
-                    "totalChunks": total_chunks,
-                    "data": chunk_payload,
-                    "metadata": {
-                        "size": len(chunk_data.encode('utf-8'))
-                    }
-                }
-                
-                logger.debug(f"Sending chunk {chunk_index + 1}/{total_chunks} (size: {len(chunk_data.encode('utf-8'))} bytes)")
-                
-                # Send chunk
-                response = await self.call_backend_function(endpoint, "POST", chunk_request)
-                
-                if not response.get("success", False):
-                    error_msg = response.get("message", "Unknown error")
-                    raise Exception(f"Chunk {chunk_index + 1} failed: {error_msg}")
-                
-                # Log progress
-                if response.get("isComplete", False):
-                    logger.info(f"✅ All chunks sent successfully. Final response: {response.get('message', 'Complete')}")
-                    return response
+            url = f"{self.base_url}:{self.base_port}/{endpoint}"
+            timeout = Timeout(connect=10.0, read=180.0, write=180.0, pool=180.0)
+
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                # Stream-read file in text mode to avoid splitting multibyte characters
+                with open(tmp_file_path, 'r', encoding='utf-8') as f:
+                    chunk_index = 0
+                    while True:
+                        # Read approximately chunk_size characters; not exact bytes, but safe for UTF-8
+                        chunk_data = f.read(chunk_size)
+                        if not chunk_data:
+                            break
+
+                        chunk_request = {
+                            "sessionId": session_id,
+                            "chunkIndex": chunk_index,
+                            "totalChunks": total_chunks,
+                            "data": chunk_data,
+                            "metadata": {
+                                "size": len(chunk_data.encode('utf-8'))
+                            }
+                        }
+
+                        logger.debug(
+                            f"Sending chunk {chunk_index + 1}/{total_chunks} (size: {len(chunk_data.encode('utf-8'))} bytes)"
+                        )
+
+                        resp = await client.post(url, json=chunk_request, headers=headers)
+                        resp.raise_for_status()
+                        response = resp.json()
+
+                        if not response.get("success", False):
+                            error_msg = response.get("message", "Unknown error")
+                            raise Exception(f"Chunk {chunk_index + 1} failed: {error_msg}")
+
+                        if response.get("isComplete", False):
+                            logger.info(
+                                f"✅ All chunks sent successfully. Final response: {response.get('message', 'Complete')}"
+                            )
+                            return response
+
+                        chunk_index += 1
             
         except Exception as e:
             logger.error(f"❌ Failed to send chunked data: {str(e)}")
             raise Exception(f"Failed to send chunked data: {str(e)}")
         finally:
             # Restore original httpx logging level
-            httpx_logger.setLevel(original_level)   
+            httpx_logger.setLevel(original_level)
+            # Clean up temp file
+            try:
+                if tmp_file_path and os.path.exists(tmp_file_path):
+                    os.remove(tmp_file_path)
+            except Exception:
+                pass
 
     async def save_ai_model(self, results: Dict[str, Any]) -> Dict[str, Any]:
         """Save AI model results to backend using chunked transfer"""

@@ -159,10 +159,11 @@ class Full_dataset_TelemetryMLService:
 
         # Deserialize the model data using provided function or default
         if deserializer_func:
-            deserialized_model_data = deserializer_func(model_data)
-        elif model_type == "imitation_learning":
-            imitation_learning = ExpertImitateLearningService()
-            deserialized_model_data = imitation_learning.deserialize_object_inside(model_data)
+            # Some deserializers only mutate internal state and return None.
+            # Treat a None return as success and keep the original serialized data
+            # so callers and cache have a non-None payload.
+            _ret = deserializer_func(model_data)
+            deserialized_model_data = _ret if _ret is not None else model_data
         else:
             # For other model types, you might need to add more deserializers
             deserialized_model_data = model_data
@@ -200,7 +201,7 @@ class Full_dataset_TelemetryMLService:
             try:
                 self._model_fetch_locks[model_key].set()
                 del self._model_fetch_locks[model_key]
-                print(f"[INFO] Released fetch lock for {track_name}/{car_name}")
+                print(f"[INFO] Released fetch lock for {model_key}")
             except Exception as cleanup_error:
                 print(f"[WARNING] Error cleaning up fetch lock: {str(cleanup_error)}")
     
@@ -316,7 +317,7 @@ class Full_dataset_TelemetryMLService:
                         model_subtype=model_subtype,
                         deserializer_func=deserializer_func
                     )
-                    print(f"[INFO] Successfully fetched and cached model for {track_name or 'any'}/{car_name or 'any'}")
+                    print(f"[INFO] Successfully fetched and cached model for {model_key}")
                     
                 except Exception as fetch_error:
                     print(f"[ERROR] Failed to fetch model: {str(fetch_error)}")
@@ -326,7 +327,8 @@ class Full_dataset_TelemetryMLService:
                     self._cleanup_fetch_lock(model_key, track_name or 'any', car_name or 'any')
             
             # At this point, we should have the model data
-            if not deserialized_model_data:
+            # Use explicit None check to allow empty dicts/lists as valid payloads
+            if deserialized_model_data is None:
                 raise Exception("Failed to obtain model data from cache or backend")
             
             return deserialized_model_data, metadata
@@ -385,7 +387,7 @@ class Full_dataset_TelemetryMLService:
         for model_type in model_types:
             try:
                 # Check if already cached
-                if self.model_cache.get(model_type, track_name, car_name):
+                if self.model_cache.get(model_type=model_type, track_name=track_name, car_name=car_name):
                     results["preloaded_models"].append(f"{model_type} (already cached)")
                     continue
                 
@@ -630,10 +632,7 @@ class Full_dataset_TelemetryMLService:
                                    telemetry_dict: Dict[str, Any],
                                    trackName: str, 
                                    carName: Optional[str] = 'AllCars',
-                                   sequence_length: int = 20,
-                                   temperature: float = 1.0,
-                                   deterministic: bool = False,
-                                   clamp_actions: bool = True) -> Dict[str, Any]:
+                                   sequence_length: int = 10) -> Dict[str, Any]:
         """
         Fetch transformer model and predict expert actions from telemetry data
         
@@ -641,155 +640,94 @@ class Full_dataset_TelemetryMLService:
             telemetry_dict: Single telemetry data record as dictionary
             trackName: Track name for model selection
             carName: Optional car name for model selection
-            sequence_length: Length of action sequence to predict (default: 20)
-            temperature: Temperature for prediction sampling (1.0 = normal, lower = more conservative)
+            sequence_length: Length of action sequence to predict (default: 10)
             
         Returns:
-            Dictionary containing:
-            - predicted_actions: List of predicted expert actions
-            - performance_scores: List of performance scores for each predicted action
-            - metadata: Additional prediction metadata
+            Dictionary with human-readable predictions directly from transformer model
         """
         if not TORCH_AVAILABLE:
             return {
-                "error": "PyTorch is not available - transformer functionality is disabled",
-                "predicted_actions": [],
-                "performance_scores": [],
-                "metadata": {}
+                "status": "error",
+                "error_message": "PyTorch is not available - transformer functionality is disabled",
+                "error_type": "ImportError"
             }
         
         try:
-            # Fetch and deserialize the transformer model
             print(f"[INFO] Fetching transformer model for {trackName}/{carName or 'any'}")
             
+            # Initialize transformer model
             transformer_model = ExpertActionTransformer()
+            
+            # Fetch and load the trained model
             transformer_model_data, model_metadata = await self._get_cached_model_or_fetch(
-                model_type="expert_action_transformer",
+                model_type="transformer_expert_action",
                 track_name=trackName,
                 car_name=carName,
                 model_subtype="transformer_model_data",
-                deserializer_func=transformer_model.deserialize_model(transformer_model_data)
+                deserializer_func=transformer_model.deserialize_transformer_model
             )
-
-            corner_service = CornerIdentificationUnsupervisedService()
-            corner_service_data, corner_service_metadata = await self._get_cached_model_or_fetch(
-                model_type="corner_identification_unsupervised",
-                track_name=trackName,
-                car_name=carName,
-                model_subtype="corner_model_data",
-                deserializer_func=corner_service.deserialize_corner_identification_model(corner_service_data)
+            
+            # Extract context data by running corner and tire grip analysis
+            context_data = {}
+            
+            # Get corner identification features
+            try:
+                corner_service = CornerIdentificationUnsupervisedService()
+                corner_service_data, corner_metadata = await self._get_cached_model_or_fetch(
+                    model_type="corner_identification",
+                    track_name=trackName,
+                    car_name='all_cars',
+                    model_subtype="corner_model_data",
+                    deserializer_func=corner_service.deserialize_corner_identification_model
+                )
+                
+                # Extract corner features from telemetry
+                # Service is async and returns List[Dict[str, Any]]
+                # Use the single telemetry record as a list for extraction
+                corner_features_list = await corner_service.extract_corner_features_for_telemetry([telemetry_dict])
+                context_data['corner_info'] = (corner_features_list[0] if corner_features_list else {})
+                
+            except Exception as e:
+                print(f"[Error] Corner identification failed: {e}")
+                context_data['corner_info'] = {}
+            
+            # Get tire grip features
+            try:
+                tire_grip_service = TireGripAnalysisService()
+                tire_grip_data, tire_metadata = await self._get_cached_model_or_fetch(
+                    model_type="tire_grip_analysis",
+                    track_name='generic',
+                    car_name='all_cars',
+                    model_subtype="tire_grip_model_data",
+                    deserializer_func=tire_grip_service.deserialize_tire_grip_model
+                )
+                
+                # Extract tire grip features from telemetry (async; returns List[Dict])
+                tire_features_list = await tire_grip_service.extract_tire_grip_features([telemetry_dict])
+                context_data['tire_info'] = (tire_features_list[0] if tire_features_list else {})
+                
+            except Exception as e:
+                print(f"[Error] Tire grip analysis failed: {e}")
+                context_data['tire_info'] = {}
+            
+            # Use transformer model's predict_human_readable method
+            print(f"[INFO] Generating predictions with sequence length: {sequence_length}")
+            predictions = transformer_model.predict_human_readable(
+                current_telemetry=telemetry_dict,
+                context_data=context_data,
+                sequence_length=sequence_length
             )
-
-            tire_grip_service = TireGripAnalysisService()
-            tire_grip_service_data, tire_grip_service_metadata = await self._get_cached_model_or_fetch(
-                model_type="tire_grip_analysis",
-                track_name=trackName,
-                car_name=carName,
-                model_subtype="tire_grip_model_data",
-                deserializer_func=tire_grip_service.deserialize_tire_grip_model(tire_grip_service_data)
-            )
-
+            
+            return predictions
+            
         except Exception as e:
-            error_msg = f"Failed to predict expert actions: \n\t{str(e)}"
-            raise Exception(error_msg)
-    
-    def _create_reasoning_labels(self, predicted_reasoning_features: List[List[float]]) -> List[Dict[str, Any]]:
-        """
-        Create interpretable labels for predicted reasoning features
-        
-        Args:
-            predicted_reasoning_features: List of reasoning feature vectors for each prediction step
-            
-        Returns:
-            List of dictionaries containing interpretable reasoning explanations
-        """
-        reasoning_explanations = []
-        
-        for step_idx, features in enumerate(predicted_reasoning_features):
-            explanation = {
-                "step": step_idx + 1,
-                "reasoning": {}
+            error_msg = f"Failed to predict expert actions: {str(e)}"
+            print(f"[ERROR] {error_msg}")
+            return {
+                "status": "error",
+                "error_message": error_msg,
+                "error_type": type(e).__name__
             }
-            
-            if len(features) >= 12:  # Basic reasoning features
-                # Speed-based reasoning (features 0-2)
-                speed_norm = features[0]
-                is_slow_corner = features[1] > 0.5
-                is_high_speed = features[2] > 0.5
-                
-                explanation["reasoning"]["speed_context"] = {
-                    "normalized_speed": round(speed_norm, 3),
-                    "is_slow_corner": is_slow_corner,
-                    "is_high_speed_section": is_high_speed,
-                    "interpretation": (
-                        "Approaching slow corner - prepare for heavy braking" if is_slow_corner
-                        else "High speed section - maintain momentum" if is_high_speed
-                        else "Medium speed section - balanced approach"
-                    )
-                }
-                
-                # G-force based reasoning (features 3-5)
-                g_lat_norm = features[3]
-                g_long_norm = features[4]
-                high_cornering = features[5] > 0.5
-                
-                explanation["reasoning"]["cornering_dynamics"] = {
-                    "lateral_g_load": round(g_lat_norm, 3),
-                    "longitudinal_g_load": round(g_long_norm, 3),
-                    "high_cornering_detected": high_cornering,
-                    "interpretation": (
-                        "High lateral forces - approaching or in corner" if high_cornering
-                        else "Moderate cornering forces" if g_lat_norm > 0.3
-                        else "Straight line or gentle curve"
-                    )
-                }
-                
-                # Steering reasoning (features 6-7)
-                steer_norm = features[6]
-                sharp_turn = features[7] > 0.5
-                
-                explanation["reasoning"]["steering_input"] = {
-                    "steering_demand": round(steer_norm, 3),
-                    "sharp_turn_detected": sharp_turn,
-                    "interpretation": (
-                        "Sharp steering input required" if sharp_turn
-                        else "Moderate steering correction" if steer_norm > 0.3
-                        else "Minimal steering input needed"
-                    )
-                }
-                
-                # Brake/throttle reasoning (features 8-11)
-                brake_level = features[8]
-                throttle_level = features[9]
-                heavy_braking = features[10] > 0.5
-                full_throttle = features[11] > 0.5
-                
-                explanation["reasoning"]["pedal_strategy"] = {
-                    "brake_demand": round(brake_level, 3),
-                    "throttle_demand": round(throttle_level, 3),
-                    "heavy_braking_zone": heavy_braking,
-                    "full_acceleration_zone": full_throttle,
-                    "interpretation": (
-                        "Heavy braking required - corner entry" if heavy_braking
-                        else "Full acceleration - corner exit or straight" if full_throttle
-                        else "Trail braking or throttle modulation" if brake_level > 0.2 and throttle_level > 0.2
-                        else "Coasting or maintenance throttle"
-                    )
-                }
-            
-            # Additional enriched features interpretation (if available)
-            if len(features) > 12:
-                explanation["reasoning"]["additional_context"] = {
-                    "enriched_features_detected": True,
-                    "corner_identification": "Available" if len(features) > 20 else "Limited",
-                    "tire_grip_analysis": "Available" if len(features) > 25 else "Limited",
-                    "interpretation": "Enhanced contextual analysis from corner and grip models"
-                }
-            
-            reasoning_explanations.append(explanation)
-        
-        return reasoning_explanations  
-
 
     async def StartImitateExpertPipeline(self, trackName: str):
         
@@ -1084,7 +1022,7 @@ class Full_dataset_TelemetryMLService:
                         corner_model_dto = {
                             "modelType": "corner_identification",
                             "trackName": corner_serialized.get("track_name"),
-                            "carName": corner_serialized.get("car_name"),
+                            "carName": 'all_cars',
                             "modelData": corner_serialized,
                             "metadata": {
                                 "total_corners": corner_serialized.get("total_corners"),
@@ -1111,7 +1049,7 @@ class Full_dataset_TelemetryMLService:
                 tire_service = TireGripAnalysisService()
                 tire_grip_model = await tire_service.train_tire_grip_model(bottom_training_telemetry_list)
                 
-                tire_service_serialized = tire_service.serialize_tire_grip_model(track_name=track_name, car_name="all_cars")
+                tire_service_serialized = tire_service.serialize_tire_grip_model()
                 tire_grip_model_dto = {
                     "modelType": "tire_grip_analysis",
                     "trackName": "generic",
@@ -1209,12 +1147,8 @@ class Full_dataset_TelemetryMLService:
             }
             
         except Exception as e:
-            print(f"[ERROR] Failed to enrich contextual data: {str(e)}")
-            return {
-                "original_telemetry": bottom_telemetry_list,  # Return original data on failure
-                "enriched_features": [],
-                "feature_metadata": {"sources": [], "feature_count": 0, "error": str(e)}
-            }
+            raise Exception(f"{self.__dir__} Failed to enrich contextual data: {str(e)}")
+
     
     def _compare_telemetry_performance(self, 
                                       expert_telemetry: List[Dict[str, Any]], 

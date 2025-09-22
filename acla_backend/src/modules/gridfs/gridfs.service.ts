@@ -168,6 +168,46 @@ export class GridFSService implements OnModuleInit, OnModuleDestroy {
     }
 
     /**
+     * Upload a stream to GridFS without buffering the entire content in memory.
+     */
+    async uploadStream(readable: Readable, filename: string, metadata?: any, bucketName?: string): Promise<ObjectId> {
+        const bucket = await this.getBucket(bucketName);
+
+        try {
+            const uploadStream = bucket.openUploadStream(filename, {
+                metadata: {
+                    ...metadata,
+                    uploadedAt: new Date(),
+                    bucketName: bucketName || GRIDFS_BUCKETS.AI_MODELS
+                }
+            });
+
+            return new Promise<ObjectId>((resolve, reject) => {
+                const timeout = setTimeout(() => {
+                    reject(new Error('Upload timeout after 60 seconds'));
+                }, 60000);
+
+                readable
+                    .on('error', (err) => {
+                        clearTimeout(timeout);
+                        reject(err);
+                    })
+                    .pipe(uploadStream)
+                    .on('error', (error) => {
+                        clearTimeout(timeout);
+                        reject(error);
+                    })
+                    .on('finish', () => {
+                        clearTimeout(timeout);
+                        resolve(uploadStream.id as ObjectId);
+                    });
+            });
+        } catch (error) {
+            throw new InternalServerErrorException(`Failed to upload stream to ${bucketName || GRIDFS_BUCKETS.AI_MODELS}: ${error.message}`);
+        }
+    }
+
+    /**
      * Upload a file to GridFS.
      * @param data File data as a Buffer.
      * @param filename Name of the file.

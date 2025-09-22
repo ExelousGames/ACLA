@@ -21,6 +21,7 @@ from sklearn.metrics import mean_squared_error, mean_absolute_error
 from ..services.tire_grip_analysis_service import TireGripFeatureCatalog
 from ..services.corner_identification_unsupervised_service import CornerFeatureCatalog
 from ..services.imitate_expert_learning_service import ExpertFeatureCatalog
+from .telemetry_models import TelemetryFeatures
 
 # Force unbuffered output for real-time print statements
 import os
@@ -756,10 +757,9 @@ class ExpertActionTransformer(nn.Module):
     def predict_human_readable(self, 
                               current_telemetry: Dict[str, Any],
                               context_data: Optional[Dict[str, Any]] = None,
-                              sequence_length: int = 10,
-                              include_confidence: bool = True) -> Dict[str, Any]:
+                              sequence_length: int = 10) -> Dict[str, Any]:
         """
-    Generate human-readable expert driving predictions from current telemetry data.
+        Generate human-readable expert driving predictions from current telemetry data.
         
         This function serves as the main interface for real-time racing guidance, converting
         raw telemetry data into actionable driving advice that can be easily understood
@@ -771,8 +771,7 @@ class ExpertActionTransformer(nn.Module):
         3. Generate expert action sequence predictions using the trained model
             (optionally conditioned on delta-to-expert gap context)
         4. Convert raw numerical predictions to human-readable advice
-        5. Calculate confidence scores and contextual information
-        6. Format everything into structured JSON response
+        5. Format everything into structured JSON response
         
         Args:
             current_telemetry: Dictionary containing current driver telemetry data
@@ -780,7 +779,6 @@ class ExpertActionTransformer(nn.Module):
             context_data: Optional dictionary with track/tire context information
                          Can include: corner info, tire grip levels, weather conditions
             sequence_length: Number of future action steps to predict (default: 10)
-            include_confidence: Whether to include prediction confidence metrics
             
         Returns:
             Structured JSON dictionary with human-readable predictions:
@@ -793,13 +791,6 @@ class ExpertActionTransformer(nn.Module):
                     "racing_line": "optimal" | "suboptimal",
                     "tire_grip": "good" | "losing grip"
                 },
-                "expert_advice": {
-                    "immediate_action": "Brake moderately and turn in earlier",
-                    "throttle_guidance": "Maintain current throttle (65%)",
-                    "braking_guidance": "Apply 40% brake pressure now",
-                    "steering_guidance": "Turn steering wheel 15° left",
-                    "gear_guidance": "Downshift to gear 3"
-                },
                 "sequence_predictions": [
                     {
                         "step": 1,
@@ -810,15 +801,10 @@ class ExpertActionTransformer(nn.Module):
                         "steering": -0.15
                     }
                 ],
-                "performance_analysis": {
-                    "vs_expert_gap": "+0.8s per lap",
-                    "main_improvement": "Earlier braking points",
-                    "confidence_score": 0.85
-                },
                 "contextual_info": {
                     "track_sector": "Sector 2, Turn 5",
                     "weather_impact": "Dry conditions, full grip",
-                    "optimal_speed": "95 km/h for this corner"
+                    "optimal_speed_estimate": "95 km/h for current section"
                 }
             }
         """
@@ -852,18 +838,8 @@ class ExpertActionTransformer(nn.Module):
             # Analyze current situation
             current_situation = self._analyze_current_situation(current_telemetry, context_data)
             
-            # Generate expert advice
-            expert_advice = self._generate_expert_advice(predictions_np[0], current_telemetry)  # First prediction
-            
             # Create sequence predictions
             sequence_predictions = self._create_sequence_predictions(predictions_np, sequence_length)
-            
-            # Performance analysis
-            performance_analysis = self._analyze_performance_gap(current_telemetry, predictions_np[0])
-            
-            # Add confidence scoring if requested
-            if include_confidence:
-                performance_analysis["confidence_score"] = self._calculate_prediction_confidence(predictions_np)
             
             # Contextual information
             contextual_info = self._extract_contextual_info(current_telemetry, context_data)
@@ -873,33 +849,33 @@ class ExpertActionTransformer(nn.Module):
                 "status": "success",
                 "timestamp": datetime.now().isoformat(),
                 "current_situation": current_situation,
-                "expert_advice": expert_advice,
                 "sequence_predictions": sequence_predictions,
-                "performance_analysis": performance_analysis,
                 "contextual_info": contextual_info
             }
             
             return make_json_safe(response)
             
         except Exception as e:
-            return make_json_safe({
+            error_payload = make_json_safe({
                 "status": "error",
                 "timestamp": datetime.now().isoformat(),
                 "error_message": str(e),
                 "error_type": type(e).__name__
             })
+            raise RuntimeError(json.dumps(error_payload))
     
     def _extract_telemetry_features(self, telemetry: Dict[str, Any]) -> List[float]:
         """Extract and normalize telemetry features for model input"""
-        # Default telemetry features expected by the model
-        feature_names = [
-            "Graphics_normalized_car_position", "Graphics_player_pos_x", "Graphics_player_pos_y", 
-            "Graphics_player_pos_z", "Graphics_current_time", "Physics_speed_kmh", "Physics_gas",
-            "Physics_brake", "Physics_steer_angle", "Physics_gear", "Physics_rpm", "Physics_g_force_x",
-            "Physics_g_force_y", "Physics_g_force_z", "Physics_slip_angle_front_left", 
-            "Physics_slip_angle_front_right", "Physics_slip_angle_rear_left", "Physics_slip_angle_rear_right", 
-            "Physics_velocity_x", "Physics_velocity_y", "Physics_velocity_z"
-        ]
+        # Use the canonical feature list for imitation expert models
+        try:
+            feature_names = TelemetryFeatures.get_features_for_imitate_expert()
+        except Exception:
+            # Fallback to a minimal, safe subset in case the catalog isn't available
+            feature_names = [
+                "Graphics_normalized_car_position", "Graphics_player_pos_x", "Graphics_player_pos_y",
+                "Graphics_player_pos_z", "Graphics_current_time", "Physics_speed_kmh", "Physics_gas",
+                "Physics_brake", "Physics_steer_angle", "Physics_gear", "Physics_rpm"
+            ]
         
         features = []
         for feature in feature_names:
@@ -908,7 +884,13 @@ class ExpertActionTransformer(nn.Module):
                 features.append(float(value))
             except (ValueError, TypeError):
                 features.append(0.0)
-        
+        # Ensure the feature vector matches the model's expected input size
+        expected_len = getattr(self, 'input_features_count', len(features))
+        if len(features) < expected_len:
+            features.extend([0.0] * (expected_len - len(features)))
+        elif len(features) > expected_len:
+            features = features[:expected_len]
+
         return features
     
     def _extract_context_features(self, context_data: Dict[str, Any]) -> List[float]:
@@ -917,17 +899,20 @@ class ExpertActionTransformer(nn.Module):
         # Placeholder implementation - adjust based on your actual context structure
         features = []
         
-        # Corner information (16 features)
+        # Corner information
         corner_features = context_data.get('corner_info', {})
         corner_keys = ['radius', 'entry_speed', 'exit_speed', 'banking', 'elevation_change'] 
         for key in corner_keys:
             features.append(float(corner_features.get(key, 0.0)))
         
-        # Add more features to reach expected context size
-        while len(features) < 31:  # Expected context_features size
-            features.append(0.0)
-        
-        return features[:31]  # Ensure exact size
+        # Add more features to reach expected context size (use configured size if available)
+        expected_len = getattr(self, 'context_features_count', 31)
+        if len(features) < expected_len:
+            features.extend([0.0] * (expected_len - len(features)))
+        elif len(features) > expected_len:
+            features = features[:expected_len]
+
+        return features
     
     def _analyze_current_situation(self, telemetry: Dict[str, Any], context: Optional[Dict[str, Any]]) -> Dict[str, str]:
         """Analyze current driving situation"""
@@ -966,73 +951,6 @@ class ExpertActionTransformer(nn.Module):
             "tire_grip": tire_grip
         }
     
-    def _generate_expert_advice(self, prediction: np.ndarray, current_telemetry: Dict[str, Any]) -> Dict[str, str]:
-        """Generate human-readable expert advice from predictions"""
-        # Prediction format: [throttle, brake, steering, gear, speed]
-        pred_throttle = float(prediction[0])
-        pred_brake = float(prediction[1])
-        pred_steering = float(prediction[2])
-        pred_gear = int(prediction[3])
-        pred_speed = float(prediction[4])
-        
-        # Current values
-        curr_throttle = float(current_telemetry.get('Physics_gas', 0))
-        curr_brake = float(current_telemetry.get('Physics_brake', 0))
-        curr_steering = float(current_telemetry.get('Physics_steer_angle', 0))
-        curr_gear = int(current_telemetry.get('Physics_gear', 1))
-        curr_speed = float(current_telemetry.get('Physics_speed_kmh', 0))
-        
-        # Generate advice
-        advice = {}
-        
-        # Throttle guidance
-        throttle_diff = pred_throttle - curr_throttle
-        if abs(throttle_diff) < 0.1:
-            advice["throttle_guidance"] = f"Maintain current throttle ({curr_throttle*100:.0f}%)"
-        elif throttle_diff > 0.1:
-            advice["throttle_guidance"] = f"Increase throttle to {pred_throttle*100:.0f}% (currently {curr_throttle*100:.0f}%)"
-        else:
-            advice["throttle_guidance"] = f"Reduce throttle to {pred_throttle*100:.0f}% (currently {curr_throttle*100:.0f}%)"
-        
-        # Braking guidance  
-        brake_diff = pred_brake - curr_brake
-        if pred_brake > 0.1:
-            advice["braking_guidance"] = f"Apply {pred_brake*100:.0f}% brake pressure"
-        elif curr_brake > 0.1 and pred_brake < 0.1:
-            advice["braking_guidance"] = "Release brakes"
-        else:
-            advice["braking_guidance"] = "No braking needed"
-        
-        # Steering guidance
-        steering_diff = pred_steering - curr_steering
-        if abs(steering_diff) > 0.05:
-            direction = "right" if steering_diff > 0 else "left"
-            advice["steering_guidance"] = f"Turn steering wheel {abs(steering_diff)*100:.0f}% more to the {direction}"
-        else:
-            advice["steering_guidance"] = "Maintain current steering"
-        
-        # Gear guidance
-        if pred_gear != curr_gear:
-            if pred_gear > curr_gear:
-                advice["gear_guidance"] = f"Upshift to gear {pred_gear}"
-            else:
-                advice["gear_guidance"] = f"Downshift to gear {pred_gear}"
-        else:
-            advice["gear_guidance"] = f"Stay in gear {curr_gear}"
-        
-        # Overall immediate action
-        if pred_brake > 0.3:
-            advice["immediate_action"] = "Brake harder and prepare for corner"
-        elif pred_throttle > curr_throttle + 0.2:
-            advice["immediate_action"] = "Accelerate out of corner"
-        elif abs(steering_diff) > 0.1:
-            direction = "right" if steering_diff > 0 else "left"
-            advice["immediate_action"] = f"Turn more to the {direction}"
-        else:
-            advice["immediate_action"] = "Maintain current driving line"
-        
-        return advice
-    
     def _create_sequence_predictions(self, predictions: np.ndarray, sequence_length: int) -> List[Dict[str, Any]]:
         """Create sequence of future predictions"""
         sequence = []
@@ -1065,48 +983,6 @@ class ExpertActionTransformer(nn.Module):
             })
         
         return sequence
-    
-    def _analyze_performance_gap(self, current_telemetry: Dict[str, Any], expert_prediction: np.ndarray) -> Dict[str, Any]:
-        """Analyze performance gap vs expert"""
-        curr_speed = float(current_telemetry.get('Physics_speed_kmh', 0))
-        expert_speed = float(expert_prediction[4])  # Predicted optimal speed
-        
-        speed_diff = expert_speed - curr_speed
-        
-        # Estimate lap time impact (simplified)
-        if abs(speed_diff) < 2:
-            gap_estimate = "On pace with expert"
-            improvement = "Minor adjustments needed"
-        elif speed_diff > 5:
-            gap_estimate = f"+{speed_diff*0.1:.1f}s per sector"
-            improvement = "Carry more speed through corners"
-        elif speed_diff < -5:
-            gap_estimate = f"+{abs(speed_diff)*0.05:.1f}s per sector"
-            improvement = "Focus on earlier braking points"
-        else:
-            gap_estimate = f"+{abs(speed_diff)*0.08:.1f}s per sector"
-            improvement = "Optimize racing line"
-        
-        return {
-            "vs_expert_gap": gap_estimate,
-            "main_improvement": improvement,
-            "speed_delta": f"{speed_diff:+.1f} km/h"
-        }
-    
-    def _calculate_prediction_confidence(self, predictions: np.ndarray) -> float:
-        """Calculate confidence score for predictions"""
-        # Simple confidence based on prediction stability
-        if len(predictions) < 2:
-            return 0.5
-        
-        # Calculate variance in predictions as inverse confidence measure
-        variances = np.var(predictions, axis=0)
-        avg_variance = np.mean(variances)
-        
-        # Convert variance to confidence (0-1 scale)
-        confidence = max(0.1, min(0.95, 1.0 / (1.0 + avg_variance * 10)))
-        
-        return round(confidence, 2)
     
     def _extract_contextual_info(self, telemetry: Dict[str, Any], context: Optional[Dict[str, Any]]) -> Dict[str, str]:
         """Extract contextual information for response"""
@@ -1146,6 +1022,7 @@ class ExpertActionTransformer(nn.Module):
         """
         import base64
         import io
+        import torch as _torch
         
         # Save model state to bytes
         buffer = io.BytesIO()
@@ -1167,7 +1044,8 @@ class ExpertActionTransformer(nn.Module):
                 'dim_feedforward': getattr(self.transformer_encoder.layers[0].linear1, 'out_features', 1024),
                 'dropout': 0.1  # Default, could extract from layers if needed
             },
-            'serialization_timestamp': datetime.now().isoformat()
+            'serialization_timestamp': datetime.now().isoformat(),
+            'pytorch_version': getattr(_torch, '__version__', 'unknown')
         }
         # Ensure the entire payload is JSON-safe (no NaN/Inf, tensors, numpy, etc.)
         return make_json_safe(model_data)
@@ -1211,28 +1089,78 @@ class ExpertActionTransformer(nn.Module):
             
             # Extract configuration
             config = serialized_data['config']
-            
-            # Validate current model configuration matches serialized model
-            config_checks = [
-                ('input_features', self.input_features_count),
-                ('context_features', self.context_features_count),
-                ('action_features', self.output_features_count),
-                ('d_model', self.d_model),
-                ('sequence_length', self.sequence_length)
-            ]
-            
-            for config_key, current_value in config_checks:
-                if config_key in config and config[config_key] != current_value:
-                    print(f"[WARNING] Configuration mismatch for {config_key}: "
-                          f"serialized={config[config_key]}, current={current_value}")
-            
-            # Update model configuration from serialized data
-            self.input_features_count = config.get('input_features', self.input_features_count)
-            self.context_features_count = config.get('context_features', self.context_features_count) 
-            self.output_features_count = config.get('action_features', self.output_features_count)
-            self.d_model = config.get('d_model', self.d_model)
-            self.sequence_length = config.get('sequence_length', self.sequence_length)
-            self.time_step_seconds = config.get('time_step_seconds', self.time_step_seconds)
+
+            # Gather architecture parameters from config with sensible fallbacks
+            cfg_input_features = config.get('input_features', self.input_features_count)
+            cfg_context_features = config.get('context_features', self.context_features_count)
+            cfg_action_features = config.get('action_features', self.output_features_count)
+            cfg_d_model = config.get('d_model', self.d_model)
+            cfg_seq_len = config.get('sequence_length', self.sequence_length)
+            cfg_time_step = config.get('time_step_seconds', getattr(self, 'time_step_seconds', 0.1))
+            cfg_nhead = config.get('nhead', getattr(self.transformer_encoder.layers[0].self_attn, 'num_heads', 8))
+            cfg_num_layers = config.get('num_layers', len(self.transformer_encoder.layers) if hasattr(self, 'transformer_encoder') else 6)
+            cfg_dim_ff = config.get('dim_feedforward', getattr(self.transformer_encoder.layers[0].linear1, 'out_features', 1024) if hasattr(self, 'transformer_encoder') else 1024)
+            cfg_dropout = config.get('dropout', 0.1)
+
+            # Determine if architecture rebuild is required
+            needs_rebuild = False
+            try:
+                current_nhead = getattr(self.transformer_encoder.layers[0].self_attn, 'num_heads', cfg_nhead)
+                current_num_layers = len(self.transformer_encoder.layers)
+                current_dim_ff = getattr(self.transformer_encoder.layers[0].linear1, 'out_features', cfg_dim_ff)
+            except Exception:
+                current_nhead = cfg_nhead
+                current_num_layers = cfg_num_layers
+                current_dim_ff = cfg_dim_ff
+
+            if (
+                cfg_input_features != self.input_features_count or
+                cfg_context_features != self.context_features_count or
+                cfg_action_features != self.output_features_count or
+                cfg_d_model != self.d_model or
+                cfg_seq_len != self.sequence_length or
+                cfg_nhead != current_nhead or
+                cfg_num_layers != current_num_layers or
+                cfg_dim_ff != current_dim_ff or
+                abs(cfg_dropout - 0.1) > 1e-9  # dropout used in module construction
+            ):
+                needs_rebuild = True
+
+            # Log any mismatches for visibility
+            if needs_rebuild:
+                print("[INFO] Rebuilding model architecture from serialized config to match checkpoint...")
+                print(f"[INFO] Serialized config: in={cfg_input_features}, ctx={cfg_context_features}, act={cfg_action_features}, d_model={cfg_d_model}, nhead={cfg_nhead}, layers={cfg_num_layers}, dim_ff={cfg_dim_ff}, seq_len={cfg_seq_len}, dropout={cfg_dropout}")
+
+            # Preserve current device
+            try:
+                device = next(self.parameters()).device
+            except Exception:
+                device = torch.device('cpu')
+
+            # Rebuild architecture if needed so state_dict keys match
+            if needs_rebuild:
+                # Re-run __init__ with the serialized configuration to rebuild modules
+                self.__init__(
+                    telemetry_features_count=cfg_input_features,
+                    context_features_count=cfg_context_features,
+                    d_model=cfg_d_model,
+                    nhead=cfg_nhead,
+                    num_layers=cfg_num_layers,
+                    dim_feedforward=cfg_dim_ff,
+                    sequence_length=cfg_seq_len,
+                    dropout=cfg_dropout,
+                    time_step_seconds=cfg_time_step,
+                )
+                # Ensure the model is on the original device
+                self.to(device)
+            else:
+                # Even if not rebuilding, update simple config fields
+                self.input_features_count = cfg_input_features
+                self.context_features_count = cfg_context_features
+                self.output_features_count = cfg_action_features
+                self.d_model = cfg_d_model
+                self.sequence_length = cfg_seq_len
+                self.time_step_seconds = cfg_time_step
             
             # Decode and restore model state
             state_dict_base64 = serialized_data['state_dict']
@@ -1243,7 +1171,18 @@ class ExpertActionTransformer(nn.Module):
             state_dict = torch.load(buffer, map_location='cpu')  # Load to CPU first
             
             # Load the state dict into current model
-            self.load_state_dict(state_dict)
+            try:
+                self.load_state_dict(state_dict, strict=True)
+            except Exception as load_err:
+                print(f"[WARNING] Strict state_dict load failed: {load_err}. Trying non-strict load...")
+                incompatible = self.load_state_dict(state_dict, strict=False)
+                # Handle both tuple return (older PyTorch) and IncompatibleKeys object (newer)
+                missing = getattr(incompatible, 'missing_keys', None) or (incompatible[0] if isinstance(incompatible, (list, tuple)) and len(incompatible) > 0 else [])
+                unexpected = getattr(incompatible, 'unexpected_keys', None) or (incompatible[1] if isinstance(incompatible, (list, tuple)) and len(incompatible) > 1 else [])
+                if missing:
+                    print(f"[WARNING] Missing keys during load: {missing}")
+                if unexpected:
+                    print(f"[WARNING] Unexpected keys during load: {unexpected}")
             
             # Set model to evaluation mode (ready for inference)
             self.eval()

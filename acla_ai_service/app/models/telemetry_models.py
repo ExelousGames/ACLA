@@ -844,7 +844,6 @@ class FeatureProcessor:
                 
                 # Remove the complex column after extraction
                 df.drop('Graphics_car_coordinates', axis=1, inplace=True)
-                print("[DEBUG] Processed Graphics_car_coordinates array")
                 
             except Exception as e:
                 print(f"[DEBUG] Error processing Graphics_car_coordinates: {str(e)}")
@@ -864,7 +863,7 @@ class FeatureProcessor:
                 
                 # Remove the complex column after extraction
                 df.drop('Graphics_car_id', axis=1, inplace=True)
-                print("[DEBUG] Processed Graphics_car_id array")
+
                 
             except Exception as e:
                 print(f"[DEBUG] Error processing Graphics_car_id: {str(e)}")

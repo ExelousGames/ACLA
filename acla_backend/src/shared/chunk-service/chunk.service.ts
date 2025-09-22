@@ -28,15 +28,12 @@ export class ChunkClientService {
      */
     async handleIncomingChunk<T>(
         chunkData: ChunkData,
-        processCallback: (data: any) => Promise<T>
+        processCallback: (data: any) => Promise<T>,
+        options?: { assemblyMode?: 'json' | 'buffer' | 'stream' | 'file'; outputPath?: string }
     ) {
         try {
-            this.logger.debug(
-                `Handling incoming chunk ${chunkData.chunkIndex + 1}/${chunkData.totalChunks} ` +
-                `for session ${chunkData.sessionId}`
-            );
 
-            const result = await this.chunkHandler.processChunkedData(chunkData, processCallback);
+            const result = await this.chunkHandler.processChunkedData(chunkData, processCallback, options);
 
             return {
                 success: true,
