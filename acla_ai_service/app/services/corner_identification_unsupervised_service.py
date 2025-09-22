@@ -530,7 +530,6 @@ class CornerIdentificationUnsupervisedService:
         Identify corner segments using unsupervised clustering of telemetry patterns without inheriting driver behavior
         """
         # Required columns for corner identification
-        # TODO: should identify corner height change, inner location
         required_cols = ['Physics_steer_angle', 'Physics_speed_kmh','Physics_speed_kmh', 'Physics_g_force_x', 'Physics_brake', 'Physics_gas' ]  # Physics_steer_angle raw range: 0..1 (0.5 center) before normalization
         if not all(col in df.columns for col in required_cols):
             print(f"[WARNING] Missing required columns for corner identification")
@@ -550,6 +549,26 @@ class CornerIdentificationUnsupervisedService:
         return corner_segments
     
     def _create_corner_detection_features(self, df: pd.DataFrame) -> Optional[np.ndarray]:
+        """
+        Create a feature matrix for corner detection from the given DataFrame.
+        This method extracts and processes several features relevant for detecting corners in driving data:
+        - Normalized and smoothed absolute steering angle
+        - Smoothed speed
+        - Rate of change of speed
+        - Absolute lateral G-force
+        - Brake input
+        - Throttle input
+        All features are combined into a single NumPy array, with NaN values replaced by zero.
+        Args:
+            df (pd.DataFrame): Input DataFrame containing driving physics data. Expected columns:
+                - 'Physics_steer_angle'
+                - 'Physics_speed_kmh'
+                - 'Physics_g_force_x'
+                - 'Physics_brake'
+                - 'Physics_gas'
+        Returns:
+            Optional[np.ndarray]: Feature matrix of shape (n_samples, n_features), or None if feature creation fails.
+        """
         """Create feature matrix for corner detection"""
         try:
             features = []
@@ -578,13 +597,15 @@ class CornerIdentificationUnsupervisedService:
             g_force_lat = np.abs(df['Physics_g_force_x'].fillna(0))
             features.append(g_force_lat)
             
-            # Brake and throttle
+            # Brake (smoothed)
             brake = df['Physics_brake'].fillna(0)
-            features.append(brake)
+            brake_smooth = brake.rolling(window=3).mean().fillna(brake)
+            features.append(brake_smooth)
 
-            # Throttle
+            # Throttle (smoothed)
             throttle = df['Physics_gas'].fillna(0)
-            features.append(throttle)
+            throttle_smooth = throttle.rolling(window=3).mean().fillna(throttle)
+            features.append(throttle_smooth)
             
             # Combine features
             feature_matrix = np.column_stack(features)
@@ -599,6 +620,16 @@ class CornerIdentificationUnsupervisedService:
             return None
     
     def _cluster_corner_regions(self, features: np.ndarray) -> np.ndarray:
+        """
+        Clusters telemetry feature data to distinguish between corner regions and straight sections.
+        This method first normalizes the input features using a RobustScaler, then applies DBSCAN clustering to segment the data into regions (e.g., corners vs. straights). If DBSCAN fails to find a sufficient number of clusters (less than 3), it falls back to KMeans clustering, selecting the best number of clusters based on silhouette score. If clustering fails entirely, a simple threshold-based fallback method is used.
+        Args:
+            features (np.ndarray): Array of feature vectors representing telemetry data.
+        Returns:
+            np.ndarray: Array of cluster labels for each input feature, indicating detected regions.
+        Raises:
+            None. All exceptions are handled internally with fallbacks and error logging.
+        """
         """Use clustering to identify corner regions vs straight sections"""
         try:
             # Normalize features
@@ -665,15 +696,37 @@ class CornerIdentificationUnsupervisedService:
             return np.zeros(len(features), dtype=int)
     
     def _extract_segments_from_clusters(self, df: pd.DataFrame, labels: np.ndarray, features: np.ndarray) -> Dict[int, Dict[str, Any]]:
-        """Extract corner segments from cluster labels with improved heuristics & merging.
+        """
+        Extracts corner segments from cluster labels using a series of heuristics and merging strategies.
 
-        Steps:
-          1. Optional median smoothing of labels to reduce flicker.
-          2. Initial segmentation on label transitions (including index 0).
-          3. Compute per-segment activity/energy metrics.
-          4. Filter by multi-factor corner candidacy (label, activity, duration, energy, decel).
-          5. Merge adjacent segments separated by small gaps if combined qualifies.
-          6. Produce final dict with confidence score & metrics.
+        This method processes cluster labels and associated feature data to identify and extract segments
+        that likely correspond to corners in a driving dataset. The extraction process includes optional
+        label smoothing, segmentation based on label transitions, computation of segment metrics, multi-factor
+        corner candidacy filtering, merging of adjacent segments, and confidence scoring.
+
+        Args:
+            df (pd.DataFrame): The input dataframe containing telemetry data, including optional car position columns.
+            labels (np.ndarray): Array of cluster labels for each sample, typically from a clustering algorithm.
+            features (np.ndarray): Feature array (n_samples, n_features) used for activity and energy calculations.
+
+        Returns:
+            Dict[int, Dict[str, Any]]: A dictionary mapping segment IDs to dictionaries containing segment metrics,
+                including start/end indices, positions, cluster label, segment length, steering/activity metrics,
+                speed drop, lateral g-force peak, corner energy, and a confidence score.
+
+            1. Optionally smooths cluster labels using a median filter to reduce label flicker.
+            2. Segments the data at label transitions, ensuring the first index is included.
+            3. Computes per-segment metrics such as steering activity, speed drop, and lateral g-force.
+            4. Filters segments for corner candidacy based on label, activity, energy, and deceleration heuristics.
+            5. Merges adjacent or near-adjacent segments if the combined segment meets corner criteria.
+            6. Returns a dictionary of final corner segments with computed metrics and confidence scores.
+
+        Notes:
+            - Handles DBSCAN noise labels (-1) as baseline unless high activity/energy is detected.
+            - Uses configurable thresholds for activity, energy, and merging behavior.
+            - Designed for unsupervised corner detection in motorsport telemetry data.
+
+
         """
         if len(labels) == 0:
             return {}
@@ -831,6 +884,7 @@ class CornerIdentificationUnsupervisedService:
             }
 
         print(f"[INFO] Extracted {len(corner_segments)} corner segments from clustering (improved)")
+        print(f"[INFO] Corner segments: {corner_segments}")
         return corner_segments
     
     def _is_high_activity_segment(self, segment_features: np.ndarray) -> bool:
