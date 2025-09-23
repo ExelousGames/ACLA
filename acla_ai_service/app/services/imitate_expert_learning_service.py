@@ -2,31 +2,27 @@
 Imitation Learning Service for Assetto Corsa Competizione Telemetry Analysis
 
 This service implements imitation learning algorithms to learn from expert driving demonstrations.
-It can learn driving behaviors, optimal racing lines, and decision-making patterns from
+It focuses on learning optimal racing lines and decision-making patterns from
 professional or expert drivers' telemetry data.
 """
 
 import numpy as np
 import pandas as pd
-import numpy as np
 import pickle
 import warnings
 import io
 import base64
+import copy
 from enum import Enum
 from typing import Dict, List, Any, Optional, Tuple, Union
 from datetime import datetime
 from pathlib import Path
 
-# Scikit-learn imports for imitation learning
-from sklearn.model_selection import train_test_split, cross_val_score
-from sklearn.preprocessing import StandardScaler, LabelEncoder, MinMaxScaler
+# Scikit-learn imports for trajectory learning
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
 from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier
-from sklearn.linear_model import LinearRegression, LogisticRegression
-from sklearn.neural_network import MLPRegressor, MLPClassifier
 from sklearn.metrics import mean_squared_error, mean_absolute_error, accuracy_score, f1_score
-from sklearn.pipeline import Pipeline
-from sklearn.cluster import KMeans
 from sklearn.decomposition import PCA
 
 # Import your telemetry models
@@ -93,483 +89,344 @@ class ExpertFeatureCatalog:
     CONTEXT_FEATURES: List[str] = [f.value for f in ContextFeature]
 
 
-class BehaviorLearner:
-    """Extract driving behavior patterns from telemetry data and train behavior models"""
+class ExpertPositionLearner:
+    """Learn expert actions based on normalized track position from multiple expert laps"""
     
     def __init__(self):
+        self.position_model = None
         self.scaler = StandardScaler()
-        self.behavior_labels = [
-            'aggressive', 'smooth', 'conservative', 'optimal', 'defensive'
-        ]
+        self.position_scaler = StandardScaler()  # Separate scaler for position input
+        
+        # Models for different output types
+        self.action_models = {}  # For steering, gas, brake
+        self.gear_model = None   # Classification model for gear
+        self.position_models = {} # For position x,y,z predictions
+        self.velocity_models = {} # For velocity x,y,z predictions
     
-    def generate_driving_style_features(self, df: pd.DataFrame) -> pd.DataFrame:
+    def extract_position_features(self, df: pd.DataFrame) -> Dict[str, pd.DataFrame]:
         """
-        Extract features that characterize driving style
+        Extract position-based features for expert learning
         
         Args:
             df: Telemetry DataFrame
             
         Returns:
-            DataFrame with driving style features
+            Dictionary with input features (normalized position) and target features (expert actions/states)
         """
-        features = pd.DataFrame(index=df.index)
+        input_features = pd.DataFrame()
+        target_features = pd.DataFrame()
         
-        # Check if we have enough rows for rolling windows
-        min_window = min(10, len(df))
-        
-        # Throttle behavior
-        if 'Physics_gas' in df.columns:
-            features['throttle_mean'] = df['Physics_gas'].rolling(window=min_window, min_periods=1).mean()
-            features['throttle_std'] = df['Physics_gas'].rolling(window=min_window, min_periods=1).std()
-            features['throttle_max'] = df['Physics_gas'].rolling(window=min_window, min_periods=1).max()
-            features['throttle_smoothness'] = df['Physics_gas'].diff().abs().rolling(window=min_window, min_periods=1).mean()
-        
-        # Brake behavior
-        if 'Physics_brake' in df.columns:
-            features['brake_mean'] = df['Physics_brake'].rolling(window=min_window, min_periods=1).mean()
-            features['brake_std'] = df['Physics_brake'].rolling(window=min_window, min_periods=1).std()
-            features['brake_max'] = df['Physics_brake'].rolling(window=min_window, min_periods=1).max()
-            features['brake_smoothness'] = df['Physics_brake'].diff().abs().rolling(window=min_window, min_periods=1).mean()
-        
-        # Steering behavior
-        if 'Physics_steer_angle' in df.columns:
-            features['steering_mean'] = df['Physics_steer_angle'].rolling(window=min_window, min_periods=1).mean()
-            features['steering_std'] = df['Physics_steer_angle'].rolling(window=min_window, min_periods=1).std()
-            features['steering_smoothness'] = df['Physics_steer_angle'].diff().abs().rolling(window=min_window, min_periods=1).mean()
-            # For single rows, use a simpler frequency calculation
-            if len(df) >= 20:
-                features['steering_frequency'] = df['Physics_steer_angle'].rolling(window=20).apply(
-                    lambda x: len(np.where(np.diff(np.sign(np.diff(x))))[0])
-                )
-            else:
-                # For small datasets, calculate a simpler measure
-                features['steering_frequency'] = np.abs(df['Physics_steer_angle'].diff()).fillna(0)
-        
-        # Speed behavior
-        if 'Physics_speed_kmh' in df.columns:
-            features['speed_mean'] = df['Physics_speed_kmh'].rolling(window=min_window, min_periods=1).mean()
-            features['speed_std'] = df['Physics_speed_kmh'].rolling(window=min_window, min_periods=1).std()
-            features['speed_variance'] = df['Physics_speed_kmh'].rolling(window=min_window, min_periods=1).var()
-        
-        # G-force behavior (aggressiveness indicators)
-        g_force_cols = ['Physics_g_force_x', 'Physics_g_force_y', 'Physics_g_force_z']
-        available_g_cols = [col for col in g_force_cols if col in df.columns]
-        
-        if len(available_g_cols) >= 2:
-            g_force_magnitude = np.sqrt(
-                sum(df[col]**2 for col in available_g_cols)
-            )
-            features['g_force_mean'] = g_force_magnitude.rolling(window=min_window, min_periods=1).mean()
-            features['g_force_max'] = g_force_magnitude.rolling(window=min_window, min_periods=1).max()
-            features['g_force_std'] = g_force_magnitude.rolling(window=min_window, min_periods=1).std()
-        
-        # Cornering behavior
-        if all(col in df.columns for col in ['Physics_steer_angle', 'Physics_speed_kmh']):
-            features['cornering_speed'] = df['Physics_speed_kmh'] * np.abs(df['Physics_steer_angle'])
-            features['cornering_aggressiveness'] = features['cornering_speed'].rolling(window=min_window, min_periods=1).mean()
-        
-        # Combined input behavior (trail braking, etc.)
-        if all(col in df.columns for col in ['Physics_brake', 'Physics_gas']):
-            features['combined_input'] = df['Physics_brake'] + df['Physics_gas']
-            features['trail_braking'] = (df['Physics_brake'] > 0) & (df['Physics_gas'] > 0)
-            features['input_overlap'] = features['trail_braking'].rolling(window=min_window, min_periods=1).sum()
-        
-        # Fill missing values
-        features = features.bfill().fillna(0)
-        
-        return features
-    
-    def classify_driving_style(self, features: pd.DataFrame) -> pd.Series:
-        """
-        Classify driving style based on extracted features
-        
-        Args:
-            features: Driving style features DataFrame
-            
-        Returns:
-            Series with driving style classifications
-        """
-        # Use clustering to identify driving styles
-        feature_cols = features.select_dtypes(include=[np.number]).columns
-        X = features[feature_cols].fillna(0)
-        
-        # Normalize features
-        X_scaled = self.scaler.fit_transform(X)
-        
-        # Use K-means clustering to identify driving patterns
-        kmeans = KMeans(n_clusters=len(self.behavior_labels), random_state=42)
-        clusters = kmeans.fit_predict(X_scaled)
-        
-        # Map clusters to behavior labels
-        style_mapping = {i: self.behavior_labels[i] for i in range(len(self.behavior_labels))}
-        driving_styles = pd.Series([style_mapping.get(cluster, 'unknown') for cluster in clusters])
-        
-        return driving_styles
-    
-    def train_behavior_model(self, 
-                            features: pd.DataFrame, 
-                            styles: pd.Series) -> Dict[str, Any]:
-        """
-        Train a model to predict driving behavior
-        
-        Args:
-            features: Behavior features DataFrame
-            styles: Driving style labels
-            
-        Returns:
-            Trained behavior model information
-        """
-        # Prepare data
-        feature_cols = features.select_dtypes(include=[np.number]).columns
-        X = features[feature_cols].fillna(0)
-        y = styles
-        
-        # Encode labels
-        label_encoder = LabelEncoder()
-        y_encoded = label_encoder.fit_transform(y)
-        
-        # Check if stratification is possible (each class needs at least 2 samples)
-        unique_classes, class_counts = np.unique(y_encoded, return_counts=True)
-        min_class_count = np.min(class_counts)
-        
-        # Split data with or without stratification based on data distribution
-        if min_class_count >= 2 and len(unique_classes) > 1:
-            # Can use stratification
-            X_train, X_test, y_train, y_test = train_test_split(
-                X, y_encoded, test_size=0.2, random_state=42, stratify=y_encoded
-            )
-            print(f"[INFO] Using stratified split with {len(unique_classes)} classes")
+        # Input feature: normalized track position (primary input)
+        if 'Graphics_normalized_car_position' in df.columns:
+            input_features['normalized_position'] = df['Graphics_normalized_car_position']
         else:
-            # Cannot use stratification - some classes have only 1 sample
-            X_train, X_test, y_train, y_test = train_test_split(
-                X, y_encoded, test_size=0.2, random_state=42
-            )
-            print(f"[WARNING] Using random split (no stratification) - some classes have only {min_class_count} sample(s)")
+            raise ValueError("Graphics_normalized_car_position not found - this is required for position-based learning")
         
-        # Scale features
-        scaler = StandardScaler()
-        X_train_scaled = scaler.fit_transform(X_train)
-        X_test_scaled = scaler.transform(X_test)
+        # Target features: Expert actions and states
+        EO = ExpertFeatureCatalog.ExpertOptimalFeature
         
-        # Train model
-        model = RandomForestClassifier(
-            n_estimators=100,
-            max_depth=20,
-            random_state=42,
-            n_jobs=-1
-        )
-        model.fit(X_train_scaled, y_train)
-
-        # Evaluate
-        y_pred = model.predict(X_test_scaled)
-        accuracy = accuracy_score(y_test, y_pred)
-        f1 = f1_score(y_test, y_pred, average='weighted')
+        # Actions
+        if 'Physics_steer_angle' in df.columns:
+            target_features[EO.EXPERT_OPTIMAL_STEERING.value] = df['Physics_steer_angle']
+        if 'Physics_gas' in df.columns:
+            target_features[EO.EXPERT_OPTIMAL_THROTTLE.value] = df['Physics_gas']
+        if 'Physics_brake' in df.columns:
+            target_features[EO.EXPERT_OPTIMAL_BRAKE.value] = df['Physics_brake']
+        if 'Physics_gear' in df.columns:
+            target_features[EO.EXPERT_OPTIMAL_GEAR.value] = df['Physics_gear']
         
-        # Feature importance
-        feature_importance = dict(zip(feature_cols, model.feature_importances_))
-        top_features = sorted(feature_importance.items(), key=lambda x: x[1], reverse=True)[:10]
+        # Positions
+        if 'Graphics_player_pos_x' in df.columns:
+            target_features[EO.EXPERT_OPTIMAL_PLAYER_POS_X.value] = df['Graphics_player_pos_x']
+        if 'Graphics_player_pos_y' in df.columns:
+            target_features[EO.EXPERT_OPTIMAL_PLAYER_POS_Y.value] = df['Graphics_player_pos_y']
+        if 'Graphics_player_pos_z' in df.columns:
+            target_features[EO.EXPERT_OPTIMAL_PLAYER_POS_Z.value] = df['Graphics_player_pos_z']
+            
+        # Velocities
+        if 'Physics_velocity_x' in df.columns:
+            target_features[EO.EXPERT_OPTIMAL_VELOCITY_X.value] = df['Physics_velocity_x']
+        if 'Physics_velocity_y' in df.columns:
+            target_features[EO.EXPERT_OPTIMAL_VELOCITY_Y.value] = df['Physics_velocity_y']
+        if 'Physics_velocity_z' in df.columns:
+            target_features['expert_optimal_velocity_z'] = df['Physics_velocity_z']
+            
+        # Speed (derived)
+        if 'Physics_speed_kmh' in df.columns:
+            target_features[EO.EXPERT_OPTIMAL_SPEED.value] = df['Physics_speed_kmh']
+            
+        # Track position (for consistency)
+        if 'Graphics_normalized_car_position' in df.columns:
+            target_features[EO.EXPERT_OPTIMAL_TRACK_POSITION.value] = df['Graphics_normalized_car_position']
+        
+        # Clean data
+        input_features = input_features.fillna(0)
+        target_features = target_features.fillna(0)
         
         return {
-            'model': model,
-            'scaler': scaler,
-            'label_encoder': label_encoder,
-            'feature_names': list(feature_cols),
-            'performance_metrics': {
-                'accuracy': accuracy,
-                'f1_score': f1
-            },
-            'feature_importance': dict(top_features)
+            'input_features': input_features,
+            'target_features': target_features
         }
-
-
-class ExpertTrajectoryLearner:
-    """Learn optimal racing lines and trajectories from expert demonstrations"""
     
-    def __init__(self):
-        self.trajectory_model = None
-        self.scaler = StandardScaler()
-        self.pca = PCA(n_components=0.95)  # Keep 95% of variance
-    
-    def extract_trajectory_features(self, df: pd.DataFrame) -> pd.DataFrame:
+    def learn_expert_position_mapping(self, expert_df: pd.DataFrame) -> Dict[str, Any]:
         """
-        Extract features relevant to racing line optimization
+        Learn expert actions from normalized track position using multiple expert laps
         
         Args:
-            df: Telemetry DataFrame
+            expert_df: Expert driver telemetry data from multiple laps
             
         Returns:
-            DataFrame with trajectory features
+            Dictionary with learned position-based model and insights
         """
-        features = pd.DataFrame()
-        TF = ExpertFeatureCatalog.TrajectoryFeature
-
-        if 'Graphics_normalized_car_position' in df.columns:
-            features[TF.TRACK_POSITION.value] = df['Graphics_normalized_car_position']
-            features[TF.TRACK_POSITION_RATE.value] = df['Graphics_normalized_car_position'].diff()
-
-        if 'Graphics_player_pos_x' in df.columns:
-            features[TF.PLAYER_POS_X.value] = df['Graphics_player_pos_x']
-            features[TF.PLAYER_POS_X_VELOCITY.value] = features[TF.PLAYER_POS_X.value].diff().rolling(window=3).mean()
-        if 'Graphics_player_pos_y' in df.columns:
-            features[TF.PLAYER_POS_Y.value] = df['Graphics_player_pos_y']
-            features[TF.PLAYER_POS_Y_VELOCITY.value] = features[TF.PLAYER_POS_Y.value].diff().rolling(window=3).mean()
-        if 'Graphics_player_pos_z' in df.columns:
-            features[TF.PLAYER_POS_Z.value] = df['Graphics_player_pos_z']
-            features[TF.PLAYER_POS_Z_VELOCITY.value] = features[TF.PLAYER_POS_Z.value].diff().rolling(window=3).mean()
-
-        if 'Physics_speed_kmh' in df.columns:
-            features[TF.SPEED.value] = df['Physics_speed_kmh']
-            features[TF.SPEED_CHANGE.value] = df['Physics_speed_kmh'].diff()
-            features[TF.ACCELERATION.value] = features[TF.SPEED_CHANGE.value] / 0.016
-
-        if 'Physics_gear' in df.columns:
-            features[TF.GEAR.value] = df['Physics_gear']
-            features[TF.GEAR_CHANGE.value] = df['Physics_gear'].diff()
-            if 'Physics_speed_kmh' in df.columns:
-                features[TF.SPEED_PER_GEAR.value] = df['Physics_speed_kmh'] / (df['Physics_gear'] + 1)
-
-        if 'Physics_steer_angle' in df.columns:
-            features[TF.STEERING_ANGLE.value] = df['Physics_steer_angle']
-            features[TF.STEERING_RATE.value] = df['Physics_steer_angle'].diff()
-
-        if all(col in df.columns for col in ['Physics_steer_angle', 'Physics_speed_kmh']):
-            features[TF.CORNERING_FORCE.value] = np.abs(df['Physics_steer_angle']) * df['Physics_speed_kmh']
-
-        if 'Physics_gas' in df.columns:
-            features[TF.THROTTLE.value] = df['Physics_gas']
-            features[TF.THROTTLE_RATE.value] = df['Physics_gas'].diff()
-        if 'Physics_brake' in df.columns:
-            features[TF.BRAKE.value] = df['Physics_brake']
-            features[TF.BRAKE_RATE.value] = df['Physics_brake'].diff()
-
-        if 'Graphics_current_time' in df.columns:
-            features[TF.CURRENT_TIME.value] = df['Graphics_current_time']
-            features[TF.TIME_RATE.value] = df['Graphics_current_time'].diff()
-
-        if 'Physics_velocity_x' in df.columns:
-            features[TF.VELOCITY_X.value] = df['Physics_velocity_x']
-            features[TF.VELOCITY_X_RATE.value] = df['Physics_velocity_x'].diff()
-        if 'Physics_velocity_y' in df.columns:
-            features[TF.VELOCITY_Y.value] = df['Physics_velocity_y']
-            features[TF.VELOCITY_Y_RATE.value] = df['Physics_velocity_y'].diff()
-        if 'Physics_velocity_z' in df.columns:
-            features[TF.VELOCITY_Z.value] = df['Physics_velocity_z']
-            features[TF.VELOCITY_Z_RATE.value] = df['Physics_velocity_z'].diff()
-
-        features = features.bfill().fillna(0)
-        return features
-    
-    def learn_optimal_trajectory(self, 
-                               expert_df: pd.DataFrame) -> Dict[str, Any]:
-        """
-        Learn optimal trajectory from expert demonstrations
+        print(f"[INFO] Learning expert position mapping from {len(expert_df)} expert data points")
         
-        Args:
-            expert_df: Expert driver telemetry data
-            track_segments: Optional list of track segments to focus on
+        # Extract position-based features
+        feature_data = self.extract_position_features(expert_df)
+        input_features = feature_data['input_features']
+        target_features = feature_data['target_features']
+        
+        if len(input_features) == 0:
+            raise ValueError("No input features extracted")
+        if len(target_features.columns) == 0:
+            raise ValueError("No target features extracted")
             
-        Returns:
-            Dictionary with learned trajectory model and insights
-        """
-        print(f"[INFO] Learning optimal trajectory from {len(expert_df)} expert data points")
+        print(f"[INFO] Input features shape: {input_features.shape}")
+        print(f"[INFO] Target features shape: {target_features.shape}")
+        print(f"[INFO] Available targets: {list(target_features.columns)}")
         
-        # Extract trajectory features
-        trajectory_features = self.extract_trajectory_features(expert_df)
-        
-        # Define target variables (what we want to optimize) using enum feature names
-        from .imitate_expert_learning_service import ExpertFeatureCatalog  # local import to avoid circular for typing tools
-        EO = ExpertFeatureCatalog.ExpertOptimalFeature
-        targets: Dict[str, pd.Series] = {}
-
-        TF = ExpertFeatureCatalog.TrajectoryFeature
-        if TF.SPEED.value in trajectory_features.columns:
-            targets[EO.EXPERT_OPTIMAL_SPEED.value] = trajectory_features[TF.SPEED.value]
-        if TF.STEERING_ANGLE.value in trajectory_features.columns:
-            targets[EO.EXPERT_OPTIMAL_STEERING.value] = trajectory_features[TF.STEERING_ANGLE.value]
-        if TF.THROTTLE.value in trajectory_features.columns:
-            targets[EO.EXPERT_OPTIMAL_THROTTLE.value] = trajectory_features[TF.THROTTLE.value]
-        if TF.BRAKE.value in trajectory_features.columns:
-            targets[EO.EXPERT_OPTIMAL_BRAKE.value] = trajectory_features[TF.BRAKE.value]
-        if TF.GEAR.value in trajectory_features.columns:
-            targets[EO.EXPERT_OPTIMAL_GEAR.value] = trajectory_features[TF.GEAR.value]
-        if TF.PLAYER_POS_X.value in trajectory_features.columns:
-            targets[EO.EXPERT_OPTIMAL_PLAYER_POS_X.value] = trajectory_features[TF.PLAYER_POS_X.value]
-        if TF.PLAYER_POS_Y.value in trajectory_features.columns:
-            targets[EO.EXPERT_OPTIMAL_PLAYER_POS_Y.value] = trajectory_features[TF.PLAYER_POS_Y.value]
-        if TF.PLAYER_POS_Z.value in trajectory_features.columns:
-            targets[EO.EXPERT_OPTIMAL_PLAYER_POS_Z.value] = trajectory_features[TF.PLAYER_POS_Z.value]
-        if TF.TRACK_POSITION.value in trajectory_features.columns:
-            targets[EO.EXPERT_OPTIMAL_TRACK_POSITION.value] = trajectory_features[TF.TRACK_POSITION.value]
-        if TF.VELOCITY_X.value in trajectory_features.columns:
-            targets[EO.EXPERT_OPTIMAL_VELOCITY_X.value] = trajectory_features[TF.VELOCITY_X.value]
-        if TF.VELOCITY_Y.value in trajectory_features.columns:
-            targets[EO.EXPERT_OPTIMAL_VELOCITY_Y.value] = trajectory_features[TF.VELOCITY_Y.value]
-        
-        # Prepare input features (current state)
-        input_features = [
-            TF.TRACK_POSITION.value,
-            TF.SPEED.value,
-            TF.STEERING_ANGLE.value,
-            TF.GEAR.value,
-            TF.PLAYER_POS_X.value,
-            TF.PLAYER_POS_Y.value,
-            TF.PLAYER_POS_Z.value,
-            TF.PLAYER_POS_X_VELOCITY.value,
-            TF.PLAYER_POS_Y_VELOCITY.value,
-            TF.PLAYER_POS_Z_VELOCITY.value
-        ]
-        available_input_features = [f for f in input_features if f in trajectory_features.columns]
-        
-        if len(available_input_features) < 2:
-            raise ValueError("Insufficient features for trajectory learning")
-        
-        X = trajectory_features[available_input_features].fillna(0)
-        
-        # Scale features
-        X_scaled = self.scaler.fit_transform(X)
-        
-        # Apply PCA for dimensionality reduction if needed
-        pca_used = False
-        if X_scaled.shape[1] > 10:
-            X_scaled = self.pca.fit_transform(X_scaled)
-            pca_used = True
+        # Prepare input (normalized position)
+        X = input_features[['normalized_position']].values
+        X_scaled = self.position_scaler.fit_transform(X)
         
         # Train models for each target
         models = {}
         performance_metrics = {}
         
-        for target_name, target_values in targets.items():
-            if target_values.isna().sum() / len(target_values) > 0.5:
-                continue  # Skip targets with too many missing values
+        EO = ExpertFeatureCatalog.ExpertOptimalFeature
+        
+        # Action models (regression)
+        action_targets = [
+            EO.EXPERT_OPTIMAL_STEERING.value,
+            EO.EXPERT_OPTIMAL_THROTTLE.value,
+            EO.EXPERT_OPTIMAL_BRAKE.value,
+            EO.EXPERT_OPTIMAL_SPEED.value
+        ]
+        
+        for target_name in action_targets:
+            if target_name in target_features.columns:
+                print(f"[INFO] Training action model for: {target_name}")
+                y = target_features[target_name].values
+                
+                # Split data
+                X_train, X_test, y_train, y_test = train_test_split(
+                    X_scaled, y, test_size=0.2, random_state=42
+                )
+                
+                # Train model
+                model = RandomForestRegressor(n_estimators=100, random_state=42, n_jobs=-1)
+                model.fit(X_train, y_train)
+                
+                # Evaluate
+                y_pred = model.predict(X_test)
+                r2 = model.score(X_test, y_test)
+                mse = mean_squared_error(y_test, y_pred)
+                mae = mean_absolute_error(y_test, y_pred)
+                
+                models[target_name] = model
+                performance_metrics[target_name] = {
+                    'r2': float(r2),
+                    'mse': float(mse),
+                    'mae': float(mae),
+                    'type': 'regression'
+                }
+                
+                print(f"[INFO] {target_name} - R²: {r2:.4f}, MSE: {mse:.4f}, MAE: {mae:.4f}")
+        
+        # Gear model (classification)
+        if EO.EXPERT_OPTIMAL_GEAR.value in target_features.columns:
+            print(f"[INFO] Training gear classification model")
+            y = target_features[EO.EXPERT_OPTIMAL_GEAR.value].values
             
-            # Clean target values based on type
-            if target_name == EO.EXPERT_OPTIMAL_GEAR.value:
-                # For gear, fill missing values with mode (most common gear) and keep as integer
-                mode_value = target_values.mode().iloc[0] if not target_values.mode().empty else 1
-                y = target_values.fillna(mode_value).astype(int)
-            else:
-                # For continuous values, use median
-                y = target_values.fillna(target_values.median())
+            X_train, X_test, y_train, y_test = train_test_split(
+                X_scaled, y, test_size=0.2, random_state=42, stratify=y
+            )
             
-            # Split data
+            model = RandomForestClassifier(n_estimators=100, random_state=42, n_jobs=-1)
+            model.fit(X_train, y_train)
+            
+            y_pred = model.predict(X_test)
+            accuracy = accuracy_score(y_test, y_pred)
+            f1 = f1_score(y_test, y_pred, average='weighted')
+            
+            models[EO.EXPERT_OPTIMAL_GEAR.value] = model
+            performance_metrics[EO.EXPERT_OPTIMAL_GEAR.value] = {
+                'accuracy': float(accuracy),
+                'f1': float(f1),
+                'type': 'classification'
+            }
+            
+            print(f"[INFO] Gear - Accuracy: {accuracy:.4f}, F1: {f1:.4f}")
+        
+        # Position models (regression)
+        position_targets = [
+            EO.EXPERT_OPTIMAL_PLAYER_POS_X.value,
+            EO.EXPERT_OPTIMAL_PLAYER_POS_Y.value,
+            EO.EXPERT_OPTIMAL_PLAYER_POS_Z.value
+        ]
+        
+        for target_name in position_targets:
+            if target_name in target_features.columns:
+                print(f"[INFO] Training position model for: {target_name}")
+                y = target_features[target_name].values
+                
+                X_train, X_test, y_train, y_test = train_test_split(
+                    X_scaled, y, test_size=0.2, random_state=42
+                )
+                
+                model = RandomForestRegressor(n_estimators=100, random_state=42, n_jobs=-1)
+                model.fit(X_train, y_train)
+                
+                y_pred = model.predict(X_test)
+                r2 = model.score(X_test, y_test)
+                mse = mean_squared_error(y_test, y_pred)
+                mae = mean_absolute_error(y_test, y_pred)
+                
+                models[target_name] = model
+                performance_metrics[target_name] = {
+                    'r2': float(r2),
+                    'mse': float(mse),
+                    'mae': float(mae),
+                    'type': 'regression'
+                }
+                
+                print(f"[INFO] {target_name} - R²: {r2:.4f}, MSE: {mse:.4f}, MAE: {mae:.4f}")
+        
+        # Velocity models (regression)
+        velocity_targets = [
+            EO.EXPERT_OPTIMAL_VELOCITY_X.value,
+            EO.EXPERT_OPTIMAL_VELOCITY_Y.value,
+            'expert_optimal_velocity_z'  # This one wasn't in the enum
+        ]
+        
+        for target_name in velocity_targets:
+            if target_name in target_features.columns:
+                print(f"[INFO] Training velocity model for: {target_name}")
+                y = target_features[target_name].values
+                
+                X_train, X_test, y_train, y_test = train_test_split(
+                    X_scaled, y, test_size=0.2, random_state=42
+                )
+                
+                model = RandomForestRegressor(n_estimators=100, random_state=42, n_jobs=-1)
+                model.fit(X_train, y_train)
+                
+                y_pred = model.predict(X_test)
+                r2 = model.score(X_test, y_test)
+                mse = mean_squared_error(y_test, y_pred)
+                mae = mean_absolute_error(y_test, y_pred)
+                
+                models[target_name] = model
+                performance_metrics[target_name] = {
+                    'r2': float(r2),
+                    'mse': float(mse),
+                    'mae': float(mae),
+                    'type': 'regression'
+                }
+                
+                print(f"[INFO] {target_name} - R²: {r2:.4f}, MSE: {mse:.4f}, MAE: {mae:.4f}")
+        
+        # Track position model (for consistency)
+        if EO.EXPERT_OPTIMAL_TRACK_POSITION.value in target_features.columns:
+            print(f"[INFO] Training track position model")
+            y = target_features[EO.EXPERT_OPTIMAL_TRACK_POSITION.value].values
+            
             X_train, X_test, y_train, y_test = train_test_split(
                 X_scaled, y, test_size=0.2, random_state=42
             )
             
-            # Use different model types based on target variable
-            if target_name == EO.EXPERT_OPTIMAL_GEAR.value:
-                # Use classifier for discrete gear values, you cant have 3.5 gear   
-                model = RandomForestClassifier(
-                    n_estimators=100, 
-                    max_depth=20, 
-                    random_state=42,
-                    n_jobs=-1
-                )
-                model.fit(X_train, y_train)
-                
-                # Evaluate classifier
-                y_pred = model.predict(X_test)
-                metrics = {
-                    'accuracy': accuracy_score(y_test, y_pred),
-                    'f1_score': f1_score(y_test, y_pred, average='weighted')
-                }
-            else:
-                # Use regressor for continuous values
-                model = RandomForestRegressor(
-                    n_estimators=100, 
-                    max_depth=20, 
-                    random_state=42,
-                    n_jobs=-1
-                )
-                model.fit(X_train, y_train)
-                
-                # Evaluate regressor
-                y_pred = model.predict(X_test)
-                metrics = {
-                    'mse': mean_squared_error(y_test, y_pred),
-                    'mae': mean_absolute_error(y_test, y_pred),
-                    'r2': model.score(X_test, y_test)
-                }
+            model = RandomForestRegressor(n_estimators=100, random_state=42, n_jobs=-1)
+            model.fit(X_train, y_train)
             
-            models[target_name] = model
-            performance_metrics[target_name] = metrics
+            y_pred = model.predict(X_test)
+            r2 = model.score(X_test, y_test)
+            mse = mean_squared_error(y_test, y_pred)
+            mae = mean_absolute_error(y_test, y_pred)
             
-            # Log metrics based on model type
-            if target_name == EO.EXPERT_OPTIMAL_GEAR.value:
-                print(f"[INFO] {target_name} model - Accuracy: {metrics['accuracy']:.3f}, F1: {metrics['f1_score']:.3f}")
-            else:
-                print(f"[INFO] {target_name} model - R²: {metrics['r2']:.3f}, MAE: {metrics['mae']:.3f}")
+            models[EO.EXPERT_OPTIMAL_TRACK_POSITION.value] = model
+            performance_metrics[EO.EXPERT_OPTIMAL_TRACK_POSITION.value] = {
+                'r2': float(r2),
+                'mse': float(mse),
+                'mae': float(mae),
+                'type': 'regression'
+            }
+            
+            print(f"[INFO] Track position - R²: {r2:.4f}, MSE: {mse:.4f}, MAE: {mae:.4f}")
         
-        # Store the complete trajectory model
-        self.trajectory_model = {
+        # Store the complete position model
+        self.position_model = {
             'models': models,
-            'scaler': self.scaler,
-            'pca': self.pca if pca_used else None,
-            'input_features': available_input_features,
-            'performance_metrics': performance_metrics
+            'position_scaler': self.position_scaler,
+            'performance_metrics': performance_metrics,
+            'input_features': ['normalized_position'],
+            'target_features': list(target_features.columns)
         }
         
         return {
-            'modelData': self.trajectory_model,
-            'metadata':{
+            'modelData': self.position_model,
+            'metadata': {
                 'performance_metrics': performance_metrics,
-                'input_features': available_input_features,
-                'models_trained': list(models.keys())
+                'input_features': ['normalized_position'],
+                'target_features': list(target_features.columns),
+                'models_trained': list(models.keys()),
+                'total_training_samples': len(expert_df)
             }
         }
     
-    def predict_optimal_actions(self, current_state: pd.DataFrame) -> Dict[str, float]:
+    def predict_expert_actions_at_position(self, normalized_positions: Union[float, List[float], np.ndarray]) -> Union[Dict[str, float], List[Dict[str, float]]]:
         """
-        Predict optimal actions given current state
+        Predict expert actions at given normalized track position(s)
         
         Args:
-            current_state: Current telemetry state (single or multiple rows)
+            normalized_positions: Single position or array of positions (0.0 to 1.0)
             
         Returns:
-            Dictionary with optimal action predictions (averaged if multiple rows)
+            Dictionary with expert predictions, or list of dictionaries for multiple positions
         """
-        if not self.trajectory_model:
-            raise ValueError("No trajectory model trained. Call learn_optimal_trajectory first.")
+        if not self.position_model:
+            raise ValueError("No position model trained. Call learn_expert_position_mapping() first.")
         
-        # Extract features from current state (this handles multiple rows efficiently)
-        trajectory_features = self.extract_trajectory_features(current_state)
+        # Handle single position vs multiple positions
+        single_position = isinstance(normalized_positions, (int, float))
+        if single_position:
+            positions_array = np.array([[normalized_positions]])
+        else:
+            positions_array = np.array(normalized_positions).reshape(-1, 1)
         
-        # Prepare input
-        input_features = self.trajectory_model['input_features']
+        # Scale positions
+        positions_scaled = self.position_model['position_scaler'].transform(positions_array)
         
-        # Ensure all required features are available
-        missing_features = [f for f in input_features if f not in trajectory_features.columns]
-        if missing_features:
-            raise ValueError(f"Missing required features for prediction: {missing_features}")
-            
-        X = trajectory_features[input_features].fillna(0)
-        
-        # Scale features (handles multiple rows)
-        X_scaled = self.trajectory_model['scaler'].transform(X)
-        
-        # Apply PCA if it was used during training and is fitted
-        if (self.trajectory_model['pca'] is not None and 
-            hasattr(self.trajectory_model['pca'], 'components_')):
-            X_scaled = self.trajectory_model['pca'].transform(X_scaled)
-        
-        # Make predictions (batch prediction is much faster)
+        # Make predictions for all models
         predictions = {}
-        from .imitate_expert_learning_service import ExpertFeatureCatalog as _EFC  # local import to avoid name issues
-        gear_key = _EFC.ExpertOptimalFeature.EXPERT_OPTIMAL_GEAR.value
-        for target_name, model in self.trajectory_model['models'].items():
-            try:
-                pred = model.predict(X_scaled)
-                # Handle gear predictions as integers
-                if target_name == gear_key:
-                    predictions[target_name] = int(pred[0])
-                else:
-                    # For continuous values, take first prediction
-                    predictions[target_name] = float(pred[0])
-            except Exception as e:
-                print(f"[WARNING] Failed to predict {target_name}: {e}")
-                predictions[target_name] = 1 if target_name == gear_key else 0.0
+        for model_name, model in self.position_model['models'].items():
+            pred = model.predict(positions_scaled)
+            predictions[model_name] = pred
         
-        return predictions
+        # Format results
+        if single_position:
+            # Return single dictionary
+            result = {}
+            for model_name, pred_array in predictions.items():
+                result[model_name] = float(pred_array[0])
+            return result
+        else:
+            # Return list of dictionaries
+            results = []
+            for i in range(len(positions_array)):
+                result = {}
+                for model_name, pred_array in predictions.items():
+                    result[model_name] = float(pred_array[i])
+                results.append(result)
+            return results
 
     def predict_optimal_actions_batch(self, current_state: pd.DataFrame) -> List[Dict[str, float]]:
         """
@@ -636,17 +493,18 @@ class ExpertTrajectoryLearner:
         
         return row_predictions
 
-    def debug_trajectory_model(self) -> Dict[str, Any]:
+    def debug_position_model(self) -> Dict[str, Any]:
         """
-        Debug method to inspect the current trajectory model state
+        Debug method to inspect the current position model state
         
         Returns:
             Dictionary with detailed model debugging information
         """
-        if not self.trajectory_model:
+        if not self.position_model:
             return {
-                'status': 'No model trained',
-                'has_model': False
+                'status': 'No model available',
+                'has_model': False,
+                'error': 'Position model not trained yet'
             }
         
         debug_info = {
@@ -656,38 +514,87 @@ class ExpertTrajectoryLearner:
         }
         
         # Check model structure
-        for key, value in self.trajectory_model.items():
+        for key, value in self.position_model.items():
             if key == 'models':
                 debug_info['model_structure']['models'] = {
                     'count': len(value),
                     'model_names': list(value.keys()),
-                    'model_types': {name: str(type(model)) for name, model in value.items()}
+                    'model_types': [type(model).__name__ for model in value.values()]
                 }
-            elif key == 'scaler':
-                debug_info['model_structure']['scaler'] = {
-                    'type': str(type(value)),
-                    'fitted': hasattr(value, 'scale_'),
-                    'n_features': getattr(value, 'n_features_in_', None)
-                }
-            elif key == 'pca':
-                if value is not None:
-                    debug_info['model_structure']['pca'] = {
-                        'type': str(type(value)),
-                        'fitted': hasattr(value, 'components_'),
-                        'n_components': getattr(value, 'n_components_', None),
-                        'explained_variance_ratio': getattr(value, 'explained_variance_ratio_', None)
-                    }
-                else:
-                    debug_info['model_structure']['pca'] = None
-            elif key == 'input_features':
-                debug_info['model_structure']['input_features'] = {
-                    'count': len(value),
-                    'features': value
+            elif key == 'position_scaler':
+                debug_info['model_structure']['position_scaler'] = {
+                    'type': type(value).__name__,
+                    'fitted': hasattr(value, 'mean_')
                 }
             elif key == 'performance_metrics':
-                debug_info['model_structure']['performance_metrics'] = value
+                debug_info['model_structure']['performance_metrics'] = {
+                    'available_metrics': list(value.keys()),
+                    'metric_count': len(value)
+                }
+            else:
+                debug_info['model_structure'][key] = {
+                    'type': type(value).__name__,
+                    'value': str(value) if not isinstance(value, (list, dict)) else f"{type(value).__name__} with {len(value)} items"
+                }
         
         return debug_info
+    
+    def validate_position_input(self, normalized_positions: Union[float, List[float], np.ndarray]) -> Dict[str, Any]:
+        """
+        Validate normalized position input for prediction
+        
+        Args:
+            normalized_positions: Position(s) to validate
+            
+        Returns:
+            Dictionary with validation results
+        """
+        validation_results = {
+            'valid': True,
+            'errors': [],
+            'warnings': [],
+            'input_analysis': {}
+        }
+        
+        # Check if model exists
+        if not self.position_model:
+            validation_results['valid'] = False
+            validation_results['errors'].append("No position model trained")
+            return validation_results
+        
+        # Convert input to array for analysis
+        if isinstance(normalized_positions, (int, float)):
+            positions_array = np.array([normalized_positions])
+        else:
+            positions_array = np.array(normalized_positions).flatten()
+        
+        # Analyze input data
+        validation_results['input_analysis'] = {
+            'shape': positions_array.shape,
+            'min_value': float(np.min(positions_array)),
+            'max_value': float(np.max(positions_array)),
+            'mean_value': float(np.mean(positions_array)),
+            'has_nan': bool(np.isnan(positions_array).any()),
+            'has_inf': bool(np.isinf(positions_array).any())
+        }
+        
+        # Check for problematic values
+        if np.isnan(positions_array).any():
+            validation_results['valid'] = False
+            validation_results['errors'].append("Input contains NaN values")
+            
+        if np.isinf(positions_array).any():
+            validation_results['valid'] = False
+            validation_results['errors'].append("Input contains infinite values")
+        
+        # Check position range (should be 0.0 to 1.0 for normalized positions)
+        if np.any(positions_array < 0.0):
+            validation_results['warnings'].append("Some positions are below 0.0 (not normalized)")
+            
+        if np.any(positions_array > 1.0):
+            validation_results['warnings'].append("Some positions are above 1.0 (not normalized)")
+        
+        return validation_results
     
     def validate_prediction_input(self, current_state: pd.DataFrame) -> Dict[str, Any]:
         """
@@ -770,7 +677,7 @@ class ExpertTrajectoryLearner:
 
 
 class ExpertImitateLearningService:
-    """Main imitation learning service that combines behavior learning and trajectory optimization"""
+    """Main imitation learning service that focuses on trajectory optimization"""
     
     def __init__(self, models_directory: str = "imitation_models"):
         """
@@ -782,8 +689,7 @@ class ExpertImitateLearningService:
         self.models_directory = Path(models_directory)
         self.models_directory.mkdir(exist_ok=True)
         
-        self.behavior_learner = BehaviorLearner()
-        self.trajectory_learner = ExpertTrajectoryLearner()
+        self.position_learner = ExpertPositionLearner()
         self.trained_models = {}
         
         print(f"[INFO] ImitationLearningService initialized. Models directory: {self.models_directory}")
@@ -794,13 +700,13 @@ class ExpertImitateLearningService:
         
         Args:
             telemetry_data: List of expert telemetry data dictionaries
-            learning_objectives: List of what to learn ('behavior', 'trajectory', 'both')
+            learning_objectives: List of what to learn ('trajectory')
             
         Returns:
             Dictionary with trained models and learning insights, serialized objects and ready for storage
         """
         if learning_objectives is None:
-            learning_objectives = ['behavior', 'trajectory']
+            learning_objectives = ['trajectory']
         
         print(f"[INFO {self.__class__.__name__}] Learning from {len(telemetry_data)} expert demonstrations")
         print(f"[INFO {self.__class__.__name__}] Learning objectives: {learning_objectives}")
@@ -813,35 +719,11 @@ class ExpertImitateLearningService:
         
         results = {}
         
-        # Learn driving behavior patterns
-        if 'behavior' in learning_objectives:
-            print("[INFO] Extracting driving behavior patterns...")
-            
-            # generate behavior features
-            behavior_features = self.behavior_learner.generate_driving_style_features(processed_df)
-            
-            # Classify driving styles
-            driving_styles = self.behavior_learner.classify_driving_style(behavior_features)
-            
-            # Train behavior prediction model
-            behavior_model = self.behavior_learner.train_behavior_model(behavior_features, driving_styles)
-            
-            results['behavior_learning'] = {
-                'modelData': {
-                    'model': behavior_model
-                },
-                'metadata':{
-                    'features_shape': behavior_features.shape,
-                    'style_distribution': driving_styles.value_counts().to_dict(),
-                    'model_performance': behavior_model.get('performance_metrics', {})
-                }
-            }
-        
-        # Learn optimal trajectories
+        # Learn expert position mapping
         if 'trajectory' in learning_objectives:
-            print("[INFO] Learning optimal trajectories...")
-            trajectory_results = self.trajectory_learner.learn_optimal_trajectory(processed_df)
-            results['trajectory_learning'] = trajectory_results
+            print("[INFO] Learning expert position mapping...")
+            position_results = self.position_learner.learn_expert_position_mapping(processed_df)
+            results['position_learning'] = position_results
 
         results['learning_summary'] = self._generate_learning_summary(results)
         
@@ -870,64 +752,15 @@ class ExpertImitateLearningService:
             print("[WARNING] No model data available")
             return {"error": "No trained models available"}
         
-        # Predict driving behavior
-        if 'behavior_learning' in self.trained_models:
+        # Predict expert actions based on position
+        if 'position_learning' in self.trained_models:
             try:
-                # Deserialize the behavior model if it's still serialized
-                behavior_model_raw = self.trained_models['behavior_learning']['modelData']['model']
-                if isinstance(behavior_model_raw, str):
-                    # Model is serialized, deserialize it
-                    behavior_model = self.deserialize_data(behavior_model_raw)
-                else:
-                    # Model is already deserialized
-                    behavior_model = behavior_model_raw
-                
-                # Extract behavior features
-                behavior_features = self.behavior_learner.generate_driving_style_features(processed_df)
-                
-                # Prepare features
-                feature_cols = behavior_model['feature_names']
-                
-                # Check if we have the required features
-                missing_features = [col for col in feature_cols if col not in behavior_features.columns]
-                if missing_features:
-                    print(f"[WARNING] Missing features for behavior prediction: {missing_features}")
-                    # Add missing features with default values
-                    for col in missing_features:
-                        behavior_features[col] = 0.0
-                
-                X = behavior_features[feature_cols].fillna(0)
-                X_scaled = behavior_model['scaler'].transform(X)
-                
-                # Predict
-                behavior_pred = behavior_model['model'].predict(X_scaled)
-                behavior_proba = behavior_model['model'].predict_proba(X_scaled)
-                
-                # Decode prediction
-                predicted_style = behavior_model['label_encoder'].inverse_transform(behavior_pred)[0]
-                style_confidence = np.max(behavior_proba)
-                
-                predictions['driving_behavior'] = {
-                    'predicted_style': predicted_style,
-                    'confidence': float(style_confidence),
-                    'style_probabilities': dict(zip(
-                        behavior_model['label_encoder'].classes_,
-                        behavior_proba[0]
-                    ))
-                }
-            except Exception as e:
-                print(f"[WARNING] Error predicting driving behavior: {e}")
-                predictions['driving_behavior'] = {"error": str(e)}
-        
-        # Predict optimal actions
-        if 'trajectory_learning' in self.trained_models:
-            try:
-                # Deserialize trajectory models if they're still serialized
-                trajectory_model_data = self.trained_models['trajectory_learning']['modelData']
+                # Deserialize position models if they're still serialized
+                position_model_data = self.trained_models['position_learning']['modelData']
                 
                 # Check if models need deserialization
-                if 'models' in trajectory_model_data:
-                    models = trajectory_model_data['models']
+                if 'models' in position_model_data:
+                    models = position_model_data['models']
                     deserialized_models = {}
                     
                     for model_name, model_data in models.items():
@@ -938,27 +771,41 @@ class ExpertImitateLearningService:
                             # Model is already deserialized
                             deserialized_models[model_name] = model_data
                     
-                    # Update the models in trajectory_model_data
-                    trajectory_model_data = trajectory_model_data.copy()
-                    trajectory_model_data['models'] = deserialized_models
+                    # Update the models in position_model_data
+                    position_model_data = position_model_data.copy()
+                    position_model_data['models'] = deserialized_models
                     
                     # Also deserialize scaler if needed
-                    if isinstance(trajectory_model_data.get('scaler'), str):
-                        trajectory_model_data['scaler'] = self.deserialize_data(trajectory_model_data['scaler'])
+                    if isinstance(position_model_data.get('position_scaler'), str):
+                        position_model_data['position_scaler'] = self.deserialize_data(position_model_data['position_scaler'])
+                
+                # Set the position model
+                self.position_learner.position_model = position_model_data
+                
+                # Extract normalized positions from the input data
+                if 'Graphics_normalized_car_position' in processed_df.columns:
+                    normalized_positions = processed_df['Graphics_normalized_car_position'].values
+                    optimal_actions = self.position_learner.predict_expert_actions_at_position(normalized_positions)
                     
-                    # Also deserialize PCA if needed and exists
-                    if trajectory_model_data.get('pca') is not None and isinstance(trajectory_model_data.get('pca'), str):
-                        trajectory_model_data['pca'] = self.deserialize_data(trajectory_model_data['pca'])
-                
-                # Set the trajectory model
-                self.trajectory_learner.trajectory_model = trajectory_model_data
-                
-                optimal_actions = self.trajectory_learner.predict_optimal_actions(processed_df)
-                predictions['optimal_actions'] = optimal_actions
+                    # If multiple rows, average the predictions for consistency with old interface
+                    if isinstance(optimal_actions, list):
+                        averaged_actions = {}
+                        for key in optimal_actions[0].keys():
+                            averaged_actions[key] = np.mean([action[key] for action in optimal_actions])
+                        predictions['optimal_actions'] = averaged_actions
+                    else:
+                        predictions['optimal_actions'] = optimal_actions
+                else:
+                    predictions['optimal_actions'] = {"error": "No normalized track position data available"}
+                    
             except Exception as e:
-                raise Exception(f"[WARNING] Could not predict optimal actions: {e}")
+                raise Exception(f"[WARNING] Could not predict expert actions: {e}")
         
-        # If no specific models are available, provide basic estimates based on telemetry
+        # Legacy support - check for old trajectory_learning models
+        elif 'trajectory_learning' in self.trained_models:
+            predictions['optimal_actions'] = {"error": "Legacy trajectory model detected. Please retrain with new position-based model."}
+        
+        # If no specific models are available, provide error
         if not predictions or all('error' in v for v in predictions.values() if isinstance(v, dict)):
             raise Exception("[Error] No valid model available for predictions")
         
@@ -971,21 +818,12 @@ class ExpertImitateLearningService:
             'learning_completed': []
         }
         
-        if 'behavior_learning' in results:
-            behavior_info = results['behavior_learning']
-            summary['learning_completed'].append('behavior')
-            summary['behavior_summary'] = {
-                'features_extracted': behavior_info['metadata']['features_shape'][1],
-                'styles_identified': len(behavior_info['metadata']['style_distribution']),
-                'model_accuracy': behavior_info['metadata'].get('model_performance', {}).get('accuracy', 0)
-            }
-        
-        if 'trajectory_learning' in results:
-            trajectory_info = results['trajectory_learning']
-            summary['learning_completed'].append('trajectory')
+        if 'position_learning' in results:
+            position_info = results['position_learning']
+            summary['learning_completed'].append('position_learning')
             
             # Calculate average performance metric, handling both regression (r2) and classification (accuracy) models
-            performance_metrics = trajectory_info['metadata']['performance_metrics']
+            performance_metrics = position_info['metadata']['performance_metrics']
             
             # Separate regression and classification metrics
             r2_scores = [metrics['r2'] for metrics in performance_metrics.values() if 'r2' in metrics]
@@ -995,13 +833,15 @@ class ExpertImitateLearningService:
             avg_r2 = np.mean(r2_scores) if r2_scores else 0.0
             avg_accuracy = np.mean(accuracy_scores) if accuracy_scores else 0.0
             
-            summary['trajectory_summary'] = {
-                'models_trained': len(trajectory_info['metadata']['models_trained']),
-                'input_features': len(trajectory_info['metadata']['input_features']),
+            summary['position_summary'] = {
+                'models_trained': len(position_info['metadata']['models_trained']),
+                'input_features': len(position_info['metadata']['input_features']),
+                'target_features': len(position_info['metadata']['target_features']),
                 'avg_r2_score': avg_r2,
                 'avg_accuracy_score': avg_accuracy,
                 'regression_models': len(r2_scores),
-                'classification_models': len(accuracy_scores)
+                'classification_models': len(accuracy_scores),
+                'total_training_samples': position_info['metadata']['total_training_samples']
             }
         
         return summary
@@ -1039,38 +879,26 @@ class ExpertImitateLearningService:
 
         expert_feature_rows: List[Dict[str, Any]] = []
 
-        # Trajectory models only (behavior intentionally excluded)
-        print("[INFO] Preparing trajectory models...")
-        trajectory_bundle = None
-        if 'trajectory_learning' in self.trained_models:
-            try:
-                trajectory_bundle = self.trained_models['trajectory_learning']['modelData']
-                print("[INFO] Deserializing trajectory models...")
-                if isinstance(trajectory_bundle.get('scaler'), str):
-                    trajectory_bundle['scaler'] = self.deserialize_data(trajectory_bundle['scaler'])
-                if trajectory_bundle.get('pca') is not None and isinstance(trajectory_bundle.get('pca'), str):
-                    trajectory_bundle['pca'] = self.deserialize_data(trajectory_bundle['pca'])
-                deserialized_models = {}
-                for name, mdl in trajectory_bundle.get('models', {}).items():
-                    print(f"[INFO] Deserializing model: {name}")
-                    deserialized_models[name] = self.deserialize_data(mdl) if isinstance(mdl, str) else mdl
-                trajectory_bundle['models'] = deserialized_models
-                self.trajectory_learner.trajectory_model = trajectory_bundle
-                print(f"[INFO] Successfully prepared {len(deserialized_models)} trajectory models")
-            except Exception as e:
-                print(f"[WARNING] Could not prepare trajectory models: {e}")
-                trajectory_bundle = None
+        # Position models should already be loaded/deserialized
+        print("[INFO] Using pre-loaded position models...")
+        if not self.position_learner.position_model:
+            raise ValueError("Position model not loaded. Call train_ai_model() or deserialize_imitation_model() first.")
 
-        def predict_optimal_batch(batch_df: pd.DataFrame) -> List[Dict[str, float]]:
-            """Predict optimal actions for a batch of rows - much faster than row-by-row"""
-            if trajectory_bundle is None:
+        def predict_expert_batch(batch_df: pd.DataFrame) -> List[Dict[str, float]]:
+            """Predict expert actions for a batch of normalized positions - much faster than row-by-row"""
+            if not self.position_learner.position_model:
                 return [{} for _ in range(len(batch_df))]
             try:
-                # Use the new batch prediction method
-                batch_predictions = self.trajectory_learner.predict_optimal_actions_batch(batch_df)
+                # Extract normalized positions from batch
+                if 'Graphics_normalized_car_position' not in batch_df.columns:
+                    print("[WARNING] No normalized position data available for expert predictions")
+                    return [{} for _ in range(len(batch_df))]
+                
+                normalized_positions = batch_df['Graphics_normalized_car_position'].values
+                batch_predictions = self.position_learner.predict_expert_actions_at_position(normalized_positions)
                 return batch_predictions
             except Exception as e:
-                print(f"[WARNING] Batch optimal action prediction failed: {e}")
+                print(f"[WARNING] Batch expert action prediction failed: {e}")
                 return [{} for _ in range(len(batch_df))]
 
         total_rows = len(processed_df)
@@ -1093,7 +921,7 @@ class ExpertImitateLearningService:
                 batch_df = processed_df.iloc[batch_start:batch_end]
                 
                 # Get predictions for entire batch at once
-                batch_predictions = predict_optimal_batch(batch_df)
+                batch_predictions = predict_expert_batch(batch_df)
                 
                 # Process each row in the batch
                 for i, row_predictions in enumerate(batch_predictions):
@@ -1142,56 +970,25 @@ class ExpertImitateLearningService:
         import copy
         results_copy = copy.deepcopy(results)
         
-        # Serialize behavior learning model if present
-        if 'behavior_learning' in results_copy and 'model' in results_copy['behavior_learning']['modelData']:
-            print("[INFO] Serializing behavior learning model...")
-            # Only serialize the actual model from the behavior_learning['model'] structure
-            behavior_model_to_serialize = results_copy['behavior_learning']['modelData']['model']
-            behavior_model_data = self.serialize_data(
-                behavior_model_to_serialize
-            )
-            results_copy['behavior_learning']['modelData']['model'] = behavior_model_data
-
-
-        # Serialize behavior learning scaler if present
-        if 'behavior_learning' in results_copy and 'scaler' in results_copy['behavior_learning']['modelData']:
-            print("[INFO] Serializing behavior learning scaler...")
-            # Only serialize the actual model from the behavior_learning['model'] structure
-            behavior_model_to_serialize = results_copy['behavior_learning']['modelData']['scaler']
-            behavior_model_data = self.serialize_data(
-                behavior_model_to_serialize
-            )
-            results_copy['behavior_learning']['modelData']['scaler'] = behavior_model_data
-            
-        # Serialize trajectory learning models if present
-        if 'trajectory_learning' in results_copy and 'models' in results_copy['trajectory_learning']['modelData']:
-            print("[INFO] Serializing trajectory learning models...")
-            # Only serialize the actual trajectory_model from the trajectory_learning structure
-            trajectory_models_to_serialize = results_copy['trajectory_learning']['modelData']['models']
+        # Serialize position learning models if present
+        if 'position_learning' in results_copy and 'models' in results_copy['position_learning']['modelData']:
+            print("[INFO] Serializing position learning models...")
+            # Only serialize the actual position_model from the position_learning structure
+            position_models_to_serialize = results_copy['position_learning']['modelData']['models']
                 
             # Serialize each model individually
-            serialized_trajectory_models = {}
-            for model_name, model in trajectory_models_to_serialize.items():
-                print(f"[INFO] Serializing trajectory model: {model_name}")
+            serialized_position_models = {}
+            for model_name, model in position_models_to_serialize.items():
+                print(f"[INFO] Serializing position model: {model_name}")
                 serialized_model_data = self.serialize_data(model)
-                serialized_trajectory_models[model_name] = serialized_model_data
+                serialized_position_models[model_name] = serialized_model_data
                 
-            # Store serialized models back in the trajectory model structure
-            results_copy['trajectory_learning']['modelData']['models'] = serialized_trajectory_models
+            # Store serialized models back in the position model structure
+            results_copy['position_learning']['modelData']['models'] = serialized_position_models
             
-            trajectory_scaler_to_serialize = results_copy['trajectory_learning']['modelData']['scaler']
-            serialized_scaler_data = self.serialize_data(
-                trajectory_scaler_to_serialize
-            )
-            results_copy['trajectory_learning']['modelData']['scaler'] = serialized_scaler_data
-            
-            # Serialize trajectory PCA only if it exists and is not None
-            trajectory_pca_to_serialize = results_copy['trajectory_learning']['modelData']['pca']
-            if trajectory_pca_to_serialize is not None:
-                serialized_pca_data = self.serialize_data(trajectory_pca_to_serialize)
-                results_copy['trajectory_learning']['modelData']['pca'] = serialized_pca_data
-            else:
-                results_copy['trajectory_learning']['modelData']['pca'] = None
+            position_scaler_to_serialize = results_copy['position_learning']['modelData']['position_scaler']
+            serialized_scaler_data = self.serialize_data(position_scaler_to_serialize)
+            results_copy['position_learning']['modelData']['position_scaler'] = serialized_scaler_data
         
         # Ensure all values are JSON-serializable
         json_friendly_results = self._ensure_json_serializable(results_copy)
@@ -1239,59 +1036,38 @@ class ExpertImitateLearningService:
         """
         try:
             results = serialized_results.copy()
-            
-            # Deserialize behavior learning model if present
-            if 'behavior_learning' in results and 'model' in results['behavior_learning']['modelData']:
-                print("[INFO] Deserializing behavior learning model...")
-                # Deserialize the actual model from the behavior_learning['model'] structure
-                behavior_model_serialized = results['behavior_learning']['modelData']['model']
-                behavior_model_deserialized = self.deserialize_data(behavior_model_serialized)
-                results['behavior_learning']['modelData']['model'] = behavior_model_deserialized
-
-            # Deserialize behavior learning scaler if present
-            if 'behavior_learning' in results and 'scaler' in results['behavior_learning']['modelData']:
-                print("[INFO] Deserializing behavior learning scaler...")
-                # Deserialize the actual scaler from the behavior_learning structure
-                behavior_scaler_serialized = results['behavior_learning']['modelData']['scaler']
-                behavior_scaler_deserialized = self.deserialize_data(behavior_scaler_serialized)
-                results['behavior_learning']['modelData']['scaler'] = behavior_scaler_deserialized
                 
-            # Deserialize trajectory learning models if present
-            if 'trajectory_learning' in results and 'models' in results['trajectory_learning']['modelData']:
-                print("[INFO] Deserializing trajectory learning models...")
-                # Deserialize each trajectory model individually
-                trajectory_models_serialized = results['trajectory_learning']['modelData']['models']
+            # Deserialize position learning models if present
+            if 'position_learning' in results and 'models' in results['position_learning']['modelData']:
+                print("[INFO] Deserializing position learning models...")
+                # Deserialize each position model individually
+                position_models_serialized = results['position_learning']['modelData']['models']
                     
                 # Deserialize each model individually
-                deserialized_trajectory_models = {}
-                for model_name, serialized_model in trajectory_models_serialized.items():
-                    print(f"[INFO] Deserializing trajectory model: {model_name}")
+                deserialized_position_models = {}
+                for model_name, serialized_model in position_models_serialized.items():
+                    print(f"[INFO] Deserializing position model: {model_name}")
                     deserialized_model = self.deserialize_data(serialized_model)
-                    deserialized_trajectory_models[model_name] = deserialized_model
+                    deserialized_position_models[model_name] = deserialized_model
                     
-                # Store deserialized models back in the trajectory model structure
-                results['trajectory_learning']['modelData']['models'] = deserialized_trajectory_models
+                # Store deserialized models back in the position model structure
+                results['position_learning']['modelData']['models'] = deserialized_position_models
                 
-                # Deserialize trajectory scaler
-                trajectory_scaler_serialized = results['trajectory_learning']['modelData']['scaler']
-                deserialized_scaler = self.deserialize_data(trajectory_scaler_serialized)
-                results['trajectory_learning']['modelData']['scaler'] = deserialized_scaler
-                
-                # Deserialize trajectory PCA (only if it exists and is not None)
-                if 'pca' in results['trajectory_learning']['modelData']:
-                    trajectory_pca_serialized = results['trajectory_learning']['modelData']['pca']
-                    if trajectory_pca_serialized is not None:
-                        deserialized_pca = self.deserialize_data(trajectory_pca_serialized)
-                        results['trajectory_learning']['modelData']['pca'] = deserialized_pca
-                    else:
-                        results['trajectory_learning']['modelData']['pca'] = None
+                # Deserialize position scaler
+                position_scaler_serialized = results['position_learning']['modelData']['position_scaler']
+                deserialized_scaler = self.deserialize_data(position_scaler_serialized)
+                results['position_learning']['modelData']['position_scaler'] = deserialized_scaler
                 
             # Load the deserialized models into this service instance
             self.trained_models = results
             
-            # Also set the trajectory model directly in the trajectory learner for immediate use
-            if 'trajectory_learning' in results:
-                self.trajectory_learner.trajectory_model = results['trajectory_learning']['modelData']
+            # Also set the position model directly in the position learner for immediate use
+            if 'position_learning' in results:
+                self.position_learner.position_model = results['position_learning']['modelData']
+            
+            # Legacy support for old trajectory models
+            elif 'trajectory_learning' in results:
+                print("[INFO] Legacy trajectory model detected - will need retraining for full functionality")
                 
             print(f"[INFO] Successfully deserialized and loaded imitation models into service instance")
             print(f"[INFO] - Models available: {list(results.keys())}")
