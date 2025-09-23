@@ -243,7 +243,7 @@ class ExpertActionTransformer(nn.Module):
     - Enriched context: Expert targets + gap features + track/environmental context
     
     OUTPUT PREDICTIONS:
-    - Non-expert's next improved actions: The driver's improved throttle, brake, steering, etc.
+    - Non-expert's next improved actions: The driver's improved gas, brake, steering, etc.
     - These represent the driver's evolving actions as they learn, NOT expert actions
     
     TRAINING PROCESS:
@@ -292,7 +292,7 @@ class ExpertActionTransformer(nn.Module):
         # Store configuration
         self.input_features_count = telemetry_features_count
         self.context_features_count = context_features_count 
-        self.output_features_count = 5  # Fixed output size: throttle, brake, steering, gear, speed
+        self.output_features_count = 4  # Fixed output size: gas, brake, steer_angle, gear
         self.d_model = d_model
         self.sequence_length = sequence_length
         self.time_step_seconds = time_step_seconds  # Control how much real time each step represents
@@ -411,7 +411,7 @@ class ExpertActionTransformer(nn.Module):
         
         Step 6: ACTION PROJECTION
         - Maps high-dimensional decoder output back to action space
-        - 256-dim → 5-dim: [throttle, brake, steering, gear, speed]
+        - 256-dim → 4-dim: [gas, brake, steer_angle, gear]
         
         Args:
             telemetry: Non-expert telemetry features [batch_size, seq_len, input_features]
@@ -729,7 +729,7 @@ class ExpertActionTransformer(nn.Module):
         
         Step D: ACTION PROJECTION
           - Converts high-dimensional decoder output to concrete racing actions
-          - Maps internal representation → [throttle, brake, steering, gear, speed]
+          - Maps internal representation → [gas, brake, steer_angle, gear]
           - These are the actual control inputs driver/car should execute
         
         Step E: SEQUENCE EXTENSION
@@ -777,7 +777,7 @@ class ExpertActionTransformer(nn.Module):
         Returns:
             Complete action sequence [batch_size, seq_len, action_features]
             Sequential racing actions from immediate next step through prediction horizon
-            Format: [throttle%, brake%, steering_angle, gear, target_speed] per time step
+            Format: [gas%, brake%, steer_angle, gear] per time step
         """
         batch_size = memory.shape[0]
         device = memory.device
@@ -951,23 +951,19 @@ class ExpertActionTransformer(nn.Module):
         Returns:
             Constrained actions [batch_size, seq_len, action_features]
         """
-        # Assume action order: [throttle, brake, steering, gear, speed]
+        # Assume action order: [gas, brake, steer_angle, gear]
         constrained = raw_actions.clone()
         
-        # Throttle and brake: [0, 1]
-        constrained[..., 0] = torch.sigmoid(raw_actions[..., 0])  # throttle
+        # Gas and brake: [0, 1]
+        constrained[..., 0] = torch.sigmoid(raw_actions[..., 0])  # gas
         constrained[..., 1] = torch.sigmoid(raw_actions[..., 1])  # brake
         
         # Steering: [-1, 1]  
-        constrained[..., 2] = torch.tanh(raw_actions[..., 2])     # steering
+        constrained[..., 2] = torch.tanh(raw_actions[..., 2])     # steer_angle
         
-        # Gear: typically [1, 6], use softmax for discrete selection
+        # Gear: typically [1, 6], use clamp for discrete values
         if raw_actions.shape[-1] > 3:
             constrained[..., 3] = torch.clamp(raw_actions[..., 3], 1, 6)  # gear
-        
-        # Speed: [0, inf) but practically [0, 350] km/h, use ReLU + clamp
-        if raw_actions.shape[-1] > 4:
-            constrained[..., 4] = torch.clamp(F.relu(raw_actions[..., 4]), 0, 350)  # speed
         
         return constrained
     
@@ -1186,12 +1182,12 @@ class ExpertActionTransformer(nn.Module):
         for i in range(min(sequence_length, len(predictions))):
             pred = predictions[i]
             
-            # Determine main action for this step
-            throttle, brake, steering, gear, speed = pred[0], pred[1], pred[2], int(pred[3]), pred[4]
+            # Determine main action for this step - now only 4 actions: [gas, brake, steer_angle, gear]
+            gas, brake, steering, gear = pred[0], pred[1], pred[2], int(pred[3])
             
             if brake > 0.3:
                 action = "Apply brakes"
-            elif throttle > 0.7:
+            elif gas > 0.7:
                 action = "Accelerate"
             elif abs(steering) > 0.1:
                 direction = "right" if steering > 0 else "left"
@@ -1203,11 +1199,10 @@ class ExpertActionTransformer(nn.Module):
                 "step": i + 1,
                 "time_ahead": f"{(i + 1) * self.time_step_seconds:.1f}s",
                 "action": action,
-                "throttle": round(float(throttle), 2),
+                "gas": round(float(gas), 2),
                 "brake": round(float(brake), 2), 
-                "steering": round(float(steering), 2),
-                "gear": int(gear),
-                "target_speed": round(float(speed), 1)
+                "steer_angle": round(float(steering), 2),
+                "gear": int(gear)
             })
         
         return sequence
@@ -1469,7 +1464,9 @@ class TelemetryActionDataset(Dataset):
         self.sequence_length = sequence_length
         
         # Default feature lists
-        self.telemetry_features = list(telemetry_data[0].keys())
+        self.action_features = self._get_default_action_features()
+        # Remove action features from telemetry features to avoid data leakage
+        self.telemetry_features = [f for f in telemetry_data[0].keys() if f not in self.action_features]
         
         # Preprocessing
         self._preprocess_data()
@@ -1480,7 +1477,7 @@ class TelemetryActionDataset(Dataset):
     def _get_default_action_features(self) -> List[str]:
         """Get default action features to predict (non-expert driver's actual actions)""" 
         return [
-            "Physics_gas", "Physics_brake", "Physics_steer_angle", "Physics_gear", "Physics_speed_kmh"
+            "Physics_gas", "Physics_brake", "Physics_steer_angle", "Physics_gear"
         ]
     
     def _preprocess_data(self):
@@ -1502,6 +1499,9 @@ class TelemetryActionDataset(Dataset):
         # Convert list of telemetry dictionaries -> numpy matrix [samples, features]
         self.telemetry_matrix = self._build_matrix(self.telemetry_data, self.telemetry_features)
         
+        # Extract action targets separately from telemetry data
+        self.action_matrix = self._build_matrix(self.telemetry_data, self.action_features)
+        
         # Extract contextual features using canonical ordering if available
         if self.enriched_contextual_data:
             # Use canonical ordering for consistency across training and prediction
@@ -1513,13 +1513,17 @@ class TelemetryActionDataset(Dataset):
         
         # Normalize features, because features have vastly different scales
         self.telemetry_scaler = StandardScaler()
+        self.action_scaler = StandardScaler()
         self.context_scaler = StandardScaler() if self.context_matrix is not None else None
+        
         self.telemetry_matrix = self.telemetry_scaler.fit_transform(self.telemetry_matrix)
+        self.action_matrix = self.action_scaler.fit_transform(self.action_matrix)
         if self.context_matrix is not None:
             self.context_matrix = self.context_scaler.fit_transform(self.context_matrix)
         
         print(f"[INFO] Preprocessed dataset: {self.telemetry_matrix.shape[0]} samples, "
-              f"{self.telemetry_matrix.shape[1]} telemetry features")
+              f"{self.telemetry_matrix.shape[1]} telemetry features, "
+              f"{self.action_matrix.shape[1]} action features")
         
         if self.context_matrix is not None:
             print(f"[INFO] Context matrix: {self.context_matrix.shape[1]} contextual features in canonical order")
@@ -1613,27 +1617,16 @@ class TelemetryActionDataset(Dataset):
         
         Returns:
             Tuple of (telemetry_seq, context_seq, action_seq) as tensors
+            - telemetry_seq: Non-action telemetry features (input)
+            - context_seq: Enriched contextual features (input)
+            - action_seq: Action targets extracted from telemetry (target)
         """
         start_idx = self.sequence_indices[idx]
         end_idx = start_idx + self.sequence_length
         
         # Extract sequences
         telemetry_seq = torch.tensor(self.telemetry_matrix[start_idx:end_idx], dtype=torch.float32)
-        
-        # Extract action features from telemetry data (actions are already included in telemetry)
-        # Get action feature indices from telemetry features
-        action_feature_names = self._get_default_action_features()
-        action_indices = []
-        for action_feature in action_feature_names:
-            if action_feature in self.telemetry_features:
-                action_indices.append(self.telemetry_features.index(action_feature))
-        
-        # Extract action sequence from telemetry matrix using the identified indices
-        if action_indices:
-            action_seq = torch.tensor(self.telemetry_matrix[start_idx:end_idx, action_indices], dtype=torch.float32)
-        else:
-            # Fallback: create zeros if no action features found
-            action_seq = torch.zeros(self.sequence_length, len(action_feature_names), dtype=torch.float32)
+        action_seq = torch.tensor(self.action_matrix[start_idx:end_idx], dtype=torch.float32)
         
         if self.context_matrix is not None:
             context_seq = torch.tensor(self.context_matrix[start_idx:end_idx], dtype=torch.float32)
@@ -1643,8 +1636,7 @@ class TelemetryActionDataset(Dataset):
     
     def get_feature_names(self) -> Tuple[List[str], List[str]]:
         """Get telemetry and action feature names"""
-        action_features = self._get_default_action_features()
-        return self.telemetry_features, action_features
+        return self.telemetry_features, self.action_features
     
     def get_context_feature_names(self) -> Optional[List[str]]:
         """
@@ -1673,7 +1665,8 @@ class TelemetryActionDataset(Dataset):
     def get_scalers(self) -> Dict[str, StandardScaler]:
         """Get the fitted scalers for denormalization"""
         scalers = {
-            'telemetry': self.telemetry_scaler
+            'telemetry': self.telemetry_scaler,
+            'actions': self.action_scaler
         }
         if self.context_scaler is not None:
             scalers['context'] = self.context_scaler
