@@ -156,7 +156,7 @@ class Full_dataset_TelemetryMLService:
             model_data = model_response.get("modelData", {})
         
         if not model_data:
-            raise Exception("No model data found in response")
+            raise Exception("No modelData in data found in response")
 
         # Deserialize the model data using provided function or default
         if deserializer_func:
@@ -321,7 +321,7 @@ class Full_dataset_TelemetryMLService:
                     print(f"[INFO] Successfully fetched and cached model for {model_key}")
                     
                 except Exception as fetch_error:
-                    print(f"[ERROR] Failed to fetch model: {str(fetch_error)}")
+                    print(f"[ERROR] Failed to fetch model {model_key}: {str(fetch_error)}")
                     raise fetch_error
                 finally:
                     # Always signal completion and clean up lock when we're the fetching thread
@@ -356,66 +356,6 @@ class Full_dataset_TelemetryMLService:
         
         print("\n" + border_line + "\n" + empty_line + "\n" + title_line + "\n" + empty_line + "\n" + border_line + "\n", flush=True)
         
-    
-    def preload_models_for_session(self, 
-                                   track_name: str, 
-                                   car_name: str,
-                                   model_types: Optional[List[str]] = None) -> Dict[str, Any]:
-        """
-        Preload models for a racing session to improve performance
-        
-        Args:
-            track_name: Track name for the session
-            car_name: Car name for the session
-            model_types: Optional list of model types to preload (default: all available)
-            
-        Returns:
-            Dictionary with preload results
-        """
-        if model_types is None:
-            model_types = ["imitation_learning", "corner_shape_unsupervised"]
-        
-        results = {
-            "track_name": track_name,
-            "car_name": car_name,
-            "preloaded_models": [],
-            "failed_models": [],
-            "total_preload_time": 0
-        }
-        
-        start_time = datetime.now()
-        
-        for model_type in model_types:
-            try:
-                # Check if already cached
-                if self.model_cache.get(model_type=model_type, track_name=track_name, car_name=car_name):
-                    results["preloaded_models"].append(f"{model_type} (already cached)")
-                    continue
-                
-                # Attempt to fetch and cache the model
-                if model_type == "imitation_learning":
-                    # This would typically be an async operation, but we'll simulate it
-                    print(f"[INFO] Preloading {model_type} model for {track_name}/{car_name}")
-                    # In a real scenario, you'd fetch from backend here
-                    results["preloaded_models"].append(model_type)
-                elif model_type == "corner_shape_unsupervised":
-                    # Corner shape analysis not yet implemented
-                    print(f"[INFO] Corner shape analysis not yet implemented")
-                    results["failed_models"].append(f"{model_type}: Not yet implemented")
-                
-            except Exception as e:
-                error_info = f"{model_type}: {str(e)}"
-                results["failed_models"].append(error_info)
-                print(f"[ERROR] Failed to preload {model_type}: {e}")
-        
-        end_time = datetime.now()
-        results["total_preload_time"] = (end_time - start_time).total_seconds()
-        
-        print(f"[INFO] Preload completed: {len(results['preloaded_models'])} successful, "
-              f"{len(results['failed_models'])} failed, "
-              f"{results['total_preload_time']:.2f}s total")
-        
-        return results
     def get_fetch_locks_status(self) -> Dict[str, Any]:
         """
         Get status of current fetch locks for debugging purposes
@@ -508,20 +448,17 @@ class Full_dataset_TelemetryMLService:
             
         try:
             #save the info to backend
-
-            ai_model_dto = {
-                "modelType": "imitation_learning",
-                "trackName": trackName,
-                "carName": carName,
-                "modelData": results,
-                "metadata": {
+            await backend_service.save_ai_model(
+                model_type="imitation_learning",
+                track_name=trackName,
+                car_name=carName,
+                model_data=results,
+                metadata={
                     "summary": results.get("summary", {}),
                     "training_timestamp": datetime.now().isoformat()
                 },
-                "isActive": True
-            }
-            
-            await backend_service.save_ai_model(ai_model_dto)
+                is_active=True
+            )
         except Exception as error:
             pass
         
@@ -584,17 +521,16 @@ class Full_dataset_TelemetryMLService:
             
             # Save results to backend if successful
             if results.get("success"):
-                model_data = {
-                    "modelType": "corner_identification",
-                    "trackName": trackName,
-                    "carName": carName or "all_cars",
-                    "modelData": results,
-                    "timestamp": datetime.now().isoformat()
-                }
-                
                 try:
                     await self.backend_service.save_ai_model(
-                        AiModelDto(**model_data)
+                        model_type="corner_identification",
+                        track_name=trackName,
+                        car_name=carName or "all_cars",
+                        model_data=results,
+                        metadata={
+                            "timestamp": datetime.now().isoformat()
+                        },
+                        is_active=True
                     )
                     print(f"[INFO] Corner identification model saved to backend for {trackName}")
                 except Exception as save_error:
@@ -654,7 +590,6 @@ class Full_dataset_TelemetryMLService:
             }
         
         try:
-            print(f"[INFO] Fetching transformer model for {trackName}/{carName or 'any'}")
             
             # Initialize transformer model
             transformer_model = ExpertActionTransformer()
@@ -669,7 +604,7 @@ class Full_dataset_TelemetryMLService:
             )
             
             # Extract context data by running corner and tire grip analysis
-            context_data = []
+            context_data = {}
             
             # Get corner identification features
             try:
@@ -686,11 +621,14 @@ class Full_dataset_TelemetryMLService:
                 # Service is async and returns List[Dict[str, Any]]
                 # Use the single telemetry record as a list for extraction
                 corner_features_list = await corner_service.extract_corner_features_for_telemetry([telemetry_dict])
-                context_data.append(corner_features_list)
+                if corner_features_list and len(corner_features_list) > 0:
+                    # Since we passed a single telemetry record, extract the single result dictionary
+                    corner_features = corner_features_list[0]
+                    context_data.update(corner_features)
+                    print(f"[INFO] Added {len(corner_features)} corner features to context")
                 
             except Exception as e:
                 print(f"[Error] Corner identification failed: {e}")
-                context_data['corner_info'] = {}
             
             # Get tire grip features
             try:
@@ -705,7 +643,11 @@ class Full_dataset_TelemetryMLService:
                 
                 # Extract tire grip features from telemetry (async; returns List[Dict])
                 tire_features_list = await tire_grip_service.extract_tire_grip_features([telemetry_dict])
-                context_data.append(tire_features_list)
+                if tire_features_list and len(tire_features_list) > 0:
+                    # Since we passed a single telemetry record, extract the single result dictionary
+                    tire_features = tire_features_list[0]
+                    context_data.update(tire_features)
+                    print(f"[INFO] Added {len(tire_features)} tire grip features to context")
                 
             except Exception as e:
                 print(f"[Error] Tire grip analysis failed: {e}")
@@ -719,15 +661,23 @@ class Full_dataset_TelemetryMLService:
                     model_subtype="imitation_model_data",
                     deserializer_func=expert_service.deserialize_imitation_model
                 )
-                context_data.append(expert_service.extract_expert_state_for_telemetry([telemetry_dict]))
+                expert_state_list = expert_service.extract_expert_state_for_telemetry([telemetry_dict])
+                if expert_state_list and len(expert_state_list) > 0:
+                    # Since we passed a single telemetry record, extract the single result dictionary
+                    expert_state_features = expert_state_list[0]
+                    context_data.update(expert_state_features)
+                    print(f"[INFO] Added {len(expert_state_features)} expert state features to context")
             except Exception as e:
-                print(f"[Error] Tireexpert_service failed: {e}")   
+                print(f"[Error] Expert service failed: {e}")   
                 
             # Use transformer model's predict_human_readable method
             print(f"[INFO] Generating predictions with sequence length: {sequence_length}")
+            print(f"[INFO] Context data keys: {list(context_data.keys()) if context_data else 'No context data'}")
+            print(f"[INFO] Total context features: {len(context_data)}")
+            
             predictions = transformer_model.predict_human_readable(
                 current_telemetry=telemetry_dict,
-                context_data=context_data,
+                context_data=context_data if context_data else None,
                 sequence_length=sequence_length
             )
             
@@ -976,12 +926,12 @@ class Full_dataset_TelemetryMLService:
             serialized_model = model.serialize_model()
             
             # Save to backend
-            transformer_model_dto = {
-                "modelType": "transformer_expert_action",
-                "trackName": trackName,
-                "carName": 'AllCars',
-                "modelData": serialized_model,
-                "metadata": {
+            await backend_service.save_ai_model(
+                model_type="transformer_expert_action",
+                track_name=trackName,
+                car_name='AllCars',
+                model_data=serialized_model,
+                metadata={
                     "training_history": training_history,
                     "test_metrics": test_metrics,
                     "feature_names": {
@@ -989,10 +939,8 @@ class Full_dataset_TelemetryMLService:
                     },
                     "training_timestamp": datetime.now().isoformat()
                 },
-                "isActive": True
-            }
-            
-            await backend_service.save_ai_model(transformer_model_dto)
+                is_active=True
+            )
             
             return {
                 "success": True,
@@ -1047,19 +995,17 @@ class Full_dataset_TelemetryMLService:
             # Train imitation model only on top (expert) telemetry laps
             imitation_result = imitation_learning.train_ai_model(top_training_telemetry_list)
 
-            ai_model_dto = {
-                "modelType": "imitation_learning",
-                "trackName": track_name,
-                "carName": 'AllCars',
-                "modelData": imitation_result,
-                "metadata": {
+            await backend_service.save_ai_model(
+                model_type="imitation_learning",
+                track_name=track_name,
+                car_name='AllCars',
+                model_data=imitation_result,
+                metadata={
                     "summary": imitation_result.get("summary", {}),
                     "training_timestamp": datetime.now().isoformat()
                 },
-                "isActive": True
-            }
-            
-            await backend_service.save_ai_model(ai_model_dto)
+                is_active=True
+            )
             
             # Extract expert state features for each bottom (non-expert) telemetry record
             
@@ -1085,20 +1031,18 @@ class Full_dataset_TelemetryMLService:
                     # Serialize and persist corner model artifact
                     try:
                         corner_serialized = corner_service.serialize_corner_identification_model(track_name=track_name, car_name="all_cars")
-                        corner_model_dto = {
-                            "modelType": "corner_identification",
-                            "trackName": corner_serialized.get("track_name"),
-                            "carName": 'all_cars',
-                            "modelData": corner_serialized,
-                            "metadata": {
+                        await self.backend_service.save_ai_model(
+                            model_type="corner_identification",
+                            track_name=corner_serialized.get("track_name"),
+                            car_name='all_cars',
+                            model_data=corner_serialized,
+                            metadata={
                                 "total_corners": corner_serialized.get("total_corners"),
                                 "clusters": len(corner_serialized.get("corner_clusters", [])),
                                 "serialization_timestamp": corner_serialized.get("serialized_timestamp")
                             },
-                            "isActive": True
-                        }
-                        
-                        await self.backend_service.save_ai_model(corner_model_dto)
+                            is_active=True
+                        )
                         print("[INFO] Saved serialized corner identification model to backend")
                     except Exception as ser_err:
                         raise Exception(f"[WARNING] Failed to serialize/save corner model: {ser_err}")
@@ -1116,18 +1060,17 @@ class Full_dataset_TelemetryMLService:
                 tire_grip_model = await tire_service.train_tire_grip_model(bottom_training_telemetry_list)
                 
                 tire_service_serialized = tire_service.serialize_tire_grip_model()
-                tire_grip_model_dto = {
-                    "modelType": "tire_grip_analysis",
-                    "trackName": "generic",
-                    "carName": "all_cars",
-                    "modelData": tire_service_serialized,
-                    "metadata": {
+                await self.backend_service.save_ai_model(
+                    model_type="tire_grip_analysis",
+                    track_name="generic",
+                    car_name="all_cars",
+                    model_data=tire_service_serialized,
+                    metadata={
                         "model_info": tire_service_serialized.get("model_info", {}),
                         "serialization_timestamp": tire_service_serialized.get("serialized_timestamp")
                     },
-                    "isActive": True
-                }
-                await self.backend_service.save_ai_model(tire_grip_model_dto)
+                    is_active=True
+                )
                 print("[INFO] Saved serialized tire grip analysis model to backend")
             except Exception as e:
                 raise Exception(f"[ERROR] Tire grip analysis training failed: {str(e)}")

@@ -38,7 +38,43 @@ export class AiModelController {
 
     @Get(':id/with-data')
     async findOneWithData(@Param('id') id: string) {
-        return this.aiModelService.findOneWithModelData(id);
+        try {
+            const result = await this.aiModelService.findOneWithModelData(id);
+            
+            // If the model data is too large, provide helpful guidance
+            if (result.modelDataInfo?.isLargeFile) {
+                return {
+                    ...result,
+                    _guidance: {
+                        message: 'This model contains large data that cannot be returned in a single response.',
+                        recommendedEndpoints: {
+                            prepareChunked: `/api/ai-model/active/${result.modelType}/prepare-chunked?trackName=${result.trackName}&carName=${result.carName}`,
+                            getChunk: '/api/ai-model/active/chunked-data/{sessionId}/{chunkIndex}'
+                        },
+                        steps: [
+                            '1. Call the prepare-chunked endpoint to get a session ID',
+                            '2. Use the session ID to fetch individual chunks',
+                            '3. Combine chunks on the client side to reconstruct the full data'
+                        ]
+                    }
+                };
+            }
+            
+            return result;
+        } catch (error) {
+            console.error(`Error in findOneWithData: ${error.message}`);
+            return {
+                success: false,
+                message: `Failed to retrieve model data: ${error.message}`,
+                _guidance: {
+                    message: 'If this is a large model, consider using the chunked data endpoints.',
+                    recommendedEndpoints: {
+                        prepareChunked: '/api/ai-model/active/{modelType}/prepare-chunked',
+                        getChunk: '/api/ai-model/active/chunked-data/{sessionId}/{chunkIndex}'
+                    }
+                }
+            };
+        }
     }
 
     @Put(':id')
@@ -67,16 +103,46 @@ export class AiModelController {
         @Query('carName') carName?: string
     ) {
         console.log(`Preparing chunked data for active model - Track: ${trackName}, Car: ${carName}, Type: ${modelType}`);
-        const modelData = await this.aiModelService.getActiveModelWithData(trackName, carName, modelType);
-        const result = await this.chunkService.prepareDataForChunkedSending(modelData);
+        
+        try {
+            const modelData = await this.aiModelService.getActiveModelWithData(trackName, carName, modelType);
+            
+            // Check if the model data contains an error or is too large
+            if (modelData.modelDataInfo?.isLargeFile) {
+                return {
+                    success: false,
+                    message: 'Model data is too large to process. This indicates a system limitation with the current model size.',
+                    fileSize: modelData.modelDataInfo.fileSizeHuman,
+                    recommendation: 'Consider reducing the model size or implementing streaming JSON processing for this specific model type.'
+                };
+            }
+            
+            if (modelData.modelDataError) {
+                return {
+                    success: false,
+                    message: `Failed to prepare model data: ${modelData.modelDataError.message}`,
+                    timestamp: modelData.modelDataError.timestamp,
+                    recommendation: modelData.modelDataError.recommendedAction
+                };
+            }
+            
+            const result = await this.chunkService.prepareDataForChunkedSending(modelData);
 
-        // Return only session info, not the actual chunks
-        return {
-            success: result.success,
-            sessionId: result.sessionId,
-            totalChunks: result.totalChunks,
-            message: result.message
-        };
+            // Return only session info, not the actual chunks
+            return {
+                success: result.success,
+                sessionId: result.sessionId,
+                totalChunks: result.totalChunks,
+                message: result.message
+            };
+        } catch (error) {
+            console.error(`Error preparing chunked data: ${error.message}`);
+            return {
+                success: false,
+                message: `Failed to prepare chunked data: ${error.message}`,
+                recommendation: 'Check server logs for detailed error information. If this is a very large model, consider using alternative data handling approaches.'
+            };
+        }
     }
 
     /**

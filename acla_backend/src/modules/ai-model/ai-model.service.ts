@@ -93,14 +93,48 @@ export class AiModelService {
         // Fetch model data from GridFS if available
         if (model.modelDataFileId) {
             try {
-                modelWithData.modelData = await this.gridfsService.downloadJSON(model.modelDataFileId, GRIDFS_BUCKETS.AI_MODELS);
+                // Check file size first to determine if we need to use streaming
+                const fileSize = await this.gridfsService.getFileSize(model.modelDataFileId, GRIDFS_BUCKETS.AI_MODELS);
+                const maxStringSize = 0x1fffffe8; // Node.js maximum string length (~536MB)
+                
+                if (fileSize >= maxStringSize) {
+                    console.warn(`Model data file is too large (${fileSize} bytes) to load into memory. File size exceeds Node.js string limit.`);
+                    // Instead of loading the data, return metadata about the file
+                    modelWithData.modelDataInfo = {
+                        fileSize: fileSize,
+                        fileSizeHuman: this.formatFileSize(fileSize),
+                        isLargeFile: true,
+                        message: 'Model data is too large to return directly. Use chunked data endpoints.',
+                        recommendedAction: 'Use /active/:modelType/prepare-chunked followed by /active/chunked-data/:sessionId/:chunkIndex endpoints'
+                    };
+                } else {
+                    // File is small enough to load normally
+                    modelWithData.modelData = await this.gridfsService.downloadJSON(model.modelDataFileId, GRIDFS_BUCKETS.AI_MODELS);
+                }
             } catch (error) {
                 console.error(`Error fetching model data from GridFS: ${error.message}`);
-                // Continue without model data if GridFS fetch fails
+                modelWithData.modelDataError = {
+                    message: `Failed to load model data: ${error.message}`,
+                    timestamp: new Date().toISOString(),
+                    recommendedAction: 'Use chunked data endpoints for large files'
+                };
             }
         }
 
         return modelWithData;
+    }
+
+    /**
+     * Helper method to format file size in human-readable format
+     */
+    /**
+     * Helper method to format file size in human-readable format
+     */
+    private formatFileSize(bytes: number): string {
+        const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
+        if (bytes === 0) return '0 Bytes';
+        const i = Math.floor(Math.log(bytes) / Math.log(1024));
+        return Math.round(bytes / Math.pow(1024, i) * 100) / 100 + ' ' + sizes[i];
     }
 
     /**

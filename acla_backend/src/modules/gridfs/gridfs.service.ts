@@ -225,6 +225,28 @@ export class GridFSService implements OnModuleInit, OnModuleDestroy {
         return JSON.parse(buffer.toString());
     }
 
+    /**
+     * Stream download for large JSON files to avoid memory issues.
+     * This method streams the file and parses JSON in chunks if needed.
+     */
+    async downloadJSONStream(fileId: ObjectId, bucketName?: string): Promise<NodeJS.ReadableStream> {
+        const bucket = await this.getBucket(bucketName);
+
+        try {
+            return bucket.openDownloadStream(fileId);
+        } catch (error) {
+            throw new InternalServerErrorException(`Failed to create download stream from ${bucketName || GRIDFS_BUCKETS.AI_MODELS}: ${error.message}`);
+        }
+    }
+
+    /**
+     * Check file size before download to determine if streaming is needed
+     */
+    async getFileSize(fileId: ObjectId, bucketName?: string): Promise<number> {
+        const fileInfo = await this.getFileInfo(fileId, bucketName);
+        return fileInfo?.length || 0;
+    }
+
     async downloadFile(fileId: ObjectId, bucketName?: string): Promise<Buffer> {
         const bucket = await this.getBucket(bucketName);
 

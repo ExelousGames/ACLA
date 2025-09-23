@@ -366,15 +366,40 @@ class BackendService:
             except Exception:
                 pass
 
-    async def save_ai_model(self, results: Dict[str, Any]) -> Dict[str, Any]:
-        """Save AI model results to backend using chunked transfer"""
-        print("[INFO] Saving AI model results to backend...")
-        logger.info("Saving AI model results to backend...")
+    async def save_ai_model(self, 
+                           model_type: str,
+                           track_name: str,
+                           car_name: str,
+                           model_data: Dict[str, Any],
+                           metadata: Optional[Dict[str, Any]] = None,
+                           is_active: bool = True) -> Dict[str, Any]:
+        """Save AI model results to backend using chunked transfer
+        
+        Args:
+            model_type: Type of the AI model (e.g., "tire_grip_analysis", "imitation_learning")
+            track_name: Name of the track the model is for
+            car_name: Name of the car the model is for
+            model_data: The serialized model data
+            metadata: Optional metadata containing model info and timestamps
+            is_active: Whether this model should be set as active
+        """
+        print(f"[INFO] Saving AI model results to backend: {model_type} for {track_name}/{car_name}")
+        logger.info(f"Saving AI model results to backend: {model_type} for {track_name}/{car_name}")
+
+        # Structure the data according to the specified format
+        structured_data = {
+            "modelType": model_type,
+            "trackName": track_name,
+            "carName": car_name,
+            "modelData": model_data,
+            "metadata": metadata or {},
+            "isActive": is_active
+        }
 
         try:
             # Use chunked upload for large data
             response = await self.send_chunked_data(
-                data=results, 
+                data=structured_data, 
                 endpoint="ai-model/save",
                 chunk_size=512 * 1024  # 512KB chunks
             )
@@ -383,7 +408,7 @@ class BackendService:
                 raise Exception(f"Backend rejected data: {response.get('message', 'Unknown error')}")
                 
         except Exception as e:
-            logger.error(f"❌ Failed to save imitation learning results: {str(e)}")
+            logger.error(f"❌ Failed to save AI model results: {str(e)}")
             raise
         return {"success": True}
 
