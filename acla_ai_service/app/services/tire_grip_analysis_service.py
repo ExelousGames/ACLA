@@ -303,53 +303,70 @@ class TireGripAnalysisService:
             "feature_count": len(self.feature_catalog.CONTEXT_FEATURES)
         }
         
-    def deserialize_tire_grip_model(self, model_data: Dict[str, Any]) -> None:
+    def deserialize_tire_grip_model(self, model_data: Dict[str, Any]) -> 'TireGripAnalysisService':
         """Load previously computed stats from JSON-safe dict and restore class instance state.
         
         Args:
             model_data: Dictionary containing serialized model state from serialize_tire_grip_model()
             
+        Returns:
+            Self (TireGripAnalysisService): The current instance with restored model state
+            
         Raises:
             ValueError: If model_data is invalid or incompatible
+            RuntimeError: If deserialization fails
         """
-        if not isinstance(model_data, dict):
-            raise ValueError("Model data must be a dictionary")
-        
-        if "stats" not in model_data:
-            raise ValueError("Model data missing required 'stats' field")
+        try:
+            if not isinstance(model_data, dict):
+                raise ValueError("Model data must be a dictionary")
             
-        if "trained" not in model_data:
-            raise ValueError("Model data missing required 'trained' field")
-        
-        # Validate version compatibility if present
-        if "version" in model_data:
-            version = model_data["version"]
-            if version != "1.0":
-                print(f"Warning: Loading model version {version}, expected 1.0. Compatibility not guaranteed.")
-        
-        # Validate feature count if present
-        if "feature_count" in model_data:
-            expected_count = len(self.feature_catalog.CONTEXT_FEATURES)
-            actual_count = model_data["feature_count"]
-            if actual_count != expected_count:
-                print(f"Warning: Model was trained with {actual_count} features, current version expects {expected_count}")
-        
-        # Restore the model state
-        self.stats_ = model_data["stats"].copy()
-        self._trained = bool(model_data["trained"])
-        
-        # Validate required statistics are present
-        required_stats = [
-            'gmag_p95', 'gx_p90', 'gy_p90',
-            'slip_angle_med', 'slip_angle_iqr',
-            'slip_ratio_med', 'slip_ratio_iqr', 
-            'temp_med', 'temp_iqr',
-            'combined_slip_p85', 'lateral_g_max'
-        ]
-        
-        missing_stats = [stat for stat in required_stats if stat not in self.stats_]
-        if missing_stats:
-            raise ValueError(f"Model data missing required statistics: {missing_stats}")
+            if "stats" not in model_data:
+                raise ValueError("Model data missing required 'stats' field")
+                
+            if "trained" not in model_data:
+                raise ValueError("Model data missing required 'trained' field")
+            
+            # Validate version compatibility if present
+            if "version" in model_data:
+                version = model_data["version"]
+                if version != "1.0":
+                    print(f"[WARNING] Loading tire grip model version {version}, expected 1.0. Compatibility not guaranteed.")
+            
+            # Validate feature count if present
+            if "feature_count" in model_data:
+                expected_count = len(self.feature_catalog.CONTEXT_FEATURES)
+                actual_count = model_data["feature_count"]
+                if actual_count != expected_count:
+                    print(f"[WARNING] Tire grip model was trained with {actual_count} features, current version expects {expected_count}")
+            
+            # Restore the model state
+            self.stats_ = model_data["stats"].copy()
+            self._trained = bool(model_data["trained"])
+            
+            # Validate required statistics are present
+            required_stats = [
+                'gmag_p95', 'gx_p90', 'gy_p90',
+                'slip_angle_med', 'slip_angle_iqr',
+                'slip_ratio_med', 'slip_ratio_iqr', 
+                'temp_med', 'temp_iqr',
+                'combined_slip_p85', 'lateral_g_max'
+            ]
+            
+            missing_stats = [stat for stat in required_stats if stat not in self.stats_]
+            if missing_stats:
+                raise ValueError(f"Model data missing required statistics: {missing_stats}")
+
+            print(f"[INFO] Successfully deserialized tire grip analysis model")
+            print(f"[INFO] - Model trained: {self._trained}")
+            print(f"[INFO] - Statistics loaded: {len(self.stats_)} stats")
+            print(f"[INFO] - Features available: {len(self.feature_catalog.CONTEXT_FEATURES)}")
+
+            return self
+            
+        except Exception as e:
+            error_msg = f"Failed to deserialize tire grip analysis model: {str(e)}"
+            print(f"[ERROR] {error_msg}")
+            raise RuntimeError(error_msg) from e
 
 # Create singleton instance for import
 tire_grip_analysis_service = TireGripAnalysisService()
