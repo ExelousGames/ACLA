@@ -18,6 +18,15 @@ if current_dir not in sys.path:
 # Import the main application from the app package
 from app.main import app
 
+# Surface basic device info on startup for visibility
+try:
+    import torch
+    _cuda_available = torch.cuda.is_available()
+    _device_name = torch.cuda.get_device_name(0) if _cuda_available else "CPU"
+    print(f"[AI Service] Torch version: {getattr(torch, '__version__', 'unknown')} | CUDA available: {_cuda_available} | Device: {_device_name}")
+except Exception as _e:
+    print(f"[AI Service] Torch import failed or CUDA check error: {_e}")
+
 if __name__ == "__main__":
     import uvicorn
     

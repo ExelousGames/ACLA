@@ -30,6 +30,59 @@ sys.stdout.reconfigure(line_buffering=True)
 
 
 # -----------------------------
+# Contextual Feature Ordering
+# -----------------------------
+def get_canonical_context_feature_order() -> List[str]:
+    """
+    Get the canonical ordering of contextual features for consistent training/prediction.
+    
+    This function defines the exact order that contextual features should appear in
+    across training and prediction phases. Features are ordered by:
+    1. ExpertFeatureCatalog.ContextFeature
+    2. CornerFeatureCatalog.ContextFeature  
+    3. TireGripFeatureCatalog.ContextFeature
+    
+    Returns:
+        List[str]: Ordered list of feature names
+    """
+    context_features = []
+    
+    # Add expert context features in enum order
+    context_features.extend([f.value for f in ExpertFeatureCatalog.ContextFeature])
+    
+    # Add corner context features in enum order
+    context_features.extend([f.value for f in CornerFeatureCatalog.ContextFeature])
+    
+    # Add tire grip context features in enum order
+    context_features.extend([f.value for f in TireGripFeatureCatalog.ContextFeature])
+    
+    return context_features
+
+
+def extract_context_features_canonical_order(context_data: Dict[str, Any]) -> List[float]:
+    """
+    Extract contextual features in canonical order, filling missing values with 0.0.
+    
+    Args:
+        context_data: Dictionary containing contextual features
+        
+    Returns:
+        List[float]: Features in canonical order with missing values filled as 0.0
+    """
+    canonical_order = get_canonical_context_feature_order()
+    features = []
+    
+    for feature_name in canonical_order:
+        value = context_data.get(feature_name, 0.0)
+        try:
+            features.append(float(value))
+        except (ValueError, TypeError):
+            features.append(0.0)
+    
+    return features
+
+
+# -----------------------------
 # JSON-safe serialization utils
 # -----------------------------
 def _safe_number(value: Union[int, float], round_floats: Optional[int] = 6, replace_invalid_with: Any = None) -> Any:
@@ -206,29 +259,35 @@ class ExpertActionTransformer(nn.Module):
     
     def __init__(self, 
                  telemetry_features_count: int = 42,  # Telemetry features from get_features_for_imitate_expert()
-                 context_features_count: int = 31,  # Enriched context (e.g., corners + grip + expert diff )
+                 context_features_count: Optional[int] = None,  # Auto-determined from canonical feature catalogs
                  d_model: int = 256,
                  nhead: int = 8,
                  num_layers: int = 6,
                  dim_feedforward: int = 1024,
                  sequence_length: int = 20,
                  dropout: float = 0.1,
-                 time_step_seconds: float = 0.1):
+                 time_step_seconds: float = 0.5):
         """
         Initialize the Expert Action Transformer
         
         Args:
             telemetry_features_count: Number of telemetry input features 
-            context_features_count: Number of enriched contextual features (corners, expert targets, delta-to-expert gaps)
+            context_features_count: Number of enriched contextual features. If None, auto-determined from canonical feature catalogs.
             d_model: Transformer model dimension
             nhead: Number of attention heads
             num_layers: Number of transformer layers
             dim_feedforward: Feedforward network dimension
             sequence_length: Maximum sequence length for predictions
             dropout: Dropout rate
-            time_step_seconds: Time duration (in seconds) that each prediction step represents (default: 0.1s)
+            time_step_seconds: Time duration (in seconds) that each prediction step represents (default: 0.5s)
         """
         super(ExpertActionTransformer, self).__init__()
+        
+        # Auto-determine context features count if not provided
+        if context_features_count is None:
+            canonical_features = get_canonical_context_feature_order()
+            context_features_count = len(canonical_features)
+            print(f"[INFO] Auto-determined context_features_count: {context_features_count} from canonical feature catalogs")
         
         # Store configuration
         self.input_features_count = telemetry_features_count
@@ -301,14 +360,19 @@ class ExpertActionTransformer(nn.Module):
         performance. Expert targets are provided as contextual guidance within the 
         enriched context data.
         
-        MODIFIED TRAINING APPROACH - NO TEACHER FORCING:
-        Unlike traditional sequence-to-sequence models, this implementation uses autoregressive 
-        generation for both training and inference. This means:
+        ADAPTIVE TRAINING APPROACH - TEACHER FORCING + AUTOREGRESSIVE:
+        This implementation uses different strategies for training vs inference:
         
-        - TRAINING: Model generates non-expert's next improved actions step-by-step
-        - INFERENCE: Same autoregressive generation process
-        - More realistic training that matches inference behavior
-        - Models the actual learning progression of a non-expert driver
+        - TRAINING: Uses teacher forcing with target actions for fast, stable training
+          * Target actions (ground truth) are fed as decoder input
+          * Enables parallel processing of entire sequences
+          * Contextual weighted loss guides learning toward high-quality examples
+          * Much faster than autoregressive generation during training
+        
+        - INFERENCE: Uses autoregressive generation for realistic prediction
+          * Generates actions step-by-step using own predictions
+          * Simulates real-time decision making process
+          * Same behavior as actual deployment scenario
         
         ARCHITECTURAL FLOW:
         
@@ -334,12 +398,16 @@ class ExpertActionTransformer(nn.Module):
         - Creates contextualized representation of current racing situation
         - Output "memory" contains encoded understanding of current state
         
-        Step 5: AUTOREGRESSIVE DECODER
-        - Always uses autoregressive generation (no teacher forcing)
+        Step 5: DECODER (MODE-DEPENDENT)
+        TRAINING MODE: Teacher forcing with target actions
+        - Uses target actions as decoder input for parallel processing
+        - Applies causal masking to prevent future information leakage
+        - Fast and stable training with proper gradient flow
+        
+        INFERENCE MODE: Autoregressive generation
         - Starts with zero/start token, generates actions sequentially
         - Each predicted action becomes input for next prediction
-        - Simulates real-time expert decision making process
-        - Same behavior during training and inference
+        - Simulates real-time decision making process
         
         Step 6: ACTION PROJECTION
         - Maps high-dimensional decoder output back to action space
@@ -379,8 +447,13 @@ class ExpertActionTransformer(nn.Module):
         # Encode current state
         memory = self.transformer_encoder(encoder_input)  # [B, L, d_model]
         
-        # Always use autoregressive generation (no teacher forcing)
-        decoder_output = self._generate_actions_autoregressive(memory, seq_len)
+        # Choose generation strategy based on training mode and target availability
+        if self.training and target_actions is not None:
+            # TRAINING MODE: Use teacher forcing for fast parallel training
+            decoder_output = self._generate_actions_teacher_forcing(memory, target_actions)
+        else:
+            # INFERENCE MODE: Use autoregressive generation for realistic prediction
+            decoder_output = self._generate_actions_autoregressive(memory, seq_len)
 
         # decoder_output is already in action space [B, L, action_features]
         return decoder_output
@@ -407,6 +480,12 @@ class ExpertActionTransformer(nn.Module):
         Returns:
             Weighted loss tensor (scalar)
         """
+        # Ensure loss computation in full precision to avoid dtype issues
+        predictions = predictions.float()
+        target_actions = target_actions.float()
+        if context is not None:
+            context = context.float()
+        
         # Base MSE loss (element-wise, not reduced)
         base_loss = F.mse_loss(predictions, target_actions, reduction='none')  # [B, L, A]
         
@@ -442,24 +521,24 @@ class ExpertActionTransformer(nn.Module):
             
             # 1. Grip utilization quality (peak at ~1.0, lower at extremes)
             if 'grip_util' in context_indices:
-                grip_util = context[:, :, context_indices['grip_util']]  # [B, L]
+                grip_util = context[:, :, context_indices['grip_util']].float()  # [B, L]
                 # Quality peaks at 1.0 (optimal grip), decreases as we move away
                 grip_quality = 1.0 - torch.abs(grip_util - 1.0).clamp(0, 1)
                 weight_components.append(grip_quality)
             
             # 2. Grip window quality (higher is better)  
             if 'grip_window' in context_indices:
-                grip_window = context[:, :, context_indices['grip_window']]  # [B, L]
+                grip_window = context[:, :, context_indices['grip_window']].float()  # [B, L]
                 weight_components.append(grip_window)
             
             # 3. Expert alignment quality (higher is better)
             if 'expert_alignment' in context_indices:
-                expert_alignment = context[:, :, context_indices['expert_alignment']]  # [B, L]
+                expert_alignment = context[:, :, context_indices['expert_alignment']].float()  # [B, L]
                 weight_components.append(expert_alignment)
             
             # 4. Corner confidence (higher is better)
             if 'corner_confidence' in context_indices:
-                corner_confidence = context[:, :, context_indices['corner_confidence']]  # [B, L]
+                corner_confidence = context[:, :, context_indices['corner_confidence']].float()  # [B, L]
                 weight_components.append(corner_confidence)
             
             # Combine weight components if any were found
@@ -485,24 +564,36 @@ class ExpertActionTransformer(nn.Module):
     
     def get_contextual_features_summary(self, context_feature_names: List[str]) -> Dict[str, Any]:
         """
-        Get a summary of which contextual features are available for quality weighting
+        Get a summary of which contextual features are available for quality weighting.
+        Also validates that the provided features match canonical ordering.
         
         Args:
             context_feature_names: List of available context feature names
             
         Returns:
-            Dictionary summarizing available contextual guidance features
+            Dictionary summarizing available contextual guidance features and ordering validation
         """
+        canonical_order = get_canonical_context_feature_order()
+        
         summary = {
             'total_context_features': len(context_feature_names) if context_feature_names else 0,
             'available_for_weighting': [],
             'tire_grip_features': [],
             'expert_features': [],
-            'corner_features': []
+            'corner_features': [],
+            'canonical_order_matches': context_feature_names == canonical_order if context_feature_names else True
         }
         
         if not context_feature_names:
             return summary
+        
+        # Validate feature ordering consistency
+        if context_feature_names != canonical_order:
+            print(f"[WARNING] Context features do not match canonical order!")
+            print(f"[WARNING] Expected count: {len(canonical_order)}, Received count: {len(context_feature_names)}")
+            if len(context_feature_names) > 0 and len(canonical_order) > 0:
+                print(f"[WARNING] First few expected: {canonical_order[:5]}")
+                print(f"[WARNING] First few received: {context_feature_names[:5]}")
         
         # Check tire grip features
         grip_features = TireGripFeatureCatalog.ContextFeature
@@ -528,6 +619,63 @@ class ExpertActionTransformer(nn.Module):
         summary['weighting_enabled'] = len(summary['available_for_weighting']) > 0
         
         return summary
+    
+    def validate_context_features(self, context_features: List[str]) -> Dict[str, Any]:
+        """
+        Validate that context features match the canonical ordering expected by the model.
+        
+        Args:
+            context_features: List of context feature names to validate
+            
+        Returns:
+            Dict containing validation results and recommendations
+        """
+        canonical_order = get_canonical_context_feature_order()
+        
+        validation_result = {
+            'is_valid': True,
+            'expected_count': len(canonical_order),
+            'received_count': len(context_features),
+            'order_matches': context_features == canonical_order,
+            'missing_features': [],
+            'extra_features': [],
+            'recommendations': []
+        }
+        
+        # Check count mismatch
+        if len(context_features) != len(canonical_order):
+            validation_result['is_valid'] = False
+            validation_result['recommendations'].append(
+                f"Expected {len(canonical_order)} context features, got {len(context_features)}"
+            )
+        
+        # Check for missing and extra features
+        canonical_set = set(canonical_order)
+        received_set = set(context_features)
+        
+        validation_result['missing_features'] = list(canonical_set - received_set)
+        validation_result['extra_features'] = list(received_set - canonical_set)
+        
+        if validation_result['missing_features']:
+            validation_result['is_valid'] = False
+            validation_result['recommendations'].append(
+                f"Missing features: {validation_result['missing_features'][:5]}..."
+            )
+        
+        if validation_result['extra_features']:
+            validation_result['is_valid'] = False
+            validation_result['recommendations'].append(
+                f"Extra features: {validation_result['extra_features'][:5]}..."
+            )
+        
+        # Check ordering
+        if not validation_result['order_matches'] and len(context_features) == len(canonical_order):
+            validation_result['is_valid'] = False
+            validation_result['recommendations'].append(
+                "Features are present but not in canonical order. Use get_canonical_context_feature_order()."
+            )
+        
+        return validation_result
     
     def _generate_square_subsequent_mask(self, sz: int) -> torch.Tensor:
         """Generate causal mask for decoder"""
@@ -665,6 +813,70 @@ class ExpertActionTransformer(nn.Module):
         # Concatenate all outputs
         return torch.cat(outputs, dim=1)  # [B, seq_len, action_features]
     
+    def _generate_actions_teacher_forcing(self, memory: torch.Tensor, target_actions: torch.Tensor) -> torch.Tensor:
+        """
+        Generate actions using teacher forcing for fast parallel training.
+        
+        Teacher forcing uses the ground truth target actions as decoder input, enabling
+        parallel processing of the entire sequence rather than sequential generation.
+        This dramatically speeds up training while maintaining learning quality.
+        
+        How Teacher Forcing Works:
+        1. Take target actions and shift them right by one position (add start token)
+        2. Feed the shifted sequence as decoder input all at once
+        3. Apply causal masking so each position can only attend to previous positions
+        4. Decoder processes the entire sequence in parallel
+        5. Output predictions for all positions simultaneously
+        
+        Benefits:
+        - Much faster training (parallel vs sequential processing)
+        - More stable gradients (entire sequence contributes to loss)
+        - Better GPU utilization (batched operations instead of loops)
+        - Maintains causal structure through attention masking
+        
+        Args:
+            memory: Encoded telemetry state [batch_size, input_seq_len, d_model]
+            target_actions: Ground truth actions [batch_size, seq_len, action_features]
+                           These are the correct actions the model should learn to predict
+        
+        Returns:
+            Predicted actions [batch_size, seq_len, action_features]
+        """
+        batch_size, seq_len, _ = target_actions.shape
+        device = memory.device
+        
+        # Create decoder input by shifting target actions right and adding start token
+        # Start token is zeros (representing "no action" at beginning)
+        start_tokens = torch.zeros(batch_size, 1, self.output_features_count, device=device)
+        
+        # Shift target actions right: [action1, action2, action3] -> [start, action1, action2]
+        # This ensures decoder input at position i is target at position i-1
+        decoder_input_actions = torch.cat([start_tokens, target_actions[:, :-1, :]], dim=1)  # [B, L, action_features]
+        
+        # Embed the action sequence for decoder processing
+        decoder_input_embedded = self.action_embedding(decoder_input_actions)  # [B, L, d_model]
+        
+        # Add positional encoding to decoder input
+        decoder_input_embedded = self.pos_encoding(decoder_input_embedded)
+        
+        # Create causal mask to prevent future information leakage
+        # Each position can only attend to current and previous positions
+        causal_mask = self._generate_square_subsequent_mask(seq_len).to(device)
+        
+        # Apply transformer decoder with teacher forcing
+        # memory contains encoded current state, decoder_input contains shifted target actions
+        decoder_output = self.transformer_decoder(
+            tgt=decoder_input_embedded,          # Shifted target actions as input
+            memory=memory,                       # Encoded current state  
+            tgt_mask=causal_mask,               # Prevent future information leakage
+            memory_mask=None                     # No masking on encoder output
+        )  # [B, L, d_model]
+        
+        # Project decoder output to action space
+        predictions = self.action_projection(decoder_output)  # [B, L, action_features]
+        
+        return predictions
+    
     def predict_non_expert_progression_sequence(self, 
                                telemetry: torch.Tensor,
                                context: Optional[torch.Tensor] = None,
@@ -695,25 +907,30 @@ class ExpertActionTransformer(nn.Module):
             sequence_length = self.sequence_length
             
         with torch.no_grad():
-            batch_size = telemetry.shape[0]
-            device = telemetry.device
+            use_cuda = telemetry.is_cuda or (hasattr(torch, 'cuda') and torch.cuda.is_available())
+            # Use float16 for better compatibility
+            amp_dtype = torch.float16 if use_cuda else None
             
-            # Embed telemetry
-            telemetry_embedded = self.telemetry_embedding(telemetry)
-            
-            # Combine with context if available
-            if context is not None and self.context_embedding is not None:
-                context_embedded = self.context_embedding(context)
-                encoder_input = telemetry_embedded + context_embedded
-            else:
-                encoder_input = telemetry_embedded
-            
-            # Add positional encoding and encode
-            encoder_input = self.pos_encoding(encoder_input)
-            memory = self.transformer_encoder(encoder_input)
-            
-            # Generate action sequence autoregressively
-            decoder_output = self._generate_actions_autoregressive(memory, sequence_length)
+            with torch.autocast(device_type='cuda', dtype=amp_dtype, enabled=use_cuda and amp_dtype is not None):
+                batch_size = telemetry.shape[0]
+                device = telemetry.device
+                
+                # Embed telemetry
+                telemetry_embedded = self.telemetry_embedding(telemetry)
+                
+                # Combine with context if available
+                if context is not None and self.context_embedding is not None:
+                    context_embedded = self.context_embedding(context)
+                    encoder_input = telemetry_embedded + context_embedded
+                else:
+                    encoder_input = telemetry_embedded
+                
+                # Add positional encoding and encode
+                encoder_input = self.pos_encoding(encoder_input)
+                memory = self.transformer_encoder(encoder_input)
+                
+                # Generate action sequence autoregressively
+                decoder_output = self._generate_actions_autoregressive(memory, sequence_length)
             
             # Apply temperature and sampling if not deterministic
             if not deterministic and temperature != 1.0:
@@ -809,18 +1026,26 @@ class ExpertActionTransformer(nn.Module):
             }
         """
         try:
+            # Validate context features if provided
+            if context_data and self.context_embedding is not None:
+                context_features = self._extract_context_features(context_data)
+                validation_result = self.validate_context_features(list(context_data.keys()))
+                
+                if not validation_result['is_valid']:
+                    print(f"[WARNING] Context feature validation failed during prediction:")
+                    for rec in validation_result['recommendations']:
+                        print(f"[WARNING] - {rec}")
+                    
+                context_tensor = torch.tensor([context_features], dtype=torch.float32).unsqueeze(0).to(device)
+            else:
+                context_tensor = None
+            
             # Prepare telemetry data for model input
             telemetry_features = self._extract_telemetry_features(current_telemetry)
             
             # Convert to tensor format
             device = next(self.parameters()).device
             telemetry_tensor = torch.tensor([telemetry_features], dtype=torch.float32).unsqueeze(0).to(device)
-            
-            # Process context data if provided
-            context_tensor = None
-            if context_data and self.context_embedding is not None:
-                context_features = self._extract_context_features(context_data)
-                context_tensor = torch.tensor([context_features], dtype=torch.float32).unsqueeze(0).to(device)
             
             # Generate predictions
             self.eval()
@@ -842,7 +1067,7 @@ class ExpertActionTransformer(nn.Module):
             sequence_predictions = self._create_sequence_predictions(predictions_np, sequence_length)
             
             # Contextual information
-            contextual_info = self._extract_contextual_info(current_telemetry, context_data)
+            contextual_info = self._extract_prediction_contextual_info(current_telemetry, context_data)
             
             # Build response
             response = {
@@ -894,25 +1119,26 @@ class ExpertActionTransformer(nn.Module):
         return features
     
     def _extract_context_features(self, context_data: Dict[str, Any]) -> List[float]:
-        """Extract contextual features for model input"""
-        # This should match the context features used during training
-        # Placeholder implementation - adjust based on your actual context structure
-        features = []
+        """
+        Extract contextual features for model input using canonical ordering.
         
-        # Corner information
-        corner_features = context_data.get('corner_info', {})
-        corner_keys = ['radius', 'entry_speed', 'exit_speed', 'banking', 'elevation_change'] 
-        for key in corner_keys:
-            features.append(float(corner_features.get(key, 0.0)))
+        This method ensures the same feature order is used during prediction
+        as was used during training. Features are extracted in canonical order
+        as defined by the feature catalogs, with missing values filled as 0.0.
         
-        # Add more features to reach expected context size (use configured size if available)
-        expected_len = getattr(self, 'context_features_count', 31)
-        if len(features) < expected_len:
-            features.extend([0.0] * (expected_len - len(features)))
-        elif len(features) > expected_len:
-            features = features[:expected_len]
-
-        return features
+        Args:
+            context_data: Dictionary containing contextual features
+            
+        Returns:
+            List[float]: Features in canonical order
+        """
+        if context_data is None:
+            # Return zeros for all canonical features if no context provided
+            canonical_order = get_canonical_context_feature_order()
+            return [0.0] * len(canonical_order)
+        
+        # Use canonical extraction function for consistency
+        return extract_context_features_canonical_order(context_data)
     
     def _analyze_current_situation(self, telemetry: Dict[str, Any], context: Optional[Dict[str, Any]]) -> Dict[str, str]:
         """Analyze current driving situation"""
@@ -984,7 +1210,7 @@ class ExpertActionTransformer(nn.Module):
         
         return sequence
     
-    def _extract_contextual_info(self, telemetry: Dict[str, Any], context: Optional[Dict[str, Any]]) -> Dict[str, str]:
+    def _extract_prediction_contextual_info(self, telemetry: Dict[str, Any], context: Optional[Dict[str, Any]]) -> Dict[str, str]:
         """Extract contextual information for response"""
         info = {}
         
@@ -1262,21 +1488,23 @@ class TelemetryActionDataset(Dataset):
         This function performs the following steps:
         1. Converts raw telemetry dictionaries into numerical feature matrices
         2. Extracts non-expert action targets from the same telemetry data 
-        3. Processes enriched contextual data (corner info, expert targets, delta-to-expert features)
+        3. Processes enriched contextual data using canonical feature ordering
         4. Applies standardization (zero mean, unit variance) to all feature matrices
         5. Stores fitted scalers for later denormalization during inference
         
-        The preprocessing ensures all input features are on similar scales, which is
-        critical for stable transformer training and attention mechanism performance.
+        The preprocessing ensures all input features are on similar scales and in
+        consistent order, which is critical for stable transformer training and 
+        attention mechanism performance.
         """
         # Extract feature matrices from raw dictionary data
         # Convert list of telemetry dictionaries -> numpy matrix [samples, features]
         self.telemetry_matrix = self._build_matrix(self.telemetry_data, self.telemetry_features)
         
-        # Extract contextual features if available (includes expert targets and gap features)
+        # Extract contextual features using canonical ordering if available
         if self.enriched_contextual_data:
-            self.context_features = list(self.enriched_contextual_data[0].keys()) if self.enriched_contextual_data else []
-            self.context_matrix = self._build_matrix(self.enriched_contextual_data, self.context_features)
+            # Use canonical ordering for consistency across training and prediction
+            self.context_features = get_canonical_context_feature_order()
+            self.context_matrix = self._build_context_matrix_canonical(self.enriched_contextual_data, self.context_features)
         else:
             self.context_features = []
             self.context_matrix = None
@@ -1292,7 +1520,8 @@ class TelemetryActionDataset(Dataset):
               f"{self.telemetry_matrix.shape[1]} telemetry features")
         
         if self.context_matrix is not None:
-            print(f"[INFO] Context matrix: {self.context_matrix.shape[1]} contextual features")
+            print(f"[INFO] Context matrix: {self.context_matrix.shape[1]} contextual features in canonical order")
+            print(f"[INFO] Canonical context features: {self.context_features[:10]}...")  # Show first 10 feature names
     
     def _build_matrix(self, data_list: List[Dict[str, Any]], feature_names: List[str]) -> np.ndarray:
         """Extract features and build a matrix from list of dictionaries"""
@@ -1311,6 +1540,29 @@ class TelemetryActionDataset(Dataset):
                         row.append(0.0)
                 except (ValueError, TypeError):
                     row.append(0.0)
+            matrix.append(row)
+        
+        return np.array(matrix, dtype=np.float32)
+    
+    def _build_context_matrix_canonical(self, data_list: List[Dict[str, Any]], feature_names: List[str]) -> np.ndarray:
+        """
+        Extract contextual features and build matrix using canonical feature ordering.
+        
+        This method ensures contextual features are extracted in the exact same order
+        during training and prediction, using the canonical feature order defined by
+        the feature catalogs. Missing features are filled with 0.0.
+        
+        Args:
+            data_list: List of contextual data dictionaries
+            feature_names: List of feature names in canonical order
+            
+        Returns:
+            np.ndarray: Feature matrix with consistent ordering
+        """
+        matrix = []
+        for record in data_list:
+            # Use the canonical extraction function to ensure consistency
+            row = extract_context_features_canonical_order(record)
             matrix.append(row)
         
         return np.array(matrix, dtype=np.float32)
@@ -1393,14 +1645,28 @@ class TelemetryActionDataset(Dataset):
         return self.telemetry_features, action_features
     
     def get_context_feature_names(self) -> Optional[List[str]]:
-        """Get context feature names if available"""
+        """
+        Get context feature names in canonical order.
+        
+        Returns:
+            Optional[List[str]]: Canonical ordered context feature names if available
+        """
         if not hasattr(self, 'context_features') or not self.context_features:
-            # Try to reconstruct from enriched_contextual_data if available
+            # Return canonical order if enriched contextual data exists
             if self.enriched_contextual_data and len(self.enriched_contextual_data) > 0:
-                self.context_features = list(self.enriched_contextual_data[0].keys())
+                self.context_features = get_canonical_context_feature_order()
             else:
                 return None
-        return self.context_features if hasattr(self, 'context_features') else None
+        
+        # Ensure we're returning canonical order
+        if hasattr(self, 'context_features') and self.context_features:
+            canonical_order = get_canonical_context_feature_order()
+            if self.context_features != canonical_order:
+                print("[WARNING] Dataset context features do not match canonical order, returning canonical order")
+                self.context_features = canonical_order
+            return self.context_features
+        
+        return None
     
     def get_scalers(self) -> Dict[str, StandardScaler]:
         """Get the fitted scalers for denormalization"""
@@ -1430,8 +1696,30 @@ class ExpertActionTrainer:
             learning_rate: Learning rate
             weight_decay: Weight decay for optimizer
         """
-        self.model = model.to(device)
+        # Device and precision setup
         self.device = device
+        self.model = model.to(device)
+        self._cuda = device.startswith('cuda') and torch.cuda.is_available()
+
+        # Enable cuDNN benchmark for faster kernels on GPU
+        try:
+            if self._cuda:
+                torch.backends.cudnn.benchmark = True
+        except Exception:
+            pass
+
+        # Mixed precision (AMP) configuration
+        # Use float16 for broader compatibility; bfloat16 can have tensor dtype mismatches
+        self.amp_dtype = torch.float16 if self._cuda else None
+        
+        # GradScaler for float16 AMP 
+        self.scaler = torch.cuda.amp.GradScaler(enabled=self._cuda and self.amp_dtype == torch.float16)
+
+        # Favor higher matmul precision/tensor cores where applicable (PyTorch 2.0+)
+        try:
+            torch.set_float32_matmul_precision('high')
+        except Exception:
+            pass
         self.learning_rate = learning_rate
         self.weight_decay = weight_decay
         
@@ -1470,25 +1758,28 @@ class ExpertActionTrainer:
         for batch in dataloader:
             if len(batch) == 3:  # telemetry, context, actions
                 telemetry, context, target_actions = batch
-                telemetry = telemetry.to(self.device)
-                context = context.to(self.device)
-                target_actions = target_actions.to(self.device)
+                telemetry = telemetry.to(self.device, non_blocking=self._cuda)
+                context = context.to(self.device, non_blocking=self._cuda)
+                target_actions = target_actions.to(self.device, non_blocking=self._cuda)
             else:  # telemetry, actions (no context)
                 telemetry, target_actions = batch
-                telemetry = telemetry.to(self.device)
-                target_actions = target_actions.to(self.device)
+                telemetry = telemetry.to(self.device, non_blocking=self._cuda)
+                target_actions = target_actions.to(self.device, non_blocking=self._cuda)
                 context = None
             
-            self.optimizer.zero_grad()
+            self.optimizer.zero_grad(set_to_none=True)
+
+            # Autocast for mixed precision on GPU
+            with torch.autocast(device_type='cuda', dtype=self.amp_dtype, enabled=self._cuda and self.amp_dtype is not None):
+                # Forward pass with teacher forcing during training, autoregressive during inference
+                predictions = self.model(
+                    telemetry=telemetry,
+                    context=context,
+                    target_actions=target_actions  # Enable teacher forcing in training mode
+                )
             
-            # Forward pass with autoregressive generation (no teacher forcing)
-            # Model will generate actions step by step using its own predictions
-            predictions = self.model(
-                telemetry=telemetry,
-                context=context
-            )
-            
-            # Use contextual weighted loss if context is available
+            # Loss computation OUTSIDE autocast to ensure proper gradient scaling
+            # This ensures contextual weighted loss is computed in full precision
             if context is not None and context_feature_names is not None:
                 loss = self.model.contextual_weighted_loss(
                     predictions=predictions, 
@@ -1497,18 +1788,22 @@ class ExpertActionTrainer:
                     context_feature_names=context_feature_names
                 )
             else:
-                # Fallback to standard MSE loss
                 loss = self.criterion(predictions, target_actions)
                 if num_batches == 0:
                     print(f"[INFO] Using standard MSE loss (no context features available)")
-            
-            # Backward pass
-            loss.backward()
-            
-            # Gradient clipping
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
-            
-            self.optimizer.step()
+
+            # Backward + optimizer step (with AMP support)
+            if self.scaler.is_enabled():
+                self.scaler.scale(loss).backward()
+                # Unscale before clipping
+                self.scaler.unscale_(self.optimizer)
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
+            else:
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                self.optimizer.step()
             
             total_loss += loss.item()
             num_batches += 1
@@ -1530,22 +1825,23 @@ class ExpertActionTrainer:
             for batch in dataloader:
                 if len(batch) == 3:  # telemetry, context, actions
                     telemetry, context, target_actions = batch
-                    telemetry = telemetry.to(self.device)
-                    context = context.to(self.device)
-                    target_actions = target_actions.to(self.device)
+                    telemetry = telemetry.to(self.device, non_blocking=self._cuda).float()
+                    context = context.to(self.device, non_blocking=self._cuda).float()
+                    target_actions = target_actions.to(self.device, non_blocking=self._cuda).float()
                 else:  # telemetry, actions (no context)
                     telemetry, target_actions = batch
-                    telemetry = telemetry.to(self.device)
-                    target_actions = target_actions.to(self.device)
+                    telemetry = telemetry.to(self.device, non_blocking=self._cuda).float()
+                    target_actions = target_actions.to(self.device, non_blocking=self._cuda).float()
                     context = None
                 
-                # Forward pass with autoregressive generation (no teacher forcing)
+                # Forward pass - no mixed precision for validation to avoid dtype issues
                 predictions = self.model(
                     telemetry=telemetry,
-                    context=context
+                    context=context,
+                    target_actions=None  # No teacher forcing in validation
                 )
                 
-                # Use contextual weighted loss if context is available
+                # Loss computation outside autocast for proper gradient handling
                 if context is not None and context_feature_names is not None:
                     loss = self.model.contextual_weighted_loss(
                         predictions=predictions, 
@@ -1727,22 +2023,24 @@ class ExpertActionTrainer:
             for batch in dataloader:
                 if len(batch) == 3:
                     telemetry, context, target_actions = batch
-                    telemetry = telemetry.to(self.device)
-                    context = context.to(self.device)
-                    target_actions = target_actions.to(self.device)
+                    telemetry = telemetry.to(self.device, non_blocking=self._cuda)
+                    context = context.to(self.device, non_blocking=self._cuda)
+                    target_actions = target_actions.to(self.device, non_blocking=self._cuda)
                 else:
                     telemetry, target_actions = batch
-                    telemetry = telemetry.to(self.device)
-                    target_actions = target_actions.to(self.device)
+                    telemetry = telemetry.to(self.device, non_blocking=self._cuda)
+                    target_actions = target_actions.to(self.device, non_blocking=self._cuda)
                     context = None
                 
-                # Use standard forward method (autoregressive generation)
-                predictions = self.model(
-                    telemetry=telemetry,
-                    context=context
-                )
+                # Use standard forward (autoregressive) under AMP for GPU (evaluation mode)
+                with torch.autocast(device_type='cuda', dtype=self.amp_dtype, enabled=self._cuda and self.amp_dtype is not None):
+                    predictions = self.model(
+                        telemetry=telemetry,
+                        context=context,
+                        target_actions=None  # No teacher forcing during evaluation
+                    )
                 
-                # Use contextual weighted loss if context is available
+                # Loss computation outside autocast
                 if context is not None and context_feature_names is not None:
                     loss = self.model.contextual_weighted_loss(
                         predictions=predictions, 

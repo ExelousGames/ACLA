@@ -24,6 +24,7 @@ from typing import Dict, List, Any, Optional, Tuple, Union
 from datetime import datetime
 from pathlib import Path
 from app.models import AiModelDto
+import os
 
 # Scikit-learn imports
 from sklearn.model_selection import train_test_split, cross_val_score, GridSearchCV, StratifiedKFold
@@ -668,7 +669,7 @@ class Full_dataset_TelemetryMLService:
             )
             
             # Extract context data by running corner and tire grip analysis
-            context_data = {}
+            context_data = []
             
             # Get corner identification features
             try:
@@ -685,7 +686,7 @@ class Full_dataset_TelemetryMLService:
                 # Service is async and returns List[Dict[str, Any]]
                 # Use the single telemetry record as a list for extraction
                 corner_features_list = await corner_service.extract_corner_features_for_telemetry([telemetry_dict])
-                context_data['corner_info'] = (corner_features_list[0] if corner_features_list else {})
+                context_data.append(corner_features_list)
                 
             except Exception as e:
                 print(f"[Error] Corner identification failed: {e}")
@@ -704,12 +705,24 @@ class Full_dataset_TelemetryMLService:
                 
                 # Extract tire grip features from telemetry (async; returns List[Dict])
                 tire_features_list = await tire_grip_service.extract_tire_grip_features([telemetry_dict])
-                context_data['tire_info'] = (tire_features_list[0] if tire_features_list else {})
+                context_data.append(tire_features_list)
                 
             except Exception as e:
                 print(f"[Error] Tire grip analysis failed: {e}")
-                context_data['tire_info'] = {}
             
+            try:
+                expert_service = ExpertImitateLearningService()
+                imitation_model_data, imitation_metadata = await self._get_cached_model_or_fetch(
+                    model_type="imitation_learning",
+                    track_name=trackName,
+                    car_name=carName,
+                    model_subtype="imitation_model_data",
+                    deserializer_func=expert_service.deserialize_imitation_model
+                )
+                context_data.append(expert_service.extract_expert_state_for_telemetry([telemetry_dict]))
+            except Exception as e:
+                print(f"[Error] Tireexpert_service failed: {e}")   
+                
             # Use transformer model's predict_human_readable method
             print(f"[INFO] Generating predictions with sequence length: {sequence_length}")
             predictions = transformer_model.predict_human_readable(
@@ -773,13 +786,44 @@ class Full_dataset_TelemetryMLService:
 
         if processed_df.empty:
             raise ValueError("No valid telemetry data available after filtering for training.")
-        
-        # Filter top 1% laps as expert demonstrations, but ensure at least 1 lap
-        top_laps_df_count = max(1, int(len(lap_df_list) * 0.01))
+
+        # Filter top 1% laps as expert demonstrations, but ensure at least 3 laps
+        top_laps_df_count = max(3, int(len(lap_df_list) * 0.01))
         top_laps_df = lap_df_list[:top_laps_df_count]
         # get rest of laps
         
         bottom_laps_df = lap_df_list[top_laps_df_count:]
+
+        # Console plot summary for top laps using FeatureProcessor.plot_features_console
+        try:
+            self._print_section_divider("TOP LAP TELEMETRY SUMMARY PLOTS")
+            if top_laps_df:
+                combined_top_df = pd.concat(top_laps_df, ignore_index=True)
+                # Use a small, informative default feature set and filter to available columns
+                features_to_plot = [
+                    "Physics_speed_kmh",
+                    "Physics_gas",
+                    "Physics_brake",
+                    "Physics_steer_angle",
+                    "Physics_gear",
+                    "Physics_rpm",
+                    "Physics_velocity_x",
+                ]
+                available_features = [f for f in features_to_plot if f in combined_top_df.columns]
+                if available_features:
+                    FeatureProcessor(combined_top_df).plot_features_console(
+                        features=available_features,
+                        width=72,
+                        window=None,
+                        use_unicode=True,
+                        title="Top Laps (Expert) Overview"
+                    )
+                else:
+                    print("[INFO] No selected features available to plot for top laps.")
+            else:
+                print("[INFO] No top laps available to plot.")
+        except Exception as plot_err:
+            print(f"[WARNING] Failed to render top laps console plots: {plot_err}")
 
         # Flatten the DataFrames to list of laps for imitation learning
         top_laps_telemetry_list = []
@@ -867,8 +911,30 @@ class Full_dataset_TelemetryMLService:
                 sequence_length=20
             )
             
-            # Create data loader for training - IMPORTANT: shuffle=False for time series to preserve temporal order
-            train_loader = DataLoader(dataset, batch_size=16, shuffle=False, num_workers=0)
+            # Configure DataLoader for better GPU throughput when available
+            use_cuda = torch.cuda.is_available()
+            num_cpu = os.cpu_count() or 2
+            num_workers = min(4, max(0, num_cpu - 1)) if use_cuda else 0
+            loader_kwargs = {
+                'batch_size': 16,
+                'shuffle': False,  # preserve temporal order for time series
+                'num_workers': num_workers,
+                'pin_memory': use_cuda,
+                'persistent_workers': num_workers > 0,
+            }
+            if num_workers > 0:
+                loader_kwargs['prefetch_factor'] = 2
+
+            # Create data loader for training
+            train_loader = DataLoader(dataset, **loader_kwargs)
+
+            if use_cuda:
+                # Enable TF32 on Ampere+ for faster matmuls while keeping accuracy
+                try:
+                    torch.backends.cuda.matmul.allow_tf32 = True
+                    torch.backends.cudnn.allow_tf32 = True
+                except Exception:
+                    pass
             
             print(f"[INFO] Using all {len(dataset)} samples for training")
             print(f"[INFO] No validation split - using full dataset for training")
@@ -892,7 +958,7 @@ class Full_dataset_TelemetryMLService:
             )
             
             # Create trainer
-            device = 'cuda' if torch.cuda.is_available() else 'cpu'
+            device = 'cuda' if use_cuda else 'cpu'
             trainer = ExpertActionTrainer(model, device=device, learning_rate=1e-4)
             
             # Train model (without validation)
@@ -1012,7 +1078,7 @@ class Full_dataset_TelemetryMLService:
             try:
                 from .corner_identification_unsupervised_service import CornerIdentificationUnsupervisedService
                 corner_service = CornerIdentificationUnsupervisedService()
-                corner_model = await corner_service.learn_track_corner_patterns(bottom_training_telemetry_list)
+                corner_model = await corner_service.learn_track_corner_patterns(top_training_telemetry_list)
                 
                 if corner_model.get("success"):
                     print(f"[INFO] Corner identification training successful: {corner_model.get('total_corners_identified', 0)} corners identified")
