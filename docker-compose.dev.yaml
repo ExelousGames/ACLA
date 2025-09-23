@@ -63,6 +63,7 @@ services:
       context: ./acla_ai_service
       dockerfile: dev.dockerfile
     container_name: acla_ai_service_c
+    gpus: all
     env_file:
       - .dev.env
       - .env.secrets
@@ -72,12 +73,20 @@ services:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - BACKEND_USERNAME=${BACKEND_USERNAME}
       - BACKEND_PASSWORD=${BACKEND_PASSWORD}
+      # Enable NVIDIA runtime features if GPUs are available on the host
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
     volumes:
       - ./acla_ai_service:/app
     ports:
       - '8000:8000'
     networks:
       - ai-network
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: [ gpu ]
 
   mongodb:
     build: ./acla_db

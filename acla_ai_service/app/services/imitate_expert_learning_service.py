@@ -1071,18 +1071,6 @@ class ExpertImitateLearningService:
             except Exception as e:
                 print(f"[WARNING] Batch optimal action prediction failed: {e}")
                 return [{} for _ in range(len(batch_df))]
-        
-        def predict_optimal_for_index(idx: int) -> Dict[str, float]:
-            """Fallback single-row prediction (kept for compatibility)"""
-            if trajectory_bundle is None:
-                return {}
-            try:
-                row_df = processed_df.iloc[[idx]]
-                return self.trajectory_learner.predict_optimal_actions(row_df)
-            except Exception as e:
-                if idx % 1000 == 0:  # Only log every 1000th error to avoid spam
-                    print(f"[WARNING] Optimal action prediction failed idx={idx}: {e}")
-                return {}
 
         total_rows = len(processed_df)
         print(f"[INFO] Processing {total_rows} rows for expert state extraction...")
@@ -1123,7 +1111,7 @@ class ExpertImitateLearningService:
                         exp_velocity_y = float(row_predictions.get(EO.EXPERT_OPTIMAL_VELOCITY_Y.value, curr_velocity_y))
 
                         # Calculate velocity alignment (dot product normalized)
-                        # If moving in same direction as expert, alignment = 1.0, otherwise 0.0
+                        # If moving in same direction as expert, alignment = 1.0
                         curr_velocity_magnitude = np.sqrt(curr_velocity_x**2 + curr_velocity_y**2)
                         exp_velocity_magnitude = np.sqrt(exp_velocity_x**2 + exp_velocity_y**2)
                         
@@ -1131,9 +1119,7 @@ class ExpertImitateLearningService:
                             # Normalize vectors and calculate dot product
                             curr_velocity_norm = np.array([curr_velocity_x / curr_velocity_magnitude, curr_velocity_y / curr_velocity_magnitude])
                             exp_velocity_norm = np.array([exp_velocity_x / exp_velocity_magnitude, exp_velocity_y / exp_velocity_magnitude])
-                            dot_product = np.dot(curr_velocity_norm, exp_velocity_norm)
-                            # Convert to 0.0 or 1.0 (1.0 if moving toward expert direction, threshold at 0.5)
-                            velocity_alignment = 1.0 if dot_product > 0.5 else 0.0
+                            velocity_alignment = np.dot(curr_velocity_norm, exp_velocity_norm)
                         else:
                             velocity_alignment = 0.0
 
@@ -1209,7 +1195,7 @@ class ExpertImitateLearningService:
         return results_copy
     
     # Deserialize object inside 
-    def deserialize_object_inside(self, serialized_results: Dict[str, Any]) -> Dict[str, Any]:
+    def deserialize_imitation_model(self, serialized_results: Dict[str, Any]) -> Dict[str, Any]:
         """
         Deserialize the objects that were serialized by serialize_object_inside function
         
@@ -1269,17 +1255,7 @@ class ExpertImitateLearningService:
             
         return results
     
-    def load_models_from_serialized(self, serialized_model_data: Dict[str, Any]) -> None:
-        """
-        Load models from serialized data into the class
-        
-        Args:
-            serialized_model_data: Dictionary containing serialized models
-        """
-        print("[INFO] Loading models from serialized data...")
-        self.trained_models = self.deserialize_object_inside(serialized_model_data)
-        print("[INFO] Models loaded successfully")
-    
+
     # Serialize models function
     def serialize_data(self, data: any) -> str:
         """
@@ -1340,9 +1316,6 @@ if __name__ == "__main__":
     
     # 1. Train the model (this stores models in the class)
     # serialized_results = service.train_ai_model(expert_telemetry_data)
-    
-    # 2. Or load previously trained models
-    # service.load_models_from_serialized(serialized_model_data)
-    
+
     # 3. Compare new telemetry with stored expert models
     # comparison = service.compare_telemetry_with_expert(incoming_telemetry)

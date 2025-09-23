@@ -98,7 +98,7 @@ class TelemetryFeatures:
         "Physics_wheel_slip_rear_left",
         "Physics_slip_ratio_front_right",
         "Physics_tyre_contact_point_front_right_y",
-        "Physics_steer_angle", #From 0.0 to 1.0
+        "Physics_steer_angle", #absolute value from -1.0 to 1.0.
         "Physics_is_ai_controlled",
         "Physics_car_damage_left",
         "Physics_wheel_pressure_rear_left",
@@ -1056,3 +1056,110 @@ class FeatureProcessor:
         individual = [l[2].copy() for l in selected]
         combined = pd.concat(individual, ignore_index=True)
         return combined, individual
+
+    # ========================= Console Plotting Utilities ========================= #
+    def plot_features_console(
+        self,
+        features: List[str],
+        width: int = 60,
+        window: Optional[int] = None,
+        use_unicode: bool = True,
+        title: Optional[str] = None,
+    ) -> None:
+        """Print compact console plots (sparklines) and stats for selected features.
+
+        For each requested feature, this prints a single-line sparkline representing
+        the time series over the chosen window, followed by Lowest/Mid(=median)/Highest
+        values computed from numeric data only.
+
+        Args:
+            features: List of column names to visualize.
+            width: Target number of character buckets in the sparkline (>=10 recommended).
+            window: If provided, only the last N rows are used for plotting/stats.
+            use_unicode: Use Unicode blocks (▁▂▃▄▅▆▇█). If False, uses ASCII fallback.
+            title: Optional header title printed above the plots.
+
+        Notes:
+            - Non-numeric values are coerced with pandas to NaN then dropped for stats.
+            - If a feature has no numeric data after coercion, a message is shown.
+            - If a feature isn't found, it's reported and skipped.
+        """
+        if self.df is None or self.df.empty:
+            print("[WARNING] DataFrame is empty; nothing to plot.")
+            return
+
+        # Determine working frame (apply tail window if requested)
+        work_df = self.df.tail(window) if isinstance(window, int) and window > 0 else self.df
+
+        # Prepare glyph sets
+        blocks = "▁▂▃▄▅▆▇█" if use_unicode else " .:-=+*#%@"
+        n_levels = len(blocks)
+
+        def to_numeric_series(col_name: str) -> Optional[pd.Series]:
+            if col_name not in work_df.columns:
+                print(f"[INFO] Feature not found: {col_name}")
+                return None
+            s = pd.to_numeric(work_df[col_name], errors='coerce')
+            return s
+
+        def render_sparkline(values: np.ndarray, buckets: int) -> str:
+            # Downsample or aggregate into 'buckets' points using simple chunked mean
+            if values.size == 0:
+                return "".ljust(buckets)
+            buckets = max(1, int(buckets))
+            if values.size <= buckets:
+                # Pad by repeating last value to reach buckets
+                pad = np.full(buckets - values.size, values[-1]) if values.size < buckets else np.array([])
+                series = np.concatenate([values, pad])
+            else:
+                # Chunked mean aggregation
+                idx = np.linspace(0, values.size, num=buckets + 1, dtype=int)
+                series = np.array([
+                    values[idx[i]:idx[i+1]].mean() if idx[i] < idx[i+1] else values[min(idx[i], values.size-1)]
+                    for i in range(buckets)
+                ])
+
+            vmin = np.nanmin(series)
+            vmax = np.nanmax(series)
+            if not np.isfinite(vmin) or not np.isfinite(vmax):
+                return blocks[0] * buckets
+            if vmax - vmin == 0:
+                # Flat line
+                level = (n_levels - 1) // 2
+                return blocks[level] * buckets
+
+            norm = (series - vmin) / (vmax - vmin)
+            idxs = np.clip((norm * (n_levels - 1)).round().astype(int), 0, n_levels - 1)
+            chars = ''.join(blocks[i] for i in idxs)
+            return chars
+
+        # Header
+        if title:
+            print(f"\n=== {title} ===")
+        print(f"[Console Plot] width={width} window={'last ' + str(window) if window else 'all'} rows\n")
+
+        name_width = 34  # left label column width
+        width = max(10, int(width))
+
+        for feat in features:
+            s = to_numeric_series(feat)
+            if s is None:
+                continue
+
+            s_clean = s.dropna()
+            if s_clean.empty:
+                print(f"{feat:<{name_width}} | (no numeric data)")
+                continue
+
+            vals = s_clean.to_numpy(dtype=float)
+
+            # Stats
+            lowest = float(np.nanmin(vals))
+            highest = float(np.nanmax(vals))
+            mid = float(np.nanmedian(vals))
+
+            spark = render_sparkline(vals, width)
+            stats = f"Lowest: {_safe_float(lowest):.3f} | Mid: {_safe_float(mid):.3f} | Highest: {_safe_float(highest):.3f}"
+            print(f"{feat:<{name_width}} | {spark}  {stats}")
+
+        print("")

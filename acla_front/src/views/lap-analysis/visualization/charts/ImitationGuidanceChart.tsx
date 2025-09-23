@@ -65,11 +65,113 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
     const [error, setError] = useState<string | null>(null);
     const [autoUpdate, setAutoUpdate] = useState<boolean>(false);
     const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+    const rafRef = useRef<number | null>(null);
+
+    // Animation state
+    const [isPlaying, setIsPlaying] = useState<boolean>(false);
+    const [progress, setProgress] = useState<number>(0); // seconds along timeline
+    const playStartRef = useRef<number | null>(null); // performance.now baseline
+    const progressAtPlayStartRef = useRef<number>(0); // progress when play started
 
     // Extract track and car information from session data
     const trackName = analysisContext.recordedSessioStaticsData?.track || 'Unknown Track';
     const carName = analysisContext.recordedSessioStaticsData?.car_model || 'Unknown Car';
     const liveData = analysisContext.liveData as TelemetryData;
+
+    // Build keyframes from predictions
+    type Keyframe = {
+        t: number; // seconds from now
+        throttle: number;
+        brake: number;
+        steering: number;
+        gear?: number;
+        target_speed?: number;
+        action?: string;
+    };
+
+    const parseTimeAhead = (timeStr?: string): number => {
+        if (!timeStr) return 0;
+        const trimmed = String(timeStr).trim();
+        const m = trimmed.match(/([0-9]*\.?[0-9]+)/);
+        if (!m) return 0;
+        const val = parseFloat(m[1]);
+        // assume seconds by default
+        if (/ms/i.test(trimmed)) return val / 1000;
+        return val;
+    };
+
+    const keyframes: Keyframe[] = useMemo(() => {
+        const preds = guidanceData?.guidance_result?.sequence_predictions ?? [];
+        const frames = preds.map(p => ({
+            t: parseTimeAhead(p.time_ahead),
+            throttle: clamp01(p.throttle ?? 0),
+            brake: clamp01(p.brake ?? 0),
+            steering: clampMinus1To1(p.steering ?? 0),
+            gear: p.gear,
+            target_speed: p.target_speed,
+            action: p.action,
+        }))
+            .sort((a, b) => a.t - b.t);
+
+        // Ensure we have an initial frame at t=0 by inferring from liveData if needed
+        if (frames.length > 0 && frames[0].t > 0) {
+            frames.unshift({
+                t: 0,
+                throttle: clamp01(Number(liveData?.throttle ?? 0)),
+                brake: clamp01(Number(liveData?.braking ?? 0)),
+                steering: clampMinus1To1(Number(liveData?.steering ?? 0)),
+                gear: typeof liveData?.gear === 'number' ? liveData.gear : undefined,
+                target_speed: undefined,
+                action: 'Current',
+            });
+        }
+
+        return frames;
+    }, [guidanceData, liveData]);
+
+    const totalDuration = useMemo(() => (keyframes.length ? keyframes[keyframes.length - 1].t : 0), [keyframes]);
+
+    // Helpers
+    function clamp01(n: number) { return Math.max(0, Math.min(1, n)); }
+    function clampMinus1To1(n: number) { return Math.max(-1, Math.min(1, n)); }
+
+    function lerp(a: number, b: number, t: number) { return a + (b - a) * t; }
+
+    function getInterpolatedValues(timeS: number) {
+        if (keyframes.length === 0) {
+            return {
+                throttle: 0, brake: 0, steering: 0,
+                gear: undefined as number | undefined,
+                target_speed: undefined as number | undefined,
+                action: undefined as string | undefined,
+            };
+        }
+        if (timeS <= keyframes[0].t) {
+            const k = keyframes[0];
+            return { throttle: k.throttle, brake: k.brake, steering: k.steering, gear: k.gear, target_speed: k.target_speed, action: k.action };
+        }
+        if (timeS >= keyframes[keyframes.length - 1].t) {
+            const k = keyframes[keyframes.length - 1];
+            return { throttle: k.throttle, brake: k.brake, steering: k.steering, gear: k.gear, target_speed: k.target_speed, action: k.action };
+        }
+        // find segment
+        let i = 0;
+        for (; i < keyframes.length - 1; i++) {
+            if (timeS >= keyframes[i].t && timeS <= keyframes[i + 1].t) break;
+        }
+        const a = keyframes[i];
+        const b = keyframes[i + 1];
+        const segDur = b.t - a.t || 1e-6;
+        const lt = (timeS - a.t) / segDur;
+        return {
+            throttle: clamp01(lerp(a.throttle, b.throttle, lt)),
+            brake: clamp01(lerp(a.brake, b.brake, lt)),
+            steering: clampMinus1To1(lerp(a.steering, b.steering, lt)),
+            gear: lt < 0.5 ? a.gear : b.gear,
+            target_speed: lt < 0.5 ? a.target_speed : b.target_speed,
+            action: lt < 0.5 ? a.action : b.action,
+        };
+    }
 
     // Function to call the imitation learning guidance API
     const fetchGuidance = useCallback(async () => {
@@ -100,6 +202,12 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
                         success: maybeEnvelope ? raw.success : undefined,
                         message: maybeEnvelope ? raw.message : undefined,
                     });
+
+                    // Reset animation with new data
+                    setProgress(0);
+                    setIsPlaying(true);
+                    playStartRef.current = null;
+                    progressAtPlayStartRef.current = 0;
 
                     // Send guidance message to AI chat if available
                     if (result.sequence_predictions && result.sequence_predictions.length > 0) {
@@ -168,6 +276,10 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
             if (intervalRef.current) {
                 clearInterval(intervalRef.current);
             }
+            if (rafRef.current) {
+                cancelAnimationFrame(rafRef.current);
+                rafRef.current = null;
+            }
         };
     }, []);
 
@@ -177,6 +289,62 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
             fetchGuidance();
         }
     }, [liveData, autoUpdate, fetchGuidance]);
+
+    // Animation loop
+    useEffect(() => {
+        if (!isPlaying || totalDuration <= 0) return;
+
+        const step = (now: number) => {
+            if (playStartRef.current == null) {
+                playStartRef.current = now;
+            }
+            const elapsed = (now - playStartRef.current) / 1000; // seconds
+            const newProgress = Math.min(progressAtPlayStartRef.current + elapsed, totalDuration);
+            setProgress(newProgress);
+
+            if (newProgress >= totalDuration) {
+                setIsPlaying(false); // stop at end
+                playStartRef.current = null;
+                progressAtPlayStartRef.current = totalDuration;
+                return;
+            }
+            rafRef.current = requestAnimationFrame(step);
+        };
+
+        rafRef.current = requestAnimationFrame(step);
+        return () => {
+            if (rafRef.current) cancelAnimationFrame(rafRef.current);
+            rafRef.current = null;
+        };
+    }, [isPlaying, totalDuration]);
+
+    const onPlayPause = useCallback(() => {
+        if (totalDuration <= 0) return;
+        if (isPlaying) {
+            // pause
+            setIsPlaying(false);
+            playStartRef.current = null;
+            progressAtPlayStartRef.current = progress;
+        } else {
+            // resume
+            setIsPlaying(true);
+            playStartRef.current = null; // will be set on next RAF
+        }
+    }, [isPlaying, progress, totalDuration]);
+
+    const onRestart = useCallback(() => {
+        setProgress(0);
+        progressAtPlayStartRef.current = 0;
+        playStartRef.current = null;
+        if (totalDuration > 0) setIsPlaying(true);
+    }, [totalDuration]);
+
+    const onScrub = useCallback((v: number) => {
+        const clamped = Math.max(0, Math.min(totalDuration || 0, v));
+        setProgress(clamped);
+        progressAtPlayStartRef.current = clamped;
+        playStartRef.current = null;
+    }, [totalDuration]);
 
     // Render telemetry data section
     const renderTelemetryData = () => {
@@ -251,77 +419,89 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
         );
     };
 
-    // Render sequence predictions section
-    const renderSequencePredictions = () => {
-        if (!guidanceData?.guidance_result?.sequence_predictions) {
-            return null;
-        }
-
-        const { sequence_predictions } = guidanceData.guidance_result;
+    // Render animated timeline section
+    const renderAnimatedTimeline = () => {
+        const hasData = keyframes.length > 0 && totalDuration > 0;
+        const cur = getInterpolatedValues(progress);
 
         return (
             <Box p="3">
-                <Text size="2" weight="bold" mb="2">Action Sequence ({sequence_predictions.length} steps)</Text>
-                <Grid gap="2">
-                    {sequence_predictions.slice(0, 5).map((prediction) => (
-                        <Box key={prediction.step} p="3" style={{
-                            border: '1px solid var(--gray-6)',
-                            borderRadius: '6px',
-                            backgroundColor: 'var(--gray-1)'
-                        }}>
-                            <Flex justify="between" align="center" mb="2">
-                                <Badge color="blue" size="1">Step {prediction.step}</Badge>
-                                <Text size="1" color="gray">{prediction.time_ahead}</Text>
-                            </Flex>
+                <Text size="2" weight="bold" mb="2">Action Animator</Text>
 
-                            <Text size="2" weight="medium" mb="2" style={{ display: 'block' }}>
-                                {prediction.action}
-                            </Text>
+                {/* Current values */}
+                <div className={styles.animatorSection}>
+                    <div className={styles.gaugeRow}>
+                        <div className={styles.gaugeLabel}>Throttle</div>
+                        <div className={styles.barOuter}>
+                            <div className={styles.barFillThrottle} style={{ width: `${(cur.throttle * 100).toFixed(2)}%` }} />
+                        </div>
+                        <div className={styles.gaugeValue}>{Math.round(cur.throttle * 100)}%</div>
+                    </div>
 
-                            <Grid columns="3" gap="2">
-                                <Box style={{ textAlign: 'center' }}>
-                                    <Text size="1" color="gray">Throttle</Text>
-                                    <Text size="2" weight="bold" color={prediction.throttle > 0.5 ? 'green' : 'gray'}>
-                                        {(prediction.throttle * 100).toFixed(0)}%
-                                    </Text>
-                                </Box>
-                                <Box style={{ textAlign: 'center' }}>
-                                    <Text size="1" color="gray">Brake</Text>
-                                    <Text size="2" weight="bold" color={prediction.brake > 0.1 ? 'red' : 'gray'}>
-                                        {(prediction.brake * 100).toFixed(0)}%
-                                    </Text>
-                                </Box>
-                                <Box style={{ textAlign: 'center' }}>
-                                    <Text size="1" color="gray">Steering</Text>
-                                    <Text size="2" weight="bold" color={Math.abs(prediction.steering) > 0.1 ? 'blue' : 'gray'}>
-                                        {(prediction.steering * 100).toFixed(0)}%
-                                    </Text>
-                                </Box>
-                            </Grid>
-                            {(prediction.gear !== undefined || prediction.target_speed !== undefined) && (
-                                <Grid columns="2" gap="2" mt="2">
-                                    {prediction.gear !== undefined && (
-                                        <Box style={{ textAlign: 'center' }}>
-                                            <Text size="1" color="gray">Gear</Text>
-                                            <Text size="2" weight="bold">{prediction.gear}</Text>
-                                        </Box>
-                                    )}
-                                    {prediction.target_speed !== undefined && (
-                                        <Box style={{ textAlign: 'center' }}>
-                                            <Text size="1" color="gray">Target Speed</Text>
-                                            <Text size="2" weight="bold">{prediction.target_speed}</Text>
-                                        </Box>
-                                    )}
-                                </Grid>
-                            )}
-                        </Box>
-                    ))}
+                    <div className={styles.gaugeRow}>
+                        <div className={styles.gaugeLabel}>Brake</div>
+                        <div className={styles.barOuter}>
+                            <div className={styles.barFillBrake} style={{ width: `${(cur.brake * 100).toFixed(2)}%` }} />
+                        </div>
+                        <div className={styles.gaugeValue}>{Math.round(cur.brake * 100)}%</div>
+                    </div>
+
+                    <div className={styles.gaugeRow}>
+                        <div className={styles.gaugeLabel}>Steering</div>
+                        <div className={styles.steeringOuter}>
+                            <div className={styles.steeringLeft} style={{ width: `${Math.max(0, -cur.steering) * 100}%` }} />
+                            <div className={styles.steeringCenterLine} />
+                            <div className={styles.steeringRight} style={{ width: `${Math.max(0, cur.steering) * 100}%` }} />
+                        </div>
+                        <div className={styles.gaugeValue}>{Math.round(cur.steering * 100)}%</div>
+                    </div>
+                </div>
+
+                {/* Extra info */}
+                <Grid columns="3" gap="3" mt="2">
+                    <Box style={{ textAlign: 'center' }}>
+                        <Text size="1" color="gray">Gear</Text>
+                        <Text size="2" weight="bold">{cur.gear ?? '-'}</Text>
+                    </Box>
+                    <Box style={{ textAlign: 'center' }}>
+                        <Text size="1" color="gray">Target Speed</Text>
+                        <Text size="2" weight="bold">{cur.target_speed ?? '-'}</Text>
+                    </Box>
+                    <Box style={{ textAlign: 'center' }}>
+                        <Text size="1" color="gray">Action</Text>
+                        <Text size="2" weight="bold">{cur.action ?? '-'}</Text>
+                    </Box>
                 </Grid>
-                {sequence_predictions.length > 5 && (
-                    <Text size="1" color="gray" mt="2" style={{ textAlign: 'center' }}>
-                        ... and {sequence_predictions.length - 5} more steps
-                    </Text>
-                )}
+
+                {/* Timeline controls */}
+                <div className={styles.timelineControls}>
+                    <div className={styles.controlsLeft}>
+                        <Button size="1" onClick={onPlayPause} disabled={!hasData} variant="soft">
+                            {isPlaying ? 'Pause' : 'Play'}
+                        </Button>
+                        <Button size="1" onClick={onRestart} disabled={!hasData} variant="soft">Restart</Button>
+                    </div>
+                    <div className={styles.controlsRight}>
+                        <Text size="1" color="gray">{progress.toFixed(2)}s / {totalDuration.toFixed(2)}s</Text>
+                    </div>
+                </div>
+                <div className={styles.timelineSlider}>
+                    <input
+                        type="range"
+                        min={0}
+                        max={Math.max(0.01, totalDuration)}
+                        step={0.01}
+                        value={Number.isFinite(progress) ? progress : 0}
+                        onChange={(e) => onScrub(parseFloat(e.target.value))}
+                        disabled={!hasData}
+                    />
+                    {/* Keyframe markers */}
+                    <div className={styles.keyframeTrack}>
+                        {keyframes.map((k, idx) => (
+                            <span key={idx} className={styles.keyframeDot} style={{ left: `${(k.t / (totalDuration || 1)) * 100}%` }} />
+                        ))}
+                    </div>
+                </div>
             </Box>
         );
     };
@@ -433,7 +613,7 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
                             {renderCurrentSituation()}
 
                             <Separator size="4" />
-                            {renderSequencePredictions()}
+                            {renderAnimatedTimeline()}
 
                             <Separator size="4" />
                             {renderContextualInfo()}
