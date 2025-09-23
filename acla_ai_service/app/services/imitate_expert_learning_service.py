@@ -1227,65 +1227,81 @@ class ExpertImitateLearningService:
             return str(obj)
     
     # Deserialize object inside 
-    def deserialize_imitation_model(self, serialized_results: Dict[str, Any]) -> Dict[str, Any]:
+    def deserialize_imitation_model(self, serialized_results: Dict[str, Any]) -> 'ExpertImitateLearningService':
         """
-        Deserialize the objects that were serialized by serialize_object_inside function
+        Deserialize the objects that were serialized by serialize_object_inside function and load them into this service instance
         
         Args:
             serialized_results: Dictionary containing serialized models and metadata
             
         Returns:
-            Dictionary with deserialized models and original structure
+            Self (ExpertImitateLearningService): The current instance with loaded models
         """
-        results = serialized_results.copy()
-        
-        # Deserialize behavior learning model if present
-        if 'behavior_learning' in results and 'model' in results['behavior_learning']['modelData']:
-            print("[INFO] Deserializing behavior learning model...")
-            # Deserialize the actual model from the behavior_learning['model'] structure
-            behavior_model_serialized = results['behavior_learning']['modelData']['model']
-            behavior_model_deserialized = self.deserialize_data(behavior_model_serialized)
-            results['behavior_learning']['modelData']['model'] = behavior_model_deserialized
+        try:
+            results = serialized_results.copy()
+            
+            # Deserialize behavior learning model if present
+            if 'behavior_learning' in results and 'model' in results['behavior_learning']['modelData']:
+                print("[INFO] Deserializing behavior learning model...")
+                # Deserialize the actual model from the behavior_learning['model'] structure
+                behavior_model_serialized = results['behavior_learning']['modelData']['model']
+                behavior_model_deserialized = self.deserialize_data(behavior_model_serialized)
+                results['behavior_learning']['modelData']['model'] = behavior_model_deserialized
 
-        # Deserialize behavior learning scaler if present
-        if 'behavior_learning' in results and 'scaler' in results['behavior_learning']['modelData']:
-            print("[INFO] Deserializing behavior learning scaler...")
-            # Deserialize the actual scaler from the behavior_learning structure
-            behavior_scaler_serialized = results['behavior_learning']['modelData']['scaler']
-            behavior_scaler_deserialized = self.deserialize_data(behavior_scaler_serialized)
-            results['behavior_learning']['modelData']['scaler'] = behavior_scaler_deserialized
-            
-        # Deserialize trajectory learning models if present
-        if 'trajectory_learning' in results and 'models' in results['trajectory_learning']['modelData']:
-            print("[INFO] Deserializing trajectory learning models...")
-            # Deserialize each trajectory model individually
-            trajectory_models_serialized = results['trajectory_learning']['modelData']['models']
+            # Deserialize behavior learning scaler if present
+            if 'behavior_learning' in results and 'scaler' in results['behavior_learning']['modelData']:
+                print("[INFO] Deserializing behavior learning scaler...")
+                # Deserialize the actual scaler from the behavior_learning structure
+                behavior_scaler_serialized = results['behavior_learning']['modelData']['scaler']
+                behavior_scaler_deserialized = self.deserialize_data(behavior_scaler_serialized)
+                results['behavior_learning']['modelData']['scaler'] = behavior_scaler_deserialized
                 
-            # Deserialize each model individually
-            deserialized_trajectory_models = {}
-            for model_name, serialized_model in trajectory_models_serialized.items():
-                print(f"[INFO] Deserializing trajectory model: {model_name}")
-                deserialized_model = self.deserialize_data(serialized_model)
-                deserialized_trajectory_models[model_name] = deserialized_model
+            # Deserialize trajectory learning models if present
+            if 'trajectory_learning' in results and 'models' in results['trajectory_learning']['modelData']:
+                print("[INFO] Deserializing trajectory learning models...")
+                # Deserialize each trajectory model individually
+                trajectory_models_serialized = results['trajectory_learning']['modelData']['models']
+                    
+                # Deserialize each model individually
+                deserialized_trajectory_models = {}
+                for model_name, serialized_model in trajectory_models_serialized.items():
+                    print(f"[INFO] Deserializing trajectory model: {model_name}")
+                    deserialized_model = self.deserialize_data(serialized_model)
+                    deserialized_trajectory_models[model_name] = deserialized_model
+                    
+                # Store deserialized models back in the trajectory model structure
+                results['trajectory_learning']['modelData']['models'] = deserialized_trajectory_models
                 
-            # Store deserialized models back in the trajectory model structure
-            results['trajectory_learning']['modelData']['models'] = deserialized_trajectory_models
+                # Deserialize trajectory scaler
+                trajectory_scaler_serialized = results['trajectory_learning']['modelData']['scaler']
+                deserialized_scaler = self.deserialize_data(trajectory_scaler_serialized)
+                results['trajectory_learning']['modelData']['scaler'] = deserialized_scaler
+                
+                # Deserialize trajectory PCA (only if it exists and is not None)
+                if 'pca' in results['trajectory_learning']['modelData']:
+                    trajectory_pca_serialized = results['trajectory_learning']['modelData']['pca']
+                    if trajectory_pca_serialized is not None:
+                        deserialized_pca = self.deserialize_data(trajectory_pca_serialized)
+                        results['trajectory_learning']['modelData']['pca'] = deserialized_pca
+                    else:
+                        results['trajectory_learning']['modelData']['pca'] = None
+                
+            # Load the deserialized models into this service instance
+            self.trained_models = results
             
-            # Deserialize trajectory scaler
-            trajectory_scaler_serialized = results['trajectory_learning']['modelData']['scaler']
-            deserialized_scaler = self.deserialize_data(trajectory_scaler_serialized)
-            results['trajectory_learning']['modelData']['scaler'] = deserialized_scaler
+            # Also set the trajectory model directly in the trajectory learner for immediate use
+            if 'trajectory_learning' in results:
+                self.trajectory_learner.trajectory_model = results['trajectory_learning']['modelData']
+                
+            print(f"[INFO] Successfully deserialized and loaded imitation models into service instance")
+            print(f"[INFO] - Models available: {list(results.keys())}")
             
-            # Deserialize trajectory PCA (only if it exists and is not None)
-            if 'pca' in results['trajectory_learning']['modelData']:
-                trajectory_pca_serialized = results['trajectory_learning']['modelData']['pca']
-                if trajectory_pca_serialized is not None:
-                    deserialized_pca = self.deserialize_data(trajectory_pca_serialized)
-                    results['trajectory_learning']['modelData']['pca'] = deserialized_pca
-                else:
-                    results['trajectory_learning']['modelData']['pca'] = None
+            return self
             
-        return results
+        except Exception as e:
+            error_msg = f"Failed to deserialize imitation learning models: {str(e)}"
+            print(f"[ERROR] {error_msg}")
+            raise RuntimeError(error_msg) from e
     
 
     # Serialize models function

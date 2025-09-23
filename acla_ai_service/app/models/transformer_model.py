@@ -1199,9 +1199,9 @@ class ExpertActionTransformer(nn.Module):
                 "step": i + 1,
                 "time_ahead": f"{(i + 1) * self.time_step_seconds:.1f}s",
                 "action": action,
-                "gas": round(float(gas), 2),
+                "throttle": round(float(gas), 2),
                 "brake": round(float(brake), 2), 
-                "steer_angle": round(float(steering), 2),
+                "steering": round(float(steering), 2),
                 "gear": int(gear)
             })
         
