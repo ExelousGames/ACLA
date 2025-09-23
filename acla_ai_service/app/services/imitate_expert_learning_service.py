@@ -8,6 +8,7 @@ professional or expert drivers' telemetry data.
 
 import numpy as np
 import pandas as pd
+import numpy as np
 import pickle
 import warnings
 import io
@@ -1136,7 +1137,7 @@ class ExpertImitateLearningService:
         print(f"[INFO] Completed expert state extraction. Extracted features for {len(expert_feature_rows)} records")
         return expert_feature_rows
         
-    def serialize_object_inside(self, results: any) -> str:
+    def serialize_object_inside(self, results: any) -> Dict[str, Any]:
         # Create a deep copy of results to avoid modifying the original
         import copy
         results_copy = copy.deepcopy(results)
@@ -1191,8 +1192,39 @@ class ExpertImitateLearningService:
                 results_copy['trajectory_learning']['modelData']['pca'] = serialized_pca_data
             else:
                 results_copy['trajectory_learning']['modelData']['pca'] = None
+        
+        # Ensure all values are JSON-serializable
+        json_friendly_results = self._ensure_json_serializable(results_copy)
+        return json_friendly_results
+    
+    def _ensure_json_serializable(self, obj: Any) -> Any:
+        """
+        Recursively ensure all values in the object are JSON-serializable
+        
+        Args:
+            obj: Object to make JSON-serializable
             
-        return results_copy
+        Returns:
+            JSON-serializable version of the object
+        """
+        if obj is None:
+            return None
+        elif isinstance(obj, (bool, int, float, str)):
+            return obj
+        elif isinstance(obj, (list, tuple)):
+            return [self._ensure_json_serializable(item) for item in obj]
+        elif isinstance(obj, dict):
+            return {str(key): self._ensure_json_serializable(value) for key, value in obj.items()}
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        elif isinstance(obj, (np.integer, np.floating)):
+            return float(obj) if isinstance(obj, np.floating) else int(obj)
+        elif hasattr(obj, '__dict__'):
+            # For objects with attributes, convert to dict
+            return {str(key): self._ensure_json_serializable(value) for key, value in obj.__dict__.items()}
+        else:
+            # For other types, convert to string as fallback
+            return str(obj)
     
     # Deserialize object inside 
     def deserialize_imitation_model(self, serialized_results: Dict[str, Any]) -> Dict[str, Any]:
@@ -1309,7 +1341,6 @@ class ExpertImitateLearningService:
     
 # Example usage and testing
 if __name__ == "__main__":
-    print("ImitationLearningService initialized. Ready for expert demonstration learning!")
     
     # Example workflow
     service = ExpertImitateLearningService()

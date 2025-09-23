@@ -1026,6 +1026,9 @@ class ExpertActionTransformer(nn.Module):
             }
         """
         try:
+            # Get device from model parameters first
+            device = next(self.parameters()).device
+            
             # Validate context features if provided
             if context_data and self.context_embedding is not None:
                 context_features = self._extract_context_features(context_data)
@@ -1044,7 +1047,6 @@ class ExpertActionTransformer(nn.Module):
             telemetry_features = self._extract_telemetry_features(current_telemetry)
             
             # Convert to tensor format
-            device = next(self.parameters()).device
             telemetry_tensor = torch.tensor([telemetry_features], dtype=torch.float32).unsqueeze(0).to(device)
             
             # Generate predictions
