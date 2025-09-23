@@ -40,7 +40,7 @@ export class AiModelController {
     async findOneWithData(@Param('id') id: string) {
         try {
             const result = await this.aiModelService.findOneWithModelData(id);
-            
+
             // If the model data is too large, provide helpful guidance
             if (result.modelDataInfo?.isLargeFile) {
                 return {
@@ -59,7 +59,7 @@ export class AiModelController {
                     }
                 };
             }
-            
+
             return result;
         } catch (error) {
             console.error(`Error in findOneWithData: ${error.message}`);
@@ -103,10 +103,10 @@ export class AiModelController {
         @Query('carName') carName?: string
     ) {
         console.log(`Preparing chunked data for active model - Track: ${trackName}, Car: ${carName}, Type: ${modelType}`);
-        
+
         try {
             const modelData = await this.aiModelService.getActiveModelWithData(trackName, carName, modelType);
-            
+
             // Check if the model data contains an error or is too large
             if (modelData.modelDataInfo?.isLargeFile) {
                 return {
@@ -116,7 +116,7 @@ export class AiModelController {
                     recommendation: 'Consider reducing the model size or implementing streaming JSON processing for this specific model type.'
                 };
             }
-            
+
             if (modelData.modelDataError) {
                 return {
                     success: false,
@@ -125,7 +125,7 @@ export class AiModelController {
                     recommendation: modelData.modelDataError.recommendedAction
                 };
             }
-            
+
             const result = await this.chunkService.prepareDataForChunkedSending(modelData);
 
             // Return only session info, not the actual chunks
