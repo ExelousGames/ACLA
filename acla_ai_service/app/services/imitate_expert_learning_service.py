@@ -52,7 +52,7 @@ class ExpertFeatureCatalog:
 
     class ContextFeature(str, Enum):
         # Velocity direction alignment with expert
-        EXPERT_VELOCITY_ALIGNMENT = 'expert_velocity_alignment' # 1.0 if moving toward expert velocity, 0.0 otherwise
+        EXPERT_VELOCITY_ALIGNMENT = 'expert_velocity_alignment' # 1.0 if moving in the expert velocity direction, 0.0 opposite direction
 
     class TrajectoryFeature(str, Enum):
         TRACK_POSITION = 'track_position'
@@ -426,72 +426,8 @@ class ExpertPositionLearner:
                 for model_name, pred_array in predictions.items():
                     result[model_name] = float(pred_array[i])
                 results.append(result)
-            return results
+            return results 
 
-    def predict_optimal_actions_batch(self, current_state: pd.DataFrame) -> List[Dict[str, float]]:
-        """
-        Predict optimal actions for multiple rows, returning individual predictions per row
-        
-        Args:
-            current_state: Current telemetry state (multiple rows)
-            
-        Returns:
-            List of dictionaries, one prediction dict per row
-        """
-        if not self.trajectory_model:
-            raise ValueError("No trajectory model trained. Call learn_optimal_trajectory first.")
-        
-        if len(current_state) == 0:
-            return []
-        
-        # Extract features from current state (handles multiple rows efficiently)
-        trajectory_features = self.extract_trajectory_features(current_state)
-        
-        # Prepare input
-        input_features = self.trajectory_model['input_features']
-        
-        # Ensure all required features are available
-        missing_features = [f for f in input_features if f not in trajectory_features.columns]
-        if missing_features:
-            raise ValueError(f"Missing required features for prediction: {missing_features}")
-            
-        X = trajectory_features[input_features].fillna(0)
-        
-        # Scale features (handles multiple rows)
-        X_scaled = self.trajectory_model['scaler'].transform(X)
-        
-        # Apply PCA if it was used during training and is fitted
-        if (self.trajectory_model['pca'] is not None and 
-            hasattr(self.trajectory_model['pca'], 'components_')):
-            X_scaled = self.trajectory_model['pca'].transform(X_scaled)
-        
-        # Make predictions for all models at once (batch prediction)
-        all_predictions = {}
-        from .imitate_expert_learning_service import ExpertFeatureCatalog as _EFC
-        gear_key = _EFC.ExpertOptimalFeature.EXPERT_OPTIMAL_GEAR.value
-        
-        for target_name, model in self.trajectory_model['models'].items():
-            try:
-                pred = model.predict(X_scaled)  # Shape: (n_rows,)
-                all_predictions[target_name] = pred
-            except Exception as e:
-                print(f"[WARNING] Failed to predict {target_name}: {e}")
-                # Create default predictions for all rows
-                default_value = 1 if target_name == gear_key else 0.0
-                all_predictions[target_name] = np.full(len(current_state), default_value)
-        
-        # Convert to list of dictionaries (one per row)
-        row_predictions = []
-        for i in range(len(current_state)):
-            row_pred = {}
-            for target_name, predictions_array in all_predictions.items():
-                if target_name == gear_key:
-                    row_pred[target_name] = int(predictions_array[i])
-                else:
-                    row_pred[target_name] = float(predictions_array[i])
-            row_predictions.append(row_pred)
-        
-        return row_predictions
 
     def debug_position_model(self) -> Dict[str, Any]:
         """
@@ -690,7 +626,6 @@ class ExpertImitateLearningService:
         self.models_directory.mkdir(exist_ok=True)
         
         self.position_learner = ExpertPositionLearner()
-        self.trained_models = {}
         
         print(f"[INFO] ImitationLearningService initialized. Models directory: {self.models_directory}")
 
@@ -717,22 +652,19 @@ class ExpertImitateLearningService:
         # Cleaned data
         processed_df = feature_processor.general_cleaning_for_analysis()
         
-        results = {}
-        
-        # Learn expert position mapping
+        # Learn expert position mapping (this is the only learning model)
         if 'trajectory' in learning_objectives:
             print("[INFO] Learning expert position mapping...")
-            position_results = self.position_learner.learn_expert_position_mapping(processed_df)
-            results['position_learning'] = position_results
+            results = self.position_learner.learn_expert_position_mapping(processed_df)
+            results['learning_summary'] = self._generate_learning_summary(results)
+        else:
+            raise ValueError("No valid learning objectives provided. Expected 'trajectory'.")
 
-        results['learning_summary'] = self._generate_learning_summary(results)
-        
-        # Store the trained models in the class
-        self.trained_models = results
-        
-        objects_serialized_data = self.serialize_object_inside(results)  
+        # Serialize the models for storage/transmission
+        objects_serialized_data = self.serialize_learning_model()  
+        results['serialized_modelData'] = objects_serialized_data
          
-        return objects_serialized_data
+        return results
     
     def predict_expert_actions(self, 
                              processed_df: pd.DataFrame) -> Dict[str, Any]:
@@ -748,62 +680,30 @@ class ExpertImitateLearningService:
         predictions = {}
         
         # Check if models exist
-        if not self.trained_models:
-            print("[WARNING] No model data available")
+        if not self.position_learner.position_model:
+            print("[WARNING] No position model available")
             return {"error": "No trained models available"}
         
-        # Predict expert actions based on position
-        if 'position_learning' in self.trained_models:
-            try:
-                # Deserialize position models if they're still serialized
-                position_model_data = self.trained_models['position_learning']['modelData']
+        try:
+            
+            # Extract normalized positions from the input data
+            if 'Graphics_normalized_car_position' in processed_df.columns:
+                normalized_positions = processed_df['Graphics_normalized_car_position'].values
+                optimal_actions = self.position_learner.predict_expert_actions_at_position(normalized_positions)
                 
-                # Check if models need deserialization
-                if 'models' in position_model_data:
-                    models = position_model_data['models']
-                    deserialized_models = {}
-                    
-                    for model_name, model_data in models.items():
-                        if isinstance(model_data, str):
-                            # Model is serialized, deserialize it
-                            deserialized_models[model_name] = self.deserialize_data(model_data)
-                        else:
-                            # Model is already deserialized
-                            deserialized_models[model_name] = model_data
-                    
-                    # Update the models in position_model_data
-                    position_model_data = position_model_data.copy()
-                    position_model_data['models'] = deserialized_models
-                    
-                    # Also deserialize scaler if needed
-                    if isinstance(position_model_data.get('position_scaler'), str):
-                        position_model_data['position_scaler'] = self.deserialize_data(position_model_data['position_scaler'])
-                
-                # Set the position model
-                self.position_learner.position_model = position_model_data
-                
-                # Extract normalized positions from the input data
-                if 'Graphics_normalized_car_position' in processed_df.columns:
-                    normalized_positions = processed_df['Graphics_normalized_car_position'].values
-                    optimal_actions = self.position_learner.predict_expert_actions_at_position(normalized_positions)
-                    
-                    # If multiple rows, average the predictions for consistency with old interface
-                    if isinstance(optimal_actions, list):
-                        averaged_actions = {}
-                        for key in optimal_actions[0].keys():
-                            averaged_actions[key] = np.mean([action[key] for action in optimal_actions])
-                        predictions['optimal_actions'] = averaged_actions
-                    else:
-                        predictions['optimal_actions'] = optimal_actions
+                # If multiple rows, average the predictions for consistency with old interface
+                if isinstance(optimal_actions, list):
+                    averaged_actions = {}
+                    for key in optimal_actions[0].keys():
+                        averaged_actions[key] = np.mean([action[key] for action in optimal_actions])
+                    predictions['optimal_actions'] = averaged_actions
                 else:
-                    predictions['optimal_actions'] = {"error": "No normalized track position data available"}
-                    
-            except Exception as e:
-                raise Exception(f"[WARNING] Could not predict expert actions: {e}")
-        
-        # Legacy support - check for old trajectory_learning models
-        elif 'trajectory_learning' in self.trained_models:
-            predictions['optimal_actions'] = {"error": "Legacy trajectory model detected. Please retrain with new position-based model."}
+                    predictions['optimal_actions'] = optimal_actions
+            else:
+                predictions['optimal_actions'] = {"error": "No normalized track position data available"}
+                
+        except Exception as e:
+            raise Exception(f"[WARNING] Could not predict expert actions: {e}")
         
         # If no specific models are available, provide error
         if not predictions or all('error' in v for v in predictions.values() if isinstance(v, dict)):
@@ -818,12 +718,12 @@ class ExpertImitateLearningService:
             'learning_completed': []
         }
         
-        if 'position_learning' in results:
-            position_info = results['position_learning']
+        # Check if we have metadata
+        if 'metadata' in results:
             summary['learning_completed'].append('position_learning')
             
             # Calculate average performance metric, handling both regression (r2) and classification (accuracy) models
-            performance_metrics = position_info['metadata']['performance_metrics']
+            performance_metrics = results['metadata']['performance_metrics']
             
             # Separate regression and classification metrics
             r2_scores = [metrics['r2'] for metrics in performance_metrics.values() if 'r2' in metrics]
@@ -834,14 +734,14 @@ class ExpertImitateLearningService:
             avg_accuracy = np.mean(accuracy_scores) if accuracy_scores else 0.0
             
             summary['position_summary'] = {
-                'models_trained': len(position_info['metadata']['models_trained']),
-                'input_features': len(position_info['metadata']['input_features']),
-                'target_features': len(position_info['metadata']['target_features']),
+                'models_trained': len(results['metadata']['models_trained']),
+                'input_features': len(results['metadata']['input_features']),
+                'target_features': len(results['metadata']['target_features']),
                 'avg_r2_score': avg_r2,
                 'avg_accuracy_score': avg_accuracy,
                 'regression_models': len(r2_scores),
                 'classification_models': len(accuracy_scores),
-                'total_training_samples': position_info['metadata']['total_training_samples']
+                'total_training_samples': results['metadata']['total_training_samples']
             }
         
         return summary
@@ -866,7 +766,7 @@ class ExpertImitateLearningService:
         if not telemetry_data:
             print("[INFO] No telemetry data provided, returning empty list")
             return []
-        if not self.trained_models:
+        if not self.position_learner.position_model:
             raise ValueError("No trained imitation models available. Train or load models before calling extract_expert_state_for_telemetry().")
 
         print("[INFO] Converting telemetry data to DataFrame...")
@@ -965,33 +865,44 @@ class ExpertImitateLearningService:
         print(f"[INFO] Completed expert state extraction. Extracted features for {len(expert_feature_rows)} records")
         return expert_feature_rows
         
-    def serialize_object_inside(self, results: any) -> Dict[str, Any]:
-        # Create a deep copy of results to avoid modifying the original
-        import copy
-        results_copy = copy.deepcopy(results)
+    def serialize_learning_model(self) -> Dict[str, Any]:
+        """
+        Serialize the current trained models stored in the position learner
         
-        # Serialize position learning models if present
-        if 'position_learning' in results_copy and 'models' in results_copy['position_learning']['modelData']:
-            print("[INFO] Serializing position learning models...")
-            # Only serialize the actual position_model from the position_learning structure
-            position_models_to_serialize = results_copy['position_learning']['modelData']['models']
-                
+        Returns:
+            Dictionary with serialized models ready for storage/transmission
+        """
+        if not self.position_learner.position_model:
+            raise ValueError("No trained models available to serialize. Train models first.")
+        
+        print("[INFO] Serializing current position models...")
+        
+        # Create a deep copy of position model to avoid modifying the original
+        import copy
+        position_model_copy = copy.deepcopy(self.position_learner.position_model)
+        
+        # Serialize models
+        if 'models' in position_model_copy:
+            print("[INFO] Serializing position models...")
             # Serialize each model individually
             serialized_position_models = {}
-            for model_name, model in position_models_to_serialize.items():
-                print(f"[INFO] Serializing position model: {model_name}")
+            for model_name, model in position_model_copy['models'].items():
+                print(f"[INFO] Serializing model: {model_name}")
                 serialized_model_data = self.serialize_data(model)
                 serialized_position_models[model_name] = serialized_model_data
                 
-            # Store serialized models back in the position model structure
-            results_copy['position_learning']['modelData']['models'] = serialized_position_models
+            # Store serialized models back
+            position_model_copy['models'] = serialized_position_models
             
-            position_scaler_to_serialize = results_copy['position_learning']['modelData']['position_scaler']
-            serialized_scaler_data = self.serialize_data(position_scaler_to_serialize)
-            results_copy['position_learning']['modelData']['position_scaler'] = serialized_scaler_data
+            # Serialize position scaler
+            if 'position_scaler' in position_model_copy:
+                position_scaler_data = self.serialize_data(position_model_copy['position_scaler'])
+                position_model_copy['position_scaler'] = position_scaler_data
+        else:
+            raise ValueError("Invalid model structure - expected models in position_model")
         
         # Ensure all values are JSON-serializable
-        json_friendly_results = self._ensure_json_serializable(results_copy)
+        json_friendly_results = self._ensure_json_serializable(position_model_copy)
         return json_friendly_results
     
     def _ensure_json_serializable(self, obj: Any) -> Any:
@@ -1026,7 +937,7 @@ class ExpertImitateLearningService:
     # Deserialize object inside 
     def deserialize_imitation_model(self, serialized_results: Dict[str, Any]) -> 'ExpertImitateLearningService':
         """
-        Deserialize the objects that were serialized by serialize_object_inside function and load them into this service instance
+        Deserialize the serialized position models and load them directly into the position learner
         
         Args:
             serialized_results: Dictionary containing serialized models and metadata
@@ -1035,43 +946,37 @@ class ExpertImitateLearningService:
             Self (ExpertImitateLearningService): The current instance with loaded models
         """
         try:
-            results = serialized_results.copy()
-                
-            # Deserialize position learning models if present
-            if 'position_learning' in results and 'models' in results['position_learning']['modelData']:
-                print("[INFO] Deserializing position learning models...")
-                # Deserialize each position model individually
-                position_models_serialized = results['position_learning']['modelData']['models']
-                    
+            print("[INFO] Deserializing imitation models...")
+            
+            # The serialized_results should be the direct position model structure
+            if 'models' in serialized_results:
+                print("[INFO] Deserializing position models...")
                 # Deserialize each model individually
                 deserialized_position_models = {}
-                for model_name, serialized_model in position_models_serialized.items():
-                    print(f"[INFO] Deserializing position model: {model_name}")
+                for model_name, serialized_model in serialized_results['models'].items():
+                    print(f"[INFO] Deserializing model: {model_name}")
                     deserialized_model = self.deserialize_data(serialized_model)
                     deserialized_position_models[model_name] = deserialized_model
                     
-                # Store deserialized models back in the position model structure
-                results['position_learning']['modelData']['models'] = deserialized_position_models
+                # Deserialize position scaler if present
+                deserialized_scaler = None
+                if 'position_scaler' in serialized_results:
+                    deserialized_scaler = self.deserialize_data(serialized_results['position_scaler'])
                 
-                # Deserialize position scaler
-                position_scaler_serialized = results['position_learning']['modelData']['position_scaler']
-                deserialized_scaler = self.deserialize_data(position_scaler_serialized)
-                results['position_learning']['modelData']['position_scaler'] = deserialized_scaler
+                # Construct the complete position model structure
+                self.position_learner.position_model = {
+                    'models': deserialized_position_models,
+                    'position_scaler': deserialized_scaler,
+                    'performance_metrics': serialized_results.get('performance_metrics', {}),
+                    'input_features': serialized_results.get('input_features', ['normalized_position']),
+                    'target_features': serialized_results.get('target_features', [])
+                }
                 
-            # Load the deserialized models into this service instance
-            self.trained_models = results
-            
-            # Also set the position model directly in the position learner for immediate use
-            if 'position_learning' in results:
-                self.position_learner.position_model = results['position_learning']['modelData']
-            
-            # Legacy support for old trajectory models
-            elif 'trajectory_learning' in results:
-                print("[INFO] Legacy trajectory model detected - will need retraining for full functionality")
+                print(f"[INFO] Successfully deserialized and loaded {len(deserialized_position_models)} models")
+                print(f"[INFO] - Model names: {list(deserialized_position_models.keys())}")
+            else:
+                raise ValueError("No models found in serialized data")
                 
-            print(f"[INFO] Successfully deserialized and loaded imitation models into service instance")
-            print(f"[INFO] - Models available: {list(results.keys())}")
-            
             return self
             
         except Exception as e:
