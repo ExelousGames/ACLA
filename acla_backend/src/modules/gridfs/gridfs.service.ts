@@ -399,6 +399,100 @@ export class GridFSService implements OnModuleInit, OnModuleDestroy {
         return stats;
     }
 
+    /**
+     * Download a specific byte range from a GridFS file
+     * This is useful for chunked transfer of large files without loading the entire file
+     * @param fileId ObjectId of the file in GridFS
+     * @param bucketName Name of the GridFS bucket
+     * @param startByte Starting byte position (inclusive)
+     * @param endByte Ending byte position (inclusive)
+     * @returns String content of the specified byte range
+     */
+    async downloadFileRange(fileId: ObjectId, bucketName: string, startByte: number, endByte: number): Promise<string> {
+        const bucket = await this.getBucket(bucketName);
+
+        try {
+            // Create a download stream with start and end options
+            const downloadStream = bucket.openDownloadStream(fileId, {
+                start: startByte,
+                end: endByte
+            });
+
+            const chunks: Buffer[] = [];
+
+            return new Promise((resolve, reject) => {
+                const timeout = setTimeout(() => {
+                    reject(new Error(`Download range timeout after 30 seconds for bytes ${startByte}-${endByte}`));
+                }, 30000);
+
+                downloadStream.on('data', (chunk: Buffer) => {
+                    chunks.push(chunk);
+                });
+
+                downloadStream.on('end', () => {
+                    clearTimeout(timeout);
+                    const buffer = Buffer.concat(chunks);
+                    resolve(buffer.toString('utf8'));
+                });
+
+                downloadStream.on('error', (error) => {
+                    clearTimeout(timeout);
+                    console.error(`GridFS download range error for bytes ${startByte}-${endByte}:`, error);
+                    reject(new InternalServerErrorException(`Failed to download range from ${bucketName}: ${error.message}`));
+                });
+            });
+        } catch (error) {
+            throw new InternalServerErrorException(`Failed to create download range stream from ${bucketName}: ${error.message}`);
+        }
+    }
+
+    /**
+     * Download a specific byte range from a GridFS file as base64 string
+     * This is useful for chunked transfer of binary data over HTTP
+     * @param fileId ObjectId of the file in GridFS
+     * @param bucketName Name of the GridFS bucket
+     * @param startByte Starting byte position (inclusive)
+     * @param endByte Ending byte position (inclusive)
+     * @returns Base64 encoded content of the specified byte range
+     */
+    async downloadFileRangeAsBase64(fileId: ObjectId, bucketName: string, startByte: number, endByte: number): Promise<string> {
+        const bucket = await this.getBucket(bucketName);
+
+        try {
+            // Create a download stream with start and end options
+            const downloadStream = bucket.openDownloadStream(fileId, {
+                start: startByte,
+                end: endByte
+            });
+
+            const chunks: Buffer[] = [];
+
+            return new Promise((resolve, reject) => {
+                const timeout = setTimeout(() => {
+                    reject(new Error(`Download range timeout after 30 seconds for bytes ${startByte}-${endByte}`));
+                }, 30000);
+
+                downloadStream.on('data', (chunk: Buffer) => {
+                    chunks.push(chunk);
+                });
+
+                downloadStream.on('end', () => {
+                    clearTimeout(timeout);
+                    const buffer = Buffer.concat(chunks);
+                    resolve(buffer.toString('base64'));
+                });
+
+                downloadStream.on('error', (error) => {
+                    clearTimeout(timeout);
+                    console.error(`GridFS download range error for bytes ${startByte}-${endByte}:`, error);
+                    reject(new InternalServerErrorException(`Failed to download range from ${bucketName}: ${error.message}`));
+                });
+            });
+        } catch (error) {
+            throw new InternalServerErrorException(`Failed to create download range stream from ${bucketName}: ${error.message}`);
+        }
+    }
+
     // Get detailed connection and service information for debugging
     async getServiceInfo(): Promise<any> {
         return {

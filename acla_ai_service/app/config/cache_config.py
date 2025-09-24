@@ -8,17 +8,20 @@ CACHE_CONFIG = {
     "max_cache_size": 100,
     
     # Maximum memory usage in MB
-    "max_memory_mb": 500,
+    "max_memory_mb": 4000,  # Increased to 4GB to handle large models
     
     # Default Time To Live for cached models in seconds
-    "default_ttl_seconds": 3600,  # 1 hour
+    "default_ttl_seconds": 7200,  # 2 hours - longer for large models
     
     # Interval for automatic cleanup of expired models in seconds
     "cleanup_interval_seconds": 300,  # 5 minutes
     
     # Model-specific TTL settings
     "model_specific_ttl": {
-        "imitation_learning": 1800,    # 30 minutes
+        "imitation_learning": 7200,    # 2 hours for large models
+        "transformer_expert_action": 7200,  # 2 hours for large models
+        "corner_identification": 7200,  # 2 hours 
+        "tire_grip_analysis": 7200,    # 2 hours
         "lap_time_prediction": 3600,   # 1 hour
         "performance_classification": 7200,  # 2 hours
         "sklearn": 3600,               # 1 hour (general sklearn models)
@@ -26,9 +29,12 @@ CACHE_CONFIG = {
     
     # Memory limits for different model types (in MB)
     "model_memory_limits": {
-        "imitation_learning": 50,      # 50 MB per imitation model
-        "sklearn": 10,                 # 10 MB per sklearn model
-        "default": 20                  # 20 MB default limit
+        "imitation_learning": 1000,    # 1GB per imitation model (large models)
+        "transformer_expert_action": 1000,  # 1GB per transformer model
+        "corner_identification": 200,  # 200MB per corner model
+        "tire_grip_analysis": 200,     # 200MB per tire model
+        "sklearn": 50,                 # 50MB per sklearn model
+        "default": 100                 # 100MB default limit
     },
     
     # Enable/disable caching for different operations
@@ -77,33 +83,34 @@ CACHE_CONFIG = {
     "performance": {
         # Use compression for large models
         "compress_large_models": True,
-        "compression_threshold_mb": 10,
+        "compression_threshold_mb": 100,  # Compress models larger than 100MB
         
         # Async operations
         "async_cache_operations": True,
-        "max_concurrent_loads": 3,
+        "max_concurrent_loads": 2,  # Reduced for large models
         
         # Memory management
         "aggressive_cleanup": False,
-        "memory_pressure_threshold": 0.8  # Start cleanup at 80% memory usage
+        "memory_pressure_threshold": 0.85,  # Start cleanup at 85% memory usage
+        "large_model_priority": True  # Prioritize keeping large models in cache
     }
 }
 
 # Environment-specific overrides
 ENVIRONMENT_OVERRIDES = {
     "development": {
-        "max_cache_size": 20,
-        "max_memory_mb": 100,
-        "default_ttl_seconds": 600,  # 10 minutes for faster testing
+        "max_cache_size": 10,  # Reduced count but higher memory
+        "max_memory_mb": 2000,  # 2GB for development
+        "default_ttl_seconds": 1800,  # 30 minutes for development
         "logging": {
             "detailed_stats": True
         }
     },
     
     "testing": {
-        "max_cache_size": 5,
-        "max_memory_mb": 50,
-        "default_ttl_seconds": 60,   # 1 minute for tests
+        "max_cache_size": 3,
+        "max_memory_mb": 500,  # 500MB for testing
+        "default_ttl_seconds": 300,   # 5 minutes for tests
         "cleanup_interval_seconds": 10,
         "cache_enabled": {
             "imitation_learning": True,
@@ -114,16 +121,17 @@ ENVIRONMENT_OVERRIDES = {
     },
     
     "production": {
-        "max_cache_size": 200,
-        "max_memory_mb": 1000,
-        "default_ttl_seconds": 7200,  # 2 hours
+        "max_cache_size": 50,  # Fewer models but larger memory
+        "max_memory_mb": 6000,  # 6GB for production
+        "default_ttl_seconds": 14400,  # 4 hours for production
         "preload_config": {
             "preload_on_startup": True
         },
         "performance": {
             "compress_large_models": True,
             "async_cache_operations": True,
-            "aggressive_cleanup": True
+            "aggressive_cleanup": True,
+            "large_model_priority": True
         }
     }
 }

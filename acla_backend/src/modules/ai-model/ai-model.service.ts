@@ -95,9 +95,9 @@ export class AiModelService {
             try {
                 // Check file size first to determine if we need to use streaming
                 const fileSize = await this.gridfsService.getFileSize(model.modelDataFileId, GRIDFS_BUCKETS.AI_MODELS);
-                const maxStringSize = 0x1fffffe8; // Node.js maximum string length (~536MB)
+                const maxSafeSize = 50 * 1024 * 1024; // 50MB - much more conservative limit
 
-                if (fileSize >= maxStringSize) {
+                if (fileSize >= maxSafeSize) {
                     // Instead of loading the data, return metadata about the file
                     modelWithData.modelDataInfo = {
                         fileSize: fileSize,

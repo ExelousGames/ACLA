@@ -9,6 +9,10 @@ import logging
 import json
 import os
 import tempfile
+import base64
+import uuid
+import re
+import numpy as np
 from app.core import settings
 
 logger = logging.getLogger(__name__)
@@ -118,6 +122,69 @@ class BackendService:
             "backend_url": self.base_url,
             "username_configured": bool(self.username)
         }
+    
+    async def validate_model_data_integrity(self, session_id: str, total_chunks: int) -> Dict[str, Any]:
+        """Validate that all chunks for a session are available and accessible"""
+        validation_results = {
+            "session_valid": False,
+            "chunks_accessible": 0,
+            "total_chunks": total_chunks,
+            "errors": [],
+            "chunk_details": []
+        }
+        
+        try:
+            # Test first chunk to validate session
+            first_chunk = await self.getActiveModelDataChunk(session_id, 0, max_retries=1)
+            if first_chunk.get("success", False):
+                validation_results["session_valid"] = True
+                validation_results["chunks_accessible"] += 1
+                
+                # Capture details about the first chunk for debugging
+                chunk_data = first_chunk.get("data")
+                validation_results["chunk_details"].append({
+                    "chunk_index": 0,
+                    "data_type": type(chunk_data).__name__,
+                    "data_size": len(str(chunk_data)) if chunk_data else 0,
+                    "byte_range": first_chunk.get("byteRange", "N/A")
+                })
+            else:
+                validation_results["errors"].append(f"First chunk failed: {first_chunk.get('error', 'Unknown error')}")
+                return validation_results
+            
+            # Test last chunk
+            if total_chunks > 1:
+                last_chunk = await self.getActiveModelDataChunk(session_id, total_chunks - 1, max_retries=1)
+                if last_chunk.get("success", False):
+                    validation_results["chunks_accessible"] += 1
+                    
+                    # Capture details about the last chunk
+                    chunk_data = last_chunk.get("data")
+                    validation_results["chunk_details"].append({
+                        "chunk_index": total_chunks - 1,
+                        "data_type": type(chunk_data).__name__,
+                        "data_size": len(str(chunk_data)) if chunk_data else 0,
+                        "byte_range": last_chunk.get("byteRange", "N/A")
+                    })
+                else:
+                    validation_results["errors"].append(f"Last chunk failed: {last_chunk.get('error', 'Unknown error')}")
+            
+            # Test middle chunk if there are many chunks
+            if total_chunks > 10:
+                middle_chunk_idx = total_chunks // 2
+                middle_chunk = await self.getActiveModelDataChunk(session_id, middle_chunk_idx, max_retries=1)
+                if middle_chunk.get("success", False):
+                    validation_results["chunks_accessible"] += 1
+                else:
+                    validation_results["errors"].append(f"Middle chunk {middle_chunk_idx} failed: {middle_chunk.get('error', 'Unknown error')}")
+            
+            return validation_results
+            
+        except Exception as e:
+            validation_results["errors"].append(f"Validation failed: {str(e)}")
+            return validation_results
+    
+
     
     async def call_backend_function(self, endpoint: str, method: str = "GET", data: Optional[Dict] = None, headers: Optional[Dict] = None) -> Dict[str, Any]:
         """Call a backend function with authentication"""
@@ -253,10 +320,7 @@ class BackendService:
 
     async def send_chunked_data(self, data: Dict[str, Any], endpoint: str, chunk_size: int = 1024 * 1024) -> Dict[str, Any]:
         """Send large data in chunks to a backend endpoint, streaming from a temp file to avoid huge in-memory strings."""
-        import json
-        import uuid
         from math import ceil
-        import numpy as np
         from httpx import Timeout
         
         # Temporarily suppress httpx INFO logging for chunked uploads
@@ -413,10 +477,13 @@ class BackendService:
         return {"success": True}
 
     async def initGetActiveModelData(self, trackName: Optional[str], carName: Optional[str], modelType: str) -> Dict[str, Any]:
-        """Initialize chunked retrieval of active model data from backend"""
+        """Initialize chunked retrieval of active model data from backend.
+        
+        New backend returns the complete structure with metadata immediately,
+        plus chunking information for retrieving the modelData field.
+        """
         try:
-            # Call the prepare-chunked endpoint to initialize the session
-            # trackName and carName are query parameters, not path parameters
+            # Call the prepare-chunked endpoint to get the complete structure
             endpoint = f"ai-model/active/{modelType}/prepare-chunked"
             
             # Build query parameters
@@ -429,108 +496,226 @@ class BackendService:
             if query_params:
                 endpoint += "?" + "&".join(query_params)
             
-            print(f"[INFO] Initializing active model data retrieval from endpoint: {endpoint}")
+            logger.info(f"🔗 Calling new backend endpoint: {endpoint}")
             response = await self.call_backend_function(endpoint, "GET")
             
             if "error" in response:
                 return response
             
-            # Return the session information
-            return {
-                "success": response.get("success", False),
-                "sessionId": response.get("sessionId"),
-                "totalChunks": response.get("totalChunks"),
-                "message": response.get("message", "Session initialized successfully")
-            }
+            # New backend returns { success, data, chunking, message }
+            if not response.get("success", False):
+                return {"error": response.get("message", "Backend request failed")}
+            
+            return response  # Return the complete response with data and chunking info
             
         except Exception as e:
-            logger.error(f"Error initializing active model data retrieval: {str(e)}")
+            logger.error(f"💥 Error initializing active model data retrieval: {str(e)}")
             return {"error": f"Failed to initialize active model data retrieval: {str(e)}"}
 
-    async def getActiveModelDataChunk(self, sessionId: str, chunkIndex: int) -> Dict[str, Any]:
-        """Get a specific chunk from a prepared chunked session"""
-        try:
-            # Call the chunked-data endpoint to get the specific chunk
-            endpoint = f"ai-model/active/chunked-data/{sessionId}/{chunkIndex}"
-            response = await self.call_backend_function(endpoint, "GET")
-            
-            if "error" in response:
+    async def getActiveModelDataChunk(self, sessionId: str, chunkIndex: int, max_retries: int = 3) -> Dict[str, Any]:
+        """Get a specific chunk from a prepared chunked session with retry logic"""
+        last_error = None
+        
+        for attempt in range(max_retries):
+            try:
+                # Call the chunked-data endpoint to get the specific chunk
+                endpoint = f"ai-model/active/chunked-data/{sessionId}/{chunkIndex}"
+                response = await self.call_backend_function(endpoint, "GET")
+                
+                if "error" in response:
+                    # If it's a session-related error, don't retry
+                    error_msg = response.get("error", "Unknown error")
+                    if "session not found" in error_msg.lower() or "expired" in error_msg.lower():
+                        return response
+                    
+                    # For other errors, retry
+                    last_error = response.get("error")
+                    if attempt < max_retries - 1:
+                        logger.warning(f"Chunk {chunkIndex} retrieval failed (attempt {attempt + 1}/{max_retries}): {last_error}")
+                        await asyncio.sleep(1.0 * (attempt + 1))  # Exponential backoff
+                        continue
+                    return response
+                
                 return response
-            
-            return response
-            
-        except Exception as e:
-            logger.error(f"Error retrieving chunk {chunkIndex} from session {sessionId}: {str(e)}")
-            return {"error": f"Failed to retrieve chunk: {str(e)}"}
+                
+            except Exception as e:
+                last_error = str(e)
+                logger.error(f"Error retrieving chunk {chunkIndex} from session {sessionId} (attempt {attempt + 1}/{max_retries}): {last_error}")
+                
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(1.0 * (attempt + 1))  # Exponential backoff
+                    continue
+        
+        return {"error": f"Failed to retrieve chunk after {max_retries} attempts: {last_error}"}
 
     async def getCompleteActiveModelData(self, trackName: Optional[str], carName: Optional[str], modelType: str) -> Dict[str, Any]:
-        """Get complete active model data by retrieving all chunks
+        """Get complete active model data - simple and clean approach.
         
-        returned result contains dict_keys(['success', 'sessionId', 'totalChunks', 'data', 'message'])
-        
+        1. Get structure with metadata immediately 
+        2. Download chunks and fill modelData
+        3. Return complete structure
         """ 
+        # Temporarily suppress httpx INFO logging for chunked downloads
+        httpx_logger = logging.getLogger("httpx")
+        original_level = httpx_logger.level
+        httpx_logger.setLevel(logging.WARNING)
+        
         try:
-            logger.info(f"Starting retrieval of active model data for {trackName}/{carName}/{modelType}")
-            
-            # Initialize the chunked session
+            # Get the complete structure with metadata from backend
             init_response = await self.initGetActiveModelData(trackName, carName, modelType)
-            logger.info(f"Successfully initialized chunked session: {init_response}")
             
             if not init_response.get("success", False):
-                logger.error(f"Failed to initialize chunked session: {init_response}")
-                return init_response
+                return {"error": init_response.get("message", "Failed to initialize")}
             
-            session_id = init_response.get("sessionId")
-            total_chunks = init_response.get("totalChunks", 0)
+            # Extract final structure and chunking info
+            final_structure = init_response.get("data", {})
+            chunking_info = init_response.get("chunking", {})
             
-            logger.info(f"Retrieving active model data in {total_chunks} chunks (session: {session_id})")
+            session_id = chunking_info.get("sessionId")
+            total_chunks = chunking_info.get("totalChunks", 0)
             
-            # Collect all chunks
-            complete_data_chunks = []
+            # If no chunks, return structure as-is
+            if not session_id or total_chunks == 0:
+                return final_structure
             
-            for chunk_index in range(total_chunks):
-                chunk_response = await self.getActiveModelDataChunk(session_id, chunk_index)
-                
-                if not chunk_response.get("success", False):
-                    error_msg = chunk_response.get("message", "Unknown error")
-                    logger.error(f"Failed to retrieve chunk {chunk_index}: {error_msg}")
-                    return {"error": f"Failed to retrieve chunk {chunk_index}: {error_msg}"}
-                
-                chunk_data = chunk_response.get("data")
-                if chunk_data is not None:
-                    complete_data_chunks.append(chunk_data)
-                
-                logger.debug(f"Retrieved chunk {chunk_index + 1}/{total_chunks}")
+            logger.info(f"📦 Will retrieve {total_chunks} chunks (session: {session_id})")
             
-            # Reconstruct the complete model data by joining all chunks
-            # The chunks contain string portions that need to be concatenated and parsed
-            logger.info("🔄 Assembling chunks into complete model data...")
+            # Retrieve and assemble all chunks
+            model_data = await self._retrieve_and_assemble_chunks(session_id, total_chunks)
+            if "error" in model_data:
+                return model_data
             
-            try:
-                # Join all chunk data strings to reconstruct the original JSON string
-                complete_json_string = ''.join(complete_data_chunks)
-                # Parse the complete JSON string back to the original data structure
-                complete_model_data = json.loads(complete_json_string)
-                
-                logger.info("✅ Successfully assembled and parsed complete model data")
-                
-                return {
-                    "success": True,
-                    "sessionId": session_id,
-                    "totalChunks": total_chunks,
-                    "data": complete_model_data,
-                    "message": "Complete model data retrieved and assembled successfully"
-                }
-            except json.JSONDecodeError as e:
-                logger.error(f"Failed to parse assembled chunk data: {str(e)}")
-                return {"error": f"Failed to parse assembled chunk data: {str(e)}"}
-            except Exception as e:
-                logger.error(f"Failed to assemble chunk data: {str(e)}")
-                return {"error": f"Failed to assemble chunk data: {str(e)}"}
+            # Fill in the modelData and return
+            final_structure["modelData"] = model_data["data"]
+            logger.info("✅ Successfully assembled complete model data with new simplified system")
+            
+            return final_structure
             
         except Exception as e:
-            logger.error(f"Error retrieving complete active model data: {str(e)}")
+            logger.error(f"Error retrieving model data: {str(e)}")
             return {"error": f"Failed to retrieve complete active model data: {str(e)}"}
+        finally:
+            # Restore original httpx logging level
+            httpx_logger.setLevel(original_level)
+
+    async def _retrieve_and_assemble_chunks(self, session_id: str, total_chunks: int) -> Dict[str, Any]:
+        """Retrieve all chunks and assemble them into the complete model data.
+        
+        New simplified approach: All chunks are base64-encoded binary data that need
+        to be concatenated as bytes, then decoded as JSON.
+        """
+        try:
+            logger.info(f"📦 Retrieving {total_chunks} chunks with simplified assembly")
+            
+            # Use temporary file to assemble binary data without memory issues
+            temp_file = None
+            try:
+                # Create temporary file for binary assembly
+                fd, temp_file = tempfile.mkstemp(suffix='.bin', prefix='model_chunks_')
+                os.close(fd)
+                
+                logger.info(f"🗂️ Assembling chunks into temporary file: {temp_file}")
+                
+                # Download and write all chunks as binary data
+                with open(temp_file, 'wb') as f:
+                    for chunk_index in range(total_chunks):
+                        chunk_response = await self.getActiveModelDataChunk(session_id, chunk_index)
+                        
+                        if not chunk_response.get("success", False):
+                            error_msg = chunk_response.get("message", "Unknown error")
+                            logger.error(f"❌ Failed to retrieve chunk {chunk_index}: {error_msg}")
+                            return {"error": f"Failed to retrieve chunk {chunk_index}: {error_msg}"}
+                        
+                        chunk_data = chunk_response.get("data")
+                        if chunk_data is None:
+                            logger.error(f"❌ No data in chunk {chunk_index}")
+                            return {"error": f"No data in chunk {chunk_index}"}
+                        
+                        # Decode base64 chunk data to binary and write to file
+                        try:
+                            if isinstance(chunk_data, str):
+                                binary_data = base64.b64decode(chunk_data)
+                                bytes_written = f.write(binary_data)
+                                
+                                # Debug last few chunks and track total bytes
+                                if chunk_index >= total_chunks - 3:
+                                    logger.info(f"🔍 Chunk {chunk_index}: base64_len={len(chunk_data)}, decoded_bytes={len(binary_data)}, wrote={bytes_written}")
+                                    
+                                # Track running total for the last chunk
+                                if chunk_index == total_chunks - 1:
+                                    current_pos = f.tell()
+                                    logger.info(f"🔍 FINAL: After last chunk, file position: {current_pos} bytes")
+                            else:
+                                logger.error(f"❌ Expected string chunk data, got {type(chunk_data)}")
+                                return {"error": f"Unexpected chunk data type: {type(chunk_data)}"}
+                        except Exception as decode_error:
+                            logger.error(f"❌ Failed to decode chunk {chunk_index}: {decode_error}")
+                            return {"error": f"Failed to decode chunk {chunk_index}: {decode_error}"}
+                        
+                        if chunk_index % 10 == 0 or chunk_index == total_chunks - 1:
+                            logger.info(f"📦 Downloaded chunk {chunk_index + 1}/{total_chunks}")
+                
+                # Parse the assembled binary file as JSON
+                logger.info("🔄 Parsing assembled model data from temporary file...")
+                
+                file_size = os.path.getsize(temp_file)
+                if file_size == 0:
+                    logger.error("❌ Assembled file is empty")
+                    return {"error": "Assembled file is empty - no data was written"}
+                
+                logger.info(f"📊 Assembled file size: {file_size} bytes ({file_size / (1024*1024):.2f} MB)")
+                
+                try:
+                    # Read the binary file as text and parse as JSON
+                    with open(temp_file, 'r', encoding='utf-8') as f:
+                        complete_model_data = json.load(f)
+                    
+                    logger.info("✅ Successfully assembled and parsed complete model data")
+                    
+                    # Debug: Log the structure
+                    if isinstance(complete_model_data, dict):
+                        top_level_keys = list(complete_model_data.keys())
+                        logger.info(f"📋 Parsed data keys: {top_level_keys}")
+                    
+                    return {
+                        "success": True,
+                        "data": complete_model_data,
+                        "message": "Model data assembled successfully"
+                    }
+                    
+                except UnicodeDecodeError as e:
+                    logger.error(f"❌ UTF-8 decode error: {str(e)}")
+                    # Check what the file actually contains
+                    with open(temp_file, 'rb') as f:
+                        first_bytes = f.read(200)
+                    logger.error(f"📄 First 200 bytes: {first_bytes}")
+                    return {"error": f"Assembled file contains binary data, not UTF-8 text: {str(e)}"}
+                    
+                except json.JSONDecodeError as e:
+                    logger.error(f"❌ Failed to parse assembled data as JSON: {str(e)}")
+                    # Debug info - check both beginning and end
+                    with open(temp_file, 'r', encoding='utf-8', errors='replace') as f:
+                        content = f.read()
+                        first_text = content[:200]
+                        last_text = content[-200:] if len(content) > 200 else content
+                    logger.error(f"📄 First 200 characters: {first_text}")
+                    logger.error(f"📄 Last 200 characters: {last_text}")
+                    return {"error": f"Failed to parse assembled data as JSON: {str(e)}"}
+                
+            finally:
+                # Clean up temporary file
+                if temp_file and os.path.exists(temp_file):
+                    try:
+                        os.remove(temp_file)
+                        logger.debug(f"🗑️ Cleaned up temporary file: {temp_file}")
+                    except Exception as cleanup_error:
+                        logger.warning(f"⚠️ Failed to cleanup temporary file {temp_file}: {cleanup_error}")
+                        
+        except Exception as e:
+            logger.error(f"💥 Error retrieving and assembling chunks: {str(e)}")
+            return {"error": f"Failed to retrieve and assemble chunks: {str(e)}"}
+
+
     
 # Global backend service instance
 backend_service = BackendService()
