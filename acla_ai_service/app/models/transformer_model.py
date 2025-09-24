@@ -297,6 +297,11 @@ class ExpertActionTransformer(nn.Module):
         self.sequence_length = sequence_length
         self.time_step_seconds = time_step_seconds  # Control how much real time each step represents
         
+        # Scalers for normalization during inference
+        self.telemetry_scaler: Optional[StandardScaler] = None
+        self.context_scaler: Optional[StandardScaler] = None
+        self.action_scaler: Optional[StandardScaler] = None
+        
         # Input embeddings
         self.telemetry_embedding = nn.Linear(telemetry_features_count, d_model)
         self.context_embedding = nn.Linear(context_features_count, d_model) if context_features_count > 0 else None
@@ -341,6 +346,19 @@ class ExpertActionTransformer(nn.Module):
         for p in self.parameters():
             if p.dim() > 1:
                 nn.init.xavier_uniform_(p)
+    
+    def set_scalers(self, telemetry_scaler: Optional[StandardScaler] = None, context_scaler: Optional[StandardScaler] = None, action_scaler: Optional[StandardScaler] = None):
+        """
+        Set the scalers for telemetry, context, and action features.
+        
+        Args:
+            telemetry_scaler: StandardScaler fitted on telemetry features
+            context_scaler: StandardScaler fitted on context features
+            action_scaler: StandardScaler fitted on action features
+        """
+        self.telemetry_scaler = telemetry_scaler
+        self.context_scaler = context_scaler
+        self.action_scaler = action_scaler
     
     def forward(self, 
                 telemetry: torch.Tensor,
@@ -451,12 +469,14 @@ class ExpertActionTransformer(nn.Module):
         if self.training and target_actions is not None:
             # TRAINING MODE: Use teacher forcing for fast parallel training
             decoder_output = self._generate_actions_teacher_forcing(memory, target_actions)
+            # During training, return scaled predictions for loss calculation
+            return decoder_output
         else:
             # INFERENCE MODE: Use autoregressive generation for realistic prediction
             decoder_output = self._generate_actions_autoregressive(memory, seq_len)
-
-        # decoder_output is already in action space [B, L, action_features]
-        return decoder_output
+            # During inference, apply inverse scaling to get original action values
+            unscaled_output = self._apply_action_inverse_scaling(decoder_output)
+            return unscaled_output
     
     def contextual_weighted_loss(self, 
                                 predictions: torch.Tensor, 
@@ -931,6 +951,9 @@ class ExpertActionTransformer(nn.Module):
                 
                 # Generate action sequence autoregressively
                 decoder_output = self._generate_actions_autoregressive(memory, sequence_length)
+                
+                # Apply inverse scaling to get original action values
+                decoder_output = self._apply_action_inverse_scaling(decoder_output)
             
             # Apply temperature and sampling if not deterministic
             if not deterministic and temperature != 1.0:
@@ -966,6 +989,33 @@ class ExpertActionTransformer(nn.Module):
             constrained[..., 3] = torch.clamp(raw_actions[..., 3], 1, 6)  # gear
         
         return constrained
+    
+    def _apply_action_inverse_scaling(self, scaled_actions: torch.Tensor) -> torch.Tensor:
+        """
+        Apply inverse scaling to model predictions to convert from normalized to original scale.
+        
+        Args:
+            scaled_actions: Scaled action predictions [batch_size, seq_len, action_features]
+            
+        Returns:
+            Unscaled actions [batch_size, seq_len, action_features]
+        """
+        if self.action_scaler is None:
+            return scaled_actions
+            
+        # Convert to numpy for sklearn scaler
+        device = scaled_actions.device
+        original_shape = scaled_actions.shape
+        
+        # Reshape to 2D: (batch_size * seq_len, action_features)
+        actions_2d = scaled_actions.view(-1, original_shape[-1]).cpu().numpy()
+        
+        # Apply inverse transform
+        unscaled_actions = self.action_scaler.inverse_transform(actions_2d)
+        
+        # Convert back to tensor and reshape
+        unscaled_tensor = torch.from_numpy(unscaled_actions).float().to(device)
+        return unscaled_tensor.view(original_shape)
     
     def predict_human_readable(self, 
                               current_telemetry: Dict[str, Any],
@@ -1093,12 +1143,7 @@ class ExpertActionTransformer(nn.Module):
         try:
             feature_names = TelemetryFeatures.get_features_for_imitate_expert()
         except Exception:
-            # Fallback to a minimal, safe subset in case the catalog isn't available
-            feature_names = [
-                "Graphics_normalized_car_position", "Graphics_player_pos_x", "Graphics_player_pos_y",
-                "Graphics_player_pos_z", "Graphics_current_time", "Physics_speed_kmh", "Physics_gas",
-                "Physics_brake", "Physics_steer_angle", "Physics_gear", "Physics_rpm"
-            ]
+            raise ValueError("TelemetryFeatures class is not properly defined.")
         
         features = []
         for feature in feature_names:
@@ -1113,6 +1158,13 @@ class ExpertActionTransformer(nn.Module):
             features.extend([0.0] * (expected_len - len(features)))
         elif len(features) > expected_len:
             features = features[:expected_len]
+
+        # Apply telemetry scaler if available
+        if self.telemetry_scaler is not None:
+            import numpy as np
+            features_array = np.array(features).reshape(1, -1)  # Shape: (1, n_features)
+            scaled_features = self.telemetry_scaler.transform(features_array)
+            features = scaled_features.flatten().tolist()
 
         return features
     
@@ -1133,10 +1185,19 @@ class ExpertActionTransformer(nn.Module):
         if context_data is None:
             # Return zeros for all canonical features if no context provided
             canonical_order = get_canonical_context_feature_order()
-            return [0.0] * len(canonical_order)
+            features = [0.0] * len(canonical_order)
+        else:
+            # Use canonical extraction function for consistency
+            features = extract_context_features_canonical_order(context_data)
         
-        # Use canonical extraction function for consistency
-        return extract_context_features_canonical_order(context_data)
+        # Apply context scaler if available
+        if self.context_scaler is not None:
+            import numpy as np
+            features_array = np.array(features).reshape(1, -1)  # Shape: (1, n_features)
+            scaled_features = self.context_scaler.transform(features_array)
+            features = scaled_features.flatten().tolist()
+            
+        return features
     
     def _analyze_current_situation(self, telemetry: Dict[str, Any], context: Optional[Dict[str, Any]]) -> Dict[str, str]:
         """Analyze current driving situation"""
@@ -1252,9 +1313,35 @@ class ExpertActionTransformer(nn.Module):
         torch.save(self.state_dict(), buffer)
         state_dict_bytes = buffer.getvalue()
         
+        # Serialize scalers
+        telemetry_scaler_data = None
+        context_scaler_data = None
+        action_scaler_data = None
+        
+        if self.telemetry_scaler is not None:
+            scaler_buffer = io.BytesIO()
+            import pickle
+            pickle.dump(self.telemetry_scaler, scaler_buffer)
+            telemetry_scaler_data = base64.b64encode(scaler_buffer.getvalue()).decode('utf-8')
+            
+        if self.context_scaler is not None:
+            scaler_buffer = io.BytesIO()
+            import pickle
+            pickle.dump(self.context_scaler, scaler_buffer)
+            context_scaler_data = base64.b64encode(scaler_buffer.getvalue()).decode('utf-8')
+            
+        if self.action_scaler is not None:
+            scaler_buffer = io.BytesIO()
+            import pickle
+            pickle.dump(self.action_scaler, scaler_buffer)
+            action_scaler_data = base64.b64encode(scaler_buffer.getvalue()).decode('utf-8')
+        
         model_data = {
             'model_type': 'ExpertActionTransformer',
             'state_dict': base64.b64encode(state_dict_bytes).decode('utf-8'),
+            'telemetry_scaler': telemetry_scaler_data,
+            'context_scaler': context_scaler_data,
+            'action_scaler': action_scaler_data,
             'config': {
                 'input_features': self.input_features_count,
                 'context_features': self.context_features_count,
@@ -1407,17 +1494,64 @@ class ExpertActionTransformer(nn.Module):
                 if unexpected:
                     print(f"[WARNING] Unexpected keys during load: {unexpected}")
             
+            # Restore scalers if available
+            import pickle
+            if 'telemetry_scaler' in serialized_data and serialized_data['telemetry_scaler'] is not None:
+                try:
+                    scaler_bytes = base64.b64decode(serialized_data['telemetry_scaler'])
+                    scaler_buffer = io.BytesIO(scaler_bytes)
+                    self.telemetry_scaler = pickle.load(scaler_buffer)
+                    print("[INFO] - Restored telemetry scaler")
+                except Exception as e:
+                    print(f"[WARNING] Failed to restore telemetry scaler: {e}")
+                    self.telemetry_scaler = None
+            else:
+                self.telemetry_scaler = None
+                
+            if 'context_scaler' in serialized_data and serialized_data['context_scaler'] is not None:
+                try:
+                    scaler_bytes = base64.b64decode(serialized_data['context_scaler'])
+                    scaler_buffer = io.BytesIO(scaler_bytes)
+                    self.context_scaler = pickle.load(scaler_buffer)
+                    print("[INFO] - Restored context scaler")
+                except Exception as e:
+                    print(f"[WARNING] Failed to restore context scaler: {e}")
+                    self.context_scaler = None
+            else:
+                self.context_scaler = None
+                
+            if 'action_scaler' in serialized_data and serialized_data['action_scaler'] is not None:
+                try:
+                    scaler_bytes = base64.b64decode(serialized_data['action_scaler'])
+                    scaler_buffer = io.BytesIO(scaler_bytes)
+                    self.action_scaler = pickle.load(scaler_buffer)
+                    print("[INFO] - Restored action scaler")
+                except Exception as e:
+                    print(f"[WARNING] Failed to restore action scaler: {e}")
+                    self.action_scaler = None
+            else:
+                self.action_scaler = None
+            
             # Set model to evaluation mode (ready for inference)
             self.eval()
             
             # Log successful restoration
             serialization_time = serialized_data.get('serialization_timestamp', 'unknown')
+            scaler_info = []
+            if self.telemetry_scaler is not None:
+                scaler_info.append("telemetry")
+            if self.context_scaler is not None:
+                scaler_info.append("context")
+            if self.action_scaler is not None:
+                scaler_info.append("action")
+            scaler_status = f" (scalers: {', '.join(scaler_info)})" if scaler_info else " (no scalers)"
+            
             print(f"[INFO] Successfully restored ExpertActionTransformer model")
             print(f"[INFO] - Model features: {self.input_features_count} telemetry, "
                   f"{self.context_features_count} context, {self.output_features_count} actions")
             print(f"[INFO] - Architecture: d_model={self.d_model}, seq_len={self.sequence_length}")
             print(f"[INFO] - Originally serialized: {serialization_time}")
-            print(f"[INFO] - Model ready for inference")
+            print(f"[INFO] - Model ready for inference{scaler_status}")
             
             return self
             
@@ -1739,6 +1873,23 @@ class ExpertActionTrainer:
         self.best_val_loss = float('inf')
         self.best_model_state = None
     
+    def set_scalers_from_dataset(self, dataset: TelemetryActionDataset):
+        """
+        Extract and set scalers from the dataset on the model.
+        
+        Args:
+            dataset: Training dataset containing fitted scalers
+        """
+        scalers = dataset.get_scalers()
+        telemetry_scaler = scalers.get('telemetry')
+        context_scaler = scalers.get('context')
+        action_scaler = scalers.get('actions')  # Note: dataset uses 'actions' key
+        
+        # Set scalers on the model
+        self.model.set_scalers(telemetry_scaler, context_scaler, action_scaler)
+        
+        print(f"[INFO] Set scalers on model - Telemetry: {'✓' if telemetry_scaler else '✗'}, Context: {'✓' if context_scaler else '✗'}, Action: {'✓' if action_scaler else '✗'}")
+    
     def train_epoch(self, dataloader: DataLoader) -> float:
         """Train for one epoch using contextual weighted loss"""
         self.model.train()
@@ -1984,6 +2135,10 @@ class ExpertActionTrainer:
         if save_best and self.best_model_state is not None:
             self.model.load_state_dict(self.best_model_state['state_dict'])
             print(f"[INFO] Loaded best model from epoch {self.best_model_state['epoch']+1}")
+        
+        # Set scalers on the model from training dataset for inference
+        if hasattr(train_dataloader.dataset, 'get_scalers'):
+            self.set_scalers_from_dataset(train_dataloader.dataset)
         
         return make_json_safe({
             'train_losses': self.train_losses,
