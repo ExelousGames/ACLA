@@ -1560,11 +1560,8 @@ class Full_dataset_TelemetryMLService:
                 model_type="imitation_learning",
                 track_name=track_name,
                 car_name='AllCars',
-                model_data=imitation_result,
-                metadata={
-                    "summary": imitation_result.get("summary", {}),
-                    "training_timestamp": datetime.now().isoformat()
-                },
+                model_data=imitation_result.get("modelData", {}),
+                metadata=imitation_result.get("metadata", {}),
                 is_active=True
             )
             
