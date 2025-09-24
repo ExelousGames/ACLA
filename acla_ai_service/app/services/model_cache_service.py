@@ -212,76 +212,6 @@ class ModelCacheService:
             True if caching is enabled, False otherwise
         """
         return is_caching_enabled(operation, self.environment)
-
-    def put(self, 
-            model_type: str,
-            data: Any,
-            track_name: Optional[str] = None, 
-            car_name: Optional[str] = None,
-            metadata: Optional[Dict[str, Any]] = None,
-            model_subtype: Optional[str] = None,
-            ttl_seconds: Optional[int] = None,
-            additional_params: Optional[Dict[str, Any]] = None) -> str:
-        """
-        Cache a model
-        
-        Args:
-            model_type: Type of model
-            data: Model data to cache
-            track_name: Track name (optional)
-            car_name: Car name (optional)
-            metadata: Optional metadata
-            model_subtype: Optional model subtype
-            ttl_seconds: TTL override (None uses default)
-            additional_params: Additional parameters for key generation
-            
-        Returns:
-            Cache key used for storage
-        """
-        cache_key = self._generate_cache_key(
-            model_type, track_name, car_name, model_subtype, additional_params
-        )
-        
-        with self._lock:
-            # Remove existing entry if present
-            if cache_key in self._cache:
-                old_entry = self._cache.pop(cache_key)
-                self._stats['total_memory_bytes'] -= old_entry.size_bytes
-            
-            # Estimate memory size
-            data_size = self._estimate_memory_size(data)
-            
-            # Check memory limits before adding
-            while (self._stats['total_memory_bytes'] + data_size > self.max_memory_mb * 1024 * 1024 and 
-                   len(self._cache) > 0):
-                self._evict_lru()
-            
-            # Check size limits
-            while len(self._cache) >= self.max_cache_size and len(self._cache) > 0:
-                self._evict_lru()
-            
-            # Create cache entry
-            # Use model-specific TTL if not provided
-            model_ttl = ttl_seconds or self.get_model_ttl(model_type)
-            
-            entry = CacheEntry(
-                key=cache_key,
-                data=data,
-                metadata=metadata or {},
-                created_at=datetime.now(),
-                last_accessed=datetime.now(),
-                access_count=0,
-                size_bytes=data_size,
-                ttl_seconds=model_ttl
-            )
-            
-            # Add to cache
-            self._cache[cache_key] = entry
-            self._stats['total_memory_bytes'] += data_size
-            
-            logger.debug(f"Cached model: {cache_key} ({data_size} bytes)")
-            
-        return cache_key
     
     def get(self, 
             model_type: str,
@@ -425,15 +355,171 @@ class ModelCacheService:
             return len(keys_to_remove)
     
     def _evict_lru(self):
-        """Remove the least recently used item from cache"""
+        """Remove the least recently used item from cache with large model priority"""
         if not self._cache:
             return
         
-        # Remove the first item (least recently used)
+        # Check if we should prioritize keeping large models
+        large_model_priority = self.config.get("performance", {}).get("large_model_priority", False)
+        large_model_threshold_mb = 500  # Consider models > 500MB as large
+        
+        if large_model_priority:
+            # First try to evict smaller models
+            for key, entry in list(self._cache.items()):
+                size_mb = entry.size_bytes / (1024 * 1024)
+                if size_mb < large_model_threshold_mb:
+                    self._cache.pop(key)
+                    self._stats['total_memory_bytes'] -= entry.size_bytes
+                    self._stats['evictions'] += 1
+                    logger.info(f"Evicted small model: {key} ({size_mb:.1f}MB)")
+                    return
+            
+            # If no small models to evict, warn and evict LRU large model
+            logger.warning("Only large models in cache, evicting LRU large model")
+        
+        # Default LRU eviction (or when only large models remain)
         key, entry = self._cache.popitem(last=False)
+        size_mb = entry.size_bytes / (1024 * 1024)
         self._stats['total_memory_bytes'] -= entry.size_bytes
         self._stats['evictions'] += 1
-        logger.debug(f"Evicted LRU entry: {key}")
+        logger.info(f"Evicted LRU entry: {key} ({size_mb:.1f}MB)")
+    
+    def _smart_evict_for_large_model(self, required_bytes: int):
+        """
+        Smart eviction strategy specifically for accommodating large models
+        
+        Args:
+            required_bytes: Number of bytes needed for the new model
+        """
+        if not self._cache:
+            return
+        
+        available_bytes = (self.max_memory_mb * 1024 * 1024) - self._stats['total_memory_bytes']
+        
+        if available_bytes >= required_bytes:
+            return  # No eviction needed
+        
+        bytes_to_free = required_bytes - available_bytes
+        freed_bytes = 0
+        evicted_models = []
+        
+        # Strategy 1: Remove expired models first
+        expired_keys = [key for key, entry in self._cache.items() if entry.is_expired()]
+        for key in expired_keys:
+            entry = self._cache.pop(key)
+            freed_bytes += entry.size_bytes
+            self._stats['total_memory_bytes'] -= entry.size_bytes
+            evicted_models.append(f"{key} (expired)")
+            
+            if freed_bytes >= bytes_to_free:
+                break
+        
+        # Strategy 2: Remove smallest models first (preserve large models)
+        if freed_bytes < bytes_to_free:
+            # Sort by size (smallest first) 
+            sorted_entries = sorted(self._cache.items(), key=lambda x: x[1].size_bytes)
+            
+            for key, entry in sorted_entries:
+                if freed_bytes >= bytes_to_free:
+                    break
+                
+                self._cache.pop(key)
+                freed_bytes += entry.size_bytes
+                self._stats['total_memory_bytes'] -= entry.size_bytes
+                size_mb = entry.size_bytes / (1024 * 1024)
+                evicted_models.append(f"{key} ({size_mb:.1f}MB)")
+                self._stats['evictions'] += 1
+        
+        if evicted_models:
+            logger.info(f"Smart eviction: freed {freed_bytes / (1024*1024):.1f}MB by removing {len(evicted_models)} models: {evicted_models[:3]}...")
+    
+    def put(self, 
+            model_type: str,
+            data: Any,
+            track_name: Optional[str] = None, 
+            car_name: Optional[str] = None,
+            metadata: Optional[Dict[str, Any]] = None,
+            model_subtype: Optional[str] = None,
+            ttl_seconds: Optional[int] = None,
+            additional_params: Optional[Dict[str, Any]] = None) -> str:
+        """
+        Cache a model with improved large model handling
+        
+        Args:
+            model_type: Type of model
+            data: Model data to cache
+            track_name: Track name (optional)
+            car_name: Car name (optional)
+            metadata: Optional metadata
+            model_subtype: Optional model subtype
+            ttl_seconds: TTL override (None uses default)
+            additional_params: Additional parameters for key generation
+            
+        Returns:
+            Cache key used for storage
+        """
+        cache_key = self._generate_cache_key(
+            model_type, track_name, car_name, model_subtype, additional_params
+        )
+        
+        with self._lock:
+            # Remove existing entry if present
+            if cache_key in self._cache:
+                old_entry = self._cache.pop(cache_key)
+                self._stats['total_memory_bytes'] -= old_entry.size_bytes
+            
+            # Estimate memory size
+            data_size = self._estimate_memory_size(data)
+            size_mb = data_size / (1024 * 1024)
+            
+            # Check if this is a large model
+            is_large_model = size_mb > 500  # Consider > 500MB as large
+            
+            # Use smart eviction for large models
+            if is_large_model:
+                logger.info(f"Caching large model: {cache_key} ({size_mb:.1f}MB)")
+                self._smart_evict_for_large_model(data_size)
+            else:
+                # Use standard eviction for smaller models
+                while (self._stats['total_memory_bytes'] + data_size > self.max_memory_mb * 1024 * 1024 and 
+                       len(self._cache) > 0):
+                    self._evict_lru()
+            
+            # Check size limits (but be more lenient for large models)
+            max_entries = self.max_cache_size
+            if is_large_model and len(self._cache) < max_entries:
+                # Allow slightly exceeding size limit for large models
+                pass
+            else:
+                while len(self._cache) >= max_entries and len(self._cache) > 0:
+                    self._evict_lru()
+            
+            # Create cache entry with longer TTL for large models
+            if ttl_seconds is None:
+                model_ttl = self.get_model_ttl(model_type)
+                if is_large_model:
+                    model_ttl = max(model_ttl, 7200)  # At least 2 hours for large models
+            else:
+                model_ttl = ttl_seconds
+            
+            entry = CacheEntry(
+                key=cache_key,
+                data=data,
+                metadata=metadata or {},
+                created_at=datetime.now(),
+                last_accessed=datetime.now(),
+                access_count=0,
+                size_bytes=data_size,
+                ttl_seconds=model_ttl
+            )
+            
+            # Add to cache
+            self._cache[cache_key] = entry
+            self._stats['total_memory_bytes'] += data_size
+            
+            logger.info(f"Cached model: {cache_key} ({size_mb:.1f}MB, TTL: {model_ttl}s)")
+            
+        return cache_key
     
     def _cleanup_worker(self):
         """Background worker for periodic cleanup"""

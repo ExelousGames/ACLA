@@ -116,6 +116,34 @@ class Full_dataset_TelemetryMLService:
         # Add a simple lock mechanism to prevent concurrent fetches of the same model
         self._model_fetch_locks = {}
         self._lock_creation_lock = asyncio.Lock()
+        
+        # Configure default caching strategies for common model types
+        self._caching_strategies = {
+            "imitation_learning": {"cache_raw_data": True, "configured_at": datetime.now().isoformat()},
+            "transformer_expert_action": {"cache_raw_data": True, "configured_at": datetime.now().isoformat()},
+            "corner_identification": {"cache_raw_data": True, "configured_at": datetime.now().isoformat()},
+            "tire_grip_analysis": {"cache_raw_data": True, "configured_at": datetime.now().isoformat()},
+        }
+        
+        # Log cache configuration on startup
+        self._log_cache_configuration()
+    
+    def _log_cache_configuration(self):
+        """Log cache configuration details"""
+        cache_stats = self.model_cache.get_stats()
+        print("\n" + "="*60)
+        print("CACHE CONFIGURATION")
+        print("="*60)
+        print(f"Max Cache Size: {self.model_cache.max_cache_size} models")
+        print(f"Max Memory: {self.model_cache.max_memory_mb}MB ({self.model_cache.max_memory_mb/1024:.1f}GB)")
+        print(f"Environment: {self.model_cache.environment}")
+        print(f"Default TTL: {self.model_cache.default_ttl_seconds}s ({self.model_cache.default_ttl_seconds/3600:.1f}h)")
+        print(f"Large Model Priority: {self.model_cache.config.get('performance', {}).get('large_model_priority', False)}")
+        print("Model-specific TTLs:")
+        for model_type, strategy in self._caching_strategies.items():
+            ttl = self.model_cache.get_model_ttl(model_type)
+            print(f"  - {model_type}: {ttl}s ({ttl/3600:.1f}h), raw_data={strategy['cache_raw_data']}")
+        print("="*60 + "\n")
 
     def clear_all_cache(self):
         """Clear cached transformer / imitation models (corner & tire services now on-demand)."""
@@ -127,9 +155,11 @@ class Full_dataset_TelemetryMLService:
                                     track_name: Optional[str] = None,
                                     car_name: Optional[str] = None,
                                     model_subtype: str = "complete_model_data",
-                                    deserializer_func=None) -> Tuple[Any, Dict[str, Any]]:
+                                    deserializer_func=None,
+                                    cache_raw_data: bool = True) -> Tuple[Any, Dict[str, Any]]:
         """
-        Fetch model from backend and cache it
+        Fetch model from backend and cache it with improved caching strategy.
+        Now supports caching raw data for better cache efficiency and on-demand deserialization.
         
         Args:
             model_type: Type of model ('imitation_learning', etc.)
@@ -137,10 +167,13 @@ class Full_dataset_TelemetryMLService:
             car_name: Car name for the model (optional)
             model_subtype: Subtype identifier for the model
             deserializer_func: Function to deserialize model data from backend and return model instance
+            cache_raw_data: If True, cache raw data and deserialize on-demand. If False, cache deserialized model.
             
         Returns:
             Tuple of (model_instance, metadata)
         """
+        print(f"[DEBUG] Fetching model from backend: {model_type}/{track_name}/{car_name}")
+        
         model_response = await self.backend_service.getCompleteActiveModelData(
             track_name, car_name, model_type
         )
@@ -148,77 +181,122 @@ class Full_dataset_TelemetryMLService:
         if "error" in model_response:
             raise Exception(f"Backend error: {model_response['error']}")
         
+        # Debug: Log the structure we received
+        print(f"[DEBUG] Model response keys: {list(model_response.keys()) if isinstance(model_response, dict) else 'Not a dict'}")
+        if "data" in model_response:
+            print(f"[DEBUG] Response data type: {type(model_response['data'])}")
+            if isinstance(model_response["data"], dict):
+                print(f"[DEBUG] Response data keys: {list(model_response['data'].keys())}")
+        
         # Extract modelData from the correct location in response
         model_data = None
         if "data" in model_response and isinstance(model_response["data"], dict):
             model_data = model_response["data"].get("modelData", {})
+            print(f"[DEBUG] Found modelData in response['data'], type: {type(model_data)}")
         else:
             model_data = model_response.get("modelData", {})
+            print(f"[DEBUG] Found modelData in response root, type: {type(model_data)}")
         
         if not model_data:
-            raise Exception("No modelData in data found in response")
+            print(f"[ERROR] No modelData found. Response structure: {model_response}")
+            raise Exception("No modelData found in response")
 
-        # Deserialize the model data using provided function or default
-        if deserializer_func:
-            # The deserializer should return the model instance
-            model_instance = deserializer_func(model_data)
-            if model_instance is None:
-                raise Exception("Deserializer function returned None - must return model instance")
-        else:
-            # For other model types without deserializer, just return the raw data
-            model_instance = model_data
-        
-        # Cache the model instance for future use
+        # Prepare cache metadata
         cache_metadata = {
             "track_name": track_name,
             "car_name": car_name,
             "model_type": model_type,
             "fetched_at": datetime.now().isoformat(),
-            "backend_model_id": model_response.get("id", "unknown")
+            "backend_model_id": model_response.get("id", "unknown"),
+            "model_subtype": model_subtype
         }
         
-        self.model_cache.put(
-            model_type=model_type,
-            track_name=track_name,
-            car_name=car_name,
-            data=model_instance,
-            metadata=cache_metadata,
-            model_subtype=model_subtype
-        )
+        # Decide caching strategy
+        if cache_raw_data and deserializer_func:
+            # Strategy 1: Cache raw data, deserialize on-demand (recommended)
+            print(f"[DEBUG] Caching raw data for on-demand deserialization: {model_type}")
+            
+            # Add flag to metadata to indicate raw data storage
+            cache_metadata["is_raw_model_data"] = True
+            cache_metadata["has_deserializer"] = True
+            
+            # Cache the raw model data
+            self.model_cache.put(
+                model_type=model_type,
+                track_name=track_name,
+                car_name=car_name,
+                data=model_data,  # Store raw data
+                metadata=cache_metadata,
+                model_subtype=model_subtype
+            )
+            
+            # Deserialize for immediate return
+            model_instance = deserializer_func(model_data)
+            if model_instance is None:
+                raise Exception("Deserializer function returned None - must return model instance")
+                
+        else:
+            # Strategy 2: Cache deserialized model (legacy behavior)
+            print(f"[DEBUG] Caching deserialized model: {model_type}")
+            
+            if deserializer_func:
+                # Deserialize the model data using provided function
+                model_instance = deserializer_func(model_data)
+                if model_instance is None:
+                    raise Exception("Deserializer function returned None - must return model instance")
+                cache_metadata["is_raw_model_data"] = False
+                cache_metadata["has_deserializer"] = True
+            else:
+                # For other model types without deserializer, just use the raw data
+                model_instance = model_data
+                cache_metadata["is_raw_model_data"] = False
+                cache_metadata["has_deserializer"] = False
+            
+            # Cache the processed model instance
+            self.model_cache.put(
+                model_type=model_type,
+                track_name=track_name,
+                car_name=car_name,
+                data=model_instance,
+                metadata=cache_metadata,
+                model_subtype=model_subtype
+            )
+        
+        print(f"[DEBUG] Successfully cached model: {model_type} (raw_data: {cache_raw_data and deserializer_func is not None})")
         
         return model_instance, cache_metadata
     
-    def _cleanup_fetch_lock(self, model_key: str, track_name: str, car_name: str):
+    def _cleanup_fetch_lock(self, cache_key: str, track_name: str, car_name: str):
         """
-        Clean up fetch lock for a specific model key
+        Clean up fetch lock for a specific cache key
         
         Args:
-            model_key: The model key used for locking
+            cache_key: The cache key used for locking
             track_name: Track name for logging
             car_name: Car name for logging
         """
-        if model_key in self._model_fetch_locks:
+        if cache_key in self._model_fetch_locks:
             try:
-                self._model_fetch_locks[model_key].set()
-                del self._model_fetch_locks[model_key]
-                print(f"[INFO] Released fetch lock for {model_key}")
+                self._model_fetch_locks[cache_key].set()
+                del self._model_fetch_locks[cache_key]
+                print(f"[DEBUG] Released fetch lock for {cache_key}")
             except Exception as cleanup_error:
                 print(f"[WARNING] Error cleaning up fetch lock: {str(cleanup_error)}")
     
-    def _emergency_cleanup_fetch_lock(self, model_key: str, track_name: str, car_name: str):
+    def _emergency_cleanup_fetch_lock(self, cache_key: str, track_name: str, car_name: str):
         """
         Emergency cleanup of fetch lock with additional safety checks
         
         Args:
-            model_key: The model key used for locking
+            cache_key: The cache key used for locking
             track_name: Track name for logging
             car_name: Car name for logging
         """
-        if hasattr(self, '_model_fetch_locks') and model_key in self._model_fetch_locks:
+        if hasattr(self, '_model_fetch_locks') and cache_key in self._model_fetch_locks:
             try:
-                self._model_fetch_locks[model_key].set()  # Signal any waiting threads
-                del self._model_fetch_locks[model_key]
-                print(f"[INFO] Emergency cleanup of fetch lock for {track_name}/{car_name}")
+                self._model_fetch_locks[cache_key].set()  # Signal any waiting threads
+                del self._model_fetch_locks[cache_key]
+                print(f"[INFO] Emergency cleanup of fetch lock for {cache_key}")
             except Exception as cleanup_error:
                 print(f"[WARNING] Error during emergency lock cleanup: {str(cleanup_error)}")
     
@@ -230,40 +308,83 @@ class Full_dataset_TelemetryMLService:
                                         model_subtype: str = "complete_model_data",
                                         deserializer_func=None) -> Tuple[Any, Dict[str, Any]]:
         """
-        Get model from cache or fetch from backend with thread-safe locking
+        Get model from cache or fetch from backend with thread-safe locking.
+        Now supports both raw data caching and on-demand deserialization.
         
         Args:
             model_type: Type of model ('imitation_learning', etc.)
             track_name: Track name for the model (optional)
             car_name: Car name for the model (optional)
             model_subtype: Subtype identifier for the model
-            deserializer_func: Function to deserialize model data from backend and return model instance
+            deserializer_func: Function to deserialize raw model data and return model instance
             
         Returns:
             Tuple of (model_instance, metadata)
         """
-        # Unique key for the model to manage locks
-        model_key = f"{track_name or 'any'}/{car_name or 'any'}/{model_type}"
+        # Generate consistent cache key using the same method as ModelCacheService
+        cache_key = self.model_cache._generate_cache_key(
+            model_type=model_type,
+            track_name=track_name,
+            car_name=car_name,
+            model_subtype=model_subtype
+        )
         
-        # Use flags to track if this thread is responsible for fetching
+        # Use cache_key for locking to ensure consistency
         is_fetching_thread = False
         model_instance = None
         metadata = {}
         
         try:
-            # First, try to get model from cache without any locking
-            cached_result = self.model_cache.get(
+            # First, check cache info without accessing the data to avoid unnecessary hits
+            cache_info = self.model_cache.get_cache_info(
                 model_type=model_type,
                 track_name=track_name,
                 car_name=car_name,
                 model_subtype=model_subtype
             )
             
-            if cached_result:
-                model_instance, metadata = cached_result
-                return model_instance, metadata
+            if cache_info and not cache_info.get('is_expired', True):
+                print(f"[DEBUG] Cache hit for {cache_key} - age: {cache_info.get('ttl_remaining_seconds', 'N/A')}s remaining")
+                
+                # Get the actual cached data
+                cached_result = self.model_cache.get(
+                    model_type=model_type,
+                    track_name=track_name,
+                    car_name=car_name,
+                    model_subtype=model_subtype
+                )
+                
+                if cached_result:
+                    raw_data, metadata = cached_result
+                    
+                    # Handle deserialization based on storage strategy
+                    if deserializer_func and isinstance(raw_data, dict) and 'is_raw_model_data' in metadata:
+                        # Raw data stored - deserialize on demand
+                        try:
+                            print(f"[DEBUG] Deserializing raw cached data for {cache_key}")
+                            model_instance = deserializer_func(raw_data)
+                            if model_instance is None:
+                                raise Exception("Deserializer returned None for cached raw data")
+                        except Exception as deser_error:
+                            print(f"[ERROR] Failed to deserialize cached data for {cache_key}: {str(deser_error)}")
+                            # Clear corrupted cache entry and continue to refetch
+                            self.model_cache.invalidate(
+                                model_type=model_type,
+                                track_name=track_name,
+                                car_name=car_name,
+                                model_subtype=model_subtype
+                            )
+                            cached_result = None
+                    else:
+                        # Pre-deserialized data or no deserializer needed
+                        model_instance = raw_data
+                    
+                    if model_instance is not None:
+                        return model_instance, metadata
+            else:
+                print(f"[DEBUG] Cache miss or expired for {cache_key}")
             
-            # If no cached result, handle fetching with proper locking
+            # If no valid cached result, handle fetching with proper locking
             async with self._lock_creation_lock:
                 # Double-check cache after acquiring lock
                 cached_result = self.model_cache.get(
@@ -274,19 +395,42 @@ class Full_dataset_TelemetryMLService:
                 )
                 
                 if cached_result:
-                    model_instance, metadata = cached_result
-                    return model_instance, metadata
-                elif model_key in self._model_fetch_locks:
-                    # Another thread is fetching this model, wait for it
-                    fetch_event = self._model_fetch_locks[model_key]
+                    raw_data, metadata = cached_result
+                    
+                    # Handle deserialization
+                    if deserializer_func and isinstance(raw_data, dict) and 'is_raw_model_data' in metadata:
+                        try:
+                            model_instance = deserializer_func(raw_data)
+                            if model_instance is None:
+                                raise Exception("Deserializer returned None")
+                        except Exception as deser_error:
+                            print(f"[ERROR] Failed to deserialize double-checked cache: {str(deser_error)}")
+                            # Clear and continue to fetch
+                            self.model_cache.invalidate(
+                                model_type=model_type,
+                                track_name=track_name,
+                                car_name=car_name,
+                                model_subtype=model_subtype
+                            )
+                            model_instance = None
+                    else:
+                        model_instance = raw_data
+                    
+                    if model_instance is not None:
+                        return model_instance, metadata
+                
+                # Check if another thread is already fetching
+                if cache_key in self._model_fetch_locks:
+                    fetch_event = self._model_fetch_locks[cache_key]
                 else:
                     # We're the first to request this model, create the event and mark ourselves as fetching
-                    self._model_fetch_locks[model_key] = asyncio.Event()
+                    self._model_fetch_locks[cache_key] = asyncio.Event()
                     is_fetching_thread = True
             
             # If we need to wait for another thread
             if not model_instance and not is_fetching_thread:
                 try:
+                    print(f"[DEBUG] Waiting for another thread to fetch {cache_key}")
                     await fetch_event.wait()
                     # The other thread should have cached the model, try cache again
                     cached_result = self.model_cache.get(
@@ -296,12 +440,24 @@ class Full_dataset_TelemetryMLService:
                         model_subtype=model_subtype
                     )
                     if cached_result:
-                        model_instance, metadata = cached_result
-                        print(f"[INFO] Using model cached by another thread for {track_name or 'any'}/{car_name or 'any'}")
-                    else:
-                        print(f"[WARNING] Expected cached model not found after waiting for {track_name or 'any'}/{car_name or 'any'}")
-                        # Continue to try fetching ourselves as fallback
-                        is_fetching_thread = True
+                        raw_data, metadata = cached_result
+                        
+                        if deserializer_func and isinstance(raw_data, dict) and 'is_raw_model_data' in metadata:
+                            try:
+                                model_instance = deserializer_func(raw_data)
+                            except Exception as deser_error:
+                                print(f"[ERROR] Failed to deserialize after wait: {str(deser_error)}")
+                                model_instance = None
+                        else:
+                            model_instance = raw_data
+                        
+                        if model_instance:
+                            print(f"[INFO] Using model cached by another thread for {cache_key}")
+                            return model_instance, metadata
+                    
+                    print(f"[WARNING] Expected cached model not found after waiting for {cache_key}")
+                    # Continue to try fetching ourselves as fallback
+                    is_fetching_thread = True
                 except Exception as wait_error:
                     print(f"[ERROR] Error while waiting for model fetch: {str(wait_error)}")
                     # Continue to try fetching ourselves as fallback
@@ -310,24 +466,27 @@ class Full_dataset_TelemetryMLService:
             # If we are the fetching thread or no data in cache, do the actual fetch
             if not model_instance and is_fetching_thread:
                 try:
+                    # Use configured caching strategy
+                    cache_raw_data = self.get_caching_strategy(model_type)
+                    
                     model_instance, metadata = await self._fetch_and_cache_model(
                         model_type=model_type,
                         track_name=track_name,
                         car_name=car_name,
                         model_subtype=model_subtype,
-                        deserializer_func=deserializer_func
+                        deserializer_func=deserializer_func,
+                        cache_raw_data=cache_raw_data
                     )
-                    print(f"[INFO] Successfully fetched and cached model for {model_key}")
+                    print(f"[INFO] Successfully fetched and cached model for {cache_key}")
                     
                 except Exception as fetch_error:
-                    print(f"[ERROR] Failed to fetch model {model_key}: {str(fetch_error)}")
+                    print(f"[ERROR] Failed to fetch model {cache_key}: {str(fetch_error)}")
                     raise fetch_error
                 finally:
                     # Always signal completion and clean up lock when we're the fetching thread
-                    self._cleanup_fetch_lock(model_key, track_name or 'any', car_name or 'any')
+                    self._cleanup_fetch_lock(cache_key, track_name or 'any', car_name or 'any')
             
             # At this point, we should have the model instance
-            # Use explicit None check to allow empty dicts/lists as valid payloads
             if model_instance is None:
                 raise Exception("Failed to obtain model instance from cache or backend")
             
@@ -336,7 +495,7 @@ class Full_dataset_TelemetryMLService:
         except Exception as e:
             # Clean up any locks that might have been created by this thread
             if is_fetching_thread:
-                self._emergency_cleanup_fetch_lock(model_key, track_name or 'any', car_name or 'any')
+                self._emergency_cleanup_fetch_lock(cache_key, track_name or 'any', car_name or 'any')
             
             raise e
     
@@ -368,6 +527,51 @@ class Full_dataset_TelemetryMLService:
             "timestamp": datetime.now().isoformat()
         }
     
+    def get_cache_debug_info(self) -> Dict[str, Any]:
+        """
+        Get comprehensive cache debugging information
+        
+        Returns:
+            Dictionary with cache and lock information
+        """
+        cache_stats = self.model_cache.get_stats()
+        lock_status = self.get_fetch_locks_status()
+        
+        return {
+            "cache_stats": cache_stats,
+            "fetch_locks": lock_status,
+            "timestamp": datetime.now().isoformat()
+        }
+    
+    def print_cache_debug_info(self):
+        """
+        Print cache debugging information to console
+        """
+        debug_info = self.get_cache_debug_info()
+        
+        print("\n" + "="*60)
+        print("CACHE DEBUG INFORMATION")
+        print("="*60)
+        
+        cache_stats = debug_info["cache_stats"]
+        print(f"Cache Size: {cache_stats['cache_size']}/{cache_stats['max_cache_size']}")
+        print(f"Memory Usage: {cache_stats['memory_usage_mb']:.2f}/{cache_stats['max_memory_mb']} MB")
+        print(f"Hit Rate: {cache_stats['hit_rate']:.2%}")
+        print(f"Hits: {cache_stats['hits']}, Misses: {cache_stats['misses']}")
+        print(f"Evictions: {cache_stats['evictions']}, Cleanups: {cache_stats['cleanups']}")
+        
+        print(f"\nActive Fetch Locks: {debug_info['fetch_locks']['lock_count']}")
+        for lock_key in debug_info['fetch_locks']['active_locks']:
+            print(f"  - {lock_key}")
+        
+        print(f"\nCached Models:")
+        for entry in cache_stats.get('entries', []):
+            print(f"  - {entry['key']} ({entry['size_mb']:.2f} MB, accessed {entry['access_count']} times)")
+            if entry.get('ttl_remaining_seconds'):
+                print(f"    TTL remaining: {entry['ttl_remaining_seconds']:.0f}s")
+        
+        print("="*60 + "\n")
+    
     async def clear_stuck_fetch_locks(self, max_age_minutes: int = 10) -> Dict[str, Any]:
         """
         Clear fetch locks that might be stuck (emergency cleanup)
@@ -384,11 +588,11 @@ class Full_dataset_TelemetryMLService:
             async with self._lock_creation_lock:
                 # Since we can't track lock creation time in this simple implementation,
                 # we'll just clear all locks as an emergency measure
-                for model_key in list(self._model_fetch_locks.keys()):
+                for cache_key in list(self._model_fetch_locks.keys()):
                     try:
-                        self._model_fetch_locks[model_key].set()
-                        del self._model_fetch_locks[model_key]
-                        cleared_locks.append(model_key)
+                        self._model_fetch_locks[cache_key].set()
+                        del self._model_fetch_locks[cache_key]
+                        cleared_locks.append(cache_key)
                     except Exception as e:
                         pass
             
@@ -407,7 +611,365 @@ class Full_dataset_TelemetryMLService:
                 "cleared_count": len(cleared_locks),
                 "timestamp": datetime.now().isoformat()
             }
+    
+    async def validate_and_preload_model(self, 
+                                        model_type: str,
+                                        track_name: Optional[str] = None,
+                                        car_name: Optional[str] = None,
+                                        model_subtype: str = "complete_model_data",
+                                        deserializer_func=None,
+                                        force_refresh: bool = False) -> Dict[str, Any]:
+        """
+        Validate a cached model or preload it from backend.
+        Useful for warming up cache or verifying model integrity.
+        
+        Args:
+            model_type: Type of model
+            track_name: Track name (optional)
+            car_name: Car name (optional)
+            model_subtype: Subtype identifier
+            deserializer_func: Deserializer function
+            force_refresh: If True, bypass cache and refetch from backend
+            
+        Returns:
+            Dictionary with validation/preload results
+        """
+        cache_key = self.model_cache._generate_cache_key(
+            model_type=model_type,
+            track_name=track_name,
+            car_name=car_name,
+            model_subtype=model_subtype
+        )
+        
+        start_time = datetime.now()
+        
+        try:
+            if force_refresh:
+                # Clear existing cache entry
+                self.model_cache.invalidate(
+                    model_type=model_type,
+                    track_name=track_name,
+                    car_name=car_name,
+                    model_subtype=model_subtype
+                )
+                print(f"[DEBUG] Force refresh - cleared cache for {cache_key}")
+            
+            # Get or fetch the model
+            model_instance, metadata = await self._get_cached_model_or_fetch(
+                model_type=model_type,
+                track_name=track_name,
+                car_name=car_name,
+                model_subtype=model_subtype,
+                deserializer_func=deserializer_func
+            )
+            
+            end_time = datetime.now()
+            load_time = (end_time - start_time).total_seconds()
+            
+            return {
+                "success": True,
+                "cache_key": cache_key,
+                "load_time_seconds": load_time,
+                "model_loaded": model_instance is not None,
+                "metadata": metadata,
+                "timestamp": end_time.isoformat()
+            }
+            
+        except Exception as e:
+            end_time = datetime.now()
+            load_time = (end_time - start_time).total_seconds()
+            
+            return {
+                "success": False,
+                "cache_key": cache_key,
+                "load_time_seconds": load_time,
+                "error": str(e),
+                "error_type": type(e).__name__,
+                "timestamp": end_time.isoformat()
+            }
    
+    def configure_caching_strategy(self, model_type: str, cache_raw_data: bool = True):
+        """
+        Configure caching strategy for a specific model type
+        
+        Args:
+            model_type: Type of model to configure
+            cache_raw_data: If True, cache raw data and deserialize on-demand
+        """
+        if not hasattr(self, '_caching_strategies'):
+            self._caching_strategies = {}
+        
+        self._caching_strategies[model_type] = {
+            "cache_raw_data": cache_raw_data,
+            "configured_at": datetime.now().isoformat()
+        }
+        
+        print(f"[INFO] Configured caching strategy for {model_type}: cache_raw_data={cache_raw_data}")
+    
+    def get_caching_strategy(self, model_type: str) -> bool:
+        """
+        Get the caching strategy for a model type
+        
+        Args:
+            model_type: Type of model
+            
+        Returns:
+            True if should cache raw data, False if should cache deserialized model
+        """
+        if hasattr(self, '_caching_strategies') and model_type in self._caching_strategies:
+            return self._caching_strategies[model_type]["cache_raw_data"]
+        
+        # Default strategy: cache raw data for better efficiency
+        return True
+    
+    async def test_caching_performance(self, 
+                                      model_type: str,
+                                      track_name: Optional[str] = None,
+                                      car_name: Optional[str] = None,
+                                      deserializer_func=None,
+                                      num_tests: int = 3) -> Dict[str, Any]:
+        """
+        Test caching performance by making multiple requests for the same model
+        
+        Args:
+            model_type: Type of model to test
+            track_name: Track name (optional)
+            car_name: Car name (optional)
+            deserializer_func: Deserializer function
+            num_tests: Number of test iterations
+            
+        Returns:
+            Performance test results
+        """
+        print(f"[INFO] Testing cache performance for {model_type} ({num_tests} iterations)")
+        
+        results = {
+            "model_type": model_type,
+            "track_name": track_name,
+            "car_name": car_name,
+            "num_tests": num_tests,
+            "test_times": [],
+            "cache_hits": 0,
+            "cache_misses": 0
+        }
+        
+        # Get initial cache stats
+        initial_stats = self.model_cache.get_stats()
+        
+        for i in range(num_tests):
+            start_time = datetime.now()
+            
+            try:
+                model_instance, metadata = await self._get_cached_model_or_fetch(
+                    model_type=model_type,
+                    track_name=track_name,
+                    car_name=car_name,
+                    deserializer_func=deserializer_func
+                )
+                
+                end_time = datetime.now()
+                test_time = (end_time - start_time).total_seconds()
+                results["test_times"].append(test_time)
+                
+                print(f"[TEST {i+1}/{num_tests}] Load time: {test_time:.4f}s")
+                
+            except Exception as e:
+                print(f"[TEST {i+1}/{num_tests}] Failed: {str(e)}")
+                results["test_times"].append(None)
+        
+        # Get final cache stats
+        final_stats = self.model_cache.get_stats()
+        results["cache_hits"] = final_stats["hits"] - initial_stats["hits"]
+        results["cache_misses"] = final_stats["misses"] - initial_stats["misses"]
+        
+        # Calculate performance metrics
+        valid_times = [t for t in results["test_times"] if t is not None]
+        if valid_times:
+            results["avg_time"] = sum(valid_times) / len(valid_times)
+            results["min_time"] = min(valid_times)
+            results["max_time"] = max(valid_times)
+        
+        print(f"[RESULTS] Avg: {results.get('avg_time', 0):.4f}s, "
+              f"Min: {results.get('min_time', 0):.4f}s, "
+              f"Max: {results.get('max_time', 0):.4f}s")
+        print(f"[RESULTS] Cache hits: {results['cache_hits']}, misses: {results['cache_misses']}")
+        
+        return results
+    
+    def analyze_large_model_cache_usage(self) -> Dict[str, Any]:
+        """
+        Analyze cache usage specifically for large models and provide optimization recommendations
+        
+        Returns:
+            Analysis results with recommendations
+        """
+        cache_stats = self.model_cache.get_stats()
+        large_model_threshold_mb = 500
+        
+        analysis = {
+            "total_memory_mb": cache_stats["memory_usage_mb"],
+            "max_memory_mb": cache_stats["max_memory_mb"],
+            "memory_usage_percent": (cache_stats["memory_usage_mb"] / cache_stats["max_memory_mb"]) * 100,
+            "large_models": [],
+            "small_models": [],
+            "recommendations": [],
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        # Analyze individual models
+        for entry_info in cache_stats.get("entries", []):
+            size_mb = entry_info["size_mb"]
+            model_info = {
+                "key": entry_info["key"],
+                "size_mb": size_mb,
+                "access_count": entry_info["access_count"],
+                "ttl_remaining_seconds": entry_info.get("ttl_remaining_seconds")
+            }
+            
+            if size_mb >= large_model_threshold_mb:
+                analysis["large_models"].append(model_info)
+            else:
+                analysis["small_models"].append(model_info)
+        
+        # Generate recommendations
+        if analysis["memory_usage_percent"] > 90:
+            analysis["recommendations"].append("Memory usage is very high (>90%). Consider increasing max_memory_mb or clearing unused models.")
+        
+        if len(analysis["large_models"]) > 5:
+            analysis["recommendations"].append(f"Many large models cached ({len(analysis['large_models'])}). Consider preloading only essential models.")
+        
+        if analysis["memory_usage_percent"] > 70 and len(analysis["small_models"]) > 10:
+            analysis["recommendations"].append("Consider clearing small models to make room for large models.")
+        
+        total_large_mb = sum(m["size_mb"] for m in analysis["large_models"])
+        if total_large_mb > analysis["max_memory_mb"] * 0.8:
+            analysis["recommendations"].append("Large models are consuming >80% of cache memory. Consider using raw data caching strategy.")
+        
+        return analysis
+    
+    def optimize_cache_for_large_models(self) -> Dict[str, Any]:
+        """
+        Optimize cache configuration for handling large models
+        
+        Returns:
+            Optimization results
+        """
+        print("[INFO] Optimizing cache for large models...")
+        
+        # Analyze current usage
+        analysis = self.analyze_large_model_cache_usage()
+        
+        optimization_actions = []
+        
+        # Clear small models if memory is tight
+        if analysis["memory_usage_percent"] > 80:
+            small_models_cleared = 0
+            for model_info in analysis["small_models"]:
+                # Try to extract model details from key for invalidation
+                key_parts = model_info["key"].split(":")
+                if len(key_parts) >= 3:
+                    model_type, track_name, car_name = key_parts[0], key_parts[1], key_parts[2]
+                    if self.model_cache.invalidate(
+                        model_type=model_type,
+                        track_name=track_name if track_name != 'any' else None,
+                        car_name=car_name if car_name != 'any' else None
+                    ):
+                        small_models_cleared += 1
+            
+            if small_models_cleared > 0:
+                optimization_actions.append(f"Cleared {small_models_cleared} small models to free memory")
+        
+        # Configure longer TTLs for large models
+        large_model_types = ["imitation_learning", "transformer_expert_action"]
+        for model_type in large_model_types:
+            if model_type in self._caching_strategies:
+                # Ensure raw data caching for large models
+                self._caching_strategies[model_type]["cache_raw_data"] = True
+                optimization_actions.append(f"Enabled raw data caching for {model_type}")
+        
+        # Clean up expired entries
+        expired_before = len([m for m in analysis["large_models"] + analysis["small_models"] 
+                            if m.get("ttl_remaining_seconds", 1) <= 0])
+        
+        # Force cleanup by accessing cache stats (which triggers cleanup)
+        self.model_cache._cleanup_expired()
+        
+        optimization_actions.append("Cleaned up expired cache entries")
+        
+        return {
+            "success": True,
+            "actions_taken": optimization_actions,
+            "analysis_before": analysis,
+            "timestamp": datetime.now().isoformat()
+        }
+    
+    async def emergency_cache_reset_for_large_models(self) -> Dict[str, Any]:
+        """
+        Emergency cache reset specifically designed for large model issues.
+        Use this when models keep re-downloading despite cache configuration.
+        
+        Returns:
+            Reset operation results
+        """
+        print("[WARNING] Performing emergency cache reset for large models...")
+        
+        # Get pre-reset stats
+        pre_stats = self.model_cache.get_stats()
+        
+        results = {
+            "pre_reset_memory_mb": pre_stats["memory_usage_mb"],
+            "pre_reset_models": pre_stats["cache_size"],
+            "actions_taken": [],
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        # 1. Clear all stuck fetch locks
+        cleared_locks = await self.clear_stuck_fetch_locks()
+        if cleared_locks["cleared_count"] > 0:
+            results["actions_taken"].append(f"Cleared {cleared_locks['cleared_count']} stuck fetch locks")
+        
+        # 2. Clear entire cache
+        self.model_cache.clear()
+        results["actions_taken"].append("Cleared entire model cache")
+        
+        # 3. Reset caching strategies with optimal settings for large models
+        self._caching_strategies = {
+            "imitation_learning": {
+                "cache_raw_data": True, 
+                "configured_at": datetime.now().isoformat()
+            },
+            "transformer_expert_action": {
+                "cache_raw_data": True, 
+                "configured_at": datetime.now().isoformat()
+            },
+            "corner_identification": {
+                "cache_raw_data": True, 
+                "configured_at": datetime.now().isoformat()
+            },
+            "tire_grip_analysis": {
+                "cache_raw_data": True, 
+                "configured_at": datetime.now().isoformat()
+            },
+        }
+        results["actions_taken"].append("Reset caching strategies to optimal settings for large models")
+        
+        # 4. Log new configuration
+        self._log_cache_configuration()
+        results["actions_taken"].append("Logged new cache configuration")
+        
+        # Get post-reset stats
+        post_stats = self.model_cache.get_stats()
+        results["post_reset_memory_mb"] = post_stats["memory_usage_mb"]
+        results["post_reset_models"] = post_stats["cache_size"]
+        results["memory_freed_mb"] = results["pre_reset_memory_mb"] - results["post_reset_memory_mb"]
+        
+        print("[INFO] Emergency cache reset completed")
+        for action in results["actions_taken"]:
+            print(f"  ✓ {action}")
+        print(f"Memory freed: {results['memory_freed_mb']:.1f}MB")
+        
+        return results
+    
     # Imitation Learning Methods
     async def train_imitation_model(self, trackName: str, carName: str) -> Dict[str, Any]:
         """

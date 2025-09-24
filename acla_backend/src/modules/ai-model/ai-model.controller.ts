@@ -5,7 +5,8 @@ import { AiModelService } from './ai-model.service';
 import { CreateAiModelDto, UpdateAiModelDto } from './dto/ai-model.dto';
 import { ChunkClientService } from '../../shared/chunk-service/chunk.service';
 import { ChunkData } from '../../shared/chunk-service/interfaces/chunk.interface';
-import { GridFSService } from '../gridfs/gridfs.service';
+import { GridFSService, GRIDFS_BUCKETS } from '../gridfs/gridfs.service';
+import { ObjectId } from 'mongodb';
 import { promises } from 'dns';
 
 @Controller('ai-model')
@@ -88,13 +89,12 @@ export class AiModelController {
     }
 
     /**
-     * Prepare the active model data for chunked transfer (returns session info only).
-     * This is the recommended way to handle large model data.
-     * Use this endpoint followed by individual calls to /chunked-data/:sessionId/:chunkIndex
+     * Initialize chunked retrieval of active model data.
+     * Returns the final structure with metadata and chunking information.
      * @param modelType Required - The type of model to retrieve
      * @param trackName Optional - The track name to filter by (query parameter)
      * @param carName Optional - The car name to filter by (query parameter)
-     * @returns Session information for chunked transfer
+     * @returns Final structure with metadata and chunking session info
      */
     @Get('active/:modelType/prepare-chunked')
     async initGetActiveModelData(
@@ -102,53 +102,95 @@ export class AiModelController {
         @Query('trackName') trackName?: string,
         @Query('carName') carName?: string
     ) {
-        console.log(`Preparing chunked data for active model - Track: ${trackName}, Car: ${carName}, Type: ${modelType}`);
+        console.log(`Initializing chunked model data - Track: ${trackName}, Car: ${carName}, Type: ${modelType}`);
 
         try {
-            const modelData = await this.aiModelService.getActiveModelWithData(trackName, carName, modelType);
+            // Get model metadata
+            const modelDoc = await this.aiModelService.getActiveModel(trackName, carName, modelType);
 
-            // Check if the model data contains an error or is too large
-            if (modelData.modelDataInfo?.isLargeFile) {
+            if (!modelDoc) {
                 return {
                     success: false,
-                    message: 'Model data is too large to process. This indicates a system limitation with the current model size.',
-                    fileSize: modelData.modelDataInfo.fileSizeHuman,
-                    recommendation: 'Consider reducing the model size or implementing streaming JSON processing for this specific model type.'
+                    message: 'No active model found for the specified criteria'
                 };
             }
 
-            if (modelData.modelDataError) {
+            if (!modelDoc.modelDataFileId) {
                 return {
                     success: false,
-                    message: `Failed to prepare model data: ${modelData.modelDataError.message}`,
-                    timestamp: modelData.modelDataError.timestamp,
-                    recommendation: modelData.modelDataError.recommendedAction
+                    message: 'Model found but no data file is associated with it'
                 };
             }
 
-            const result = await this.chunkService.prepareDataForChunkedSending(modelData);
+            // Get file info
+            const fileSize = await this.gridfsService.getFileSize(new ObjectId(modelDoc.modelDataFileId), GRIDFS_BUCKETS.AI_MODELS);
+            const chunkSize = 512 * 1024; // 512KB chunks
+            const totalChunks = Math.ceil(fileSize / chunkSize);
 
-            // Return only session info, not the actual chunks
+            // Create session for chunked transfer
+            const sessionId = `model_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+
+            // Store session metadata
+            this.storeStreamingSessionMetadata(sessionId, {
+                fileId: new ObjectId(modelDoc.modelDataFileId),
+                bucketName: GRIDFS_BUCKETS.AI_MODELS,
+                totalChunks: totalChunks,
+                chunkSize: chunkSize,
+                fileSize: fileSize,
+                filename: `${modelType}_${trackName}_${carName}`,
+                createdAt: Date.now()
+            });
+
+            console.log(`Prepared chunked transfer: ${totalChunks} chunks of ${this.formatFileSize(chunkSize)} each`);
+
+            // Return final structure with metadata and chunking info
             return {
-                success: result.success,
-                sessionId: result.sessionId,
-                totalChunks: result.totalChunks,
-                message: result.message
+                success: true,
+                data: {
+                    // Model metadata (available immediately)
+                    modelType: modelDoc.modelType,
+                    trackName: modelDoc.trackName,
+                    carName: modelDoc.carName,
+                    isActive: modelDoc.isActive,
+                    metadata: modelDoc.metadata || {},
+
+                    // Placeholder for chunked data (will be filled by client)
+                    modelData: null // This will be populated from chunks
+                },
+                chunking: {
+                    sessionId: sessionId,
+                    totalChunks: totalChunks,
+                    chunkSize: chunkSize,
+                    totalSize: fileSize,
+                    totalSizeHuman: this.formatFileSize(fileSize),
+                    fieldsToFill: ['modelData'] // Fields that will be populated from chunks
+                },
+                message: `Model structure ready, ${totalChunks} chunks to retrieve`
             };
         } catch (error) {
-            console.error(`Error preparing chunked data: ${error.message}`);
+            console.error(`Error initializing chunked data: ${error.message}`);
             return {
                 success: false,
-                message: `Failed to prepare chunked data: ${error.message}`,
-                recommendation: 'Check server logs for detailed error information. If this is a very large model, consider using alternative data handling approaches.'
+                message: `Failed to initialize chunked data: ${error.message}`
             };
         }
     }
 
     /**
-     * Get a specific chunk from a prepared chunked session.
+     * Helper method to format file size in human-readable format
+     */
+    private formatFileSize(bytes: number): string {
+        const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
+        if (bytes === 0) return '0 Bytes';
+        const i = Math.floor(Math.log(bytes) / Math.log(1024));
+        return Math.round(bytes / Math.pow(1024, i) * 100) / 100 + ' ' + sizes[i];
+    }
+
+    /**
+     * Get a specific chunk of model data.
      * @param sessionId The session ID from prepare-chunked endpoint
      * @param chunkIndex The index of the chunk to retrieve (0-based)
+     * @returns Raw chunk data as base64 string
      */
     @Get('active/chunked-data/:sessionId/:chunkIndex')
     async getActiveModelDataChunk(
@@ -165,20 +207,17 @@ export class AiModelController {
         }
 
         try {
-            // Get the session status to validate it exists
-            const sessionStatus = await this.chunkService.getSessionStatus(sessionId);
-
-            if (!sessionStatus.success) {
-                return {
-                    success: false,
-                    message: 'Session not found or expired'
-                };
-            }
-
-            // Get the chunk directly from the chunk service
-            const result = await this.chunkService.getPreparedChunk(sessionId, chunkIndexNum);
-            return result;
+            const streamingChunk = await this.getStreamingChunk(sessionId, chunkIndexNum);
+            return {
+                success: true,
+                sessionId,
+                chunkIndex: chunkIndexNum,
+                totalChunks: streamingChunk.totalChunks,
+                data: streamingChunk.data, // Base64 encoded chunk data
+                isLastChunk: streamingChunk.isLastChunk
+            };
         } catch (error) {
+            console.error(`Error getting chunk ${chunkIndexNum}: ${error.message}`);
             return {
                 success: false,
                 message: `Failed to retrieve chunk: ${error.message}`
@@ -251,6 +290,76 @@ export class AiModelController {
                 message: 'Failed to reinitialize GridFS',
                 error: error.message
             };
+        }
+    }
+
+    /**
+     * Store streaming session metadata for later chunk retrieval
+     * In a production system, this should use Redis or a proper session store
+     */
+    private streamingSessions: Map<string, any> = new Map();
+
+    private storeStreamingSessionMetadata(sessionId: string, metadata: any): void {
+        this.streamingSessions.set(sessionId, metadata);
+
+        // Set a timeout to clean up the session after 15 minutes
+        setTimeout(() => {
+            this.streamingSessions.delete(sessionId);
+            console.log(`Cleaned up streaming session: ${sessionId}`);
+        }, 15 * 60 * 1000); // 15 minutes
+    }
+
+    /**
+     * Get streaming chunk for a session by reading directly from GridFS
+     * Returns chunk data as base64 for safe transport
+     */
+    private async getStreamingChunk(sessionId: string, chunkIndex: number): Promise<any> {
+        const sessionMetadata = this.streamingSessions.get(sessionId);
+        if (!sessionMetadata) {
+            throw new Error('Session not found or expired');
+        }
+
+        const { fileId, bucketName, totalChunks, chunkSize, fileSize } = sessionMetadata;
+
+        if (chunkIndex < 0 || chunkIndex >= totalChunks) {
+            throw new Error(`Invalid chunk index. Must be between 0 and ${totalChunks - 1}`);
+        }
+
+        try {
+            // Calculate the byte range for this chunk
+            // Note: GridFS end parameter is exclusive, so we don't subtract 1
+            const startByte = chunkIndex * chunkSize;
+            const endByte = Math.min(startByte + chunkSize, fileSize);
+            const isLastChunk = chunkIndex === totalChunks - 1;
+
+            // Debug last few chunks
+            if (chunkIndex >= totalChunks - 3) {
+                console.log(`🔍 DEBUG Last chunk ${chunkIndex}: startByte=${startByte}, endByte=${endByte}, fileSize=${fileSize}, isLastChunk=${isLastChunk}`);
+            }
+
+            // Read chunk from GridFS and return as base64
+            const chunkData = await this.gridfsService.downloadFileRangeAsBase64(
+                new ObjectId(fileId),
+                bucketName,
+                startByte,
+                endByte
+            );
+
+            // Debug last few chunks data
+            if (chunkIndex >= totalChunks - 3) {
+                console.log(`🔍 DEBUG Chunk ${chunkIndex} data length: ${chunkData?.length || 0}`);
+            }
+
+            return {
+                sessionId,
+                chunkIndex,
+                totalChunks,
+                isLastChunk,
+                data: chunkData // Base64 encoded chunk data
+            };
+        } catch (error) {
+            console.error(`Error reading chunk ${chunkIndex} from GridFS:`, error);
+            throw new Error(`Failed to read chunk ${chunkIndex}: ${error.message}`);
         }
     }
 }
