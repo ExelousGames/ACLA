@@ -53,7 +53,9 @@ class ExpertFeatureCatalog:
     class ContextFeature(str, Enum):
         # Velocity direction alignment with expert
         EXPERT_VELOCITY_ALIGNMENT = 'expert_velocity_alignment' # 1.0 if moving in the expert velocity direction, 0.0 opposite direction
-
+        SPEED_DIFFERENCE = 'speed_difference' # Difference between current speed and expert optimal speed (km/h)
+        DISTANCE_TO_EXPERT_LINE = 'distance_to_expert_line' # Lateral distance to expert racing line (meters), -negative is left, +positive is right
+    
     class TrajectoryFeature(str, Enum):
         TRACK_POSITION = 'track_position'
         TRACK_POSITION_RATE = 'track_position_rate'
@@ -854,6 +856,15 @@ class ExpertImitateLearningService:
 
                         # Store only velocity alignment feature
                         row_features[ContextFeature.EXPERT_VELOCITY_ALIGNMENT.value] = float(velocity_alignment)
+
+                        # Calculate speed difference
+                        speed_difference = exp_velocity_magnitude - curr_velocity_magnitude
+                        row_features[ContextFeature.SPEED_DIFFERENCE.value] = float(speed_difference)
+
+                        # Calculate distance to expert line (negative if off to left, positive if off to right)
+                        distance_to_expert_line = row_predictions.get(EO.EXPERT_OPTIMAL_PLAYER_POS_X.value, 0.0) - current_row.get('Graphics_player_pos_x', 0.0)
+                        row_features[ContextFeature.DISTANCE_TO_EXPERT_LINE.value] = float(distance_to_expert_line)
+
                     except Exception as _e:
                         raise Exception(f"Velocity alignment calculation failed: {_e}")
 
@@ -864,7 +875,17 @@ class ExpertImitateLearningService:
 
         print(f"[INFO] Completed expert state extraction. Extracted features for {len(expert_feature_rows)} records")
         return expert_feature_rows
+    
+    def filter_optimal_telemetry_segments(self):
+        """
+        Placeholder for filtering telemetry segments to only those with consistent improving towards expert behavior
+
         
+        Returns:
+            None
+        """
+        print("[INFO] Filtering optimal telemetry segments - Not yet implemented")
+        pass
     def serialize_learning_model(self) -> Dict[str, Any]:
         """
         Serialize the current trained models stored in the position learner
