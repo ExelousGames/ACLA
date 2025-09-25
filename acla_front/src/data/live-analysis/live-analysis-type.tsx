@@ -9,7 +9,7 @@ export type SessionOption = {
     //key is required for child component of MapList component
     dataKey: number,
     name: string;
-    id: string;
+    SessionId: string;
     total_time?: number;
 }
 
@@ -37,27 +37,28 @@ export type MapInfo = {
 export type UploadReacingSessionInitDto = {
     sessionName: string;
     mapName: string;
-    userEmail: string;
+    carName: string;
+    userId: string;
 }
 
 export type UploadRacingSessionInitReturnDto = {
     uploadId: string;
-
 }
 
 
 export type SessionBasicInfoListDto = {
     list: {
         name: string,
-        id: string
+        sessionId: string
     }[]
 }
 
 export type RacingSessionDetailedInfoDto = {
     session_name: string;
-    id: string;
+    SessionId: string;
     map: string;
-    user_email: string;
+    car: string;
+    user_id: string;
     points: {
         id: number,
         position_x: number,

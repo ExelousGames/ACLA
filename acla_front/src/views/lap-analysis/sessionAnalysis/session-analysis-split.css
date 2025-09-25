@@ -1,0 +1,73 @@
+/* Session Analysis Split Layout Styles */
+.session-analysis-split-container {
+    width: 100%;
+    height: 90vh;
+    overflow: hidden;
+    padding: 16px;
+    box-sizing: border-box;
+}
+
+.visualization-section {
+    height: 100%;
+    overflow: hidden;
+}
+
+.chat-section {
+    height: 100%;
+    overflow: hidden;
+}
+
+/* Ensure cards take full available space */
+.visualization-section .rt-Card,
+.chat-section .rt-Card {
+    height: 100%;
+    padding: 0;
+}
+
+/* Visualization section specific styling */
+.visualization-section .rt-Card {
+    padding: 8px;
+}
+
+/* Responsive design */
+@media (max-width: 1400px) {
+    .session-analysis-split-container {
+        height: 85vh;
+    }
+}
+
+@media (max-width: 1200px) {
+    .session-analysis-split-container .rt-Flex {
+        flex-direction: column !important;
+        height: auto;
+    }
+
+    .visualization-section {
+        flex: none !important;
+        width: 100%;
+        height: 60vh;
+        margin-bottom: 16px;
+    }
+
+    .chat-section {
+        flex: none !important;
+        width: 100%;
+        height: 40vh;
+    }
+}
+
+@media (max-width: 768px) {
+    .session-analysis-split-container {
+        padding: 8px;
+        height: auto;
+    }
+
+    .visualization-section {
+        height: 55vh;
+        margin-bottom: 12px;
+    }
+
+    .chat-section {
+        height: 40vh;
+    }
+}

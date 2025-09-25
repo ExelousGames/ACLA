@@ -1,24 +1,45 @@
 import { Injectable } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
-import { RacingSessionDetailedInfoDto, SessionBasicInfoListDto } from 'src/dto/racing-session.dto';
+import { RacingSessionDetailedInfoDto, SessionBasicInfoListDto, AllSessionsInitResponseDto, SessionChunkDto } from 'src/dto/racing-session.dto';
 import { RacingSession } from 'src/schemas/racing-session.schema';
+import { GridFSService, GRIDFS_BUCKETS } from '../gridfs/gridfs.service';
+import { ObjectId } from 'mongodb';
+import * as crypto from 'crypto';
 
 @Injectable()
 export class RacingSessionService {
-    constructor(@InjectModel(RacingSession.name) private racingSession: Model<RacingSession>) {
-    }
+    constructor(
+        @InjectModel(RacingSession.name) private racingSession: Model<RacingSession>,
+        private readonly gridfsService: GridFSService,
+    ) { }
 
-    async retrieveAllRacingSessionsInfo(mapName: string, username: string): Promise<SessionBasicInfoListDto | null> {
+    /**
+     * Large telemetry datasets are stored exclusively in GridFS as chunked JSON files.
+     * Stored metadata per session document:
+     *  - dataChunkFileIds: ordered GridFS file IDs (JSON arrays of telemetry rows)
+     *  - chunkSize: size used for splitting when uploaded
+     *  - totalChunks: number of chunks
+     *  - totalDataPoints: total number of telemetry rows
+     * Public API surfaces (upload/init, upload/chunk, upload/complete, download/init, download/chunk) are unchanged.
+     */
+
+    /**
+     * Retrieves basic information about all racing sessions for a specific map and user.
+     * @param mapName - The name of the racing map.
+     * @param userId - The ID of the user.
+     * @returns A promise that resolves to a list of basic session information.
+     */
+    async retrieveAllRacingSessionsBasicInfo(mapName: string, userId: string): Promise<SessionBasicInfoListDto | null> {
 
         try {
             let racingMap: SessionBasicInfoListDto = new SessionBasicInfoListDto();
-
-            const data = await this.racingSession.find({ 'map': mapName, 'user_email': username }).select('session_name id').exec();
+            //find all sessions with the map name and user id, only return session_name and _id
+            const data = await this.racingSession.find({ 'map': mapName, 'user_id': userId }).select('session_name user_id').exec();
             data.forEach((element) => {
                 racingMap.list.push({
                     name: element.session_name,
-                    id: element.id
+                    sessionId: element._id.toString()
                 });
             });
             return racingMap;
@@ -34,16 +55,15 @@ export class RacingSessionService {
     async retrieveSessionDetailedInfo(id: string): Promise<RacingSessionDetailedInfoDto | null> {
         try {
             let session: RacingSessionDetailedInfoDto = new RacingSessionDetailedInfoDto;
-            const data = await this.racingSession.findOne({ 'id': id }).exec();
+            const data = await this.racingSession.findOne({ 'user_id': id }).exec();
 
             if (data) {
                 session.session_name = data.session_name;
-                session.id = data.id;
                 session.map = data.map;
-                session.user_email = data.user_email;
+                session.userId = data.user_id.toString();
                 session.points = data.points;
-                session.data = data.data;
-
+                // Telemetry data is stored in GridFS chunks; detailed endpoint returns empty array placeholder
+                session.data = [];
             }
 
             return session;
@@ -55,22 +75,144 @@ export class RacingSessionService {
 
 
     /**
-     * 
+     * Creates a new racing session.
      * @param session_name 
-     * @param id 
      * @param map 
-     * @param user_email 
+     * @param car_name 
+     * @param userId 
      * @param data 
      * @returns 
      */
-    async createRacingSession(session_name: string, id: string, map: string, user_email: string, data: any[]) {
+    async createRacingSession(
+        session_name: string,
+        map: string,
+        car_name: string,
+        userId: string,
+        data: any[],
+        options?: { chunkSize?: number }
+    ) {
+        const chunkSize = options?.chunkSize || 1000;
+        const dataChunkFileIds: ObjectId[] = [];
+        const totalChunks = Math.ceil(data.length / chunkSize);
+        for (let i = 0; i < totalChunks; i++) {
+            const start = i * chunkSize;
+            const end = Math.min(start + chunkSize, data.length);
+            const chunk = data.slice(start, end);
+            const filename = `session_${session_name}_${map}_${car_name}_chunk_${i}_${Date.now()}.json`;
+            const fileId = await this.gridfsService.uploadJSON(
+                chunk,
+                filename,
+                {
+                    session_name,
+                    map,
+                    car_name,
+                    userId,
+                    chunkIndex: i,
+                    totalChunks,
+                    chunkSize,
+                    createdAt: new Date()
+                },
+                GRIDFS_BUCKETS.RACING_SESSIONS
+            );
+            dataChunkFileIds.push(fileId as unknown as ObjectId);
+        }
         return this.racingSession.create({
             session_name,
-            id,
             map,
-            user_email,
-            data
+            car_name,
+            user_id: userId,
+            dataChunkFileIds: dataChunkFileIds,
+            chunkSize: chunkSize,
+            totalChunks: totalChunks,
+            totalDataPoints: data.length
         });
     }
+
+    /**
+     * Retrieves metadata for all racing sessions with chunking information
+     * @param trackName - Track name to filter sessions (optional)
+     * @param carName - Car name to filter sessions (optional)
+     * @param chunkSize - Size of each data chunk (default: 1000)
+     * @returns Session metadata with chunking info
+     */
+    async initializeSessionsDownload(trackName?: string, carName?: string, chunkSize: number = 1000): Promise<AllSessionsInitResponseDto> {
+        try {
+            // Build filter object dynamically based on provided parameters
+            const filter: any = {};
+            if (trackName) {
+                filter.map = trackName;
+            }
+            if (carName) {
+                filter.car_name = carName;
+            }
+
+            const sessions = await this.racingSession.find(filter).exec();
+
+            const sessionMetadata = sessions.map(session => {
+                const dataSize = session.totalDataPoints || 0;
+                const chunkCount = session.totalChunks || 0;
+                return {
+                    sessionId: session._id.toString(),
+                    session_name: session.session_name,
+                    map: session.map,
+                    car_name: session.car_name,
+                    userId: session.user_id,
+                    dataSize,
+                    chunkCount
+                };
+            });
+
+            const totalChunks = sessionMetadata.reduce((total, session) => total + session.chunkCount, 0);
+
+            return {
+                downloadId: crypto.randomUUID(),
+                totalSessions: sessions.length,
+                totalChunks,
+                sessionMetadata
+            };
+        } catch (error) {
+            throw new Error(`Failed to initialize sessions download: ${error.message}`);
+        }
+    }
+
+    /**
+     * Retrieves a specific chunk of session data
+     * @param sessionId - The session ID
+     * @param chunkIndex - The chunk index to retrieve
+     * @param chunkSize - Size of each chunk (default: 1000)
+     * @returns Session chunk data
+     */
+    async getSessionChunk(sessionId: string, chunkIndex: number, chunkSize: number = 1000): Promise<SessionChunkDto> {
+        try {
+            const session = await this.racingSession.findById(sessionId)
+                .select('dataChunkFileIds chunkSize totalChunks')
+                .exec();
+
+            if (!session) {
+                throw new Error('Session not found');
+            }
+            const totalChunks = session.totalChunks || ((session as any).dataChunkFileIds?.length ?? 0);
+            if (chunkIndex < 0 || chunkIndex >= totalChunks) {
+                throw new Error('Chunk index out of range');
+            }
+            const fileId = (session as any).dataChunkFileIds[chunkIndex];
+            if (!fileId) {
+                throw new Error('Chunk file id missing');
+            }
+            const json = await this.gridfsService.downloadJSON(fileId, GRIDFS_BUCKETS.RACING_SESSIONS);
+            const chunkData = Array.isArray(json) ? json : [];
+            return {
+                downloadId: '', // Will be set by controller
+                sessionId,
+                chunkIndex,
+                totalChunks,
+                data: chunkData,
+                isComplete: chunkIndex === totalChunks - 1
+            };
+        } catch (error) {
+            throw new Error(`Failed to retrieve session chunk: ${error.message}`);
+        }
+    }
+
 
 }

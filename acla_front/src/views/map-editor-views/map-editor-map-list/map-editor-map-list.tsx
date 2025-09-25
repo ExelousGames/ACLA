@@ -57,6 +57,17 @@ const MapEditorMapList = (props: any) => {
 
             }).catch((e) => {
                 console.error('Error loading maps:', e);
+
+                // Handle specific error cases
+                if (e.status === 403) {
+                    console.error('Access forbidden: User may not have sufficient permissions or may not be logged in');
+                    // You might want to redirect to login or show a permission error
+                } else if (e.status === 401) {
+                    console.error('Authentication required: Please log in');
+                    // Redirect to login page
+                } else {
+                    console.error('Failed to load maps:', e.message);
+                }
             });
     };
 

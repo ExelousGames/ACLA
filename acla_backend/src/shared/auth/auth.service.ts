@@ -21,7 +21,8 @@ export class AuthService {
      * @returns User object if valid, otherwise null
      */
     async validateUser(email: string, pass: string): Promise<any> {
-        const user = await this.usersService.findOne(email);
+
+        const user = await this.usersService.findOneWithEmail(email);
         // Use PasswordService to compare the plain text password with the hashed password
         if (user && await this.passwordService.comparePassword(pass, user.password)) {
             // Convert Mongoose document to plain object and remove password
@@ -34,10 +35,11 @@ export class AuthService {
 
     //after successfully login, system give user a JWT token for continued access
     async giveJWTToken(userinfo: any) {
-        const payload = { username: userinfo.email, sub: userinfo.id }; // Use 'id' instead of 'userId'
+        const payload = { username: userinfo.email, id: userinfo.id }; // Use 'id' instead of 'userId'
         return {
             //generate our JWT from a subset of the user object properties,  //which we then return as a simple object with a single access_token property
             access_token: this.jwtService.sign(payload, { secret: jwtConstants.secret }),
+            userId: userinfo.id
         };
     }
 

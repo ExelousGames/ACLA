@@ -2,7 +2,7 @@ import { Body, Controller, Delete, Get, Request, Param, Post, Put } from '@nestj
 import { AuthService } from 'src/shared/auth/auth.service';
 import { UserInfo } from '../../schemas/user-info.schema';
 import { UserInfoService } from './user-info.service';
-import { CreateUserInfoDto, UpdateUserPermissionsDto, UpdateUserRolesDto, UpdateUserPasswordDto } from 'src/dto/user.dto';
+import { CreateUserInfoDto, UpdateUserPermissionsDto, UpdateUserRolesDto, UpdateUserPasswordDto, UserProfileDto } from 'src/dto/user.dto';
 import {
     Auth,
     LocalAuth,
@@ -118,8 +118,31 @@ export class UserInfoController {
 
     @JwtAuth()
     @Get('profile')
-    getProfile(@Request() req) {
-        return req.user;
+    getProfile(@Request() req): UserProfileDto {
+        // Return the full user object with permissions and roles, excluding sensitive data
+        if (req.user && req.user.user) {
+            const userDoc = req.user.user.toObject ? req.user.user.toObject() : req.user.user;
+            const { password, _id, __v, ...userProfile } = userDoc;
+            
+            return {
+                ...userProfile,
+                userId: req.user.userId,
+                username: req.user.username
+            };
+        }
+        
+        // Fallback if user object is not properly populated
+        return {
+            id: req.user?.userId || '',
+            email: req.user?.username || '',
+            roles: [],
+            permissions: [],
+            isActive: true,
+            createdAt: new Date(),
+            lastLogin: new Date(),
+            userId: req.user?.userId,
+            username: req.user?.username
+        };
     }
 
     // Example: Only users with 'admin' role can access this endpoint

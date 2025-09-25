@@ -1,17 +1,14 @@
 import { useContext, useEffect, useRef, useState } from 'react';
-import { Stage, Layer, Circle, Line, Group, Image } from 'react-konva';
+import { Stage, Layer, Line } from 'react-konva';
 import { AddControlPoints } from 'utils/curve-tobezier/curve-to-bezier';
 import { offsetBezierPoints, Point, getBezierTangent, getEndDirection, pointOnCubicBezierSpline, calculateSegmentLengths } from 'utils/curve-tobezier/points-on-curve';
-import useImage from 'use-image';
-import image from 'assets/map2.png'
 import apiService from 'services/api.service';
 import { MapInfo, RacingSessionDetailedInfoDto } from 'data/live-analysis/live-analysis-type';
 import { AnalysisContext } from '../session-analysis';
 import LiveAnalysisSessionRecording from '../liveAnalysisSessionRecording';
 import { useEnvironment } from 'contexts/EnvironmentContext';
-import { ContextMenu, DropdownMenu, IconButton } from '@radix-ui/themes';
-import { Html } from 'react-konva-utils';
-import { PlusIcon } from '@radix-ui/react-icons';
+import { IconButton } from '@radix-ui/themes';
+import { ZoomInIcon, ZoomOutIcon } from '@radix-ui/react-icons';
 
 type RacingTurningPoint = {
     position: Point,
@@ -51,7 +48,12 @@ const SessionAnalysisMap = () => {
     const [racingLinePoints, setRacingLinePoints] = useState<RacingLinePoint[]>([]);
     const [racingLineBezierPoints, setRacingLineBezierPoints] = useState<BezierPoints[]>([]);
     const [iterations, setIterations] = useState<number>(10);
-    const [mapImage] = useImage(image);
+
+    // Camera/viewport control state
+    const [stagePos, setStagePos] = useState({ x: 0, y: 0 });
+    const [stageScale, setStageScale] = useState(1);
+    const stageRef = useRef<any>(null);
+
     // Reference to parent container
     const containerRef = useRef<HTMLInputElement>(null);
 
@@ -61,6 +63,18 @@ const SessionAnalysisMap = () => {
     useEffect(() => {
         updateSize();
         createInitialShapes();
+
+        // Add resize listener
+        const handleResize = () => {
+            updateSize();
+        };
+
+        window.addEventListener('resize', handleResize);
+
+        // Cleanup
+        return () => {
+            window.removeEventListener('resize', handleResize);
+        };
     }, []);
 
     //recalculate controlling position for bezier curve since the turning position changed
@@ -68,12 +82,56 @@ const SessionAnalysisMap = () => {
         calculateAndDrawTrack();
     }, [turningPoints]);
 
-
-    //after turning points updated, we can update the racing line in the next frame
+    // Center the track when bezier points are first calculated
     useEffect(() => {
-        calculateAndDrawRacingLine();
+        if (bezierPoints.length > 3) {
+            centerTrack();
+        }
+    }, [bezierPoints, stageSize]);
 
-    }, [bezierPoints]);
+    // Function to center the track in the viewport
+    const centerTrack = () => {
+        if (bezierPoints.length === 0 || !stageRef.current) return;
+
+        // Calculate bounding box of all track points
+        const points = extractBezierPointToPoint(bezierPoints);
+        if (points.length === 0) return;
+
+        let minX = points[0][0];
+        let maxX = points[0][0];
+        let minY = points[0][1];
+        let maxY = points[0][1];
+
+        points.forEach(point => {
+            minX = Math.min(minX, point[0]);
+            maxX = Math.max(maxX, point[0]);
+            minY = Math.min(minY, point[1]);
+            maxY = Math.max(maxY, point[1]);
+        });
+
+        // Calculate track center and dimensions
+        const trackCenterX = (minX + maxX) / 2;
+        const trackCenterY = (minY + maxY) / 2;
+        const trackWidth = maxX - minX;
+        const trackHeight = maxY - minY;
+
+        // Calculate scale to fit track in viewport with some padding
+        const padding = 0.1; // 10% padding
+        const availableWidth = stageSize.width * (1 - padding);
+        const availableHeight = stageSize.height * (1 - padding);
+        const scaleX = availableWidth / trackWidth;
+        const scaleY = availableHeight / trackHeight;
+        const scale = Math.min(scaleX, scaleY, 2); // Max scale of 2x
+
+        // Calculate position to center the track
+        const viewportCenterX = stageSize.width / 2;
+        const viewportCenterY = stageSize.height / 2;
+        const offsetX = viewportCenterX - (trackCenterX * scale);
+        const offsetY = viewportCenterY - (trackCenterY * scale);
+
+        setStageScale(scale);
+        setStagePos({ x: offsetX, y: offsetY });
+    };
 
     // Function to handle resize
     const updateSize = () => {
@@ -89,6 +147,45 @@ const SessionAnalysisMap = () => {
             height: containerHeight,
         });
     };
+
+    // Zoom and camera control functions
+    const handleZoomIn = () => {
+        const newScale = Math.min(stageScale * 1.2, 3); // Max zoom 3x
+        setStageScale(newScale);
+    };
+
+    const handleZoomOut = () => {
+        const newScale = Math.max(stageScale / 1.2, 0.1); // Min zoom 0.1x
+        setStageScale(newScale);
+    };
+
+    const handleStageDrag = (e: any) => {
+        setStagePos({
+            x: e.target.x(),
+            y: e.target.y(),
+        });
+    };
+
+    const handleWheel = (e: any) => {
+        e.evt.preventDefault();
+
+        const scaleBy = 1.05;
+        const stage = e.target.getStage();
+        const oldScale = stage.scaleX();
+        const mousePointTo = {
+            x: stage.getPointerPosition().x / oldScale - stage.x() / oldScale,
+            y: stage.getPointerPosition().y / oldScale - stage.y() / oldScale,
+        };
+
+        const newScale = e.evt.deltaY > 0 ? oldScale / scaleBy : oldScale * scaleBy;
+        const clampedScale = Math.max(0.1, Math.min(3, newScale));
+
+        setStageScale(clampedScale);
+        setStagePos({
+            x: -(mousePointTo.x - stage.getPointerPosition().x / clampedScale) * clampedScale,
+            y: -(mousePointTo.y - stage.getPointerPosition().y / clampedScale) * clampedScale,
+        });
+    }
 
     function createInitialShapes() {
 
@@ -106,8 +203,8 @@ const SessionAnalysisMap = () => {
         }).catch((e) => {
         });
 
-        if (analysisContext.sessionSelected?.id) {
-            apiService.post('/racing-session/detailedSessionInfo', { id: analysisContext.sessionSelected?.id }).then((result) => {
+        if (analysisContext.sessionSelected?.SessionId) {
+            apiService.post('/racing-session/detailedSessionInfo', { id: analysisContext.sessionSelected?.SessionId }).then((result) => {
                 const data = result.data as RacingSessionDetailedInfoDto;
                 analysisContext.setSession(data);
             }).catch((e) => {
@@ -116,52 +213,6 @@ const SessionAnalysisMap = () => {
 
 
     }
-
-
-
-    function handleDragMove(e: any, id: any) {
-        const target = e.target;
-
-        setTurningPoints(turningPoints.map((turningPoint: {
-            position: Point,
-            type: number,
-            index: number, //type and index are used together. some points are index sensitive
-            description?: string,
-            info?: string,
-            variables?: [{ key: string, value: string }]
-        }) => {
-            if (turningPoint.index !== id) return turningPoint;
-
-            let pointPosition: any[] = [e.target.x(), e.target.y()];
-
-            if (e.target.x() <= 0) {
-                pointPosition[0] = 0;
-            }
-            if (e.target.x() as number >= stageSize.width) {
-                pointPosition[0] = stageSize.width;
-            }
-
-            if (e.target.y() < 0) {
-                pointPosition[1] = 0;
-            }
-            if (e.target.y() as number >= stageSize.height) {
-                pointPosition[1] = stageSize.height;
-            }
-
-            //set position. for some reason, position wont set again at boundary, this fix it temporarily
-            e.target.absolutePosition({
-                x: pointPosition[0],
-                y: pointPosition[1]
-            });
-
-            return { ...turningPoint, position: [pointPosition[0], pointPosition[1]] }
-
-        }));
-    }
-
-    const handleDragEnd = (e: any, id: any) => {
-
-    };
 
     function calculateAndDrawRacingLine() {
 
@@ -270,37 +321,6 @@ const SessionAnalysisMap = () => {
     }
 
     /**
-    * Appends a new point continuing the spline's end direction
-    */
-    function AddPointInDirection() {
-        if (bezierPoints.length < 4) {
-            return;
-        }
-
-        const points = extractBezierPointToPoint(bezierPoints);
-        const lastPoint = points[points.length - 1];
-        const direction = getEndDirection(points);
-        const distance = 50
-        // Normalize direction vector
-        const dirLength = Math.sqrt(direction[0] ** 2 + direction[1] ** 2);
-        const normalizedDir: Point = [
-            direction[0] / dirLength,
-            direction[1] / dirLength
-        ];
-
-        const newP = {
-            position: [
-                lastPoint[0] + normalizedDir[0] * distance,
-                lastPoint[1] + normalizedDir[1] * distance
-            ],
-            type: 0,
-            index: turningPoints.length //type and index are used together. some points are index sensitive
-        } as RacingTurningPoint;
-        // Return new array with added points (maintaining cubic Bézier requirements)
-        return setTurningPoints([...turningPoints, newP]);
-    }
-
-    /**
      * using the 'turningPoints' and calculate the left and right curbs
      * @returns 
      */
@@ -374,109 +394,99 @@ const SessionAnalysisMap = () => {
         }
     }
 
-    function deleteTurningPoint(index: number) {
-        if (turningPoints.length <= 4) return;
-        setTurningPoints(prevState => {
-            return prevState.filter(task => task.index !== index)
-        })
-    }
-
     return (
+        <div ref={containerRef} style={{ width: '100%', height: '100%', position: 'relative' }}>
+            {/* Zoom Controls */}
+            <div style={{
+                position: 'absolute',
+                top: '16px',
+                right: '16px',
+                zIndex: 1000,
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '8px'
+            }}>
+                <IconButton
+                    onClick={handleZoomIn}
+                    size="3"
+                    variant="outline"
+                    style={{
+                        backgroundColor: 'white',
+                        cursor: 'pointer'
+                    }}
+                    title="Zoom In"
+                >
+                    <ZoomInIcon />
+                </IconButton>
+                <IconButton
+                    onClick={handleZoomOut}
+                    size="3"
+                    variant="outline"
+                    style={{
+                        backgroundColor: 'white',
+                        cursor: 'pointer'
+                    }}
+                    title="Zoom Out"
+                >
+                    <ZoomOutIcon />
+                </IconButton>
+            </div>
 
-        <div ref={containerRef} style={{ width: '100%', height: '90%' }}>
-            <ContextMenu.Root>
-                <ContextMenu.Trigger>
-                    <div>
+            <Stage
+                width={stageSize.width}
+                height={stageSize.height}
+                ref={stageRef}
+                scaleX={stageScale}
+                scaleY={stageScale}
+                x={stagePos.x}
+                y={stagePos.y}
+                draggable={true}
+                onDragEnd={handleStageDrag}
+                onWheel={handleWheel}
+            >
+                <Layer>
+                    {/* Racing Track Lines */}
+                    {bezierPoints.length > 3 && (
+                        <>
+                            {/* Track Shadow/Border for depth */}
+                            <Line
+                                points={exportPointsForDrawing(extractBezierPointToPoint(bezierPoints))}
+                                stroke="#1a1a1a"
+                                strokeWidth={32}
+                                bezier={true}
+                                lineCap="round"
+                                lineJoin="round"
+                                shadowColor="#000000"
+                                shadowBlur={8}
+                                shadowOffset={{ x: 2, y: 2 }}
+                                shadowOpacity={0.3}
+                            />
 
-                        <Stage width={stageSize.width} height={stageSize.height} >
-                            <Layer>
+                            {/* Main Track Surface */}
+                            <Line
+                                points={exportPointsForDrawing(extractBezierPointToPoint(bezierPoints))}
+                                stroke="#404040"
+                                strokeWidth={28}
+                                bezier={true}
+                                lineCap="round"
+                                lineJoin="round"
+                            />
 
-                                {/* 
-                                <Image
-                                    x={0}
-                                    y={0}
-                                    image={mapImage}
-                                    scaleX={3}
-                                    scaleY={3}
-                                />
-                                <Line
-                                    points={exportPointsForDrawing(extractBezierPointToPoint(leftCurbBezierPoints))}
-                                    stroke="red" strokeWidth={2} bezier={true}
-                                />
-                                <Line
-                                    points={exportPointsForDrawing(extractBezierPointToPoint(rightCurbBezierPoints))}
-                                    stroke="red" strokeWidth={2} bezier={true}
-                                />
-                               
-                               
-                                 */}
-
-                                <Line
-                                    points={exportPointsForDrawing(extractBezierPointToPoint(bezierPoints))}
-                                    stroke="red" strokeWidth={25} bezier={true}
-                                />
-                                {
-
-                                    turningPoints.map((
-                                        turningPoint: {
-                                            position: Point,
-                                            type: number,
-                                            index: number, //type and index are used together. some points are index sensitive
-                                            description?: string,
-                                            info?: string,
-                                            variables?: [{ key: string, value: string }]
-                                        }) => (
-
-                                        <Group
-                                            key={turningPoint.index} id={`group-${turningPoint.index}`} x={turningPoint.position[0]} y={turningPoint.position[1]} draggable
-                                            onDragMove={(e) => handleDragMove(e, turningPoint.index)}
-                                            onDragEnd={(e) => handleDragEnd(e, turningPoint.index)}>
-                                            <Circle key={turningPoint.index} radius={10} fill={"green"} name={turningPoint.index.toString()} />
-                                            <Html>
-                                                <DropdownMenu.Root>
-                                                    <DropdownMenu.Trigger>
-                                                        <IconButton>
-                                                            <PlusIcon />
-                                                        </IconButton>
-                                                    </DropdownMenu.Trigger>
-                                                    <DropdownMenu.Content>
-                                                        <DropdownMenu.Separator />
-                                                        <DropdownMenu.Item color="red" onSelect={() => deleteTurningPoint(turningPoint.index)}>
-                                                            Delete
-                                                        </DropdownMenu.Item>
-                                                    </DropdownMenu.Content>
-                                                </DropdownMenu.Root>
-
-                                            </Html>
-                                        </Group>
-                                    ))}
-
-                                <Line
-                                    points={exportPointsForDrawing(extractBezierPointToPoint(racingLineBezierPoints))}
-                                    stroke="green" strokeWidth={2} bezier={true} closed={true}
-                                />
-
-                                <Circle
-                                    x={pointOnCubicBezierSpline(extractBezierPointToPoint(bezierPoints), segmentLengths, analysisContext.liveData?.Graphics?.normalized_car_position)[0]}
-                                    y={pointOnCubicBezierSpline(extractBezierPointToPoint(bezierPoints), segmentLengths, analysisContext.liveData?.Graphics?.normalized_car_position)[1]}
-                                    radius={15}
-                                    fill="purple"
-                                />
-                                {/* 
-                    {racingLinePoints.map((position: { id: Key, position: Point }) => (
-                        <Circle
-                            key={position.id} x={position.position[0]} y={position.position[1]} radius={10} fill={"blue"} name={position.id.toString()}
-                        />
-                    ))}
-                    */}
-                            </Layer>
-                        </Stage>
-                    </div>
-                </ContextMenu.Trigger>
-                <ContextMenu.Content size="1">
-                    <ContextMenu.Item onClick={AddPointInDirection}>Add a new turning point</ContextMenu.Item>
-                </ContextMenu.Content>
-            </ContextMenu.Root>
+                            {/* Center Line Dashes */}
+                            <Line
+                                points={exportPointsForDrawing(extractBezierPointToPoint(bezierPoints))}
+                                stroke="#ffffff"
+                                strokeWidth={2}
+                                bezier={true}
+                                lineCap="round"
+                                lineJoin="round"
+                                dash={[8, 12]}
+                                opacity={0.8}
+                            />
+                        </>
+                    )}
+                </Layer>
+            </Stage>
         </div>
     );
 
