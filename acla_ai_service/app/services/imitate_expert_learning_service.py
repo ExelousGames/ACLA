@@ -894,8 +894,7 @@ class ExpertImitateLearningService:
         print(f"[INFO] Using segment_length={segment_length}, improvement_threshold={improvement_threshold}")
         
         if len(telemetry_data) < segment_length * 2:
-            print(f"[WARNING] Insufficient data for segment analysis. Need at least {segment_length * 2} records, got {len(telemetry_data)}")
-            return [telemetry_data]  # Return original data as single segment if insufficient for analysis
+            raise ValueError(f"[WARNING] Insufficient data for segment analysis. Need at least {segment_length * 2} records, got {len(telemetry_data)}")
         
         # Get context feature names from enum
         ContextFeature = ExpertFeatureCatalog.ContextFeature
@@ -913,9 +912,7 @@ class ExpertImitateLearningService:
         first_record = telemetry_data[0]
         missing_features = [f for f in required_features if f not in first_record]
         if missing_features:
-            print(f"[ERROR] Missing required context features: {missing_features}")
-            print(f"[ERROR] Available features: {list(first_record.keys())}")
-            return [telemetry_data]  # Return original data as single segment if features missing
+            raise ValueError(f"[ERROR] Missing required context features: {missing_features}, available: {list(first_record.keys())}")
         
         print(f"[INFO] Found all required context features: {required_features}")
         
@@ -927,15 +924,17 @@ class ExpertImitateLearningService:
 
         # Create segments and analyze improvement trends
         optimal_segments = []
+        # Calculate total segments ensuring each has exactly segment_length
         total_segments = (len(df) - segment_length) // (segment_length // 2) + 1  # Overlapping segments
         
         print(f"[INFO] Analyzing {total_segments} potential segments...")
         
         for start_idx in range(0, len(df) - segment_length + 1, segment_length // 2):  # 50% overlap
-            end_idx = min(start_idx + segment_length, len(df))
+            end_idx = start_idx + segment_length  # Fixed length, no min() to ensure exact segment_length
             segment = df.iloc[start_idx:end_idx].copy()
             
-            if len(segment) < segment_length:
+            # Ensure segment has exactly the required length
+            if len(segment) != segment_length:
                 continue
                 
             # Analyze improvement trends for each context feature
@@ -954,8 +953,14 @@ class ExpertImitateLearningService:
         # Ensure we have minimum required segments
         if len(optimal_segments) < min_segments:
             print(f"[WARNING] Found only {len(optimal_segments)} optimal segments, below minimum of {min_segments}")
-            print(f"[WARNING] Returning original data as single segment to ensure sufficient training data")
-            return [telemetry_data]
+            print(f"[WARNING] Creating non-overlapping segments of exact length from original data")
+            # Create non-overlapping segments of exact segment_length from original data
+            fallback_segments = []
+            for i in range(0, len(telemetry_data) - segment_length + 1, segment_length):
+                segment = telemetry_data[i:i + segment_length]
+                if len(segment) == segment_length:
+                    fallback_segments.append(segment)
+            return fallback_segments if fallback_segments else []
         
         return optimal_segments
     
