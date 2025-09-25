@@ -54,7 +54,7 @@ class ExpertFeatureCatalog:
         # Velocity direction alignment with expert
         EXPERT_VELOCITY_ALIGNMENT = 'expert_velocity_alignment' # 1.0 if moving in the expert velocity direction, 0.0 opposite direction
         SPEED_DIFFERENCE = 'speed_difference' # Difference between current speed and expert optimal speed (km/h)
-        DISTANCE_TO_EXPERT_LINE = 'distance_to_expert_line' # Lateral distance to expert racing line (meters), -negative is left, +positive is right
+        DISTANCE_TO_EXPERT_LINE = 'distance_to_expert_line' # distance between current position and expert optimal racing line (meters)
     
     class TrajectoryFeature(str, Enum):
         TRACK_POSITION = 'track_position'
@@ -862,7 +862,7 @@ class ExpertImitateLearningService:
                         row_features[ContextFeature.SPEED_DIFFERENCE.value] = float(speed_difference)
 
                         # Calculate distance to expert line (negative if off to left, positive if off to right)
-                        distance_to_expert_line = row_predictions.get(EO.EXPERT_OPTIMAL_PLAYER_POS_X.value, 0.0) - current_row.get('Graphics_player_pos_x', 0.0)
+                        distance_to_expert_line = np.sqrt((row_predictions.get(EO.EXPERT_OPTIMAL_PLAYER_POS_X.value, 0.0) - current_row.get('Graphics_player_pos_x', 0.0))**2 + (row_predictions.get(EO.EXPERT_OPTIMAL_PLAYER_POS_Y.value, 0.0) - current_row.get('Graphics_player_pos_y', 0.0))**2)    
                         row_features[ContextFeature.DISTANCE_TO_EXPERT_LINE.value] = float(distance_to_expert_line)
 
                     except Exception as _e:
@@ -876,16 +876,172 @@ class ExpertImitateLearningService:
         print(f"[INFO] Completed expert state extraction. Extracted features for {len(expert_feature_rows)} records")
         return expert_feature_rows
     
-    def filter_optimal_telemetry_segments(self):
+    def filter_optimal_telemetry_segments(self, telemetry_data: List[Dict[str, Any]], 
+                                         segment_length: int = 20, 
+                                         improvement_threshold: float = 0.7,
+                                         min_segments: int = 5) -> List[Dict[str, Any]]:
         """
-        Placeholder for filtering telemetry segments to only those with consistent improving towards expert behavior
+        Filter telemetry data to only those segments with consistent improvement rate towards expert behavior.
+        Uses ContextFeature enum values to identify segments where the driver is progressively 
+        getting closer to expert performance.
 
-        
+        Args:
+            telemetry_data: List of telemetry records containing ContextFeature values
+            segment_length: Length of each segment to analyze for improvement trends
+            improvement_threshold: Fraction of metrics that must show improvement (0.0-1.0)
+            min_segments: Minimum number of segments required to return results
+            
         Returns:
-            None
+            List[Dict[str, Any]]: Filtered telemetry data containing only improving segments
         """
-        print("[INFO] Filtering optimal telemetry segments - Not yet implemented")
-        pass
+        
+        print(f"[INFO] Filtering optimal telemetry segments from {len(telemetry_data)} records...")
+        print(f"[INFO] Using segment_length={segment_length}, improvement_threshold={improvement_threshold}")
+        
+        if len(telemetry_data) < segment_length * 2:
+            print(f"[WARNING] Insufficient data for segment analysis. Need at least {segment_length * 2} records, got {len(telemetry_data)}")
+            return telemetry_data  # Return original data if insufficient for analysis
+        
+        # Get context feature names from enum
+        ContextFeature = ExpertFeatureCatalog.ContextFeature
+        required_features = [
+            ContextFeature.EXPERT_VELOCITY_ALIGNMENT.value,
+            ContextFeature.SPEED_DIFFERENCE.value,
+            ContextFeature.DISTANCE_TO_EXPERT_LINE.value
+        ]
+        
+        # Validate that required features exist in data
+        if not telemetry_data:
+            print("[WARNING] Empty telemetry data provided")
+            return []
+            
+        first_record = telemetry_data[0]
+        missing_features = [f for f in required_features if f not in first_record]
+        if missing_features:
+            print(f"[ERROR] Missing required context features: {missing_features}")
+            print(f"[ERROR] Available features: {list(first_record.keys())}")
+            return telemetry_data  # Return original data if features missing
+        
+        print(f"[INFO] Found all required context features: {required_features}")
+        
+        # Convert to DataFrame for easier analysis
+        try:
+            df = pd.DataFrame(telemetry_data)
+        except Exception as e:
+            print(f"[ERROR] Failed to convert telemetry data to DataFrame: {e}")
+            return telemetry_data
+        
+        # Create segments and analyze improvement trends
+        optimal_segments = []
+        total_segments = (len(df) - segment_length) // (segment_length // 2) + 1  # Overlapping segments
+        
+        print(f"[INFO] Analyzing {total_segments} potential segments...")
+        
+        for start_idx in range(0, len(df) - segment_length + 1, segment_length // 2):  # 50% overlap
+            end_idx = min(start_idx + segment_length, len(df))
+            segment = df.iloc[start_idx:end_idx].copy()
+            
+            if len(segment) < segment_length:
+                continue
+                
+            # Analyze improvement trends for each context feature
+            improvement_scores = self._analyze_segment_improvement(segment, required_features)
+            
+            # Check if segment meets improvement threshold
+            if improvement_scores['overall_improvement_rate'] >= improvement_threshold:
+                segment_dict = segment.to_dict('records')
+                optimal_segments.extend(segment_dict)
+                print(f"[INFO] Added improving segment {start_idx}-{end_idx} (improvement rate: {improvement_scores['overall_improvement_rate']:.2f})")
+        
+        # Remove duplicates while preserving order
+        seen_indices = set()
+        unique_optimal_records = []
+        
+        for record in optimal_segments:
+            # Create a simple hash based on position and time to identify duplicates
+            record_hash = hash((
+                record.get('Graphics_normalized_car_position', 0),
+                record.get('Graphics_current_time', 0),
+                record.get('Physics_speed_kmh', 0)
+            ))
+            
+            if record_hash not in seen_indices:
+                seen_indices.add(record_hash)
+                unique_optimal_records.append(record)
+        
+        print(f"[INFO] Filtered segments analysis complete:")
+        print(f"[INFO] - Original records: {len(telemetry_data)}")
+        print(f"[INFO] - Optimal segments found: {len(optimal_segments)}")
+        print(f"[INFO] - Unique optimal records: {len(unique_optimal_records)}")
+        
+        # Ensure we have minimum required segments
+        if len(unique_optimal_records) < min_segments:
+            print(f"[WARNING] Found only {len(unique_optimal_records)} optimal records, below minimum of {min_segments}")
+            print(f"[WARNING] Returning original data to ensure sufficient training data")
+            return telemetry_data
+        
+        return unique_optimal_records
+    
+    def _analyze_segment_improvement(self, segment: pd.DataFrame, required_features: List[str]) -> Dict[str, float]:
+        """
+        Analyze improvement trends within a telemetry segment
+        
+        Args:
+            segment: DataFrame containing telemetry segment
+            required_features: List of context feature names to analyze
+            
+        Returns:
+            Dictionary with improvement analysis results
+        """
+        ContextFeature = ExpertFeatureCatalog.ContextFeature
+        improvement_metrics = {}
+        
+        try:
+            # Analyze expert_velocity_alignment - should increase toward 1.0
+            velocity_alignment = segment[ContextFeature.EXPERT_VELOCITY_ALIGNMENT.value].values
+            if len(velocity_alignment) > 1:
+                velocity_trend = np.polyfit(range(len(velocity_alignment)), velocity_alignment, 1)[0]
+                improvement_metrics['velocity_alignment_improving'] = velocity_trend > 0  # Should be increasing
+            else:
+                improvement_metrics['velocity_alignment_improving'] = False
+            
+            # Analyze speed_difference - absolute value should decrease (getting closer to expert)
+            speed_diff = segment[ContextFeature.SPEED_DIFFERENCE.value].values
+            if len(speed_diff) > 1:
+                abs_speed_diff = np.abs(speed_diff)
+                speed_trend = np.polyfit(range(len(abs_speed_diff)), abs_speed_diff, 1)[0]
+                improvement_metrics['speed_difference_improving'] = speed_trend < 0  # Should be decreasing
+            else:
+                improvement_metrics['speed_difference_improving'] = False
+            
+            # Analyze distance_to_expert_line - should decrease (getting closer to racing line)
+            distance_to_line = segment[ContextFeature.DISTANCE_TO_EXPERT_LINE.value].values
+            if len(distance_to_line) > 1:
+                distance_trend = np.polyfit(range(len(distance_to_line)), distance_to_line, 1)[0]
+                improvement_metrics['distance_to_line_improving'] = distance_trend < 0  # Should be decreasing
+            else:
+                improvement_metrics['distance_to_line_improving'] = False
+            
+            # Calculate overall improvement rate
+            improving_count = sum(improvement_metrics.values())
+            total_metrics = len(improvement_metrics)
+            improvement_metrics['overall_improvement_rate'] = improving_count / total_metrics if total_metrics > 0 else 0.0
+            
+            # Add detailed trend values for debugging
+            improvement_metrics['velocity_alignment_trend'] = velocity_trend if 'velocity_trend' in locals() else 0.0
+            improvement_metrics['speed_difference_trend'] = speed_trend if 'speed_trend' in locals() else 0.0  
+            improvement_metrics['distance_to_line_trend'] = distance_trend if 'distance_trend' in locals() else 0.0
+            
+        except Exception as e:
+            print(f"[WARNING] Error analyzing segment improvement: {e}")
+            improvement_metrics = {
+                'velocity_alignment_improving': False,
+                'speed_difference_improving': False, 
+                'distance_to_line_improving': False,
+                'overall_improvement_rate': 0.0
+            }
+        
+        return improvement_metrics
     def serialize_learning_model(self) -> Dict[str, Any]:
         """
         Serialize the current trained models stored in the position learner
