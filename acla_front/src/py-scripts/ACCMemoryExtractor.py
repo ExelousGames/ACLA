@@ -6,22 +6,27 @@ import os
 from util.json_utils import DataclassJSONUtility
 from util.clean_encode import cleanEncoding
 import sys
+import enum 
 
 recordedData = []
 
 class ACCRecording:
-    def __init__(self):
+    def __init__(self, target_fps: int = 60):
         self.asm = accSharedMemory()
+        self.target_fps = target_fps if target_fps > 0 else 60
+        self._frame_delay = 1.0 / float(self.target_fps)
         return
 
     def startRecording(self,full_path):
         sm = self.asm.read_shared_memory()
         if  (sm is not None):
             #record once to clean or create the file
-            self.write_object_to_csv(sm,full_path)
+            #self.write_object_to_csv(sm,full_path)
             #start to record the session
             my_scheduler = sched.scheduler(time.time, time.sleep)
-            my_scheduler.enter(0.1, 1, self.recordOnce, (my_scheduler,full_path))
+            # 60 FPS = 1/60 seconds delay between calls
+
+            my_scheduler.enter(self._frame_delay, 1, self.recordOnce, (my_scheduler,full_path))
             my_scheduler.run()
             
         else:
@@ -31,12 +36,14 @@ class ACCRecording:
         sm = self.asm.read_shared_memory()
         if  (sm is not None):
             # schedule the next call first
-            scheduler.enter(1, 1, self.recordOnce, (scheduler,full_path))
+            scheduler.enter(self._frame_delay, 1, self.recordOnce, (scheduler,full_path))
 
-            self.append_object_to_csv(sm,full_path)
+            flattened = self.flatten_object(sm)
+            
+            #self.append_object_to_csv(flattened,full_path)
 
             # !!!!!! must keep this to communicate with frontend
-            print(DataclassJSONUtility.to_json(sm, indent=2).rstrip())
+            print(DataclassJSONUtility.to_json(flattened, indent=2).rstrip())
         else:
             self.asm.close()
 
@@ -57,11 +64,14 @@ class ACCRecording:
                 # Skip private attributes
                 if key.startswith('_'):
                     continue
-                    
                 full_key = f"{prefix}{key}" if prefix else key
                 
+                if isinstance(value, enum.Enum):
+                    valueFixed = cleanEncoding(value.value)
+                    if not self.is_blank(valueFixed):
+                        flattened[full_key] = valueFixed
                 # Handle nested objects recursively
-                if hasattr(value, '__dict__'):
+                elif hasattr(value, '__dict__'):
                     nested_flattened = self.flatten_object(value, prefix=f"{full_key}_")
                     flattened.update(nested_flattened)
                 # Handle basic types
@@ -87,9 +97,8 @@ class ACCRecording:
             flattened_objects = []
             
    
-            flattened = self.flatten_object(object)
-            flattened_objects.append(flattened)
-            all_fieldnames.update(flattened.keys())
+            flattened_objects.append(object)
+            all_fieldnames.update(object.keys())
             
             
             with open(filename, 'a', newline='', encoding='utf-8') as csvfile:
@@ -101,8 +110,8 @@ class ACCRecording:
                 )
                 
                 
-                for flattened in flattened_objects:
-                    writer.writerow(flattened)
+                for object in flattened_objects:
+                    writer.writerow(object)
     
     def write_object_to_csv(self, objects: Any, filename: str, write_header: bool = True) -> None:
             """

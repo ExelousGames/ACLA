@@ -34,11 +34,11 @@ const UserProfile = () => {
             setFormData({
                 firstName: auth.userProfile.firstName || '',
                 lastName: auth.userProfile.lastName || '',
-                email: auth.userProfile.email || auth.user || '',
+                email: auth.userProfile.email || auth.userEmail || '',
                 username: auth.userProfile.username || ''
             });
         }
-    }, [auth?.userProfile, auth?.user]);
+    }, [auth?.userProfile, auth?.userEmail]);
 
     const handleInputChange = (field: string, value: string) => {
         setFormData(prev => ({
@@ -59,7 +59,7 @@ const UserProfile = () => {
             setFormData({
                 firstName: auth.userProfile.firstName || '',
                 lastName: auth.userProfile.lastName || '',
-                email: auth.userProfile.email || auth.user || '',
+                email: auth.userProfile.email || auth.userEmail || '',
                 username: auth.userProfile.username || ''
             });
         }

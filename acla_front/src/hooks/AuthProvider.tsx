@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import apiService from 'services/api.service';
 
 interface AuthContextType {
-    user: string;
+    userEmail: string;
     token: string | null;
     userProfile: any | null;
     login: (data: { email: string; password: string }) => Promise<void>;
@@ -23,7 +23,6 @@ const AuthProvider = ({ children }: { children: ReactNode }) => {
 
     const [userEmail, setUserEmail] = useState('');
     const [token, setToken] = useState(localStorage.getItem("token") || "");
-
     const [userProfile, setUserProfile] = useState<any>(null);
     const navigate = useNavigate();
 
@@ -40,22 +39,22 @@ const AuthProvider = ({ children }: { children: ReactNode }) => {
     useEffect(() => {
         const token = localStorage.getItem("token");
         const username = localStorage.getItem("username");
-        if (!token || !username) {
+        const userId = localStorage.getItem("userId");
+        if (!token || !username || !userId) {
             logout();
             return
         }
         setToken(token);
         setUserEmail(username);
-
         // Fetch user profile with permissions
         fetchUserProfile();
     }, []);
 
-    //handles user login by sending a POST request to an authentication endpoint, 
-    // updating the user and token state upon a successful response, and storing the token in local storage.
+    // handles user login by sending a POST request to an authentication endpoint, 
+    //  updating the user and token state upon a successful response, and storing the token in local storage.
     const login = async (data: any) => {
         try {
-            const response = await apiService.post<{ access_token: string }>('/userinfo/auth/login', data);
+            const response = await apiService.post<{ access_token: string, userId: string }>('/userinfo/auth/login', data);
 
             if (response) {
                 let tokentemp: string = response.data.access_token;
@@ -119,7 +118,7 @@ const AuthProvider = ({ children }: { children: ReactNode }) => {
     //use Context Provider to wrap the tree of components that need this context
     return <AuthContext.Provider value={{
         token,
-        user: userEmail,
+        userEmail: userEmail,
         userProfile,
         login,
         logout,
