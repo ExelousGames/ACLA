@@ -364,8 +364,7 @@ class TireGripAnalysisService:
             return self
             
         except Exception as e:
-            error_msg = f"Failed to deserialize tire grip analysis model: {str(e)}"
-            print(f"[ERROR] {error_msg}")
+            error_msg = f"{__class__.__name__} Failed to deserialize tire grip analysis model: {str(e)}"
             raise RuntimeError(error_msg) from e
 
 # Create singleton instance for import

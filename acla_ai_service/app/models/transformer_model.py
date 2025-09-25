@@ -364,89 +364,67 @@ class ExpertActionTransformer(nn.Module):
                 telemetry: torch.Tensor,
                 context: Optional[torch.Tensor] = None, 
                 target_actions: Optional[torch.Tensor] = None,
-                target_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+                target_mask: Optional[torch.Tensor] = None,
+                segment_length: Optional[int] = None) -> torch.Tensor:
         """
-        Forward pass - Non-Expert Driver Progression Learning Pipeline
+        Forward pass - Segmented Non-Expert Driver Progression Learning Pipeline
         
-        This method implements the complete forward pass through the transformer model,
-        transforming non-expert telemetry and enriched context into predicted non-expert 
-        action sequences that show progression toward expert performance over time.
+        This method processes variable-length segments of telemetry data where each segment
+        represents a coherent effort to improve toward expert performance. The model
+        handles segments of different lengths and learns progression patterns within
+        each improvement attempt.
         
-        CRITICAL UNDERSTANDING:
-        The model does NOT predict what an expert would do. Instead, it predicts what 
-        the non-expert driver should do next as they progressively improve toward expert 
-        performance. Expert targets are provided as contextual guidance within the 
-        enriched context data.
+        SEGMENTED PROCESSING APPROACH:
+        Unlike traditional fixed-length sequence processing, this model handles:
+        - Variable-length segments (10-200+ timesteps per segment)
+        - Each segment represents a complete improvement effort
+        - Segments are processed independently during training
+        - Dynamic sequence handling with proper masking
         
-        ADAPTIVE TRAINING APPROACH - TEACHER FORCING + AUTOREGRESSIVE:
-        This implementation uses different strategies for training vs inference:
+        ARCHITECTURAL FLOW FOR SEGMENTS:
         
-        - TRAINING: Uses teacher forcing with target actions for fast, stable training
-          * Target actions (ground truth) are fed as decoder input
-          * Enables parallel processing of entire sequences
-          * Contextual weighted loss guides learning toward high-quality examples
-          * Much faster than autoregressive generation during training
+        Step 1: DYNAMIC INPUT HANDLING
+        - Accept variable-length telemetry and context tensors
+        - Handle single segments during training (batch_size=1, variable seq_len)
+        - Maintain consistent feature dimensions across segments
         
-        - INFERENCE: Uses autoregressive generation for realistic prediction
-          * Generates actions step-by-step using own predictions
-          * Simulates real-time decision making process
-          * Same behavior as actual deployment scenario
+        Step 2: EMBEDDING LAYER
+        - Non-expert telemetry features → high-dimensional space (d_model)
+        - Enriched context features → same space (d_model)
+        - Variable sequence lengths handled dynamically
         
-        ARCHITECTURAL FLOW:
+        Step 3: FEATURE FUSION
+        - Combines telemetry + context for each timestep in segment
+        - Creates unified representation for the entire improvement effort
+        - Maintains temporal relationships within the segment
         
-        Step 1: EMBEDDING LAYER
-        - Non-expert telemetry features (42-dim) → high-dimensional space (256-dim)
-        - Enriched context features (31-dim) → same space (256-dim)
-        - Creates rich feature representations for transformer processing
+        Step 4: POSITIONAL ENCODING
+        - Applies positional encoding up to actual segment length
+        - Handles variable lengths without padding artifacts
+        - Preserves temporal order within each improvement attempt
         
-        Step 2: FEATURE FUSION
-        - Combines non-expert telemetry + enriched context (expert targets, gap features, track info)
-        - Allows model to correlate current non-expert state with improvement targets
-        - Gap-aware signals help the model understand how to improve over time
-        - Creates unified input representation for encoder
-        
-        Step 3: POSITIONAL ENCODING
-        - Injects sequence position information into embeddings
-        - Critical for understanding temporal order in racing telemetry
-        - Enables model to distinguish "brake before corner" vs "accelerate after corner"
-        
-        Step 4: TRANSFORMER ENCODER
-        - Processes current driver state through multi-head attention
-        - Each attention head focuses on different aspects (speed, position, forces)
-        - Creates contextualized representation of current racing situation
-        - Output "memory" contains encoded understanding of current state
-        
-        Step 5: DECODER (MODE-DEPENDENT)
-        TRAINING MODE: Teacher forcing with target actions
-        - Uses target actions as decoder input for parallel processing
-        - Applies causal masking to prevent future information leakage
-        - Fast and stable training with proper gradient flow
-        
-        INFERENCE MODE: Autoregressive generation
-        - Starts with zero/start token, generates actions sequentially
-        - Each predicted action becomes input for next prediction
-        - Simulates real-time decision making process
-        
-        Step 6: ACTION PROJECTION
-        - Maps high-dimensional decoder output back to action space
-        - 256-dim → 4-dim: [gas, brake, steer_angle, gear]
+        Step 5: TRANSFORMER PROCESSING
+        - Encoder processes the complete segment context
+        - Decoder generates action sequences for the segment
+        - Uses segment-specific sequence length for generation
         
         Args:
             telemetry: Non-expert telemetry features [batch_size, seq_len, input_features]
-                      Contains non-expert driver's current state: speed, position, forces, actions, etc.
-            context: Enriched contextual features [batch_size, seq_len, context_features] 
-                    Contains expert targets, gap features, track info, environmental conditions
-            target_actions: Non-expert's target action sequences for training [batch_size, seq_len, action_features]
-                          The non-expert's actual improved actions for supervised learning
-            target_mask: Mask for target sequence [batch_size, seq_len]
-                        Currently unused, reserved for variable-length sequences
+                      (typically batch_size=1 for single segment processing)
+            context: Enriched contextual features [batch_size, seq_len, context_features]
+            target_actions: Target action sequences [batch_size, seq_len, action_features]
+            target_mask: Optional mask for variable-length sequences
+            segment_length: Length of the current segment being processed
             
         Returns:
             Predicted action sequence [batch_size, seq_len, action_features]
-            Non-expert's predicted improved actions as they progress toward expert performance
+            Where seq_len matches the input segment length
         """
         batch_size = telemetry.shape[0]
         seq_len = telemetry.shape[1]
+        
+        # Use provided segment_length or infer from input
+        actual_seq_len = segment_length if segment_length is not None else seq_len
         
         # Embed telemetry
         telemetry_embedded = self.telemetry_embedding(telemetry)  # [B, L, d_model]
@@ -459,7 +437,7 @@ class ExpertActionTransformer(nn.Module):
         else:
             encoder_input = telemetry_embedded
         
-        # Add positional encoding
+        # Apply positional encoding only up to actual sequence length
         encoder_input = self.pos_encoding(encoder_input)
         
         # Encode current state
@@ -473,7 +451,7 @@ class ExpertActionTransformer(nn.Module):
             return decoder_output
         else:
             # INFERENCE MODE: Use autoregressive generation for realistic prediction
-            decoder_output = self._generate_actions_autoregressive(memory, seq_len)
+            decoder_output = self._generate_actions_autoregressive(memory, actual_seq_len)
             # During inference, apply inverse scaling to get original action values
             unscaled_output = self._apply_action_inverse_scaling(decoder_output)
             return unscaled_output
@@ -897,67 +875,39 @@ class ExpertActionTransformer(nn.Module):
         
         return predictions
     
-    def predict_non_expert_progression_sequence(self, 
-                               telemetry: torch.Tensor,
-                               context: Optional[torch.Tensor] = None,
-                               sequence_length: Optional[int] = None,
-                               temperature: float = 1.0,
-                               deterministic: bool = False) -> torch.Tensor:
+    def predict_segment_progression(self, 
+                                  telemetry: torch.Tensor,
+                                  context: Optional[torch.Tensor] = None,
+                                  temperature: float = 1.0,
+                                  deterministic: bool = False) -> torch.Tensor:
         """
-        Predict a sequence of non-expert driver actions showing progression toward expert performance
+        Predict progression actions for a complete segment
         
-        IMPORTANT: This method predicts what the NON-EXPERT driver should do next as they 
-        progressively improve, NOT what an expert would do. Expert targets are provided 
-        in the context to guide the improvement direction.
+        This method processes a variable-length segment and predicts the non-expert
+        driver's improved actions throughout that segment. Each segment represents
+        a coherent improvement effort (e.g., a corner approach, lap section).
         
         Args:
-            telemetry: Non-expert telemetry features [batch_size, input_seq_len, input_features]
-            context: Enriched contextual features [batch_size, input_seq_len, context_features]
-                     Must include expert targets and delta-to-expert features to guide improvement.
-            sequence_length: Length of action sequence to predict (default: self.sequence_length)
-            temperature: Temperature for sampling (higher = more random)
-            deterministic: If True, use greedy decoding instead of sampling
+            telemetry: Non-expert telemetry features [batch_size, segment_len, input_features]
+            context: Enriched contextual features [batch_size, segment_len, context_features]
+                     Contains expert targets and gap features to guide improvement
+            temperature: Temperature for sampling (higher = more random) - currently unused
+            deterministic: If True, use greedy decoding instead of sampling - currently unused
             
         Returns:
-            Predicted non-expert progression sequence [batch_size, sequence_length, action_features]
-            Shows how the non-expert driver should improve their actions over time
+            Predicted segment progression [batch_size, segment_len, action_features]
+            Shows improved non-expert actions throughout the segment
         """
         self.eval()
-        if sequence_length is None:
-            sequence_length = self.sequence_length
+        segment_length = telemetry.shape[1]
             
         with torch.no_grad():
-            use_cuda = telemetry.is_cuda or (hasattr(torch, 'cuda') and torch.cuda.is_available())
-            # Use float16 for better compatibility
-            amp_dtype = torch.float16 if use_cuda else None
-            
-            with torch.autocast(device_type='cuda', dtype=amp_dtype, enabled=use_cuda and amp_dtype is not None):
-                batch_size = telemetry.shape[0]
-                device = telemetry.device
-                
-                # Embed telemetry
-                telemetry_embedded = self.telemetry_embedding(telemetry)
-                
-                # Combine with context if available
-                if context is not None and self.context_embedding is not None:
-                    context_embedded = self.context_embedding(context)
-                    encoder_input = telemetry_embedded + context_embedded
-                else:
-                    encoder_input = telemetry_embedded
-                
-                # Add positional encoding and encode
-                encoder_input = self.pos_encoding(encoder_input)
-                memory = self.transformer_encoder(encoder_input)
-                
-                # Generate action sequence autoregressively
-                decoder_output = self._generate_actions_autoregressive(memory, sequence_length)
-                
-                # Apply inverse scaling to get original action values
-                decoder_output = self._apply_action_inverse_scaling(decoder_output)
-            
-            # Apply temperature and sampling if not deterministic
-            if not deterministic and temperature != 1.0:
-                decoder_output = decoder_output / temperature
+            return self.forward(
+                telemetry=telemetry, 
+                context=context, 
+                target_actions=None,
+                segment_length=segment_length
+            )
                 
             # Apply activation functions for different action types
             actions = self._apply_action_constraints(decoder_output)
@@ -1098,7 +1048,7 @@ class ExpertActionTransformer(nn.Module):
             # Generate predictions
             self.eval()
             with torch.no_grad():
-                predictions = self.predict_non_expert_progression_sequence(
+                predictions = self.predict_segment_progression(
                     telemetry=telemetry_tensor,
                     context=context_tensor,
                     sequence_length=sequence_length,
@@ -1563,50 +1513,59 @@ class ExpertActionTransformer(nn.Module):
 
 class TelemetryActionDataset(Dataset):
     """
-    Dataset class for learning non-expert driver progression toward expert performance
+    Segmented Dataset class for learning non-expert driver progression toward expert performance
 
-    This dataset uses non-expert telemetry and actions, with enriched contextual data that includes
-    expert targets and delta-to-expert gap features. The model learns how a non-expert driver
-    should adjust their actions over time to progressively reach expert performance levels.
+    This dataset handles lists of telemetry segments where each segment represents an effort
+    to improve toward expert performance. Each segment can have variable length and represents
+    a coherent improvement attempt (e.g., a corner approach, a lap section, or a training session).
     
-    Key insight: The model output represents the non-expert driver's actual actions as they
-    improve over time, NOT the expert's actions. Expert actions are provided as contextual
-    guidance within enriched_contextual_data.
+    Key insight: The model processes one segment at a time, where each segment shows
+    a non-expert driver's progression toward expert performance within that specific context.
     """
     
     def __init__(self,
-                 telemetry_data: List[Dict[str, Any]],
-                 enriched_contextual_data: List[Dict[str, Any]],
-                 sequence_length: int = 20):
+                 telemetry_segments: List[List[Dict[str, Any]]],
+                 enriched_contextual_segments: List[List[Dict[str, Any]]]):
         """
-        Initialize the dataset
+        Initialize the segmented dataset
         
         Args:
-            telemetry_data: List of non-expert telemetry records (includes both telemetry and actions)
-            enriched_contextual_data: List of enriched contextual features including:
-                                    - Expert optimal targets (expert_optimal_*)
-                                    - Delta-to-expert gap features (expert_gap_*, expert_velocity_alignment)  
-                                    - Corner/track/tire contextual information
-                                    - Target actions for training (now included in enriched contextual data)
-            sequence_length: Length of sequences to generate
-            telemetry_features: List of telemetry feature names to extract (position, speed, forces, etc.)
+            telemetry_segments: List of telemetry segments, where each segment is a list of 
+                               non-expert telemetry records showing progression
+            enriched_contextual_segments: List of contextual segments, where each segment 
+                                        contains expert targets, gap features, and environmental context
         """
-        assert len(telemetry_data) == len(enriched_contextual_data), "Telemetry and contextual data must have same length"
+        assert len(telemetry_segments) == len(enriched_contextual_segments), \
+            "Number of telemetry segments must match contextual segments"
         
-        self.telemetry_data = telemetry_data
-        self.enriched_contextual_data = enriched_contextual_data
-        self.sequence_length = sequence_length
+        # Validate that each segment pair has the same length
+        for i, (tel_seg, ctx_seg) in enumerate(zip(telemetry_segments, enriched_contextual_segments)):
+            assert len(tel_seg) == len(ctx_seg), \
+                f"Segment {i}: telemetry length ({len(tel_seg)}) != contextual length ({len(ctx_seg)})"
         
-        # Default feature lists
-        self.action_features = self._get_default_action_features()
-        # Remove action features from telemetry features to avoid data leakage
-        self.telemetry_features = [f for f in telemetry_data[0].keys() if f not in self.action_features]
+        self.telemetry_segments = telemetry_segments
+        self.enriched_contextual_segments = enriched_contextual_segments
+        self.num_segments = len(telemetry_segments)
         
-        # Preprocessing
-        self._preprocess_data()
+        # Extract feature names from first segment
+        if telemetry_segments and telemetry_segments[0]:
+            self.action_features = self._get_default_action_features()
+            self.telemetry_features = [f for f in telemetry_segments[0][0].keys() 
+                                     if f not in self.action_features]
+        else:
+            raise ValueError("Empty telemetry segments provided")
         
-        # Generate sequence indices
-        self._generate_sequences()
+        # Get canonical context feature order
+        self.context_features = get_canonical_context_feature_order()
+        
+        print(f"[INFO] Initialized segmented dataset with {self.num_segments} segments")
+        print(f"[INFO] Segment lengths: {[len(seg) for seg in telemetry_segments[:5]]}..." +
+              (f" (showing first 5 of {self.num_segments})" if self.num_segments > 5 else ""))
+        print(f"[INFO] Features - Telemetry: {len(self.telemetry_features)}, " +
+              f"Actions: {len(self.action_features)}, Context: {len(self.context_features)}")
+        
+        # Preprocess all segments
+        self._preprocess_segments()
     
     def _get_default_action_features(self) -> List[str]:
         """Get default action features to predict (non-expert driver's actual actions)""" 
@@ -1614,54 +1573,72 @@ class TelemetryActionDataset(Dataset):
             "Physics_gas", "Physics_brake", "Physics_steer_angle", "Physics_gear"
         ]
     
-    def _preprocess_data(self):
+    def _preprocess_segments(self):
         """
-        Preprocess and normalize the data for transformer training.
+        Preprocess and normalize segmented telemetry data.
         
-        This function performs the following steps:
-        1. Converts raw telemetry dictionaries into numerical feature matrices
-        2. Extracts non-expert action targets from the same telemetry data 
-        3. Processes enriched contextual data using canonical feature ordering
-        4. Applies standardization (zero mean, unit variance) to all feature matrices
-        5. Stores fitted scalers for later denormalization during inference
+        This method processes each segment individually while maintaining consistent
+        normalization across all segments. Each segment represents a coherent improvement
+        effort with variable length.
         
-        The preprocessing ensures all input features are on similar scales and in
-        consistent order, which is critical for stable transformer training and 
-        attention mechanism performance.
+        Processing steps:
+        1. Collect all data points from all segments for global normalization
+        2. Build separate matrices for telemetry, actions, and context features
+        3. Fit scalers on the complete dataset for consistent normalization
+        4. Store processed segments with normalized features
         """
-        # Extract feature matrices from raw dictionary data
-        # Convert list of telemetry dictionaries -> numpy matrix [samples, features]
-        self.telemetry_matrix = self._build_matrix(self.telemetry_data, self.telemetry_features)
+        print("[INFO] Preprocessing segmented data...")
         
-        # Extract action targets separately from telemetry data
-        self.action_matrix = self._build_matrix(self.telemetry_data, self.action_features)
+        # Collect all data points from all segments for global normalization
+        all_telemetry_data = []
+        all_action_data = []
+        all_context_data = []
         
-        # Extract contextual features using canonical ordering if available
-        if self.enriched_contextual_data:
-            # Use canonical ordering for consistency across training and prediction
-            self.context_features = get_canonical_context_feature_order()
-            self.context_matrix = self._build_context_matrix_canonical(self.enriched_contextual_data, self.context_features)
-        else:
-            self.context_features = []
-            self.context_matrix = None
+        for tel_segment, ctx_segment in zip(self.telemetry_segments, self.enriched_contextual_segments):
+            all_telemetry_data.extend(tel_segment)
+            all_action_data.extend(tel_segment)  # Actions are in telemetry data
+            all_context_data.extend(ctx_segment)
         
-        # Normalize features, because features have vastly different scales
+        # Build global feature matrices for fitting scalers
+        global_telemetry_matrix = self._build_matrix(all_telemetry_data, self.telemetry_features)
+        global_action_matrix = self._build_matrix(all_action_data, self.action_features)
+        global_context_matrix = self._build_context_matrix_canonical(all_context_data, self.context_features)
+        
+        # Fit scalers on global data for consistent normalization
         self.telemetry_scaler = StandardScaler()
-        self.action_scaler = StandardScaler()
-        self.context_scaler = StandardScaler() if self.context_matrix is not None else None
+        self.action_scaler = StandardScaler()  
+        self.context_scaler = StandardScaler()
         
-        self.telemetry_matrix = self.telemetry_scaler.fit_transform(self.telemetry_matrix)
-        self.action_matrix = self.action_scaler.fit_transform(self.action_matrix)
-        if self.context_matrix is not None:
-            self.context_matrix = self.context_scaler.fit_transform(self.context_matrix)
+        self.telemetry_scaler.fit(global_telemetry_matrix)
+        self.action_scaler.fit(global_action_matrix)
+        self.context_scaler.fit(global_context_matrix)
         
-        print(f"[INFO] Preprocessed dataset: {self.telemetry_matrix.shape[0]} samples, "
-              f"{self.telemetry_matrix.shape[1]} telemetry features, "
-              f"{self.action_matrix.shape[1]} action features")
+        # Process each segment individually with fitted scalers
+        self.processed_segments = []
+        for i, (tel_segment, ctx_segment) in enumerate(zip(self.telemetry_segments, self.enriched_contextual_segments)):
+            # Build matrices for this segment
+            seg_telemetry_matrix = self._build_matrix(tel_segment, self.telemetry_features)
+            seg_action_matrix = self._build_matrix(tel_segment, self.action_features)
+            seg_context_matrix = self._build_context_matrix_canonical(ctx_segment, self.context_features)
+            
+            # Apply normalization
+            seg_telemetry_normalized = self.telemetry_scaler.transform(seg_telemetry_matrix)
+            seg_action_normalized = self.action_scaler.transform(seg_action_matrix)
+            seg_context_normalized = self.context_scaler.transform(seg_context_matrix)
+            
+            # Store processed segment
+            processed_segment = {
+                'telemetry': torch.tensor(seg_telemetry_normalized, dtype=torch.float32),
+                'actions': torch.tensor(seg_action_normalized, dtype=torch.float32),
+                'context': torch.tensor(seg_context_normalized, dtype=torch.float32),
+                'length': len(tel_segment)
+            }
+            self.processed_segments.append(processed_segment)
         
-        if self.context_matrix is not None:
-            print(f"[INFO] Context matrix: {self.context_matrix.shape[1]} contextual features in canonical order")
-            print(f"[INFO] Canonical context features: {self.context_features[:10]}...")  # Show first 10 feature names
+        print(f"[INFO] Preprocessed {len(self.processed_segments)} segments")
+        print(f"[INFO] Global normalization: {global_telemetry_matrix.shape[0]} total samples")
+        print(f"[INFO] Feature dimensions - Telemetry: {global_telemetry_matrix.shape[1]}, " +
+              f"Actions: {global_action_matrix.shape[1]}, Context: {global_context_matrix.shape[1]}")
     
     def _build_matrix(self, data_list: List[Dict[str, Any]], feature_names: List[str]) -> np.ndarray:
         """Extract features and build a matrix from list of dictionaries"""
@@ -1707,108 +1684,63 @@ class TelemetryActionDataset(Dataset):
         
         return np.array(matrix, dtype=np.float32)
     
-    def _generate_sequences(self):
-        """
-        Generate valid sequence start indices for transformer training.
-        
-        Purpose:
-        - Creates fixed-length training sequences from continuous telemetry data
-        - Determines how the dataset will be chunked for batch processing
-        - Ensures sequences fit within available data boundaries
-        
-        How it works:
-        1. Iterates through telemetry data in non-overlapping windows
-        2. Each window starts at index i and spans sequence_length samples
-        3. Only creates sequences where there's enough data (i + sequence_length <= total_samples)
-        4. Stores valid start indices in self.sequence_indices list
-        
-        Strategy:
-        - Non-overlapping sequences prevent data leakage between training samples
-        - Step size equals sequence_length to maximize data efficiency
-        - Alternative strategies could use overlapping windows or sliding windows
-        
-        Example:
-        - Data length: 1000 samples, sequence_length: 20
-        - Generated indices: [0, 20, 40, 60, ..., 980] 
-        - Result: 49 non-overlapping sequences of 20 samples each
-        """
-        self.sequence_indices = []
-        
-        # Generate non-overlapping sequences to prevent data leakage
-        # Step by sequence_length to avoid overlap between training samples
-        for i in range(0, len(self.telemetry_data) - self.sequence_length + 1, self.sequence_length):
-            self.sequence_indices.append(i)
-        
-        print(f"[INFO] Generated {len(self.sequence_indices)} sequences of length {self.sequence_length}")
-    
     def __len__(self) -> int:
-        """Return number of sequences"""
-        return len(self.sequence_indices)
+        """Return number of segments"""
+        return self.num_segments
     
-    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, ...]:
+    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
-        Get a training sample
+        Get a training segment
         
+        Args:
+            idx: Segment index
+            
         Returns:
             Tuple of (telemetry_seq, context_seq, action_seq) as tensors
-            - telemetry_seq: Non-action telemetry features (input)
-            - context_seq: Enriched contextual features (input)
-            - action_seq: Action targets extracted from telemetry (target)
+            Each tensor has shape [segment_length, features] where segment_length
+            varies per segment
         """
-        start_idx = self.sequence_indices[idx]
-        end_idx = start_idx + self.sequence_length
+        if idx >= len(self.processed_segments):
+            raise IndexError(f"Segment index {idx} out of range (0-{len(self.processed_segments)-1})")
         
-        # Extract sequences
-        telemetry_seq = torch.tensor(self.telemetry_matrix[start_idx:end_idx], dtype=torch.float32)
-        action_seq = torch.tensor(self.action_matrix[start_idx:end_idx], dtype=torch.float32)
-        
-        if self.context_matrix is not None:
-            context_seq = torch.tensor(self.context_matrix[start_idx:end_idx], dtype=torch.float32)
-            return telemetry_seq, context_seq, action_seq
-        else:
-            return telemetry_seq, action_seq
+        segment = self.processed_segments[idx]
+        return segment['telemetry'], segment['context'], segment['actions']
     
     def get_feature_names(self) -> Tuple[List[str], List[str]]:
         """Get telemetry and action feature names"""
         return self.telemetry_features, self.action_features
     
-    def get_context_feature_names(self) -> Optional[List[str]]:
-        """
-        Get context feature names in canonical order.
-        
-        Returns:
-            Optional[List[str]]: Canonical ordered context feature names if available
-        """
-        if not hasattr(self, 'context_features') or not self.context_features:
-            # Return canonical order if enriched contextual data exists
-            if self.enriched_contextual_data and len(self.enriched_contextual_data) > 0:
-                self.context_features = get_canonical_context_feature_order()
-            else:
-                return None
-        
-        # Ensure we're returning canonical order
-        if hasattr(self, 'context_features') and self.context_features:
-            canonical_order = get_canonical_context_feature_order()
-            if self.context_features != canonical_order:
-                print("[WARNING] Dataset context features do not match canonical order, returning canonical order")
-                self.context_features = canonical_order
-            return self.context_features
-        
-        return None
+    def get_context_feature_names(self) -> List[str]:
+        """Get context feature names in canonical order"""
+        return self.context_features
     
     def get_scalers(self) -> Dict[str, StandardScaler]:
         """Get the fitted scalers for denormalization"""
-        scalers = {
+        return {
             'telemetry': self.telemetry_scaler,
-            'actions': self.action_scaler
+            'actions': self.action_scaler,
+            'context': self.context_scaler
         }
-        if self.context_scaler is not None:
-            scalers['context'] = self.context_scaler
-        return scalers
+    
+    def get_segment_info(self) -> Dict[str, Any]:
+        """Get information about the segments in the dataset"""
+        segment_lengths = [seg['length'] for seg in self.processed_segments]
+        return {
+            'num_segments': self.num_segments,
+            'segment_lengths': segment_lengths,
+            'min_length': min(segment_lengths) if segment_lengths else 0,
+            'max_length': max(segment_lengths) if segment_lengths else 0,
+            'avg_length': sum(segment_lengths) / len(segment_lengths) if segment_lengths else 0,
+            'total_samples': sum(segment_lengths)
+        }
 
 class ExpertActionTrainer:
     """
-    Trainer class for the Expert Action Transformer.
+    Segmented Trainer class for the Expert Action Transformer.
+    
+    This trainer handles segmented telemetry data where each training example
+    is a complete segment of variable length representing an improvement effort.
+    Training processes one segment at a time rather than using traditional batching.
     """
     
     def __init__(self,
@@ -1817,7 +1749,7 @@ class ExpertActionTrainer:
                  learning_rate: float = 1e-4,
                  weight_decay: float = 1e-5):
         """
-        Initialize the trainer
+        Initialize the segmented trainer
         
         Args:
             model: The transformer model
@@ -1875,7 +1807,7 @@ class ExpertActionTrainer:
     
     def set_scalers_from_dataset(self, dataset: TelemetryActionDataset):
         """
-        Extract and set scalers from the dataset on the model.
+        Extract and set scalers from the segmented dataset on the model.
         
         Args:
             dataset: Training dataset containing fitted scalers
@@ -1883,60 +1815,66 @@ class ExpertActionTrainer:
         scalers = dataset.get_scalers()
         telemetry_scaler = scalers.get('telemetry')
         context_scaler = scalers.get('context')
-        action_scaler = scalers.get('actions')  # Note: dataset uses 'actions' key
+        action_scaler = scalers.get('actions')  
         
         # Set scalers on the model
         self.model.set_scalers(telemetry_scaler, context_scaler, action_scaler)
         
         print(f"[INFO] Set scalers on model - Telemetry: {'✓' if telemetry_scaler else '✗'}, Context: {'✓' if context_scaler else '✗'}, Action: {'✓' if action_scaler else '✗'}")
     
-    def train_epoch(self, dataloader: DataLoader) -> float:
-        """Train for one epoch using contextual weighted loss"""
+    def train_epoch(self, dataset: TelemetryActionDataset) -> float:
+        """
+        Train for one epoch processing segments individually
+        
+        Unlike traditional batch training, this method processes each segment
+        individually since segments have variable lengths. Each segment represents
+        a complete improvement effort that should be learned as a coherent unit.
+        
+        Args:
+            dataset: Segmented telemetry action dataset
+            
+        Returns:
+            Average loss across all segments
+        """
         self.model.train()
         total_loss = 0.0
-        num_batches = 0
+        num_segments = len(dataset)
         
-        # Get context feature names from the dataset if available
-        context_feature_names = None
-        if hasattr(dataloader.dataset, 'get_context_feature_names'):
-            context_feature_names = dataloader.dataset.get_context_feature_names()
+        # Get context feature names from the dataset
+        context_feature_names = dataset.get_context_feature_names()
         
-        for batch in dataloader:
-            if len(batch) == 3:  # telemetry, context, actions
-                telemetry, context, target_actions = batch
-                telemetry = telemetry.to(self.device, non_blocking=self._cuda)
-                context = context.to(self.device, non_blocking=self._cuda)
-                target_actions = target_actions.to(self.device, non_blocking=self._cuda)
-            else:  # telemetry, actions (no context)
-                telemetry, target_actions = batch
-                telemetry = telemetry.to(self.device, non_blocking=self._cuda)
-                target_actions = target_actions.to(self.device, non_blocking=self._cuda)
-                context = None
+        print(f"[INFO] Training on {num_segments} segments...")
+        
+        for segment_idx in range(num_segments):
+            # Get single segment (no batching due to variable lengths)
+            telemetry, context, target_actions = dataset[segment_idx]
+            
+            # Add batch dimension (batch_size=1 for single segment)
+            telemetry = telemetry.unsqueeze(0).to(self.device, non_blocking=self._cuda)
+            context = context.unsqueeze(0).to(self.device, non_blocking=self._cuda)
+            target_actions = target_actions.unsqueeze(0).to(self.device, non_blocking=self._cuda)
+            
+            segment_length = telemetry.shape[1]  # Actual length of this segment
             
             self.optimizer.zero_grad(set_to_none=True)
 
             # Autocast for mixed precision on GPU
             with torch.autocast(device_type='cuda', dtype=self.amp_dtype, enabled=self._cuda and self.amp_dtype is not None):
-                # Forward pass with teacher forcing during training, autoregressive during inference
+                # Forward pass with teacher forcing during training
                 predictions = self.model(
                     telemetry=telemetry,
                     context=context,
-                    target_actions=target_actions  # Enable teacher forcing in training mode
+                    target_actions=target_actions,  # Enable teacher forcing in training mode
+                    segment_length=segment_length
                 )
             
             # Loss computation OUTSIDE autocast to ensure proper gradient scaling
-            # This ensures contextual weighted loss is computed in full precision
-            if context is not None and context_feature_names is not None:
-                loss = self.model.contextual_weighted_loss(
-                    predictions=predictions, 
-                    target_actions=target_actions,
-                    context=context,
-                    context_feature_names=context_feature_names
-                )
-            else:
-                loss = self.criterion(predictions, target_actions)
-                if num_batches == 0:
-                    print(f"[INFO] Using standard MSE loss (no context features available)")
+            loss = self.model.contextual_weighted_loss(
+                predictions=predictions, 
+                target_actions=target_actions,
+                context=context,
+                context_feature_names=context_feature_names
+            )
 
             # Backward + optimizer step (with AMP support)
             if self.scaler.is_enabled():
@@ -1952,61 +1890,68 @@ class ExpertActionTrainer:
                 self.optimizer.step()
             
             total_loss += loss.item()
-            num_batches += 1
+            
+            # Progress reporting for long training
+            if (segment_idx + 1) % max(1, num_segments // 10) == 0:
+                avg_loss_so_far = total_loss / (segment_idx + 1)
+                print(f"  Processed {segment_idx + 1}/{num_segments} segments, "
+                      f"avg loss: {avg_loss_so_far:.6f}, "
+                      f"segment length: {segment_length}")
         
-        return total_loss / num_batches if num_batches > 0 else 0.0
+        return total_loss / num_segments if num_segments > 0 else 0.0
     
-    def validate_epoch(self, dataloader: DataLoader) -> float:
-        """Validate for one epoch using contextual weighted loss"""
+    def validate_epoch(self, dataset: TelemetryActionDataset) -> float:
+        """
+        Validate for one epoch processing segments individually
+        
+        Args:
+            dataset: Validation dataset with segmented data
+            
+        Returns:
+            Average validation loss across all segments
+        """
         self.model.eval()
         total_loss = 0.0
-        num_batches = 0
+        num_segments = len(dataset)
         
-        # Get context feature names from the dataset if available
-        context_feature_names = None
-        if hasattr(dataloader.dataset, 'get_context_feature_names'):
-            context_feature_names = dataloader.dataset.get_context_feature_names()
+        # Get context feature names from the dataset
+        context_feature_names = dataset.get_context_feature_names()
         
         with torch.no_grad():
-            for batch in dataloader:
-                if len(batch) == 3:  # telemetry, context, actions
-                    telemetry, context, target_actions = batch
-                    telemetry = telemetry.to(self.device, non_blocking=self._cuda).float()
-                    context = context.to(self.device, non_blocking=self._cuda).float()
-                    target_actions = target_actions.to(self.device, non_blocking=self._cuda).float()
-                else:  # telemetry, actions (no context)
-                    telemetry, target_actions = batch
-                    telemetry = telemetry.to(self.device, non_blocking=self._cuda).float()
-                    target_actions = target_actions.to(self.device, non_blocking=self._cuda).float()
-                    context = None
+            for segment_idx in range(num_segments):
+                # Get single segment
+                telemetry, context, target_actions = dataset[segment_idx]
+                
+                # Add batch dimension
+                telemetry = telemetry.unsqueeze(0).to(self.device, non_blocking=self._cuda).float()
+                context = context.unsqueeze(0).to(self.device, non_blocking=self._cuda).float()
+                target_actions = target_actions.unsqueeze(0).to(self.device, non_blocking=self._cuda).float()
+                
+                segment_length = telemetry.shape[1]
                 
                 # Forward pass - no mixed precision for validation to avoid dtype issues
                 predictions = self.model(
                     telemetry=telemetry,
                     context=context,
-                    target_actions=None  # No teacher forcing in validation
+                    target_actions=None,  # No teacher forcing in validation
+                    segment_length=segment_length
                 )
                 
-                # Loss computation outside autocast for proper gradient handling
-                if context is not None and context_feature_names is not None:
-                    loss = self.model.contextual_weighted_loss(
-                        predictions=predictions, 
-                        target_actions=target_actions,
-                        context=context,
-                        context_feature_names=context_feature_names
-                    )
-                else:
-                    # Fallback to standard MSE loss
-                    loss = self.criterion(predictions, target_actions)
+                # Loss computation
+                loss = self.model.contextual_weighted_loss(
+                    predictions=predictions, 
+                    target_actions=target_actions,
+                    context=context,
+                    context_feature_names=context_feature_names
+                )
                 
                 total_loss += loss.item()
-                num_batches += 1
         
-        return total_loss / num_batches if num_batches > 0 else 0.0
+        return total_loss / num_segments if num_segments > 0 else 0.0
     
     def train(self, 
-              train_dataloader: DataLoader,
-              val_dataloader: Optional[DataLoader] = None,
+              train_dataset: TelemetryActionDataset,
+              val_dataset: Optional[TelemetryActionDataset] = None,
               epochs: int = 50,
               patience: int = 15,
               save_best: bool = True) -> Dict[str, Any]:
@@ -2072,35 +2017,37 @@ class ExpertActionTrainer:
             - epochs_trained: Actual number of epochs completed
             - final_lr: Final learning rate after training
         """
-        print(f"[INFO] Starting training for {epochs} epochs on {self.device}")
+        print(f"[INFO] Starting segmented training for {epochs} epochs on {self.device}")
         print(f"[INFO] Model parameters: {sum(p.numel() for p in self.model.parameters()):,}")
         
-        # Display contextual feature information
-        if hasattr(train_dataloader.dataset, 'get_context_feature_names'):
-            context_feature_names = train_dataloader.dataset.get_context_feature_names()
-            if context_feature_names:
-                context_summary = self.model.get_contextual_features_summary(context_feature_names)
-                print(f"[INFO] Contextual weighted loss enabled with {len(context_summary['available_for_weighting'])} weighting features:")
-                if context_summary['tire_grip_features']:
-                    print(f"[INFO]   - Tire grip features: {context_summary['tire_grip_features']}")
-                if context_summary['expert_features']:
-                    print(f"[INFO]   - Expert alignment features: {context_summary['expert_features']}")
-                if context_summary['corner_features']:
-                    print(f"[INFO]   - Corner context features: {context_summary['corner_features']}")
-            else:
-                print(f"[INFO] No contextual features available - using standard MSE loss")
+        # Display dataset and contextual feature information
+        segment_info = train_dataset.get_segment_info()
+        print(f"[INFO] Training dataset: {segment_info['num_segments']} segments, "
+              f"lengths {segment_info['min_length']}-{segment_info['max_length']} "
+              f"(avg: {segment_info['avg_length']:.1f})")
+        
+        context_feature_names = train_dataset.get_context_feature_names()
+        if context_feature_names:
+            context_summary = self.model.get_contextual_features_summary(context_feature_names)
+            print(f"[INFO] Contextual weighted loss enabled with {len(context_summary['available_for_weighting'])} weighting features:")
+            if context_summary['tire_grip_features']:
+                print(f"[INFO]   - Tire grip features: {context_summary['tire_grip_features']}")
+            if context_summary['expert_features']:
+                print(f"[INFO]   - Expert alignment features: {context_summary['expert_features']}")
+            if context_summary['corner_features']:
+                print(f"[INFO]   - Corner context features: {context_summary['corner_features']}")
         
         best_val_loss = float('inf')
         epochs_without_improvement = 0
         
         for epoch in range(epochs):
-            # Train
-            train_loss = self.train_epoch(train_dataloader)
+            # Train on segments
+            train_loss = self.train_epoch(train_dataset)
             self.train_losses.append(train_loss)
             
-            # Validate
-            if val_dataloader is not None:
-                val_loss = self.validate_epoch(val_dataloader)
+            # Validate on segments
+            if val_dataset is not None:
+                val_loss = self.validate_epoch(val_dataset)
                 self.val_losses.append(val_loss)
                 
                 # Learning rate scheduling
@@ -2137,8 +2084,7 @@ class ExpertActionTrainer:
             print(f"[INFO] Loaded best model from epoch {self.best_model_state['epoch']+1}")
         
         # Set scalers on the model from training dataset for inference
-        if hasattr(train_dataloader.dataset, 'get_scalers'):
-            self.set_scalers_from_dataset(train_dataloader.dataset)
+        self.set_scalers_from_dataset(train_dataset)
         
         return make_json_safe({
             'train_losses': self.train_losses,
@@ -2148,15 +2094,15 @@ class ExpertActionTrainer:
             'final_lr': self.optimizer.param_groups[0]['lr']
         })
     
-    def evaluate(self, dataloader: DataLoader) -> Dict[str, float]:
+    def evaluate(self, dataset: TelemetryActionDataset) -> Dict[str, float]:
         """
-        Evaluate the model on test data using contextual weighted loss
+        Evaluate the model on segmented test data
         
         Args:
-            dataloader: Test data loader
+            dataset: Test dataset with segmented data
             
         Returns:
-            Evaluation metrics
+            Evaluation metrics across all segments
         """
         self.model.eval()
         total_loss = 0.0
@@ -2164,53 +2110,48 @@ class ExpertActionTrainer:
         all_predictions = []
         all_targets = []
         
-        # Get context feature names from the dataset if available
-        context_feature_names = None
-        if hasattr(dataloader.dataset, 'get_context_feature_names'):
-            context_feature_names = dataloader.dataset.get_context_feature_names()
+        context_feature_names = dataset.get_context_feature_names()
+        num_segments = len(dataset)
+        
+        print(f"[INFO] Evaluating on {num_segments} segments...")
         
         with torch.no_grad():
-            for batch in dataloader:
-                if len(batch) == 3:
-                    telemetry, context, target_actions = batch
-                    telemetry = telemetry.to(self.device, non_blocking=self._cuda)
-                    context = context.to(self.device, non_blocking=self._cuda)
-                    target_actions = target_actions.to(self.device, non_blocking=self._cuda)
-                else:
-                    telemetry, target_actions = batch
-                    telemetry = telemetry.to(self.device, non_blocking=self._cuda)
-                    target_actions = target_actions.to(self.device, non_blocking=self._cuda)
-                    context = None
+            for segment_idx in range(num_segments):
+                telemetry, context, target_actions = dataset[segment_idx]
+                
+                # Add batch dimension
+                telemetry = telemetry.unsqueeze(0).to(self.device, non_blocking=self._cuda)
+                context = context.unsqueeze(0).to(self.device, non_blocking=self._cuda)
+                target_actions = target_actions.unsqueeze(0).to(self.device, non_blocking=self._cuda)
+                
+                segment_length = telemetry.shape[1]
                 
                 # Use standard forward (autoregressive) under AMP for GPU (evaluation mode)
                 with torch.autocast(device_type='cuda', dtype=self.amp_dtype, enabled=self._cuda and self.amp_dtype is not None):
                     predictions = self.model(
                         telemetry=telemetry,
                         context=context,
-                        target_actions=None  # No teacher forcing during evaluation
+                        target_actions=None,  # No teacher forcing during evaluation
+                        segment_length=segment_length
                     )
                 
                 # Loss computation outside autocast
-                if context is not None and context_feature_names is not None:
-                    loss = self.model.contextual_weighted_loss(
-                        predictions=predictions, 
-                        target_actions=target_actions,
-                        context=context,
-                        context_feature_names=context_feature_names
-                    )
-                else:
-                    # Fallback to standard MSE loss
-                    loss = self.criterion(predictions, target_actions)
+                loss = self.model.contextual_weighted_loss(
+                    predictions=predictions, 
+                    target_actions=target_actions,
+                    context=context,
+                    context_feature_names=context_feature_names
+                )
                 
-                total_loss += loss.item() * target_actions.shape[0]
-                total_samples += target_actions.shape[0]
+                total_loss += loss.item() * segment_length
+                total_samples += segment_length
                 
                 all_predictions.append(predictions.cpu().numpy())
                 all_targets.append(target_actions.cpu().numpy())
         
-        # Compute additional metrics
-        predictions_array = np.concatenate(all_predictions, axis=0)
-        targets_array = np.concatenate(all_targets, axis=0)
+        # Compute additional metrics - concatenate all segment data
+        predictions_array = np.concatenate(all_predictions, axis=1)  # Concatenate along sequence dimension
+        targets_array = np.concatenate(all_targets, axis=1)
         
         # Flatten for overall metrics
         pred_flat = predictions_array.reshape(-1)
@@ -2229,7 +2170,8 @@ class ExpertActionTrainer:
             'mse': mse,
             'mae': mae,
             'r2': r2,
-            'num_samples': total_samples
+            'num_samples': total_samples,
+            'num_segments': num_segments
         })
     
     def get_model_info(self) -> Dict[str, Any]:
@@ -2255,3 +2197,167 @@ class ExpertActionTrainer:
             'model_parameters': sum(p.numel() for p in self.model.parameters()),
             'trainable_parameters': sum(p.numel() for p in self.model.parameters() if p.requires_grad)
         })
+
+
+# Utility functions for converting to segmented format
+def create_segments_from_continuous_data(telemetry_data: List[Dict[str, Any]], 
+                                        enriched_contextual_data: List[Dict[str, Any]], 
+                                        segment_length: int = 50,
+                                        overlap: int = 0) -> Tuple[List[List[Dict[str, Any]]], List[List[Dict[str, Any]]]]:
+    """
+    Convert continuous telemetry data into segments for the new segmented model.
+    
+    This utility function helps migrate from the old continuous data format to the new
+    segmented format required by the updated transformer model.
+    
+    Args:
+        telemetry_data: Continuous list of telemetry records
+        enriched_contextual_data: Continuous list of contextual records
+        segment_length: Length of each segment (default: 50)
+        overlap: Number of overlapping samples between segments (default: 0)
+        
+    Returns:
+        Tuple of (telemetry_segments, contextual_segments) where each is a list of segments
+    """
+    assert len(telemetry_data) == len(enriched_contextual_data), \
+        "Telemetry and contextual data must have same length"
+    
+    telemetry_segments = []
+    contextual_segments = []
+    
+    total_samples = len(telemetry_data)
+    step_size = segment_length - overlap
+    
+    for start_idx in range(0, total_samples - segment_length + 1, step_size):
+        end_idx = start_idx + segment_length
+        
+        tel_segment = telemetry_data[start_idx:end_idx]
+        ctx_segment = enriched_contextual_data[start_idx:end_idx]
+        
+        telemetry_segments.append(tel_segment)
+        contextual_segments.append(ctx_segment)
+    
+    print(f"[INFO] Created {len(telemetry_segments)} segments from {total_samples} continuous samples")
+    print(f"[INFO] Segment parameters: length={segment_length}, overlap={overlap}, step_size={step_size}")
+    
+    return telemetry_segments, contextual_segments
+
+
+def create_custom_segments(telemetry_data: List[Dict[str, Any]], 
+                          enriched_contextual_data: List[Dict[str, Any]], 
+                          segment_boundaries: List[Tuple[int, int]]) -> Tuple[List[List[Dict[str, Any]]], List[List[Dict[str, Any]]]]:
+    """
+    Create custom segments based on specific boundary indices.
+    
+    This function allows creating segments based on semantic boundaries like:
+    - Corner approaches and exits
+    - Lap sections
+    - Training session parts
+    - Any other meaningful racing segments
+    
+    Args:
+        telemetry_data: Continuous list of telemetry records
+        enriched_contextual_data: Continuous list of contextual records
+        segment_boundaries: List of (start_idx, end_idx) tuples defining segments
+        
+    Returns:
+        Tuple of (telemetry_segments, contextual_segments)
+    """
+    assert len(telemetry_data) == len(enriched_contextual_data), \
+        "Telemetry and contextual data must have same length"
+    
+    telemetry_segments = []
+    contextual_segments = []
+    
+    for start_idx, end_idx in segment_boundaries:
+        if start_idx < 0 or end_idx > len(telemetry_data) or start_idx >= end_idx:
+            print(f"[WARNING] Invalid segment boundary ({start_idx}, {end_idx}), skipping")
+            continue
+            
+        tel_segment = telemetry_data[start_idx:end_idx]
+        ctx_segment = enriched_contextual_data[start_idx:end_idx]
+        
+        telemetry_segments.append(tel_segment)
+        contextual_segments.append(ctx_segment)
+    
+    segment_lengths = [len(seg) for seg in telemetry_segments]
+    print(f"[INFO] Created {len(telemetry_segments)} custom segments")
+    print(f"[INFO] Segment lengths: min={min(segment_lengths)}, max={max(segment_lengths)}, avg={sum(segment_lengths)/len(segment_lengths):.1f}")
+    
+    return telemetry_segments, contextual_segments
+
+
+def segment_by_improvement_attempts(telemetry_data: List[Dict[str, Any]], 
+                                   enriched_contextual_data: List[Dict[str, Any]], 
+                                   improvement_indicator_key: str = 'expert_gap_total',
+                                   min_segment_length: int = 10,
+                                   max_segment_length: int = 200) -> Tuple[List[List[Dict[str, Any]]], List[List[Dict[str, Any]]]]:
+    """
+    Automatically segment data based on improvement attempts.
+    
+    This function analyzes the improvement indicator (e.g., gap to expert) and creates
+    segments where the driver shows consistent improvement effort. Segments are created
+    when the improvement trajectory changes significantly.
+    
+    Args:
+        telemetry_data: Continuous list of telemetry records
+        enriched_contextual_data: Continuous list of contextual records  
+        improvement_indicator_key: Key in contextual data indicating improvement (e.g., 'expert_gap_total')
+        min_segment_length: Minimum length for a segment
+        max_segment_length: Maximum length for a segment
+        
+    Returns:
+        Tuple of (telemetry_segments, contextual_segments)
+    """
+    assert len(telemetry_data) == len(enriched_contextual_data), \
+        "Telemetry and contextual data must have same length"
+    
+    # Extract improvement indicator values
+    improvement_values = []
+    for ctx_record in enriched_contextual_data:
+        value = ctx_record.get(improvement_indicator_key, 0.0)
+        try:
+            improvement_values.append(float(value))
+        except (ValueError, TypeError):
+            improvement_values.append(0.0)
+    
+    if not improvement_values:
+        print("[WARNING] No improvement indicator values found, using fixed segments")
+        return create_segments_from_continuous_data(telemetry_data, enriched_contextual_data, 50, 0)
+    
+    # Find segment boundaries based on improvement trend changes
+    segment_boundaries = []
+    current_start = 0
+    
+    for i in range(min_segment_length, len(improvement_values)):
+        # Check if we should end current segment
+        should_segment = False
+        
+        # End if we've reached maximum segment length
+        if i - current_start >= max_segment_length:
+            should_segment = True
+        
+        # End if improvement trend changes significantly
+        elif i >= min_segment_length:
+            # Calculate improvement trend over recent window
+            window_size = min(10, i - current_start)
+            if window_size >= 3:
+                recent_trend = improvement_values[i-window_size:i]
+                overall_trend = improvement_values[current_start:i]
+                
+                # Simple trend change detection (can be made more sophisticated)
+                recent_avg = sum(recent_trend) / len(recent_trend)
+                overall_avg = sum(overall_trend) / len(overall_trend)
+                
+                if abs(recent_avg - overall_avg) > 0.1 * abs(overall_avg) and i - current_start >= min_segment_length:
+                    should_segment = True
+        
+        if should_segment:
+            segment_boundaries.append((current_start, i))
+            current_start = i
+    
+    # Add final segment
+    if current_start < len(improvement_values) - min_segment_length:
+        segment_boundaries.append((current_start, len(improvement_values)))
+    
+    return create_custom_segments(telemetry_data, enriched_contextual_data, segment_boundaries)
