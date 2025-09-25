@@ -1024,43 +1024,6 @@ class Full_dataset_TelemetryMLService:
             pass
         
         return results
-
-    # Corner Shape Unsupervised Learning Methods
-    async def learn_corner_shapes(self, trackName: str, 
-                                 clustering_params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """
-        Learn corner shapes for a specific track using unsupervised machine learning
-        
-        This method uses multiple clustering algorithms to automatically discover
-        different types of corners on a track based on their shape characteristics
-        extracted from racing telemetry data.
-        
-        Args:
-            trackName: Name of the track to analyze
-            clustering_params: Optional parameters for clustering algorithms
-                             e.g., {'n_clusters': 6, 'eps': 0.5, 'min_samples': 3}
-                             
-        Returns:
-            Dictionary with corner shape learning results including:
-            - Discovered corner types and their characteristics
-            - Clustering algorithm performance metrics
-            - Feature importance and analysis
-        """
-        try:
-            # Corner shape learning is not yet implemented
-            results = {
-                "error": f"Corner shape learning not yet implemented for track {trackName}",
-                "track_name": trackName,
-                "implemented": False
-            }
-            
-            return results
-            
-        except Exception as e:
-            return {
-                "error": f"Failed to learn corner shapes for track {trackName}: {str(e)}",
-                "track_name": trackName
-            }
     
     # Corner Identification Unsupervised Learning Methods
     async def learn_corner_characteristics(self, trackName: str, carName: Optional[str] = None) -> Dict[str, Any]:
@@ -1354,11 +1317,6 @@ class Full_dataset_TelemetryMLService:
         #enrich data
         self._print_section_divider("ENRICHING CONTEXTUAL DATA")
         enrichment_result = await self.enriched_contextual_data(top_laps_telemetry_list, bottom_laps_telemetry_list,trackName)
-        enrichment_count = len(enrichment_result["enriched_features"])
-        feature_metadata = enrichment_result["feature_metadata"]
-        print(f"[INFO] Bottom laps telemetry has {len(bottom_laps_telemetry_list[0].keys())} keys which are: {bottom_laps_telemetry_list[0].keys()}")
-        print(f"[INFO] Enrichment successful: {enrichment_count} records with {feature_metadata.get('feature_count', 0)} enriched features")
-        print(f"[INFO] Enrichment details: {feature_metadata.get('feature_names', [])}")
         
         # train transformer model
         self._print_section_divider("TRAINING TRANSFORMER MODEL")
@@ -1373,8 +1331,6 @@ class Full_dataset_TelemetryMLService:
         return {
             "success": True,
             "transformer_training": transformer_results,
-            "expert_imitation_trained": True,
-            "contextual_data_enriched": enrichment_count,
             "track_name": trackName
         }
 
@@ -1409,9 +1365,6 @@ class Full_dataset_TelemetryMLService:
             if len(original_telemetry) != len(enriched_contextual_data):
                 raise ValueError(f"Data length mismatch: {len(original_telemetry)} telemetry records vs {len(enriched_contextual_data)} enriched records")
             
-            # Data is already prepared:
-            # - original_telemetry: Non-expert telemetry data
-            # - enriched_contextual_data: Expert targets, delta-to-expert gaps, corner/tire features (context)
             telemetry_data = original_telemetry
             contextual_data = enriched_contextual_data
             
@@ -1547,65 +1500,47 @@ class Full_dataset_TelemetryMLService:
         
         try:
             # Use all telemetry data for both training enrichment models and feature extraction
-            # This ensures consistency and maximizes available data
             bottom_training_telemetry_list = bottom_telemetry_list.copy()
             top_training_telemetry_list = top_telemetry_list.copy()
 
             self._print_section_divider("TRAINING IMITATION LEARNING MODEL")
-            imitation_learning = ExpertImitateLearningService()
-            # Train imitation model only on top (expert) telemetry laps
-            imitation_result = imitation_learning.train_ai_model(top_training_telemetry_list)
-
-            await backend_service.save_ai_model(
-                model_type="imitation_learning",
-                track_name=track_name,
-                car_name='AllCars',
-                model_data=imitation_result.get("modelData", {}),
-                metadata=imitation_result.get("metadata", {}),
-                is_active=True
-            )
+            try:        
+                imitation_learning = ExpertImitateLearningService()
+                # Train imitation model only on top (expert) telemetry laps
+                imitation_result = imitation_learning.train_ai_model(top_training_telemetry_list)
             
-            # Extract expert state features for each bottom (non-expert) telemetry record
-            
-            self._print_section_divider("EXTRACT FROM IMITATION LEARNING MODEL")
-            try:
-                expert_state_features = imitation_learning.extract_expert_state_for_telemetry(bottom_training_telemetry_list)
-                print(f"[INFO] Extracted expert state features for {len(expert_state_features)} non-expert records")
+                # Save imitation learning model to backend
+                await backend_service.save_ai_model(
+                    model_type="imitation_learning",
+                    track_name=track_name,
+                    car_name='AllCars',
+                    model_data=imitation_result.get("modelData", {}),
+                    metadata=imitation_result.get("metadata", {}),
+                    is_active=True
+                )
             except Exception as e:
-                print(f"[WARNING] Failed to extract expert state features: {e}")
-                expert_state_features = []
-            
-            print(f"[INFO] Using all {len(bottom_training_telemetry_list)} records for enrichment model training and feature extraction")
-            
+                raise Exception(f"[ERROR] Imitation learning training failed: {str(e)}")
+
             # Train corner identification model using training data
             self._print_section_divider("Training corner identification model...")
             try:
                 from .corner_identification_unsupervised_service import CornerIdentificationUnsupervisedService
                 corner_service = CornerIdentificationUnsupervisedService()
                 corner_model = await corner_service.learn_track_corner_patterns(top_training_telemetry_list)
-                
-                if corner_model.get("success"):
-                    print(f"[INFO] Corner identification training successful: {corner_model.get('total_corners_identified', 0)} corners identified")
-                    # Serialize and persist corner model artifact
-                    try:
-                        corner_serialized = corner_service.serialize_corner_identification_model(track_name=track_name, car_name="all_cars")
-                        await self.backend_service.save_ai_model(
-                            model_type="corner_identification",
-                            track_name=corner_serialized.get("track_name"),
-                            car_name='all_cars',
-                            model_data=corner_serialized,
-                            metadata={
-                                "total_corners": corner_serialized.get("total_corners"),
-                                "clusters": len(corner_serialized.get("corner_clusters", [])),
-                                "serialization_timestamp": corner_serialized.get("serialized_timestamp")
-                            },
-                            is_active=True
-                        )
-                        print("[INFO] Saved serialized corner identification model to backend")
-                    except Exception as ser_err:
-                        raise Exception(f"[WARNING] Failed to serialize/save corner model: {ser_err}")
-                else:
-                    raise Exception(f"[WARNING] Corner identification training failed: {corner_model.get('error', 'Unknown error')}")
+
+                corner_serialized = corner_service.serialize_corner_identification_model(track_name=track_name, car_name="all_cars")
+                await self.backend_service.save_ai_model(
+                    model_type="corner_identification",
+                    track_name=corner_serialized.get("track_name"),
+                    car_name='all_cars',
+                    model_data=corner_serialized,
+                    metadata={
+                        "total_corners": corner_serialized.get("total_corners"),
+                        "clusters": len(corner_serialized.get("corner_clusters", [])),
+                        "serialization_timestamp": corner_serialized.get("serialized_timestamp")
+                        },
+                        is_active=True
+                    )
             except Exception as e:
                 raise Exception(f"[ERROR] Corner identification training failed: {str(e)}")
             
@@ -1629,7 +1564,6 @@ class Full_dataset_TelemetryMLService:
                     },
                     is_active=True
                 )
-                print("[INFO] Saved serialized tire grip analysis model to backend")
             except Exception as e:
                 raise Exception(f"[ERROR] Tire grip analysis training failed: {str(e)}")
             
@@ -1637,6 +1571,18 @@ class Full_dataset_TelemetryMLService:
             enriched_features_data = []
             feature_sources = []
             
+            # Extract expert state features for each bottom (non-expert) telemetry record
+            self._print_section_divider("EXTRACT FROM IMITATION LEARNING MODEL")
+            try:
+                expert_state_features = imitation_learning.extract_expert_state_for_telemetry(bottom_training_telemetry_list)
+
+                # Filtered improving segments only 
+                listOfImprovingSegment = imitation_learning.filter_optimal_telemetry_segments(bottom_training_telemetry_list)
+
+                print(f"[INFO] Extracted expert state features for {len(expert_state_features)} non-expert records")
+            except Exception as e:
+                raise Exception(f" [WARNING] Failed to extract expert state features: {e}")
+
             # Initialize with expert state features (if available) else empty for each record
             if expert_state_features and len(expert_state_features) == len(bottom_training_telemetry_list):
                 enriched_features_data = [dict(esf) for esf in expert_state_features]

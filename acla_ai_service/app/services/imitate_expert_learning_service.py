@@ -610,6 +610,7 @@ class ExpertPositionLearner:
         except Exception as e:
             validation_results['valid'] = False
             validation_results['errors'].append(f"Feature extraction failed: {str(e)}")
+            raise Exception(f"Feature extraction failed: {str(e)}")
         
         return validation_results
 
@@ -762,22 +763,17 @@ class ExpertImitateLearningService:
         Returns:
             List of dictionaries, one per record, containing expert targets and delta-to-expert context only.
         """
-        print(f"[INFO] Starting expert state extraction for {len(telemetry_data)} telemetry records")
         
         ContextFeature = ExpertFeatureCatalog.ContextFeature
         if not telemetry_data:
-            print("[INFO] No telemetry data provided, returning empty list")
             return []
         if not self.position_learner.position_model:
             raise ValueError("No trained imitation models available. Train or load models before calling extract_expert_state_for_telemetry().")
 
-        print("[INFO] Converting telemetry data to DataFrame...")
         try:
             processed_df = pd.DataFrame(telemetry_data)
-            print(f"[INFO] DataFrame created with shape: {processed_df.shape}")
         except Exception as e:
-            print(f"[ERROR] Failed to create DataFrame: {e}")
-            raise
+            raise Exception(f"Failed to create DataFrame: {e}")
 
         expert_feature_rows: List[Dict[str, Any]] = []
 
@@ -800,8 +796,7 @@ class ExpertImitateLearningService:
                 batch_predictions = self.position_learner.predict_expert_actions_at_position(normalized_positions)
                 return batch_predictions
             except Exception as e:
-                print(f"[WARNING] Batch expert action prediction failed: {e}")
-                return [{} for _ in range(len(batch_df))]
+                raise Exception(f"Batch prediction failed: {e}")
 
         total_rows = len(processed_df)
         print(f"[INFO] Processing {total_rows} rows for expert state extraction...")
@@ -879,7 +874,7 @@ class ExpertImitateLearningService:
     def filter_optimal_telemetry_segments(self, telemetry_data: List[Dict[str, Any]], 
                                          segment_length: int = 20, 
                                          improvement_threshold: float = 0.7,
-                                         min_segments: int = 5) -> List[Dict[str, Any]]:
+                                         min_segments: int = 5) -> List[List[Dict[str, Any]]]:
         """
         Filter telemetry data to only those segments with consistent improvement rate towards expert behavior.
         Uses ContextFeature enum values to identify segments where the driver is progressively 
@@ -892,7 +887,7 @@ class ExpertImitateLearningService:
             min_segments: Minimum number of segments required to return results
             
         Returns:
-            List[Dict[str, Any]]: Filtered telemetry data containing only improving segments
+            List[List[Dict[str, Any]]]: List of segments, where each segment is a list of telemetry records
         """
         
         print(f"[INFO] Filtering optimal telemetry segments from {len(telemetry_data)} records...")
@@ -900,7 +895,7 @@ class ExpertImitateLearningService:
         
         if len(telemetry_data) < segment_length * 2:
             print(f"[WARNING] Insufficient data for segment analysis. Need at least {segment_length * 2} records, got {len(telemetry_data)}")
-            return telemetry_data  # Return original data if insufficient for analysis
+            return [telemetry_data]  # Return original data as single segment if insufficient for analysis
         
         # Get context feature names from enum
         ContextFeature = ExpertFeatureCatalog.ContextFeature
@@ -920,7 +915,7 @@ class ExpertImitateLearningService:
         if missing_features:
             print(f"[ERROR] Missing required context features: {missing_features}")
             print(f"[ERROR] Available features: {list(first_record.keys())}")
-            return telemetry_data  # Return original data if features missing
+            return [telemetry_data]  # Return original data as single segment if features missing
         
         print(f"[INFO] Found all required context features: {required_features}")
         
@@ -928,9 +923,8 @@ class ExpertImitateLearningService:
         try:
             df = pd.DataFrame(telemetry_data)
         except Exception as e:
-            print(f"[ERROR] Failed to convert telemetry data to DataFrame: {e}")
-            return telemetry_data
-        
+            raise Exception(f"Failed to convert telemetry data to DataFrame: {e}")
+
         # Create segments and analyze improvement trends
         optimal_segments = []
         total_segments = (len(df) - segment_length) // (segment_length // 2) + 1  # Overlapping segments
@@ -950,37 +944,20 @@ class ExpertImitateLearningService:
             # Check if segment meets improvement threshold
             if improvement_scores['overall_improvement_rate'] >= improvement_threshold:
                 segment_dict = segment.to_dict('records')
-                optimal_segments.extend(segment_dict)
+                optimal_segments.append(segment_dict)
                 print(f"[INFO] Added improving segment {start_idx}-{end_idx} (improvement rate: {improvement_scores['overall_improvement_rate']:.2f})")
-        
-        # Remove duplicates while preserving order
-        seen_indices = set()
-        unique_optimal_records = []
-        
-        for record in optimal_segments:
-            # Create a simple hash based on position and time to identify duplicates
-            record_hash = hash((
-                record.get('Graphics_normalized_car_position', 0),
-                record.get('Graphics_current_time', 0),
-                record.get('Physics_speed_kmh', 0)
-            ))
-            
-            if record_hash not in seen_indices:
-                seen_indices.add(record_hash)
-                unique_optimal_records.append(record)
         
         print(f"[INFO] Filtered segments analysis complete:")
         print(f"[INFO] - Original records: {len(telemetry_data)}")
         print(f"[INFO] - Optimal segments found: {len(optimal_segments)}")
-        print(f"[INFO] - Unique optimal records: {len(unique_optimal_records)}")
         
         # Ensure we have minimum required segments
-        if len(unique_optimal_records) < min_segments:
-            print(f"[WARNING] Found only {len(unique_optimal_records)} optimal records, below minimum of {min_segments}")
-            print(f"[WARNING] Returning original data to ensure sufficient training data")
-            return telemetry_data
+        if len(optimal_segments) < min_segments:
+            print(f"[WARNING] Found only {len(optimal_segments)} optimal segments, below minimum of {min_segments}")
+            print(f"[WARNING] Returning original data as single segment to ensure sufficient training data")
+            return [telemetry_data]
         
-        return unique_optimal_records
+        return optimal_segments
     
     def _analyze_segment_improvement(self, segment: pd.DataFrame, required_features: List[str]) -> Dict[str, float]:
         """
@@ -1033,13 +1010,7 @@ class ExpertImitateLearningService:
             improvement_metrics['distance_to_line_trend'] = distance_trend if 'distance_trend' in locals() else 0.0
             
         except Exception as e:
-            print(f"[WARNING] Error analyzing segment improvement: {e}")
-            improvement_metrics = {
-                'velocity_alignment_improving': False,
-                'speed_difference_improving': False, 
-                'distance_to_line_improving': False,
-                'overall_improvement_rate': 0.0
-            }
+            raise Exception(f"Error analyzing segment improvement: {e}")
         
         return improvement_metrics
     def serialize_learning_model(self) -> Dict[str, Any]:
