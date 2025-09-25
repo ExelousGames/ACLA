@@ -1313,19 +1313,25 @@ class Full_dataset_TelemetryMLService:
             lap_records = lap_df.to_dict('records')
             # Add lap records directly to the list
             bottom_laps_telemetry_list.extend(lap_records)
+
+        segment_length = 50  # Default segment length for transformer training
+        try:
+            # enrich data
+            self._print_section_divider("ENRICHING CONTEXTUAL DATA")
+            combined_segments = await self.enriched_contextual_data(top_laps_telemetry_list, bottom_laps_telemetry_list, trackName, segment_length=segment_length)
+        except Exception as e:
+            return {"error": str(e)}
         
-        #enrich data
-        self._print_section_divider("ENRICHING CONTEXTUAL DATA")
-        enrichment_result = await self.enriched_contextual_data(top_laps_telemetry_list, bottom_laps_telemetry_list,trackName)
-        
+        try:
         # train transformer model
-        self._print_section_divider("TRAINING TRANSFORMER MODEL")
-        transformer_results = await self._train_expert_action_transformer(
-            original_telemetry=enrichment_result["original_telemetry"],
-            enriched_contextual_data=enrichment_result["enriched_features"],
-            trackName=trackName,
-            enrichment_result=enrichment_result  # Pass the already computed enrichment
-        )
+            self._print_section_divider("TRAINING TRANSFORMER MODEL")
+            transformer_results = await self._train_expert_action_transformer(
+                combined_segments=combined_segments,  # combined_segments contain both telemetry and context data
+                trackName=trackName,
+                fixed_segment_length=segment_length  # Use default segment length
+            )
+        except Exception as e:
+            return {"error": str(e)}
         
         self._print_section_divider("TRANSFORMER LEARNING COMPLETED")
         return {
@@ -1335,17 +1341,17 @@ class Full_dataset_TelemetryMLService:
         }
 
     async def _train_expert_action_transformer(self, 
-                                             original_telemetry: List[Dict[str, Any]],
-                                             enriched_contextual_data: List[Dict[str, Any]],
+                                             combined_segments: List[List[Dict[str, Any]]],
                                              trackName: str,
+                                             fixed_segment_length: int = 50,
                                              enrichment_result: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
-        Train the transformer model to learn non-expert driver progression toward expert performance
+        Train the transformer model to learn non-expert driver progression toward expert performance using fixed-size segments
         
         Args:
-            original_telemetry: List of non-expert telemetry records (contains telemetry and non-expert actions)
-            enriched_contextual_data: List of enriched contextual features (expert targets, gaps, corner/tire features)
+            combined_segments: List of fixed-size segments containing combined telemetry and context data
             trackName: Track name for model identification
+            fixed_segment_length: Length that all segments must have (default: 50)
             enrichment_result: Pre-computed enrichment result to avoid re-training models
             
         Returns:
@@ -1359,39 +1365,31 @@ class Full_dataset_TelemetryMLService:
                     "success": False   
                 }
             
-            print(f"[INFO] Starting transformer training with {len(original_telemetry)} telemetry records")
+            print(f"[INFO] Starting transformer training with {len(combined_segments)} fixed-size segments")
+            print(f"[INFO] Each segment has fixed length: {fixed_segment_length}")
             
-            # Verify data consistency
-            if len(original_telemetry) != len(enriched_contextual_data):
-                raise ValueError(f"Data length mismatch: {len(original_telemetry)} telemetry records vs {len(enriched_contextual_data)} enriched records")
-            
-            telemetry_data = original_telemetry
-            contextual_data = enriched_contextual_data
-            
-            # Create dataset
-            dataset = TelemetryActionDataset(
-                telemetry_data=telemetry_data,
-                enriched_contextual_data=contextual_data if contextual_data else None,
-                sequence_length=20
+            # Validate segments before creating dataset
+            validation_result = TelemetryActionDataset.validate_segments(
+                combined_segments=combined_segments,
+                expected_length=fixed_segment_length
             )
             
-            # Configure DataLoader for better GPU throughput when available
+            if not validation_result['is_valid']:
+                error_details = "\n".join(validation_result['errors'][:5])  # Show first 5 errors
+                raise ValueError(f"Segment validation failed:\n{error_details}")
+            
+            print(f"[INFO] ✓ Validated {validation_result['num_segments']} segments")
+            print(f"[INFO] ✓ Valid segments: {validation_result['statistics']['valid_segments']}")
+            
+            # Create fixed-size segmented dataset
+            dataset = TelemetryActionDataset(
+                combined_segments=combined_segments,
+                fixed_segment_length=fixed_segment_length
+            )
+            
+            # Configure PyTorch optimizations
             use_cuda = torch.cuda.is_available()
-            num_cpu = os.cpu_count() or 2
-            num_workers = min(4, max(0, num_cpu - 1)) if use_cuda else 0
-            loader_kwargs = {
-                'batch_size': 16,
-                'shuffle': False,  # preserve temporal order for time series
-                'num_workers': num_workers,
-                'pin_memory': use_cuda,
-                'persistent_workers': num_workers > 0,
-            }
-            if num_workers > 0:
-                loader_kwargs['prefetch_factor'] = 2
-
-            # Create data loader for training
-            train_loader = DataLoader(dataset, **loader_kwargs)
-
+            
             if use_cuda:
                 # Enable TF32 on Ampere+ for faster matmuls while keeping accuracy
                 try:
@@ -1400,41 +1398,44 @@ class Full_dataset_TelemetryMLService:
                 except Exception:
                     pass
             
-            print(f"[INFO] Using all {len(dataset)} samples for training")
+            print(f"[INFO] Using all {len(dataset)} segments for training")
+            print(f"[INFO] Total training samples: {len(dataset) * fixed_segment_length}")
+            print(f"[INFO] Device: {'CUDA' if use_cuda else 'CPU'}")
             print(f"[INFO] No validation split - using full dataset for training")
             
             # Get feature dimensions from dataset
-            telemetry_features, non_expert_action_features = dataset.get_feature_names()
-            context_features_count = len(contextual_data[0]) if contextual_data else 0
+            input_feature_names, action_feature_names = dataset.get_feature_names()
+            input_features_count = len(input_feature_names)
             
-            print(f"[INFO] Dataset info: {len(telemetry_features)} telemetry features, "
-                  f"{len(non_expert_action_features)} non-expert action features (from telemetry), {context_features_count} context features")
-            print(f"[INFO] Model will output fixed 5 action features: throttle, brake, steering, gear, speed")
+            print(f"[INFO] Dataset info: {input_features_count} combined input features, "
+                  f"{len(action_feature_names)} action features")
+            print(f"[INFO] Model will output 4 action features: gas, brake, steer_angle, gear")
+            print(f"[INFO] Fixed segment length: {fixed_segment_length}")
             
-            # Create model
+            # Create model with unified input features
             model = ExpertActionTransformer(
-                telemetry_features_count=len(telemetry_features),
-                context_features_count=context_features_count,
+                input_features_count=input_features_count,
                 d_model=256,
                 nhead=8,
-                num_layers=4,  # Smaller model for faster training
-                sequence_length=20
+                num_layers=20,  # Smaller model for faster training
+                sequence_length=fixed_segment_length  # Use fixed segment length
             )
             
             # Create trainer
             device = 'cuda' if use_cuda else 'cpu'
             trainer = ExpertActionTrainer(model, device=device, learning_rate=1e-4)
+        
             
-            # Train model (without validation)
+            # Train model using the new fixed-size segment approach
             training_history = trainer.train(
-                train_dataloader=train_loader,
-                val_dataloader=None,
+                train_dataset=dataset,
+                val_dataset=None,  # No validation split for now
                 epochs=30,
                 patience=10
             )
             
             # Evaluate model on training data
-            test_metrics = trainer.evaluate(train_loader)
+            test_metrics = trainer.evaluate(dataset)
             
             # Serialize model
             serialized_model = model.serialize_model()
@@ -1449,7 +1450,8 @@ class Full_dataset_TelemetryMLService:
                     "training_history": training_history,
                     "test_metrics": test_metrics,
                     "feature_names": {
-                        "telemetry": telemetry_features,
+                        "input_features": input_feature_names,
+                        "action_features": action_feature_names
                     },
                     "training_timestamp": datetime.now().isoformat()
                 },
@@ -1471,32 +1473,27 @@ class Full_dataset_TelemetryMLService:
                 "error": str(e)
             }
 
-    async def enriched_contextual_data(self, top_telemetry_list: List[Dict[str, Any]], bottom_telemetry_list: List[Dict[str, Any]], track_name: str) -> Dict[str, Any]:
+    async def enriched_contextual_data(self, top_telemetry_list: List[Dict[str, Any]], bottom_telemetry_list: List[Dict[str, Any]], track_name: str, segment_length: int) -> List[List[Dict[str, Any]]]:
         """
         Extract enriched contextual features from telemetry data using trained models. it adds expert state, corner identification, and tire grip features,
         and helps transformer model to better understand track geometry, physics constraints, extra expert insights to differentiate actions that
         converge towards feature expert state.
         
-        This method keeps original telemetry separate from enriched features for clean training.
+        This method returns combined segmented data for the unified transformer model.
         
         Args:
-            telemetry_list: List of telemetry record dictionaries (flat list)
+            top_telemetry_list: List of expert telemetry record dictionaries (flat list)
+            bottom_telemetry_list: List of non-expert telemetry record dictionaries (flat list)
+            track_name: Track name for model identification
             
         Returns:
-            Dictionary containing:
-            - original_telemetry: Original telemetry data (unchanged)
-            - enriched_features: List of enriched feature dictionaries
-            - feature_metadata: Information about feature sources and types
+            List[List[Dict[str, Any]]] - List of combined telemetry+context segments
         """
 
 
         if not bottom_telemetry_list:
             print("[WARNING] No telemetry data provided for enrichment")
-            return {
-                "original_telemetry": [],
-                "enriched_features": [],
-                "feature_metadata": {"sources": [], "feature_count": 0}
-            }
+            return []
         
         try:
             # Use all telemetry data for both training enrichment models and feature extraction
@@ -1567,51 +1564,35 @@ class Full_dataset_TelemetryMLService:
             except Exception as e:
                 raise Exception(f"[ERROR] Tire grip analysis training failed: {str(e)}")
             
-            # Now extract enriched features separately (don't mix back into original data)
-            enriched_features_data = []
+            # First, combine telemetry with context features
+            self._print_section_divider("COMBINING TELEMETRY WITH CONTEXT FEATURES")
+            
+            # Extract features for all bottom telemetry records
             feature_sources = []
             
-            # Extract expert state features for each bottom (non-expert) telemetry record
-            self._print_section_divider("EXTRACT FROM IMITATION LEARNING MODEL")
+            # Extract expert state features for all records
             try:
-                expert_state_features = imitation_learning.extract_expert_state_for_telemetry(bottom_training_telemetry_list)
-
-                # Filtered improving segments only 
-                listOfImprovingSegment = imitation_learning.filter_optimal_telemetry_segments(bottom_training_telemetry_list)
-
-                print(f"[INFO] Extracted expert state features for {len(expert_state_features)} non-expert records")
-            except Exception as e:
-                raise Exception(f" [WARNING] Failed to extract expert state features: {e}")
-
-            # Initialize with expert state features (if available) else empty for each record
-            if expert_state_features and len(expert_state_features) == len(bottom_training_telemetry_list):
-                enriched_features_data = [dict(esf) for esf in expert_state_features]
+                imitation_state_features = imitation_learning.extract_expert_state_for_telemetry(bottom_training_telemetry_list)
+                print(f"[INFO] Extracted expert state features for {len(imitation_state_features)} records")
                 feature_sources.append("expert_state")
-            else:
-                for _ in range(len(bottom_training_telemetry_list)):
-                    enriched_features_data.append({})
+            except Exception as e:
+                print(f"[WARNING] Failed to extract expert state features: {str(e)}")
+                imitation_state_features = []
             
-            # Extract corner features as separate enriched data
+            # Extract corner features for all records
+            corner_enriched_data = []
             if corner_model.get("success"):
                 try:
-                    self._print_section_divider("Extracting corner features...")
                     corner_enriched_data = await corner_service.extract_corner_features_for_telemetry(bottom_training_telemetry_list)
-                    
-                    # Add corner features to enriched features data
-                    for i, corner_features in enumerate(corner_enriched_data):
-                        if i < len(enriched_features_data):
-                            enriched_features_data[i].update(corner_features)
-                    
                     feature_sources.append("corner_identification")
                     print(f"[INFO] Extracted corner features for {len(corner_enriched_data)} records")
                 except Exception as e:
-                    raise Exception(f"[WARNING] Failed to extract corner features: {str(e)}")
+                    print(f"[WARNING] Failed to extract corner features: {str(e)}")
             
-            # Extract tire grip features as separate enriched data
-
+            # Extract tire grip features for all records
             try:
-                self._print_section_divider("Extracting tire grip features...")
                 grip_enriched_data = await tire_service.extract_tire_grip_features(bottom_training_telemetry_list)
+                
                 # Validate expected keys exist in at least one record
                 try:
                     from .tire_grip_analysis_service import TireGripFeatureCatalog
@@ -1622,42 +1603,70 @@ class Full_dataset_TelemetryMLService:
                         if missing:
                             print(f"[WARNING] Tire grip features missing keys: {sorted(list(missing))}")
                 except Exception as v_err:
-                    raise Exception(f"[WARNING] Tire grip feature validation skipped: {v_err}")
-                    
-                # Add tire grip features to enriched features data
-                for i, grip_features in enumerate(grip_enriched_data):
-                    if i < len(enriched_features_data):
-                        enriched_features_data[i].update(grip_features)
+                    print(f"[WARNING] Tire grip feature validation skipped: {v_err}")
                     
                 feature_sources.append("tire_grip_analysis")
                 print(f"[INFO] Extracted tire grip features for {len(grip_enriched_data)} records")
             except Exception as e:
-                raise Exception(f"[WARNING] Failed to extract tire grip features: {str(e)}")
+                print(f"[WARNING] Failed to extract tire grip features: {str(e)}")
+                grip_enriched_data = []
             
-            print(f"[INFO] Contextual data enrichment completed: {len(enriched_features_data)} enriched feature records created")
+            # Combine telemetry with all context features
+            combined_telemetry_data = []
+            for i, telemetry_record in enumerate(bottom_training_telemetry_list):
+                combined_record = telemetry_record.copy()
+                
+                # Add expert state features if available
+                if i < len(imitation_state_features):
+                    combined_record.update(imitation_state_features[i])
+                
+                # Add corner features if available
+                if i < len(corner_enriched_data):
+                    combined_record.update(corner_enriched_data[i])
+                
+                # Add tire grip features if available
+                if i < len(grip_enriched_data):
+                    combined_record.update(grip_enriched_data[i])
+                
+                combined_telemetry_data.append(combined_record)
+            
+            print(f"[INFO] Combined {len(combined_telemetry_data)} telemetry records with context features")
+            
+            # Now filter the combined data into optimal segments
+            self._print_section_divider("FILTERING COMBINED DATA INTO SEGMENTS")
+            try:
+                # Use the imitation learning service to filter the combined data into segments
+                combined_segments = imitation_learning.filter_optimal_telemetry_segments(combined_telemetry_data, segment_length=segment_length)
+                print(f"[INFO] Created {len(combined_segments)} combined segments from filtered data")
+            except Exception as e:
+                raise Exception(f"Failed to filter combined data into segments: {str(e)}")
             
             # Create feature metadata
-            sample_enriched = enriched_features_data[0] if enriched_features_data else {}
+            sample_combined = {}
+            if combined_segments and combined_segments[0]:
+                sample_combined = combined_segments[0][0]
+            
             grip_sample_enriched = grip_enriched_data[0] if grip_enriched_data else {}
             corner_sample_enriched = corner_enriched_data[0] if corner_enriched_data else {}
+            expert_sample = imitation_state_features[0] if imitation_state_features else {}
+            
             feature_metadata = {
                 'sources': feature_sources,
-                'feature_count': len(sample_enriched),
-                'feature_names': list(sample_enriched.keys()),
+                'feature_count': len(sample_combined),
+                'feature_names': list(sample_combined.keys()),
                 'corner_features': list(corner_sample_enriched.keys()),
                 'grip_features': list(grip_sample_enriched.keys()),
-                'total_original_records': len(bottom_training_telemetry_list),
+                'expert_state_features': list(expert_sample.keys()),
+                'total_segments': len(combined_segments),
+                'total_records': len(combined_telemetry_data),
                 'corner_identification_success': corner_model.get("success", False),
                 'tire_grip_analysis_success': tire_grip_model.get("success", False)
             }
             
-            print(f"[INFO] Feature metadata: {feature_metadata['feature_count']} enriched features from {len(feature_sources)} sources")
+            print(f"[INFO] Feature metadata: {feature_metadata['feature_count']} combined features from {len(feature_sources)} sources")
+            print(f"[INFO] Successfully created {len(combined_segments)} segments with combined telemetry and context data")
             
-            return {
-                "original_telemetry": bottom_training_telemetry_list,  # Keep original data unchanged
-                "enriched_features": enriched_features_data,    # Separate enriched features
-                "feature_metadata": feature_metadata           # Metadata about features
-            }
+            return combined_segments
             
         except Exception as e:
             raise Exception(f"{self.__dir__} Failed to enrich contextual data: {str(e)}")
