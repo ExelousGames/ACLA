@@ -341,6 +341,18 @@ class BackendService:
                 return {key: convert_numpy_types(value) for key, value in obj.items()}
             elif isinstance(obj, list):
                 return [convert_numpy_types(item) for item in obj]
+            elif isinstance(obj, tuple):
+                return [convert_numpy_types(item) for item in obj]
+            elif isinstance(obj, (np.bool_, bool)):
+                return bool(obj)
+            elif obj is None:
+                return None
+            elif isinstance(obj, (str, int, float)):
+                return obj
+            elif hasattr(obj, '__class__') and 'sklearn' in str(type(obj)):
+                # If we encounter sklearn objects, this indicates a serialization issue
+                raise ValueError(f"Encountered unserialized sklearn object: {type(obj)}. "
+                               f"This object should have been serialized before sending to backend.")
             else:
                 return obj
 

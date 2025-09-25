@@ -1008,19 +1008,17 @@ class Full_dataset_TelemetryMLService:
         results = imitation_learning.train_ai_model(telemetry_data)
             
         try:
-            #save the info to backend
+            # Only send the serialized model data, not the raw sklearn objects
             await backend_service.save_ai_model(
                 model_type="imitation_learning",
                 track_name=trackName,
                 car_name=carName,
-                model_data=results,
-                metadata={
-                    "summary": results.get("summary", {}),
-                    "training_timestamp": datetime.now().isoformat()
-                },
+                model_data=results.get("serialized_modelData", {}),
+                metadata=results.get("learning_summary", {}),
                 is_active=True
             )
         except Exception as error:
+            print(f"[ERROR] Failed to save imitation model to backend: {str(error)}")
             pass
         
         return results
@@ -1506,13 +1504,30 @@ class Full_dataset_TelemetryMLService:
                 # Train imitation model only on top (expert) telemetry laps
                 imitation_result = imitation_learning.train_ai_model(top_training_telemetry_list)
             
+                # Extract only serialized data for backend storage (same fix as in train_imitation_model)
+                serialized_data = imitation_result.get("serialized_modelData", {})
+                if not serialized_data:
+                    print("[ERROR] No serialized_modelData found in imitation results!")
+                    raise Exception("No serialized model data available from imitation learning")
+                
+                model_data_for_backend = {
+                    "serialized_modelData": serialized_data,
+                    "training_info": {
+                        "telemetry_records_count": len(top_training_telemetry_list),
+                        "training_timestamp": datetime.now().isoformat()
+                    }
+                }
+            
                 # Save imitation learning model to backend
                 await backend_service.save_ai_model(
                     model_type="imitation_learning",
                     track_name=track_name,
                     car_name='AllCars',
-                    model_data=imitation_result.get("modelData", {}),
-                    metadata=imitation_result.get("metadata", {}),
+                    model_data=model_data_for_backend,
+                    metadata={
+                        "training_timestamp": datetime.now().isoformat(),
+                        "telemetry_records_processed": len(top_training_telemetry_list)
+                    },
                     is_active=True
                 )
             except Exception as e:
