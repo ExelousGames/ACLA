@@ -258,8 +258,7 @@ class ExpertActionTransformer(nn.Module):
     """
     
     def __init__(self, 
-                 telemetry_features_count: int = 42,  # Telemetry features from get_features_for_imitate_expert()
-                 context_features_count: Optional[int] = None,  # Auto-determined from canonical feature catalogs
+                 input_features_count: int = 42,  # Combined telemetry and context features
                  d_model: int = 256,
                  nhead: int = 8,
                  num_layers: int = 6,
@@ -271,8 +270,7 @@ class ExpertActionTransformer(nn.Module):
         Initialize the Expert Action Transformer
         
         Args:
-            telemetry_features_count: Number of telemetry input features 
-            context_features_count: Number of enriched contextual features. If None, auto-determined from canonical feature catalogs.
+            input_features_count: Number of combined input features (telemetry + context)
             d_model: Transformer model dimension
             nhead: Number of attention heads
             num_layers: Number of transformer layers
@@ -283,28 +281,19 @@ class ExpertActionTransformer(nn.Module):
         """
         super(ExpertActionTransformer, self).__init__()
         
-        # Auto-determine context features count if not provided
-        if context_features_count is None:
-            canonical_features = get_canonical_context_feature_order()
-            context_features_count = len(canonical_features)
-            print(f"[INFO] Auto-determined context_features_count: {context_features_count} from canonical feature catalogs")
-        
         # Store configuration
-        self.input_features_count = telemetry_features_count
-        self.context_features_count = context_features_count 
+        self.input_features_count = input_features_count
         self.output_features_count = 4  # Fixed output size: gas, brake, steer_angle, gear
         self.d_model = d_model
         self.sequence_length = sequence_length
         self.time_step_seconds = time_step_seconds  # Control how much real time each step represents
         
-        # Scalers for normalization during inference
-        self.telemetry_scaler: Optional[StandardScaler] = None
-        self.context_scaler: Optional[StandardScaler] = None
+        # Scaler for normalization during inference
+        self.input_scaler: Optional[StandardScaler] = None
         self.action_scaler: Optional[StandardScaler] = None
         
-        # Input embeddings
-        self.telemetry_embedding = nn.Linear(telemetry_features_count, d_model)
-        self.context_embedding = nn.Linear(context_features_count, d_model) if context_features_count > 0 else None
+        # Input embedding (single embedding for combined features)
+        self.input_embedding = nn.Linear(input_features_count, d_model)
 
         # Positional encoding : Without positional encoding: The transformer can't distinguish between [brake, throttle, steer] and [steer, brake, throttle], it adds unique positional information
         self.pos_encoding = PositionalEncoding(d_model, dropout, max_len=sequence_length * 2)
@@ -347,98 +336,68 @@ class ExpertActionTransformer(nn.Module):
             if p.dim() > 1:
                 nn.init.xavier_uniform_(p)
     
-    def set_scalers(self, telemetry_scaler: Optional[StandardScaler] = None, context_scaler: Optional[StandardScaler] = None, action_scaler: Optional[StandardScaler] = None):
+    def set_scalers(self, input_scaler: Optional[StandardScaler] = None, action_scaler: Optional[StandardScaler] = None):
         """
-        Set the scalers for telemetry, context, and action features.
+        Set the scalers for combined input and action features.
         
         Args:
-            telemetry_scaler: StandardScaler fitted on telemetry features
-            context_scaler: StandardScaler fitted on context features
+            input_scaler: StandardScaler fitted on combined input features (telemetry + context)
             action_scaler: StandardScaler fitted on action features
         """
-        self.telemetry_scaler = telemetry_scaler
-        self.context_scaler = context_scaler
+        self.input_scaler = input_scaler
         self.action_scaler = action_scaler
     
     def forward(self, 
-                telemetry: torch.Tensor,
-                context: Optional[torch.Tensor] = None, 
-                target_actions: Optional[torch.Tensor] = None,
-                target_mask: Optional[torch.Tensor] = None,
-                segment_length: Optional[int] = None) -> torch.Tensor:
+                combined_input: torch.Tensor,
+                target_actions: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
-        Forward pass - Segmented Non-Expert Driver Progression Learning Pipeline
+        Forward pass - Fixed-Size Segment Non-Expert Driver Progression Learning Pipeline
         
-        This method processes variable-length segments of telemetry data where each segment
-        represents a coherent effort to improve toward expert performance. The model
-        handles segments of different lengths and learns progression patterns within
-        each improvement attempt.
+        This method processes fixed-length segments of telemetry data where each segment
+        represents a coherent effort to improve toward expert performance. All segments
+        are preprocessed to have the same length (self.sequence_length).
         
-        SEGMENTED PROCESSING APPROACH:
-        Unlike traditional fixed-length sequence processing, this model handles:
-        - Variable-length segments (10-200+ timesteps per segment)
+        FIXED SEGMENTED PROCESSING APPROACH:
+        - Fixed-length segments (self.sequence_length timesteps per segment)
         - Each segment represents a complete improvement effort
-        - Segments are processed independently during training
-        - Dynamic sequence handling with proper masking
+        - Consistent batch processing with fixed dimensions
+        - No masking required due to fixed lengths
         
-        ARCHITECTURAL FLOW FOR SEGMENTS:
+        ARCHITECTURAL FLOW:
         
-        Step 1: DYNAMIC INPUT HANDLING
-        - Accept variable-length telemetry and context tensors
-        - Handle single segments during training (batch_size=1, variable seq_len)
-        - Maintain consistent feature dimensions across segments
+        Step 1: INPUT VALIDATION
+        - Ensure input dimensions match expected fixed size
+        - Validate batch and sequence dimensions
         
         Step 2: EMBEDDING LAYER
-        - Non-expert telemetry features → high-dimensional space (d_model)
-        - Enriched context features → same space (d_model)
-        - Variable sequence lengths handled dynamically
+        - Combined telemetry and context features → high-dimensional space (d_model)
         
-        Step 3: FEATURE FUSION
-        - Combines telemetry + context for each timestep in segment
-        - Creates unified representation for the entire improvement effort
-        - Maintains temporal relationships within the segment
-        
-        Step 4: POSITIONAL ENCODING
-        - Applies positional encoding up to actual segment length
-        - Handles variable lengths without padding artifacts
+        Step 3: POSITIONAL ENCODING
+        - Applies positional encoding to fixed sequence length
         - Preserves temporal order within each improvement attempt
         
-        Step 5: TRANSFORMER PROCESSING
+        Step 4: TRANSFORMER PROCESSING
         - Encoder processes the complete segment context
         - Decoder generates action sequences for the segment
-        - Uses segment-specific sequence length for generation
         
         Args:
-            telemetry: Non-expert telemetry features [batch_size, seq_len, input_features]
-                      (typically batch_size=1 for single segment processing)
-            context: Enriched contextual features [batch_size, seq_len, context_features]
-            target_actions: Target action sequences [batch_size, seq_len, action_features]
-            target_mask: Optional mask for variable-length sequences
-            segment_length: Length of the current segment being processed
+            combined_input: Combined telemetry and context features [batch_size, sequence_length, input_features]
+            target_actions: Target action sequences [batch_size, sequence_length, action_features]
             
         Returns:
-            Predicted action sequence [batch_size, seq_len, action_features]
-            Where seq_len matches the input segment length
+            Predicted action sequence [batch_size, sequence_length, action_features]
         """
-        batch_size = telemetry.shape[0]
-        seq_len = telemetry.shape[1]
+        batch_size = combined_input.shape[0]
+        seq_len = combined_input.shape[1]
         
-        # Use provided segment_length or infer from input
-        actual_seq_len = segment_length if segment_length is not None else seq_len
+        # Validate fixed sequence length
+        assert seq_len == self.sequence_length, f"Expected sequence length {self.sequence_length}, got {seq_len}"
         
-        # Embed telemetry
-        telemetry_embedded = self.telemetry_embedding(telemetry)  # [B, L, d_model]
+        # Embed combined input
+        embedded_input = self.input_embedding(combined_input)  # [B, L, d_model]
         
-        # Combine with context if available
-        if context is not None and self.context_embedding is not None:
-            context_embedded = self.context_embedding(context)  # [B, L, d_model]
-            # Combine telemetry and context
-            encoder_input = telemetry_embedded + context_embedded
-        else:
-            encoder_input = telemetry_embedded
-        
-        # Apply positional encoding only up to actual sequence length
-        encoder_input = self.pos_encoding(encoder_input)
+        # Apply positional encoding
+        encoder_input = self.pos_encoding(embedded_input)
         
         # Encode current state
         memory = self.transformer_encoder(encoder_input)  # [B, L, d_model]
@@ -451,229 +410,34 @@ class ExpertActionTransformer(nn.Module):
             return decoder_output
         else:
             # INFERENCE MODE: Use autoregressive generation for realistic prediction
-            decoder_output = self._generate_actions_autoregressive(memory, actual_seq_len)
+            decoder_output = self._generate_actions_autoregressive(memory, self.sequence_length)
             # During inference, apply inverse scaling to get original action values
             unscaled_output = self._apply_action_inverse_scaling(decoder_output)
             return unscaled_output
     
-    def contextual_weighted_loss(self, 
-                                predictions: torch.Tensor, 
-                                target_actions: torch.Tensor, 
-                                context: Optional[torch.Tensor] = None,
-                                context_feature_names: Optional[List[str]] = None) -> torch.Tensor:
+    def standard_loss(self, 
+                     predictions: torch.Tensor, 
+                     target_actions: torch.Tensor) -> torch.Tensor:
         """
-        Contextual weighted loss that emphasizes learning from high-quality examples
-        
-        This loss function weights the standard MSE loss based on contextual quality indicators:
-        - Higher weight for samples with good grip utilization (close to optimal)
-        - Higher weight for samples with good expert alignment
-        - Lower weight for samples showing poor physics utilization
+        Standard MSE loss for action prediction
         
         Args:
             predictions: Model predictions [batch_size, seq_len, action_features]
             target_actions: Target actions [batch_size, seq_len, action_features]  
-            context: Contextual features [batch_size, seq_len, context_features]
-            context_feature_names: Names of context features for indexing
             
         Returns:
-            Weighted loss tensor (scalar)
+            MSE loss tensor (scalar)
         """
         # Ensure loss computation in full precision to avoid dtype issues
         predictions = predictions.float()
         target_actions = target_actions.float()
-        if context is not None:
-            context = context.float()
         
-        # Base MSE loss (element-wise, not reduced)
-        base_loss = F.mse_loss(predictions, target_actions, reduction='none')  # [B, L, A]
+        # Base MSE loss
+        loss = F.mse_loss(predictions, target_actions, reduction='mean')
         
-        if context is None or context_feature_names is None:
-            # Fallback to standard MSE if no context available
-            return base_loss.mean()
-        
-        # Initialize quality weight as ones (neutral weighting)
-        quality_weight = torch.ones(context.shape[0], context.shape[1], device=context.device)  # [B, L]
-        
-        try:
-            # Extract contextual quality indicators by feature name
-            context_indices = {}
-            
-            # Tire grip features
-            grip_features = TireGripFeatureCatalog.ContextFeature
-            if grip_features.TURNING_GRIP_UTILIZATION.value in context_feature_names:
-                context_indices['grip_util'] = context_feature_names.index(grip_features.TURNING_GRIP_UTILIZATION.value)
-            if grip_features.OPTIMAL_GRIP_WINDOW.value in context_feature_names:
-                context_indices['grip_window'] = context_feature_names.index(grip_features.OPTIMAL_GRIP_WINDOW.value)
-            
-            # Expert alignment features  
-            expert_features = ExpertFeatureCatalog.ContextFeature
-            if expert_features.EXPERT_VELOCITY_ALIGNMENT.value in context_feature_names:
-                context_indices['expert_alignment'] = context_feature_names.index(expert_features.EXPERT_VELOCITY_ALIGNMENT.value)
-            
-            # Corner context features (for additional weighting)
-            corner_features = CornerFeatureCatalog.ContextFeature
-            if corner_features.CORNER_CONFIDENCE.value in context_feature_names:
-                context_indices['corner_confidence'] = context_feature_names.index(corner_features.CORNER_CONFIDENCE.value)
-            
-            weight_components = []
-            
-            # 1. Grip utilization quality (peak at ~1.0, lower at extremes)
-            if 'grip_util' in context_indices:
-                grip_util = context[:, :, context_indices['grip_util']].float()  # [B, L]
-                # Quality peaks at 1.0 (optimal grip), decreases as we move away
-                grip_quality = 1.0 - torch.abs(grip_util - 1.0).clamp(0, 1)
-                weight_components.append(grip_quality)
-            
-            # 2. Grip window quality (higher is better)  
-            if 'grip_window' in context_indices:
-                grip_window = context[:, :, context_indices['grip_window']].float()  # [B, L]
-                weight_components.append(grip_window)
-            
-            # 3. Expert alignment quality (higher is better)
-            if 'expert_alignment' in context_indices:
-                expert_alignment = context[:, :, context_indices['expert_alignment']].float()  # [B, L]
-                weight_components.append(expert_alignment)
-            
-            # 4. Corner confidence (higher is better)
-            if 'corner_confidence' in context_indices:
-                corner_confidence = context[:, :, context_indices['corner_confidence']].float()  # [B, L]
-                weight_components.append(corner_confidence)
-            
-            # Combine weight components if any were found
-            if weight_components:
-                # Average all quality components
-                quality_weight = torch.stack(weight_components, dim=-1).mean(dim=-1)  # [B, L]
-                
-                # Add small epsilon to prevent zero weights
-                quality_weight = quality_weight + 0.1
-                
-                # Normalize to prevent extreme weighting
-                quality_weight = quality_weight.clamp(0.1, 2.0)
-            
-        except Exception as e:
-            print(f"[WARNING] Error in contextual weighting: {e}. Using standard loss.")
-            quality_weight = torch.ones_like(quality_weight)
-        
-        # Apply quality weights to loss (expand dims to match action dimensions)
-        weighted_loss = base_loss * quality_weight.unsqueeze(-1)  # [B, L, A]
-        
-        # Return mean weighted loss
-        return weighted_loss.mean()
+        return loss
     
-    def get_contextual_features_summary(self, context_feature_names: List[str]) -> Dict[str, Any]:
-        """
-        Get a summary of which contextual features are available for quality weighting.
-        Also validates that the provided features match canonical ordering.
-        
-        Args:
-            context_feature_names: List of available context feature names
-            
-        Returns:
-            Dictionary summarizing available contextual guidance features and ordering validation
-        """
-        canonical_order = get_canonical_context_feature_order()
-        
-        summary = {
-            'total_context_features': len(context_feature_names) if context_feature_names else 0,
-            'available_for_weighting': [],
-            'tire_grip_features': [],
-            'expert_features': [],
-            'corner_features': [],
-            'canonical_order_matches': context_feature_names == canonical_order if context_feature_names else True
-        }
-        
-        if not context_feature_names:
-            return summary
-        
-        # Validate feature ordering consistency
-        if context_feature_names != canonical_order:
-            print(f"[WARNING] Context features do not match canonical order!")
-            print(f"[WARNING] Expected count: {len(canonical_order)}, Received count: {len(context_feature_names)}")
-            if len(context_feature_names) > 0 and len(canonical_order) > 0:
-                print(f"[WARNING] First few expected: {canonical_order[:5]}")
-                print(f"[WARNING] First few received: {context_feature_names[:5]}")
-        
-        # Check tire grip features
-        grip_features = TireGripFeatureCatalog.ContextFeature
-        for feature in grip_features:
-            if feature.value in context_feature_names:
-                summary['tire_grip_features'].append(feature.value)
-                summary['available_for_weighting'].append(feature.value)
-        
-        # Check expert alignment features
-        expert_features = ExpertFeatureCatalog.ContextFeature
-        for feature in expert_features:
-            if feature.value in context_feature_names:
-                summary['expert_features'].append(feature.value)
-                summary['available_for_weighting'].append(feature.value)
-        
-        # Check corner features
-        corner_features = CornerFeatureCatalog.ContextFeature
-        for feature in corner_features:
-            if feature.value in context_feature_names:
-                summary['corner_features'].append(feature.value)
-                summary['available_for_weighting'].append(feature.value)
-        
-        summary['weighting_enabled'] = len(summary['available_for_weighting']) > 0
-        
-        return summary
-    
-    def validate_context_features(self, context_features: List[str]) -> Dict[str, Any]:
-        """
-        Validate that context features match the canonical ordering expected by the model.
-        
-        Args:
-            context_features: List of context feature names to validate
-            
-        Returns:
-            Dict containing validation results and recommendations
-        """
-        canonical_order = get_canonical_context_feature_order()
-        
-        validation_result = {
-            'is_valid': True,
-            'expected_count': len(canonical_order),
-            'received_count': len(context_features),
-            'order_matches': context_features == canonical_order,
-            'missing_features': [],
-            'extra_features': [],
-            'recommendations': []
-        }
-        
-        # Check count mismatch
-        if len(context_features) != len(canonical_order):
-            validation_result['is_valid'] = False
-            validation_result['recommendations'].append(
-                f"Expected {len(canonical_order)} context features, got {len(context_features)}"
-            )
-        
-        # Check for missing and extra features
-        canonical_set = set(canonical_order)
-        received_set = set(context_features)
-        
-        validation_result['missing_features'] = list(canonical_set - received_set)
-        validation_result['extra_features'] = list(received_set - canonical_set)
-        
-        if validation_result['missing_features']:
-            validation_result['is_valid'] = False
-            validation_result['recommendations'].append(
-                f"Missing features: {validation_result['missing_features'][:5]}..."
-            )
-        
-        if validation_result['extra_features']:
-            validation_result['is_valid'] = False
-            validation_result['recommendations'].append(
-                f"Extra features: {validation_result['extra_features'][:5]}..."
-            )
-        
-        # Check ordering
-        if not validation_result['order_matches'] and len(context_features) == len(canonical_order):
-            validation_result['is_valid'] = False
-            validation_result['recommendations'].append(
-                "Features are present but not in canonical order. Use get_canonical_context_feature_order()."
-            )
-        
-        return validation_result
+
     
     def _generate_square_subsequent_mask(self, sz: int) -> torch.Tensor:
         """Generate causal mask for decoder"""
@@ -876,8 +640,7 @@ class ExpertActionTransformer(nn.Module):
         return predictions
     
     def predict_segment_progression(self, 
-                                  telemetry: torch.Tensor,
-                                  context: Optional[torch.Tensor] = None,
+                                  combined_input: torch.Tensor,
                                   temperature: float = 1.0,
                                   deterministic: bool = False) -> torch.Tensor:
         """
@@ -888,9 +651,8 @@ class ExpertActionTransformer(nn.Module):
         a coherent improvement effort (e.g., a corner approach, lap section).
         
         Args:
-            telemetry: Non-expert telemetry features [batch_size, segment_len, input_features]
-            context: Enriched contextual features [batch_size, segment_len, context_features]
-                     Contains expert targets and gap features to guide improvement
+            combined_input: Combined telemetry and context features [batch_size, segment_len, input_features]
+                           Contains expert targets and gap features to guide improvement
             temperature: Temperature for sampling (higher = more random) - currently unused
             deterministic: If True, use greedy decoding instead of sampling - currently unused
             
@@ -899,14 +661,12 @@ class ExpertActionTransformer(nn.Module):
             Shows improved non-expert actions throughout the segment
         """
         self.eval()
-        segment_length = telemetry.shape[1]
+        segment_length = combined_input.shape[1]
             
         with torch.no_grad():
             return self.forward(
-                telemetry=telemetry, 
-                context=context, 
-                target_actions=None,
-                segment_length=segment_length
+                combined_input=combined_input, 
+                target_actions=None
             )
                 
             # Apply activation functions for different action types
@@ -1025,33 +785,17 @@ class ExpertActionTransformer(nn.Module):
             # Get device from model parameters first
             device = next(self.parameters()).device
             
-            # Validate context features if provided
-            if context_data and self.context_embedding is not None:
-                context_features = self._extract_context_features(context_data)
-                validation_result = self.validate_context_features(list(context_data.keys()))
-                
-                if not validation_result['is_valid']:
-                    print(f"[WARNING] Context feature validation failed during prediction:")
-                    for rec in validation_result['recommendations']:
-                        print(f"[WARNING] - {rec}")
-                    
-                context_tensor = torch.tensor([context_features], dtype=torch.float32).unsqueeze(0).to(device)
-            else:
-                context_tensor = None
-            
-            # Prepare telemetry data for model input
-            telemetry_features = self._extract_telemetry_features(current_telemetry)
+            # Prepare combined input data for model input
+            combined_features = self._extract_combined_features(current_telemetry, context_data)
             
             # Convert to tensor format
-            telemetry_tensor = torch.tensor([telemetry_features], dtype=torch.float32).unsqueeze(0).to(device)
+            combined_tensor = torch.tensor([combined_features], dtype=torch.float32).unsqueeze(0).to(device)
             
             # Generate predictions
             self.eval()
             with torch.no_grad():
                 predictions = self.predict_segment_progression(
-                    telemetry=telemetry_tensor,
-                    context=context_tensor,
-                    sequence_length=sequence_length,
+                    combined_input=combined_tensor,
                     deterministic=True
                 )
             
@@ -1087,67 +831,62 @@ class ExpertActionTransformer(nn.Module):
             })
             raise RuntimeError(json.dumps(error_payload))
     
-    def _extract_telemetry_features(self, telemetry: Dict[str, Any]) -> List[float]:
-        """Extract and normalize telemetry features for model input"""
-        # Use the canonical feature list for imitation expert models
-        try:
-            feature_names = TelemetryFeatures.get_features_for_imitate_expert()
-        except Exception:
-            raise ValueError("TelemetryFeatures class is not properly defined.")
-        
-        features = []
-        for feature in feature_names:
-            value = telemetry.get(feature, 0.0)
-            try:
-                features.append(float(value))
-            except (ValueError, TypeError):
-                features.append(0.0)
-        # Ensure the feature vector matches the model's expected input size
-        expected_len = getattr(self, 'input_features_count', len(features))
-        if len(features) < expected_len:
-            features.extend([0.0] * (expected_len - len(features)))
-        elif len(features) > expected_len:
-            features = features[:expected_len]
-
-        # Apply telemetry scaler if available
-        if self.telemetry_scaler is not None:
-            import numpy as np
-            features_array = np.array(features).reshape(1, -1)  # Shape: (1, n_features)
-            scaled_features = self.telemetry_scaler.transform(features_array)
-            features = scaled_features.flatten().tolist()
-
-        return features
-    
-    def _extract_context_features(self, context_data: Dict[str, Any]) -> List[float]:
+    def _extract_combined_features(self, telemetry: Dict[str, Any], context_data: Optional[Dict[str, Any]] = None) -> List[float]:
         """
-        Extract contextual features for model input using canonical ordering.
-        
-        This method ensures the same feature order is used during prediction
-        as was used during training. Features are extracted in canonical order
-        as defined by the feature catalogs, with missing values filled as 0.0.
+        Extract combined telemetry and context features for model input.
         
         Args:
-            context_data: Dictionary containing contextual features
+            telemetry: Dictionary containing telemetry data
+            context_data: Optional dictionary containing context data
             
         Returns:
-            List[float]: Features in canonical order
+            List[float]: Combined features for model input
         """
-        if context_data is None:
-            # Return zeros for all canonical features if no context provided
-            canonical_order = get_canonical_context_feature_order()
-            features = [0.0] * len(canonical_order)
-        else:
-            # Use canonical extraction function for consistency
-            features = extract_context_features_canonical_order(context_data)
+        # Extract telemetry features
+        try:
+            from ..services.imitate_expert_learning_service import get_features_for_imitate_expert
+            telemetry_feature_names = get_features_for_imitate_expert()
+        except Exception:
+            try:
+                telemetry_feature_names = TelemetryFeatures.get_features_for_imitate_expert()
+            except Exception:
+                raise ValueError("Could not get telemetry feature names")
         
-        # Apply context scaler if available
-        if self.context_scaler is not None:
+        telemetry_features = []
+        for feature_name in telemetry_feature_names:
+            try:
+                value = float(telemetry.get(feature_name, 0.0))
+                telemetry_features.append(value)
+            except (ValueError, TypeError):
+                telemetry_features.append(0.0)
+        
+        # Extract context features if available
+        context_features = []
+        if context_data:
+            context_features = extract_context_features_canonical_order(context_data)
+        else:
+            # If no context provided, use zeros for all canonical context features
+            canonical_order = get_canonical_context_feature_order()
+            context_features = [0.0] * len(canonical_order)
+        
+        # Combine telemetry and context features
+        combined_features = telemetry_features + context_features
+        
+        # Ensure the feature vector matches the model's expected input size
+        expected_len = getattr(self, 'input_features_count', len(combined_features))
+        if len(combined_features) < expected_len:
+            combined_features.extend([0.0] * (expected_len - len(combined_features)))
+        elif len(combined_features) > expected_len:
+            combined_features = combined_features[:expected_len]
+
+        # Apply input scaler if available
+        if self.input_scaler is not None:
             import numpy as np
-            features_array = np.array(features).reshape(1, -1)  # Shape: (1, n_features)
-            scaled_features = self.context_scaler.transform(features_array)
-            features = scaled_features.flatten().tolist()
-            
-        return features
+            features_array = np.array(combined_features).reshape(1, -1)
+            scaled_features = self.input_scaler.transform(features_array)
+            combined_features = scaled_features.flatten().tolist()
+
+        return combined_features
     
     def _analyze_current_situation(self, telemetry: Dict[str, Any], context: Optional[Dict[str, Any]]) -> Dict[str, str]:
         """Analyze current driving situation"""
@@ -1513,58 +1252,63 @@ class ExpertActionTransformer(nn.Module):
 
 class TelemetryActionDataset(Dataset):
     """
-    Segmented Dataset class for learning non-expert driver progression toward expert performance
+    Fixed-Size Segmented Dataset class for learning non-expert driver progression toward expert performance
 
     This dataset handles lists of telemetry segments where each segment represents an effort
-    to improve toward expert performance. Each segment can have variable length and represents
-    a coherent improvement attempt (e.g., a corner approach, a lap section, or a training session).
+    to improve toward expert performance. All segments must have the same fixed length,
+    representing a coherent improvement attempt (e.g., a corner approach, a lap section, or a training session).
     
-    Key insight: The model processes one segment at a time, where each segment shows
+    Key insight: The model processes fixed-size segments in batches, where each segment shows
     a non-expert driver's progression toward expert performance within that specific context.
     """
     
     def __init__(self,
-                 telemetry_segments: List[List[Dict[str, Any]]],
-                 enriched_contextual_segments: List[List[Dict[str, Any]]]):
+                 combined_segments: List[List[Dict[str, Any]]],
+                 fixed_segment_length: int):
         """
-        Initialize the segmented dataset
+        Initialize the fixed-size segmented dataset with combined telemetry and context data
         
         Args:
-            telemetry_segments: List of telemetry segments, where each segment is a list of 
-                               non-expert telemetry records showing progression
-            enriched_contextual_segments: List of contextual segments, where each segment 
-                                        contains expert targets, gap features, and environmental context
+            combined_segments: List of pre-created combined segments, where each segment is a list of 
+                              dictionaries containing both telemetry and context features together.
+                              All segments must have exactly fixed_segment_length elements.
+            fixed_segment_length: Required length for all segments
         """
-        assert len(telemetry_segments) == len(enriched_contextual_segments), \
-            "Number of telemetry segments must match contextual segments"
+        # Basic validation
+        assert len(combined_segments) > 0, "At least one segment must be provided"
+        assert fixed_segment_length > 0, f"Fixed segment length must be positive, got {fixed_segment_length}"
         
-        # Validate that each segment pair has the same length
-        for i, (tel_seg, ctx_seg) in enumerate(zip(telemetry_segments, enriched_contextual_segments)):
-            assert len(tel_seg) == len(ctx_seg), \
-                f"Segment {i}: telemetry length ({len(tel_seg)}) != contextual length ({len(ctx_seg)})"
+        # Validate that all segments have exactly the fixed length
+        invalid_segments = []
+        for i, segment in enumerate(combined_segments):
+            if len(segment) != fixed_segment_length:
+                invalid_segments.append(f"Combined segment {i}: length {len(segment)} != {fixed_segment_length}")
         
-        self.telemetry_segments = telemetry_segments
-        self.enriched_contextual_segments = enriched_contextual_segments
-        self.num_segments = len(telemetry_segments)
+        if invalid_segments:
+            error_msg = f"Fixed-size validation failed for {len(invalid_segments)} segment(s):\n" + "\n".join(invalid_segments[:10])
+            if len(invalid_segments) > 10:
+                error_msg += f"\n... and {len(invalid_segments) - 10} more segments"
+            raise ValueError(error_msg)
+        
+        # Store validated segments
+        self.combined_segments = combined_segments
+        self.num_segments = len(combined_segments)
+        self.fixed_segment_length = fixed_segment_length
         
         # Extract feature names from first segment
-        if telemetry_segments and telemetry_segments[0]:
+        if combined_segments and combined_segments[0]:
             self.action_features = self._get_default_action_features()
-            self.telemetry_features = [f for f in telemetry_segments[0][0].keys() 
-                                     if f not in self.action_features]
+            # All features except actions are input features (telemetry + context combined)
+            self.input_features = [f for f in combined_segments[0][0].keys() 
+                                  if f not in self.action_features]
         else:
-            raise ValueError("Empty telemetry segments provided")
+            raise ValueError("Empty combined segments provided")
         
-        # Get canonical context feature order
-        self.context_features = get_canonical_context_feature_order()
+        print(f"[INFO] ✓ Validated fixed-size segmented dataset with {self.num_segments} segments")
+        print(f"[INFO] ✓ All segments have fixed length: {fixed_segment_length}")
+        print(f"[INFO] ✓ Features - Input: {len(self.input_features)}, Actions: {len(self.action_features)}")
         
-        print(f"[INFO] Initialized segmented dataset with {self.num_segments} segments")
-        print(f"[INFO] Segment lengths: {[len(seg) for seg in telemetry_segments[:5]]}..." +
-              (f" (showing first 5 of {self.num_segments})" if self.num_segments > 5 else ""))
-        print(f"[INFO] Features - Telemetry: {len(self.telemetry_features)}, " +
-              f"Actions: {len(self.action_features)}, Context: {len(self.context_features)}")
-        
-        # Preprocess all segments
+        # Preprocess all validated segments
         self._preprocess_segments()
     
     def _get_default_action_features(self) -> List[str]:
@@ -1575,70 +1319,65 @@ class TelemetryActionDataset(Dataset):
     
     def _preprocess_segments(self):
         """
-        Preprocess and normalize segmented telemetry data.
+        Preprocess and normalize fixed-size segmented telemetry data.
         
-        This method processes each segment individually while maintaining consistent
-        normalization across all segments. Each segment represents a coherent improvement
-        effort with variable length.
+        This method processes each fixed-size segment while maintaining consistent
+        normalization across all segments. All segments have the same fixed length.
         
         Processing steps:
         1. Collect all data points from all segments for global normalization
         2. Build separate matrices for telemetry, actions, and context features
         3. Fit scalers on the complete dataset for consistent normalization
-        4. Store processed segments with normalized features
+        4. Store processed segments as tensors ready for batch processing
         """
-        print("[INFO] Preprocessing segmented data...")
+        print("[INFO] Preprocessing fixed-size segmented data...")
         
         # Collect all data points from all segments for global normalization
         all_telemetry_data = []
         all_action_data = []
         all_context_data = []
         
-        for tel_segment, ctx_segment in zip(self.telemetry_segments, self.enriched_contextual_segments):
-            all_telemetry_data.extend(tel_segment)
-            all_action_data.extend(tel_segment)  # Actions are in telemetry data
-            all_context_data.extend(ctx_segment)
+        for segment in self.combined_segments:
+            all_telemetry_data.extend(segment)
+            all_action_data.extend(segment)  # Actions are in combined data
         
         # Build global feature matrices for fitting scalers
-        global_telemetry_matrix = self._build_matrix(all_telemetry_data, self.telemetry_features)
+        global_input_matrix = self._build_matrix(all_telemetry_data, self.input_features)
         global_action_matrix = self._build_matrix(all_action_data, self.action_features)
-        global_context_matrix = self._build_context_matrix_canonical(all_context_data, self.context_features)
         
         # Fit scalers on global data for consistent normalization
-        self.telemetry_scaler = StandardScaler()
+        self.input_scaler = StandardScaler()
         self.action_scaler = StandardScaler()  
-        self.context_scaler = StandardScaler()
         
-        self.telemetry_scaler.fit(global_telemetry_matrix)
+        self.input_scaler.fit(global_input_matrix)
         self.action_scaler.fit(global_action_matrix)
-        self.context_scaler.fit(global_context_matrix)
         
-        # Process each segment individually with fitted scalers
-        self.processed_segments = []
-        for i, (tel_segment, ctx_segment) in enumerate(zip(self.telemetry_segments, self.enriched_contextual_segments)):
-            # Build matrices for this segment
-            seg_telemetry_matrix = self._build_matrix(tel_segment, self.telemetry_features)
-            seg_action_matrix = self._build_matrix(tel_segment, self.action_features)
-            seg_context_matrix = self._build_context_matrix_canonical(ctx_segment, self.context_features)
+        # Process segments as matrices for efficient batch processing
+        # IMPORTANT: Preserve temporal order within each segment for coherent driving sequences
+        input_matrices = []
+        action_matrices = []
+        
+        for segment in self.combined_segments:
+            # Build matrices for this segment (preserving temporal order)
+            seg_input_matrix = self._build_matrix(segment, self.input_features)
+            seg_action_matrix = self._build_matrix(segment, self.action_features)
             
             # Apply normalization
-            seg_telemetry_normalized = self.telemetry_scaler.transform(seg_telemetry_matrix)
+            seg_input_normalized = self.input_scaler.transform(seg_input_matrix)
             seg_action_normalized = self.action_scaler.transform(seg_action_matrix)
-            seg_context_normalized = self.context_scaler.transform(seg_context_matrix)
             
-            # Store processed segment
-            processed_segment = {
-                'telemetry': torch.tensor(seg_telemetry_normalized, dtype=torch.float32),
-                'actions': torch.tensor(seg_action_normalized, dtype=torch.float32),
-                'context': torch.tensor(seg_context_normalized, dtype=torch.float32),
-                'length': len(tel_segment)
-            }
-            self.processed_segments.append(processed_segment)
+            input_matrices.append(seg_input_normalized)
+            action_matrices.append(seg_action_normalized)
         
-        print(f"[INFO] Preprocessed {len(self.processed_segments)} segments")
-        print(f"[INFO] Global normalization: {global_telemetry_matrix.shape[0]} total samples")
-        print(f"[INFO] Feature dimensions - Telemetry: {global_telemetry_matrix.shape[1]}, " +
-              f"Actions: {global_action_matrix.shape[1]}, Context: {global_context_matrix.shape[1]}")
+        # Convert to tensors - shape: [num_segments, fixed_segment_length, features]
+        # Temporal order within each segment is preserved for coherent driving sequences
+        self.input_tensor = torch.tensor(np.array(input_matrices), dtype=torch.float32)
+        self.action_tensor = torch.tensor(np.array(action_matrices), dtype=torch.float32)
+        
+        print(f"[INFO] Preprocessed {len(input_matrices)} fixed-size segments")
+        print(f"[INFO] ✓ Temporal order preserved within each segment")
+        print(f"[INFO] Tensor shapes - Input: {self.input_tensor.shape}, Actions: {self.action_tensor.shape}")
+        print(f"[INFO] Global normalization: {global_input_matrix.shape[0]} total samples")
     
     def _build_matrix(self, data_list: List[Dict[str, Any]], feature_names: List[str]) -> np.ndarray:
         """Extract features and build a matrix from list of dictionaries"""
@@ -1688,7 +1427,7 @@ class TelemetryActionDataset(Dataset):
         """Return number of segments"""
         return self.num_segments
     
-    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Get a training segment
         
@@ -1696,51 +1435,102 @@ class TelemetryActionDataset(Dataset):
             idx: Segment index
             
         Returns:
-            Tuple of (telemetry_seq, context_seq, action_seq) as tensors
-            Each tensor has shape [segment_length, features] where segment_length
-            varies per segment
+            Tuple of (combined_input_seq, action_seq) as tensors
+            Each tensor has shape [fixed_segment_length, features]
         """
-        if idx >= len(self.processed_segments):
-            raise IndexError(f"Segment index {idx} out of range (0-{len(self.processed_segments)-1})")
+        if idx >= self.num_segments:
+            raise IndexError(f"Segment index {idx} out of range (0-{self.num_segments-1})")
         
-        segment = self.processed_segments[idx]
-        return segment['telemetry'], segment['context'], segment['actions']
+        return self.input_tensor[idx], self.action_tensor[idx]
     
     def get_feature_names(self) -> Tuple[List[str], List[str]]:
-        """Get telemetry and action feature names"""
-        return self.telemetry_features, self.action_features
-    
-    def get_context_feature_names(self) -> List[str]:
-        """Get context feature names in canonical order"""
-        return self.context_features
+        """Get input and action feature names"""
+        return self.input_features, self.action_features
     
     def get_scalers(self) -> Dict[str, StandardScaler]:
         """Get the fitted scalers for denormalization"""
         return {
-            'telemetry': self.telemetry_scaler,
-            'actions': self.action_scaler,
-            'context': self.context_scaler
+            'input': self.input_scaler,
+            'actions': self.action_scaler
         }
     
     def get_segment_info(self) -> Dict[str, Any]:
-        """Get information about the segments in the dataset"""
-        segment_lengths = [seg['length'] for seg in self.processed_segments]
+        """Get information about the fixed-size segments in the dataset"""
         return {
             'num_segments': self.num_segments,
-            'segment_lengths': segment_lengths,
-            'min_length': min(segment_lengths) if segment_lengths else 0,
-            'max_length': max(segment_lengths) if segment_lengths else 0,
-            'avg_length': sum(segment_lengths) / len(segment_lengths) if segment_lengths else 0,
-            'total_samples': sum(segment_lengths)
+            'fixed_segment_length': self.fixed_segment_length,
+            'total_samples': self.num_segments * self.fixed_segment_length,
+            'tensor_shapes': {
+                'input': list(self.input_tensor.shape),
+                'actions': list(self.action_tensor.shape)
+            }
         }
+    
+    @staticmethod
+    def validate_segments(combined_segments: List[List[Dict[str, Any]]],
+                         expected_length: int) -> Dict[str, Any]:
+        """
+        Validate combined segment data before creating dataset
+        
+        Args:
+            combined_segments: List of combined segments to validate
+            expected_length: Expected length for all segments
+            
+        Returns:
+            Dict with validation results and statistics
+        """
+        validation_result = {
+            'is_valid': True,
+            'num_segments': len(combined_segments),
+            'expected_length': expected_length,
+            'errors': [],
+            'warnings': [],
+            'statistics': {
+                'segment_lengths': [],
+                'valid_segments': 0,
+                'invalid_segments': 0
+            }
+        }
+        
+        if len(combined_segments) == 0:
+            validation_result['is_valid'] = False
+            validation_result['errors'].append("No segments provided")
+            return validation_result
+        
+        # Validate each segment
+        for i, segment in enumerate(combined_segments):
+            seg_len = len(segment)
+            validation_result['statistics']['segment_lengths'].append(seg_len)
+            
+            segment_valid = True
+            
+            if seg_len != expected_length:
+                validation_result['errors'].append(f"Segment {i}: length {seg_len} != expected {expected_length}")
+                segment_valid = False
+            
+            if segment_valid:
+                validation_result['statistics']['valid_segments'] += 1
+            else:
+                validation_result['statistics']['invalid_segments'] += 1
+                validation_result['is_valid'] = False
+        
+        # Add summary statistics
+        if validation_result['statistics']['segment_lengths']:
+            lengths = validation_result['statistics']['segment_lengths']
+            
+            validation_result['statistics'].update({
+                'length_range': (min(lengths), max(lengths)),
+                'all_segments_same_length': len(set(lengths)) == 1,
+            })
+        
+        return validation_result
 
 class ExpertActionTrainer:
     """
-    Segmented Trainer class for the Expert Action Transformer.
+    Fixed-Size Segmented Trainer class for the Expert Action Transformer.
     
-    This trainer handles segmented telemetry data where each training example
-    is a complete segment of variable length representing an improvement effort.
-    Training processes one segment at a time rather than using traditional batching.
+    This trainer handles fixed-size segmented telemetry data with efficient batch processing.
+    All segments have the same fixed length, enabling traditional batching for faster training.
     """
     
     def __init__(self,
@@ -1813,48 +1603,39 @@ class ExpertActionTrainer:
             dataset: Training dataset containing fitted scalers
         """
         scalers = dataset.get_scalers()
-        telemetry_scaler = scalers.get('telemetry')
-        context_scaler = scalers.get('context')
+        input_scaler = scalers.get('input')
         action_scaler = scalers.get('actions')  
         
         # Set scalers on the model
-        self.model.set_scalers(telemetry_scaler, context_scaler, action_scaler)
+        self.model.set_scalers(input_scaler, action_scaler)
         
-        print(f"[INFO] Set scalers on model - Telemetry: {'✓' if telemetry_scaler else '✗'}, Context: {'✓' if context_scaler else '✗'}, Action: {'✓' if action_scaler else '✗'}")
+        print(f"[INFO] Set scalers on model - Input: {'✓' if input_scaler else '✗'}, Action: {'✓' if action_scaler else '✗'}")
     
     def train_epoch(self, dataset: TelemetryActionDataset) -> float:
         """
-        Train for one epoch processing segments individually
-        
-        Unlike traditional batch training, this method processes each segment
-        individually since segments have variable lengths. Each segment represents
-        a complete improvement effort that should be learned as a coherent unit.
+        Train for one epoch using batch processing on fixed-size segments
         
         Args:
-            dataset: Segmented telemetry action dataset
+            dataset: Fixed-size segmented telemetry action dataset
             
         Returns:
-            Average loss across all segments
+            Average loss across all batches
         """
         self.model.train()
         total_loss = 0.0
-        num_segments = len(dataset)
+        num_batches = 0
         
-        # Get context feature names from the dataset
-        context_feature_names = dataset.get_context_feature_names()
+        # Create DataLoader for efficient batch processing
+        # NOTE: shuffle=False to preserve temporal order within segments
+        dataloader = DataLoader(dataset, batch_size=32, shuffle=False, num_workers=2)
         
-        print(f"[INFO] Training on {num_segments} segments...")
+        print(f"[INFO] Training on {len(dataset)} segments in batches...")
+        print(f"[INFO] Preserving temporal order within each segment (no shuffling)")
         
-        for segment_idx in range(num_segments):
-            # Get single segment (no batching due to variable lengths)
-            telemetry, context, target_actions = dataset[segment_idx]
-            
-            # Add batch dimension (batch_size=1 for single segment)
-            telemetry = telemetry.unsqueeze(0).to(self.device, non_blocking=self._cuda)
-            context = context.unsqueeze(0).to(self.device, non_blocking=self._cuda)
-            target_actions = target_actions.unsqueeze(0).to(self.device, non_blocking=self._cuda)
-            
-            segment_length = telemetry.shape[1]  # Actual length of this segment
+        for batch_combined_input, batch_target_actions in dataloader:
+            # Move to device
+            batch_combined_input = batch_combined_input.to(self.device, non_blocking=self._cuda)
+            batch_target_actions = batch_target_actions.to(self.device, non_blocking=self._cuda)
             
             self.optimizer.zero_grad(set_to_none=True)
 
@@ -1862,18 +1643,14 @@ class ExpertActionTrainer:
             with torch.autocast(device_type='cuda', dtype=self.amp_dtype, enabled=self._cuda and self.amp_dtype is not None):
                 # Forward pass with teacher forcing during training
                 predictions = self.model(
-                    telemetry=telemetry,
-                    context=context,
-                    target_actions=target_actions,  # Enable teacher forcing in training mode
-                    segment_length=segment_length
+                    combined_input=batch_combined_input,
+                    target_actions=batch_target_actions
                 )
             
             # Loss computation OUTSIDE autocast to ensure proper gradient scaling
-            loss = self.model.contextual_weighted_loss(
+            loss = self.model.standard_loss(
                 predictions=predictions, 
-                target_actions=target_actions,
-                context=context,
-                context_feature_names=context_feature_names
+                target_actions=batch_target_actions
             )
 
             # Backward + optimizer step (with AMP support)
@@ -1890,64 +1667,57 @@ class ExpertActionTrainer:
                 self.optimizer.step()
             
             total_loss += loss.item()
-            
-            # Progress reporting for long training
-            if (segment_idx + 1) % max(1, num_segments // 10) == 0:
-                avg_loss_so_far = total_loss / (segment_idx + 1)
-                print(f"  Processed {segment_idx + 1}/{num_segments} segments, "
-                      f"avg loss: {avg_loss_so_far:.6f}, "
-                      f"segment length: {segment_length}")
+            num_batches += 1
         
-        return total_loss / num_segments if num_segments > 0 else 0.0
+        return total_loss / num_batches if num_batches > 0 else 0.0
     
     def validate_epoch(self, dataset: TelemetryActionDataset) -> float:
         """
-        Validate for one epoch processing segments individually
+        Validate for one epoch using batch processing on fixed-size segments
         
         Args:
-            dataset: Validation dataset with segmented data
+            dataset: Validation dataset with fixed-size segmented data
             
         Returns:
-            Average validation loss across all segments
+            Average validation loss across all batches
         """
         self.model.eval()
         total_loss = 0.0
-        num_segments = len(dataset)
+        num_batches = 0
+        
+        # Create DataLoader for efficient batch processing
+        # NOTE: shuffle=False to preserve temporal order within segments
+        dataloader = DataLoader(dataset, batch_size=32, shuffle=False, num_workers=2)
         
         # Get context feature names from the dataset
         context_feature_names = dataset.get_context_feature_names()
         
         with torch.no_grad():
-            for segment_idx in range(num_segments):
-                # Get single segment
-                telemetry, context, target_actions = dataset[segment_idx]
-                
-                # Add batch dimension
-                telemetry = telemetry.unsqueeze(0).to(self.device, non_blocking=self._cuda).float()
-                context = context.unsqueeze(0).to(self.device, non_blocking=self._cuda).float()
-                target_actions = target_actions.unsqueeze(0).to(self.device, non_blocking=self._cuda).float()
-                
-                segment_length = telemetry.shape[1]
+            for batch_telemetry, batch_context, batch_target_actions in dataloader:
+                # Move to device
+                batch_telemetry = batch_telemetry.to(self.device, non_blocking=self._cuda).float()
+                batch_context = batch_context.to(self.device, non_blocking=self._cuda).float()
+                batch_target_actions = batch_target_actions.to(self.device, non_blocking=self._cuda).float()
                 
                 # Forward pass - no mixed precision for validation to avoid dtype issues
                 predictions = self.model(
-                    telemetry=telemetry,
-                    context=context,
-                    target_actions=None,  # No teacher forcing in validation
-                    segment_length=segment_length
+                    telemetry=batch_telemetry,
+                    context=batch_context,
+                    target_actions=None  # No teacher forcing in validation
                 )
                 
                 # Loss computation
                 loss = self.model.contextual_weighted_loss(
                     predictions=predictions, 
-                    target_actions=target_actions,
-                    context=context,
+                    target_actions=batch_target_actions,
+                    context=batch_context,
                     context_feature_names=context_feature_names
                 )
                 
                 total_loss += loss.item()
+                num_batches += 1
         
-        return total_loss / num_segments if num_segments > 0 else 0.0
+        return total_loss / num_batches if num_batches > 0 else 0.0
     
     def train(self, 
               train_dataset: TelemetryActionDataset,
@@ -2197,167 +1967,3 @@ class ExpertActionTrainer:
             'model_parameters': sum(p.numel() for p in self.model.parameters()),
             'trainable_parameters': sum(p.numel() for p in self.model.parameters() if p.requires_grad)
         })
-
-
-# Utility functions for converting to segmented format
-def create_segments_from_continuous_data(telemetry_data: List[Dict[str, Any]], 
-                                        enriched_contextual_data: List[Dict[str, Any]], 
-                                        segment_length: int = 50,
-                                        overlap: int = 0) -> Tuple[List[List[Dict[str, Any]]], List[List[Dict[str, Any]]]]:
-    """
-    Convert continuous telemetry data into segments for the new segmented model.
-    
-    This utility function helps migrate from the old continuous data format to the new
-    segmented format required by the updated transformer model.
-    
-    Args:
-        telemetry_data: Continuous list of telemetry records
-        enriched_contextual_data: Continuous list of contextual records
-        segment_length: Length of each segment (default: 50)
-        overlap: Number of overlapping samples between segments (default: 0)
-        
-    Returns:
-        Tuple of (telemetry_segments, contextual_segments) where each is a list of segments
-    """
-    assert len(telemetry_data) == len(enriched_contextual_data), \
-        "Telemetry and contextual data must have same length"
-    
-    telemetry_segments = []
-    contextual_segments = []
-    
-    total_samples = len(telemetry_data)
-    step_size = segment_length - overlap
-    
-    for start_idx in range(0, total_samples - segment_length + 1, step_size):
-        end_idx = start_idx + segment_length
-        
-        tel_segment = telemetry_data[start_idx:end_idx]
-        ctx_segment = enriched_contextual_data[start_idx:end_idx]
-        
-        telemetry_segments.append(tel_segment)
-        contextual_segments.append(ctx_segment)
-    
-    print(f"[INFO] Created {len(telemetry_segments)} segments from {total_samples} continuous samples")
-    print(f"[INFO] Segment parameters: length={segment_length}, overlap={overlap}, step_size={step_size}")
-    
-    return telemetry_segments, contextual_segments
-
-
-def create_custom_segments(telemetry_data: List[Dict[str, Any]], 
-                          enriched_contextual_data: List[Dict[str, Any]], 
-                          segment_boundaries: List[Tuple[int, int]]) -> Tuple[List[List[Dict[str, Any]]], List[List[Dict[str, Any]]]]:
-    """
-    Create custom segments based on specific boundary indices.
-    
-    This function allows creating segments based on semantic boundaries like:
-    - Corner approaches and exits
-    - Lap sections
-    - Training session parts
-    - Any other meaningful racing segments
-    
-    Args:
-        telemetry_data: Continuous list of telemetry records
-        enriched_contextual_data: Continuous list of contextual records
-        segment_boundaries: List of (start_idx, end_idx) tuples defining segments
-        
-    Returns:
-        Tuple of (telemetry_segments, contextual_segments)
-    """
-    assert len(telemetry_data) == len(enriched_contextual_data), \
-        "Telemetry and contextual data must have same length"
-    
-    telemetry_segments = []
-    contextual_segments = []
-    
-    for start_idx, end_idx in segment_boundaries:
-        if start_idx < 0 or end_idx > len(telemetry_data) or start_idx >= end_idx:
-            print(f"[WARNING] Invalid segment boundary ({start_idx}, {end_idx}), skipping")
-            continue
-            
-        tel_segment = telemetry_data[start_idx:end_idx]
-        ctx_segment = enriched_contextual_data[start_idx:end_idx]
-        
-        telemetry_segments.append(tel_segment)
-        contextual_segments.append(ctx_segment)
-    
-    segment_lengths = [len(seg) for seg in telemetry_segments]
-    print(f"[INFO] Created {len(telemetry_segments)} custom segments")
-    print(f"[INFO] Segment lengths: min={min(segment_lengths)}, max={max(segment_lengths)}, avg={sum(segment_lengths)/len(segment_lengths):.1f}")
-    
-    return telemetry_segments, contextual_segments
-
-
-def segment_by_improvement_attempts(telemetry_data: List[Dict[str, Any]], 
-                                   enriched_contextual_data: List[Dict[str, Any]], 
-                                   improvement_indicator_key: str = 'expert_gap_total',
-                                   min_segment_length: int = 10,
-                                   max_segment_length: int = 200) -> Tuple[List[List[Dict[str, Any]]], List[List[Dict[str, Any]]]]:
-    """
-    Automatically segment data based on improvement attempts.
-    
-    This function analyzes the improvement indicator (e.g., gap to expert) and creates
-    segments where the driver shows consistent improvement effort. Segments are created
-    when the improvement trajectory changes significantly.
-    
-    Args:
-        telemetry_data: Continuous list of telemetry records
-        enriched_contextual_data: Continuous list of contextual records  
-        improvement_indicator_key: Key in contextual data indicating improvement (e.g., 'expert_gap_total')
-        min_segment_length: Minimum length for a segment
-        max_segment_length: Maximum length for a segment
-        
-    Returns:
-        Tuple of (telemetry_segments, contextual_segments)
-    """
-    assert len(telemetry_data) == len(enriched_contextual_data), \
-        "Telemetry and contextual data must have same length"
-    
-    # Extract improvement indicator values
-    improvement_values = []
-    for ctx_record in enriched_contextual_data:
-        value = ctx_record.get(improvement_indicator_key, 0.0)
-        try:
-            improvement_values.append(float(value))
-        except (ValueError, TypeError):
-            improvement_values.append(0.0)
-    
-    if not improvement_values:
-        print("[WARNING] No improvement indicator values found, using fixed segments")
-        return create_segments_from_continuous_data(telemetry_data, enriched_contextual_data, 50, 0)
-    
-    # Find segment boundaries based on improvement trend changes
-    segment_boundaries = []
-    current_start = 0
-    
-    for i in range(min_segment_length, len(improvement_values)):
-        # Check if we should end current segment
-        should_segment = False
-        
-        # End if we've reached maximum segment length
-        if i - current_start >= max_segment_length:
-            should_segment = True
-        
-        # End if improvement trend changes significantly
-        elif i >= min_segment_length:
-            # Calculate improvement trend over recent window
-            window_size = min(10, i - current_start)
-            if window_size >= 3:
-                recent_trend = improvement_values[i-window_size:i]
-                overall_trend = improvement_values[current_start:i]
-                
-                # Simple trend change detection (can be made more sophisticated)
-                recent_avg = sum(recent_trend) / len(recent_trend)
-                overall_avg = sum(overall_trend) / len(overall_trend)
-                
-                if abs(recent_avg - overall_avg) > 0.1 * abs(overall_avg) and i - current_start >= min_segment_length:
-                    should_segment = True
-        
-        if should_segment:
-            segment_boundaries.append((current_start, i))
-            current_start = i
-    
-    # Add final segment
-    if current_start < len(improvement_values) - min_segment_length:
-        segment_boundaries.append((current_start, len(improvement_values)))
-    
-    return create_custom_segments(telemetry_data, enriched_contextual_data, segment_boundaries)
