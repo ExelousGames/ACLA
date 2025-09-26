@@ -210,17 +210,17 @@ class ExpertActionTransformer(nn.Module):
     This model learns how a NON-EXPERT DRIVER progressively improves their driving actions 
     over time to reach expert-level performance. It does NOT directly predict expert actions.
     Instead, it models the learning trajectory of a non-expert driver as they receive 
-    guidance and improve toward expert-level performance.
+    gap-based guidance and improve toward expert-level performance.
     
     Think of it as modeling the "learning curve" of a student driver who is getting coaching
-    from an expert instructor. The model learns: "Given where I am now (non-expert state) 
-    and what the expert target looks like (contextual guidance), what should my next 
+    based on performance gaps. The model learns: "Given where I am now (non-expert state) 
+    and how far I am from expert performance (gap features), what should my next 
     improved action be?"
     
     CORE FUNCTIONALITY:
     1. PROGRESSION MODELING: Models how non-expert actions evolve toward expert performance
-    2. GAP-AWARE LEARNING: Uses delta-to-expert features to understand improvement direction
-    3. CONTEXTUAL GUIDANCE: Uses expert targets as contextual guidance, not direct output
+    2. GAP-AWARE LEARNING: Uses expert-to-non-expert gap features to understand improvement direction
+    3. CONTEXTUAL GUIDANCE: Uses performance gaps as contextual guidance, not direct expert actions
     4. SEQUENTIAL IMPROVEMENT: Learns step-by-step improvement sequences over time
     
     PRACTICAL APPLICATIONS:
@@ -231,16 +231,20 @@ class ExpertActionTransformer(nn.Module):
     
     HOW IT WORKS:
     The model takes non-expert telemetry and enriched contextual data that includes:
-    - Expert optimal targets (what the expert would do)
-    - Delta-to-expert gap features (how far off the non-expert currently is)
+    - Expert-to-non-expert gap features (velocity alignment, speed difference, distance to expert line)
     - Track/corner contextual information
+    - Tire grip and environmental context
     
     It then predicts what the non-expert driver's NEXT IMPROVED ACTIONS should be,
     not what the expert would do. This models the gradual improvement process.
     
     INPUT DATA:
     - Non-expert telemetry: Current non-expert driver's state and actions
-    - Enriched context: Expert targets + gap features + track/environmental context
+    - Gap features: Performance differences from expert (ExpertFeatureCatalog.ContextFeature)
+      * EXPERT_VELOCITY_ALIGNMENT: How aligned current velocity is with expert direction
+      * SPEED_DIFFERENCE: Difference between current and optimal expert speed
+      * DISTANCE_TO_EXPERT_LINE: Distance from current position to expert racing line
+    - Environmental context: Track info, tire grip, corner identification features
     
     OUTPUT PREDICTIONS:
     - Non-expert's next improved actions: The driver's improved gas, brake, steering, etc.
@@ -248,11 +252,11 @@ class ExpertActionTransformer(nn.Module):
     
     TRAINING PROCESS:
     The model is trained on sequences of non-expert telemetry data where drivers are 
-    progressively improving over time. Expert targets are provided as contextual guidance
-    through the enriched_contextual_data, helping the model understand the improvement direction.
+    progressively improving over time. Gap features are computed by comparing non-expert
+    actions to expert performance, providing the model with improvement direction signals.
     
     Architecture:
-    - Input: Non-expert telemetry + enriched context (expert targets, gaps, track info)
+    - Input: Non-expert telemetry + gap features + environmental context
     - Output: Non-expert's improved action sequences (learning trajectory)
     - Uses attention mechanism to focus on relevant improvement patterns
     """
@@ -381,11 +385,15 @@ class ExpertActionTransformer(nn.Module):
         - Decoder generates action sequences for the segment
         
         Args:
-            combined_input: Combined telemetry and context features [batch_size, sequence_length, input_features]
-            target_actions: Target action sequences [batch_size, sequence_length, action_features]
+            combined_input: Combined telemetry and gap features [batch_size, sequence_length, input_features]
+                           Contains non-expert telemetry + expert-to-non-expert gap features +
+                           environmental context (track, tire, corner info)
+            target_actions: Target improved action sequences [batch_size, sequence_length, action_features]
+                           These are the improved non-expert actions the model should learn to predict
             
         Returns:
-            Predicted action sequence [batch_size, sequence_length, action_features]
+            Predicted improved action sequence [batch_size, sequence_length, action_features]
+            Shows how non-expert driver should improve actions toward expert performance
         """
         batch_size = combined_input.shape[0]
         seq_len = combined_input.shape[1]
@@ -411,10 +419,8 @@ class ExpertActionTransformer(nn.Module):
         else:
             # INFERENCE MODE: Use autoregressive generation for realistic prediction
             decoder_output = self._generate_actions_autoregressive(memory, self.sequence_length)
-            # During inference, apply inverse scaling to get original action values
-            unscaled_output = self._apply_action_inverse_scaling(decoder_output)
-            return unscaled_output
-    
+            return decoder_output
+
     def standard_loss(self, 
                      predictions: torch.Tensor, 
                      target_actions: torch.Tensor) -> torch.Tensor:
@@ -447,7 +453,7 @@ class ExpertActionTransformer(nn.Module):
     
     def _generate_actions_autoregressive(self, memory: torch.Tensor, seq_len: int) -> torch.Tensor:
         """
-        Generate expert racing actions autoregressively during real-time inference.
+        Generate improved racing actions autoregressively during real-time inference.
         
         WHAT IS AUTOREGRESSIVE GENERATION?
         Autoregressive generation is a sequential prediction approach where each new prediction
@@ -486,13 +492,13 @@ class ExpertActionTransformer(nn.Module):
         
         Step C: TRANSFORMER DECODING
           - Feeds current sequence + encoded telemetry through decoder
-          - Decoder attends to relevant patterns from training (expert demonstrations)
-          - Produces high-dimensional representation of optimal next action
+          - Decoder attends to relevant patterns from training (progression demonstrations)
+          - Produces high-dimensional representation of improved next action
         
         Step D: ACTION PROJECTION
-          - Converts high-dimensional decoder output to concrete racing actions
+          - Converts high-dimensional decoder output to concrete improved racing actions
           - Maps internal representation → [gas, brake, steer_angle, gear]
-          - These are the actual control inputs driver/car should execute
+          - These are the improved control inputs non-expert driver should execute
         
         Step E: SEQUENCE EXTENSION
           - Embeds predicted action back into model's internal representation
@@ -505,24 +511,24 @@ class ExpertActionTransformer(nn.Module):
         
         RACING-SPECIFIC EXAMPLES:
         
-        Corner Approach Sequence:
-        T=0: Model sees "approaching corner at 180 km/h"
-        → Predicts: "Start braking, 60% brake pressure" 
-        T=1: Model sees "approaching corner + predicted braking"
-        → Predicts: "Continue braking, 80% brake pressure, slight left turn"
-        T=2: Model sees "corner entry + previous braking/turning"
-        → Predicts: "Release brake, increase steering, prepare for apex"
-        T=3: Model sees "at apex + full turning sequence"
-        → Predicts: "Begin throttle application, reduce steering"
+        Corner Approach Improvement Sequence:
+        T=0: Model sees "approaching corner at 180 km/h + speed_difference: +15 km/h too fast"
+        → Predicts: "Start braking earlier, 60% brake pressure" 
+        T=1: Model sees "approaching corner + predicted braking + distance_to_expert_line: 2m outside"
+        → Predicts: "Continue braking, 80% brake pressure, turn in more to close line gap"
+        T=2: Model sees "corner entry + previous actions + expert_velocity_alignment: 0.7"
+        → Predicts: "Release brake, increase steering to better align with expert trajectory"
+        T=3: Model sees "at apex + full turning sequence + improved alignment"
+        → Predicts: "Begin throttle application, reduce steering, approach expert line"
         
-        This creates coherent racing strategy where each action logically follows from
-        previous actions, just like expert human drivers plan ahead.
+        This creates coherent improvement strategy where each action logically follows from
+        previous actions, guided by gap features showing distance from expert performance.
         
         TECHNICAL ADVANTAGES:
         1. COHERENT SEQUENCES: Each action considers full context of previous decisions
-        2. ADAPTIVE PLANNING: Can adjust strategy based on predicted outcomes
+        2. ADAPTIVE PLANNING: Can adjust strategy based on predicted outcomes and gap feedback
         3. TEMPORAL CONSISTENCY: Maintains logical action flow over time
-        4. EXPERT MIMICKING: Replicates how expert drivers think sequentially
+        4. GAP-AWARE IMPROVEMENT: Uses performance gaps to guide learning direction
         
         PERFORMANCE CHARACTERISTICS:
         - Computational: O(seq_len²) due to growing attention sequence
@@ -531,14 +537,15 @@ class ExpertActionTransformer(nn.Module):
         - Real-time: Suitable for real-time racing applications (millisecond latency)
         
         Args:
-            memory: Encoded current telemetry state [batch_size, input_seq_len, d_model]
-                   Contains transformer encoder's understanding of current racing situation
+            memory: Encoded telemetry and gap feature state [batch_size, input_seq_len, d_model]
+                   Contains transformer encoder's understanding of current racing situation and 
+                   performance gaps relative to expert
             seq_len: Number of future action steps to predict (typically 10-20 for racing)
                     Represents prediction horizon: how far ahead to plan
         
         Returns:
-            Complete action sequence [batch_size, seq_len, action_features]
-            Sequential racing actions from immediate next step through prediction horizon
+            Complete improved action sequence [batch_size, seq_len, action_features]
+            Sequential improved non-expert actions from immediate next step through prediction horizon
             Format: [gas%, brake%, steer_angle, gear] per time step
         """
         batch_size = memory.shape[0]
@@ -597,9 +604,9 @@ class ExpertActionTransformer(nn.Module):
         - Maintains causal structure through attention masking
         
         Args:
-            memory: Encoded telemetry state [batch_size, input_seq_len, d_model]
-            target_actions: Ground truth actions [batch_size, seq_len, action_features]
-                           These are the correct actions the model should learn to predict
+            memory: Encoded telemetry and gap feature state [batch_size, input_seq_len, d_model]
+            target_actions: Ground truth improved actions [batch_size, seq_len, action_features]
+                           These are the correct improved non-expert actions the model should learn to predict
         
         Returns:
             Predicted actions [batch_size, seq_len, action_features]
@@ -612,7 +619,7 @@ class ExpertActionTransformer(nn.Module):
         start_tokens = torch.zeros(batch_size, 1, self.output_features_count, device=device)
         
         # Shift target actions right: [action1, action2, action3] -> [start, action1, action2]
-        # This ensures decoder input at position i is target at position i-1
+        # model sees start token at t=0, and try to predict action1 at t=1, etc.
         decoder_input_actions = torch.cat([start_tokens, target_actions[:, :-1, :]], dim=1)  # [B, L, action_features]
         
         # Embed the action sequence for decoder processing
@@ -640,20 +647,17 @@ class ExpertActionTransformer(nn.Module):
         return predictions
     
     def predict_segment_progression(self, 
-                                  combined_input: torch.Tensor,
-                                  temperature: float = 1.0,
-                                  deterministic: bool = False) -> torch.Tensor:
+                                  combined_input: torch.Tensor) -> torch.Tensor:
         """
         Predict progression actions for a complete segment
         
-        This method processes a variable-length segment and predicts the non-expert
+        This method processes a fixed-length segment and predicts the non-expert
         driver's improved actions throughout that segment. Each segment represents
         a coherent improvement effort (e.g., a corner approach, lap section).
         
         Args:
-            combined_input: Combined telemetry and context features [batch_size, segment_len, input_features]
-                           Contains expert targets and gap features to guide improvement
-            temperature: Temperature for sampling (higher = more random) - currently unused
+            combined_input: Combined telemetry and gap features [batch_size, segment_len, input_features]
+                           Contains non-expert telemetry + expert-to-non-expert gap features to guide improvement
             deterministic: If True, use greedy decoding instead of sampling - currently unused
             
         Returns:
@@ -668,37 +672,7 @@ class ExpertActionTransformer(nn.Module):
                 combined_input=combined_input, 
                 target_actions=None
             )
-                
-            # Apply activation functions for different action types
-            actions = self._apply_action_constraints(decoder_output)
-            
-            return actions
     
-    def _apply_action_constraints(self, raw_actions: torch.Tensor) -> torch.Tensor:
-        """
-        Apply physical constraints to predicted actions
-        
-        Args:
-            raw_actions: Raw action predictions [batch_size, seq_len, action_features]
-            
-        Returns:
-            Constrained actions [batch_size, seq_len, action_features]
-        """
-        # Assume action order: [gas, brake, steer_angle, gear]
-        constrained = raw_actions.clone()
-        
-        # Gas and brake: [0, 1]
-        constrained[..., 0] = torch.sigmoid(raw_actions[..., 0])  # gas
-        constrained[..., 1] = torch.sigmoid(raw_actions[..., 1])  # brake
-        
-        # Steering: [-1, 1]  
-        constrained[..., 2] = torch.tanh(raw_actions[..., 2])     # steer_angle
-        
-        # Gear: typically [1, 6], use clamp for discrete values
-        if raw_actions.shape[-1] > 3:
-            constrained[..., 3] = torch.clamp(raw_actions[..., 3], 1, 6)  # gear
-        
-        return constrained
     
     def _apply_action_inverse_scaling(self, scaled_actions: torch.Tensor) -> torch.Tensor:
         """
@@ -717,7 +691,7 @@ class ExpertActionTransformer(nn.Module):
         device = scaled_actions.device
         original_shape = scaled_actions.shape
         
-        # Reshape to 2D: (batch_size * seq_len, action_features)
+        # Reshape to 2D: (batch_size * seq_l_generate_actions_teacher_forcingen, action_features)
         actions_2d = scaled_actions.view(-1, original_shape[-1]).cpu().numpy()
         
         # Apply inverse transform
@@ -760,24 +734,28 @@ class ExpertActionTransformer(nn.Module):
                               context_data: Optional[Dict[str, Any]] = None,
                               sequence_length: int = 10) -> Dict[str, Any]:
         """
-        Generate human-readable expert driving predictions from current telemetry data.
+        Generate human-readable driving improvement predictions from current telemetry data.
         
-        This function serves as the main interface for real-time racing guidance, converting
-        raw telemetry data into actionable driving advice that can be easily understood
-        by human drivers or displayed in user interfaces.
+        This function serves as the main interface for real-time racing coaching, converting
+        raw telemetry data into actionable driving advice that shows how a non-expert driver
+        should improve their actions to move toward expert-level performance.
         
         Process Flow:
         1. Validate and preprocess input telemetry data
         2. Convert telemetry to model input format (normalization, feature extraction)
-        3. Generate expert action sequence predictions using the trained model
-            (optionally conditioned on delta-to-expert gap context)
+        3. Generate improved action sequence predictions using the trained model
+            (conditioned on expert-to-non-expert gap context features)
         4. Convert raw numerical predictions to human-readable advice
         5. Format everything into structured JSON response
         
         Args:
             current_telemetry: Dictionary containing current driver telemetry data
                               Expected keys: speed, position, forces, steering, throttle, brake, etc.
-            context_data: Optional dictionary with track/tire context information
+            context_data: Optional dictionary with gap and environmental context information
+                         Should include gap features from ExpertFeatureCatalog.ContextFeature:
+                         - expert_velocity_alignment: How aligned current velocity is with expert
+                         - speed_difference: Speed difference from expert optimal
+                         - distance_to_expert_line: Distance from expert racing line
                          Can include: corner info, tire grip levels, weather conditions
             sequence_length: Number of future action steps to predict (default: 10)
             
@@ -786,12 +764,6 @@ class ExpertActionTransformer(nn.Module):
             {
                 "status": "success" | "error",
                 "timestamp": ISO timestamp,
-                "current_situation": {
-                    "speed": "120 km/h",
-                    "track_position": "mid-corner",
-                    "racing_line": "optimal" | "suboptimal",
-                    "tire_grip": "good" | "losing grip"
-                },
                 "sequence_predictions": [
                     {
                         "step": 1,
@@ -801,12 +773,7 @@ class ExpertActionTransformer(nn.Module):
                         "brake": 0.6,
                         "steering": -0.15
                     }
-                ],
-                "contextual_info": {
-                    "track_sector": "Sector 2, Turn 5",
-                    "weather_impact": "Dry conditions, full grip",
-                    "optimal_speed_estimate": "95 km/h for current section"
-                }
+                ]
             }
         """
         try:
@@ -820,32 +787,28 @@ class ExpertActionTransformer(nn.Module):
             combined_tensor = torch.tensor([combined_features], dtype=torch.float32).unsqueeze(0).to(device)
             
             # Generate predictions
-            self.eval()
-            with torch.no_grad():
-                predictions = self.predict_segment_progression(
-                    combined_input=combined_tensor,
-                    deterministic=True
-                )
+            try:
+                self.eval()
+                with torch.no_grad():
+                    predictions = self.predict_segment_progression(
+                        combined_input=combined_tensor
+                    )
+                    # During inference, apply inverse scaling to get original action values
+                    predictions = self._apply_action_inverse_scaling(predictions)
+            except Exception as e:
+                raise RuntimeError(f"Error during model prediction: {str(e)}")
             
             # Convert predictions to numpy for processing
             predictions_np = predictions.cpu().numpy()[0]  # Remove batch dimension
             
-            # Analyze current situation
-            current_situation = self._analyze_current_situation(current_telemetry, context_data)
-            
             # Create sequence predictions
             sequence_predictions = self._create_sequence_predictions(predictions_np, sequence_length)
-            
-            # Contextual information
-            contextual_info = self._extract_prediction_contextual_info(current_telemetry, context_data)
-            
+
             # Build response
             response = {
                 "status": "success",
                 "timestamp": datetime.now().isoformat(),
-                "current_situation": current_situation,
                 "sequence_predictions": sequence_predictions,
-                "contextual_info": contextual_info
             }
             
             return make_json_safe(response)
@@ -861,14 +824,17 @@ class ExpertActionTransformer(nn.Module):
     
     def _extract_combined_features(self, telemetry: Dict[str, Any], context_data: Optional[Dict[str, Any]] = None) -> List[float]:
         """
-        Extract combined telemetry and context features for model input.
+        Extract combined telemetry and gap features for model input.
         
         Args:
-            telemetry: Dictionary containing telemetry data
-            context_data: Optional dictionary containing context data
+            telemetry: Dictionary containing non-expert telemetry data
+            context_data: Optional dictionary containing gap features from ExpertFeatureCatalog.ContextFeature:
+                         - expert_velocity_alignment: Alignment with expert velocity direction
+                         - speed_difference: Speed difference from expert optimal
+                         - distance_to_expert_line: Distance from expert racing line
             
         Returns:
-            List[float]: Combined features for model input
+            List[float]: Combined features for model input (telemetry + gap features + environmental context)
         """
         # Extract telemetry features
         try:
@@ -916,43 +882,6 @@ class ExpertActionTransformer(nn.Module):
 
         return combined_features
     
-    def _analyze_current_situation(self, telemetry: Dict[str, Any], context: Optional[Dict[str, Any]]) -> Dict[str, str]:
-        """Analyze current driving situation"""
-        speed = float(telemetry.get('Physics_speed_kmh', 0))
-        steer_angle = float(telemetry.get('Physics_steer_angle', 0))
-        throttle = float(telemetry.get('Physics_gas', 0))
-        brake = float(telemetry.get('Physics_brake', 0))
-        
-        # Determine track position
-        if abs(steer_angle) > 0.1:
-            track_position = "in-corner"
-        elif throttle > 0.8:
-            track_position = "straight-line"
-        else:
-            track_position = "corner-approach"
-        
-        # Determine racing line quality
-        if abs(steer_angle) < 0.05 and speed > 100:
-            racing_line = "optimal"
-        else:
-            racing_line = "suboptimal"
-        
-        # Tire grip assessment (simplified)
-        g_lateral = abs(float(telemetry.get('Physics_g_force_x', 0)))
-        if g_lateral < 1.0:
-            tire_grip = "good grip"
-        elif g_lateral < 1.5:
-            tire_grip = "moderate grip"
-        else:
-            tire_grip = "losing grip"
-        
-        return {
-            "speed": f"{speed:.0f} km/h",
-            "track_position": track_position,
-            "racing_line": racing_line,
-            "tire_grip": tire_grip
-        }
-    
     def _create_sequence_predictions(self, predictions: np.ndarray, sequence_length: int) -> List[Dict[str, Any]]:
         """Create sequence of future predictions"""
         sequence = []
@@ -963,9 +892,9 @@ class ExpertActionTransformer(nn.Module):
             # Determine main action for this step - now only 4 actions: [gas, brake, steer_angle, gear]
             gas, brake, steering, gear = pred[0], pred[1], pred[2], int(pred[3])
             
-            if brake > 0.3:
+            if brake > 0.1:
                 action = "Apply brakes"
-            elif gas > 0.7:
+            elif gas > 0.1:
                 action = "Accelerate"
             elif abs(steering) > 0.1:
                 direction = "right" if steering > 0 else "left"
@@ -984,35 +913,6 @@ class ExpertActionTransformer(nn.Module):
             })
         
         return sequence
-    
-    def _extract_prediction_contextual_info(self, telemetry: Dict[str, Any], context: Optional[Dict[str, Any]]) -> Dict[str, str]:
-        """Extract contextual information for response"""
-        info = {}
-        
-        # Track information
-        position = float(telemetry.get('Graphics_normalized_car_position', 0))
-        if position < 0.33:
-            info["track_sector"] = "Sector 1"
-        elif position < 0.66:
-            info["track_sector"] = "Sector 2" 
-        else:
-            info["track_sector"] = "Sector 3"
-        
-        # Weather (simplified)
-        info["weather_impact"] = "Dry conditions, full grip available"
-        
-        # Optimal speed for current section (estimated)
-        current_speed = float(telemetry.get('Physics_speed_kmh', 0))
-        steer_angle = abs(float(telemetry.get('Physics_steer_angle', 0)))
-        
-        if steer_angle > 0.2:
-            optimal_speed = current_speed * 0.9  # Corner
-        else:
-            optimal_speed = current_speed * 1.1  # Straight
-        
-        info["optimal_speed_estimate"] = f"{optimal_speed:.0f} km/h for current section"
-        
-        return info
     
     def serialize_model(self) -> Dict[str, Any]:
         """
@@ -1335,7 +1235,6 @@ class TelemetryActionDataset(Dataset):
         # Collect all data points from all segments for global normalization
         all_telemetry_data = []
         all_action_data = []
-        all_context_data = []
         
         for segment in self.combined_segments:
             all_telemetry_data.extend(segment)
