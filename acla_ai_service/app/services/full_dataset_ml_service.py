@@ -1471,7 +1471,7 @@ class Full_dataset_TelemetryMLService:
                 "error": str(e)
             }
 
-    async def enriched_contextual_data(self, top_telemetry_list: List[Dict[str, Any]], bottom_telemetry_list: List[Dict[str, Any]], track_name: str, segment_length: int) -> List[List[Dict[str, Any]]]:
+    async def enriched_contextual_data(self, top_laps_telemetry_list: List[Dict[str, Any]], bottom_laps_telemetry_list: List[Dict[str, Any]], track_name: str, segment_length: int) -> List[List[Dict[str, Any]]]:
         """
         Extract enriched contextual features from telemetry data using trained models. it adds expert state, corner identification, and tire grip features,
         and helps transformer model to better understand track geometry, physics constraints, extra expert insights to differentiate actions that
@@ -1488,21 +1488,21 @@ class Full_dataset_TelemetryMLService:
             List[List[Dict[str, Any]]] - List of combined telemetry+context segments
         """
 
-
-        if not bottom_telemetry_list:
+        print(f"Bottom laps telemetry list length: {len(bottom_laps_telemetry_list)}")
+        if not bottom_laps_telemetry_list:
             print("[WARNING] No telemetry data provided for enrichment")
             return []
         
         try:
             # Use all telemetry data for both training enrichment models and feature extraction
-            bottom_training_telemetry_list = bottom_telemetry_list.copy()
-            top_training_telemetry_list = top_telemetry_list.copy()
+            bottom_laps_training_telemetry_list = bottom_laps_telemetry_list.copy()
+            top_laps_training_telemetry_list = top_laps_telemetry_list.copy()
 
             self._print_section_divider("TRAINING IMITATION LEARNING MODEL")
             try:        
                 imitation_learning = ExpertImitateLearningService()
                 # Train imitation model only on top (expert) telemetry laps
-                imitation_result = imitation_learning.train_ai_model(top_training_telemetry_list)
+                imitation_result = imitation_learning.train_ai_model(top_laps_training_telemetry_list)
             
                 # Extract only serialized data for backend storage (same fix as in train_imitation_model)
                 serialized_data = imitation_result.get("serialized_modelData", {})
@@ -1513,7 +1513,7 @@ class Full_dataset_TelemetryMLService:
                 model_data_for_backend = {
                     "serialized_modelData": serialized_data,
                     "training_info": {
-                        "telemetry_records_count": len(top_training_telemetry_list),
+                        "telemetry_records_count": len(top_laps_training_telemetry_list),
                         "training_timestamp": datetime.now().isoformat()
                     }
                 }
@@ -1526,7 +1526,7 @@ class Full_dataset_TelemetryMLService:
                     model_data=model_data_for_backend,
                     metadata={
                         "training_timestamp": datetime.now().isoformat(),
-                        "telemetry_records_processed": len(top_training_telemetry_list)
+                        "telemetry_records_processed": len(top_laps_training_telemetry_list)
                     },
                     is_active=True
                 )
@@ -1538,7 +1538,7 @@ class Full_dataset_TelemetryMLService:
             try:
                 from .corner_identification_unsupervised_service import CornerIdentificationUnsupervisedService
                 corner_service = CornerIdentificationUnsupervisedService()
-                corner_model = await corner_service.learn_track_corner_patterns(top_training_telemetry_list)
+                corner_model = await corner_service.learn_track_corner_patterns(top_laps_training_telemetry_list)
 
                 corner_serialized = corner_service.serialize_corner_identification_model(track_name=track_name, car_name="all_cars")
                 await self.backend_service.save_ai_model(
@@ -1562,7 +1562,7 @@ class Full_dataset_TelemetryMLService:
                 # The tire grip service is now heuristic-only: it computes features deterministically from physics telemetry
                 from .tire_grip_analysis_service import TireGripAnalysisService
                 tire_service = TireGripAnalysisService()
-                tire_grip_model = await tire_service.train_tire_grip_model(bottom_training_telemetry_list)
+                tire_grip_model = await tire_service.train_tire_grip_model(bottom_laps_training_telemetry_list)
                 
                 tire_service_serialized = tire_service.serialize_tire_grip_model()
                 await self.backend_service.save_ai_model(
@@ -1587,7 +1587,7 @@ class Full_dataset_TelemetryMLService:
             
             # Extract expert state features for all records
             try:
-                imitation_state_features = imitation_learning.extract_expert_state_for_telemetry(bottom_training_telemetry_list)
+                imitation_state_features = imitation_learning.extract_expert_state_for_telemetry(bottom_laps_training_telemetry_list)
                 print(f"[INFO] Extracted expert state features for {len(imitation_state_features)} records")
                 feature_sources.append("expert_state")
             except Exception as e:
@@ -1598,7 +1598,7 @@ class Full_dataset_TelemetryMLService:
             corner_enriched_data = []
             if corner_model.get("success"):
                 try:
-                    corner_enriched_data = await corner_service.extract_corner_features_for_telemetry(bottom_training_telemetry_list)
+                    corner_enriched_data = await corner_service.extract_corner_features_for_telemetry(bottom_laps_training_telemetry_list)
                     feature_sources.append("corner_identification")
                     print(f"[INFO] Extracted corner features for {len(corner_enriched_data)} records")
                 except Exception as e:
@@ -1606,7 +1606,7 @@ class Full_dataset_TelemetryMLService:
             
             # Extract tire grip features for all records
             try:
-                grip_enriched_data = await tire_service.extract_tire_grip_features(bottom_training_telemetry_list)
+                grip_enriched_data = await tire_service.extract_tire_grip_features(bottom_laps_training_telemetry_list)
                 
                 # Validate expected keys exist in at least one record
                 try:
@@ -1628,7 +1628,7 @@ class Full_dataset_TelemetryMLService:
             
             # Combine telemetry with all context features
             combined_telemetry_data = []
-            for i, telemetry_record in enumerate(bottom_training_telemetry_list):
+            for i, telemetry_record in enumerate(bottom_laps_training_telemetry_list):
                 combined_record = telemetry_record.copy()
                 
                 # Add expert state features if available

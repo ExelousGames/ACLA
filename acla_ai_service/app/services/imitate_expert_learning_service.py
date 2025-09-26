@@ -873,7 +873,7 @@ class ExpertImitateLearningService:
     
     def filter_optimal_telemetry_segments(self, telemetry_data: List[Dict[str, Any]], 
                                          segment_length: int = 20, 
-                                         improvement_threshold: float = 0.7,
+                                         improvement_threshold: float = 0.55,
                                          min_segments: int = 5) -> List[List[Dict[str, Any]]]:
         """
         Filter telemetry data to only those segments with consistent improvement rate towards expert behavior.
@@ -929,6 +929,16 @@ class ExpertImitateLearningService:
         
         print(f"[INFO] Analyzing {total_segments} potential segments...")
         
+        '''
+        Why Overlap is Needed
+        1. Smooth Temporal Coverage: Without overlap, you might miss important behavioral patterns that occur at segment boundaries. Overlapping ensures every part of the telemetry data is analyzed in different contexts.
+
+        2. Better Pattern Detection: Driving improvements often occur gradually across time windows. A pattern that starts near the end of one segment would be missed if segments were completely separate, but gets properly captured with overlap.
+
+        3. Statistical Robustness: More segments mean more samples for analysis, leading to more reliable identification of "improving" vs "non-improving" segments .
+
+        4. Continuous Behavior Analysis: Racing behavior is continuous - a driver's improvement in cornering technique might span across what would be separate non-overlapping segments.
+        '''
         for start_idx in range(0, len(df) - segment_length + 1, segment_length // 2):  # 50% overlap
             end_idx = start_idx + segment_length  # Fixed length, no min() to ensure exact segment_length
             segment = df.iloc[start_idx:end_idx].copy()
@@ -952,15 +962,7 @@ class ExpertImitateLearningService:
         
         # Ensure we have minimum required segments
         if len(optimal_segments) < min_segments:
-            print(f"[WARNING] Found only {len(optimal_segments)} optimal segments, below minimum of {min_segments}")
-            print(f"[WARNING] Creating non-overlapping segments of exact length from original data")
-            # Create non-overlapping segments of exact segment_length from original data
-            fallback_segments = []
-            for i in range(0, len(telemetry_data) - segment_length + 1, segment_length):
-                segment = telemetry_data[i:i + segment_length]
-                if len(segment) == segment_length:
-                    fallback_segments.append(segment)
-            return fallback_segments if fallback_segments else []
+            raise ValueError(f"[WARNING] Only found {len(optimal_segments)} optimal segments, which is less than the minimum required {min_segments}. Adjust parameters or provide more data.")
         
         return optimal_segments
     
