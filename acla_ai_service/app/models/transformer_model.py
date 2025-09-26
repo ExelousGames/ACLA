@@ -727,6 +727,34 @@ class ExpertActionTransformer(nn.Module):
         unscaled_tensor = torch.from_numpy(unscaled_actions).float().to(device)
         return unscaled_tensor.view(original_shape)
     
+    def get_contextual_features_summary(self, context_feature_names: List[str]) -> Dict[str, Any]:
+        """
+        Get summary of contextual features available for loss weighting
+        
+        Args:
+            context_feature_names: List of context feature names
+            
+        Returns:
+            Dictionary with summary of available contextual features
+        """
+        # Get all possible context features from catalogs
+        expert_features = [f.value for f in ExpertFeatureCatalog.ContextFeature]
+        corner_features = [f.value for f in CornerFeatureCatalog.ContextFeature]
+        tire_grip_features = [f.value for f in TireGripFeatureCatalog.ContextFeature]
+        
+        # Filter to only those present in the dataset
+        available_expert = [f for f in expert_features if f in context_feature_names]
+        available_corner = [f for f in corner_features if f in context_feature_names]
+        available_tire_grip = [f for f in tire_grip_features if f in context_feature_names]
+        
+        return {
+            'available_for_weighting': available_expert + available_corner + available_tire_grip,
+            'expert_features': available_expert,
+            'corner_features': available_corner,
+            'tire_grip_features': available_tire_grip,
+            'total_context_features': len(context_feature_names)
+        }
+    
     def predict_human_readable(self, 
                               current_telemetry: Dict[str, Any],
                               context_data: Optional[Dict[str, Any]] = None,
@@ -1003,21 +1031,14 @@ class ExpertActionTransformer(nn.Module):
         state_dict_bytes = buffer.getvalue()
         
         # Serialize scalers
-        telemetry_scaler_data = None
-        context_scaler_data = None
+        input_scaler_data = None
         action_scaler_data = None
         
-        if self.telemetry_scaler is not None:
+        if self.input_scaler is not None:
             scaler_buffer = io.BytesIO()
             import pickle
-            pickle.dump(self.telemetry_scaler, scaler_buffer)
-            telemetry_scaler_data = base64.b64encode(scaler_buffer.getvalue()).decode('utf-8')
-            
-        if self.context_scaler is not None:
-            scaler_buffer = io.BytesIO()
-            import pickle
-            pickle.dump(self.context_scaler, scaler_buffer)
-            context_scaler_data = base64.b64encode(scaler_buffer.getvalue()).decode('utf-8')
+            pickle.dump(self.input_scaler, scaler_buffer)
+            input_scaler_data = base64.b64encode(scaler_buffer.getvalue()).decode('utf-8')
             
         if self.action_scaler is not None:
             scaler_buffer = io.BytesIO()
@@ -1028,13 +1049,11 @@ class ExpertActionTransformer(nn.Module):
         model_data = {
             'model_type': 'ExpertActionTransformer',
             'state_dict': base64.b64encode(state_dict_bytes).decode('utf-8'),
-            'telemetry_scaler': telemetry_scaler_data,
-            'context_scaler': context_scaler_data,
+            'input_scaler': input_scaler_data,
             'action_scaler': action_scaler_data,
             'config': {
-                'input_features': self.input_features_count,
-                'context_features': self.context_features_count,
-                'action_features': self.output_features_count,
+                'input_features_count': self.input_features_count,
+                'output_features_count': self.output_features_count,
                 'd_model': self.d_model,
                 'sequence_length': self.sequence_length,
                 'time_step_seconds': self.time_step_seconds,  # Include time step configuration
@@ -1090,9 +1109,8 @@ class ExpertActionTransformer(nn.Module):
             config = serialized_data['config']
 
             # Gather architecture parameters from config with sensible fallbacks
-            cfg_input_features = config.get('input_features', self.input_features_count)
-            cfg_context_features = config.get('context_features', self.context_features_count)
-            cfg_action_features = config.get('action_features', self.output_features_count)
+            cfg_input_features = config.get('input_features_count', self.input_features_count)
+            cfg_action_features = config.get('output_features_count', self.output_features_count)
             cfg_d_model = config.get('d_model', self.d_model)
             cfg_seq_len = config.get('sequence_length', self.sequence_length)
             cfg_time_step = config.get('time_step_seconds', getattr(self, 'time_step_seconds', 0.1))
@@ -1114,7 +1132,6 @@ class ExpertActionTransformer(nn.Module):
 
             if (
                 cfg_input_features != self.input_features_count or
-                cfg_context_features != self.context_features_count or
                 cfg_action_features != self.output_features_count or
                 cfg_d_model != self.d_model or
                 cfg_seq_len != self.sequence_length or
@@ -1128,7 +1145,7 @@ class ExpertActionTransformer(nn.Module):
             # Log any mismatches for visibility
             if needs_rebuild:
                 print("[INFO] Rebuilding model architecture from serialized config to match checkpoint...")
-                print(f"[INFO] Serialized config: in={cfg_input_features}, ctx={cfg_context_features}, act={cfg_action_features}, d_model={cfg_d_model}, nhead={cfg_nhead}, layers={cfg_num_layers}, dim_ff={cfg_dim_ff}, seq_len={cfg_seq_len}, dropout={cfg_dropout}")
+                print(f"[INFO] Serialized config: in={cfg_input_features}, act={cfg_action_features}, d_model={cfg_d_model}, nhead={cfg_nhead}, layers={cfg_num_layers}, dim_ff={cfg_dim_ff}, seq_len={cfg_seq_len}, dropout={cfg_dropout}")
 
             # Preserve current device
             try:
@@ -1140,8 +1157,7 @@ class ExpertActionTransformer(nn.Module):
             if needs_rebuild:
                 # Re-run __init__ with the serialized configuration to rebuild modules
                 self.__init__(
-                    telemetry_features_count=cfg_input_features,
-                    context_features_count=cfg_context_features,
+                    input_features_count=cfg_input_features,
                     d_model=cfg_d_model,
                     nhead=cfg_nhead,
                     num_layers=cfg_num_layers,
@@ -1155,7 +1171,6 @@ class ExpertActionTransformer(nn.Module):
             else:
                 # Even if not rebuilding, update simple config fields
                 self.input_features_count = cfg_input_features
-                self.context_features_count = cfg_context_features
                 self.output_features_count = cfg_action_features
                 self.d_model = cfg_d_model
                 self.sequence_length = cfg_seq_len
@@ -1185,29 +1200,17 @@ class ExpertActionTransformer(nn.Module):
             
             # Restore scalers if available
             import pickle
-            if 'telemetry_scaler' in serialized_data and serialized_data['telemetry_scaler'] is not None:
+            if 'input_scaler' in serialized_data and serialized_data['input_scaler'] is not None:
                 try:
-                    scaler_bytes = base64.b64decode(serialized_data['telemetry_scaler'])
+                    scaler_bytes = base64.b64decode(serialized_data['input_scaler'])
                     scaler_buffer = io.BytesIO(scaler_bytes)
-                    self.telemetry_scaler = pickle.load(scaler_buffer)
-                    print("[INFO] - Restored telemetry scaler")
+                    self.input_scaler = pickle.load(scaler_buffer)
+                    print("[INFO] - Restored input scaler")
                 except Exception as e:
-                    print(f"[WARNING] Failed to restore telemetry scaler: {e}")
-                    self.telemetry_scaler = None
+                    print(f"[WARNING] Failed to restore input scaler: {e}")
+                    self.input_scaler = None
             else:
-                self.telemetry_scaler = None
-                
-            if 'context_scaler' in serialized_data and serialized_data['context_scaler'] is not None:
-                try:
-                    scaler_bytes = base64.b64decode(serialized_data['context_scaler'])
-                    scaler_buffer = io.BytesIO(scaler_bytes)
-                    self.context_scaler = pickle.load(scaler_buffer)
-                    print("[INFO] - Restored context scaler")
-                except Exception as e:
-                    print(f"[WARNING] Failed to restore context scaler: {e}")
-                    self.context_scaler = None
-            else:
-                self.context_scaler = None
+                self.input_scaler = None
                 
             if 'action_scaler' in serialized_data and serialized_data['action_scaler'] is not None:
                 try:
@@ -1227,17 +1230,14 @@ class ExpertActionTransformer(nn.Module):
             # Log successful restoration
             serialization_time = serialized_data.get('serialization_timestamp', 'unknown')
             scaler_info = []
-            if self.telemetry_scaler is not None:
-                scaler_info.append("telemetry")
-            if self.context_scaler is not None:
-                scaler_info.append("context")
+            if self.input_scaler is not None:
+                scaler_info.append("input")
             if self.action_scaler is not None:
                 scaler_info.append("action")
             scaler_status = f" (scalers: {', '.join(scaler_info)})" if scaler_info else " (no scalers)"
             
             print(f"[INFO] Successfully restored ExpertActionTransformer model")
-            print(f"[INFO] - Model features: {self.input_features_count} telemetry, "
-                  f"{self.context_features_count} context, {self.output_features_count} actions")
+            print(f"[INFO] - Model features: {self.input_features_count} input, {self.output_features_count} actions")
             print(f"[INFO] - Architecture: d_model={self.d_model}, seq_len={self.sequence_length}")
             print(f"[INFO] - Originally serialized: {serialization_time}")
             print(f"[INFO] - Model ready for inference{scaler_status}")
@@ -1454,11 +1454,15 @@ class TelemetryActionDataset(Dataset):
             'actions': self.action_scaler
         }
     
+    def get_context_feature_names(self) -> List[str]:
+        """Get the context feature names from the canonical ordering"""
+        return get_canonical_context_feature_order()
+    
     def get_segment_info(self) -> Dict[str, Any]:
         """Get information about the fixed-size segments in the dataset"""
         return {
             'num_segments': self.num_segments,
-            'fixed_segment_length': self.fixed_segment_length,
+            'segment_length': self.fixed_segment_length,
             'total_samples': self.num_segments * self.fixed_segment_length,
             'tensor_shapes': {
                 'input': list(self.input_tensor.shape),
@@ -1693,25 +1697,21 @@ class ExpertActionTrainer:
         context_feature_names = dataset.get_context_feature_names()
         
         with torch.no_grad():
-            for batch_telemetry, batch_context, batch_target_actions in dataloader:
+            for batch_combined_input, batch_target_actions in dataloader:
                 # Move to device
-                batch_telemetry = batch_telemetry.to(self.device, non_blocking=self._cuda).float()
-                batch_context = batch_context.to(self.device, non_blocking=self._cuda).float()
+                batch_combined_input = batch_combined_input.to(self.device, non_blocking=self._cuda).float()
                 batch_target_actions = batch_target_actions.to(self.device, non_blocking=self._cuda).float()
                 
                 # Forward pass - no mixed precision for validation to avoid dtype issues
                 predictions = self.model(
-                    telemetry=batch_telemetry,
-                    context=batch_context,
+                    combined_input=batch_combined_input,
                     target_actions=None  # No teacher forcing in validation
                 )
                 
                 # Loss computation
-                loss = self.model.contextual_weighted_loss(
+                loss = self.model.standard_loss(
                     predictions=predictions, 
-                    target_actions=batch_target_actions,
-                    context=batch_context,
-                    context_feature_names=context_feature_names
+                    target_actions=batch_target_actions
                 )
                 
                 total_loss += loss.item()
@@ -1793,8 +1793,7 @@ class ExpertActionTrainer:
         # Display dataset and contextual feature information
         segment_info = train_dataset.get_segment_info()
         print(f"[INFO] Training dataset: {segment_info['num_segments']} segments, "
-              f"lengths {segment_info['min_length']}-{segment_info['max_length']} "
-              f"(avg: {segment_info['avg_length']:.1f})")
+              f"each with length {segment_info['segment_length']}")
         
         context_feature_names = train_dataset.get_context_feature_names()
         if context_feature_names:
@@ -1866,7 +1865,7 @@ class ExpertActionTrainer:
     
     def evaluate(self, dataset: TelemetryActionDataset) -> Dict[str, float]:
         """
-        Evaluate the model on segmented test data
+        Evaluate the model on segmented test data using efficient batch processing
         
         Args:
             dataset: Test dataset with segmented data
@@ -1883,60 +1882,97 @@ class ExpertActionTrainer:
         context_feature_names = dataset.get_context_feature_names()
         num_segments = len(dataset)
         
-        print(f"[INFO] Evaluating on {num_segments} segments...")
+        print(f"[INFO] Evaluating on {num_segments} segments using batch processing...")
+        
+        # Create DataLoader for efficient batch processing (same as training)
+        # Use larger batch size for evaluation since we don't need gradients
+        batch_size = 64  # Larger batch size for faster evaluation
+        dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=2)
+        
+        num_batches = len(dataloader)
+        print(f"[INFO] Processing {num_batches} batches with batch size {batch_size}")
         
         with torch.no_grad():
-            for segment_idx in range(num_segments):
-                telemetry, context, target_actions = dataset[segment_idx]
+            for batch_idx, (batch_combined_input, batch_target_actions) in enumerate(dataloader):
+                # Show progress updates
+                if batch_idx % max(1, num_batches // 10) == 0 or batch_idx == num_batches - 1:
+                    progress_pct = (batch_idx + 1) / num_batches * 100
+                    segments_processed = (batch_idx + 1) * batch_size
+                    if segments_processed > num_segments:
+                        segments_processed = num_segments
+                    print(f"[INFO] Evaluation progress: batch {batch_idx + 1}/{num_batches} ({progress_pct:.1f}%) - {segments_processed}/{num_segments} segments")
                 
-                # Add batch dimension
-                telemetry = telemetry.unsqueeze(0).to(self.device, non_blocking=self._cuda)
-                context = context.unsqueeze(0).to(self.device, non_blocking=self._cuda)
-                target_actions = target_actions.unsqueeze(0).to(self.device, non_blocking=self._cuda)
+                # Move to device
+                batch_combined_input = batch_combined_input.to(self.device, non_blocking=self._cuda)
+                batch_target_actions = batch_target_actions.to(self.device, non_blocking=self._cuda)
                 
-                segment_length = telemetry.shape[1]
+                batch_size_actual = batch_combined_input.shape[0]
+                segment_length = batch_combined_input.shape[1]
                 
                 # Use standard forward (autoregressive) under AMP for GPU (evaluation mode)
                 with torch.autocast(device_type='cuda', dtype=self.amp_dtype, enabled=self._cuda and self.amp_dtype is not None):
                     predictions = self.model(
-                        telemetry=telemetry,
-                        context=context,
-                        target_actions=None,  # No teacher forcing during evaluation
-                        segment_length=segment_length
+                        combined_input=batch_combined_input,
+                        target_actions=None  # No teacher forcing during evaluation
                     )
                 
                 # Loss computation outside autocast
-                loss = self.model.contextual_weighted_loss(
+                loss = self.model.standard_loss(
                     predictions=predictions, 
-                    target_actions=target_actions,
-                    context=context,
-                    context_feature_names=context_feature_names
+                    target_actions=batch_target_actions
                 )
                 
-                total_loss += loss.item() * segment_length
-                total_samples += segment_length
+                batch_samples = batch_size_actual * segment_length
+                total_loss += loss.item() * batch_samples
+                total_samples += batch_samples
+                
+                # Show running average loss periodically
+                if batch_idx > 0 and (batch_idx % max(1, num_batches // 10) == 0 or batch_idx == num_batches - 1):
+                    running_avg_loss = total_loss / total_samples
+                    print(f"[INFO] Running average loss: {running_avg_loss:.6f}")
                 
                 all_predictions.append(predictions.cpu().numpy())
-                all_targets.append(target_actions.cpu().numpy())
+                all_targets.append(batch_target_actions.cpu().numpy())
         
-        # Compute additional metrics - concatenate all segment data
-        predictions_array = np.concatenate(all_predictions, axis=1)  # Concatenate along sequence dimension
-        targets_array = np.concatenate(all_targets, axis=1)
+        # Compute additional metrics - concatenate all batch data efficiently
+        print(f"[INFO] Computing final evaluation metrics...")
         
-        # Flatten for overall metrics
-        pred_flat = predictions_array.reshape(-1)
-        target_flat = targets_array.reshape(-1)
+        # Concatenate along the batch dimension first, then reshape
+        predictions_array = np.concatenate(all_predictions, axis=0)  # Shape: [total_segments, seq_len, features]
+        targets_array = np.concatenate(all_targets, axis=0)
         
-        mse = mean_squared_error(target_flat, pred_flat)
-        mae = mean_absolute_error(target_flat, pred_flat)
+        print(f"[INFO] Evaluation data shape - Predictions: {predictions_array.shape}, Targets: {targets_array.shape}")
         
-        # R² score
+        # Flatten for overall metrics (more efficient than reshaping twice)
+        pred_flat = predictions_array.flatten()
+        target_flat = targets_array.flatten()
+        
+        print(f"[INFO] Computing metrics on {len(pred_flat):,} prediction values...")
+        
+        # Compute metrics efficiently
+        mse = np.mean((target_flat - pred_flat) ** 2)
+        mae = np.mean(np.abs(target_flat - pred_flat))
+        
+        # R² score (vectorized computation)
+        target_mean = np.mean(target_flat)
         ss_res = np.sum((target_flat - pred_flat) ** 2)
-        ss_tot = np.sum((target_flat - np.mean(target_flat)) ** 2)
+        ss_tot = np.sum((target_flat - target_mean) ** 2)
         r2 = 1 - (ss_res / ss_tot) if ss_tot != 0 else 0
         
+        final_test_loss = total_loss / total_samples if total_samples > 0 else 0.0
+        
+        # Display final evaluation results
+        print(f"\n[INFO] ===== EVALUATION COMPLETE =====")
+        print(f"[INFO] Segments processed: {num_segments}")
+        print(f"[INFO] Total samples: {total_samples}")
+        print(f"[INFO] Test Loss: {final_test_loss:.6f}")
+        print(f"[INFO] Mean Squared Error (MSE): {mse:.6f}")
+        print(f"[INFO] Mean Absolute Error (MAE): {mae:.6f}")
+        print(f"[INFO] R² Score: {r2:.4f}")
+        print(f"[INFO] ================================\n")
+        
         return make_json_safe({
-            'test_loss': total_loss / total_samples if total_samples > 0 else 0.0,
+            'test_loss': final_test_loss,
             'mse': mse,
             'mae': mae,
             'r2': r2,
@@ -1949,7 +1985,6 @@ class ExpertActionTrainer:
         return make_json_safe({
             'model_config': {
                 'input_features': self.model.input_features_count,
-                'context_features': self.model.context_features_count,
                 'action_features': self.model.output_features_count,
                 'd_model': self.model.d_model,
                 'sequence_length': self.model.sequence_length
