@@ -309,54 +309,65 @@ export class AiModelService {
             return this.save_ai_model(dto);
         }
 
-        // Huge file path: attempt to minimally parse header fields if they exist near the start.
-        // If not feasible, fall back to unknown placeholders and require metadata later.
+        // Huge file path: We need to extract only the modelData portion and upload that to GridFS
+        // Use streaming approach to avoid "Invalid string length" errors
         let trackName = 'unknown';
         let carName = 'unknown';
         let modelType = 'unknown';
         let metadata: any = undefined;
 
         try {
-            // Read first 2MB and try partial parse for metadata fields
-            const fd = await fs.promises.open(filePath, 'r');
-            const buf = Buffer.alloc(Math.min(2 * 1024 * 1024, stat.size));
-            await fd.read(buf, 0, buf.length, 0);
-            await fd.close();
-            const head = buf.toString('utf8');
-            // naive field extraction
-            const tn = head.match(/"trackName"\s*:\s*"([^"]+)"/);
-            const cn = head.match(/"carName"\s*:\s*"([^"]+)"/);
-            const mt = head.match(/"modelType"\s*:\s*"([^"]+)"/);
-            trackName = tn?.[1] || trackName;
-            carName = cn?.[1] || carName;
-            modelType = mt?.[1] || modelType;
-        } catch {
-            // ignore extraction errors
-        }
+            // For huge files, use streaming JSON parsing to extract modelData without loading entire file
+            const extractedData = await this.extractModelDataFromHugeFile(filePath);
 
-        const filename = `model_${trackName}_${carName}_${modelType}_${Date.now()}.json`;
-        const readStream = fs.createReadStream(filePath);
-        const fileId = await this.gridfsService.uploadStream(
-            readStream as unknown as Readable,
-            filename,
-            { trackName, carName, modelType },
-            GRIDFS_BUCKETS.AI_MODELS
-        );
+            trackName = extractedData.trackName || trackName;
+            carName = extractedData.carName || carName;
+            modelType = extractedData.modelType || modelType;
+            metadata = extractedData.metadata;
 
-        // Upsert active model for the triple (trackName, carName, modelType)
-        const existing = await this.findActiveModel({ trackName, carName, modelType } as any);
-        if (existing) {
-            await this.aiModelModel.updateOne(
-                { _id: (existing as any)._id },
-                { $set: { modelDataFileId: fileId, metadata } }
+            if (!extractedData.modelDataFilePath) {
+                throw new Error('Failed to extract modelData from huge file');
+            }
+
+            // Upload the extracted modelData file directly to GridFS
+            const filename = `model_${trackName}_${carName}_${modelType}_${Date.now()}.json`;
+            const modelDataStream = fs.createReadStream(extractedData.modelDataFilePath);
+            const fileId = await this.gridfsService.uploadStream(
+                modelDataStream as unknown as Readable,
+                filename,
+                { trackName, carName, modelType, uploadedAt: new Date() },
+                GRIDFS_BUCKETS.AI_MODELS
             );
-            return { updated: true, fileId };
+
+            // Clean up temporary modelData file
+            try {
+                await fs.promises.unlink(extractedData.modelDataFilePath);
+            } catch (cleanupError) {
+                console.warn(`Failed to cleanup temp file ${extractedData.modelDataFilePath}: ${cleanupError.message}`);
+            }
+
+            // Store the file ID
+            const fileIdToUse = fileId;
+
+            // Upsert active model for the triple (trackName, carName, modelType)
+            const existing = await this.findActiveModel({ trackName, carName, modelType } as any);
+            if (existing) {
+                await this.aiModelModel.updateOne(
+                    { _id: (existing as any)._id },
+                    { $set: { modelDataFileId: fileIdToUse, metadata } }
+                );
+                return { updated: true, fileId: fileIdToUse };
+            }
+            const created = new this.aiModelModel({
+                trackName, carName, modelType, modelDataFileId: fileIdToUse, metadata, isActive: true
+            });
+            const saved = await created.save();
+            return saved;
+
+        } catch (error) {
+            console.error(`Error extracting modelData from huge file: ${error.message}`);
+            throw new InternalServerErrorException(`Failed to extract modelData from file: ${error.message}`);
         }
-        const created = new this.aiModelModel({
-            trackName, carName, modelType, modelDataFileId: fileId, metadata, isActive: true
-        });
-        const saved = await created.save();
-        return saved;
     }
 
     private async findActiveModel(dto: UpdateAiModelDto): Promise<AIModel | null> {
@@ -467,6 +478,175 @@ export class AiModelService {
     // Reinitialize GridFS
     async reinitializeGridFS(): Promise<void> {
         return await this.gridfsService.reinitialize();
+    }
+
+    /**
+     * Extract modelData from huge files using streaming approach to avoid memory issues.
+     * This method streams through the file to find and extract only the modelData portion.
+     */
+    private async extractModelDataFromHugeFile(filePath: string): Promise<{
+        trackName?: string,
+        carName?: string,
+        modelType?: string,
+        metadata?: any,
+        modelDataFilePath?: string
+    }> {
+        return new Promise((resolve, reject) => {
+            const fs = require('fs');
+            const path = require('path');
+            const os = require('os');
+
+            let buffer = '';
+            let foundModelDataStart = false;
+            let braceCount = 0;
+            let insideModelData = false;
+            let trackName = 'unknown';
+            let carName = 'unknown';
+            let modelType = 'unknown';
+            let metadata: any = undefined;
+
+            // Create temporary file for extracted modelData
+            const tempDir = os.tmpdir();
+            const tempFilename = `modeldata_${Date.now()}_${Math.random().toString(36).substr(2, 9)}.json`;
+            const tempFilePath = path.join(tempDir, tempFilename);
+            const writeStream = fs.createWriteStream(tempFilePath);
+
+            const readStream = fs.createReadStream(filePath, { encoding: 'utf8', highWaterMark: 64 * 1024 });
+
+            readStream.on('data', (chunk: string) => {
+                buffer += chunk;
+
+                // Extract metadata fields if not found yet
+                if (trackName === 'unknown') {
+                    const tnMatch = buffer.match(/"trackName"\s*:\s*"([^"]+)"/);
+                    if (tnMatch) trackName = tnMatch[1];
+                }
+                if (carName === 'unknown') {
+                    const cnMatch = buffer.match(/"carName"\s*:\s*"([^"]+)"/);
+                    if (cnMatch) carName = cnMatch[1];
+                }
+                if (modelType === 'unknown') {
+                    const mtMatch = buffer.match(/"modelType"\s*:\s*"([^"]+)"/);
+                    if (mtMatch) modelType = mtMatch[1];
+                }
+
+                // Look for the start of modelData
+                if (!foundModelDataStart) {
+                    const modelDataStartIndex = buffer.indexOf('"modelData":');
+                    if (modelDataStartIndex !== -1) {
+                        foundModelDataStart = true;
+                        insideModelData = true;
+
+                        // Find the opening brace/bracket after "modelData":
+                        const valueStartIndex = buffer.indexOf(':', modelDataStartIndex) + 1;
+                        let valueStart = valueStartIndex;
+                        while (valueStart < buffer.length && /\s/.test(buffer[valueStart])) {
+                            valueStart++;
+                        }
+
+                        if (valueStart < buffer.length) {
+                            const firstChar = buffer[valueStart];
+                            braceCount = firstChar === '{' ? 1 : (firstChar === '[' ? 1 : 0);
+
+                            // Process the modelData content starting from the opening brace/bracket
+                            const modelDataStart = buffer.substring(valueStart);
+
+                            // Find if the modelData ends in this chunk
+                            let endIndex = -1;
+                            for (let i = 1; i < modelDataStart.length; i++) {
+                                if (modelDataStart[i] === '{' || modelDataStart[i] === '[') {
+                                    braceCount++;
+                                } else if (modelDataStart[i] === '}' || modelDataStart[i] === ']') {
+                                    braceCount--;
+                                    if (braceCount === 0) {
+                                        // Found the end of modelData in this chunk
+                                        endIndex = i + 1; // Include the closing brace
+                                        break;
+                                    }
+                                }
+                            }
+
+                            if (endIndex !== -1) {
+                                // Write only up to the end of modelData
+                                writeStream.write(modelDataStart.substring(0, endIndex));
+                                writeStream.end();
+                                readStream.destroy();
+                                return;
+                            } else {
+                                // Haven't found the end yet, write the entire chunk
+                                writeStream.write(modelDataStart);
+                            }
+                        }
+                        // Clear buffer after processing
+                        buffer = '';
+                    }
+                } else if (insideModelData) {
+                    // We're inside modelData, find if it ends in this chunk
+                    let endIndex = -1;
+
+                    for (let i = 0; i < buffer.length; i++) {
+                        if (buffer[i] === '{' || buffer[i] === '[') {
+                            braceCount++;
+                        } else if (buffer[i] === '}' || buffer[i] === ']') {
+                            braceCount--;
+                            if (braceCount === 0) {
+                                // Found the end of modelData
+                                endIndex = i + 1; // Include the closing brace
+                                break;
+                            }
+                        }
+                    }
+
+                    if (endIndex !== -1) {
+                        // Write only up to the end of modelData
+                        writeStream.write(buffer.substring(0, endIndex));
+                        writeStream.end();
+                        readStream.destroy();
+                        return;
+                    } else {
+                        // Haven't found the end yet, write the entire chunk
+                        writeStream.write(buffer);
+                    }
+
+                    buffer = '';
+                }
+
+                // Keep buffer size manageable when not inside modelData
+                if (!insideModelData && buffer.length > 1024 * 1024) { // 1MB
+                    buffer = buffer.substring(buffer.length - 512 * 1024); // Keep last 512KB
+                }
+            });
+
+            readStream.on('end', () => {
+                if (insideModelData) {
+                    // If we reached the end and we're still inside modelData, end the write stream
+                    writeStream.end();
+                } else if (!foundModelDataStart) {
+                    // No modelData found in the file
+                    writeStream.destroy();
+                    reject(new Error('No modelData field found in the file'));
+                }
+            });
+
+            writeStream.on('finish', () => {
+                resolve({
+                    trackName,
+                    carName,
+                    modelType,
+                    metadata,
+                    modelDataFilePath: tempFilePath
+                });
+            });
+
+            readStream.on('error', (error) => {
+                writeStream.destroy();
+                reject(new Error(`Error reading file: ${error.message}`));
+            });
+
+            writeStream.on('error', (error) => {
+                reject(new Error(`Error writing temp file: ${error.message}`));
+            });
+        });
     }
 
 }

@@ -255,6 +255,10 @@ class ExpertActionTransformer(nn.Module):
     progressively improving over time. Gap features are computed by comparing non-expert
     actions to expert performance, providing the model with improvement direction signals.
     
+    SEQUENCE LENGTH REQUIREMENTS:
+    - Training: Requires fixed-length sequences for efficient batch processing
+    - Prediction: Supports variable-length sequences for flexible real-time inference
+    
     Architecture:
     - Input: Non-expert telemetry + gap features + environmental context
     - Output: Non-expert's improved action sequences (learning trajectory)
@@ -355,17 +359,19 @@ class ExpertActionTransformer(nn.Module):
                 combined_input: torch.Tensor,
                 target_actions: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
-        Forward pass - Fixed-Size Segment Non-Expert Driver Progression Learning Pipeline
+        Forward pass - Non-Expert Driver Progression Learning Pipeline
         
-        This method processes fixed-length segments of telemetry data where each segment
-        represents a coherent effort to improve toward expert performance. All segments
-        are preprocessed to have the same length (self.sequence_length).
+        TRAINING: Processes fixed-length segments (self.sequence_length) for efficient batch training
+        INFERENCE: Handles variable-length sequences for flexible real-time prediction
         
-        FIXED SEGMENTED PROCESSING APPROACH:
+        TRAINING APPROACH:
         - Fixed-length segments (self.sequence_length timesteps per segment)
-        - Each segment represents a complete improvement effort
         - Consistent batch processing with fixed dimensions
         - No masking required due to fixed lengths
+        
+        INFERENCE APPROACH:
+        - Variable-length sequences supported
+        - Flexible prediction horizon based on input length
         
         ARCHITECTURAL FLOW:
         
@@ -398,8 +404,9 @@ class ExpertActionTransformer(nn.Module):
         batch_size = combined_input.shape[0]
         seq_len = combined_input.shape[1]
         
-        # Validate fixed sequence length
-        assert seq_len == self.sequence_length, f"Expected sequence length {self.sequence_length}, got {seq_len}"
+        # Validate fixed sequence length only during training
+        if self.training:
+            assert seq_len == self.sequence_length, f"Training requires fixed sequence length {self.sequence_length}, got {seq_len}"
         
         # Embed combined input
         embedded_input = self.input_embedding(combined_input)  # [B, L, d_model]
@@ -418,7 +425,10 @@ class ExpertActionTransformer(nn.Module):
             return decoder_output
         else:
             # INFERENCE MODE: Use autoregressive generation for realistic prediction
-            decoder_output = self._generate_actions_autoregressive(memory, self.sequence_length)
+            # For inference, generate fixed sequence length regardless of input length
+            # This allows single timestep input to generate multi-step predictions
+            prediction_length = self.sequence_length  # Use model's configured sequence length
+            decoder_output = self._generate_actions_autoregressive(memory, prediction_length)
             return decoder_output
 
     def standard_loss(self, 
@@ -647,31 +657,39 @@ class ExpertActionTransformer(nn.Module):
         return predictions
     
     def predict_segment_progression(self, 
-                                  combined_input: torch.Tensor) -> torch.Tensor:
+                                  combined_input: torch.Tensor,
+                                  prediction_length: Optional[int] = None) -> torch.Tensor:
         """
-        Predict progression actions for a complete segment
+        Predict progression actions for a segment
         
-        This method processes a fixed-length segment and predicts the non-expert
-        driver's improved actions throughout that segment. Each segment represents
-        a coherent improvement effort (e.g., a corner approach, lap section).
+        This method processes input telemetry and predicts the non-expert driver's 
+        improved actions for the specified prediction length.
         
         Args:
-            combined_input: Combined telemetry and gap features [batch_size, segment_len, input_features]
+            combined_input: Combined telemetry and gap features [batch_size, input_len, input_features]
                            Contains non-expert telemetry + expert-to-non-expert gap features to guide improvement
-            deterministic: If True, use greedy decoding instead of sampling - currently unused
+            prediction_length: Number of future steps to predict. If None, uses model's sequence_length
             
         Returns:
-            Predicted segment progression [batch_size, segment_len, action_features]
-            Shows improved non-expert actions throughout the segment
+            Predicted action progression [batch_size, prediction_length, action_features]
+            Shows improved non-expert actions for the prediction horizon
         """
         self.eval()
-        segment_length = combined_input.shape[1]
+        
+        # Store original sequence length and temporarily update if needed
+        original_sequence_length = self.sequence_length
+        if prediction_length is not None:
+            self.sequence_length = prediction_length
             
-        with torch.no_grad():
-            return self.forward(
-                combined_input=combined_input, 
-                target_actions=None
-            )
+        try:
+            with torch.no_grad():
+                return self.forward(
+                    combined_input=combined_input, 
+                    target_actions=None
+                )
+        finally:
+            # Restore original sequence length
+            self.sequence_length = original_sequence_length
     
     
     def _apply_action_inverse_scaling(self, scaled_actions: torch.Tensor) -> torch.Tensor:
@@ -740,13 +758,20 @@ class ExpertActionTransformer(nn.Module):
         raw telemetry data into actionable driving advice that shows how a non-expert driver
         should improve their actions to move toward expert-level performance.
         
+        INFERENCE APPROACH:
+        Unlike training which uses fixed-length sequences, inference uses a single timestep
+        of current telemetry data to predict a sequence of future improved actions through
+        autoregressive generation. This mirrors real-world racing where you make decisions
+        based on current state to plan future actions.
+        
         Process Flow:
         1. Validate and preprocess input telemetry data
         2. Convert telemetry to model input format (normalization, feature extraction)
-        3. Generate improved action sequence predictions using the trained model
+        3. Create single-timestep input (not repeated sequence)
+        4. Generate improved action sequence predictions using autoregressive generation
             (conditioned on expert-to-non-expert gap context features)
-        4. Convert raw numerical predictions to human-readable advice
-        5. Format everything into structured JSON response
+        5. Convert raw numerical predictions to human-readable advice
+        6. Format everything into structured JSON response
         
         Args:
             current_telemetry: Dictionary containing current driver telemetry data
@@ -783,15 +808,17 @@ class ExpertActionTransformer(nn.Module):
             # Prepare combined input data for model input
             combined_features = self._extract_combined_features(current_telemetry, context_data)
             
-            # Convert to tensor format
-            combined_tensor = torch.tensor([combined_features], dtype=torch.float32).unsqueeze(0).to(device)
+            # For inference, create a single timestep input (not repeated sequence)
+            # The model will use autoregressive generation to create the sequence
+            combined_tensor = torch.tensor([[combined_features]], dtype=torch.float32).to(device)  # [1, 1, features]
             
             # Generate predictions
             try:
                 self.eval()
                 with torch.no_grad():
                     predictions = self.predict_segment_progression(
-                        combined_input=combined_tensor
+                        combined_input=combined_tensor,
+                        prediction_length=sequence_length
                     )
                     # During inference, apply inverse scaling to get original action values
                     predictions = self._apply_action_inverse_scaling(predictions)
@@ -969,13 +996,14 @@ class ExpertActionTransformer(nn.Module):
         return make_json_safe(model_data)
     
 
-    def deserialize_transformer_model(self, serialized_data: Dict[str, Any]) -> 'ExpertActionTransformer':
+    @classmethod
+    def deserialize_transformer_model(cls, serialized_data: Dict[str, Any]) -> 'ExpertActionTransformer':
         """
-        Deserialize model from JSON-serializable dictionary and restore state to current instance
+        Create and return a new ExpertActionTransformer instance from serialized data.
         
-        This method restores a trained ExpertActionTransformer model from serialized data
-        created by serialize_model(). It updates the current instance's configuration and
-        loads the trained weights, making the model ready for inference.
+        This class method creates a new trained ExpertActionTransformer model from serialized data
+        created by serialize_model(). It instantiates a new model with the correct architecture
+        and loads the trained weights, making the model ready for inference.
         
         Args:
             serialized_data: Dictionary containing serialized model data with keys:
@@ -985,7 +1013,7 @@ class ExpertActionTransformer(nn.Module):
                            - 'serialization_timestamp': When model was serialized
         
         Returns:
-            Self (ExpertActionTransformer): The current instance with restored state
+            ExpertActionTransformer: New instance with restored state
         
         Raises:
             ValueError: If serialized data format is invalid or incompatible
@@ -1009,72 +1037,32 @@ class ExpertActionTransformer(nn.Module):
             config = serialized_data['config']
 
             # Gather architecture parameters from config with sensible fallbacks
-            cfg_input_features = config.get('input_features_count', self.input_features_count)
-            cfg_action_features = config.get('output_features_count', self.output_features_count)
-            cfg_d_model = config.get('d_model', self.d_model)
-            cfg_seq_len = config.get('sequence_length', self.sequence_length)
-            cfg_time_step = config.get('time_step_seconds', getattr(self, 'time_step_seconds', 0.1))
-            cfg_nhead = config.get('nhead', getattr(self.transformer_encoder.layers[0].self_attn, 'num_heads', 8))
-            cfg_num_layers = config.get('num_layers', len(self.transformer_encoder.layers) if hasattr(self, 'transformer_encoder') else 6)
-            cfg_dim_ff = config.get('dim_feedforward', getattr(self.transformer_encoder.layers[0].linear1, 'out_features', 1024) if hasattr(self, 'transformer_encoder') else 1024)
+            cfg_input_features = config.get('input_features_count', 42)
+            cfg_action_features = config.get('output_features_count', 4)
+            cfg_d_model = config.get('d_model', 256)
+            cfg_seq_len = config.get('sequence_length', 20)
+            cfg_time_step = config.get('time_step_seconds', 0.5)
+            cfg_nhead = config.get('nhead', 8)
+            cfg_num_layers = config.get('num_layers', 6)
+            cfg_dim_ff = config.get('dim_feedforward', 1024)
             cfg_dropout = config.get('dropout', 0.1)
 
-            # Determine if architecture rebuild is required
-            needs_rebuild = False
-            try:
-                current_nhead = getattr(self.transformer_encoder.layers[0].self_attn, 'num_heads', cfg_nhead)
-                current_num_layers = len(self.transformer_encoder.layers)
-                current_dim_ff = getattr(self.transformer_encoder.layers[0].linear1, 'out_features', cfg_dim_ff)
-            except Exception:
-                current_nhead = cfg_nhead
-                current_num_layers = cfg_num_layers
-                current_dim_ff = cfg_dim_ff
+            print(f"[INFO] Creating ExpertActionTransformer from serialized config:")
+            print(f"[INFO] - Features: {cfg_input_features} input, {cfg_action_features} actions")
+            print(f"[INFO] - Architecture: d_model={cfg_d_model}, nhead={cfg_nhead}, layers={cfg_num_layers}")
+            print(f"[INFO] - Sequence: length={cfg_seq_len}, time_step={cfg_time_step}s")
 
-            if (
-                cfg_input_features != self.input_features_count or
-                cfg_action_features != self.output_features_count or
-                cfg_d_model != self.d_model or
-                cfg_seq_len != self.sequence_length or
-                cfg_nhead != current_nhead or
-                cfg_num_layers != current_num_layers or
-                cfg_dim_ff != current_dim_ff or
-                abs(cfg_dropout - 0.1) > 1e-9  # dropout used in module construction
-            ):
-                needs_rebuild = True
-
-            # Log any mismatches for visibility
-            if needs_rebuild:
-                print("[INFO] Rebuilding model architecture from serialized config to match checkpoint...")
-                print(f"[INFO] Serialized config: in={cfg_input_features}, act={cfg_action_features}, d_model={cfg_d_model}, nhead={cfg_nhead}, layers={cfg_num_layers}, dim_ff={cfg_dim_ff}, seq_len={cfg_seq_len}, dropout={cfg_dropout}")
-
-            # Preserve current device
-            try:
-                device = next(self.parameters()).device
-            except Exception:
-                device = torch.device('cpu')
-
-            # Rebuild architecture if needed so state_dict keys match
-            if needs_rebuild:
-                # Re-run __init__ with the serialized configuration to rebuild modules
-                self.__init__(
-                    input_features_count=cfg_input_features,
-                    d_model=cfg_d_model,
-                    nhead=cfg_nhead,
-                    num_layers=cfg_num_layers,
-                    dim_feedforward=cfg_dim_ff,
-                    sequence_length=cfg_seq_len,
-                    dropout=cfg_dropout,
-                    time_step_seconds=cfg_time_step,
-                )
-                # Ensure the model is on the original device
-                self.to(device)
-            else:
-                # Even if not rebuilding, update simple config fields
-                self.input_features_count = cfg_input_features
-                self.output_features_count = cfg_action_features
-                self.d_model = cfg_d_model
-                self.sequence_length = cfg_seq_len
-                self.time_step_seconds = cfg_time_step
+            # Create new model instance with the serialized configuration
+            model = cls(
+                input_features_count=cfg_input_features,
+                d_model=cfg_d_model,
+                nhead=cfg_nhead,
+                num_layers=cfg_num_layers,
+                dim_feedforward=cfg_dim_ff,
+                sequence_length=cfg_seq_len,
+                dropout=cfg_dropout,
+                time_step_seconds=cfg_time_step,
+            )
             
             # Decode and restore model state
             state_dict_base64 = serialized_data['state_dict']
@@ -1084,12 +1072,12 @@ class ExpertActionTransformer(nn.Module):
             buffer = io.BytesIO(state_dict_bytes)
             state_dict = torch.load(buffer, map_location='cpu')  # Load to CPU first
             
-            # Load the state dict into current model
+            # Load the state dict into the new model
             try:
-                self.load_state_dict(state_dict, strict=True)
+                model.load_state_dict(state_dict, strict=True)
             except Exception as load_err:
                 print(f"[WARNING] Strict state_dict load failed: {load_err}. Trying non-strict load...")
-                incompatible = self.load_state_dict(state_dict, strict=False)
+                incompatible = model.load_state_dict(state_dict, strict=False)
                 # Handle both tuple return (older PyTorch) and IncompatibleKeys object (newer)
                 missing = getattr(incompatible, 'missing_keys', None) or (incompatible[0] if isinstance(incompatible, (list, tuple)) and len(incompatible) > 0 else [])
                 unexpected = getattr(incompatible, 'unexpected_keys', None) or (incompatible[1] if isinstance(incompatible, (list, tuple)) and len(incompatible) > 1 else [])
@@ -1104,50 +1092,505 @@ class ExpertActionTransformer(nn.Module):
                 try:
                     scaler_bytes = base64.b64decode(serialized_data['input_scaler'])
                     scaler_buffer = io.BytesIO(scaler_bytes)
-                    self.input_scaler = pickle.load(scaler_buffer)
+                    model.input_scaler = pickle.load(scaler_buffer)
                     print("[INFO] - Restored input scaler")
                 except Exception as e:
                     print(f"[WARNING] Failed to restore input scaler: {e}")
-                    self.input_scaler = None
+                    model.input_scaler = None
             else:
-                self.input_scaler = None
+                model.input_scaler = None
                 
             if 'action_scaler' in serialized_data and serialized_data['action_scaler'] is not None:
                 try:
                     scaler_bytes = base64.b64decode(serialized_data['action_scaler'])
                     scaler_buffer = io.BytesIO(scaler_bytes)
-                    self.action_scaler = pickle.load(scaler_buffer)
+                    model.action_scaler = pickle.load(scaler_buffer)
                     print("[INFO] - Restored action scaler")
                 except Exception as e:
                     print(f"[WARNING] Failed to restore action scaler: {e}")
-                    self.action_scaler = None
+                    model.action_scaler = None
             else:
-                self.action_scaler = None
+                model.action_scaler = None
             
             # Set model to evaluation mode (ready for inference)
-            self.eval()
+            model.eval()
             
             # Log successful restoration
             serialization_time = serialized_data.get('serialization_timestamp', 'unknown')
             scaler_info = []
-            if self.input_scaler is not None:
+            if model.input_scaler is not None:
                 scaler_info.append("input")
-            if self.action_scaler is not None:
+            if model.action_scaler is not None:
                 scaler_info.append("action")
             scaler_status = f" (scalers: {', '.join(scaler_info)})" if scaler_info else " (no scalers)"
             
-            print(f"[INFO] Successfully restored ExpertActionTransformer model")
-            print(f"[INFO] - Model features: {self.input_features_count} input, {self.output_features_count} actions")
-            print(f"[INFO] - Architecture: d_model={self.d_model}, seq_len={self.sequence_length}")
+            print(f"[INFO] Successfully created ExpertActionTransformer model from serialized data")
+            print(f"[INFO] - Model features: {model.input_features_count} input, {model.output_features_count} actions")
+            print(f"[INFO] - Architecture: d_model={model.d_model}, seq_len={model.sequence_length}")
             print(f"[INFO] - Originally serialized: {serialization_time}")
             print(f"[INFO] - Model ready for inference{scaler_status}")
             
-            return self
+            return model
             
         except Exception as e:
             error_msg = f"Failed to deserialize ExpertActionTransformer model: {str(e)}"
             print(f"[ERROR] {error_msg}")
             raise RuntimeError(error_msg) from e
+    
+    def check_dataset_quality(self, dataset: 'TelemetryActionDataset', dataset_name: str = "Training Dataset") -> Dict[str, Any]:
+        """
+        Comprehensive dataset quality check for training data validation.
+        
+        This function performs extensive quality validation on the dataset to ensure
+        it meets the requirements for effective transformer training. It checks for:
+        - Data integrity and completeness
+        - Statistical distribution health
+        - Feature correlation analysis
+        - Temporal consistency within segments
+        - Outlier detection and analysis
+        - Missing value patterns
+        - Scale and normalization verification
+        
+        Args:
+            dataset: TelemetryActionDataset to validate
+            dataset_name: Name for reporting (e.g., "Training Dataset", "Validation Dataset")
+            
+        Returns:
+            Dictionary containing comprehensive quality metrics and recommendations
+        """
+        print(f"\n{'='*80}")
+        print(f"🔍 DATASET QUALITY ANALYSIS: {dataset_name}")
+        print(f"{'='*80}")
+        
+        quality_report = {
+            'dataset_name': dataset_name,
+            'timestamp': datetime.now().isoformat(),
+            'overall_quality': 'UNKNOWN',
+            'critical_issues': [],
+            'warnings': [],
+            'recommendations': [],
+            'metrics': {}
+        }
+        
+        try:
+            # Get basic dataset information
+            segment_info = dataset.get_segment_info()
+            input_features, action_features = dataset.get_feature_names()
+            context_features = dataset.get_context_feature_names()
+            
+            print(f"📊 Basic Dataset Information:")
+            print(f"   • Total segments: {segment_info['num_segments']:,}")
+            print(f"   • Segment length: {segment_info['segment_length']}")
+            print(f"   • Total samples: {segment_info['total_samples']:,}")
+            print(f"   • Input features: {len(input_features)}")
+            print(f"   • Action features: {len(action_features)}")
+            print(f"   • Context features: {len(context_features)}")
+            
+            quality_report['metrics']['basic_info'] = {
+                'num_segments': segment_info['num_segments'],
+                'segment_length': segment_info['segment_length'],
+                'total_samples': segment_info['total_samples'],
+                'input_features_count': len(input_features),
+                'action_features_count': len(action_features),
+                'context_features_count': len(context_features)
+            }
+            
+            # Check minimum dataset size requirements
+            min_segments_required = 100
+            min_samples_required = 10000
+            
+            if segment_info['num_segments'] < min_segments_required:
+                quality_report['critical_issues'].append(
+                    f"Insufficient segments: {segment_info['num_segments']} < {min_segments_required} (minimum required)"
+                )
+            
+            if segment_info['total_samples'] < min_samples_required:
+                quality_report['critical_issues'].append(
+                    f"Insufficient total samples: {segment_info['total_samples']} < {min_samples_required} (minimum required)"
+                )
+            
+            # Analyze tensor data quality
+            print(f"\n🔬 Tensor Data Quality Analysis:")
+            input_tensor = dataset.input_tensor
+            action_tensor = dataset.action_tensor
+            
+            # Check for NaN/Inf values
+            input_nan_count = torch.isnan(input_tensor).sum().item()
+            input_inf_count = torch.isinf(input_tensor).sum().item()
+            action_nan_count = torch.isnan(action_tensor).sum().item()
+            action_inf_count = torch.isinf(action_tensor).sum().item()
+            
+            print(f"   • Input tensor NaN values: {input_nan_count:,}")
+            print(f"   • Input tensor Inf values: {input_inf_count:,}")
+            print(f"   • Action tensor NaN values: {action_nan_count:,}")
+            print(f"   • Action tensor Inf values: {action_inf_count:,}")
+            
+            if input_nan_count > 0 or action_nan_count > 0:
+                quality_report['critical_issues'].append(f"NaN values detected: Input={input_nan_count}, Action={action_nan_count}")
+            
+            if input_inf_count > 0 or action_inf_count > 0:
+                quality_report['critical_issues'].append(f"Infinite values detected: Input={input_inf_count}, Action={action_inf_count}")
+            
+            # Statistical analysis
+            print(f"\n📈 Statistical Distribution Analysis:")
+            
+            # Input features statistics
+            input_mean = torch.mean(input_tensor, dim=(0, 1))
+            input_std = torch.std(input_tensor, dim=(0, 1))
+            input_min = torch.min(input_tensor.view(-1, input_tensor.size(-1)), dim=0)[0]
+            input_max = torch.max(input_tensor.view(-1, input_tensor.size(-1)), dim=0)[0]
+            
+            # Action features statistics  
+            action_mean = torch.mean(action_tensor, dim=(0, 1))
+            action_std = torch.std(action_tensor, dim=(0, 1))
+            action_min = torch.min(action_tensor.view(-1, action_tensor.size(-1)), dim=0)[0]
+            action_max = torch.max(action_tensor.view(-1, action_tensor.size(-1)), dim=0)[0]
+            
+            # Check for zero variance features
+            zero_var_input = (input_std < 1e-6).sum().item()
+            zero_var_action = (action_std < 1e-6).sum().item()
+            
+            print(f"   • Input features with zero variance: {zero_var_input}")
+            print(f"   • Action features with zero variance: {zero_var_action}")
+            print(f"   • Input mean range: [{input_mean.min():.4f}, {input_mean.max():.4f}]")
+            print(f"   • Input std range: [{input_std.min():.4f}, {input_std.max():.4f}]")
+            print(f"   • Action mean range: [{action_mean.min():.4f}, {action_mean.max():.4f}]")
+            print(f"   • Action std range: [{action_std.min():.4f}, {action_std.max():.4f}]")
+            
+            if zero_var_input > 0:
+                quality_report['warnings'].append(f"{zero_var_input} input features have zero variance")
+            
+            if zero_var_action > 0:
+                quality_report['critical_issues'].append(f"{zero_var_action} action features have zero variance")
+            
+            quality_report['metrics']['statistics'] = {
+                'input_stats': {
+                    'mean_range': [float(input_mean.min()), float(input_mean.max())],
+                    'std_range': [float(input_std.min()), float(input_std.max())],
+                    'value_range': [float(input_min.min()), float(input_max.max())],
+                    'zero_variance_count': zero_var_input
+                },
+                'action_stats': {
+                    'mean_range': [float(action_mean.min()), float(action_mean.max())],
+                    'std_range': [float(action_std.min()), float(action_std.max())],
+                    'value_range': [float(action_min.min()), float(action_max.max())],
+                    'zero_variance_count': zero_var_action
+                }
+            }
+            
+            # Outlier detection
+            print(f"\n🎯 Outlier Detection Analysis:")
+            
+            # Calculate z-scores and identify outliers (>3 standard deviations)
+            input_z_scores = torch.abs((input_tensor - input_mean) / (input_std + 1e-8))
+            action_z_scores = torch.abs((action_tensor - action_mean) / (action_std + 1e-8))
+            
+            input_outliers = (input_z_scores > 3.0).sum().item()
+            action_outliers = (action_z_scores > 3.0).sum().item()
+            
+            input_outlier_percentage = (input_outliers / input_tensor.numel()) * 100
+            action_outlier_percentage = (action_outliers / action_tensor.numel()) * 100
+            
+            print(f"   • Input outliers (>3σ): {input_outliers:,} ({input_outlier_percentage:.2f}%)")
+            print(f"   • Action outliers (>3σ): {action_outliers:,} ({action_outlier_percentage:.2f}%)")
+            
+            if input_outlier_percentage > 5.0:
+                quality_report['warnings'].append(f"High input outlier percentage: {input_outlier_percentage:.2f}%")
+            
+            if action_outlier_percentage > 5.0:
+                quality_report['warnings'].append(f"High action outlier percentage: {action_outlier_percentage:.2f}%")
+            
+            quality_report['metrics']['outliers'] = {
+                'input_outliers': input_outliers,
+                'input_outlier_percentage': float(input_outlier_percentage),
+                'action_outliers': action_outliers,
+                'action_outlier_percentage': float(action_outlier_percentage)
+            }
+            
+            # Temporal consistency check within segments
+            print(f"\n⏱️ Temporal Consistency Analysis:")
+            
+            # Calculate temporal derivatives (changes between consecutive timesteps)
+            input_derivatives = torch.diff(input_tensor, dim=1)  # [segments, seq_len-1, features]
+            action_derivatives = torch.diff(action_tensor, dim=1)
+            
+            # Calculate mean absolute temporal changes
+            input_temporal_change = torch.mean(torch.abs(input_derivatives))
+            action_temporal_change = torch.mean(torch.abs(action_derivatives))
+            
+            # Check for sudden jumps (large temporal derivatives)
+            input_large_jumps = (torch.abs(input_derivatives) > 5.0).sum().item()
+            action_large_jumps = (torch.abs(action_derivatives) > 2.0).sum().item()
+            
+            print(f"   • Mean input temporal change: {input_temporal_change:.4f}")
+            print(f"   • Mean action temporal change: {action_temporal_change:.4f}")
+            print(f"   • Large input jumps: {input_large_jumps:,}")
+            print(f"   • Large action jumps: {action_large_jumps:,}")
+            
+            if input_large_jumps > input_tensor.numel() * 0.01:  # >1% of values
+                quality_report['warnings'].append(f"Many large temporal jumps in input data: {input_large_jumps}")
+            
+            if action_large_jumps > action_tensor.numel() * 0.01:
+                quality_report['warnings'].append(f"Many large temporal jumps in action data: {action_large_jumps}")
+            
+            quality_report['metrics']['temporal_consistency'] = {
+                'input_temporal_change': float(input_temporal_change),
+                'action_temporal_change': float(action_temporal_change),
+                'input_large_jumps': input_large_jumps,
+                'action_large_jumps': action_large_jumps
+            }
+            
+            # Feature correlation analysis
+            print(f"\n🔗 Feature Correlation Analysis:")
+            
+            # Flatten tensors for correlation analysis
+            input_flat = input_tensor.view(-1, input_tensor.size(-1)).numpy()
+            action_flat = action_tensor.view(-1, action_tensor.size(-1)).numpy()
+            
+            # Calculate correlation matrices with proper handling of zero variance features
+            high_corr_input_pairs = []
+            high_corr_action_pairs = []
+            
+            try:
+                # Check for sufficient variance before correlation calculation
+                input_std_flat = np.std(input_flat, axis=0)
+                valid_input_features = input_std_flat > 1e-10  # Only features with sufficient variance
+                
+                if np.sum(valid_input_features) > 1:  # Need at least 2 features for correlation
+                    valid_input_data = input_flat[:, valid_input_features]
+                    valid_input_feature_names = [input_features[i] for i in range(len(input_features)) if valid_input_features[i]]
+                    
+                    # Suppress numpy warnings for correlation calculation
+                    with np.errstate(divide='ignore', invalid='ignore'):
+                        input_corr_matrix = np.corrcoef(valid_input_data.T)
+                    
+                    # Replace NaN values with 0 (no correlation)
+                    input_corr_matrix = np.nan_to_num(input_corr_matrix, nan=0.0, posinf=0.0, neginf=0.0)
+                    
+                    # Find highly correlated feature pairs
+                    for i in range(len(valid_input_feature_names)):
+                        for j in range(i+1, len(valid_input_feature_names)):
+                            if abs(input_corr_matrix[i, j]) > 0.95:
+                                high_corr_input_pairs.append((valid_input_feature_names[i], valid_input_feature_names[j], input_corr_matrix[i, j]))
+                else:
+                    print(f"   • Skipping input correlation analysis - insufficient valid features ({np.sum(valid_input_features)})")
+                    
+            except Exception as e:
+                print(f"   • Input correlation analysis failed: {str(e)}")
+                quality_report['warnings'].append("Input correlation analysis failed due to data issues")
+            
+            try:
+                # Same for action features
+                action_std_flat = np.std(action_flat, axis=0)
+                valid_action_features = action_std_flat > 1e-10  # Only features with sufficient variance
+                
+                if np.sum(valid_action_features) > 1:  # Need at least 2 features for correlation
+                    valid_action_data = action_flat[:, valid_action_features]
+                    valid_action_feature_names = [action_features[i] for i in range(len(action_features)) if valid_action_features[i]]
+                    
+                    # Suppress numpy warnings for correlation calculation
+                    with np.errstate(divide='ignore', invalid='ignore'):
+                        action_corr_matrix = np.corrcoef(valid_action_data.T)
+                    
+                    # Replace NaN values with 0 (no correlation)
+                    action_corr_matrix = np.nan_to_num(action_corr_matrix, nan=0.0, posinf=0.0, neginf=0.0)
+                    
+                    # Find highly correlated feature pairs
+                    for i in range(len(valid_action_feature_names)):
+                        for j in range(i+1, len(valid_action_feature_names)):
+                            if abs(action_corr_matrix[i, j]) > 0.95:
+                                high_corr_action_pairs.append((valid_action_feature_names[i], valid_action_feature_names[j], action_corr_matrix[i, j]))
+                else:
+                    print(f"   • Skipping action correlation analysis - insufficient valid features ({np.sum(valid_action_features)})")
+                    
+            except Exception as e:
+                print(f"   • Action correlation analysis failed: {str(e)}")
+                quality_report['warnings'].append("Action correlation analysis failed due to data issues")
+            
+            print(f"   • Highly correlated input pairs (>0.95): {len(high_corr_input_pairs)}")
+            print(f"   • Highly correlated action pairs (>0.95): {len(high_corr_action_pairs)}")
+            
+            if len(high_corr_input_pairs) > 0:
+                quality_report['warnings'].append(f"{len(high_corr_input_pairs)} highly correlated input feature pairs detected")
+                for pair in high_corr_input_pairs[:3]:  # Show first 3
+                    print(f"     - {pair[0]} ↔ {pair[1]}: {pair[2]:.3f}")
+            
+            if len(high_corr_action_pairs) > 0:
+                quality_report['warnings'].append(f"{len(high_corr_action_pairs)} highly correlated action feature pairs detected")
+                for pair in high_corr_action_pairs[:3]:  # Show first 3
+                    print(f"     - {pair[0]} ↔ {pair[1]}: {pair[2]:.3f}")
+            
+            # Normalization verification
+            print(f"\n🎛️ Normalization Verification:")
+            
+            scalers = dataset.get_scalers()
+            input_scaler = scalers.get('input')
+            action_scaler = scalers.get('actions')
+            
+            scaler_quality = {
+                'input_scaler_available': input_scaler is not None,
+                'action_scaler_available': action_scaler is not None
+            }
+            
+            if input_scaler:
+                # Check if data is approximately normalized (mean~0, std~1)
+                normalized_mean = torch.abs(input_mean).max().item()
+                normalized_std_deviation = torch.abs(input_std - 1.0).max().item()
+                
+                print(f"   • Input normalization quality:")
+                print(f"     - Max absolute mean: {normalized_mean:.4f} (should be ~0)")
+                print(f"     - Max std deviation from 1: {normalized_std_deviation:.4f} (should be ~0)")
+                
+                scaler_quality['input_normalization'] = {
+                    'max_abs_mean': float(normalized_mean),
+                    'max_std_deviation': float(normalized_std_deviation)
+                }
+                
+                if normalized_mean > 0.1:
+                    quality_report['warnings'].append(f"Input normalization: high mean {normalized_mean:.4f}")
+                if normalized_std_deviation > 0.2:
+                    quality_report['warnings'].append(f"Input normalization: std deviation {normalized_std_deviation:.4f}")
+            
+            if action_scaler:
+                action_normalized_mean = torch.abs(action_mean).max().item()
+                action_normalized_std_dev = torch.abs(action_std - 1.0).max().item()
+                
+                print(f"   • Action normalization quality:")
+                print(f"     - Max absolute mean: {action_normalized_mean:.4f} (should be ~0)")
+                print(f"     - Max std deviation from 1: {action_normalized_std_dev:.4f} (should be ~0)")
+                
+                scaler_quality['action_normalization'] = {
+                    'max_abs_mean': float(action_normalized_mean),
+                    'max_std_deviation': float(action_normalized_std_dev)
+                }
+            
+            quality_report['metrics']['normalization'] = scaler_quality
+            
+            # Context feature validation
+            print(f"\n🎯 Context Feature Validation:")
+            
+            if len(context_features) > 0:
+                # Get sample of context data to validate
+                sample_segment = dataset.combined_segments[0] if dataset.combined_segments else []
+                if sample_segment:
+                    context_sample = sample_segment[0] if sample_segment else {}
+                    
+                    expert_context_count = 0
+                    corner_context_count = 0
+                    tire_context_count = 0
+                    
+                    for feature_name in context_features:
+                        if 'expert' in feature_name.lower():
+                            expert_context_count += 1
+                        elif 'corner' in feature_name.lower():
+                            corner_context_count += 1
+                        elif 'tire' in feature_name.lower() or 'grip' in feature_name.lower():
+                            tire_context_count += 1
+                    
+                    print(f"   • Expert context features: {expert_context_count}")
+                    print(f"   • Corner context features: {corner_context_count}")
+                    print(f"   • Tire grip context features: {tire_context_count}")
+                    
+                    quality_report['metrics']['context_features'] = {
+                        'expert_features': expert_context_count,
+                        'corner_features': corner_context_count,
+                        'tire_features': tire_context_count
+                    }
+                    
+                    if expert_context_count == 0:
+                        quality_report['warnings'].append("No expert context features detected")
+                else:
+                    quality_report['warnings'].append("Cannot validate context features - no sample data available")
+            else:
+                quality_report['warnings'].append("No context features available")
+            
+            # Generate overall quality assessment
+            print(f"\n🎖️ QUALITY ASSESSMENT SUMMARY:")
+            
+            critical_count = len(quality_report['critical_issues'])
+            warning_count = len(quality_report['warnings'])
+            
+            if critical_count == 0 and warning_count == 0:
+                overall_quality = "EXCELLENT"
+                quality_color = "🟢"
+            elif critical_count == 0 and warning_count <= 2:
+                overall_quality = "GOOD"
+                quality_color = "🟡"
+            elif critical_count <= 1 and warning_count <= 5:
+                overall_quality = "ACCEPTABLE"
+                quality_color = "🟠"
+            else:
+                overall_quality = "POOR"
+                quality_color = "🔴"
+            
+            quality_report['overall_quality'] = overall_quality
+            
+            print(f"   {quality_color} Overall Quality: {overall_quality}")
+            print(f"   • Critical Issues: {critical_count}")
+            print(f"   • Warnings: {warning_count}")
+            
+            # Generate recommendations
+            recommendations = []
+            
+            if segment_info['num_segments'] < min_segments_required:
+                recommendations.append("Collect more training segments for better model generalization")
+            
+            if zero_var_input > 0:
+                recommendations.append("Remove or fix zero-variance input features")
+            
+            if zero_var_action > 0:
+                recommendations.append("Investigate zero-variance action features - may indicate data collection issues")
+            
+            if input_outlier_percentage > 5.0 or action_outlier_percentage > 5.0:
+                recommendations.append("Consider outlier removal or robust scaling methods")
+            
+            if len(high_corr_input_pairs) > 5:
+                recommendations.append("Consider dimensionality reduction for highly correlated input features")
+            
+            if not input_scaler or not action_scaler:
+                recommendations.append("Ensure proper data normalization with StandardScaler")
+            
+            if len(context_features) == 0:
+                recommendations.append("Add contextual features for better learning guidance")
+            
+            quality_report['recommendations'] = recommendations
+            
+            # Print detailed summary
+            print(f"\n📋 DETAILED SUMMARY:")
+            print(f"{'─'*60}")
+            
+            if quality_report['critical_issues']:
+                print(f"🚨 Critical Issues ({len(quality_report['critical_issues'])}):")
+                for i, issue in enumerate(quality_report['critical_issues'], 1):
+                    print(f"   {i}. {issue}")
+                print()
+            
+            if quality_report['warnings']:
+                print(f"⚠️ Warnings ({len(quality_report['warnings'])}):")
+                for i, warning in enumerate(quality_report['warnings'], 1):
+                    print(f"   {i}. {warning}")
+                print()
+            
+            if quality_report['recommendations']:
+                print(f"💡 Recommendations ({len(quality_report['recommendations'])}):")
+                for i, rec in enumerate(quality_report['recommendations'], 1):
+                    print(f"   {i}. {rec}")
+                print()
+            
+            print(f"✅ Dataset quality check completed for {dataset_name}")
+            print(f"📊 Ready for training: {'Yes' if overall_quality in ['EXCELLENT', 'GOOD'] else 'With caution' if overall_quality == 'ACCEPTABLE' else 'Not recommended'}")
+            
+        except Exception as e:
+            error_msg = f"Error during dataset quality analysis: {str(e)}"
+            print(f"❌ {error_msg}")
+            quality_report['critical_issues'].append(error_msg)
+            quality_report['overall_quality'] = 'ERROR'
+        
+        print(f"{'='*80}\n")
+        
+        return make_json_safe(quality_report)
+
+
 
 
 class TelemetryActionDataset(Dataset):
@@ -1434,6 +1877,49 @@ class ExpertActionTrainer:
     
     This trainer handles fixed-size segmented telemetry data with efficient batch processing.
     All segments have the same fixed length, enabling traditional batching for faster training.
+    
+    DATASET QUALITY VALIDATION USAGE:
+    
+    # Example 1: Basic quality check before training
+    model = ExpertActionTransformer(input_features_count=42)
+    trainer = ExpertActionTrainer(model)
+    
+    # Check dataset quality and get detailed report
+    quality_report = model.check_dataset_quality(train_dataset, "My Training Dataset")
+    print(f"Dataset quality: {quality_report['overall_quality']}")
+    
+    # Example 2: Comprehensive pre-training validation (recommended)
+    try:
+        validation_results = trainer.validate_training_data_quality(
+            train_dataset=train_dataset,
+            val_dataset=val_dataset,
+            require_good_quality=True  # Will raise exception if quality is poor
+        )
+        
+        # Proceed with training if validation passes
+        training_results = trainer.train(train_dataset, val_dataset, epochs=50)
+        
+    except ValueError as e:
+        print(f"Training blocked due to data quality issues: {e}")
+        # Fix data quality issues before proceeding
+    
+    # Example 3: Quality check with custom handling
+    validation_results = trainer.validate_training_data_quality(
+        train_dataset=train_dataset,
+        val_dataset=val_dataset,
+        require_good_quality=False  # Don't raise exception, just report
+    )
+    
+    if validation_results['overall_recommendation'] in ['EXCELLENT', 'GOOD']:
+        print("✅ Starting training with high-quality data")
+        training_results = trainer.train(train_dataset, val_dataset, epochs=100)
+    elif validation_results['overall_recommendation'] == 'ACCEPTABLE':
+        print("⚠️ Starting training with acceptable data, monitoring closely")
+        training_results = trainer.train(train_dataset, val_dataset, epochs=30, patience=5)
+    else:
+        print("🔴 Skipping training due to poor data quality")
+        print("Critical issues:", validation_results['aggregated_critical_issues'])
+        print("Recommendations:", validation_results['aggregated_recommendations'])
     """
     
     def __init__(self,
@@ -1761,6 +2247,127 @@ class ExpertActionTrainer:
             'epochs_trained': epoch + 1,
             'final_lr': self.optimizer.param_groups[0]['lr']
         })
+    
+    def validate_training_data_quality(self, 
+                                     train_dataset: TelemetryActionDataset,
+                                     val_dataset: Optional[TelemetryActionDataset] = None,
+                                     require_good_quality: bool = True) -> Dict[str, Any]:
+        """
+        Validate dataset quality before training and provide comprehensive quality reports.
+        
+        This method performs thorough quality checks on training and validation datasets
+        to ensure they meet the requirements for effective transformer training. It can
+        optionally enforce quality standards by raising exceptions for poor quality data.
+        
+        Args:
+            train_dataset: Training dataset to validate
+            val_dataset: Optional validation dataset to validate
+            require_good_quality: If True, raises exception for poor quality datasets
+            
+        Returns:
+            Dictionary containing quality reports for all datasets
+            
+        Raises:
+            ValueError: If require_good_quality=True and dataset quality is poor
+        """
+        print(f"\n🔍 COMPREHENSIVE DATASET QUALITY VALIDATION")
+        print(f"{'='*80}")
+        
+        quality_results = {
+            'validation_timestamp': datetime.now().isoformat(),
+            'datasets_checked': [],
+            'overall_recommendation': 'UNKNOWN'
+        }
+        
+        # Check training dataset quality
+        print(f"Validating training dataset...")
+        train_quality = self.model.check_dataset_quality(train_dataset, "Training Dataset")
+        quality_results['training_quality'] = train_quality
+        quality_results['datasets_checked'].append('training')
+        
+        # Check validation dataset quality if provided
+        val_quality = None
+        if val_dataset is not None:
+            print(f"Validating validation dataset...")
+            val_quality = self.model.check_dataset_quality(val_dataset, "Validation Dataset")
+            quality_results['validation_quality'] = val_quality
+            quality_results['datasets_checked'].append('validation')
+        
+        # Determine overall recommendation
+        train_quality_level = train_quality.get('overall_quality', 'ERROR')
+        val_quality_level = val_quality.get('overall_quality', 'EXCELLENT') if val_quality else 'N/A'
+        
+        # Overall recommendation based on worst dataset quality
+        quality_levels = ['EXCELLENT', 'GOOD', 'ACCEPTABLE', 'POOR', 'ERROR']
+        
+        worst_quality = train_quality_level
+        if val_quality_level != 'N/A':
+            train_idx = quality_levels.index(train_quality_level) if train_quality_level in quality_levels else -1
+            val_idx = quality_levels.index(val_quality_level) if val_quality_level in quality_levels else -1
+            worst_idx = max(train_idx, val_idx)
+            worst_quality = quality_levels[worst_idx] if worst_idx >= 0 else 'ERROR'
+        
+        quality_results['overall_recommendation'] = worst_quality
+        
+        # Print overall summary
+        print(f"\n🎯 OVERALL TRAINING READINESS ASSESSMENT:")
+        print(f"{'─'*60}")
+        print(f"Training Dataset Quality: {train_quality_level}")
+        if val_quality:
+            print(f"Validation Dataset Quality: {val_quality_level}")
+        print(f"Overall Recommendation: {worst_quality}")
+        
+        # Training readiness recommendations
+        if worst_quality == 'EXCELLENT':
+            recommendation = "✅ READY FOR TRAINING - Excellent data quality detected"
+            print(f"{recommendation}")
+        elif worst_quality == 'GOOD':
+            recommendation = "✅ READY FOR TRAINING - Good data quality with minor issues"
+            print(f"{recommendation}")
+        elif worst_quality == 'ACCEPTABLE':
+            recommendation = "⚠️ TRAINING WITH CAUTION - Acceptable quality but monitor training closely"
+            print(f"{recommendation}")
+        elif worst_quality == 'POOR':
+            recommendation = "🔴 NOT RECOMMENDED FOR TRAINING - Poor data quality detected"
+            print(f"{recommendation}")
+        else:
+            recommendation = "❌ TRAINING BLOCKED - Critical data quality issues"
+            print(f"{recommendation}")
+        
+        quality_results['training_recommendation'] = recommendation
+        
+        # Aggregate all critical issues and recommendations
+        all_critical_issues = train_quality.get('critical_issues', [])
+        all_recommendations = train_quality.get('recommendations', [])
+        
+        if val_quality:
+            all_critical_issues.extend(val_quality.get('critical_issues', []))
+            all_recommendations.extend(val_quality.get('recommendations', []))
+        
+        quality_results['aggregated_critical_issues'] = list(set(all_critical_issues))
+        quality_results['aggregated_recommendations'] = list(set(all_recommendations))
+        
+        if all_critical_issues:
+            print(f"\n🚨 ALL CRITICAL ISSUES TO ADDRESS:")
+            for i, issue in enumerate(all_critical_issues, 1):
+                print(f"   {i}. {issue}")
+        
+        if all_recommendations:
+            print(f"\n💡 AGGREGATED RECOMMENDATIONS:")
+            for i, rec in enumerate(all_recommendations, 1):
+                print(f"   {i}. {rec}")
+        
+        # Enforce quality requirements if requested
+        if require_good_quality and worst_quality in ['POOR', 'ERROR']:
+            error_msg = (f"Dataset quality check failed: {worst_quality} quality detected. "
+                        f"Critical issues: {len(all_critical_issues)}. "
+                        f"Set require_good_quality=False to proceed anyway.")
+            print(f"\n❌ {error_msg}")
+            raise ValueError(error_msg)
+        
+        print(f"{'='*80}\n")
+        
+        return make_json_safe(quality_results)
     
     def evaluate(self, dataset: TelemetryActionDataset) -> Dict[str, float]:
         """

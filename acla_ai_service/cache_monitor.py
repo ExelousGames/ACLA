@@ -107,10 +107,9 @@ results = await ml_service.test_caching_performance(
     print("""
 For managing 900MB models effectively:
 
-1. Raw Data Caching (Enabled by default):
-   - Models are stored as raw data and deserialized on-demand
-   - Reduces memory footprint and improves cache hit rates
-   - Configure with: ml_service.configure_caching_strategy(model_type, cache_raw_data=True)
+1. Model Instance Caching:
+   - Models are cached as deserialized instances for immediate use
+   - Optimized for performance with direct model access
 
 2. Memory Configuration:
    - Current max memory: {:.1f}GB 

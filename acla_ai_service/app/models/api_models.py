@@ -54,3 +54,13 @@ class AiModelDto(BaseModel):
     modelData: Dict[str, Any]
     metadata: Dict[str, Any]
     isActive: bool
+
+
+class ActiveModelData(BaseModel):
+    """Complete active model data structure returned by getCompleteActiveModelData"""
+    modelType: str
+    trackName: str
+    carName: str
+    isActive: bool
+    metadata: Dict[str, Any]
+    modelData: Dict[str, Any]

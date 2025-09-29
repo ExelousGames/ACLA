@@ -663,10 +663,6 @@ class ExpertImitateLearningService:
         else:
             raise ValueError("No valid learning objectives provided. Expected 'trajectory'.")
 
-        # Serialize the models for storage/transmission
-        objects_serialized_data = self.serialize_learning_model()  
-        results['serialized_modelData'] = objects_serialized_data
-         
         return results
     
     def predict_expert_actions(self, 
@@ -809,10 +805,6 @@ class ExpertImitateLearningService:
         for batch_start in range(0, total_rows, batch_size):
             batch_end = min(batch_start + batch_size, total_rows)
             
-            # Progress reporting
-            progress_pct = (batch_end) / total_rows * 100
-            print(f"[INFO] Processing batch {batch_start+1}-{batch_end}/{total_rows} ({progress_pct:.1f}%)")
-            
             try:
                 # Get batch DataFrame
                 batch_df = processed_df.iloc[batch_start:batch_end]
@@ -954,7 +946,7 @@ class ExpertImitateLearningService:
             if improvement_scores['overall_improvement_rate'] >= improvement_threshold:
                 segment_dict = segment.to_dict('records')
                 optimal_segments.append(segment_dict)
-                print(f"[INFO] Added improving segment {start_idx}-{end_idx} (improvement rate: {improvement_scores['overall_improvement_rate']:.2f})")
+                #print(f"[INFO] Added improving segment {start_idx}-{end_idx} (improvement rate: {improvement_scores['overall_improvement_rate']:.2f})")
         
         print(f"[INFO] Filtered segments analysis complete:")
         print(f"[INFO] - Original records: {len(telemetry_data)}")
@@ -1020,6 +1012,7 @@ class ExpertImitateLearningService:
             raise Exception(f"Error analyzing segment improvement: {e}")
         
         return improvement_metrics
+    
     def serialize_learning_model(self) -> Dict[str, Any]:
         """
         Serialize the current trained models stored in the position learner
@@ -1092,8 +1085,8 @@ class ExpertImitateLearningService:
     # Deserialize object inside 
     def deserialize_imitation_model(self, serialized_results: Dict[str, Any]) -> 'ExpertImitateLearningService':
         """
-        Deserialize the serialized position models and load them directly into the position learner
-        
+        Deserialize the serialized position models and load them directly into the position learner. After deserializing,
+        the models are ready for immediate use in predictions.
         Args:
             serialized_results: Dictionary containing serialized models and metadata
             
@@ -1136,7 +1129,6 @@ class ExpertImitateLearningService:
             
         except Exception as e:
             error_msg = f"Failed to deserialize imitation learning models: {str(e)}"
-            print(f"[ERROR] {error_msg}")
             raise RuntimeError(error_msg) from e
     
 

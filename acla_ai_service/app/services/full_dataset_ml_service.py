@@ -23,7 +23,7 @@ from collections import Counter
 from typing import Dict, List, Any, Optional, Tuple, Union
 from datetime import datetime
 from pathlib import Path
-from app.models import AiModelDto
+from app.models import AiModelDto, ActiveModelData
 import os
 
 # Scikit-learn imports
@@ -117,13 +117,9 @@ class Full_dataset_TelemetryMLService:
         self._model_fetch_locks = {}
         self._lock_creation_lock = asyncio.Lock()
         
-        # Configure default caching strategies for common model types
-        self._caching_strategies = {
-            "imitation_learning": {"cache_raw_data": True, "configured_at": datetime.now().isoformat()},
-            "transformer_expert_action": {"cache_raw_data": True, "configured_at": datetime.now().isoformat()},
-            "corner_identification": {"cache_raw_data": True, "configured_at": datetime.now().isoformat()},
-            "tire_grip_analysis": {"cache_raw_data": True, "configured_at": datetime.now().isoformat()},
-        }
+        # Clear entire cache to ensure we start fresh with model instances only
+        self.model_cache.clear()
+        print("[INFO] Cleared entire cache on startup - will cache model instances directly")
         
         # Log cache configuration on startup
         self._log_cache_configuration()
@@ -139,10 +135,7 @@ class Full_dataset_TelemetryMLService:
         print(f"Environment: {self.model_cache.environment}")
         print(f"Default TTL: {self.model_cache.default_ttl_seconds}s ({self.model_cache.default_ttl_seconds/3600:.1f}h)")
         print(f"Large Model Priority: {self.model_cache.config.get('performance', {}).get('large_model_priority', False)}")
-        print("Model-specific TTLs:")
-        for model_type, strategy in self._caching_strategies.items():
-            ttl = self.model_cache.get_model_ttl(model_type)
-            print(f"  - {model_type}: {ttl}s ({ttl/3600:.1f}h), raw_data={strategy['cache_raw_data']}")
+        print("Caching Strategy: Model instances cached directly")
         print("="*60 + "\n")
 
     def clear_all_cache(self):
@@ -150,16 +143,16 @@ class Full_dataset_TelemetryMLService:
         self.model_cache.clear()
         print("[INFO] All cached model_cache entries cleared (corner & tire services are on-demand so no persistent cache to clear)")
     
+
+    
     async def _fetch_and_cache_model(self,
                                     model_type: str,
                                     track_name: Optional[str] = None,
                                     car_name: Optional[str] = None,
                                     model_subtype: str = "complete_model_data",
-                                    deserializer_func=None,
-                                    cache_raw_data: bool = True) -> Tuple[Any, Dict[str, Any]]:
+                                    deserializer_func=None) -> Tuple[Any, Dict[str, Any]]:
         """
-        Fetch model from backend and cache it with improved caching strategy.
-        Now supports caching raw data for better cache efficiency and on-demand deserialization.
+        Fetch model from backend and cache the model instance directly.
         
         Args:
             model_type: Type of model ('imitation_learning', etc.)
@@ -167,102 +160,48 @@ class Full_dataset_TelemetryMLService:
             car_name: Car name for the model (optional)
             model_subtype: Subtype identifier for the model
             deserializer_func: Function to deserialize model data from backend and return model instance
-            cache_raw_data: If True, cache raw data and deserialize on-demand. If False, cache deserialized model.
             
         Returns:
             Tuple of (model_instance, metadata)
         """
         print(f"[DEBUG] Fetching model from backend: {model_type}/{track_name}/{car_name}")
         
-        model_response = await self.backend_service.getCompleteActiveModelData(
+        # getCompleteActiveModelData now always returns ActiveModelData or raises exception
+        model_response: ActiveModelData = await self.backend_service.getCompleteActiveModelData(
             track_name, car_name, model_type
         )
-          
-        if "error" in model_response:
-            raise Exception(f"Backend error: {model_response['error']}")
-        
-        # Debug: Log the structure we received
-        print(f"[DEBUG] Model response keys: {list(model_response.keys()) if isinstance(model_response, dict) else 'Not a dict'}")
-        if "data" in model_response:
-            print(f"[DEBUG] Response data type: {type(model_response['data'])}")
-            if isinstance(model_response["data"], dict):
-                print(f"[DEBUG] Response data keys: {list(model_response['data'].keys())}")
-        
-        # Extract modelData from the correct location in response
-        model_data = None
-        if "data" in model_response and isinstance(model_response["data"], dict):
-            model_data = model_response["data"].get("modelData", {})
-            print(f"[DEBUG] Found modelData in response['data'], type: {type(model_data)}")
-        else:
-            model_data = model_response.get("modelData", {})
-            print(f"[DEBUG] Found modelData in response root, type: {type(model_data)}")
-        
-        if not model_data:
-            print(f"[ERROR] No modelData found. Response structure: {model_response}")
-            raise Exception("No modelData found in response")
-
-        # Prepare cache metadata
+        # Prepare cache metadata with all available structured data
         cache_metadata = {
-            "track_name": track_name,
-            "car_name": car_name,
-            "model_type": model_type,
+            "track_name": model_response.trackName,
+            "car_name": model_response.carName,
+            "model_type": model_response.modelType,
+            "is_active": model_response.isActive,
             "fetched_at": datetime.now().isoformat(),
-            "backend_model_id": model_response.get("id", "unknown"),
+            "backend_metadata": model_response.metadata,
             "model_subtype": model_subtype
         }
         
-        # Decide caching strategy
-        if cache_raw_data and deserializer_func:
-            # Strategy 1: Cache raw data, deserialize on-demand (recommended)
-            print(f"[DEBUG] Caching raw data for on-demand deserialization: {model_type}")
-            
-            # Add flag to metadata to indicate raw data storage
-            cache_metadata["is_raw_model_data"] = True
-            cache_metadata["has_deserializer"] = True
-            
-            # Cache the raw model data
-            self.model_cache.put(
-                model_type=model_type,
-                track_name=track_name,
-                car_name=car_name,
-                data=model_data,  # Store raw data
-                metadata=cache_metadata,
-                model_subtype=model_subtype
-            )
-            
-            # Deserialize for immediate return
-            model_instance = deserializer_func(model_data)
+        # Deserialize the model instance
+        if deserializer_func:
+            print(f"[DEBUG] Deserializing model instance: {model_type}")
+            model_instance = deserializer_func(model_response.modelData)
             if model_instance is None:
                 raise Exception("Deserializer function returned None - must return model instance")
-                
         else:
-            # Strategy 2: Cache deserialized model (legacy behavior)
-            print(f"[DEBUG] Caching deserialized model: {model_type}")
-            
-            if deserializer_func:
-                # Deserialize the model data using provided function
-                model_instance = deserializer_func(model_data)
-                if model_instance is None:
-                    raise Exception("Deserializer function returned None - must return model instance")
-                cache_metadata["is_raw_model_data"] = False
-                cache_metadata["has_deserializer"] = True
-            else:
-                # For other model types without deserializer, just use the raw data
-                model_instance = model_data
-                cache_metadata["is_raw_model_data"] = False
-                cache_metadata["has_deserializer"] = False
-            
-            # Cache the processed model instance
-            self.model_cache.put(
-                model_type=model_type,
-                track_name=track_name,
-                car_name=car_name,
-                data=model_instance,
-                metadata=cache_metadata,
-                model_subtype=model_subtype
-            )
+            raise ValueError("deserializer_func is required to deserialize model data")
         
-        print(f"[DEBUG] Successfully cached model: {model_type} (raw_data: {cache_raw_data and deserializer_func is not None})")
+        # Cache the model instance directly
+        print(f"[DEBUG] Caching model instance: {model_type}")
+        self.model_cache.put(
+            model_type=model_type,
+            track_name=track_name,
+            car_name=car_name,
+            data=model_instance,  # Store model instance directly
+            metadata=cache_metadata,
+            model_subtype=model_subtype
+        )
+        
+        print(f"[DEBUG] Successfully cached model instance: {model_type}")
         
         return model_instance, cache_metadata
     
@@ -300,7 +239,6 @@ class Full_dataset_TelemetryMLService:
             except Exception as cleanup_error:
                 print(f"[WARNING] Error during emergency lock cleanup: {str(cleanup_error)}")
     
-
     async def _get_cached_model_or_fetch(self,
                                         model_type: str,
                                         track_name: Optional[str] = None,
@@ -309,14 +247,14 @@ class Full_dataset_TelemetryMLService:
                                         deserializer_func=None) -> Tuple[Any, Dict[str, Any]]:
         """
         Get model from cache or fetch from backend with thread-safe locking.
-        Now supports both raw data caching and on-demand deserialization.
+        Caches and retrieves model instances directly.
         
         Args:
             model_type: Type of model ('imitation_learning', etc.)
             track_name: Track name for the model (optional)
             car_name: Car name for the model (optional)
             model_subtype: Subtype identifier for the model
-            deserializer_func: Function to deserialize raw model data and return model instance
+            deserializer_func: Function to deserialize model data from backend and return model instance
             
         Returns:
             Tuple of (model_instance, metadata)
@@ -355,29 +293,8 @@ class Full_dataset_TelemetryMLService:
                 )
                 
                 if cached_result:
-                    raw_data, metadata = cached_result
-                    
-                    # Handle deserialization based on storage strategy
-                    if deserializer_func and isinstance(raw_data, dict) and 'is_raw_model_data' in metadata:
-                        # Raw data stored - deserialize on demand
-                        try:
-                            print(f"[DEBUG] Deserializing raw cached data for {cache_key}")
-                            model_instance = deserializer_func(raw_data)
-                            if model_instance is None:
-                                raise Exception("Deserializer returned None for cached raw data")
-                        except Exception as deser_error:
-                            print(f"[ERROR] Failed to deserialize cached data for {cache_key}: {str(deser_error)}")
-                            # Clear corrupted cache entry and continue to refetch
-                            self.model_cache.invalidate(
-                                model_type=model_type,
-                                track_name=track_name,
-                                car_name=car_name,
-                                model_subtype=model_subtype
-                            )
-                            cached_result = None
-                    else:
-                        # Pre-deserialized data or no deserializer needed
-                        model_instance = raw_data
+                    model_instance, metadata = cached_result
+                    print(f"[DEBUG] Retrieved cached model instance for {cache_key}")
                     
                     if model_instance is not None:
                         return model_instance, metadata
@@ -395,26 +312,8 @@ class Full_dataset_TelemetryMLService:
                 )
                 
                 if cached_result:
-                    raw_data, metadata = cached_result
-                    
-                    # Handle deserialization
-                    if deserializer_func and isinstance(raw_data, dict) and 'is_raw_model_data' in metadata:
-                        try:
-                            model_instance = deserializer_func(raw_data)
-                            if model_instance is None:
-                                raise Exception("Deserializer returned None")
-                        except Exception as deser_error:
-                            print(f"[ERROR] Failed to deserialize double-checked cache: {str(deser_error)}")
-                            # Clear and continue to fetch
-                            self.model_cache.invalidate(
-                                model_type=model_type,
-                                track_name=track_name,
-                                car_name=car_name,
-                                model_subtype=model_subtype
-                            )
-                            model_instance = None
-                    else:
-                        model_instance = raw_data
+                    model_instance, metadata = cached_result
+                    print(f"[DEBUG] Retrieved cached model instance (double-check) for {cache_key}")
                     
                     if model_instance is not None:
                         return model_instance, metadata
@@ -440,16 +339,7 @@ class Full_dataset_TelemetryMLService:
                         model_subtype=model_subtype
                     )
                     if cached_result:
-                        raw_data, metadata = cached_result
-                        
-                        if deserializer_func and isinstance(raw_data, dict) and 'is_raw_model_data' in metadata:
-                            try:
-                                model_instance = deserializer_func(raw_data)
-                            except Exception as deser_error:
-                                print(f"[ERROR] Failed to deserialize after wait: {str(deser_error)}")
-                                model_instance = None
-                        else:
-                            model_instance = raw_data
+                        model_instance, metadata = cached_result
                         
                         if model_instance:
                             print(f"[INFO] Using model cached by another thread for {cache_key}")
@@ -466,16 +356,12 @@ class Full_dataset_TelemetryMLService:
             # If we are the fetching thread or no data in cache, do the actual fetch
             if not model_instance and is_fetching_thread:
                 try:
-                    # Use configured caching strategy
-                    cache_raw_data = self.get_caching_strategy(model_type)
-                    
                     model_instance, metadata = await self._fetch_and_cache_model(
                         model_type=model_type,
                         track_name=track_name,
                         car_name=car_name,
                         model_subtype=model_subtype,
-                        deserializer_func=deserializer_func,
-                        cache_raw_data=cache_raw_data
+                        deserializer_func=deserializer_func
                     )
                     print(f"[INFO] Successfully fetched and cached model for {cache_key}")
                     
@@ -687,40 +573,7 @@ class Full_dataset_TelemetryMLService:
                 "error_type": type(e).__name__,
                 "timestamp": end_time.isoformat()
             }
-   
-    def configure_caching_strategy(self, model_type: str, cache_raw_data: bool = True):
-        """
-        Configure caching strategy for a specific model type
-        
-        Args:
-            model_type: Type of model to configure
-            cache_raw_data: If True, cache raw data and deserialize on-demand
-        """
-        if not hasattr(self, '_caching_strategies'):
-            self._caching_strategies = {}
-        
-        self._caching_strategies[model_type] = {
-            "cache_raw_data": cache_raw_data,
-            "configured_at": datetime.now().isoformat()
-        }
-        
-        print(f"[INFO] Configured caching strategy for {model_type}: cache_raw_data={cache_raw_data}")
-    
-    def get_caching_strategy(self, model_type: str) -> bool:
-        """
-        Get the caching strategy for a model type
-        
-        Args:
-            model_type: Type of model
-            
-        Returns:
-            True if should cache raw data, False if should cache deserialized model
-        """
-        if hasattr(self, '_caching_strategies') and model_type in self._caching_strategies:
-            return self._caching_strategies[model_type]["cache_raw_data"]
-        
-        # Default strategy: cache raw data for better efficiency
-        return True
+
     
     async def test_caching_performance(self, 
                                       model_type: str,
@@ -843,7 +696,7 @@ class Full_dataset_TelemetryMLService:
         
         total_large_mb = sum(m["size_mb"] for m in analysis["large_models"])
         if total_large_mb > analysis["max_memory_mb"] * 0.8:
-            analysis["recommendations"].append("Large models are consuming >80% of cache memory. Consider using raw data caching strategy.")
+            analysis["recommendations"].append("Large models are consuming >80% of cache memory. Consider increasing max_memory_mb or clearing unused models.")
         
         return analysis
     
@@ -879,13 +732,8 @@ class Full_dataset_TelemetryMLService:
             if small_models_cleared > 0:
                 optimization_actions.append(f"Cleared {small_models_cleared} small models to free memory")
         
-        # Configure longer TTLs for large models
-        large_model_types = ["imitation_learning", "transformer_expert_action"]
-        for model_type in large_model_types:
-            if model_type in self._caching_strategies:
-                # Ensure raw data caching for large models
-                self._caching_strategies[model_type]["cache_raw_data"] = True
-                optimization_actions.append(f"Enabled raw data caching for {model_type}")
+        # Models are now cached as instances directly - no additional configuration needed
+        optimization_actions.append("Model instances are cached directly for optimal performance")
         
         # Clean up expired entries
         expired_before = len([m for m in analysis["large_models"] + analysis["small_models"] 
@@ -932,28 +780,7 @@ class Full_dataset_TelemetryMLService:
         self.model_cache.clear()
         results["actions_taken"].append("Cleared entire model cache")
         
-        # 3. Reset caching strategies with optimal settings for large models
-        self._caching_strategies = {
-            "imitation_learning": {
-                "cache_raw_data": True, 
-                "configured_at": datetime.now().isoformat()
-            },
-            "transformer_expert_action": {
-                "cache_raw_data": True, 
-                "configured_at": datetime.now().isoformat()
-            },
-            "corner_identification": {
-                "cache_raw_data": True, 
-                "configured_at": datetime.now().isoformat()
-            },
-            "tire_grip_analysis": {
-                "cache_raw_data": True, 
-                "configured_at": datetime.now().isoformat()
-            },
-        }
-        results["actions_taken"].append("Reset caching strategies to optimal settings for large models")
-        
-        # 4. Log new configuration
+        # 3. Log new configuration
         self._log_cache_configuration()
         results["actions_taken"].append("Logged new cache configuration")
         
@@ -1006,14 +833,14 @@ class Full_dataset_TelemetryMLService:
 
         imitation_learning = ExpertImitateLearningService()
         results = imitation_learning.train_ai_model(telemetry_data)
-            
+        serialized_data = imitation_learning.serialize_learning_model()  
         try:
             # Only send the serialized model data, not the raw sklearn objects
             await backend_service.save_ai_model(
                 model_type="imitation_learning",
                 track_name=trackName,
                 car_name=carName,
-                model_data=results.get("serialized_modelData", {}),
+                model_data=serialized_data,
                 metadata=results.get("learning_summary", {}),
                 is_active=True
             )
@@ -1113,16 +940,13 @@ class Full_dataset_TelemetryMLService:
         
         try:
             
-            # Initialize transformer model
-            transformer_model = ExpertActionTransformer()
-            
-            # Fetch and load the trained model
+            # Fetch and load the trained model using the class method deserializer
             transformer_model, model_metadata = await self._get_cached_model_or_fetch(
                 model_type="transformer_expert_action",
                 track_name=trackName,
                 car_name=carName,
                 model_subtype="transformer_model_data",
-                deserializer_func=transformer_model.deserialize_transformer_model
+                deserializer_func=ExpertActionTransformer.deserialize_transformer_model
             )
             
             # Extract context data by running corner and tire grip analysis
@@ -1140,12 +964,12 @@ class Full_dataset_TelemetryMLService:
                 )
                 
                 # Extract corner features from telemetry
-                # Service is async and returns List[Dict[str, Any]]
                 # Use the single telemetry record as a list for extraction
                 corner_features_list = await corner_service.extract_corner_features_for_telemetry([telemetry_dict])
                 if corner_features_list and len(corner_features_list) > 0:
                     # Since we passed a single telemetry record, extract the single result dictionary
                     corner_features = corner_features_list[0]
+                    print(f"[DEBUG] Corner features extracted: {corner_features}")
                     context_data.update(corner_features)
                     print(f"[INFO] Added {len(corner_features)} corner features to context")
                 
@@ -1423,7 +1247,7 @@ class Full_dataset_TelemetryMLService:
             device = 'cuda' if use_cuda else 'cpu'
             trainer = ExpertActionTrainer(model, device=device, learning_rate=1e-4)
         
-            
+            trainer.validate_training_data_quality(dataset)
             # Train model using the new fixed-size segment approach
             training_history = trainer.train(
                 train_dataset=dataset,
@@ -1505,29 +1329,17 @@ class Full_dataset_TelemetryMLService:
                 imitation_result = imitation_learning.train_ai_model(top_laps_training_telemetry_list)
             
                 # Extract only serialized data for backend storage (same fix as in train_imitation_model)
-                serialized_data = imitation_result.get("serialized_modelData", {})
+                serialized_data = imitation_learning.serialize_learning_model()
                 if not serialized_data:
                     print("[ERROR] No serialized_modelData found in imitation results!")
                     raise Exception("No serialized model data available from imitation learning")
-                
-                model_data_for_backend = {
-                    "serialized_modelData": serialized_data,
-                    "training_info": {
-                        "telemetry_records_count": len(top_laps_training_telemetry_list),
-                        "training_timestamp": datetime.now().isoformat()
-                    }
-                }
-            
                 # Save imitation learning model to backend
                 await backend_service.save_ai_model(
                     model_type="imitation_learning",
                     track_name=track_name,
                     car_name='AllCars',
-                    model_data=model_data_for_backend,
-                    metadata={
-                        "training_timestamp": datetime.now().isoformat(),
-                        "telemetry_records_processed": len(top_laps_training_telemetry_list)
-                    },
+                    model_data=serialized_data,
+                    metadata=imitation_result.get("learning_summary", {}),
                     is_active=True
                 )
             except Exception as e:
@@ -1599,6 +1411,7 @@ class Full_dataset_TelemetryMLService:
             if corner_model.get("success"):
                 try:
                     corner_enriched_data = await corner_service.extract_corner_features_for_telemetry(bottom_laps_training_telemetry_list)
+                    print(f"[DEBUG] Corner features extracted: {corner_enriched_data[:5]}")  # Show first 5 for debugging
                     feature_sources.append("corner_identification")
                     print(f"[INFO] Extracted corner features for {len(corner_enriched_data)} records")
                 except Exception as e:
