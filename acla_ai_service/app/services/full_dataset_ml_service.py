@@ -20,7 +20,7 @@ import io
 import asyncio
 import time
 from collections import Counter
-from typing import Dict, List, Any, Optional, Tuple, Union
+from typing import Dict, List, Any, Optional, Tuple, Union, Iterator
 from datetime import datetime
 from pathlib import Path
 from app.models import AiModelDto, ActiveModelData
@@ -49,6 +49,9 @@ from .backend_service import backend_service
 
 # Import model cache service
 from .model_cache_service import model_cache_service
+
+# Import hybrid data cache service
+from .hybrid_data_cache_service import HybridDataCache
 
 # PyTorch imports (for transformer model)
 try:
@@ -112,6 +115,15 @@ class Full_dataset_TelemetryMLService:
         
         # Model cache service integration
         self.model_cache = model_cache_service
+        
+        # Initialize hybrid data cache for large datasets
+        self.data_cache = HybridDataCache(
+            cache_directory="telemetry_data_cache",
+            max_memory_datasets=2,  # Keep only 2 datasets in memory
+            enable_dask=True,
+            dask_memory_limit="4GB"
+        )
+        print(f"[INFO] Hybrid data cache initialized for large dataset processing")
         
         # Add a simple lock mechanism to prevent concurrent fetches of the same model
         self._model_fetch_locks = {}
@@ -1043,12 +1055,46 @@ class Full_dataset_TelemetryMLService:
         """
         returns: success, transformer_training, expert_imitation_trained    , contextual_data_enriched, comparison_results, track_name
         """
-        self._print_section_divider("FETCHING TELEMETRY DATA FROM BACKEND")
-        #retrieve all racing session in database
-        try:
-            sessions_summary = await backend_service.get_all_racing_sessions(trackName)
-        except Exception as e:
-            return {"error": str(e)}
+        self._print_section_divider("CHECKING HYBRID DATA CACHE")
+        
+        # Try to get cached data first
+        cached_sessions = self.data_cache.get_cached_sessions(trackName, max_age_hours=24)
+        
+        if cached_sessions:
+            print(f"[INFO] Using cached data for {trackName}")
+            sessions_summary = cached_sessions
+        else:
+            self._print_section_divider("FETCHING TELEMETRY DATA FROM BACKEND WITH STREAMING")
+            try:
+                # Get sessions with streaming backend call
+                sessions_summary = await backend_service.get_all_racing_sessions(trackName)
+                
+                # Estimate data size for cache decision
+                total_records = sessions_summary.get("summary", {}).get("total_telemetry_records", 0)
+                estimated_size_mb = (total_records * 50) / (1024 * 1024)  # Rough estimate: 50 bytes per record
+                
+                # Cache using streaming approach
+                print(f"[INFO] Caching {len(sessions_summary.get('sessions', []))} sessions (~{estimated_size_mb:.1f}MB)")
+                
+                def sessions_iterator():
+                    """Generator for streaming cache storage"""
+                    for session in sessions_summary.get("sessions", []):
+                        yield session
+                
+                # Cache the data using streaming
+                cache_success = self.data_cache.cache_sessions_streaming(
+                    track_name=trackName,
+                    sessions_iterator=sessions_iterator(),
+                    estimated_size_mb=estimated_size_mb
+                )
+                
+                if cache_success:
+                    print(f"[INFO] Successfully cached data for future use")
+                else:
+                    print(f"[WARNING] Failed to cache data, continuing with in-memory processing")
+                
+            except Exception as e:
+                return {"error": str(e)}
 
         #list of telemetry data for each session
         each_session_telemetry_data = []
@@ -1058,6 +1104,302 @@ class Full_dataset_TelemetryMLService:
         if not each_session_telemetry_data:
             raise ValueError("No telemetry data found")
         
+        # Check if we can use efficient processing for large datasets
+        total_records = sum(len(session_data) for session_data in each_session_telemetry_data)
+        print(f"[INFO] Total telemetry records: {total_records}")
+        
+        # Use efficient processing for large datasets (>100k records)
+        if total_records > 100000:
+            self._print_section_divider("LARGE DATASET DETECTED - USING EFFICIENT PROCESSING")
+            try:
+                top_laps_telemetry_list, bottom_laps_telemetry_list = self.process_large_dataset_efficiently(
+                    trackName=trackName,
+                    segment_length=50,
+                    max_memory_records=100000
+                )
+            except Exception as e:
+                print(f"[WARNING] Efficient processing failed: {e}, falling back to standard processing")
+                # Fall back to standard processing with memory management
+                if total_records > 500000:  # 500k limit for standard processing
+                    print(f"[WARNING] Dataset too large for standard processing, sampling to 500k records")
+                    sample_ratio = 500000 / total_records
+                    sampled_data = []
+                    for session_data in each_session_telemetry_data:
+                        if session_data:
+                            sample_size = max(1, int(len(session_data) * sample_ratio))
+                            sampled_data.extend(session_data[:sample_size])
+                    each_session_telemetry_data = [sampled_data]
+                
+                # Standard processing path
+                top_laps_telemetry_list, bottom_laps_telemetry_list = self._standard_data_processing(each_session_telemetry_data)
+        else:
+            self._print_section_divider("STANDARD DATA PROCESSING")
+            top_laps_telemetry_list, bottom_laps_telemetry_list = self._standard_data_processing(each_session_telemetry_data)
+
+        segment_length = 50  # Default segment length for transformer training
+        try:
+            # enrich data
+            self._print_section_divider("ENRICHING CONTEXTUAL DATA")
+            combined_segments = await self.enriched_contextual_data(top_laps_telemetry_list, bottom_laps_telemetry_list, trackName, segment_length=segment_length)
+        except Exception as e:
+            return {"error": str(e)}
+        
+        try:
+        # train transformer model
+            self._print_section_divider("TRAINING TRANSFORMER MODEL")
+            transformer_results = await self._train_expert_action_transformer(
+                combined_segments=combined_segments,  # combined_segments contain both telemetry and context data
+                trackName=trackName,
+                fixed_segment_length=segment_length  # Use default segment length
+            )
+        except Exception as e:
+            return {"error": str(e)}
+        
+        self._print_section_divider("TRANSFORMER LEARNING COMPLETED")
+        return {
+            "success": True,
+            "transformer_training": transformer_results,
+            "track_name": trackName
+        }
+
+    def process_sessions_streaming(self, sessions_data: List[Dict[str, Any]], 
+                                 chunk_size: int = 5000) -> Iterator[List[Dict[str, Any]]]:
+        """
+        Process session data in streaming chunks to avoid memory overflow
+        
+        Args:
+            sessions_data: List of session dictionaries
+            chunk_size: Number of records per chunk
+            
+        Yields:
+            Chunks of processed telemetry records
+        """
+        print(f"[INFO] Processing {len(sessions_data)} sessions in streaming chunks of {chunk_size}")
+        
+        current_chunk = []
+        processed_sessions = 0
+        
+        for session in sessions_data:
+            session_data = session.get("data", [])
+            if not session_data:
+                continue
+                
+            # Add session records to current chunk
+            current_chunk.extend(session_data)
+            processed_sessions += 1
+            
+            # Yield chunk when it reaches the size limit
+            while len(current_chunk) >= chunk_size:
+                yield current_chunk[:chunk_size]
+                current_chunk = current_chunk[chunk_size:]
+            
+            # Progress logging
+            if processed_sessions % 10 == 0:
+                print(f"[INFO] Processed {processed_sessions}/{len(sessions_data)} sessions")
+        
+        # Yield remaining records
+        if current_chunk:
+            yield current_chunk
+        
+        print(f"[INFO] Completed streaming processing of {processed_sessions} sessions")
+
+    def process_large_dataset_efficiently(self, trackName: str, 
+                                        segment_length: int = 50,
+                                        max_memory_records: int = 100000) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        """
+        Process large cached datasets efficiently using streaming and Dask
+        
+        Args:
+            trackName: Track name for data retrieval
+            segment_length: Length of segments for processing
+            max_memory_records: Maximum records to keep in memory at once
+            
+        Returns:
+            Tuple of (top_laps_telemetry_list, bottom_laps_telemetry_list)
+        """
+        print(f"[INFO] Processing large dataset for {trackName} with memory limit {max_memory_records}")
+        
+        def process_chunk(chunk_df: pd.DataFrame) -> Dict[str, Any]:
+            """Process a single chunk of data"""
+            try:
+                feature_processor = FeatureProcessor(chunk_df)
+                
+                # Clean and filter data
+                processed_df = feature_processor.general_cleaning_for_analysis()
+                
+                # Filter to relevant features
+                telemetry_features = TelemetryFeatures()
+                relevant_features = telemetry_features.get_features_for_imitate_expert()
+                processed_df = feature_processor.filter_features_by_list(processed_df, relevant_features)
+                
+                if processed_df.empty:
+                    return {"top_laps": [], "bottom_laps": []}
+                
+                # Extract performance laps
+                _, lap_df_list = feature_processor._filter_top_performance_laps(processed_df, 1)
+                
+                if not lap_df_list:
+                    return {"top_laps": [], "bottom_laps": []}
+                
+                # Split top/bottom laps
+                top_laps_df_count = max(1, int(len(lap_df_list) * 0.01))  # Top 1%
+                top_laps_df = lap_df_list[:top_laps_df_count]
+                bottom_laps_df = lap_df_list[top_laps_df_count:]
+                
+                # Convert to records
+                top_records = []
+                for lap_df in top_laps_df:
+                    top_records.extend(lap_df.to_dict('records'))
+                
+                bottom_records = []
+                for lap_df in bottom_laps_df:
+                    bottom_records.extend(lap_df.to_dict('records'))
+                
+                return {
+                    "top_laps": top_records,
+                    "bottom_laps": bottom_records,
+                    "processed_records": len(processed_df)
+                }
+                
+            except Exception as e:
+                print(f"[WARNING] Failed to process chunk: {e}")
+                return {"top_laps": [], "bottom_laps": []}
+        
+        try:
+            # Use hybrid cache streaming processing
+            chunk_results = self.data_cache.process_large_dataset_streaming(
+                track_name=trackName,
+                processing_func=process_chunk,
+                chunk_size=max_memory_records
+            )
+            
+            # Aggregate results
+            top_laps_telemetry_list = []
+            bottom_laps_telemetry_list = []
+            total_processed = 0
+            
+            for result in chunk_results:
+                if isinstance(result, dict):
+                    top_laps_telemetry_list.extend(result.get("top_laps", []))
+                    bottom_laps_telemetry_list.extend(result.get("bottom_laps", []))
+                    total_processed += result.get("processed_records", 0)
+            
+            print(f"[INFO] Processed {total_processed} records total")
+            print(f"[INFO] Extracted {len(top_laps_telemetry_list)} expert records, {len(bottom_laps_telemetry_list)} training records")
+            
+            return top_laps_telemetry_list, bottom_laps_telemetry_list
+            
+        except Exception as e:
+            print(f"[WARNING] Large dataset processing failed, falling back to standard processing: {e}")
+            return self._fallback_processing(trackName, segment_length)
+
+    def _fallback_processing(self, trackName: str, segment_length: int) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        """Fallback processing method when streaming fails"""
+        print("[INFO] Using fallback processing method")
+        
+        # Get cached data normally
+        cached_sessions = self.data_cache.get_cached_sessions(trackName)
+        if not cached_sessions:
+            raise ValueError("No cached data available for fallback processing")
+        
+        # Process with memory limits
+        sessions_data = cached_sessions.get("sessions", [])
+        total_records = sum(len(s.get("data", [])) for s in sessions_data)
+        
+        if total_records > 200000:  # 200k record limit for fallback
+            print(f"[WARNING] Dataset too large ({total_records} records), sampling to 200k")
+            # Sample sessions to reduce size
+            sample_ratio = 200000 / total_records
+            sampled_sessions = []
+            
+            for session in sessions_data:
+                session_data = session.get("data", [])
+                if session_data:
+                    sample_size = max(1, int(len(session_data) * sample_ratio))
+                    sampled_data = session_data[:sample_size]  # Take first N records
+                    sampled_sessions.append({
+                        **session,
+                        "data": sampled_data
+                    })
+            
+            sessions_data = sampled_sessions
+        
+        # Process normally with reduced dataset
+        flattened_telemetry_data = []
+        for session_data in sessions_data:
+            flattened_telemetry_data.extend(session_data.get("data", []))
+        
+        # Convert to DataFrame and process
+        telemetry_df = pd.DataFrame(flattened_telemetry_data)
+        feature_processor = FeatureProcessor(telemetry_df)
+        processed_df = feature_processor.general_cleaning_for_analysis()
+        
+        # Filter features
+        telemetry_features = TelemetryFeatures()
+        relevant_features = telemetry_features.get_features_for_imitate_expert()
+        processed_df = feature_processor.filter_features_by_list(processed_df, relevant_features)
+        processed_df, lap_df_list = feature_processor._filter_top_performance_laps(processed_df, 1)
+        
+        if processed_df.empty:
+            raise ValueError("No valid telemetry data available after fallback filtering")
+        
+        # Split laps
+        top_laps_df_count = max(3, int(len(lap_df_list) * 0.01))
+        top_laps_df = lap_df_list[:top_laps_df_count]
+        bottom_laps_df = lap_df_list[top_laps_df_count:]
+        
+        # Convert to records
+        top_laps_telemetry_list = []
+        for lap_df in top_laps_df:
+            top_laps_telemetry_list.extend(lap_df.to_dict('records'))
+        
+        bottom_laps_telemetry_list = []
+        for lap_df in bottom_laps_df:
+            bottom_laps_telemetry_list.extend(lap_df.to_dict('records'))
+        
+        return top_laps_telemetry_list, bottom_laps_telemetry_list
+
+    def get_data_cache_info(self) -> Dict[str, Any]:
+        """Get information about the hybrid data cache"""
+        return self.data_cache.get_cache_info()
+
+    def clear_data_cache(self, track_name: Optional[str] = None):
+        """Clear hybrid data cache"""
+        self.data_cache.clear_cache(track_name)
+        print(f"[INFO] Cleared data cache" + (f" for {track_name}" if track_name else ""))
+
+    def print_data_cache_info(self):
+        """Print detailed data cache information"""
+        info = self.get_data_cache_info()
+        print("\n" + "="*60)
+        print("HYBRID DATA CACHE INFORMATION")
+        print("="*60)
+        print(f"Memory Cache: {info['memory_cache']['entries']}/{info['memory_cache']['max_entries']} datasets")
+        print(f"Dask Enabled: {info['dask_enabled']}")
+        if info.get('dask_client'):
+            print(f"Dask Client: {info['dask_client']}")
+        
+        disk_info = info['disk_cache']
+        print(f"Disk Cache: {len(disk_info['entries'])} entries, {disk_info['total_size_mb']:.1f}MB")
+        print(f"Storage Directory: {disk_info['storage_directory']}")
+        
+        if disk_info['entries']:
+            print("\nCached Datasets:")
+            for entry in disk_info['entries'][:5]:  # Show first 5
+                print(f"  - {entry['track_name']}: {entry['record_count']} records "
+                      f"({entry['size_mb']:.1f}MB, {entry['storage_type']})")
+        print("="*60 + "\n")
+
+    def _standard_data_processing(self, each_session_telemetry_data: List[List[Dict[str, Any]]]) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        """
+        Standard data processing method for smaller datasets
+        
+        Args:
+            each_session_telemetry_data: List of session data lists
+            
+        Returns:
+            Tuple of (top_laps_telemetry_list, bottom_laps_telemetry_list)
+        """
         # Flatten the list of lists into a single list of telemetry records (dictionaries)
         # This ensures each telemetry record maintains its field names as dictionary keys
         flattened_telemetry_data = []
@@ -1135,32 +1477,8 @@ class Full_dataset_TelemetryMLService:
             lap_records = lap_df.to_dict('records')
             # Add lap records directly to the list
             bottom_laps_telemetry_list.extend(lap_records)
-
-        segment_length = 50  # Default segment length for transformer training
-        try:
-            # enrich data
-            self._print_section_divider("ENRICHING CONTEXTUAL DATA")
-            combined_segments = await self.enriched_contextual_data(top_laps_telemetry_list, bottom_laps_telemetry_list, trackName, segment_length=segment_length)
-        except Exception as e:
-            return {"error": str(e)}
         
-        try:
-        # train transformer model
-            self._print_section_divider("TRAINING TRANSFORMER MODEL")
-            transformer_results = await self._train_expert_action_transformer(
-                combined_segments=combined_segments,  # combined_segments contain both telemetry and context data
-                trackName=trackName,
-                fixed_segment_length=segment_length  # Use default segment length
-            )
-        except Exception as e:
-            return {"error": str(e)}
-        
-        self._print_section_divider("TRANSFORMER LEARNING COMPLETED")
-        return {
-            "success": True,
-            "transformer_training": transformer_results,
-            "track_name": trackName
-        }
+        return top_laps_telemetry_list, bottom_laps_telemetry_list
 
     async def _train_expert_action_transformer(self, 
                                              combined_segments: List[List[Dict[str, Any]]],
