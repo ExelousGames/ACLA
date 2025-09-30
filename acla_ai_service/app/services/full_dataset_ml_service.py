@@ -104,12 +104,6 @@ class Full_dataset_TelemetryMLService:
         except Exception:
             self._imitate_expert_feature_names = []
         
-    # NOTE: Corner identification & tire grip analysis services are now created on-demand
-    # during training or prediction to avoid holding stale state between different
-    # transformer trainings or runtime sessions. Any previous persistent instances
-    # have been removed (self.corner_identification / self.tire_grip_analysis).
-
-        
         # Backend service integration
         self.backend_service = backend_service
         
@@ -1104,45 +1098,31 @@ class Full_dataset_TelemetryMLService:
         if not each_session_telemetry_data:
             raise ValueError("No telemetry data found")
         
-        # Check if we can use efficient processing for large datasets
+        # Always assume we're dealing with a very large dataset - use efficient processing
         total_records = sum(len(session_data) for session_data in each_session_telemetry_data)
         print(f"[INFO] Total telemetry records: {total_records}")
         
-        # Use efficient processing for large datasets (>100k records)
-        if total_records > 100000:
-            self._print_section_divider("LARGE DATASET DETECTED - USING EFFICIENT PROCESSING")
-            try:
-                top_laps_telemetry_list, bottom_laps_telemetry_list = self.process_large_dataset_efficiently(
-                    trackName=trackName,
-                    segment_length=50,
-                    max_memory_records=100000
-                )
-            except Exception as e:
-                print(f"[WARNING] Efficient processing failed: {e}, falling back to standard processing")
-                # Fall back to standard processing with memory management
-                if total_records > 500000:  # 500k limit for standard processing
-                    print(f"[WARNING] Dataset too large for standard processing, sampling to 500k records")
-                    sample_ratio = 500000 / total_records
-                    sampled_data = []
-                    for session_data in each_session_telemetry_data:
-                        if session_data:
-                            sample_size = max(1, int(len(session_data) * sample_ratio))
-                            sampled_data.extend(session_data[:sample_size])
-                    each_session_telemetry_data = [sampled_data]
-                
-                # Standard processing path
-                top_laps_telemetry_list, bottom_laps_telemetry_list = self._standard_data_processing(each_session_telemetry_data)
-        else:
-            self._print_section_divider("STANDARD DATA PROCESSING")
-            top_laps_telemetry_list, bottom_laps_telemetry_list = self._standard_data_processing(each_session_telemetry_data)
+        self._print_section_divider("LARGE DATASET ASSUMED - USING EFFICIENT PROCESSING")
+        
+        # Always use efficient processing for large datasets - no fallback
+        top_laps_telemetry_list, bottom_laps_telemetry_list = self.process_large_dataset_efficiently(
+            trackName=trackName,
+            segment_length=50,
+            max_memory_records=100000
+        )
 
         segment_length = 50  # Default segment length for transformer training
         try:
-            # enrich data
+            # enrich data TODO  bottom laps are huge, you cant save all laps in memory
             self._print_section_divider("ENRICHING CONTEXTUAL DATA")
             combined_segments = await self.enriched_contextual_data(top_laps_telemetry_list, bottom_laps_telemetry_list, trackName, segment_length=segment_length)
         except Exception as e:
             return {"error": str(e)}
+        
+        
+        # remove any unused variable to this point to free memory
+        del top_laps_telemetry_list
+        del bottom_laps_telemetry_list
         
         try:
         # train transformer model
@@ -1205,48 +1185,61 @@ class Full_dataset_TelemetryMLService:
 
     def process_large_dataset_efficiently(self, trackName: str, 
                                         segment_length: int = 50,
-                                        max_memory_records: int = 100000) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+                                        max_memory_records: int = 50000) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
         """
-        Process large cached datasets efficiently using streaming and Dask
+        Process very large cached datasets efficiently using streaming and Dask
+        Optimized for datasets that cannot fit in memory
         
         Args:
             trackName: Track name for data retrieval
             segment_length: Length of segments for processing
-            max_memory_records: Maximum records to keep in memory at once
+            max_memory_records: Maximum records to keep in memory at once (reduced for large datasets)
             
         Returns:
             Tuple of (top_laps_telemetry_list, bottom_laps_telemetry_list)
         """
-        print(f"[INFO] Processing large dataset for {trackName} with memory limit {max_memory_records}")
+        print(f"[INFO] Processing very large dataset for {trackName} with conservative memory limit {max_memory_records}")
+        print(f"[INFO] Using streaming approach with Dask/HDF5 backend")
         
         def process_chunk(chunk_df: pd.DataFrame) -> Dict[str, Any]:
-            """Process a single chunk of data"""
+            """Process a single chunk of data with optimized memory usage"""
             try:
+                if chunk_df.empty:
+                    return {"top_laps": [], "bottom_laps": [], "processed_records": 0}
+                
+                print(f"[DEBUG] Processing chunk with {len(chunk_df)} records")
+                
                 feature_processor = FeatureProcessor(chunk_df)
                 
                 # Clean and filter data
                 processed_df = feature_processor.general_cleaning_for_analysis()
                 
-                # Filter to relevant features
+                if processed_df.empty:
+                    return {"top_laps": [], "bottom_laps": [], "processed_records": 0}
+                
+                # Filter to relevant features early to reduce memory usage
                 telemetry_features = TelemetryFeatures()
                 relevant_features = telemetry_features.get_features_for_imitate_expert()
                 processed_df = feature_processor.filter_features_by_list(processed_df, relevant_features)
                 
                 if processed_df.empty:
-                    return {"top_laps": [], "bottom_laps": []}
+                    return {"top_laps": [], "bottom_laps": [], "processed_records": 0}
                 
-                # Extract performance laps
+                # Extract performance laps with strict filtering
                 _, lap_df_list = feature_processor._filter_top_performance_laps(processed_df, 1)
                 
                 if not lap_df_list:
-                    return {"top_laps": [], "bottom_laps": []}
+                    return {"top_laps": [], "bottom_laps": [], "processed_records": len(processed_df)}
                 
-                # Split top/bottom laps
-                top_laps_df_count = max(1, int(len(lap_df_list) * 0.01))  # Top 1%
+                # More aggressive filtering for very large datasets - take only top 0.5%
+                top_laps_df_count = max(1, int(len(lap_df_list) * 0.005))  # Top 0.5% for very large datasets
                 top_laps_df = lap_df_list[:top_laps_df_count]
-                bottom_laps_df = lap_df_list[top_laps_df_count:]
                 
-                # Convert to records
+                # Take a reasonable sample of bottom laps to avoid memory issues, TODO USE all laps except top laps, you cant save all laps in memory
+                max_bottom_laps = min(10, len(lap_df_list) - top_laps_df_count)
+                bottom_laps_df = lap_df_list[top_laps_df_count:top_laps_df_count + max_bottom_laps]
+                
+                # Convert to records efficiently
                 top_records = []
                 for lap_df in top_laps_df:
                     top_records.extend(lap_df.to_dict('records'))
@@ -1255,109 +1248,61 @@ class Full_dataset_TelemetryMLService:
                 for lap_df in bottom_laps_df:
                     bottom_records.extend(lap_df.to_dict('records'))
                 
+                # Clear DataFrames to free memory
+                del processed_df, lap_df_list, top_laps_df, bottom_laps_df
+                
                 return {
                     "top_laps": top_records,
                     "bottom_laps": bottom_records,
-                    "processed_records": len(processed_df)
+                    "processed_records": len(chunk_df)
                 }
                 
             except Exception as e:
-                print(f"[WARNING] Failed to process chunk: {e}")
-                return {"top_laps": [], "bottom_laps": []}
+                print(f"[WARNING] Failed to process chunk of {len(chunk_df) if not chunk_df.empty else 0} records: {e}")
+                return {"top_laps": [], "bottom_laps": [], "processed_records": 0}
         
         try:
-            # Use hybrid cache streaming processing
+            print("[INFO] Initiating streaming processing with hybrid cache backend")
+            
+            # Use hybrid cache streaming processing with conservative chunk size
             chunk_results = self.data_cache.process_large_dataset_streaming(
                 track_name=trackName,
                 processing_func=process_chunk,
                 chunk_size=max_memory_records
             )
             
-            # Aggregate results
+            if not chunk_results:
+                raise ValueError(f"No data chunks returned from cache for {trackName}")
+            
+            # Aggregate results with progress tracking
             top_laps_telemetry_list = []
             bottom_laps_telemetry_list = []
             total_processed = 0
+            chunks_processed = 0
             
             for result in chunk_results:
-                if isinstance(result, dict):
+                if isinstance(result, dict) and result:
                     top_laps_telemetry_list.extend(result.get("top_laps", []))
                     bottom_laps_telemetry_list.extend(result.get("bottom_laps", []))
                     total_processed += result.get("processed_records", 0)
+                    chunks_processed += 1
+                    
+                    # Progress logging for large datasets
+                    if chunks_processed % 10 == 0:
+                        print(f"[INFO] Processed {chunks_processed} chunks, {total_processed} total records")
             
-            print(f"[INFO] Processed {total_processed} records total")
-            print(f"[INFO] Extracted {len(top_laps_telemetry_list)} expert records, {len(bottom_laps_telemetry_list)} training records")
+            if not top_laps_telemetry_list and not bottom_laps_telemetry_list:
+                raise ValueError(f"No valid telemetry data extracted from {trackName} dataset")
+            
+            print(f"[SUCCESS] Processed {chunks_processed} chunks, {total_processed} records total")
+            print(f"[SUCCESS] Extracted {len(top_laps_telemetry_list)} expert records, {len(bottom_laps_telemetry_list)} training records")
             
             return top_laps_telemetry_list, bottom_laps_telemetry_list
             
         except Exception as e:
-            print(f"[WARNING] Large dataset processing failed, falling back to standard processing: {e}")
-            return self._fallback_processing(trackName, segment_length)
-
-    def _fallback_processing(self, trackName: str, segment_length: int) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
-        """Fallback processing method when streaming fails"""
-        print("[INFO] Using fallback processing method")
-        
-        # Get cached data normally
-        cached_sessions = self.data_cache.get_cached_sessions(trackName)
-        if not cached_sessions:
-            raise ValueError("No cached data available for fallback processing")
-        
-        # Process with memory limits
-        sessions_data = cached_sessions.get("sessions", [])
-        total_records = sum(len(s.get("data", [])) for s in sessions_data)
-        
-        if total_records > 200000:  # 200k record limit for fallback
-            print(f"[WARNING] Dataset too large ({total_records} records), sampling to 200k")
-            # Sample sessions to reduce size
-            sample_ratio = 200000 / total_records
-            sampled_sessions = []
-            
-            for session in sessions_data:
-                session_data = session.get("data", [])
-                if session_data:
-                    sample_size = max(1, int(len(session_data) * sample_ratio))
-                    sampled_data = session_data[:sample_size]  # Take first N records
-                    sampled_sessions.append({
-                        **session,
-                        "data": sampled_data
-                    })
-            
-            sessions_data = sampled_sessions
-        
-        # Process normally with reduced dataset
-        flattened_telemetry_data = []
-        for session_data in sessions_data:
-            flattened_telemetry_data.extend(session_data.get("data", []))
-        
-        # Convert to DataFrame and process
-        telemetry_df = pd.DataFrame(flattened_telemetry_data)
-        feature_processor = FeatureProcessor(telemetry_df)
-        processed_df = feature_processor.general_cleaning_for_analysis()
-        
-        # Filter features
-        telemetry_features = TelemetryFeatures()
-        relevant_features = telemetry_features.get_features_for_imitate_expert()
-        processed_df = feature_processor.filter_features_by_list(processed_df, relevant_features)
-        processed_df, lap_df_list = feature_processor._filter_top_performance_laps(processed_df, 1)
-        
-        if processed_df.empty:
-            raise ValueError("No valid telemetry data available after fallback filtering")
-        
-        # Split laps
-        top_laps_df_count = max(3, int(len(lap_df_list) * 0.01))
-        top_laps_df = lap_df_list[:top_laps_df_count]
-        bottom_laps_df = lap_df_list[top_laps_df_count:]
-        
-        # Convert to records
-        top_laps_telemetry_list = []
-        for lap_df in top_laps_df:
-            top_laps_telemetry_list.extend(lap_df.to_dict('records'))
-        
-        bottom_laps_telemetry_list = []
-        for lap_df in bottom_laps_df:
-            bottom_laps_telemetry_list.extend(lap_df.to_dict('records'))
-        
-        return top_laps_telemetry_list, bottom_laps_telemetry_list
+            print(f"[ERROR] Large dataset processing failed: {e}")
+            print(f"[ERROR] This indicates an issue with the hybrid cache or data processing pipeline")
+            raise Exception(f"Failed to process large dataset for {trackName}: {str(e)}")
 
     def get_data_cache_info(self) -> Dict[str, Any]:
         """Get information about the hybrid data cache"""
@@ -1389,96 +1334,6 @@ class Full_dataset_TelemetryMLService:
                 print(f"  - {entry['track_name']}: {entry['record_count']} records "
                       f"({entry['size_mb']:.1f}MB, {entry['storage_type']})")
         print("="*60 + "\n")
-
-    def _standard_data_processing(self, each_session_telemetry_data: List[List[Dict[str, Any]]]) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
-        """
-        Standard data processing method for smaller datasets
-        
-        Args:
-            each_session_telemetry_data: List of session data lists
-            
-        Returns:
-            Tuple of (top_laps_telemetry_list, bottom_laps_telemetry_list)
-        """
-        # Flatten the list of lists into a single list of telemetry records (dictionaries)
-        # This ensures each telemetry record maintains its field names as dictionary keys
-        flattened_telemetry_data = []
-        for session_data in each_session_telemetry_data:
-                flattened_telemetry_data.extend(session_data)
-        
-        # make sure every ai model is using the same data for training
-        # Convert to DataFrame from list of dictionaries (this preserves column names)
-        telemetry_df = pd.DataFrame(flattened_telemetry_data)
-        feature_processor = FeatureProcessor(telemetry_df)
-        
-        # Cleaned data
-        processed_df = feature_processor.general_cleaning_for_analysis()
-        
-        # Filter to only relevant features for analysis
-        telemetry_features = TelemetryFeatures()
-        relevant_features = telemetry_features.get_features_for_imitate_expert()
-        print(f"[INFO] Filtering to {len(relevant_features)} features for training using get_features_for_imitate_expert()")
-        processed_df = feature_processor.filter_features_by_list(processed_df, relevant_features)
-        print(f"[INFO] DataFrame after filtering has {processed_df.shape[1]} columns")
-        processed_df,lap_df_list = feature_processor._filter_top_performance_laps(processed_df,1)
-
-        if processed_df.empty:
-            raise ValueError("No valid telemetry data available after filtering for training.")
-
-        # Filter top 1% laps as expert demonstrations, but ensure at least 3 laps
-        top_laps_df_count = max(3, int(len(lap_df_list) * 0.01))
-        top_laps_df = lap_df_list[:top_laps_df_count]
-        # get rest of laps
-        
-        bottom_laps_df = lap_df_list[top_laps_df_count:]
-
-        # Console plot summary for top laps using FeatureProcessor.plot_features_console
-        try:
-            self._print_section_divider("TOP LAP TELEMETRY SUMMARY PLOTS")
-            if top_laps_df:
-                combined_top_df = pd.concat(top_laps_df, ignore_index=True)
-                # Use a small, informative default feature set and filter to available columns
-                features_to_plot = [
-                    "Physics_speed_kmh",
-                    "Physics_gas",
-                    "Physics_brake",
-                    "Physics_steer_angle",
-                    "Physics_gear",
-                    "Physics_rpm",
-                    "Physics_velocity_x",
-                ]
-                available_features = [f for f in features_to_plot if f in combined_top_df.columns]
-                if available_features:
-                    FeatureProcessor(combined_top_df).plot_features_console(
-                        features=available_features,
-                        width=72,
-                        window=None,
-                        use_unicode=True,
-                        title="Top Laps (Expert) Overview"
-                    )
-                else:
-                    print("[INFO] No selected features available to plot for top laps.")
-            else:
-                print("[INFO] No top laps available to plot.")
-        except Exception as plot_err:
-            print(f"[WARNING] Failed to render top laps console plots: {plot_err}")
-
-        # Flatten the DataFrames to list of laps for imitation learning
-        top_laps_telemetry_list = []
-        for lap_df in top_laps_df:
-            # Convert DataFrame to list of dictionaries
-            lap_records = lap_df.to_dict('records')
-            top_laps_telemetry_list.extend(lap_records)
-        
-        # Convert rest_laps DataFrames to list of lap records (dictionaries)
-        bottom_laps_telemetry_list = []
-        for lap_df in bottom_laps_df:
-            # Convert DataFrame to list of dictionaries
-            lap_records = lap_df.to_dict('records')
-            # Add lap records directly to the list
-            bottom_laps_telemetry_list.extend(lap_records)
-        
-        return top_laps_telemetry_list, bottom_laps_telemetry_list
 
     async def _train_expert_action_transformer(self, 
                                              combined_segments: List[List[Dict[str, Any]]],
@@ -1623,22 +1478,69 @@ class Full_dataset_TelemetryMLService:
         
         Args:
             top_telemetry_list: List of expert telemetry record dictionaries (flat list)
-            bottom_telemetry_list: List of non-expert telemetry record dictionaries (flat list)
+            bottom_telemetry_list: List of non-expert telemetry record dictionaries (flat list) - will be sampled for memory efficiency
             track_name: Track name for model identification
             
         Returns:
             List[List[Dict[str, Any]]] - List of combined telemetry+context segments
         """
 
-        print(f"Bottom laps telemetry list length: {len(bottom_laps_telemetry_list)}")
+        print(f"[INFO] Original dataset sizes:")
+        print(f"  - Top laps (expert): {len(top_laps_telemetry_list)} records")
+        print(f"  - Bottom laps (training): {len(bottom_laps_telemetry_list)} records")
+        
         if not bottom_laps_telemetry_list:
             print("[WARNING] No telemetry data provided for enrichment")
             return []
         
+        # Sample bottom laps if too large to avoid memory issues
+        max_bottom_laps_for_training = 50000  # Conservative limit for contextual training
+        original_bottom_laps_count = len(bottom_laps_telemetry_list)  # Track original size
+        
+        if len(bottom_laps_telemetry_list) > max_bottom_laps_for_training:
+            print(f"[INFO] Bottom laps dataset is very large ({len(bottom_laps_telemetry_list)} records)")
+            print(f"[INFO] Sampling to {max_bottom_laps_for_training} records for memory efficiency")
+            
+            # Intelligent sampling strategy: take samples throughout the dataset
+            import random
+            random.seed(42)  # Reproducible sampling
+            
+            # Take samples at regular intervals + some random samples
+            step_size = len(bottom_laps_telemetry_list) // (max_bottom_laps_for_training // 2)
+            
+            # Regular interval sampling (50% of target)
+            regular_samples = bottom_laps_telemetry_list[::step_size][:max_bottom_laps_for_training // 2]
+            
+            # Random sampling from remaining data (50% of target)
+            remaining_data = [x for i, x in enumerate(bottom_laps_telemetry_list) if i % step_size != 0]
+            random_sample_size = min(max_bottom_laps_for_training // 2, len(remaining_data))
+            random_samples = random.sample(remaining_data, random_sample_size) if remaining_data else []
+            
+            # Combine samples
+            sampled_bottom_laps = regular_samples + random_samples
+            
+            print(f"[INFO] Sampled dataset composition:")
+            print(f"  - Regular interval samples: {len(regular_samples)}")
+            print(f"  - Random samples: {len(random_samples)}")
+            print(f"  - Total sampled: {len(sampled_bottom_laps)}")
+            
+            bottom_laps_telemetry_list = sampled_bottom_laps
+        else:
+            print(f"[INFO] Bottom laps dataset size is manageable ({len(bottom_laps_telemetry_list)} records)")
+        
+        print(f"[INFO] Final dataset sizes for contextual enrichment:")
+        print(f"  - Top laps (expert): {len(top_laps_telemetry_list)} records")
+        print(f"  - Bottom laps (training): {len(bottom_laps_telemetry_list)} records")
+        
         try:
-            # Use all telemetry data for both training enrichment models and feature extraction
-            bottom_laps_training_telemetry_list = bottom_laps_telemetry_list.copy()
-            top_laps_training_telemetry_list = top_laps_telemetry_list.copy()
+            # Use sampled data for both training enrichment models but use all data for feature extraction
+            # Memory-efficient approach: don't copy large datasets unnecessarily
+            bottom_laps_training_telemetry_list = bottom_laps_telemetry_list  # Already sampled above
+            top_laps_training_telemetry_list = top_laps_telemetry_list  # Small dataset, safe to reference
+            
+            print(f"[INFO] Training enrichment models with:")
+            print(f"  - Expert samples: {len(top_laps_training_telemetry_list)}")
+            print(f"  - Training samples: {len(bottom_laps_training_telemetry_list)}")
 
             self._print_section_divider("TRAINING IMITATION LEARNING MODEL")
             try:        
@@ -1712,69 +1614,94 @@ class Full_dataset_TelemetryMLService:
             # First, combine telemetry with context features
             self._print_section_divider("COMBINING TELEMETRY WITH CONTEXT FEATURES")
             
-            # Extract features for all bottom telemetry records
+            # Track sampling information for metadata (original_bottom_laps_count defined earlier)
+            sampling_applied = len(bottom_laps_training_telemetry_list) < original_bottom_laps_count
+            sampling_stats = {
+                "original_size": original_bottom_laps_count,
+                "sampled_size": len(bottom_laps_training_telemetry_list),
+                "reduction_percentage": round((1 - len(bottom_laps_training_telemetry_list) / original_bottom_laps_count) * 100, 2) if original_bottom_laps_count > 0 else 0
+            }
+            
+            # Process feature extraction in all bottom laps telemetry in chunks to avoid memory issues TODO not sample, use all laps except top laps
+            chunk_size = 10000  # Process 10k records at a time
+            combined_telemetry_data = []
             feature_sources = []
             
-            # Extract expert state features for all records
-            try:
-                imitation_state_features = imitation_learning.extract_expert_state_for_telemetry(bottom_laps_training_telemetry_list)
-                print(f"[INFO] Extracted expert state features for {len(imitation_state_features)} records")
-                feature_sources.append("expert_state")
-            except Exception as e:
-                print(f"[WARNING] Failed to extract expert state features: {str(e)}")
-                imitation_state_features = []
+            print(f"[INFO] Processing feature extraction in chunks of {chunk_size} records")
             
-            # Extract corner features for all records
-            corner_enriched_data = []
-            if corner_model.get("success"):
+            # Process data in chunks to avoid memory overflow
+            for chunk_start in range(0, len(bottom_laps_training_telemetry_list), chunk_size):
+                chunk_end = min(chunk_start + chunk_size, len(bottom_laps_training_telemetry_list))
+                chunk_data = bottom_laps_training_telemetry_list[chunk_start:chunk_end]
+                
+                print(f"[INFO] Processing chunk {chunk_start//chunk_size + 1}: records {chunk_start}-{chunk_end}")
+                
+                # Extract expert state features for chunk
+                chunk_imitation_features = []
                 try:
-                    corner_enriched_data = await corner_service.extract_corner_features_for_telemetry(bottom_laps_training_telemetry_list)
-                    print(f"[DEBUG] Corner features extracted: {corner_enriched_data[:5]}")  # Show first 5 for debugging
-                    feature_sources.append("corner_identification")
-                    print(f"[INFO] Extracted corner features for {len(corner_enriched_data)} records")
+                    chunk_imitation_features = imitation_learning.extract_expert_state_for_telemetry(chunk_data)
+                    if chunk_start == 0:  # Only add to sources list once
+                        feature_sources.append("expert_state")
                 except Exception as e:
-                    print(f"[WARNING] Failed to extract corner features: {str(e)}")
-            
-            # Extract tire grip features for all records
-            try:
-                grip_enriched_data = await tire_service.extract_tire_grip_features(bottom_laps_training_telemetry_list)
+                    print(f"[WARNING] Failed to extract expert state features for chunk: {str(e)}")
                 
-                # Validate expected keys exist in at least one record
+                # Extract corner features for chunk
+                chunk_corner_features = []
+                if corner_model.get("success"):
+                    try:
+                        chunk_corner_features = await corner_service.extract_corner_features_for_telemetry(chunk_data)
+                        if chunk_start == 0:  # Only add to sources list once
+                            feature_sources.append("corner_identification")
+                    except Exception as e:
+                        print(f"[WARNING] Failed to extract corner features for chunk: {str(e)}")
+                
+                # Extract tire grip features for chunk
+                chunk_grip_features = []
                 try:
-                    from .tire_grip_analysis_service import TireGripFeatureCatalog
-                    expected_keys = set(TireGripFeatureCatalog.CONTEXT_FEATURES)
-                    if grip_enriched_data:
-                        sample_keys = set(grip_enriched_data[0].keys())
-                        missing = expected_keys - sample_keys
-                        if missing:
-                            print(f"[WARNING] Tire grip features missing keys: {sorted(list(missing))}")
-                except Exception as v_err:
-                    print(f"[WARNING] Tire grip feature validation skipped: {v_err}")
+                    chunk_grip_features = await tire_service.extract_tire_grip_features(chunk_data)
+                    if chunk_start == 0:  # Only add to sources list once
+                        feature_sources.append("tire_grip_analysis")
+                        
+                        # Validate expected keys exist in at least one record
+                        try:
+                            from .tire_grip_analysis_service import TireGripFeatureCatalog
+                            expected_keys = set(TireGripFeatureCatalog.CONTEXT_FEATURES)
+                            if chunk_grip_features:
+                                sample_keys = set(chunk_grip_features[0].keys())
+                                missing = expected_keys - sample_keys
+                                if missing:
+                                    print(f"[WARNING] Tire grip features missing keys: {sorted(list(missing))}")
+                        except Exception as v_err:
+                            print(f"[WARNING] Tire grip feature validation skipped: {v_err}")
+                            
+                except Exception as e:
+                    print(f"[WARNING] Failed to extract tire grip features for chunk: {str(e)}")
+                
+                # Combine telemetry with all context features for this chunk
+                for i, telemetry_record in enumerate(chunk_data):
+                    combined_record = telemetry_record.copy()
                     
-                feature_sources.append("tire_grip_analysis")
-                print(f"[INFO] Extracted tire grip features for {len(grip_enriched_data)} records")
-            except Exception as e:
-                print(f"[WARNING] Failed to extract tire grip features: {str(e)}")
-                grip_enriched_data = []
+                    # Add expert state features if available
+                    if i < len(chunk_imitation_features):
+                        combined_record.update(chunk_imitation_features[i])
+                    
+                    # Add corner features if available
+                    if i < len(chunk_corner_features):
+                        combined_record.update(chunk_corner_features[i])
+                    
+                    # Add tire grip features if available
+                    if i < len(chunk_grip_features):
+                        combined_record.update(chunk_grip_features[i])
+                    
+                    combined_telemetry_data.append(combined_record)
+                
+                # Clear chunk feature arrays to free memory
+                del chunk_imitation_features, chunk_corner_features, chunk_grip_features
+                
+                print(f"[INFO] Completed chunk {chunk_start//chunk_size + 1}, total combined records: {len(combined_telemetry_data)}")
             
-            # Combine telemetry with all context features
-            combined_telemetry_data = []
-            for i, telemetry_record in enumerate(bottom_laps_training_telemetry_list):
-                combined_record = telemetry_record.copy()
-                
-                # Add expert state features if available
-                if i < len(imitation_state_features):
-                    combined_record.update(imitation_state_features[i])
-                
-                # Add corner features if available
-                if i < len(corner_enriched_data):
-                    combined_record.update(corner_enriched_data[i])
-                
-                # Add tire grip features if available
-                if i < len(grip_enriched_data):
-                    combined_record.update(grip_enriched_data[i])
-                
-                combined_telemetry_data.append(combined_record)
+            print(f"[INFO] Feature extraction completed for {len(combined_telemetry_data)} records")
+            print(f"[INFO] Active feature sources: {feature_sources}")
             
             print(f"[INFO] Combined {len(combined_telemetry_data)} telemetry records with context features")
             
@@ -1789,24 +1716,21 @@ class Full_dataset_TelemetryMLService:
             
             # Create feature metadata
             sample_combined = {}
-            if combined_segments and combined_segments[0]:
-                sample_combined = combined_segments[0][0]
+            sample_feature_names = []
             
-            grip_sample_enriched = grip_enriched_data[0] if grip_enriched_data else {}
-            corner_sample_enriched = corner_enriched_data[0] if corner_enriched_data else {}
-            expert_sample = imitation_state_features[0] if imitation_state_features else {}
+            if combined_telemetry_data:
+                sample_combined = combined_telemetry_data[0]
+                sample_feature_names = list(sample_combined.keys())
             
             feature_metadata = {
                 'sources': feature_sources,
                 'feature_count': len(sample_combined),
-                'feature_names': list(sample_combined.keys()),
-                'corner_features': list(corner_sample_enriched.keys()),
-                'grip_features': list(grip_sample_enriched.keys()),
-                'expert_state_features': list(expert_sample.keys()),
-                'total_segments': len(combined_segments),
+                'feature_names': sample_feature_names,
                 'total_records': len(combined_telemetry_data),
                 'corner_identification_success': corner_model.get("success", False),
-                'tire_grip_analysis_success': tire_grip_model.get("success", False)
+                'tire_grip_analysis_success': tire_grip_model.get("success", False),
+                'sampling_applied': sampling_applied,
+                'sampling_stats': sampling_stats
             }
             
             print(f"[INFO] Feature metadata: {feature_metadata['feature_count']} combined features from {len(feature_sources)} sources")

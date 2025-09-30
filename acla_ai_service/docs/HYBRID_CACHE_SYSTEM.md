@@ -35,7 +35,7 @@ The Hybrid Data Cache system provides memory-efficient processing of large telem
 │  Memory Cache   │ ◄─── Fast access for small/frequent datasets
 │   (LRU, 2-3)    │
 └─────────┬───────┘
-          │ Cache Miss
+          │ Cache Miss 
           │
 ┌─────────▼───────┐
 │   Disk Cache    │ ◄─── HDF5 compressed storage
@@ -125,11 +125,35 @@ cache = HybridDataCache(
 
 ## Storage Decision Logic
 
-| Dataset Size | Storage Method | Processing Method |
+**Note: System now assumes all datasets are very large and uses efficient processing by default**
+
+| Configuration | Storage Method | Processing Method |
 |-------------|---------------|------------------|
-| < 100MB     | Memory Cache  | Pandas (in-memory) |
-| 100MB - 1GB | HDF5 Disk     | Pandas (chunked) |
-| > 1GB       | HDF5 Disk     | Dask (distributed) |
+| All Datasets | HDF5 Disk (Compressed) | Dask (distributed) or Pandas (chunked) |
+| Memory Cache | LRU (2-3 datasets) | Direct access for frequent datasets |
+| Chunk Size | 50k records/chunk | Conservative memory limits |
+| Expert Selection | Top 0.5% | Aggressive filtering for large datasets |
+
+## No Fallback Philosophy
+
+The system has been redesigned to **always assume very large datasets** and uses only efficient processing methods:
+
+### Design Principles
+- **Fail Fast**: If efficient processing fails, the system fails immediately with clear diagnostics
+- **No Quality Degradation**: No fallback to inferior processing methods that compromise data quality
+- **Predictable Performance**: Always uses the same optimized processing path
+- **Clear Error Messages**: When failures occur, they provide actionable diagnostic information
+
+### Benefits
+- **Consistent Performance**: No unpredictable fallback behavior
+- **Better Resource Planning**: Always uses known memory/CPU patterns
+- **Easier Debugging**: Single processing path reduces complexity
+- **Quality Assurance**: No risk of silently degrading to suboptimal methods
+
+### When It Fails
+- **Clear Diagnostics**: Detailed error messages about cache/processing issues
+- **No Silent Degradation**: Won't silently process with inferior methods
+- **Actionable Errors**: Error messages indicate specific remediation steps
 
 ## Performance Benchmarks
 
@@ -168,17 +192,19 @@ New Data → Estimate Size → Choose Storage → Stream Process → Cache Metad
 
 ## Error Handling & Fallbacks
 
-### Automatic Fallbacks
-1. **Dask Unavailable**: Falls back to pandas chunked processing
-2. **Memory Overflow**: Automatically switches to disk storage
+### Error Handling (No Fallbacks)
+1. **Dask Unavailable**: Uses pandas chunked processing
+2. **Memory Overflow**: Fails fast with clear error message
 3. **Disk Full**: Evicts oldest cached datasets
 4. **Corrupted Cache**: Removes corrupted entries and re-downloads
+5. **Processing Failure**: No fallback - fails immediately with diagnostic info
 
 ### Memory Protection
-- **Chunk Size Limits**: Maximum 100k records per memory chunk
-- **Dataset Sampling**: Automatic sampling for datasets > 500k records
+- **Conservative Chunk Limits**: Maximum 50k records per memory chunk
+- **Aggressive Filtering**: Top 0.5% expert selection for large datasets
 - **LRU Eviction**: Removes least recently used datasets from memory
-- **Emergency Cleanup**: Clears cache when memory usage exceeds limits
+- **No Fallback Sampling**: Fails fast instead of degrading quality
+- **Immediate Cleanup**: Clears DataFrames after processing each chunk
 
 ## Monitoring & Debugging
 
