@@ -316,7 +316,19 @@ class ExpertActionTransformer(nn.Module):
         )
         self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
         
-        # Transformer decoder for generating action sequences  
+        # Transformer decoder for generating action sequences
+        '''
+        d_model: The number of expected features in the input (the model dimension).
+        nhead: The number of attention heads.
+        dim_feedforward: The dimension of the feedforward network model (default is 2048).
+        dropout: Dropout value (default is 0.1).
+        activation: Activation function of the intermediate layer, either "relu" or "gelu" (default is "relu").
+        layer_norm_eps: Epsilon value for layer normalization (default is 1e-5).
+        batch_first: If True, then input and output tensors are provided as (batch, seq, feature) (default is False).
+        norm_first: If True, layer norm is done before attention and feedforward operations (default is False).
+        device: The device on which the module will be allocated.
+        dtype: The data type for the module’s parameters.
+        '''
         decoder_layer = nn.TransformerDecoderLayer(
             d_model=d_model,
             nhead=nhead,
@@ -2036,7 +2048,7 @@ class ExpertActionTrainer:
                     target_actions=batch_target_actions
                 )
             
-            # Loss computation OUTSIDE autocast to ensure proper gradient scaling
+            # Loss computation OUTSIDE autocast to ensure proper gradient scaling, TODO loss function should consider how close is the actions to the expert states
             loss = self.model.standard_loss(
                 predictions=predictions, 
                 target_actions=batch_target_actions
