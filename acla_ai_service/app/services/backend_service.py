@@ -190,8 +190,133 @@ class BackendService:
             logger.error(f"Backend request to {endpoint} failed: {str(e)}")
             raise Exception(f"Backend function call failed: {str(e)}\n")
 
+    async def get_all_racing_sessions_streaming(self, trackName: Optional[str] = None, carName: Optional[str] = None, chunk_size: int = 1000, data_cache=None) -> Dict[str, Any]:
+        """
+        Stream all racing sessions directly to cache without loading into memory
+        
+        Args:
+            trackName: Optional track name filter
+            carName: Optional car name filter  
+            chunk_size: Size of chunks to download
+            data_cache: HybridDataCache instance to stream data to (uses shared cache if None)
+            
+        Returns:
+            Dictionary with metadata only (no session data in memory)
+        """
+        if not data_cache:
+            # Import shared cache here to avoid circular imports
+            from .hybrid_data_cache_service import get_shared_data_cache
+            data_cache = get_shared_data_cache()
+            
+        try:
+            # Initialize the download to get metadata about all sessions
+            init_data = {
+                "trackName": trackName,
+                "carName": carName,
+                "chunkSize": chunk_size
+            }
+
+            try:
+                # initial the download the sessions - use longer timeout for data-intensive operations
+                init_response = await self.call_backend_function("racing-session/download/init", "POST", init_data, timeout_seconds=120.0)
+
+            except Exception as e:
+                raise RuntimeError(f"Failed to initialize racing session download: {str(e)}")
+
+            download_id = init_response.get("downloadId")
+            if not download_id:
+                raise RuntimeError("No download ID received from initialization")
+            
+            # Get all session metadata
+            session_metadata = init_response.get("sessionMetadata", [])
+            total_sessions = init_response.get("totalSessions", 0)
+            total_chunks = init_response.get("totalChunks", 0)
+            
+            logger.info(f"Initialized download for {total_sessions} sessions with {total_chunks} total chunks")
+            logger.info(f"Streaming sessions directly to shared cache without loading into memory")
+            logger.info(f"Using shared cache for data reuse across all services")
+            
+            # Create generator and stream sessions directly to cache
+            class SessionStreamer:
+                def __init__(self, session_metadata, download_id, backend_service):
+                    self.session_metadata = session_metadata
+                    self.download_id = download_id
+                    self.backend_service = backend_service
+                
+                async def __aiter__(self):
+                    """Async iterator for streaming sessions"""
+                    for session_meta in self.session_metadata:
+                        session_id = session_meta["sessionId"]
+                        chunk_count = session_meta["chunkCount"]
+                        
+                        session_chunks = []
+                        
+                        # Download all chunks for this session
+                        for chunk_index in range(chunk_count):
+                            chunk_request = {
+                                "downloadId": self.download_id,
+                                "sessionId": session_id,
+                                "chunkIndex": chunk_index
+                            }
+                            
+                            chunk_response = await self.backend_service.call_backend_function("racing-session/download/chunk", "POST", chunk_request, timeout_seconds=180.0)
+                            
+                            if "error" in chunk_response:
+                                logger.error(f"Failed to download chunk {chunk_index} for session {session_id}: {chunk_response['error']}")
+                                continue
+                            
+                            chunk_data = chunk_response.get("data", [])
+                            session_chunks.extend(chunk_data)
+                        
+                        # Yield session without storing in parent scope
+                        yield {
+                            "sessionId": session_id,
+                            "metadata": session_meta,
+                            "data": session_chunks,
+                            "total_telemetry_records": len(session_chunks)
+                        }
+                        
+                        # Clear session_chunks to free memory immediately
+                        del session_chunks
+            
+            # Stream to cache
+            estimated_size_mb = (total_chunks * chunk_size * 50) / (1024 * 1024)  # Rough estimate
+            streamer = SessionStreamer(session_metadata, download_id, self)
+            
+            cache_success = data_cache.cache_sessions_streaming(
+                track_name=trackName or "all_tracks",
+                sessions_iterator=streamer,
+                estimated_size_mb=estimated_size_mb
+            )
+            
+            if not cache_success:
+                raise RuntimeError("Failed to stream sessions to cache")
+            
+            logger.info(f"Successfully streamed {total_sessions} sessions to cache")
+            
+            # Return only metadata (no session data in memory)
+            return {
+                "success": True,
+                "download_id": download_id,
+                "total_sessions": total_sessions,
+                "total_chunks": total_chunks,
+                "cached": True,
+                "cache_key": trackName or "all_tracks",
+                "summary": {
+                    "total_sessions_retrieved": total_sessions,
+                    "estimated_total_records": total_chunks * chunk_size,
+                    "streamed_to_cache": True
+                }
+            }
+            
+        except Exception as e:
+            logger.error(f"Error streaming racing sessions: {str(e)}")
+            raise Exception(f"Failed to stream racing sessions: {str(e)}")
+
     async def get_all_racing_sessions(self, trackName: Optional[str] = None, carName: Optional[str] = None, chunk_size: int = 1000) -> Dict[str, Any]:
         """
+        DEPRECATED: This method loads all sessions into memory. Use get_all_racing_sessions_streaming instead.
+        
         Get all racing sessions from all users in the database
         
         return structure:
@@ -213,6 +338,8 @@ class BackendService:
             },
         }
         """
+        logger.warning("get_all_racing_sessions is deprecated and loads all data into memory. Use get_all_racing_sessions_streaming instead.")
+        
         try:
             # Initialize the download to get metadata about all sessions
             init_data = {

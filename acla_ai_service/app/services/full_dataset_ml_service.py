@@ -51,7 +51,7 @@ from .backend_service import backend_service
 from .model_cache_service import model_cache_service
 
 # Import hybrid data cache service
-from .hybrid_data_cache_service import HybridDataCache
+from .hybrid_data_cache_service import hybrid_data_cache, get_shared_data_cache
 
 # PyTorch imports (for transformer model)
 try:
@@ -110,14 +110,10 @@ class Full_dataset_TelemetryMLService:
         # Model cache service integration
         self.model_cache = model_cache_service
         
-        # Initialize hybrid data cache for large datasets
-        self.data_cache = HybridDataCache(
-            cache_directory="telemetry_data_cache",
-            max_memory_datasets=2,  # Keep only 2 datasets in memory
-            enable_dask=True,
-            dask_memory_limit="4GB"
-        )
-        print(f"[INFO] Hybrid data cache initialized for large dataset processing")
+        # Use shared hybrid data cache for large datasets
+        self.data_cache = hybrid_data_cache
+        print(f"[INFO] Using shared hybrid data cache for large dataset processing")
+        print(f"[INFO] Shared cache can be reused across backend_service, full_dataset_ml_service, and imitate_expert_learning_service")
         
         # Add a simple lock mechanism to prevent concurrent fetches of the same model
         self._model_fetch_locks = {}
@@ -803,123 +799,6 @@ class Full_dataset_TelemetryMLService:
         
         return results
     
-    # Imitation Learning Methods
-    async def train_imitation_model(self, trackName: str, carName: str) -> Dict[str, Any]:
-        """
-        Train an imitation learning model from expert driving demonstrations
-        
-        Args:
-            unprocessed_telemetry_data: List of expert driver telemetry data (optional if fetch_from_backend=True)
-            learning_objectives: What to learn ('behavior', 'trajectory', 'both')
-            user_id: User identifier for tracking and filtering backend data
-            jwt_token: JWT token for backend authentication
-            fetch_from_backend: Whether to fetch data from backend instead of using provided data
-            
-        Returns:
-            Dictionary with imitation learning results
-        """
-        #retrieve all racing session in database
-        try:
-            sessions = await backend_service.get_all_racing_sessions(trackName, carName)
-        except Exception as e:
-            return {"error": str(e)}
-
-        each_session_telemetry_data = []
-  
-        for session in sessions.get("sessions", []):
-                each_session_telemetry_data.append(session.get("data", []))
-
-        if not each_session_telemetry_data:
-            raise ValueError("No telemetry data found")
-
-        # Flatten the list of lists into a single list of telemetry records
-        telemetry_data = [item for sublist in each_session_telemetry_data for item in sublist]
-
-        # Learn from expert demonstrations
-
-        imitation_learning = ExpertImitateLearningService()
-        results = imitation_learning.train_ai_model(telemetry_data)
-        serialized_data = imitation_learning.serialize_learning_model()  
-        try:
-            # Only send the serialized model data, not the raw sklearn objects
-            await backend_service.save_ai_model(
-                model_type="imitation_learning",
-                track_name=trackName,
-                car_name=carName,
-                model_data=serialized_data,
-                metadata=results.get("learning_summary", {}),
-                is_active=True
-            )
-        except Exception as error:
-            print(f"[ERROR] Failed to save imitation model to backend: {str(error)}")
-            pass
-        
-        return results
-    
-    # Corner Identification Unsupervised Learning Methods
-    async def learn_corner_characteristics(self, trackName: str, carName: Optional[str] = None) -> Dict[str, Any]:
-        """
-        Learn detailed corner characteristics for a track using unsupervised methods
-        
-        Args:
-            trackName: Track name for corner identification
-            carName: Optional car name filter
-            
-        Returns:
-            Dictionary with corner identification and feature extraction results
-        """
-        try:
-            # On-demand instantiate corner identification service
-            from .corner_identification_unsupervised_service import CornerIdentificationUnsupervisedService
-            corner_service = CornerIdentificationUnsupervisedService()
-            results = await corner_service.learn_track_corner_patterns(trackName, carName)
-            
-            # Save results to backend if successful
-            if results.get("success"):
-                try:
-                    await self.backend_service.save_ai_model(
-                        model_type="corner_identification",
-                        track_name=trackName,
-                        car_name=carName or "all_cars",
-                        model_data=results,
-                        metadata={
-                            "timestamp": datetime.now().isoformat()
-                        },
-                        is_active=True
-                    )
-                    print(f"[INFO] Corner identification model saved to backend for {trackName}")
-                except Exception as save_error:
-                    print(f"[WARNING] Failed to save corner identification model to backend: {str(save_error)}")
-            
-            return results
-            
-        except Exception as e:
-            print(f"[ERROR] Failed to learn corner characteristics for {trackName}: {str(e)}")
-            return {
-                "success": False,
-                "error": str(e),
-                "corner_patterns": []
-            }
-    
-
-    # Tire Grip Analysis Methods
-    async def train_tire_grip_model(self, trackName: str, carName: Optional[str] = None) -> Dict[str, Any]:
-        """
-        Train tire grip analysis models for a specific track/car combination
-        
-        Args:
-            trackName: Name of the track
-            carName: Name of the car (optional)
-            
-        Returns:
-            Training results and model performance metrics
-        """
-        from .tire_grip_analysis_service import TireGripAnalysisService
-        tire_service = TireGripAnalysisService()
-        return await tire_service.train_tire_grip_model(trackName, carName)
-    
-    
-    
     async def predict_expert_actions(self, 
                                    telemetry_dict: Dict[str, Any],
                                    trackName: str, 
@@ -1049,91 +928,111 @@ class Full_dataset_TelemetryMLService:
         """
         returns: success, transformer_training, expert_imitation_trained    , contextual_data_enriched, comparison_results, track_name
         """
-        self._print_section_divider("CHECKING HYBRID DATA CACHE")
         
-        # Try to get cached data first
-        cached_sessions = self.data_cache.get_cached_sessions(trackName, max_age_hours=24)
+        # Validate dependencies before starting pipeline
+        self._print_section_divider("VALIDATING PIPELINE DEPENDENCIES")
         
-        if cached_sessions:
-            print(f"[INFO] Using cached data for {trackName}")
-            sessions_summary = cached_sessions
-        else:
-            self._print_section_divider("FETCHING TELEMETRY DATA FROM BACKEND WITH STREAMING")
-            try:
-                # Get sessions with streaming backend call
-                sessions_summary = await backend_service.get_all_racing_sessions(trackName)
-                
-                # Estimate data size for cache decision
-                total_records = sessions_summary.get("summary", {}).get("total_telemetry_records", 0)
-                estimated_size_mb = (total_records * 50) / (1024 * 1024)  # Rough estimate: 50 bytes per record
-                
-                # Cache using streaming approach
-                print(f"[INFO] Caching {len(sessions_summary.get('sessions', []))} sessions (~{estimated_size_mb:.1f}MB)")
-                
-                def sessions_iterator():
-                    """Generator for streaming cache storage"""
-                    for session in sessions_summary.get("sessions", []):
-                        yield session
-                
-                # Cache the data using streaming
-                cache_success = self.data_cache.cache_sessions_streaming(
-                    track_name=trackName,
-                    sessions_iterator=sessions_iterator(),
-                    estimated_size_mb=estimated_size_mb
-                )
-                
-                if cache_success:
-                    print(f"[INFO] Successfully cached data for future use")
-                else:
-                    print(f"[WARNING] Failed to cache data, continuing with in-memory processing")
-                
-            except Exception as e:
-                return {"error": str(e)}
+        # Check PyTorch availability for transformer training
+        if not TORCH_AVAILABLE:
+            raise ImportError("PyTorch is not available - transformer functionality is disabled. Please install PyTorch to use this pipeline.")
+        
+        # Validate backend service
+        if not hasattr(self, 'backend_service') or self.backend_service is None:
+            raise ValueError("Backend service is not initialized - cannot proceed with pipeline")
+        
+        # Validate data cache service
+        if not hasattr(self, 'data_cache') or self.data_cache is None:
+            raise ValueError("Data cache service is not initialized - cannot proceed with pipeline")
+        
+        # Validate track name
+        if not trackName or not isinstance(trackName, str) or len(trackName.strip()) == 0:
+            raise ValueError("Invalid trackName provided - must be a non-empty string")
+        
+        print(f"[INFO] ✓ All dependencies validated successfully")
+        print(f"[INFO] ✓ PyTorch available: {TORCH_AVAILABLE}")
+        print(f"[INFO] ✓ Backend service initialized")
+        print(f"[INFO] ✓ Data cache service initialized") 
+        print(f"[INFO] ✓ Track name validated: '{trackName}'")
+        
+        self._print_section_divider("STREAMING TELEMETRY DATA FROM BACKEND DIRECTLY TO CACHE")
+        
+        # Always fetch from backend (no cache check)
+        try:
+            # Stream sessions directly to cache without loading into memory
+            sessions_metadata = await backend_service.get_all_racing_sessions_streaming(
+                trackName=trackName
+            )
+            
+            if not sessions_metadata.get("success", False):
+                raise Exception(f"Failed to stream sessions: {sessions_metadata.get('message', 'Unknown error')}")
+            
+            print(f"[INFO] Successfully streamed {sessions_metadata['total_sessions']} sessions directly to cache")
+            print(f"[INFO] Estimated {sessions_metadata['summary']['estimated_total_records']} total records")
+            
+        except Exception as e:
+            print(f"[ERROR] Failed to stream sessions from backend: {str(e)}")
+            raise Exception(f"Backend streaming failed: {str(e)}") from e
 
-        #list of telemetry data for each session
-        each_session_telemetry_data = []
-  
-        for session_summary in sessions_summary.get("sessions", []):
-                each_session_telemetry_data.append(session_summary.get("data", []))
-        if not each_session_telemetry_data:
+        # Validate that we have sessions from backend streaming
+        total_sessions = sessions_metadata.get("total_sessions", 0)
+        total_records = sessions_metadata.get("summary", {}).get("estimated_total_records", 0)
+        
+        if total_sessions == 0:
+            raise ValueError("No sessions found")
+        if total_records == 0:
             raise ValueError("No telemetry data found")
         
-        # Always assume we're dealing with a very large dataset - use efficient processing
-        total_records = sum(len(session_data) for session_data in each_session_telemetry_data)
+        print(f"[INFO] Total sessions: {total_sessions}")
         print(f"[INFO] Total telemetry records: {total_records}")
         
         self._print_section_divider("LARGE DATASET ASSUMED - USING EFFICIENT PROCESSING")
         
         # Always use efficient processing for large datasets - no fallback
-        top_laps_telemetry_list, bottom_laps_telemetry_list = self.process_large_dataset_efficiently(
+        # sessions_summary data is already cached, process directly from cache
+        top_laps_telemetry_list, bottom_laps_cache_key = self.process_large_dataset_efficiently(
             trackName=trackName,
-            segment_length=50,
             max_memory_records=100000
         )
 
         segment_length = 50  # Default segment length for transformer training
+        segments_cache_key = None
+        transformer_results = None
+        
         try:
-            # enrich data TODO  bottom laps are huge, you cant save all laps in memory
+            # enrich data - now using cache-based approach to avoid memory overflow
             self._print_section_divider("ENRICHING CONTEXTUAL DATA")
-            combined_segments = await self.enriched_contextual_data(top_laps_telemetry_list, bottom_laps_telemetry_list, trackName, segment_length=segment_length)
-        except Exception as e:
-            return {"error": str(e)}
-        
-        
-        # remove any unused variable to this point to free memory
-        del top_laps_telemetry_list
-        del bottom_laps_telemetry_list
-        
-        try:
-        # train transformer model
+            segments_cache_key = await self.enriched_contextual_data(top_laps_telemetry_list, bottom_laps_cache_key, trackName, segment_length=segment_length)
+            
+            # remove any unused variable to this point to free memory
+            del top_laps_telemetry_list
+            
+            # train transformer model
             self._print_section_divider("TRAINING TRANSFORMER MODEL")
             transformer_results = await self._train_expert_action_transformer(
-                combined_segments=combined_segments,  # combined_segments contain both telemetry and context data
+                segments_cache_key=segments_cache_key,  # Pass cache key instead of segments in memory
                 trackName=trackName,
                 fixed_segment_length=segment_length  # Use default segment length
             )
-        except Exception as e:
-            return {"error": str(e)}
+            
+        finally:
+            # Clean up cached data even if processing fails
+            if bottom_laps_cache_key:
+                try:
+                    self.data_cache.clear_cache(bottom_laps_cache_key)
+                    print(f"[INFO] Cleaned up cached bottom laps data: {bottom_laps_cache_key}")
+                except Exception as e:
+                    print(f"[WARNING] Failed to clean up cached bottom laps data: {str(e)}")
+            
+            if segments_cache_key:
+                try:
+                    self.data_cache.clear_cache(segments_cache_key)
+                    print(f"[INFO] Cleaned up cached segments data: {segments_cache_key}")
+                except Exception as e:
+                    print(f"[WARNING] Failed to clean up cached segments: {str(e)}")
+        
+        # Ensure transformer training completed successfully before returning
+        if not transformer_results or not transformer_results.get("success"):
+            raise Exception("Transformer training failed - no valid results produced")
         
         self._print_section_divider("TRANSFORMER LEARNING COMPLETED")
         return {
@@ -1183,12 +1082,11 @@ class Full_dataset_TelemetryMLService:
         
         print(f"[INFO] Completed streaming processing of {processed_sessions} sessions")
 
-    def process_large_dataset_efficiently(self, trackName: str, 
-                                        segment_length: int = 50,
-                                        max_memory_records: int = 50000) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    def process_large_dataset_efficiently(self, trackName: str,
+                                        max_memory_records: int = 50000) -> Tuple[List[Dict[str, Any]], str]:
         """
         Process very large cached datasets efficiently using streaming and Dask
-        Optimized for datasets that cannot fit in memory
+        Optimized for datasets that cannot fit in memory - stores bottom laps in cache instead of memory
         
         Args:
             trackName: Track name for data retrieval
@@ -1196,7 +1094,7 @@ class Full_dataset_TelemetryMLService:
             max_memory_records: Maximum records to keep in memory at once (reduced for large datasets)
             
         Returns:
-            Tuple of (top_laps_telemetry_list, bottom_laps_telemetry_list)
+            Tuple of (top_laps_telemetry_list, bottom_laps_cache_key) where cache_key is used to access bottom laps via data_cache
         """
         print(f"[INFO] Processing very large dataset for {trackName} with conservative memory limit {max_memory_records}")
         print(f"[INFO] Using streaming approach with Dask/HDF5 backend")
@@ -1235,9 +1133,8 @@ class Full_dataset_TelemetryMLService:
                 top_laps_df_count = max(1, int(len(lap_df_list) * 0.005))  # Top 0.5% for very large datasets
                 top_laps_df = lap_df_list[:top_laps_df_count]
                 
-                # Take a reasonable sample of bottom laps to avoid memory issues, TODO USE all laps except top laps, you cant save all laps in memory
-                max_bottom_laps = min(10, len(lap_df_list) - top_laps_df_count)
-                bottom_laps_df = lap_df_list[top_laps_df_count:top_laps_df_count + max_bottom_laps]
+                # Use ALL remaining laps as bottom laps (all non-expert laps for training)
+                bottom_laps_df = lap_df_list[top_laps_df_count:]
                 
                 # Convert to records efficiently
                 top_records = []
@@ -1274,16 +1171,20 @@ class Full_dataset_TelemetryMLService:
             if not chunk_results:
                 raise ValueError(f"No data chunks returned from cache for {trackName}")
             
-            # Aggregate results with progress tracking
+            # Aggregate top laps in memory but cache bottom laps to avoid memory overflow
             top_laps_telemetry_list = []
-            bottom_laps_telemetry_list = []
+            bottom_laps_cache_key = f"bottom_laps_{trackName}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
             total_processed = 0
             chunks_processed = 0
+                            
+            # Re-iterate through results for processing since generator was consumed
+            chunk_results_list = list(chunk_results)
+            total_bottom_laps_count = 0
             
-            for result in chunk_results:
+            for result in chunk_results_list:
                 if isinstance(result, dict) and result:
                     top_laps_telemetry_list.extend(result.get("top_laps", []))
-                    bottom_laps_telemetry_list.extend(result.get("bottom_laps", []))
+                    total_bottom_laps_count += len(result.get("bottom_laps", []))
                     total_processed += result.get("processed_records", 0)
                     chunks_processed += 1
                     
@@ -1291,13 +1192,42 @@ class Full_dataset_TelemetryMLService:
                     if chunks_processed % 10 == 0:
                         print(f"[INFO] Processed {chunks_processed} chunks, {total_processed} total records")
             
-            if not top_laps_telemetry_list and not bottom_laps_telemetry_list:
+            # Cache bottom laps using streaming to avoid memory accumulation
+            print(f"[INFO] Caching {total_bottom_laps_count} bottom laps to avoid memory overflow")
+            
+            def create_bottom_laps_generator():
+                """Recreate generator for caching"""
+                chunk_idx = 0
+                for result in chunk_results_list:
+                    if isinstance(result, dict) and result:
+                        bottom_laps = result.get("bottom_laps", [])
+                        if bottom_laps:
+                            yield {
+                                "sessionId": f"bottom_laps_chunk_{chunk_idx}",
+                                "data": bottom_laps
+                            }
+                            chunk_idx += 1
+            
+            # Estimate size for caching decision
+            estimated_size_mb = (total_bottom_laps_count * 50) / (1024 * 1024)  # Rough estimate: 50 bytes per record
+            
+            cache_success = self.data_cache.cache_sessions_streaming(
+                track_name=bottom_laps_cache_key,
+                sessions_iterator=create_bottom_laps_generator(),
+                estimated_size_mb=estimated_size_mb
+            )
+            
+            if not cache_success:
+                print(f"[WARNING] Failed to cache bottom laps, this may cause memory issues")
+            
+            if not top_laps_telemetry_list and total_bottom_laps_count == 0:
                 raise ValueError(f"No valid telemetry data extracted from {trackName} dataset")
             
             print(f"[SUCCESS] Processed {chunks_processed} chunks, {total_processed} records total")
-            print(f"[SUCCESS] Extracted {len(top_laps_telemetry_list)} expert records, {len(bottom_laps_telemetry_list)} training records")
+            print(f"[SUCCESS] Extracted {len(top_laps_telemetry_list)} expert records, cached {total_bottom_laps_count} training records")
+            print(f"[INFO] Bottom laps cached with key: {bottom_laps_cache_key}")
             
-            return top_laps_telemetry_list, bottom_laps_telemetry_list
+            return top_laps_telemetry_list, bottom_laps_cache_key
             
         except Exception as e:
             print(f"[ERROR] Large dataset processing failed: {e}")
@@ -1305,8 +1235,9 @@ class Full_dataset_TelemetryMLService:
             raise Exception(f"Failed to process large dataset for {trackName}: {str(e)}")
 
     def get_data_cache_info(self) -> Dict[str, Any]:
-        """Get information about the hybrid data cache"""
-        return self.data_cache.get_cache_info()
+        """Get information about the shared hybrid data cache"""
+        from .hybrid_data_cache_service import get_shared_cache_info
+        return get_shared_cache_info()
 
     def clear_data_cache(self, track_name: Optional[str] = None):
         """Clear hybrid data cache"""
@@ -1314,11 +1245,22 @@ class Full_dataset_TelemetryMLService:
         print(f"[INFO] Cleared data cache" + (f" for {track_name}" if track_name else ""))
 
     def print_data_cache_info(self):
-        """Print detailed data cache information"""
+        """Print detailed shared data cache information"""
         info = self.get_data_cache_info()
         print("\n" + "="*60)
-        print("HYBRID DATA CACHE INFORMATION")
+        print("SHARED HYBRID DATA CACHE INFORMATION")
         print("="*60)
+        
+        # Print sharing information
+        sharing_info = info.get('sharing_info', {})
+        if sharing_info.get('is_shared'):
+            print("Cache Sharing: ENABLED")
+            print(f"Shared across: {', '.join(sharing_info.get('shared_across', []))}")
+            print("Benefits:")
+            for benefit in sharing_info.get('benefits', []):
+                print(f"  • {benefit}")
+            print("")
+        
         print(f"Memory Cache: {info['memory_cache']['entries']}/{info['memory_cache']['max_entries']} datasets")
         print(f"Dask Enabled: {info['dask_enabled']}")
         if info.get('dask_client'):
@@ -1336,7 +1278,7 @@ class Full_dataset_TelemetryMLService:
         print("="*60 + "\n")
 
     async def _train_expert_action_transformer(self, 
-                                             combined_segments: List[List[Dict[str, Any]]],
+                                             segments_cache_key: str,
                                              trackName: str,
                                              fixed_segment_length: int = 50,
                                              enrichment_result: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -1344,7 +1286,7 @@ class Full_dataset_TelemetryMLService:
         Train the transformer model to learn non-expert driver progression toward expert performance using fixed-size segments
         
         Args:
-            combined_segments: List of fixed-size segments containing combined telemetry and context data
+            segments_cache_key: Cache key to access segments from data cache
             trackName: Track name for model identification
             fixed_segment_length: Length that all segments must have (default: 50)
             enrichment_result: Pre-computed enrichment result to avoid re-training models
@@ -1360,7 +1302,21 @@ class Full_dataset_TelemetryMLService:
                     "success": False   
                 }
             
-            print(f"[INFO] Starting transformer training with {len(combined_segments)} fixed-size segments")
+            # Load segments from cache
+            print(f"[INFO] Loading segments from cache key: {segments_cache_key}")
+            cached_segments_data = self.data_cache.get_cached_sessions(segments_cache_key, max_age_hours=24)
+            
+            if not cached_segments_data:
+                raise ValueError(f"No cached segments found for key: {segments_cache_key}")
+            
+            # Extract segments from cached data structure
+            combined_segments = []
+            for session in cached_segments_data.get("sessions", []):
+                segment_data = session.get("data", [])
+                if segment_data:
+                    combined_segments.append(segment_data)
+            
+            print(f"[INFO] Starting transformer training with {len(combined_segments)} fixed-size segments loaded from cache")
             print(f"[INFO] Each segment has fixed length: {fixed_segment_length}")
             
             # Validate segments before creating dataset
@@ -1381,6 +1337,9 @@ class Full_dataset_TelemetryMLService:
                 combined_segments=combined_segments,
                 fixed_segment_length=fixed_segment_length
             )
+            
+            # Clear combined_segments to free memory since dataset now has the data
+            del combined_segments
             
             # Configure PyTorch optimizations
             use_cuda = torch.cuda.is_available()
@@ -1468,79 +1427,120 @@ class Full_dataset_TelemetryMLService:
                 "error": str(e)
             }
 
-    async def enriched_contextual_data(self, top_laps_telemetry_list: List[Dict[str, Any]], bottom_laps_telemetry_list: List[Dict[str, Any]], track_name: str, segment_length: int) -> List[List[Dict[str, Any]]]:
+    async def _extract_features_from_chunk_async(self, chunk_data: List[Dict[str, Any]], imitation_learning, corner_service, tire_service, feature_sources: List[str]) -> List[Dict[str, Any]]:
+        """
+        Extract features from a chunk of telemetry data with proper async handling
+        
+        Args:
+            chunk_data: List of telemetry records
+            imitation_learning: Imitation learning service instance
+            corner_service: Corner identification service instance  
+            tire_service: Tire grip service instance
+            feature_sources: List to track active feature sources
+            
+        Returns:
+            List of combined telemetry records with context features
+        """
+        try:
+            if not chunk_data:
+                return []
+            
+            combined_chunk_data = []
+            
+            # Extract expert state features for chunk
+            chunk_imitation_features = []
+            try:
+                chunk_imitation_features = imitation_learning.extract_expert_state_for_telemetry(chunk_data)
+                if "expert_state" not in feature_sources:
+                    feature_sources.append("expert_state")
+            except Exception as e:
+                print(f"[WARNING] Failed to extract expert state features for chunk: {str(e)}")
+            
+            # Extract corner features for chunk (with proper async)
+            chunk_corner_features = []
+            try:
+                chunk_corner_features = await corner_service.extract_corner_features_for_telemetry(chunk_data)
+                if "corner_identification" not in feature_sources:
+                    feature_sources.append("corner_identification") 
+            except Exception as e:
+                print(f"[WARNING] Failed to extract corner features for chunk: {str(e)}")
+            
+            # Extract tire grip features for chunk (with proper async)
+            chunk_grip_features = []
+            try:
+                chunk_grip_features = await tire_service.extract_tire_grip_features(chunk_data)
+                if "tire_grip_analysis" not in feature_sources:
+                    feature_sources.append("tire_grip_analysis")
+            except Exception as e:
+                print(f"[WARNING] Failed to extract tire grip features for chunk: {str(e)}")
+            
+            # Combine telemetry with all context features for this chunk
+            for i, telemetry_record in enumerate(chunk_data):
+                combined_record = telemetry_record.copy()
+                
+                # Add expert state features if available
+                if i < len(chunk_imitation_features):
+                    combined_record.update(chunk_imitation_features[i])
+                
+                # Add corner features if available  
+                if i < len(chunk_corner_features):
+                    combined_record.update(chunk_corner_features[i])
+                
+                # Add tire grip features if available
+                if i < len(chunk_grip_features):
+                    combined_record.update(chunk_grip_features[i])
+                
+                combined_chunk_data.append(combined_record)
+            
+            return combined_chunk_data
+            
+        except Exception as e:
+            print(f"[WARNING] Failed to process chunk: {str(e)}")
+            return []
+
+    async def enriched_contextual_data(self, top_laps_telemetry_list: List[Dict[str, Any]], bottom_laps_cache_key: str, track_name: str, segment_length: int) -> str:
         """
         Extract enriched contextual features from telemetry data using trained models. it adds expert state, corner identification, and tire grip features,
         and helps transformer model to better understand track geometry, physics constraints, extra expert insights to differentiate actions that
         converge towards feature expert state.
         
         This method returns combined segmented data for the unified transformer model.
+        IMPORTANT: This method processes cached bottom laps data in streaming chunks to avoid memory overflow.
         
         Args:
-            top_telemetry_list: List of expert telemetry record dictionaries (flat list)
-            bottom_telemetry_list: List of non-expert telemetry record dictionaries (flat list) - will be sampled for memory efficiency
+            top_laps_telemetry_list: List of expert telemetry record dictionaries (flat list)
+            bottom_laps_cache_key: Cache key for accessing bottom laps data via data_cache (avoids memory overflow)
             track_name: Track name for model identification
+            segment_length: Length of segments for processing
             
         Returns:
-            List[List[Dict[str, Any]]] - List of combined telemetry+context segments
+            str - Cache key for accessing the combined telemetry+context segments
         """
 
-        print(f"[INFO] Original dataset sizes:")
+        print(f"[INFO] Processing contextual data:")
         print(f"  - Top laps (expert): {len(top_laps_telemetry_list)} records")
-        print(f"  - Bottom laps (training): {len(bottom_laps_telemetry_list)} records")
+        print(f"  - Bottom laps (training): cached with key '{bottom_laps_cache_key}'")
         
-        if not bottom_laps_telemetry_list:
-            print("[WARNING] No telemetry data provided for enrichment")
-            return []
+        # Validate cached data exists
+        cached_bottom_laps = self.data_cache.get_cached_sessions(bottom_laps_cache_key, max_age_hours=24)
+        if not cached_bottom_laps:
+            print("[ERROR] No cached bottom laps data found")
+            raise ValueError("No cached bottom laps data found - unable to proceed with contextual data enrichment")
         
-        # Sample bottom laps if too large to avoid memory issues
-        max_bottom_laps_for_training = 50000  # Conservative limit for contextual training
-        original_bottom_laps_count = len(bottom_laps_telemetry_list)  # Track original size
+        # Get total count from cached data for logging
+        total_bottom_laps_count = cached_bottom_laps.get("summary", {}).get("total_telemetry_records", 0)
+        print(f"  - Bottom laps total count: {total_bottom_laps_count} records (cached)")
         
-        if len(bottom_laps_telemetry_list) > max_bottom_laps_for_training:
-            print(f"[INFO] Bottom laps dataset is very large ({len(bottom_laps_telemetry_list)} records)")
-            print(f"[INFO] Sampling to {max_bottom_laps_for_training} records for memory efficiency")
-            
-            # Intelligent sampling strategy: take samples throughout the dataset
-            import random
-            random.seed(42)  # Reproducible sampling
-            
-            # Take samples at regular intervals + some random samples
-            step_size = len(bottom_laps_telemetry_list) // (max_bottom_laps_for_training // 2)
-            
-            # Regular interval sampling (50% of target)
-            regular_samples = bottom_laps_telemetry_list[::step_size][:max_bottom_laps_for_training // 2]
-            
-            # Random sampling from remaining data (50% of target)
-            remaining_data = [x for i, x in enumerate(bottom_laps_telemetry_list) if i % step_size != 0]
-            random_sample_size = min(max_bottom_laps_for_training // 2, len(remaining_data))
-            random_samples = random.sample(remaining_data, random_sample_size) if remaining_data else []
-            
-            # Combine samples
-            sampled_bottom_laps = regular_samples + random_samples
-            
-            print(f"[INFO] Sampled dataset composition:")
-            print(f"  - Regular interval samples: {len(regular_samples)}")
-            print(f"  - Random samples: {len(random_samples)}")
-            print(f"  - Total sampled: {len(sampled_bottom_laps)}")
-            
-            bottom_laps_telemetry_list = sampled_bottom_laps
-        else:
-            print(f"[INFO] Bottom laps dataset size is manageable ({len(bottom_laps_telemetry_list)} records)")
-        
-        print(f"[INFO] Final dataset sizes for contextual enrichment:")
-        print(f"  - Top laps (expert): {len(top_laps_telemetry_list)} records")
-        print(f"  - Bottom laps (training): {len(bottom_laps_telemetry_list)} records")
+        print(f"[INFO] Using ALL data without sampling since we're processing via cache streaming")
         
         try:
-            # Use sampled data for both training enrichment models but use all data for feature extraction
-            # Memory-efficient approach: don't copy large datasets unnecessarily
-            bottom_laps_training_telemetry_list = bottom_laps_telemetry_list  # Already sampled above
+            # Use only expert data for training enrichment models (memory efficient)
+            # We'll process bottom laps via streaming later for feature extraction
             top_laps_training_telemetry_list = top_laps_telemetry_list  # Small dataset, safe to reference
             
-            print(f"[INFO] Training enrichment models with:")
+            print(f"[INFO] Training enrichment models with expert data:")
             print(f"  - Expert samples: {len(top_laps_training_telemetry_list)}")
-            print(f"  - Training samples: {len(bottom_laps_training_telemetry_list)}")
+            print(f"  - Bottom laps will be processed via streaming from cache")
 
             self._print_section_divider("TRAINING IMITATION LEARNING MODEL")
             try:        
@@ -1588,13 +1588,14 @@ class Full_dataset_TelemetryMLService:
             except Exception as e:
                 raise Exception(f"[ERROR] Corner identification training failed: {str(e)}")
             
-            # Train tire grip analysis model using training data
+            # Train tire grip analysis model using training data (use expert samples for training)
             self._print_section_divider("Training tire grip analysis model...")
             try:
                 # The tire grip service is now heuristic-only: it computes features deterministically from physics telemetry
                 from .tire_grip_analysis_service import TireGripAnalysisService
                 tire_service = TireGripAnalysisService()
-                tire_grip_model = await tire_service.train_tire_grip_model(bottom_laps_training_telemetry_list)
+                # Use expert data for training the tire grip model
+                tire_grip_model = await tire_service.train_tire_grip_model(top_laps_training_telemetry_list)
                 
                 tire_service_serialized = tire_service.serialize_tire_grip_model()
                 await self.backend_service.save_ai_model(
@@ -1611,246 +1612,113 @@ class Full_dataset_TelemetryMLService:
             except Exception as e:
                 raise Exception(f"[ERROR] Tire grip analysis training failed: {str(e)}")
             
-            # First, combine telemetry with context features
-            self._print_section_divider("COMBINING TELEMETRY WITH CONTEXT FEATURES")
+            # First, combine telemetry with context features using cache-based streaming
+            self._print_section_divider("COMBINING TELEMETRY WITH CONTEXT FEATURES VIA CACHE STREAMING")
             
-            # Track sampling information for metadata (original_bottom_laps_count defined earlier)
-            sampling_applied = len(bottom_laps_training_telemetry_list) < original_bottom_laps_count
-            sampling_stats = {
-                "original_size": original_bottom_laps_count,
-                "sampled_size": len(bottom_laps_training_telemetry_list),
-                "reduction_percentage": round((1 - len(bottom_laps_training_telemetry_list) / original_bottom_laps_count) * 100, 2) if original_bottom_laps_count > 0 else 0
-            }
-            
-            # Process feature extraction in all bottom laps telemetry in chunks to avoid memory issues TODO not sample, use all laps except top laps
+            # Process feature extraction using cache streaming to avoid memory issues
             chunk_size = 10000  # Process 10k records at a time
-            combined_telemetry_data = []
+            all_combined_telemetry_data = []
             feature_sources = []
             
-            print(f"[INFO] Processing feature extraction in chunks of {chunk_size} records")
+            print(f"[INFO] Processing feature extraction via cache streaming in chunks of {chunk_size} records")
             
-            # Process data in chunks to avoid memory overflow
-            for chunk_start in range(0, len(bottom_laps_training_telemetry_list), chunk_size):
-                chunk_end = min(chunk_start + chunk_size, len(bottom_laps_training_telemetry_list))
-                chunk_data = bottom_laps_training_telemetry_list[chunk_start:chunk_end]
+            # Use cache streaming to process all bottom laps data with async feature extraction
+            async def process_cached_data_with_async_features():
+                """Process cached data with proper async feature extraction"""
+                cached_sessions = self.data_cache.get_cached_sessions(bottom_laps_cache_key, max_age_hours=24)
+                if not cached_sessions:
+                    raise ValueError(f"No cached data found for {bottom_laps_cache_key}")
                 
-                print(f"[INFO] Processing chunk {chunk_start//chunk_size + 1}: records {chunk_start}-{chunk_end}")
+                all_combined_data = []
+                processed_chunks = 0
                 
-                # Extract expert state features for chunk
-                chunk_imitation_features = []
-                try:
-                    chunk_imitation_features = imitation_learning.extract_expert_state_for_telemetry(chunk_data)
-                    if chunk_start == 0:  # Only add to sources list once
-                        feature_sources.append("expert_state")
-                except Exception as e:
-                    print(f"[WARNING] Failed to extract expert state features for chunk: {str(e)}")
-                
-                # Extract corner features for chunk
-                chunk_corner_features = []
-                if corner_model.get("success"):
-                    try:
-                        chunk_corner_features = await corner_service.extract_corner_features_for_telemetry(chunk_data)
-                        if chunk_start == 0:  # Only add to sources list once
-                            feature_sources.append("corner_identification")
-                    except Exception as e:
-                        print(f"[WARNING] Failed to extract corner features for chunk: {str(e)}")
-                
-                # Extract tire grip features for chunk
-                chunk_grip_features = []
-                try:
-                    chunk_grip_features = await tire_service.extract_tire_grip_features(chunk_data)
-                    if chunk_start == 0:  # Only add to sources list once
-                        feature_sources.append("tire_grip_analysis")
+                # Process each session chunk from cache
+                for session in cached_sessions.get("sessions", []):
+                    session_data = session.get("data", [])
+                    if not session_data:
+                        continue
+                    
+                    # Process in chunks to avoid memory overflow
+                    for i in range(0, len(session_data), chunk_size):
+                        chunk_data = session_data[i:i + chunk_size]
+                        processed_chunks += 1
                         
-                        # Validate expected keys exist in at least one record
-                        try:
-                            from .tire_grip_analysis_service import TireGripFeatureCatalog
-                            expected_keys = set(TireGripFeatureCatalog.CONTEXT_FEATURES)
-                            if chunk_grip_features:
-                                sample_keys = set(chunk_grip_features[0].keys())
-                                missing = expected_keys - sample_keys
-                                if missing:
-                                    print(f"[WARNING] Tire grip features missing keys: {sorted(list(missing))}")
-                        except Exception as v_err:
-                            print(f"[WARNING] Tire grip feature validation skipped: {v_err}")
-                            
-                except Exception as e:
-                    print(f"[WARNING] Failed to extract tire grip features for chunk: {str(e)}")
+                        print(f"[INFO] Processing chunk {processed_chunks}: {len(chunk_data)} records")
+                        
+                        # Extract features for this chunk (with proper async handling)
+                        chunk_combined_data = await self._extract_features_from_chunk_async(
+                            chunk_data, imitation_learning, corner_service, tire_service, feature_sources
+                        )
+                        
+                        all_combined_data.extend(chunk_combined_data)
+                        
+                        # Clear chunk data to free memory
+                        del chunk_data, chunk_combined_data
+                        
+                        if processed_chunks % 10 == 0:
+                            print(f"[INFO] Processed {processed_chunks} chunks, {len(all_combined_data)} total records")
                 
-                # Combine telemetry with all context features for this chunk
-                for i, telemetry_record in enumerate(chunk_data):
-                    combined_record = telemetry_record.copy()
-                    
-                    # Add expert state features if available
-                    if i < len(chunk_imitation_features):
-                        combined_record.update(chunk_imitation_features[i])
-                    
-                    # Add corner features if available
-                    if i < len(chunk_corner_features):
-                        combined_record.update(chunk_corner_features[i])
-                    
-                    # Add tire grip features if available
-                    if i < len(chunk_grip_features):
-                        combined_record.update(chunk_grip_features[i])
-                    
-                    combined_telemetry_data.append(combined_record)
-                
-                # Clear chunk feature arrays to free memory
-                del chunk_imitation_features, chunk_corner_features, chunk_grip_features
-                
-                print(f"[INFO] Completed chunk {chunk_start//chunk_size + 1}, total combined records: {len(combined_telemetry_data)}")
+                return all_combined_data
             
-            print(f"[INFO] Feature extraction completed for {len(combined_telemetry_data)} records")
+            # Execute the async processing
+            all_combined_telemetry_data = await process_cached_data_with_async_features()
+            
+            print(f"[INFO] Successfully processed {len(all_combined_telemetry_data)} records via cache streaming")
             print(f"[INFO] Active feature sources: {feature_sources}")
             
-            print(f"[INFO] Combined {len(combined_telemetry_data)} telemetry records with context features")
+            print(f"[INFO] Combined {len(all_combined_telemetry_data)} telemetry records with context features")
             
-            # Now filter the combined data into optimal segments
-            self._print_section_divider("FILTERING COMBINED DATA INTO SEGMENTS")
+            # Filter the combined data into optimal segments and cache them instead of keeping in memory
+            self._print_section_divider("FILTERING COMBINED DATA INTO SEGMENTS AND CACHING")
             try:
                 # Use the imitation learning service to filter the combined data into segments
-                combined_segments = imitation_learning.filter_optimal_telemetry_segments(combined_telemetry_data, segment_length=segment_length)
+                combined_segments = imitation_learning.filter_optimal_telemetry_segments(all_combined_telemetry_data, segment_length=segment_length)
                 print(f"[INFO] Created {len(combined_segments)} combined segments from filtered data")
+                
+                # Clear all_combined_telemetry_data to free memory since we now have segments
+                del all_combined_telemetry_data
+                
+                # Cache the segments to avoid memory accumulation
+                segments_cache_key = f"segments_{track_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+                
+                def segments_generator():
+                    """Generator that yields segments for caching"""
+                    for idx, segment in enumerate(combined_segments):
+                        yield {
+                            "sessionId": f"segment_{idx}",
+                            "data": segment
+                        }
+                        
+                # Estimate size for caching decision
+                total_segment_records = sum(len(segment) for segment in combined_segments)
+                estimated_size_mb = (total_segment_records * 50) / (1024 * 1024)  # Rough estimate: 50 bytes per record
+                
+                print(f"[INFO] Caching {len(combined_segments)} segments (~{estimated_size_mb:.1f}MB) to avoid memory accumulation")
+                
+                cache_success = self.data_cache.cache_sessions_streaming(
+                    track_name=segments_cache_key,
+                    sessions_iterator=segments_generator(),
+                    estimated_size_mb=estimated_size_mb
+                )
+                
+                if not cache_success:
+                    print(f"[WARNING] Failed to cache segments, keeping in memory as fallback")
+                    # Return the segments directly if caching fails
+                    return combined_segments
+                
+                # Clear segments from memory since they're now cached
+                del combined_segments
+                
+                print(f"[INFO] Successfully cached segments with key: {segments_cache_key}")
+                
+                # Return cache key instead of segments
+                return segments_cache_key
+                
             except Exception as e:
                 raise Exception(f"Failed to filter combined data into segments: {str(e)}")
             
-            # Create feature metadata
-            sample_combined = {}
-            sample_feature_names = []
-            
-            if combined_telemetry_data:
-                sample_combined = combined_telemetry_data[0]
-                sample_feature_names = list(sample_combined.keys())
-            
-            feature_metadata = {
-                'sources': feature_sources,
-                'feature_count': len(sample_combined),
-                'feature_names': sample_feature_names,
-                'total_records': len(combined_telemetry_data),
-                'corner_identification_success': corner_model.get("success", False),
-                'tire_grip_analysis_success': tire_grip_model.get("success", False),
-                'sampling_applied': sampling_applied,
-                'sampling_stats': sampling_stats
-            }
-            
-            print(f"[INFO] Feature metadata: {feature_metadata['feature_count']} combined features from {len(feature_sources)} sources")
-            print(f"[INFO] Successfully created {len(combined_segments)} segments with combined telemetry and context data")
-            
-            return combined_segments
-            
         except Exception as e:
             raise Exception(f"{self.__dir__} Failed to enrich contextual data: {str(e)}")
-
-    
-    def _compare_telemetry_performance(self, 
-                                      expert_telemetry: List[Dict[str, Any]], 
-                                      non_expert_telemetry: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """
-        Compare performance between expert and non-expert telemetry
-        
-        Args:
-            expert_telemetry: Expert driver telemetry records
-            non_expert_telemetry: Non-expert driver telemetry records
-            
-        Returns:
-            Dictionary with comparison results and performance metrics
-        """
-        try:
-            # Convert to DataFrames for analysis
-            expert_df = pd.DataFrame(expert_telemetry) if expert_telemetry else pd.DataFrame()
-            non_expert_df = pd.DataFrame(non_expert_telemetry) if non_expert_telemetry else pd.DataFrame()
-            
-            if expert_df.empty or non_expert_df.empty:
-                return {
-                    'total_data_points': 0,
-                    'overall_score': 0.0,
-                    'performance_sections': [],
-                    'error': 'Insufficient data for comparison'
-                }
-            
-            comparison_metrics = {}
-            performance_sections = []
-            
-            # Speed comparison
-            if 'Physics_speed_kmh' in expert_df.columns and 'Physics_speed_kmh' in non_expert_df.columns:
-                expert_speed = expert_df['Physics_speed_kmh'].mean()
-                non_expert_speed = non_expert_df['Physics_speed_kmh'].mean()
-                speed_ratio = non_expert_speed / expert_speed if expert_speed > 0 else 0
-                
-                comparison_metrics['speed'] = {
-                    'expert_avg': expert_speed,
-                    'non_expert_avg': non_expert_speed,
-                    'efficiency_ratio': speed_ratio
-                }
-                
-                performance_sections.append({
-                    'metric': 'speed',
-                    'expert_value': expert_speed,
-                    'driver_value': non_expert_speed,
-                    'score': min(speed_ratio, 1.0) * 100  # Cap at 100%
-                })
-            
-            # Lap time comparison (if available)
-            if 'Graphics_current_time' in expert_df.columns and 'Graphics_current_time' in non_expert_df.columns:
-                expert_lap_time = expert_df['Graphics_current_time'].max() - expert_df['Graphics_current_time'].min()
-                non_expert_lap_time = non_expert_df['Graphics_current_time'].max() - non_expert_df['Graphics_current_time'].min()
-                
-                if expert_lap_time > 0 and non_expert_lap_time > 0:
-                    time_ratio = expert_lap_time / non_expert_lap_time  # Ratio < 1 means non-expert is faster (unlikely)
-                    
-                    comparison_metrics['lap_time'] = {
-                        'expert_time': expert_lap_time,
-                        'non_expert_time': non_expert_lap_time,
-                        'efficiency_ratio': time_ratio
-                    }
-                    
-                    performance_sections.append({
-                        'metric': 'lap_time',
-                        'expert_value': expert_lap_time,
-                        'driver_value': non_expert_lap_time,
-                        'score': min(time_ratio * 100, 100)  # Expert should be faster
-                    })
-            
-            # Smoothness comparison (steering, throttle, brake)
-            smoothness_scores = []
-            for control in ['Physics_steer_angle', 'Physics_gas', 'Physics_brake']:
-                if control in expert_df.columns and control in non_expert_df.columns:
-                    expert_std = expert_df[control].std()
-                    non_expert_std = non_expert_df[control].std()
-                    
-                    # Lower standard deviation indicates smoother control
-                    smoothness_ratio = expert_std / non_expert_std if non_expert_std > 0 else 1.0
-                    smoothness_score = min(smoothness_ratio * 100, 100)
-                    smoothness_scores.append(smoothness_score)
-                    
-                    performance_sections.append({
-                        'metric': f'{control}_smoothness',
-                        'expert_value': expert_std,
-                        'driver_value': non_expert_std,
-                        'score': smoothness_score
-                    })
-            
-            # Calculate overall performance score
-            all_scores = [section['score'] for section in performance_sections]
-            overall_score = np.mean(all_scores) if all_scores else 0.0
-            
-            return {
-                'total_data_points': len(non_expert_telemetry),
-                'overall_score': overall_score,
-                'performance_sections': performance_sections,
-                'comparison_metrics': comparison_metrics,
-                'expert_data_points': len(expert_telemetry),
-                'analysis_timestamp': datetime.now().isoformat()
-            }
-            
-        except Exception as e:
-            print(f"[ERROR] Performance comparison failed: {str(e)}")
-            return {
-                'total_data_points': len(non_expert_telemetry) if non_expert_telemetry else 0,
-                'overall_score': 0.0,
-                'performance_sections': [],
-                'error': str(e)
-            }
     
 if __name__ == "__main__":
     # Example usage

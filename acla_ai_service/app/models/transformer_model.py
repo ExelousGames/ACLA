@@ -204,69 +204,49 @@ class PositionalEncoding(nn.Module):
 
 class ExpertActionTransformer(nn.Module):
     """
-    ExpertActionTransformer - AI Model for Non-Expert Driver Progression Learning
+    ExpertActionTransformer - Unified Expert Improvement Learning Model
     
     WHAT IT ACTUALLY DOES:
-    This model learns how a NON-EXPERT DRIVER progressively improves their driving actions 
-    over time to reach expert-level performance. It does NOT directly predict expert actions.
-    Instead, it models the learning trajectory of a non-expert driver as they receive 
-    gap-based guidance and improve toward expert-level performance.
+    This model learns how non-expert drivers progressively move closer to expert-level performance.
+    Given the current complete driving state, it predicts the next improved state that moves the
+    driver toward expert-like behavior. Instead of separating context and actions, this model
+    treats all features as a unified state vector and predicts expert improvement progressions.
     
-    Think of it as modeling the "learning curve" of a student driver who is getting coaching
-    based on performance gaps. The model learns: "Given where I am now (non-expert state) 
-    and how far I am from expert performance (gap features), what should my next 
-    improved action be?"
+    UNIFIED FEATURE APPROACH:
+    - Input: Complete state vector [context_features + action_features] at timestep t
+    - Output: Complete state vector [context_features + action_features] at timestep t+1
+    - The attention mechanism learns relationships between ALL features (context and actions)
     
     CORE FUNCTIONALITY:
-    1. PROGRESSION MODELING: Models how non-expert actions evolve toward expert performance
-    2. GAP-AWARE LEARNING: Uses expert-to-non-expert gap features to understand improvement direction
-    3. CONTEXTUAL GUIDANCE: Uses performance gaps as contextual guidance, not direct expert actions
-    4. SEQUENTIAL IMPROVEMENT: Learns step-by-step improvement sequences over time
-    
-    PRACTICAL APPLICATIONS:
-    - Driver Training Systems: Models how students progress during training sessions
-    - Adaptive Racing Coaching: Provides personalized improvement trajectories
-    - Performance Analysis: Understands learning patterns and improvement rates
-    - Skill Development: Models how drivers acquire expert-level techniques
+    1. EXPERT IMPROVEMENT LEARNING: Predicts next improved state in progression toward expert level
+    2. UNIFIED FEATURES: Context and actions are treated as single feature vector during improvement
+    3. ATTENTION LEARNING: Model learns relationships between context and expert-improving actions
+    4. SEQUENTIAL MODELING: Learns temporal dependencies in expert improvement progressions
     
     HOW IT WORKS:
-    The model takes non-expert telemetry and enriched contextual data that includes:
-    - Expert-to-non-expert gap features (velocity alignment, speed difference, distance to expert line)
-    - Track/corner contextual information
-    - Tire grip and environmental context
+    The model takes a unified feature vector containing:
+    - Contextual features: gap analysis, track info, tire grip, environmental data
+    - Action features: gas, brake, steer_angle, gear
     
-    It then predicts what the non-expert driver's NEXT IMPROVED ACTIONS should be,
-    not what the expert would do. This models the gradual improvement process.
-    
-    INPUT DATA:
-    - Non-expert telemetry: Current non-expert driver's state and actions
-    - Gap features: Performance differences from expert (ExpertFeatureCatalog.ContextFeature)
-      * EXPERT_VELOCITY_ALIGNMENT: How aligned current velocity is with expert direction
-      * SPEED_DIFFERENCE: Difference between current and optimal expert speed
-      * DISTANCE_TO_EXPERT_LINE: Distance from current position to expert racing line
-    - Environmental context: Track info, tire grip, corner identification features
-    
-    OUTPUT PREDICTIONS:
-    - Non-expert's next improved actions: The driver's improved gas, brake, steering, etc.
-    - These represent the driver's evolving actions as they learn, NOT expert actions
+    It predicts the next timestep's complete feature vector during improvement progression:
+    - Next contextual features: updated gap analysis showing progress toward expert line
+    - Next action features: MORE EXPERT-LIKE gas, brake, steer_angle, gear
     
     TRAINING PROCESS:
-    The model is trained on sequences of non-expert telemetry data where drivers are 
-    progressively improving over time. Gap features are computed by comparing non-expert
-    actions to expert performance, providing the model with improvement direction signals.
-    
-    SEQUENCE LENGTH REQUIREMENTS:
-    - Training: Requires fixed-length sequences for efficient batch processing
-    - Prediction: Supports variable-length sequences for flexible real-time inference
+    The model is trained on sequences of IMPROVING ACTIONS where non-expert drivers
+    progressively move closer to expert-level performance. Each timestep contains
+    the complete state during improvement progression. It learns to predict the next
+    improved state from the current state, allowing the attention mechanism to discover
+    relationships between context and expert-improving actions naturally.
     
     Architecture:
-    - Input: Non-expert telemetry + gap features + environmental context
-    - Output: Non-expert's improved action sequences (learning trajectory)
-    - Uses attention mechanism to focus on relevant improvement patterns
+    - Input: Unified state vector [context + actions]
+    - Processing: Transformer encoder with self-attention over all features
+    - Output: Next unified state vector [next_context + next_actions]
     """
     
     def __init__(self, 
-                 input_features_count: int = 42,  # Combined telemetry and context features
+                 total_features_count: int = 46,  # Combined context + action features
                  d_model: int = 256,
                  nhead: int = 8,
                  num_layers: int = 6,
@@ -275,38 +255,36 @@ class ExpertActionTransformer(nn.Module):
                  dropout: float = 0.1,
                  time_step_seconds: float = 0.5):
         """
-        Initialize the Expert Action Transformer
+        Initialize the Unified State Transformer
         
         Args:
-            input_features_count: Number of combined input features (telemetry + context)
+            total_features_count: Total number of features (context + actions combined)
             d_model: Transformer model dimension
             nhead: Number of attention heads
             num_layers: Number of transformer layers
             dim_feedforward: Feedforward network dimension
             sequence_length: Maximum sequence length for predictions
             dropout: Dropout rate
-            time_step_seconds: Time duration (in seconds) that each prediction step represents (default: 0.5s)
+            time_step_seconds: Time duration (in seconds) that each prediction step represents
         """
         super(ExpertActionTransformer, self).__init__()
         
         # Store configuration
-        self.input_features_count = input_features_count
-        self.output_features_count = 4  # Fixed output size: gas, brake, steer_angle, gear
+        self.total_features_count = total_features_count
         self.d_model = d_model
         self.sequence_length = sequence_length
-        self.time_step_seconds = time_step_seconds  # Control how much real time each step represents
+        self.time_step_seconds = time_step_seconds
         
-        # Scaler for normalization during inference
-        self.input_scaler: Optional[StandardScaler] = None
-        self.action_scaler: Optional[StandardScaler] = None
+        # Scaler for normalization during inference (single scaler for unified features)
+        self.feature_scaler: Optional[StandardScaler] = None
         
-        # Input embedding (single embedding for combined features)
-        self.input_embedding = nn.Linear(input_features_count, d_model)
+        # Input embedding for unified features
+        self.input_embedding = nn.Linear(total_features_count, d_model)
 
         # Positional encoding : Without positional encoding: The transformer can't distinguish between [brake, throttle, steer] and [steer, brake, throttle], it adds unique positional information
         self.pos_encoding = PositionalEncoding(d_model, dropout, max_len=sequence_length * 2)
         
-        # Transformer encoder for processing current state
+        # Transformer encoder for processing unified state sequences
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=d_model,
             nhead=nhead,
@@ -314,9 +292,9 @@ class ExpertActionTransformer(nn.Module):
             dropout=dropout,
             batch_first=True
         )
-        self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
         
-        # Transformer decoder for generating action sequences
+
         '''
         d_model: The number of expected features in the input (the model dimension).
         nhead: The number of attention heads.
@@ -329,20 +307,10 @@ class ExpertActionTransformer(nn.Module):
         device: The device on which the module will be allocated.
         dtype: The data type for the module’s parameters.
         '''
-        decoder_layer = nn.TransformerDecoderLayer(
-            d_model=d_model,
-            nhead=nhead,
-            dim_feedforward=dim_feedforward,
-            dropout=dropout,
-            batch_first=True
-        )
-        self.transformer_decoder = nn.TransformerDecoder(decoder_layer, num_layers=num_layers)
+
         
-        # Action sequence embedding (for decoder inputs during training)
-        self.action_embedding = nn.Linear(self.output_features_count, d_model)
-        
-        # Output projection to action space
-        self.action_projection = nn.Linear(d_model, self.output_features_count)
+        # Output projection to unified feature space
+        self.output_projection = nn.Linear(d_model, total_features_count)
         
         # Layer normalization
         self.layer_norm = nn.LayerNorm(d_model)
@@ -356,112 +324,113 @@ class ExpertActionTransformer(nn.Module):
             if p.dim() > 1:
                 nn.init.xavier_uniform_(p)
     
-    def set_scalers(self, input_scaler: Optional[StandardScaler] = None, action_scaler: Optional[StandardScaler] = None):
+    def set_scalers(self, feature_scaler: Optional[StandardScaler] = None):
         """
-        Set the scalers for combined input and action features.
+        Set the scaler for unified features (context + actions combined).
         
         Args:
-            input_scaler: StandardScaler fitted on combined input features (telemetry + context)
-            action_scaler: StandardScaler fitted on action features
+            feature_scaler: StandardScaler fitted on unified feature vectors
         """
-        self.input_scaler = input_scaler
-        self.action_scaler = action_scaler
+        self.feature_scaler = feature_scaler
     
     def forward(self, 
-                combined_input: torch.Tensor,
-                target_actions: Optional[torch.Tensor] = None) -> torch.Tensor:
+                unified_input: torch.Tensor,
+                prediction_steps: int = None) -> torch.Tensor:
         """
-        Forward pass - Non-Expert Driver Progression Learning Pipeline
+        Forward pass - Autoregressive State Prediction
         
-        TRAINING: Processes fixed-length segments (self.sequence_length) for efficient batch training
-        INFERENCE: Handles variable-length sequences for flexible real-time prediction
+        This method generates predictions autoregressively where each new prediction
+        is based on all previous states (real + predicted). This mimics realistic
+        decision-making where each action depends on the complete history including
+        previous actions taken.
         
-        TRAINING APPROACH:
-        - Fixed-length segments (self.sequence_length timesteps per segment)
-        - Consistent batch processing with fixed dimensions
-        - No masking required due to fixed lengths
-        
-        INFERENCE APPROACH:
-        - Variable-length sequences supported
-        - Flexible prediction horizon based on input length
-        
-        ARCHITECTURAL FLOW:
-        
-        Step 1: INPUT VALIDATION
-        - Ensure input dimensions match expected fixed size
-        - Validate batch and sequence dimensions
-        
-        Step 2: EMBEDDING LAYER
-        - Combined telemetry and context features → high-dimensional space (d_model)
-        
-        Step 3: POSITIONAL ENCODING
-        - Applies positional encoding to fixed sequence length
-        - Preserves temporal order within each improvement attempt
-        
-        Step 4: TRANSFORMER PROCESSING
-        - Encoder processes the complete segment context
-        - Decoder generates action sequences for the segment
+        AUTOREGRESSIVE FLOW:
+        1. Start with input sequence (real states)
+        2. For each prediction step:
+           - Process current sequence through transformer
+           - Predict next state from the sequence
+           - Append prediction to sequence for next iteration
+        3. Return all generated predictions
         
         Args:
-            combined_input: Combined telemetry and gap features [batch_size, sequence_length, input_features]
-                           Contains non-expert telemetry + expert-to-non-expert gap features +
-                           environmental context (track, tire, corner info)
-            target_actions: Target improved action sequences [batch_size, sequence_length, action_features]
-                           These are the improved non-expert actions the model should learn to predict
+            unified_input: Initial unified states [batch_size, input_length, total_features]
+                          Each timestep contains: [context_features + action_features]  
+            prediction_steps: Number of future steps to predict (if None, predicts 1 step)
             
         Returns:
-            Predicted improved action sequence [batch_size, sequence_length, action_features]
-            Shows how non-expert driver should improve actions toward expert performance
+            Generated predictions [batch_size, prediction_steps, total_features]
+            Each prediction is based on all previous states (real + predicted)
         """
-        batch_size = combined_input.shape[0]
-        seq_len = combined_input.shape[1]
+        if prediction_steps is None:
+            prediction_steps = 1
+            
+        batch_size = unified_input.shape[0]
+        device = unified_input.device
         
-        # Validate fixed sequence length only during training
-        if self.training:
-            assert seq_len == self.sequence_length, f"Training requires fixed sequence length {self.sequence_length}, got {seq_len}"
+        # Start with input sequence
+        current_sequence = unified_input
+        predictions = []
         
-        # Embed combined input
-        embedded_input = self.input_embedding(combined_input)  # [B, L, d_model]
+        # Generate predictions autoregressively
+        for step in range(prediction_steps):
+            # Validate current sequence dimensions
+            expected_features = self.total_features_count
+            actual_features = current_sequence.shape[-1]
+            assert actual_features == expected_features, f"Expected {expected_features} features, got {actual_features}"
+            
+            # Embed current sequence
+            embedded_input = self.input_embedding(current_sequence)
+            
+            # Apply positional encoding
+            encoded_input = self.pos_encoding(embedded_input)
+            
+            # Process through transformer
+            transformer_output = self.transformer(encoded_input)
+            
+            # Project to unified feature space
+            sequence_predictions = self.output_projection(transformer_output)
+            
+            # Take the last prediction as next state
+            next_state = sequence_predictions[:, -1:, :]  # [B, 1, features]
+            
+            # Store prediction
+            predictions.append(next_state)
+            
+            # Append prediction to sequence for next iteration (autoregressive)
+            current_sequence = torch.cat([current_sequence, next_state], dim=1)
+            
+            # Limit sequence length to prevent memory issues
+            max_context = 100
+            if current_sequence.shape[1] > max_context:
+                current_sequence = current_sequence[:, -max_context:, :]
         
-        # Apply positional encoding
-        encoder_input = self.pos_encoding(embedded_input)
-        
-        # Encode current state
-        memory = self.transformer_encoder(encoder_input)  # [B, L, d_model]
-        
-        # Choose generation strategy based on training mode and target availability
-        if self.training and target_actions is not None:
-            # TRAINING MODE: Use teacher forcing for fast parallel training
-            decoder_output = self._generate_actions_teacher_forcing(memory, target_actions)
-            # During training, return scaled predictions for loss calculation
-            return decoder_output
-        else:
-            # INFERENCE MODE: Use autoregressive generation for realistic prediction
-            # For inference, generate fixed sequence length regardless of input length
-            # This allows single timestep input to generate multi-step predictions
-            prediction_length = self.sequence_length  # Use model's configured sequence length
-            decoder_output = self._generate_actions_autoregressive(memory, prediction_length)
-            return decoder_output
+        # Return all predictions
+        return torch.cat(predictions, dim=1) if len(predictions) > 1 else predictions[0]
 
-    def standard_loss(self, 
-                     predictions: torch.Tensor, 
-                     target_actions: torch.Tensor) -> torch.Tensor:
+    def unified_loss(self, 
+                    predictions: torch.Tensor, 
+                    targets: torch.Tensor) -> torch.Tensor:
         """
-        Standard MSE loss for action prediction
+        MSE loss for unified expert improvement learning
+        
+        Since training segments are filtered to contain only improving action sequences
+        (non-expert → expert-like progressions), this loss learns how to predict the
+        next improved state in the progression toward expert-level performance.
         
         Args:
-            predictions: Model predictions [batch_size, seq_len, action_features]
-            target_actions: Target actions [batch_size, seq_len, action_features]  
+            predictions: Model predictions [batch_size, seq_len, total_features]
+            targets: Target improved unified states [batch_size, seq_len, total_features]
+                    These targets represent expert-improving states in filtered segments
             
         Returns:
-            MSE loss tensor (scalar)
+            MSE loss tensor (scalar) - measures accuracy of expert improvement predictions
         """
         # Ensure loss computation in full precision to avoid dtype issues
         predictions = predictions.float()
-        target_actions = target_actions.float()
+        targets = targets.float()
         
-        # Base MSE loss
-        loss = F.mse_loss(predictions, target_actions, reduction='mean')
+        # Base MSE loss over all unified features
+        loss = F.mse_loss(predictions, targets, reduction='mean')
         
         return loss
     
@@ -473,218 +442,23 @@ class ExpertActionTransformer(nn.Module):
         mask = mask.float().masked_fill(mask == 0, float('-inf')).masked_fill(mask == 1, float(0.0))
         return mask
     
-    def _generate_actions_autoregressive(self, memory: torch.Tensor, seq_len: int) -> torch.Tensor:
-        """
-        Generate improved racing actions autoregressively during real-time inference.
-        
-        WHAT IS AUTOREGRESSIVE GENERATION?
-        Autoregressive generation is a sequential prediction approach where each new prediction
-        depends on all previously generated predictions. In racing terms, this means:
-        - Step 1: Predict immediate action based on current telemetry
-        - Step 2: Predict next action based on current telemetry + predicted action from Step 1
-        - Step 3: Predict next action based on current telemetry + actions from Steps 1-2
-        - Continue until full racing sequence is generated
-        
-        This mirrors how human racing drivers think: each driving decision influences the next,
-        creating a chain of interdependent actions that form an optimal racing strategy.
-        
-        WHY AUTOREGRESSIVE FOR RACING?
-        Racing actions are highly sequential and interdependent:
-        1. PHYSICS CAUSALITY: Current throttle affects next corner speed, which affects next braking
-        2. STRATEGIC PLANNING: Early braking enables later acceleration, optimizing overall lap time
-        3. REAL-TIME CONSTRAINTS: Driver must make decisions without knowing future exact conditions
-        4. TEMPORAL DEPENDENCIES: Racing line decisions now affect racing line options later
-        
-        IMPLEMENTATION ARCHITECTURE:
-        
-        Phase 1: INITIALIZATION
-        - Creates "start token" (zero tensor) representing beginning of action sequence
-        - This acts like a driver sitting in car before taking any actions
-        
-        Phase 2: ITERATIVE GENERATION LOOP (for each future time step)
-        Step A: POSITIONAL ENCODING
-          - Injects temporal position information into current sequence
-          - Tells model "this is action at time T+1, T+2, etc."
-          - Critical for understanding action timing and sequence order
-        
-        Step B: CAUSAL MASKING
-          - Creates attention mask preventing "looking ahead" at future actions
-          - Simulates real-time racing: driver can't see future decisions
-          - Ensures each prediction uses only current telemetry + past actions
-        
-        Step C: TRANSFORMER DECODING
-          - Feeds current sequence + encoded telemetry through decoder
-          - Decoder attends to relevant patterns from training (progression demonstrations)
-          - Produces high-dimensional representation of improved next action
-        
-        Step D: ACTION PROJECTION
-          - Converts high-dimensional decoder output to concrete improved racing actions
-          - Maps internal representation → [gas, brake, steer_angle, gear]
-          - These are the improved control inputs non-expert driver should execute
-        
-        Step E: SEQUENCE EXTENSION
-          - Embeds predicted action back into model's internal representation
-          - Appends to growing sequence of predicted actions
-          - This prediction becomes input for next time step's decision
-        
-        Phase 3: SEQUENCE COMPLETION
-        - Concatenates all individual predictions into full action sequence
-        - Returns complete racing strategy: immediate through future actions
-        
-        RACING-SPECIFIC EXAMPLES:
-        
-        Corner Approach Improvement Sequence:
-        T=0: Model sees "approaching corner at 180 km/h + speed_difference: +15 km/h too fast"
-        → Predicts: "Start braking earlier, 60% brake pressure" 
-        T=1: Model sees "approaching corner + predicted braking + distance_to_expert_line: 2m outside"
-        → Predicts: "Continue braking, 80% brake pressure, turn in more to close line gap"
-        T=2: Model sees "corner entry + previous actions + expert_velocity_alignment: 0.7"
-        → Predicts: "Release brake, increase steering to better align with expert trajectory"
-        T=3: Model sees "at apex + full turning sequence + improved alignment"
-        → Predicts: "Begin throttle application, reduce steering, approach expert line"
-        
-        This creates coherent improvement strategy where each action logically follows from
-        previous actions, guided by gap features showing distance from expert performance.
-        
-        TECHNICAL ADVANTAGES:
-        1. COHERENT SEQUENCES: Each action considers full context of previous decisions
-        2. ADAPTIVE PLANNING: Can adjust strategy based on predicted outcomes and gap feedback
-        3. TEMPORAL CONSISTENCY: Maintains logical action flow over time
-        4. GAP-AWARE IMPROVEMENT: Uses performance gaps to guide learning direction
-        
-        PERFORMANCE CHARACTERISTICS:
-        - Computational: O(seq_len²) due to growing attention sequence
-        - Memory: O(seq_len * d_model) for maintaining decoder state
-        - Quality: High coherence but potential error accumulation over long sequences
-        - Real-time: Suitable for real-time racing applications (millisecond latency)
-        
-        Args:
-            memory: Encoded telemetry and gap feature state [batch_size, input_seq_len, d_model]
-                   Contains transformer encoder's understanding of current racing situation and 
-                   performance gaps relative to expert
-            seq_len: Number of future action steps to predict (typically 10-20 for racing)
-                    Represents prediction horizon: how far ahead to plan
-        
-        Returns:
-            Complete improved action sequence [batch_size, seq_len, action_features]
-            Sequential improved non-expert actions from immediate next step through prediction horizon
-            Format: [gas%, brake%, steer_angle, gear] per time step
-        """
-        batch_size = memory.shape[0]
-        device = memory.device
-        
-        # Initialize with zeros or learned start token
-        decoder_input = torch.zeros(batch_size, 1, self.d_model, device=device)
-        outputs = []
-        
-        for i in range(seq_len):
-            # Add positional encoding
-            decoder_input_pos = self.pos_encoding(decoder_input)
-            
-            # Create causal mask
-            tgt_mask = self._generate_square_subsequent_mask(decoder_input_pos.shape[1])
-            tgt_mask = tgt_mask.to(device)
-            
-            # Decode
-            decoder_output = self.transformer_decoder(
-                tgt=decoder_input_pos,
-                memory=memory,
-                tgt_mask=tgt_mask
-            )  # [B, i+1, d_model]
-            
-            # Get the last output and project to action space
-            last_output = decoder_output[:, -1:, :]  # [B, 1, d_model] 
-            action_output = self.action_projection(last_output)  # [B, 1, action_features]
-            outputs.append(action_output)
-            
-            # Prepare next decoder input (embed the predicted action)
-            next_embedded = self.action_embedding(action_output)  # [B, 1, d_model]
-            decoder_input = torch.cat([decoder_input, next_embedded], dim=1)
-        
-        # Concatenate all outputs
-        return torch.cat(outputs, dim=1)  # [B, seq_len, action_features]
-    
-    def _generate_actions_teacher_forcing(self, memory: torch.Tensor, target_actions: torch.Tensor) -> torch.Tensor:
-        """
-        Generate actions using teacher forcing for fast parallel training.
-        
-        Teacher forcing uses the ground truth target actions as decoder input, enabling
-        parallel processing of the entire sequence rather than sequential generation.
-        This dramatically speeds up training while maintaining learning quality.
-        
-        How Teacher Forcing Works:
-        1. Take target actions and shift them right by one position (add start token)
-        2. Feed the shifted sequence as decoder input all at once
-        3. Apply causal masking so each position can only attend to previous positions
-        4. Decoder processes the entire sequence in parallel
-        5. Output predictions for all positions simultaneously
-        
-        Benefits:
-        - Much faster training (parallel vs sequential processing)
-        - More stable gradients (entire sequence contributes to loss)
-        - Better GPU utilization (batched operations instead of loops)
-        - Maintains causal structure through attention masking
-        
-        Args:
-            memory: Encoded telemetry and gap feature state [batch_size, input_seq_len, d_model]
-            target_actions: Ground truth improved actions [batch_size, seq_len, action_features]
-                           These are the correct improved non-expert actions the model should learn to predict
-        
-        Returns:
-            Predicted actions [batch_size, seq_len, action_features]
-        """
-        batch_size, seq_len, _ = target_actions.shape
-        device = memory.device
-        
-        # Create decoder input by shifting target actions right and adding start token
-        # Start token is zeros (representing "no action" at beginning)
-        start_tokens = torch.zeros(batch_size, 1, self.output_features_count, device=device)
-        
-        # Shift target actions right: [action1, action2, action3] -> [start, action1, action2]
-        # model sees start token at t=0, and try to predict action1 at t=1, etc.
-        decoder_input_actions = torch.cat([start_tokens, target_actions[:, :-1, :]], dim=1)  # [B, L, action_features]
-        
-        # Embed the action sequence for decoder processing
-        decoder_input_embedded = self.action_embedding(decoder_input_actions)  # [B, L, d_model]
-        
-        # Add positional encoding to decoder input
-        decoder_input_embedded = self.pos_encoding(decoder_input_embedded)
-        
-        # Create causal mask to prevent future information leakage
-        # Each position can only attend to current and previous positions
-        causal_mask = self._generate_square_subsequent_mask(seq_len).to(device)
-        
-        # Apply transformer decoder with teacher forcing
-        # memory contains encoded current state, decoder_input contains shifted target actions
-        decoder_output = self.transformer_decoder(
-            tgt=decoder_input_embedded,          # Shifted target actions as input
-            memory=memory,                       # Encoded current state  
-            tgt_mask=causal_mask,               # Prevent future information leakage
-            memory_mask=None                     # No masking on encoder output
-        )  # [B, L, d_model]
-        
-        # Project decoder output to action space
-        predictions = self.action_projection(decoder_output)  # [B, L, action_features]
-        
-        return predictions
-    
     def predict_segment_progression(self, 
                                   combined_input: torch.Tensor,
                                   prediction_length: Optional[int] = None) -> torch.Tensor:
         """
-        Predict progression actions for a segment
+        Predict unified state progression for a segment
         
-        This method processes input telemetry and predicts the non-expert driver's 
-        improved actions for the specified prediction length.
+        This method processes input unified states and predicts the next sequence of
+        unified states (context + actions) for the specified prediction length.
         
         Args:
-            combined_input: Combined telemetry and gap features [batch_size, input_len, input_features]
-                           Contains non-expert telemetry + expert-to-non-expert gap features to guide improvement
+            combined_input: Unified state features [batch_size, input_len, total_features]
+                           Contains combined context + action features for autoregressive prediction
             prediction_length: Number of future steps to predict. If None, uses model's sequence_length
             
         Returns:
-            Predicted action progression [batch_size, prediction_length, action_features]
-            Shows improved non-expert actions for the prediction horizon
+            Predicted unified state progression [batch_size, prediction_length, total_features]
+            Shows next sequence of unified states (context + improved actions)
         """
         self.eval()
         
@@ -696,39 +470,39 @@ class ExpertActionTransformer(nn.Module):
         try:
             with torch.no_grad():
                 return self.forward(
-                    combined_input=combined_input, 
-                    target_actions=None
+                    unified_input=combined_input, 
+                    prediction_steps=prediction_length
                 )
         finally:
             # Restore original sequence length
             self.sequence_length = original_sequence_length
     
     
-    def _apply_action_inverse_scaling(self, scaled_actions: torch.Tensor) -> torch.Tensor:
+    def _apply_unified_inverse_scaling(self, scaled_predictions: torch.Tensor) -> torch.Tensor:
         """
-        Apply inverse scaling to model predictions to convert from normalized to original scale.
+        Apply inverse scaling to unified model predictions to convert from normalized to original scale.
         
         Args:
-            scaled_actions: Scaled action predictions [batch_size, seq_len, action_features]
+            scaled_predictions: Scaled unified predictions [batch_size, seq_len, total_features]
             
         Returns:
-            Unscaled actions [batch_size, seq_len, action_features]
+            Unscaled unified predictions [batch_size, seq_len, total_features]
         """
-        if self.action_scaler is None:
-            return scaled_actions
+        if self.feature_scaler is None:
+            return scaled_predictions
             
         # Convert to numpy for sklearn scaler
-        device = scaled_actions.device
-        original_shape = scaled_actions.shape
+        device = scaled_predictions.device
+        original_shape = scaled_predictions.shape
         
-        # Reshape to 2D: (batch_size * seq_l_generate_actions_teacher_forcingen, action_features)
-        actions_2d = scaled_actions.view(-1, original_shape[-1]).cpu().numpy()
+        # Reshape to 2D: (batch_size * seq_len, total_features)
+        predictions_2d = scaled_predictions.view(-1, original_shape[-1]).cpu().numpy()
         
         # Apply inverse transform
-        unscaled_actions = self.action_scaler.inverse_transform(actions_2d)
+        unscaled_predictions = self.feature_scaler.inverse_transform(predictions_2d)
         
         # Convert back to tensor and reshape
-        unscaled_tensor = torch.from_numpy(unscaled_actions).float().to(device)
+        unscaled_tensor = torch.from_numpy(unscaled_predictions).float().to(device)
         return unscaled_tensor.view(original_shape)
     
     def get_contextual_features_summary(self, context_feature_names: List[str]) -> Dict[str, Any]:
@@ -818,7 +592,7 @@ class ExpertActionTransformer(nn.Module):
             device = next(self.parameters()).device
             
             # Prepare combined input data for model input
-            combined_features = self._extract_combined_features(current_telemetry, context_data)
+            combined_features = self._extract_combined_features_for_prediction(current_telemetry, context_data)
             
             # For inference, create a single timestep input (not repeated sequence)
             # The model will use autoregressive generation to create the sequence
@@ -832,8 +606,8 @@ class ExpertActionTransformer(nn.Module):
                         combined_input=combined_tensor,
                         prediction_length=sequence_length
                     )
-                    # During inference, apply inverse scaling to get original action values
-                    predictions = self._apply_action_inverse_scaling(predictions)
+                    # During inference, apply inverse scaling to get original unified feature values
+                    predictions = self._apply_unified_inverse_scaling(predictions)
             except Exception as e:
                 raise RuntimeError(f"Error during model prediction: {str(e)}")
             
@@ -861,7 +635,7 @@ class ExpertActionTransformer(nn.Module):
             })
             raise RuntimeError(json.dumps(error_payload))
     
-    def _extract_combined_features(self, telemetry: Dict[str, Any], context_data: Optional[Dict[str, Any]] = None) -> List[float]:
+    def _extract_combined_features_for_prediction(self, telemetry: Dict[str, Any], context_data: Optional[Dict[str, Any]] = None) -> List[float]:
         """
         Extract combined telemetry and gap features for model input.
         
@@ -898,39 +672,67 @@ class ExpertActionTransformer(nn.Module):
         if context_data:
             context_features = extract_context_features_canonical_order(context_data)
         else:
-            # If no context provided, use zeros for all canonical context features
-            canonical_order = get_canonical_context_feature_order()
-            context_features = [0.0] * len(canonical_order)
+            raise ValueError("Context data is required for gap features")
         
         # Combine telemetry and context features
         combined_features = telemetry_features + context_features
         
         # Ensure the feature vector matches the model's expected input size
-        expected_len = getattr(self, 'input_features_count', len(combined_features))
+        expected_len = self.total_features_count
         if len(combined_features) < expected_len:
             combined_features.extend([0.0] * (expected_len - len(combined_features)))
         elif len(combined_features) > expected_len:
             combined_features = combined_features[:expected_len]
 
-        # Apply input scaler if available
-        if self.input_scaler is not None:
+        # Apply unified feature scaler if available
+        if self.feature_scaler is not None:
             import numpy as np
             features_array = np.array(combined_features).reshape(1, -1)
-            scaled_features = self.input_scaler.transform(features_array)
+            scaled_features = self.feature_scaler.transform(features_array)
             combined_features = scaled_features.flatten().tolist()
 
         return combined_features
     
     def _create_sequence_predictions(self, predictions: np.ndarray, sequence_length: int) -> List[Dict[str, Any]]:
-        """Create sequence of future predictions"""
+        """Create sequence of future predictions from unified feature vectors"""
         sequence = []
+        
+        # Get feature names to find action indices in unified vector
+        try:
+            from ..services.imitate_expert_learning_service import get_features_for_imitate_expert
+            telemetry_feature_names = get_features_for_imitate_expert()
+        except Exception:
+            try:
+                from ..models.telemetry_models import TelemetryFeatures
+                telemetry_feature_names = TelemetryFeatures.get_features_for_imitate_expert()
+            except Exception:
+                # Fallback: assume actions are in first 4 positions (old behavior)
+                telemetry_feature_names = [""] * 50  # dummy list
+        
+        # Find action feature indices in the unified vector
+        try:
+            gas_idx = telemetry_feature_names.index("Physics_gas")
+            brake_idx = telemetry_feature_names.index("Physics_brake") 
+            steer_idx = telemetry_feature_names.index("Physics_steer_angle")
+            gear_idx = telemetry_feature_names.index("Physics_gear")
+        except (ValueError, IndexError):
+            # Fallback to old assumption if indices not found
+            gas_idx, brake_idx, steer_idx, gear_idx = 0, 1, 2, 3
         
         for i in range(min(sequence_length, len(predictions))):
             pred = predictions[i]
             
-            # Determine main action for this step - now only 4 actions: [gas, brake, steer_angle, gear]
-            gas, brake, steering, gear = pred[0], pred[1], pred[2], int(pred[3])
+            # Extract actions from their positions in the unified feature vector
+            if len(pred) > max(gas_idx, brake_idx, steer_idx, gear_idx):
+                gas = pred[gas_idx]
+                brake = pred[brake_idx]
+                steering = pred[steer_idx]
+                gear = int(pred[gear_idx])
+            else:
+                # Fallback if prediction vector is too short
+                gas, brake, steering, gear = 0.0, 0.0, 0.0, 1
             
+            # Determine main action for this step
             if brake > 0.1:
                 action = "Apply brakes"
             elif gas > 0.1:
@@ -969,36 +771,27 @@ class ExpertActionTransformer(nn.Module):
         torch.save(self.state_dict(), buffer)
         state_dict_bytes = buffer.getvalue()
         
-        # Serialize scalers
-        input_scaler_data = None
-        action_scaler_data = None
+        # Serialize unified feature scaler
+        feature_scaler_data = None
         
-        if self.input_scaler is not None:
+        if self.feature_scaler is not None:
             scaler_buffer = io.BytesIO()
             import pickle
-            pickle.dump(self.input_scaler, scaler_buffer)
-            input_scaler_data = base64.b64encode(scaler_buffer.getvalue()).decode('utf-8')
-            
-        if self.action_scaler is not None:
-            scaler_buffer = io.BytesIO()
-            import pickle
-            pickle.dump(self.action_scaler, scaler_buffer)
-            action_scaler_data = base64.b64encode(scaler_buffer.getvalue()).decode('utf-8')
+            pickle.dump(self.feature_scaler, scaler_buffer)
+            feature_scaler_data = base64.b64encode(scaler_buffer.getvalue()).decode('utf-8')
         
         model_data = {
             'model_type': 'ExpertActionTransformer',
             'state_dict': base64.b64encode(state_dict_bytes).decode('utf-8'),
-            'input_scaler': input_scaler_data,
-            'action_scaler': action_scaler_data,
+            'feature_scaler': feature_scaler_data,
             'config': {
-                'input_features_count': self.input_features_count,
-                'output_features_count': self.output_features_count,
+                'total_features_count': self.total_features_count,
                 'd_model': self.d_model,
                 'sequence_length': self.sequence_length,
                 'time_step_seconds': self.time_step_seconds,  # Include time step configuration
-                'nhead': getattr(self.transformer_encoder.layers[0].self_attn, 'num_heads', 8),
-                'num_layers': len(self.transformer_encoder.layers),
-                'dim_feedforward': getattr(self.transformer_encoder.layers[0].linear1, 'out_features', 1024),
+                'nhead': getattr(self.transformer.layers[0].self_attn, 'num_heads', 8),
+                'num_layers': len(self.transformer.layers),
+                'dim_feedforward': getattr(self.transformer.layers[0].linear1, 'out_features', 1024),
                 'dropout': 0.1  # Default, could extract from layers if needed
             },
             'serialization_timestamp': datetime.now().isoformat(),
@@ -1049,8 +842,7 @@ class ExpertActionTransformer(nn.Module):
             config = serialized_data['config']
 
             # Gather architecture parameters from config with sensible fallbacks
-            cfg_input_features = config.get('input_features_count', 42)
-            cfg_action_features = config.get('output_features_count', 4)
+            cfg_total_features = config.get('total_features_count', config.get('input_features_count', 42))  # Backward compatibility
             cfg_d_model = config.get('d_model', 256)
             cfg_seq_len = config.get('sequence_length', 20)
             cfg_time_step = config.get('time_step_seconds', 0.5)
@@ -1060,13 +852,13 @@ class ExpertActionTransformer(nn.Module):
             cfg_dropout = config.get('dropout', 0.1)
 
             print(f"[INFO] Creating ExpertActionTransformer from serialized config:")
-            print(f"[INFO] - Features: {cfg_input_features} input, {cfg_action_features} actions")
+            print(f"[INFO] - Features: {cfg_total_features} total unified features")
             print(f"[INFO] - Architecture: d_model={cfg_d_model}, nhead={cfg_nhead}, layers={cfg_num_layers}")
             print(f"[INFO] - Sequence: length={cfg_seq_len}, time_step={cfg_time_step}s")
 
             # Create new model instance with the serialized configuration
             model = cls(
-                input_features_count=cfg_input_features,
+                total_features_count=cfg_total_features,
                 d_model=cfg_d_model,
                 nhead=cfg_nhead,
                 num_layers=cfg_num_layers,
@@ -1098,46 +890,41 @@ class ExpertActionTransformer(nn.Module):
                 if unexpected:
                     print(f"[WARNING] Unexpected keys during load: {unexpected}")
             
-            # Restore scalers if available
+            # Restore unified feature scaler if available (with backward compatibility)
             import pickle
-            if 'input_scaler' in serialized_data and serialized_data['input_scaler'] is not None:
+            
+            # Try new unified scaler first
+            if 'feature_scaler' in serialized_data and serialized_data['feature_scaler'] is not None:
+                try:
+                    scaler_bytes = base64.b64decode(serialized_data['feature_scaler'])
+                    scaler_buffer = io.BytesIO(scaler_bytes)
+                    model.feature_scaler = pickle.load(scaler_buffer)
+                    print("[INFO] - Restored unified feature scaler")
+                except Exception as e:
+                    print(f"[WARNING] Failed to restore unified feature scaler: {e}")
+                    model.feature_scaler = None
+            # Backward compatibility: try to load old input_scaler as feature_scaler
+            elif 'input_scaler' in serialized_data and serialized_data['input_scaler'] is not None:
                 try:
                     scaler_bytes = base64.b64decode(serialized_data['input_scaler'])
                     scaler_buffer = io.BytesIO(scaler_bytes)
-                    model.input_scaler = pickle.load(scaler_buffer)
-                    print("[INFO] - Restored input scaler")
+                    model.feature_scaler = pickle.load(scaler_buffer)
+                    print("[INFO] - Restored feature scaler from legacy input_scaler (backward compatibility)")
                 except Exception as e:
-                    print(f"[WARNING] Failed to restore input scaler: {e}")
-                    model.input_scaler = None
+                    print(f"[WARNING] Failed to restore legacy input scaler: {e}")
+                    model.feature_scaler = None
             else:
-                model.input_scaler = None
-                
-            if 'action_scaler' in serialized_data and serialized_data['action_scaler'] is not None:
-                try:
-                    scaler_bytes = base64.b64decode(serialized_data['action_scaler'])
-                    scaler_buffer = io.BytesIO(scaler_bytes)
-                    model.action_scaler = pickle.load(scaler_buffer)
-                    print("[INFO] - Restored action scaler")
-                except Exception as e:
-                    print(f"[WARNING] Failed to restore action scaler: {e}")
-                    model.action_scaler = None
-            else:
-                model.action_scaler = None
+                model.feature_scaler = None
             
             # Set model to evaluation mode (ready for inference)
             model.eval()
             
             # Log successful restoration
             serialization_time = serialized_data.get('serialization_timestamp', 'unknown')
-            scaler_info = []
-            if model.input_scaler is not None:
-                scaler_info.append("input")
-            if model.action_scaler is not None:
-                scaler_info.append("action")
-            scaler_status = f" (scalers: {', '.join(scaler_info)})" if scaler_info else " (no scalers)"
+            scaler_status = " (unified feature scaler)" if model.feature_scaler is not None else " (no scaler)"
             
             print(f"[INFO] Successfully created ExpertActionTransformer model from serialized data")
-            print(f"[INFO] - Model features: {model.input_features_count} input, {model.output_features_count} actions")
+            print(f"[INFO] - Model features: {model.total_features_count} total unified features")
             print(f"[INFO] - Architecture: d_model={model.d_model}, seq_len={model.sequence_length}")
             print(f"[INFO] - Originally serialized: {serialization_time}")
             print(f"[INFO] - Model ready for inference{scaler_status}")
@@ -1202,8 +989,7 @@ class ExpertActionTransformer(nn.Module):
                 'num_segments': segment_info['num_segments'],
                 'segment_length': segment_info['segment_length'],
                 'total_samples': segment_info['total_samples'],
-                'input_features_count': len(input_features),
-                'action_features_count': len(action_features),
+                'total_features_count': len(input_features) + len(action_features),
                 'context_features_count': len(context_features)
             }
             
@@ -1607,37 +1393,40 @@ class ExpertActionTransformer(nn.Module):
 
 class TelemetryActionDataset(Dataset):
     """
-    Fixed-Size Segmented Dataset class for learning non-expert driver progression toward expert performance
-
-    This dataset handles lists of telemetry segments where each segment represents an effort
-    to improve toward expert performance. All segments must have the same fixed length,
-    representing a coherent improvement attempt (e.g., a corner approach, a lap section, or a training session).
+    Unified State Dataset for sequence prediction
     
-    Key insight: The model processes fixed-size segments in batches, where each segment shows
-    a non-expert driver's progression toward expert performance within that specific context.
+    This dataset handles unified feature vectors where each timestep contains both context
+    and action features combined into a single vector. The model learns to predict the
+    next timestep's complete state (context + actions) from the current state.
+    
+    Each segment represents a temporal sequence where:
+    - Input: state[t] = [context_features + action_features] at timestep t
+    - Target: state[t+1] = [context_features + action_features] at timestep t+1
+    
+    The attention mechanism learns relationships between all features naturally.
     """
     
     def __init__(self,
-                 combined_segments: List[List[Dict[str, Any]]],
+                 unified_segments: List[List[Dict[str, Any]]],
                  fixed_segment_length: int):
         """
-        Initialize the fixed-size segmented dataset with combined telemetry and context data
+        Initialize the unified state dataset
         
         Args:
-            combined_segments: List of pre-created combined segments, where each segment is a list of 
-                              dictionaries containing both telemetry and context features together.
-                              All segments must have exactly fixed_segment_length elements.
+            unified_segments: List of segments, where each segment is a list of 
+                             dictionaries containing unified features (context + actions).
+                             All segments must have exactly fixed_segment_length elements.
             fixed_segment_length: Required length for all segments
         """
         # Basic validation
-        assert len(combined_segments) > 0, "At least one segment must be provided"
+        assert len(unified_segments) > 0, "At least one segment must be provided"
         assert fixed_segment_length > 0, f"Fixed segment length must be positive, got {fixed_segment_length}"
         
         # Validate that all segments have exactly the fixed length
         invalid_segments = []
-        for i, segment in enumerate(combined_segments):
+        for i, segment in enumerate(unified_segments):
             if len(segment) != fixed_segment_length:
-                invalid_segments.append(f"Combined segment {i}: length {len(segment)} != {fixed_segment_length}")
+                invalid_segments.append(f"Unified segment {i}: length {len(segment)} != {fixed_segment_length}")
         
         if invalid_segments:
             error_msg = f"Fixed-size validation failed for {len(invalid_segments)} segment(s):\n" + "\n".join(invalid_segments[:10])
@@ -1646,92 +1435,79 @@ class TelemetryActionDataset(Dataset):
             raise ValueError(error_msg)
         
         # Store validated segments
-        self.combined_segments = combined_segments
-        self.num_segments = len(combined_segments)
+        self.unified_segments = unified_segments
+        self.num_segments = len(unified_segments)
         self.fixed_segment_length = fixed_segment_length
         
-        # Extract feature names from first segment
-        if combined_segments and combined_segments[0]:
-            self.action_features = self._get_default_action_features()
-            # All features except actions are input features (telemetry + context combined)
-            self.input_features = [f for f in combined_segments[0][0].keys() 
-                                  if f not in self.action_features]
+        # Extract all unified feature names from first segment
+        if unified_segments and unified_segments[0]:
+            # All features are treated as unified (context + actions combined)
+            self.unified_features = list(unified_segments[0][0].keys())
         else:
-            raise ValueError("Empty combined segments provided")
+            raise ValueError("Empty unified segments provided")
         
-        print(f"[INFO] ✓ Validated fixed-size segmented dataset with {self.num_segments} segments")
+        print(f"[INFO] ✓ Validated unified state dataset with {self.num_segments} segments")
         print(f"[INFO] ✓ All segments have fixed length: {fixed_segment_length}")
-        print(f"[INFO] ✓ Features - Input: {len(self.input_features)}, Actions: {len(self.action_features)}")
+        print(f"[INFO] ✓ Total unified features: {len(self.unified_features)}")
         
         # Preprocess all validated segments
         self._preprocess_segments()
     
-    def _get_default_action_features(self) -> List[str]:
-        """Get default action features to predict (non-expert driver's actual actions)""" 
-        return [
-            "Physics_gas", "Physics_brake", "Physics_steer_angle", "Physics_gear"
-        ]
-    
     def _preprocess_segments(self):
         """
-        Preprocess and normalize fixed-size segmented telemetry data.
+        Preprocess and normalize unified feature segments.
         
-        This method processes each fixed-size segment while maintaining consistent
-        normalization across all segments. All segments have the same fixed length.
+        This method processes each segment containing unified features (context + actions)
+        and creates input-target pairs for next-state prediction training.
         
         Processing steps:
-        1. Collect all data points from all segments for global normalization
-        2. Build separate matrices for telemetry, actions, and context features
-        3. Fit scalers on the complete dataset for consistent normalization
-        4. Store processed segments as tensors ready for batch processing
+        1. Collect all unified data points for global normalization
+        2. Fit scaler on complete unified dataset
+        3. Create input-target pairs: input[t] -> target[t+1]
+        4. Store as tensors ready for batch processing
         """
-        print("[INFO] Preprocessing fixed-size segmented data...")
+        print("[INFO] Preprocessing unified feature segments...")
         
         # Collect all data points from all segments for global normalization
-        all_telemetry_data = []
-        all_action_data = []
+        all_unified_data = []
+        for segment in self.unified_segments:
+            all_unified_data.extend(segment)
         
-        for segment in self.combined_segments:
-            all_telemetry_data.extend(segment)
-            all_action_data.extend(segment)  # Actions are in combined data
+        # Build global unified feature matrix for fitting scaler
+        global_unified_matrix = self._build_matrix(all_unified_data, self.unified_features)
         
-        # Build global feature matrices for fitting scalers
-        global_input_matrix = self._build_matrix(all_telemetry_data, self.input_features)
-        global_action_matrix = self._build_matrix(all_action_data, self.action_features)
+        # Fit scaler on global unified data for consistent normalization
+        self.feature_scaler = StandardScaler()
+        self.feature_scaler.fit(global_unified_matrix)
         
-        # Fit scalers on global data for consistent normalization
-        self.input_scaler = StandardScaler()
-        self.action_scaler = StandardScaler()  
+        # Process segments to create input-target pairs
+        # Input: state[t], Target: state[t+1]
+        input_sequences = []
+        target_sequences = []
         
-        self.input_scaler.fit(global_input_matrix)
-        self.action_scaler.fit(global_action_matrix)
-        
-        # Process segments as matrices for efficient batch processing
-        # IMPORTANT: Preserve temporal order within each segment for coherent driving sequences
-        input_matrices = []
-        action_matrices = []
-        
-        for segment in self.combined_segments:
-            # Build matrices for this segment (preserving temporal order)
-            seg_input_matrix = self._build_matrix(segment, self.input_features)
-            seg_action_matrix = self._build_matrix(segment, self.action_features)
+        for segment in self.unified_segments:
+            # Build unified matrix for this segment (preserving temporal order)
+            seg_unified_matrix = self._build_matrix(segment, self.unified_features)
             
             # Apply normalization
-            seg_input_normalized = self.input_scaler.transform(seg_input_matrix)
-            seg_action_normalized = self.action_scaler.transform(seg_action_matrix)
+            seg_normalized = self.feature_scaler.transform(seg_unified_matrix)
             
-            input_matrices.append(seg_input_normalized)
-            action_matrices.append(seg_action_normalized)
+            # Create input-target pairs: input[0:n-1] -> target[1:n]
+            if len(seg_normalized) > 1:
+                input_seq = seg_normalized[:-1]  # states t=0 to t=n-2
+                target_seq = seg_normalized[1:]  # states t=1 to t=n-1
+                
+                input_sequences.append(input_seq)
+                target_sequences.append(target_seq)
         
-        # Convert to tensors - shape: [num_segments, fixed_segment_length, features]
-        # Temporal order within each segment is preserved for coherent driving sequences
-        self.input_tensor = torch.tensor(np.array(input_matrices), dtype=torch.float32)
-        self.action_tensor = torch.tensor(np.array(action_matrices), dtype=torch.float32)
+        # Convert to tensors - shape: [num_segments, seq_len-1, unified_features]
+        self.input_tensor = torch.tensor(np.array(input_sequences), dtype=torch.float32)
+        self.target_tensor = torch.tensor(np.array(target_sequences), dtype=torch.float32)
         
-        print(f"[INFO] Preprocessed {len(input_matrices)} fixed-size segments")
+        print(f"[INFO] Preprocessed {len(input_sequences)} unified sequences")
         print(f"[INFO] ✓ Temporal order preserved within each segment")
-        print(f"[INFO] Tensor shapes - Input: {self.input_tensor.shape}, Actions: {self.action_tensor.shape}")
-        print(f"[INFO] Global normalization: {global_input_matrix.shape[0]} total samples")
+        print(f"[INFO] Tensor shapes - Input: {self.input_tensor.shape}, Target: {self.target_tensor.shape}")
+        print(f"[INFO] Global normalization: {global_unified_matrix.shape[0]} total samples")
     
     def _build_matrix(self, data_list: List[Dict[str, Any]], feature_names: List[str]) -> np.ndarray:
         """Extract features and build a matrix from list of dictionaries"""
@@ -1783,55 +1559,50 @@ class TelemetryActionDataset(Dataset):
     
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Get a training segment
+        Get a training sequence pair
         
         Args:
-            idx: Segment index
+            idx: Sequence index
             
         Returns:
-            Tuple of (combined_input_seq, action_seq) as tensors
-            Each tensor has shape [fixed_segment_length, features]
+            Tuple of (input_states, target_states) as tensors
+            input_states: [seq_len, unified_features] - states at t=0 to t=n-2
+            target_states: [seq_len, unified_features] - states at t=1 to t=n-1
         """
         if idx >= self.num_segments:
-            raise IndexError(f"Segment index {idx} out of range (0-{self.num_segments-1})")
+            raise IndexError(f"Sequence index {idx} out of range (0-{self.num_segments-1})")
         
-        return self.input_tensor[idx], self.action_tensor[idx]
+        return self.input_tensor[idx], self.target_tensor[idx]
     
-    def get_feature_names(self) -> Tuple[List[str], List[str]]:
-        """Get input and action feature names"""
-        return self.input_features, self.action_features
+    def get_feature_names(self) -> List[str]:
+        """Get unified feature names"""
+        return self.unified_features
     
-    def get_scalers(self) -> Dict[str, StandardScaler]:
-        """Get the fitted scalers for denormalization"""
-        return {
-            'input': self.input_scaler,
-            'actions': self.action_scaler
-        }
-    
-    def get_context_feature_names(self) -> List[str]:
-        """Get the context feature names from the canonical ordering"""
-        return get_canonical_context_feature_order()
+    def get_scalers(self) -> StandardScaler:
+        """Get the fitted scaler for denormalization"""
+        return self.feature_scaler
     
     def get_segment_info(self) -> Dict[str, Any]:
-        """Get information about the fixed-size segments in the dataset"""
+        """Get information about the unified sequences in the dataset"""
         return {
             'num_segments': self.num_segments,
             'segment_length': self.fixed_segment_length,
-            'total_samples': self.num_segments * self.fixed_segment_length,
+            'sequence_length': len(self.input_tensor[0]) if len(self.input_tensor) > 0 else 0,
+            'total_unified_features': len(self.unified_features),
             'tensor_shapes': {
                 'input': list(self.input_tensor.shape),
-                'actions': list(self.action_tensor.shape)
+                'target': list(self.target_tensor.shape)
             }
         }
     
     @staticmethod
-    def validate_segments(combined_segments: List[List[Dict[str, Any]]],
+    def validate_segments(unified_segments: List[List[Dict[str, Any]]],
                          expected_length: int) -> Dict[str, Any]:
         """
-        Validate combined segment data before creating dataset
+        Validate unified segment data before creating dataset
         
         Args:
-            combined_segments: List of combined segments to validate
+            unified_segments: List of unified segments to validate
             expected_length: Expected length for all segments
             
         Returns:
@@ -1839,7 +1610,7 @@ class TelemetryActionDataset(Dataset):
         """
         validation_result = {
             'is_valid': True,
-            'num_segments': len(combined_segments),
+            'num_segments': len(unified_segments),
             'expected_length': expected_length,
             'errors': [],
             'warnings': [],
@@ -1850,13 +1621,13 @@ class TelemetryActionDataset(Dataset):
             }
         }
         
-        if len(combined_segments) == 0:
+        if len(unified_segments) == 0:
             validation_result['is_valid'] = False
             validation_result['errors'].append("No segments provided")
             return validation_result
         
         # Validate each segment
-        for i, segment in enumerate(combined_segments):
+        for i, segment in enumerate(unified_segments):
             seg_len = len(segment)
             validation_result['statistics']['segment_lengths'].append(seg_len)
             
@@ -1885,15 +1656,16 @@ class TelemetryActionDataset(Dataset):
 
 class ExpertActionTrainer:
     """
-    Fixed-Size Segmented Trainer class for the Expert Action Transformer.
+    Unified State Trainer class for the Expert Action Transformer.
     
-    This trainer handles fixed-size segmented telemetry data with efficient batch processing.
-    All segments have the same fixed length, enabling traditional batching for faster training.
+    This trainer handles unified feature sequences for next-state prediction training.
+    Each training sample consists of input state and target next state, where states
+    contain unified features (context + actions combined).
     
     DATASET QUALITY VALIDATION USAGE:
     
     # Example 1: Basic quality check before training
-    model = ExpertActionTransformer(input_features_count=42)
+    model = ExpertActionTransformer(total_features_count=46)
     trainer = ExpertActionTrainer(model)
     
     # Check dataset quality and get detailed report
@@ -1998,26 +1770,24 @@ class ExpertActionTrainer:
     
     def set_scalers_from_dataset(self, dataset: TelemetryActionDataset):
         """
-        Extract and set scalers from the segmented dataset on the model.
+        Extract and set scaler from the unified dataset on the model.
         
         Args:
-            dataset: Training dataset containing fitted scalers
+            dataset: Training dataset containing fitted scaler
         """
-        scalers = dataset.get_scalers()
-        input_scaler = scalers.get('input')
-        action_scaler = scalers.get('actions')  
+        feature_scaler = dataset.get_scalers()
         
-        # Set scalers on the model
-        self.model.set_scalers(input_scaler, action_scaler)
+        # Set scaler on the model
+        self.model.set_scalers(feature_scaler)
         
-        print(f"[INFO] Set scalers on model - Input: {'✓' if input_scaler else '✗'}, Action: {'✓' if action_scaler else '✗'}")
+        print(f"[INFO] Set unified feature scaler on model: {'✓' if feature_scaler else '✗'}")
     
     def train_epoch(self, dataset: TelemetryActionDataset) -> float:
         """
-        Train for one epoch using batch processing on fixed-size segments
+        Train for one epoch using unified state prediction
         
         Args:
-            dataset: Fixed-size segmented telemetry action dataset
+            dataset: Unified feature dataset
             
         Returns:
             Average loss across all batches
@@ -2030,28 +1800,28 @@ class ExpertActionTrainer:
         # NOTE: shuffle=False to preserve temporal order within segments
         dataloader = DataLoader(dataset, batch_size=32, shuffle=False, num_workers=2)
         
-        print(f"[INFO] Training on {len(dataset)} segments in batches...")
-        print(f"[INFO] Preserving temporal order within each segment (no shuffling)")
+        print(f"[INFO] Training on {len(dataset)} unified sequences in batches...")
+        print(f"[INFO] Preserving temporal order within each sequence")
         
-        for batch_combined_input, batch_target_actions in dataloader:
+        for batch_input_states, batch_target_states in dataloader:
             # Move to device
-            batch_combined_input = batch_combined_input.to(self.device, non_blocking=self._cuda)
-            batch_target_actions = batch_target_actions.to(self.device, non_blocking=self._cuda)
+            batch_input_states = batch_input_states.to(self.device, non_blocking=self._cuda)
+            batch_target_states = batch_target_states.to(self.device, non_blocking=self._cuda)
             
             self.optimizer.zero_grad(set_to_none=True)
 
             # Autocast for mixed precision on GPU
             with torch.autocast(device_type='cuda', dtype=self.amp_dtype, enabled=self._cuda and self.amp_dtype is not None):
-                # Forward pass with teacher forcing during training
-                predictions = self.model(
-                    combined_input=batch_combined_input,
-                    target_actions=batch_target_actions
-                )
+                # Forward pass: predict sequence autoregressively
+                # batch_input_states: [B, seq_len, features] - input sequence
+                # We predict the same number of steps as target sequence length
+                target_seq_len = batch_target_states.shape[1]
+                predictions = self.model(unified_input=batch_input_states, prediction_steps=target_seq_len)
             
-            # Loss computation OUTSIDE autocast to ensure proper gradient scaling, TODO loss function should consider how close is the actions to the expert states
-            loss = self.model.standard_loss(
+            # Loss computation: unified state prediction loss
+            loss = self.model.unified_loss(
                 predictions=predictions, 
-                target_actions=batch_target_actions
+                targets=batch_target_states
             )
 
             # Backward + optimizer step (with AMP support)
@@ -2502,8 +2272,7 @@ class ExpertActionTrainer:
         """Get model information and training state"""
         return make_json_safe({
             'model_config': {
-                'input_features': self.model.input_features_count,
-                'action_features': self.model.output_features_count,
+                'total_features': self.model.total_features_count,
                 'd_model': self.model.d_model,
                 'sequence_length': self.model.sequence_length
             },

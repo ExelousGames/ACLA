@@ -637,5 +637,75 @@ class HybridDataCache:
                 pass
 
 
-# Create service instance
+# Create shared service instance
 hybrid_data_cache = HybridDataCache()
+
+def get_shared_data_cache():
+    """
+    Get the shared data cache instance
+    
+    This function provides a consistent way for all services to access 
+    the same cache instance, ensuring data is shared across services.
+    
+    Returns:
+        HybridDataCache: The shared cache instance
+    """
+    return hybrid_data_cache
+
+def cache_telemetry_sessions(track_name: str, sessions_iterator, estimated_size_mb: float = None):
+    """
+    Convenience function to cache telemetry sessions using the shared cache
+    
+    Args:
+        track_name: Track name for the sessions
+        sessions_iterator: Iterator yielding session data
+        estimated_size_mb: Estimated size in MB
+        
+    Returns:
+        bool: True if caching was successful
+    """
+    return hybrid_data_cache.cache_sessions_streaming(
+        track_name=track_name,
+        sessions_iterator=sessions_iterator,
+        estimated_size_mb=estimated_size_mb
+    )
+
+def get_cached_telemetry_sessions(track_name: str, max_age_hours: int = 24):
+    """
+    Convenience function to get cached telemetry sessions using the shared cache
+    
+    Args:
+        track_name: Track name to retrieve
+        max_age_hours: Maximum age of cached data in hours
+        
+    Returns:
+        Dict or None: Cached session data or None if not found
+    """
+    return hybrid_data_cache.get_cached_sessions(track_name, max_age_hours=max_age_hours)
+
+def get_shared_cache_info():
+    """
+    Get information about the shared cache usage
+    
+    Returns:
+        Dict: Cache information including what data is shared across services
+    """
+    cache_info = hybrid_data_cache.get_cache_info()
+    
+    # Add information about sharing
+    cache_info["sharing_info"] = {
+        "is_shared": True,
+        "shared_across": [
+            "backend_service",
+            "full_dataset_ml_service", 
+            "imitate_expert_learning_service"
+        ],
+        "benefits": [
+            "Avoids duplicate data caching",
+            "Reduces memory usage",
+            "Enables data reuse across services",
+            "Consistent cache management"
+        ]
+    }
+    
+    return cache_info
