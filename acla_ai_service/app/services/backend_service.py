@@ -283,7 +283,7 @@ class BackendService:
             estimated_size_mb = (total_chunks * chunk_size * 50) / (1024 * 1024)  # Rough estimate
             streamer = SessionStreamer(session_metadata, download_id, self)
             
-            cache_success = data_cache.cache_sessions_streaming(
+            cache_success = await data_cache.cache_sessions_streaming(
                 track_name=trackName or "all_tracks",
                 sessions_iterator=streamer,
                 estimated_size_mb=estimated_size_mb

@@ -697,40 +697,24 @@ class ExpertActionTransformer(nn.Module):
         """Create sequence of future predictions from unified feature vectors"""
         sequence = []
         
-        # Get feature names to find action indices in unified vector
-        try:
-            from ..services.imitate_expert_learning_service import get_features_for_imitate_expert
-            telemetry_feature_names = get_features_for_imitate_expert()
-        except Exception:
-            try:
-                from ..models.telemetry_models import TelemetryFeatures
-                telemetry_feature_names = TelemetryFeatures.get_features_for_imitate_expert()
-            except Exception:
-                # Fallback: assume actions are in first 4 positions (old behavior)
-                telemetry_feature_names = [""] * 50  # dummy list
+        # Get feature names and find physics action indices
+        from ..models.telemetry_models import TelemetryFeatures
+        feature_names = TelemetryFeatures.get_features_for_imitate_expert()
         
-        # Find action feature indices in the unified vector
-        try:
-            gas_idx = telemetry_feature_names.index("Physics_gas")
-            brake_idx = telemetry_feature_names.index("Physics_brake") 
-            steer_idx = telemetry_feature_names.index("Physics_steer_angle")
-            gear_idx = telemetry_feature_names.index("Physics_gear")
-        except (ValueError, IndexError):
-            # Fallback to old assumption if indices not found
-            gas_idx, brake_idx, steer_idx, gear_idx = 0, 1, 2, 3
+        # Find indices for physics actions
+        gas_idx = feature_names.index("Physics_gas")
+        brake_idx = feature_names.index("Physics_brake") 
+        steer_idx = feature_names.index("Physics_steer_angle")
+        gear_idx = feature_names.index("Physics_gear")
         
         for i in range(min(sequence_length, len(predictions))):
             pred = predictions[i]
             
-            # Extract actions from their positions in the unified feature vector
-            if len(pred) > max(gas_idx, brake_idx, steer_idx, gear_idx):
-                gas = pred[gas_idx]
-                brake = pred[brake_idx]
-                steering = pred[steer_idx]
-                gear = int(pred[gear_idx])
-            else:
-                # Fallback if prediction vector is too short
-                gas, brake, steering, gear = 0.0, 0.0, 0.0, 1
+            # Extract physics actions from their positions in the unified feature vector
+            gas = pred[gas_idx]
+            brake = pred[brake_idx]
+            steering = pred[steer_idx]
+            gear = int(pred[gear_idx])
             
             # Determine main action for this step
             if brake > 0.1:
@@ -961,6 +945,8 @@ class ExpertActionTransformer(nn.Module):
         print(f"🔍 DATASET QUALITY ANALYSIS: {dataset_name}")
         print(f"{'='*80}")
         
+        print(f"[DEBUG] Starting check_dataset_quality for {dataset_name}")
+        
         quality_report = {
             'dataset_name': dataset_name,
             'timestamp': datetime.now().isoformat(),
@@ -973,8 +959,11 @@ class ExpertActionTransformer(nn.Module):
         
         try:
             # Get basic dataset information
+            print(f"[DEBUG] Getting segment info...")
             segment_info = dataset.get_segment_info()
+            print(f"[DEBUG] Getting feature names...")
             input_features, action_features = dataset.get_feature_names()
+            print(f"[DEBUG] Feature names obtained successfully")
             context_features = dataset.get_context_feature_names()
             
             print(f"📊 Basic Dataset Information:")
@@ -1010,24 +999,24 @@ class ExpertActionTransformer(nn.Module):
             # Analyze tensor data quality
             print(f"\n🔬 Tensor Data Quality Analysis:")
             input_tensor = dataset.input_tensor
-            action_tensor = dataset.action_tensor
+            target_tensor = dataset.target_tensor  # In unified approach, target and action are the same
             
             # Check for NaN/Inf values
             input_nan_count = torch.isnan(input_tensor).sum().item()
             input_inf_count = torch.isinf(input_tensor).sum().item()
-            action_nan_count = torch.isnan(action_tensor).sum().item()
-            action_inf_count = torch.isinf(action_tensor).sum().item()
+            target_nan_count = torch.isnan(target_tensor).sum().item()
+            target_inf_count = torch.isinf(target_tensor).sum().item()
             
             print(f"   • Input tensor NaN values: {input_nan_count:,}")
             print(f"   • Input tensor Inf values: {input_inf_count:,}")
-            print(f"   • Action tensor NaN values: {action_nan_count:,}")
-            print(f"   • Action tensor Inf values: {action_inf_count:,}")
+            print(f"   • Target tensor NaN values: {target_nan_count:,}")
+            print(f"   • Target tensor Inf values: {target_inf_count:,}")
             
-            if input_nan_count > 0 or action_nan_count > 0:
-                quality_report['critical_issues'].append(f"NaN values detected: Input={input_nan_count}, Action={action_nan_count}")
+            if input_nan_count > 0 or target_nan_count > 0:
+                quality_report['critical_issues'].append(f"NaN values detected: Input={input_nan_count}, Target={target_nan_count}")
             
-            if input_inf_count > 0 or action_inf_count > 0:
-                quality_report['critical_issues'].append(f"Infinite values detected: Input={input_inf_count}, Action={action_inf_count}")
+            if input_inf_count > 0 or target_inf_count > 0:
+                quality_report['critical_issues'].append(f"Infinite values detected: Input={input_inf_count}, Target={target_inf_count}")
             
             # Statistical analysis
             print(f"\n📈 Statistical Distribution Analysis:")
@@ -1038,28 +1027,28 @@ class ExpertActionTransformer(nn.Module):
             input_min = torch.min(input_tensor.view(-1, input_tensor.size(-1)), dim=0)[0]
             input_max = torch.max(input_tensor.view(-1, input_tensor.size(-1)), dim=0)[0]
             
-            # Action features statistics  
-            action_mean = torch.mean(action_tensor, dim=(0, 1))
-            action_std = torch.std(action_tensor, dim=(0, 1))
-            action_min = torch.min(action_tensor.view(-1, action_tensor.size(-1)), dim=0)[0]
-            action_max = torch.max(action_tensor.view(-1, action_tensor.size(-1)), dim=0)[0]
+            # Target features statistics  
+            target_mean = torch.mean(target_tensor, dim=(0, 1))
+            target_std = torch.std(target_tensor, dim=(0, 1))
+            target_min = torch.min(target_tensor.view(-1, target_tensor.size(-1)), dim=0)[0]
+            target_max = torch.max(target_tensor.view(-1, target_tensor.size(-1)), dim=0)[0]
             
             # Check for zero variance features
             zero_var_input = (input_std < 1e-6).sum().item()
-            zero_var_action = (action_std < 1e-6).sum().item()
+            zero_var_target = (target_std < 1e-6).sum().item()
             
             print(f"   • Input features with zero variance: {zero_var_input}")
-            print(f"   • Action features with zero variance: {zero_var_action}")
+            print(f"   • Target features with zero variance: {zero_var_target}")
             print(f"   • Input mean range: [{input_mean.min():.4f}, {input_mean.max():.4f}]")
             print(f"   • Input std range: [{input_std.min():.4f}, {input_std.max():.4f}]")
-            print(f"   • Action mean range: [{action_mean.min():.4f}, {action_mean.max():.4f}]")
-            print(f"   • Action std range: [{action_std.min():.4f}, {action_std.max():.4f}]")
+            print(f"   • Target mean range: [{target_mean.min():.4f}, {target_mean.max():.4f}]")
+            print(f"   • Target std range: [{target_std.min():.4f}, {target_std.max():.4f}]")
             
             if zero_var_input > 0:
                 quality_report['warnings'].append(f"{zero_var_input} input features have zero variance")
             
-            if zero_var_action > 0:
-                quality_report['critical_issues'].append(f"{zero_var_action} action features have zero variance")
+            if zero_var_target > 0:
+                quality_report['critical_issues'].append(f"{zero_var_target} target features have zero variance")
             
             quality_report['metrics']['statistics'] = {
                 'input_stats': {
@@ -1068,11 +1057,11 @@ class ExpertActionTransformer(nn.Module):
                     'value_range': [float(input_min.min()), float(input_max.max())],
                     'zero_variance_count': zero_var_input
                 },
-                'action_stats': {
-                    'mean_range': [float(action_mean.min()), float(action_mean.max())],
-                    'std_range': [float(action_std.min()), float(action_std.max())],
-                    'value_range': [float(action_min.min()), float(action_max.max())],
-                    'zero_variance_count': zero_var_action
+                'target_stats': {
+                    'mean_range': [float(target_mean.min()), float(target_mean.max())],
+                    'std_range': [float(target_std.min()), float(target_std.max())],
+                    'value_range': [float(target_min.min()), float(target_max.max())],
+                    'zero_variance_count': zero_var_target
                 }
             }
             
@@ -1081,28 +1070,28 @@ class ExpertActionTransformer(nn.Module):
             
             # Calculate z-scores and identify outliers (>3 standard deviations)
             input_z_scores = torch.abs((input_tensor - input_mean) / (input_std + 1e-8))
-            action_z_scores = torch.abs((action_tensor - action_mean) / (action_std + 1e-8))
+            target_z_scores = torch.abs((target_tensor - target_mean) / (target_std + 1e-8))
             
             input_outliers = (input_z_scores > 3.0).sum().item()
-            action_outliers = (action_z_scores > 3.0).sum().item()
+            target_outliers = (target_z_scores > 3.0).sum().item()
             
             input_outlier_percentage = (input_outliers / input_tensor.numel()) * 100
-            action_outlier_percentage = (action_outliers / action_tensor.numel()) * 100
+            target_outlier_percentage = (target_outliers / target_tensor.numel()) * 100
             
             print(f"   • Input outliers (>3σ): {input_outliers:,} ({input_outlier_percentage:.2f}%)")
-            print(f"   • Action outliers (>3σ): {action_outliers:,} ({action_outlier_percentage:.2f}%)")
+            print(f"   • Target outliers (>3σ): {target_outliers:,} ({target_outlier_percentage:.2f}%)")
             
             if input_outlier_percentage > 5.0:
                 quality_report['warnings'].append(f"High input outlier percentage: {input_outlier_percentage:.2f}%")
             
-            if action_outlier_percentage > 5.0:
-                quality_report['warnings'].append(f"High action outlier percentage: {action_outlier_percentage:.2f}%")
+            if target_outlier_percentage > 5.0:
+                quality_report['warnings'].append(f"High target outlier percentage: {target_outlier_percentage:.2f}%")
             
             quality_report['metrics']['outliers'] = {
                 'input_outliers': input_outliers,
                 'input_outlier_percentage': float(input_outlier_percentage),
-                'action_outliers': action_outliers,
-                'action_outlier_percentage': float(action_outlier_percentage)
+                'target_outliers': target_outliers,
+                'target_outlier_percentage': float(target_outlier_percentage)
             }
             
             # Temporal consistency check within segments
@@ -1110,32 +1099,32 @@ class ExpertActionTransformer(nn.Module):
             
             # Calculate temporal derivatives (changes between consecutive timesteps)
             input_derivatives = torch.diff(input_tensor, dim=1)  # [segments, seq_len-1, features]
-            action_derivatives = torch.diff(action_tensor, dim=1)
+            target_derivatives = torch.diff(target_tensor, dim=1)
             
             # Calculate mean absolute temporal changes
             input_temporal_change = torch.mean(torch.abs(input_derivatives))
-            action_temporal_change = torch.mean(torch.abs(action_derivatives))
+            target_temporal_change = torch.mean(torch.abs(target_derivatives))
             
             # Check for sudden jumps (large temporal derivatives)
             input_large_jumps = (torch.abs(input_derivatives) > 5.0).sum().item()
-            action_large_jumps = (torch.abs(action_derivatives) > 2.0).sum().item()
+            target_large_jumps = (torch.abs(target_derivatives) > 2.0).sum().item()
             
             print(f"   • Mean input temporal change: {input_temporal_change:.4f}")
-            print(f"   • Mean action temporal change: {action_temporal_change:.4f}")
+            print(f"   • Mean target temporal change: {target_temporal_change:.4f}")
             print(f"   • Large input jumps: {input_large_jumps:,}")
-            print(f"   • Large action jumps: {action_large_jumps:,}")
+            print(f"   • Large target jumps: {target_large_jumps:,}")
             
             if input_large_jumps > input_tensor.numel() * 0.01:  # >1% of values
                 quality_report['warnings'].append(f"Many large temporal jumps in input data: {input_large_jumps}")
             
-            if action_large_jumps > action_tensor.numel() * 0.01:
-                quality_report['warnings'].append(f"Many large temporal jumps in action data: {action_large_jumps}")
+            if target_large_jumps > target_tensor.numel() * 0.01:
+                quality_report['warnings'].append(f"Many large temporal jumps in target data: {target_large_jumps}")
             
             quality_report['metrics']['temporal_consistency'] = {
                 'input_temporal_change': float(input_temporal_change),
-                'action_temporal_change': float(action_temporal_change),
+                'target_temporal_change': float(target_temporal_change),
                 'input_large_jumps': input_large_jumps,
-                'action_large_jumps': action_large_jumps
+                'target_large_jumps': target_large_jumps
             }
             
             # Feature correlation analysis
@@ -1143,11 +1132,11 @@ class ExpertActionTransformer(nn.Module):
             
             # Flatten tensors for correlation analysis
             input_flat = input_tensor.view(-1, input_tensor.size(-1)).numpy()
-            action_flat = action_tensor.view(-1, action_tensor.size(-1)).numpy()
+            target_flat = target_tensor.view(-1, target_tensor.size(-1)).numpy()
             
             # Calculate correlation matrices with proper handling of zero variance features
             high_corr_input_pairs = []
-            high_corr_action_pairs = []
+            high_corr_target_pairs = []
             
             try:
                 # Check for sufficient variance before correlation calculation
@@ -1179,58 +1168,55 @@ class ExpertActionTransformer(nn.Module):
             
             try:
                 # Same for action features
-                action_std_flat = np.std(action_flat, axis=0)
-                valid_action_features = action_std_flat > 1e-10  # Only features with sufficient variance
+                target_std_flat = np.std(target_flat, axis=0)
+                valid_target_features = target_std_flat > 1e-10  # Only features with sufficient variance
                 
-                if np.sum(valid_action_features) > 1:  # Need at least 2 features for correlation
-                    valid_action_data = action_flat[:, valid_action_features]
-                    valid_action_feature_names = [action_features[i] for i in range(len(action_features)) if valid_action_features[i]]
+                if np.sum(valid_target_features) > 1:  # Need at least 2 features for correlation
+                    valid_target_data = target_flat[:, valid_target_features]
+                    valid_target_feature_names = [action_features[i] for i in range(len(action_features)) if valid_target_features[i]]
                     
                     # Suppress numpy warnings for correlation calculation
                     with np.errstate(divide='ignore', invalid='ignore'):
-                        action_corr_matrix = np.corrcoef(valid_action_data.T)
+                        target_corr_matrix = np.corrcoef(valid_target_data.T)
                     
                     # Replace NaN values with 0 (no correlation)
-                    action_corr_matrix = np.nan_to_num(action_corr_matrix, nan=0.0, posinf=0.0, neginf=0.0)
+                    target_corr_matrix = np.nan_to_num(target_corr_matrix, nan=0.0, posinf=0.0, neginf=0.0)
                     
                     # Find highly correlated feature pairs
-                    for i in range(len(valid_action_feature_names)):
-                        for j in range(i+1, len(valid_action_feature_names)):
-                            if abs(action_corr_matrix[i, j]) > 0.95:
-                                high_corr_action_pairs.append((valid_action_feature_names[i], valid_action_feature_names[j], action_corr_matrix[i, j]))
+                    for i in range(len(valid_target_feature_names)):
+                        for j in range(i+1, len(valid_target_feature_names)):
+                            if abs(target_corr_matrix[i, j]) > 0.95:
+                                high_corr_target_pairs.append((valid_target_feature_names[i], valid_target_feature_names[j], target_corr_matrix[i, j]))
                 else:
-                    print(f"   • Skipping action correlation analysis - insufficient valid features ({np.sum(valid_action_features)})")
+                    print(f"   • Skipping target correlation analysis - insufficient valid features ({np.sum(valid_target_features)})")
                     
             except Exception as e:
-                print(f"   • Action correlation analysis failed: {str(e)}")
-                quality_report['warnings'].append("Action correlation analysis failed due to data issues")
+                print(f"   • Target correlation analysis failed: {str(e)}")
+                quality_report['warnings'].append("Target correlation analysis failed due to data issues")
             
             print(f"   • Highly correlated input pairs (>0.95): {len(high_corr_input_pairs)}")
-            print(f"   • Highly correlated action pairs (>0.95): {len(high_corr_action_pairs)}")
+            print(f"   • Highly correlated target pairs (>0.95): {len(high_corr_target_pairs)}")
             
             if len(high_corr_input_pairs) > 0:
                 quality_report['warnings'].append(f"{len(high_corr_input_pairs)} highly correlated input feature pairs detected")
                 for pair in high_corr_input_pairs[:3]:  # Show first 3
                     print(f"     - {pair[0]} ↔ {pair[1]}: {pair[2]:.3f}")
             
-            if len(high_corr_action_pairs) > 0:
-                quality_report['warnings'].append(f"{len(high_corr_action_pairs)} highly correlated action feature pairs detected")
-                for pair in high_corr_action_pairs[:3]:  # Show first 3
+            if len(high_corr_target_pairs) > 0:
+                quality_report['warnings'].append(f"{len(high_corr_target_pairs)} highly correlated target feature pairs detected")
+                for pair in high_corr_target_pairs[:3]:  # Show first 3
                     print(f"     - {pair[0]} ↔ {pair[1]}: {pair[2]:.3f}")
             
             # Normalization verification
             print(f"\n🎛️ Normalization Verification:")
             
-            scalers = dataset.get_scalers()
-            input_scaler = scalers.get('input')
-            action_scaler = scalers.get('actions')
+            feature_scaler = dataset.get_scalers()
             
             scaler_quality = {
-                'input_scaler_available': input_scaler is not None,
-                'action_scaler_available': action_scaler is not None
+                'feature_scaler_available': feature_scaler is not None
             }
             
-            if input_scaler:
+            if feature_scaler:
                 # Check if data is approximately normalized (mean~0, std~1)
                 normalized_mean = torch.abs(input_mean).max().item()
                 normalized_std_deviation = torch.abs(input_std - 1.0).max().item()
@@ -1249,18 +1235,18 @@ class ExpertActionTransformer(nn.Module):
                 if normalized_std_deviation > 0.2:
                     quality_report['warnings'].append(f"Input normalization: std deviation {normalized_std_deviation:.4f}")
             
-            if action_scaler:
-                action_normalized_mean = torch.abs(action_mean).max().item()
-                action_normalized_std_dev = torch.abs(action_std - 1.0).max().item()
-                
-                print(f"   • Action normalization quality:")
-                print(f"     - Max absolute mean: {action_normalized_mean:.4f} (should be ~0)")
-                print(f"     - Max std deviation from 1: {action_normalized_std_dev:.4f} (should be ~0)")
-                
-                scaler_quality['action_normalization'] = {
-                    'max_abs_mean': float(action_normalized_mean),
-                    'max_std_deviation': float(action_normalized_std_dev)
-                }
+            # In unified approach, target uses same normalization as input
+            target_normalized_mean = torch.abs(target_mean).max().item()
+            target_normalized_std_dev = torch.abs(target_std - 1.0).max().item()
+            
+            print(f"   • Target normalization quality:")
+            print(f"     - Max absolute mean: {target_normalized_mean:.4f} (should be ~0)")
+            print(f"     - Max std deviation from 1: {target_normalized_std_dev:.4f} (should be ~0)")
+            
+            scaler_quality['target_normalization'] = {
+                'max_abs_mean': float(target_normalized_mean),
+                'max_std_deviation': float(target_normalized_std_dev)
+            }
             
             quality_report['metrics']['normalization'] = scaler_quality
             
@@ -1269,7 +1255,7 @@ class ExpertActionTransformer(nn.Module):
             
             if len(context_features) > 0:
                 # Get sample of context data to validate
-                sample_segment = dataset.combined_segments[0] if dataset.combined_segments else []
+                sample_segment = dataset.unified_segments[0] if dataset.unified_segments else []
                 if sample_segment:
                     context_sample = sample_segment[0] if sample_segment else {}
                     
@@ -1336,16 +1322,16 @@ class ExpertActionTransformer(nn.Module):
             if zero_var_input > 0:
                 recommendations.append("Remove or fix zero-variance input features")
             
-            if zero_var_action > 0:
-                recommendations.append("Investigate zero-variance action features - may indicate data collection issues")
+            if zero_var_target > 0:
+                recommendations.append("Investigate zero-variance target features - may indicate data collection issues")
             
-            if input_outlier_percentage > 5.0 or action_outlier_percentage > 5.0:
+            if input_outlier_percentage > 5.0 or target_outlier_percentage > 5.0:
                 recommendations.append("Consider outlier removal or robust scaling methods")
             
             if len(high_corr_input_pairs) > 5:
                 recommendations.append("Consider dimensionality reduction for highly correlated input features")
             
-            if not input_scaler or not action_scaler:
+            if not feature_scaler:
                 recommendations.append("Ensure proper data normalization with StandardScaler")
             
             if len(context_features) == 0:
@@ -1574,9 +1560,10 @@ class TelemetryActionDataset(Dataset):
         
         return self.input_tensor[idx], self.target_tensor[idx]
     
-    def get_feature_names(self) -> List[str]:
-        """Get unified feature names"""
-        return self.unified_features
+    def get_feature_names(self) -> Tuple[List[str], List[str]]:
+        """Get unified feature names - returns (input_features, target_features)"""
+        # In unified model, input and target features are the same
+        return self.unified_features, self.unified_features
     
     def get_scalers(self) -> StandardScaler:
         """Get the fitted scaler for denormalization"""
@@ -1589,11 +1576,24 @@ class TelemetryActionDataset(Dataset):
             'segment_length': self.fixed_segment_length,
             'sequence_length': len(self.input_tensor[0]) if len(self.input_tensor) > 0 else 0,
             'total_unified_features': len(self.unified_features),
+            'total_samples': self.num_segments * self.fixed_segment_length,
             'tensor_shapes': {
                 'input': list(self.input_tensor.shape),
                 'target': list(self.target_tensor.shape)
             }
         }
+    
+    def get_context_feature_names(self) -> List[str]:
+        """Get context feature names from unified features"""
+        # Filter for context features (exclude basic telemetry features)
+        context_features = []
+        for feature in self.unified_features:
+            if any(context_prefix in feature.lower() for context_prefix in [
+                'expert_', 'corner_', 'tire_', 'grip_', 'distance_', 
+                'velocity_alignment', 'speed_difference'
+            ]):
+                context_features.append(feature)
+        return context_features
     
     @staticmethod
     def validate_segments(unified_segments: List[List[Dict[str, Any]]],
@@ -1792,18 +1792,30 @@ class ExpertActionTrainer:
         Returns:
             Average loss across all batches
         """
+        print(f"[DEBUG] train_epoch called with dataset of size: {len(dataset)}")
         self.model.train()
         total_loss = 0.0
         num_batches = 0
         
+        print(f"[DEBUG] Creating DataLoader...")
         # Create DataLoader for efficient batch processing
         # NOTE: shuffle=False to preserve temporal order within segments
         dataloader = DataLoader(dataset, batch_size=32, shuffle=False, num_workers=2)
+        print(f"[DEBUG] DataLoader created successfully")
         
         print(f"[INFO] Training on {len(dataset)} unified sequences in batches...")
         print(f"[INFO] Preserving temporal order within each sequence")
         
-        for batch_input_states, batch_target_states in dataloader:
+        print(f"[DEBUG] Starting DataLoader iteration...")
+        
+        for batch_data in dataloader:
+            # Debug: Check what the dataloader is actually returning
+            if len(batch_data) != 2:
+                print(f"[ERROR] DataLoader returning {len(batch_data)} items instead of 2")
+                print(f"[ERROR] Items: {[type(item) for item in batch_data]}")
+                raise ValueError(f"DataLoader returning {len(batch_data)} items, expected 2")
+            
+            batch_input_states, batch_target_states = batch_data
             # Move to device
             batch_input_states = batch_input_states.to(self.device, non_blocking=self._cuda)
             batch_target_states = batch_target_states.to(self.device, non_blocking=self._cuda)
@@ -1864,21 +1876,26 @@ class ExpertActionTrainer:
         context_feature_names = dataset.get_context_feature_names()
         
         with torch.no_grad():
-            for batch_combined_input, batch_target_actions in dataloader:
+            for batch_data in dataloader:
+                # Debug: Check what the dataloader is actually returning
+                if len(batch_data) != 2:
+                    print(f"[ERROR] DataLoader returning {len(batch_data)} items instead of 2")
+                    print(f"[ERROR] Items: {[type(item) for item in batch_data]}")
+                    raise ValueError(f"DataLoader returning {len(batch_data)} items, expected 2")
+                
+                batch_input_states, batch_target_states = batch_data
                 # Move to device
-                batch_combined_input = batch_combined_input.to(self.device, non_blocking=self._cuda).float()
-                batch_target_actions = batch_target_actions.to(self.device, non_blocking=self._cuda).float()
+                batch_input_states = batch_input_states.to(self.device, non_blocking=self._cuda).float()
+                batch_target_states = batch_target_states.to(self.device, non_blocking=self._cuda).float()
                 
                 # Forward pass - no mixed precision for validation to avoid dtype issues
-                predictions = self.model(
-                    combined_input=batch_combined_input,
-                    target_actions=None  # No teacher forcing in validation
-                )
+                target_seq_len = batch_target_states.shape[1]
+                predictions = self.model(unified_input=batch_input_states, prediction_steps=target_seq_len)
                 
-                # Loss computation
-                loss = self.model.standard_loss(
+                # Loss computation: unified state prediction loss
+                loss = self.model.unified_loss(
                     predictions=predictions, 
-                    target_actions=batch_target_actions
+                    targets=batch_target_states
                 )
                 
                 total_loss += loss.item()
@@ -1976,9 +1993,14 @@ class ExpertActionTrainer:
         best_val_loss = float('inf')
         epochs_without_improvement = 0
         
+        print(f"[DEBUG] Starting training loop for {epochs} epochs...")
+        
         for epoch in range(epochs):
+            print(f"[DEBUG] Starting epoch {epoch+1}/{epochs}")
             # Train on segments
+            print(f"[DEBUG] Calling train_epoch...")
             train_loss = self.train_epoch(train_dataset)
+            print(f"[DEBUG] train_epoch completed with loss: {train_loss}")
             self.train_losses.append(train_loss)
             
             # Validate on segments
@@ -2055,6 +2077,8 @@ class ExpertActionTrainer:
         print(f"\n🔍 COMPREHENSIVE DATASET QUALITY VALIDATION")
         print(f"{'='*80}")
         
+        print(f"[DEBUG] About to start dataset quality validation...")
+        
         quality_results = {
             'validation_timestamp': datetime.now().isoformat(),
             'datasets_checked': [],
@@ -2062,8 +2086,14 @@ class ExpertActionTrainer:
         }
         
         # Check training dataset quality
-        print(f"Validating training dataset...")
-        train_quality = self.model.check_dataset_quality(train_dataset, "Training Dataset")
+        print(f"[DEBUG] Validating training dataset...")
+        print(f"[DEBUG] Calling check_dataset_quality method...")
+        try:
+            train_quality = self.model.check_dataset_quality(train_dataset, "Training Dataset")
+            print(f"[DEBUG] check_dataset_quality completed successfully")
+        except Exception as e:
+            print(f"[ERROR] check_dataset_quality failed: {str(e)}")
+            raise e
         quality_results['training_quality'] = train_quality
         quality_results['datasets_checked'].append('training')
         
@@ -2181,7 +2211,15 @@ class ExpertActionTrainer:
         print(f"[INFO] Processing {num_batches} batches with batch size {batch_size}")
         
         with torch.no_grad():
-            for batch_idx, (batch_combined_input, batch_target_actions) in enumerate(dataloader):
+            for batch_idx, batch_data in enumerate(dataloader):
+                # Debug: Check what the dataloader is actually returning
+                if len(batch_data) != 2:
+                    print(f"[ERROR] DataLoader returning {len(batch_data)} items instead of 2")
+                    print(f"[ERROR] Items: {[type(item) for item in batch_data]}")
+                    raise ValueError(f"DataLoader returning {len(batch_data)} items, expected 2")
+                
+                batch_input_states, batch_target_states = batch_data
+                
                 # Show progress updates
                 if batch_idx % max(1, num_batches // 10) == 0 or batch_idx == num_batches - 1:
                     progress_pct = (batch_idx + 1) / num_batches * 100
@@ -2191,23 +2229,21 @@ class ExpertActionTrainer:
                     print(f"[INFO] Evaluation progress: batch {batch_idx + 1}/{num_batches} ({progress_pct:.1f}%) - {segments_processed}/{num_segments} segments")
                 
                 # Move to device
-                batch_combined_input = batch_combined_input.to(self.device, non_blocking=self._cuda)
-                batch_target_actions = batch_target_actions.to(self.device, non_blocking=self._cuda)
+                batch_input_states = batch_input_states.to(self.device, non_blocking=self._cuda)
+                batch_target_states = batch_target_states.to(self.device, non_blocking=self._cuda)
                 
-                batch_size_actual = batch_combined_input.shape[0]
-                segment_length = batch_combined_input.shape[1]
+                batch_size_actual = batch_input_states.shape[0]
+                segment_length = batch_input_states.shape[1]
                 
                 # Use standard forward (autoregressive) under AMP for GPU (evaluation mode)
                 with torch.autocast(device_type='cuda', dtype=self.amp_dtype, enabled=self._cuda and self.amp_dtype is not None):
-                    predictions = self.model(
-                        combined_input=batch_combined_input,
-                        target_actions=None  # No teacher forcing during evaluation
-                    )
+                    target_seq_len = batch_target_states.shape[1]
+                    predictions = self.model(unified_input=batch_input_states, prediction_steps=target_seq_len)
                 
-                # Loss computation outside autocast
-                loss = self.model.standard_loss(
+                # Loss computation outside autocast: unified state prediction loss
+                loss = self.model.unified_loss(
                     predictions=predictions, 
-                    target_actions=batch_target_actions
+                    targets=batch_target_states
                 )
                 
                 batch_samples = batch_size_actual * segment_length
@@ -2220,7 +2256,7 @@ class ExpertActionTrainer:
                     print(f"[INFO] Running average loss: {running_avg_loss:.6f}")
                 
                 all_predictions.append(predictions.cpu().numpy())
-                all_targets.append(batch_target_actions.cpu().numpy())
+                all_targets.append(batch_target_states.cpu().numpy())
         
         # Compute additional metrics - concatenate all batch data efficiently
         print(f"[INFO] Computing final evaluation metrics...")

@@ -989,14 +989,14 @@ class Full_dataset_TelemetryMLService:
         
         # Always use efficient processing for large datasets - no fallback
         # sessions_summary data is already cached, process directly from cache
-        top_laps_telemetry_list, bottom_laps_cache_key = self.process_large_dataset_efficiently(
+        top_laps_telemetry_list, bottom_laps_cache_key = await self.process_large_dataset_efficiently(
             trackName=trackName,
             max_memory_records=100000
         )
 
         segment_length = 50  # Default segment length for transformer training
         segments_cache_key = None
-        transformer_results = None
+        transformer_results = {"success": False, "error": "Training not started"}  # Initialize with failure
         
         try:
             # enrich data - now using cache-based approach to avoid memory overflow
@@ -1082,7 +1082,7 @@ class Full_dataset_TelemetryMLService:
         
         print(f"[INFO] Completed streaming processing of {processed_sessions} sessions")
 
-    def process_large_dataset_efficiently(self, trackName: str,
+    async def process_large_dataset_efficiently(self, trackName: str,
                                         max_memory_records: int = 50000) -> Tuple[List[Dict[str, Any]], str]:
         """
         Process very large cached datasets efficiently using streaming and Dask
@@ -1195,8 +1195,8 @@ class Full_dataset_TelemetryMLService:
             # Cache bottom laps using streaming to avoid memory accumulation
             print(f"[INFO] Caching {total_bottom_laps_count} bottom laps to avoid memory overflow")
             
-            def create_bottom_laps_generator():
-                """Recreate generator for caching"""
+            async def create_bottom_laps_generator():
+                """Recreate async generator for caching"""
                 chunk_idx = 0
                 for result in chunk_results_list:
                     if isinstance(result, dict) and result:
@@ -1211,7 +1211,7 @@ class Full_dataset_TelemetryMLService:
             # Estimate size for caching decision
             estimated_size_mb = (total_bottom_laps_count * 50) / (1024 * 1024)  # Rough estimate: 50 bytes per record
             
-            cache_success = self.data_cache.cache_sessions_streaming(
+            cache_success = await self.data_cache.cache_sessions_streaming(
                 track_name=bottom_laps_cache_key,
                 sessions_iterator=create_bottom_laps_generator(),
                 estimated_size_mb=estimated_size_mb
@@ -1321,7 +1321,7 @@ class Full_dataset_TelemetryMLService:
             
             # Validate segments before creating dataset
             validation_result = TelemetryActionDataset.validate_segments(
-                combined_segments=combined_segments,
+                unified_segments=combined_segments,
                 expected_length=fixed_segment_length
             )
             
@@ -1334,7 +1334,7 @@ class Full_dataset_TelemetryMLService:
             
             # Create fixed-size segmented dataset
             dataset = TelemetryActionDataset(
-                combined_segments=combined_segments,
+                unified_segments=combined_segments,
                 fixed_segment_length=fixed_segment_length
             )
             
@@ -1368,7 +1368,7 @@ class Full_dataset_TelemetryMLService:
             
             # Create model with unified input features
             model = ExpertActionTransformer(
-                input_features_count=input_features_count,
+                total_features_count=input_features_count,
                 d_model=256,
                 nhead=8,
                 num_layers=20,  # Smaller model for faster training
@@ -1377,16 +1377,22 @@ class Full_dataset_TelemetryMLService:
             
             # Create trainer
             device = 'cuda' if use_cuda else 'cpu'
+            print(f"[DEBUG] Creating trainer on device: {device}")
             trainer = ExpertActionTrainer(model, device=device, learning_rate=1e-4)
         
+            print(f"[DEBUG] Starting data quality validation...")
             trainer.validate_training_data_quality(dataset)
+            print(f"[DEBUG] Data quality validation completed")
+            
             # Train model using the new fixed-size segment approach
+            print(f"[DEBUG] Starting training loop...")
             training_history = trainer.train(
                 train_dataset=dataset,
                 val_dataset=None,  # No validation split for now
                 epochs=30,
                 patience=10
             )
+            print(f"[DEBUG] Training loop completed successfully")
             
             # Evaluate model on training data
             test_metrics = trainer.evaluate(dataset)
@@ -1681,8 +1687,8 @@ class Full_dataset_TelemetryMLService:
                 # Cache the segments to avoid memory accumulation
                 segments_cache_key = f"segments_{track_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
                 
-                def segments_generator():
-                    """Generator that yields segments for caching"""
+                async def segments_generator():
+                    """Async generator that yields segments for caching"""
                     for idx, segment in enumerate(combined_segments):
                         yield {
                             "sessionId": f"segment_{idx}",
@@ -1695,7 +1701,7 @@ class Full_dataset_TelemetryMLService:
                 
                 print(f"[INFO] Caching {len(combined_segments)} segments (~{estimated_size_mb:.1f}MB) to avoid memory accumulation")
                 
-                cache_success = self.data_cache.cache_sessions_streaming(
+                cache_success = await self.data_cache.cache_sessions_streaming(
                     track_name=segments_cache_key,
                     sessions_iterator=segments_generator(),
                     estimated_size_mb=estimated_size_mb

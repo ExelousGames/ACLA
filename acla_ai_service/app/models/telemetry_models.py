@@ -1000,7 +1000,7 @@ class FeatureProcessor:
         work = df.copy()
 
         # Ensure numeric types where possible
-        work['Graphics_completed_lap'] = pd.to_numeric(work['Graphics_completed_lap'], errors='coerce').fillna(method='ffill').fillna(0).astype(int)
+        work['Graphics_completed_lap'] = pd.to_numeric(work['Graphics_completed_lap'], errors='coerce').ffill().fillna(0).astype(int)
         work['Graphics_current_time'] = pd.to_numeric(work['Graphics_current_time'], errors='coerce').fillna(0)
 
         # Treat any non-boolean as boolean-like

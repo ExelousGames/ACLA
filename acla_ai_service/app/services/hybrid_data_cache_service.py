@@ -20,16 +20,43 @@ from datetime import datetime, timedelta
 import pandas as pd
 import numpy as np
 
-# Dask imports for large dataset processing
+# Dask imports for large dataset processing - REQUIRED
 try:
     import dask
+    # Check pandas version compatibility first
+    import pandas as pd_version_check
+    pandas_version = pd_version_check.__version__
+    
     import dask.dataframe as dd
     from dask.distributed import LocalCluster, Client
-    import h5py
     DASK_AVAILABLE = True
-except ImportError:
-    DASK_AVAILABLE = False
-    print("[WARNING] Dask not available - falling back to basic caching")
+    print(f"[INFO] Dask successfully imported with pandas {pandas_version}")
+except ImportError as e:
+    raise ImportError(f"[CRITICAL ERROR] Dask is required for telemetry processing but not available. "
+                     f"Install with: pip install dask[distributed]. Error: {str(e)}")
+except (TypeError, AttributeError) as e:
+    try:
+        import pandas as pd_err_check
+        pandas_ver = pd_err_check.__version__
+        import dask as dask_err_check  
+        dask_ver = dask_err_check.__version__ if hasattr(dask_err_check, '__version__') else 'unknown'
+    except:
+        pandas_ver = 'unknown'
+        dask_ver = 'unknown'
+    
+    raise ImportError(f"[CRITICAL ERROR] Dask version compatibility issue detected. "
+                     f"Current versions - Pandas: {pandas_ver}, Dask: {dask_ver}. "
+                     f"Update requirements.txt with compatible versions: "
+                     f"dask[dataframe]==2024.2.1 and pandas==2.1.4. "
+                     f"Then rebuild Docker container. Error: {str(e)}")
+
+# h5py import - REQUIRED for HDF5 storage
+try:
+    import h5py
+    HDF5_AVAILABLE = True
+except ImportError as e:
+    raise ImportError(f"[CRITICAL ERROR] h5py is required for HDF5 storage but not available. "
+                     f"Install with: pip install h5py. Error: {str(e)}")
 
 # Suppress warnings
 warnings.filterwarnings('ignore', category=UserWarning)
@@ -50,7 +77,7 @@ class HybridDataCache:
                  cache_directory: str = "telemetry_data_cache",
                  max_memory_datasets: int = 3,
                  enable_dask: bool = True,
-                 dask_memory_limit: str = "4GB"):
+                 dask_memory_limit: str = "2GB"):
         """
         Initialize hybrid data cache
         
@@ -76,8 +103,13 @@ class HybridDataCache:
         self.metadata_db = self.cache_dir / "cache_metadata.db"
         self._init_metadata_db()
         
-        # Dask setup
-        self.enable_dask = enable_dask and DASK_AVAILABLE
+        # Dask setup - REQUIRED
+        if not DASK_AVAILABLE:
+            raise RuntimeError("[CRITICAL ERROR] Dask is required but not available during initialization")
+        if not HDF5_AVAILABLE:
+            raise RuntimeError("[CRITICAL ERROR] h5py is required but not available during initialization")
+            
+        self.enable_dask = enable_dask
         self.dask_client = None
         self.dask_memory_limit = dask_memory_limit
         
@@ -86,6 +118,7 @@ class HybridDataCache:
         
         print(f"[INFO] Hybrid data cache initialized at {self.cache_dir}")
         print(f"[INFO] Dask enabled: {self.enable_dask}")
+        print(f"[INFO] Required dependencies verified: Dask={DASK_AVAILABLE}, h5py={HDF5_AVAILABLE}")
     
     def _init_metadata_db(self):
         """Initialize SQLite metadata database"""
@@ -118,7 +151,7 @@ class HybridDataCache:
             """)
     
     def _setup_dask(self):
-        """Setup Dask client for distributed processing"""
+        """Setup Dask client for distributed processing - REQUIRED"""
         try:
             # Use existing client if available, otherwise create new one
             try:
@@ -136,9 +169,7 @@ class HybridDataCache:
                 self.dask_client = Client(cluster)
                 print(f"[INFO] Created new Dask client: {self.dask_client}")
         except Exception as e:
-            print(f"[WARNING] Failed to setup Dask: {e}")
-            self.enable_dask = False
-            self.dask_client = None
+            raise RuntimeError(f"[CRITICAL ERROR] Failed to setup required Dask client: {e}")
     
     def _generate_cache_key(self, track_name: str, car_name: Optional[str] = None, 
                            filters: Optional[Dict[str, Any]] = None) -> str:
@@ -183,7 +214,7 @@ class HybridDataCache:
         
         return None
     
-    def cache_sessions_streaming(self, track_name: str, sessions_iterator: Iterator[Dict[str, Any]], 
+    async def cache_sessions_streaming(self, track_name: str, sessions_iterator: Iterator[Dict[str, Any]], 
                                car_name: Optional[str] = None,
                                estimated_size_mb: Optional[float] = None) -> bool:
         """
@@ -201,15 +232,21 @@ class HybridDataCache:
         cache_key = self._generate_cache_key(track_name, car_name)
         
         try:
+            # Both Dask and HDF5 are required - no fallback options
+            if not HDF5_AVAILABLE:
+                raise RuntimeError("[CRITICAL ERROR] h5py is required for caching but not available")
+            if not DASK_AVAILABLE:
+                raise RuntimeError("[CRITICAL ERROR] Dask is required for caching but not available")
+            
             # Choose storage method based on estimated size
             use_hdf5 = (estimated_size_mb and estimated_size_mb > 100) or self.enable_dask
             
             if use_hdf5:
-                success = self._cache_to_hdf5_streaming(
+                success = await self._cache_to_hdf5_streaming(
                     cache_key, track_name, car_name, sessions_iterator
                 )
             else:
-                success = self._cache_to_memory_streaming(
+                success = await self._cache_to_memory_streaming(
                     cache_key, track_name, car_name, sessions_iterator
                 )
             
@@ -217,30 +254,46 @@ class HybridDataCache:
                 print(f"[INFO] Successfully cached {track_name} using streaming")
                 return True
             else:
-                print(f"[WARNING] Failed to cache {track_name}")
-                return False
+                raise RuntimeError(f"[CRITICAL ERROR] Failed to cache {track_name} - no fallback available")
                 
         except Exception as e:
             print(f"[ERROR] Failed to cache sessions for {track_name}: {e}")
             return False
     
-    def _cache_to_hdf5_streaming(self, cache_key: str, track_name: str, 
+    async def _cache_to_hdf5_streaming(self, cache_key: str, track_name: str, 
                                 car_name: Optional[str], 
                                 sessions_iterator: Iterator[Dict[str, Any]]) -> bool:
-        """Stream sessions to HDF5 storage"""
+        """Stream sessions to HDF5 storage - REQUIRED"""
+        if not HDF5_AVAILABLE:
+            raise RuntimeError("[CRITICAL ERROR] HDF5 storage is required but h5py not available")
+        if not DASK_AVAILABLE:
+            raise RuntimeError("[CRITICAL ERROR] Dask is required but not available")
+            
         hdf5_path = self.hdf5_dir / f"{cache_key}.h5"
+        temp_hdf5_path = self.hdf5_dir / f"{cache_key}.tmp.h5"
         
         try:
+            # Clean up any existing files first
+            for path in [hdf5_path, temp_hdf5_path]:
+                if path.exists():
+                    try:
+                        path.unlink()
+                        print(f"[INFO] Cleaned up existing file: {path}")
+                    except Exception as cleanup_error:
+                        print(f"[WARNING] Could not clean up existing file {path}: {cleanup_error}")
+            
             session_count = 0
             total_records = 0
             
-            with h5py.File(hdf5_path, 'w') as hdf_file:
+            # Write to temporary file first, then rename atomically
+            with h5py.File(temp_hdf5_path, 'w') as hdf_file:
                 # Create groups for organized storage
                 sessions_group = hdf_file.create_group("sessions")
                 metadata_group = hdf_file.create_group("metadata")
                 
                 # Process sessions in streaming fashion
-                for session_idx, session in enumerate(sessions_iterator):
+                session_idx = 0
+                async for session in sessions_iterator:
                     session_id = session.get("sessionId", f"session_{session_idx}")
                     session_data = session.get("data", [])
                     
@@ -266,7 +319,7 @@ class HybridDataCache:
                             session_dataset.create_dataset(
                                 column, 
                                 data=data, 
-                                compression='lz4',
+                                compression='gzip',
                                 compression_opts=9
                             )
                         
@@ -282,6 +335,8 @@ class HybridDataCache:
                     except Exception as e:
                         print(f"[WARNING] Failed to process session {session_idx}: {e}")
                         continue
+                    finally:
+                        session_idx += 1
                 
                 # Store cache metadata
                 hdf_file.attrs['track_name'] = track_name
@@ -289,6 +344,10 @@ class HybridDataCache:
                 hdf_file.attrs['session_count'] = session_count
                 hdf_file.attrs['total_records'] = total_records
                 hdf_file.attrs['cached_at'] = datetime.now().isoformat()
+            
+            # Atomically rename temp file to final file
+            temp_hdf5_path.rename(hdf5_path)
+            print(f"[INFO] Successfully wrote HDF5 file: {hdf5_path}")
             
             # Update metadata database
             file_size_mb = hdf5_path.stat().st_size / (1024 * 1024)
@@ -302,11 +361,17 @@ class HybridDataCache:
             
         except Exception as e:
             print(f"[ERROR] HDF5 caching failed: {e}")
-            if hdf5_path.exists():
-                hdf5_path.unlink()
+            # Clean up any failed files
+            for cleanup_path in [hdf5_path, temp_hdf5_path]:
+                try:
+                    if cleanup_path.exists():
+                        cleanup_path.unlink()
+                        print(f"[INFO] Cleaned up failed file: {cleanup_path}")
+                except Exception as cleanup_error:
+                    print(f"[WARNING] Could not clean up failed file {cleanup_path}: {cleanup_error}")
             return False
     
-    def _cache_to_memory_streaming(self, cache_key: str, track_name: str,
+    async def _cache_to_memory_streaming(self, cache_key: str, track_name: str,
                                   car_name: Optional[str],
                                   sessions_iterator: Iterator[Dict[str, Any]]) -> bool:
         """Cache smaller datasets to memory"""
@@ -315,16 +380,23 @@ class HybridDataCache:
             session_count = 0
             total_records = 0
             
-            for session in sessions_iterator:
+            async for session in sessions_iterator:
                 sessions_data.append(session)
                 session_count += 1
                 total_records += len(session.get("data", []))
                 
-                # Prevent memory overflow
+                # Prevent memory overflow - switch to HDF5 for large datasets
                 if total_records > 50000:  # Limit for memory storage
                     print(f"[INFO] Dataset too large for memory, switching to HDF5")
-                    return self._cache_to_hdf5_streaming(
-                        cache_key, track_name, car_name, iter(sessions_data)
+                    # Create a sync iterator from the data we've collected so far
+                    async def remaining_sessions():
+                        for remaining_session in sessions_data:
+                            yield remaining_session
+                        async for remaining_session in sessions_iterator:
+                            yield remaining_session
+                    
+                    return await self._cache_to_hdf5_streaming(
+                        cache_key, track_name, car_name, remaining_sessions()
                     )
             
             # Store in memory
@@ -365,7 +437,10 @@ class HybridDataCache:
             raise ValueError(f"Unknown storage type: {storage_type}")
     
     def _load_from_hdf5(self, file_path: str, cached_info: Dict[str, Any]) -> Dict[str, Any]:
-        """Load data from HDF5 file"""
+        """Load data from HDF5 file - REQUIRED"""
+        if not HDF5_AVAILABLE:
+            raise RuntimeError("[CRITICAL ERROR] HDF5 loading is required but h5py not available")
+            
         try:
             sessions_data = []
             
@@ -511,13 +586,24 @@ class HybridDataCache:
         if not cached_info:
             raise ValueError(f"No cached data found for {track_name}")
         
+        # Both Dask and HDF5 are required for processing
+        if not DASK_AVAILABLE:
+            raise RuntimeError("[CRITICAL ERROR] Dask is required for large dataset processing but not available")
+        if not HDF5_AVAILABLE:
+            raise RuntimeError("[CRITICAL ERROR] h5py is required for large dataset processing but not available")
+            
         if cached_info["storage_type"] == "hdf5" and self.enable_dask:
             return self._process_with_dask(cached_info["file_path"], processing_func, chunk_size)
         else:
-            return self._process_with_pandas(cached_info, processing_func, chunk_size)
+            return self._process_with_pandas(cached_info, processing_func, chunk_size, cache_key)
     
     def _process_with_dask(self, file_path: str, processing_func: callable, chunk_size: int) -> Any:
-        """Process HDF5 data using Dask"""
+        """Process HDF5 data using Dask - REQUIRED"""
+        if not HDF5_AVAILABLE:
+            raise RuntimeError("[CRITICAL ERROR] HDF5 processing is required but h5py not available")
+        if not DASK_AVAILABLE:
+            raise RuntimeError("[CRITICAL ERROR] Dask processing is required but not available")
+            
         try:
             # Read HDF5 with Dask (simplified approach)
             # Note: This is a basic implementation - more sophisticated handling may be needed
@@ -545,13 +631,22 @@ class HybridDataCache:
             return results
             
         except Exception as e:
-            print(f"[WARNING] Dask processing failed, falling back to pandas: {e}")
-            return self._process_with_pandas({"file_path": file_path}, processing_func, chunk_size)
+            raise RuntimeError(f"[CRITICAL ERROR] Dask processing failed with no fallback available: {e}")
     
-    def _process_with_pandas(self, cached_info: Dict[str, Any], processing_func: callable, chunk_size: int) -> Any:
+    def _process_with_pandas(self, cached_info: Dict[str, Any], processing_func: callable, chunk_size: int, cache_key: str) -> Any:
         """Process data using pandas chunking"""
         results = []
-        data = self._load_from_disk(cached_info)
+        
+        # Handle memory vs disk storage
+        if cached_info["storage_type"] == "memory":
+            # For memory storage, get data directly from memory cache
+            if cache_key in self.memory_cache:
+                data = self.memory_cache[cache_key]
+            else:
+                raise ValueError(f"Memory cached data not found for {cache_key}")
+        else:
+            # For disk storage, load from disk
+            data = self._load_from_disk(cached_info)
         
         for session in data["sessions"]:
             session_data = session["data"]
@@ -652,7 +747,7 @@ def get_shared_data_cache():
     """
     return hybrid_data_cache
 
-def cache_telemetry_sessions(track_name: str, sessions_iterator, estimated_size_mb: float = None):
+async def cache_telemetry_sessions(track_name: str, sessions_iterator, estimated_size_mb: float = None):
     """
     Convenience function to cache telemetry sessions using the shared cache
     
@@ -664,7 +759,7 @@ def cache_telemetry_sessions(track_name: str, sessions_iterator, estimated_size_
     Returns:
         bool: True if caching was successful
     """
-    return hybrid_data_cache.cache_sessions_streaming(
+    return await hybrid_data_cache.cache_sessions_streaming(
         track_name=track_name,
         sessions_iterator=sessions_iterator,
         estimated_size_mb=estimated_size_mb
