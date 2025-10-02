@@ -3,6 +3,11 @@ REM ACLA Development Environment Startup Script for Windows
 
 echo 🚀 Starting ACLA Development Environment with AI Service...
 
+REM Check WSL memory configuration
+if not exist "%USERPROFILE%\.wslconfig" (
+    echo ⚠️  WSL memory not optimized. Run 'optimize-memory.bat' first for better performance.
+)
+
 REM Check if Docker is running
 docker info >nul 2>&1
 if errorlevel 1 (
@@ -70,5 +75,10 @@ echo    - Pattern detection in racing behavior
 echo    - Sector-wise performance analysis
 echo.
 echo 📚 See AI_SERVICE_GUIDE.md for detailed documentation
+echo.
+echo 💾 Memory Usage Tips:
+echo    - If WSL uses too much memory, run 'optimize-memory.bat'
+echo    - Stop containers when not developing: docker-compose -f docker-compose.dev.yaml down
+echo    - Clean up regularly: docker system prune -f
 
 pause

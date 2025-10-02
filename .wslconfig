@@ -1,0 +1,38 @@
+# WSL 2 configuration file
+# This file should be placed in your Windows user directory (C:\Users\<YourUsername>\.wslconfig)
+# Copy this file to: %USERPROFILE%\.wslconfig
+
+[wsl2]
+# Limits VM memory to use no more than 4 GB, aggressive memory limiting
+memory=5GB
+
+# Sets the VM to use two virtual processors
+processors=2
+
+# Specify a custom Linux kernel to use with your installed distros. The default kernel used can be found at https://github.com/microsoft/WSL2-Linux-Kernel
+# kernel=C:\\temp\\myCustomKernel
+
+# Sets additional kernel parameters, in this case enabling nested virtualization
+# kernelCommandLine = vsyscall=emulate
+
+# Sets amount of swap space to 1GB, reduced for memory conservation
+swap=1GB
+
+# Sets swapfile path location, default is %USERPROFILE%\AppData\Local\Temp\swap.vhdx
+# swapfile=C:\\temp\\wsl-swap.vhdx
+
+# Disable page reporting so WSL retains all allocated memory claimed from Windows and releases none back when free
+# localhostforwarding=true
+
+# Turn on default connection to bind WSL 2 localhost to Windows localhost
+localhostforwarding=true
+
+# Disables nested virtualization
+# nestedVirtualization=false
+
+# Turns on output console showing contents of dmesg when opening a WSL 2 distro for debugging
+# debugConsole=true
+
+# Enable experimental features
+[experimental]
+sparseVhd=true

@@ -2,16 +2,19 @@ fastapi==0.104.1
 uvicorn==0.24.0
 pydantic==2.5.0
 pydantic-settings==2.1.0
+typing-extensions==4.8.0
 requests==2.31.0
 pandas==2.1.4
-numpy==1.25.2
+numpy==1.24.4
 scikit-learn==1.3.2
 joblib==1.3.2
 river==0.21.0
-dask[distributed]==2024.2.1
-h5py==3.10.0
-tables==3.9.2
+
+# Optimized data storage and processing
+pyarrow==14.0.0
 lz4==4.3.2
+xxhash==3.4.1
+
 torch==2.0.1
 pytest==7.4.0
 pytest-asyncio==0.21.1
@@ -22,6 +25,5 @@ plotly==5.17.0
 matplotlib==3.8.2
 seaborn==0.13.0
 python-dotenv==1.0.0
-asyncio==3.4.3
 aiofiles==23.2.1
 aiohttp==3.9.1

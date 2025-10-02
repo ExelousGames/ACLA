@@ -251,7 +251,7 @@ class BackendService:
                         
                         session_chunks = []
                         
-                        # Download all chunks for this session
+                        # Download all chunks for this session with retry logic
                         for chunk_index in range(chunk_count):
                             chunk_request = {
                                 "downloadId": self.download_id,
@@ -259,14 +259,52 @@ class BackendService:
                                 "chunkIndex": chunk_index
                             }
                             
-                            chunk_response = await self.backend_service.call_backend_function("racing-session/download/chunk", "POST", chunk_request, timeout_seconds=180.0)
+                            # Implement retry logic for chunk downloads
+                            chunk_data = []
+                            max_retries = 3
+                            base_timeout = 180.0
                             
-                            if "error" in chunk_response:
-                                logger.error(f"Failed to download chunk {chunk_index} for session {session_id}: {chunk_response['error']}")
-                                continue
+                            for retry_attempt in range(max_retries):
+                                # Increase timeout with each retry
+                                timeout_seconds = base_timeout + (retry_attempt * 120.0)  # 180, 300, 420 seconds
+                                
+                                try:
+                                    logger.info(f"Downloading chunk {chunk_index + 1}/{chunk_count} for session {session_id[:8]}... (attempt {retry_attempt + 1}/{max_retries}, timeout: {timeout_seconds}s)")
+                                    
+                                    chunk_response = await self.backend_service.call_backend_function(
+                                        "racing-session/download/chunk", 
+                                        "POST", 
+                                        chunk_request, 
+                                        timeout_seconds=timeout_seconds
+                                    )
+                                    
+                                    if "error" in chunk_response:
+                                        if retry_attempt < max_retries - 1:
+                                            logger.warning(f"Chunk {chunk_index} failed (attempt {retry_attempt + 1}): {chunk_response['error']}. Retrying...")
+                                            await asyncio.sleep(5 * (retry_attempt + 1))  # Exponential backoff
+                                            continue
+                                        else:
+                                            logger.error(f"Failed to download chunk {chunk_index} for session {session_id} after {max_retries} attempts: {chunk_response['error']}")
+                                            break
+                                    
+                                    chunk_data = chunk_response.get("data", [])
+                                    logger.info(f"Successfully downloaded chunk {chunk_index + 1}/{chunk_count} with {len(chunk_data)} records")
+                                    break  # Success, exit retry loop
+                                    
+                                except Exception as e:
+                                    if retry_attempt < max_retries - 1:
+                                        logger.warning(f"Chunk {chunk_index} download exception (attempt {retry_attempt + 1}): {str(e)}. Retrying...")
+                                        await asyncio.sleep(5 * (retry_attempt + 1))  # Exponential backoff
+                                        continue
+                                    else:
+                                        logger.error(f"Failed to download chunk {chunk_index} for session {session_id} after {max_retries} attempts due to exception: {str(e)}")
+                                        break
                             
-                            chunk_data = chunk_response.get("data", [])
-                            session_chunks.extend(chunk_data)
+                            # Only add data if we successfully got it
+                            if chunk_data:
+                                session_chunks.extend(chunk_data)
+                            else:
+                                logger.warning(f"Skipping empty chunk {chunk_index} for session {session_id}")
                         
                         # Yield session without storing in parent scope
                         yield {
@@ -376,7 +414,7 @@ class BackendService:
                 
                 session_chunks = []
                 
-                # Download all chunks for this session
+                # Download all chunks for this session with retry logic
                 for chunk_index in range(chunk_count):
                     chunk_request = {
                         "downloadId": download_id,
@@ -384,14 +422,52 @@ class BackendService:
                         "chunkIndex": chunk_index
                     }
                     
-                    chunk_response = await self.call_backend_function("racing-session/download/chunk", "POST", chunk_request, timeout_seconds=180.0)
+                    # Implement retry logic for chunk downloads
+                    chunk_data = []
+                    max_retries = 3
+                    base_timeout = 180.0
                     
-                    if "error" in chunk_response:
-                        logger.error(f"Failed to download chunk {chunk_index} for session {session_id}: {chunk_response['error']}")
-                        continue
+                    for retry_attempt in range(max_retries):
+                        # Increase timeout with each retry
+                        timeout_seconds = base_timeout + (retry_attempt * 120.0)  # 180, 300, 420 seconds
+                        
+                        try:
+                            logger.info(f"Downloading chunk {chunk_index + 1}/{chunk_count} for session {session_id[:8]}... (attempt {retry_attempt + 1}/{max_retries}, timeout: {timeout_seconds}s)")
+                            
+                            chunk_response = await self.call_backend_function(
+                                "racing-session/download/chunk", 
+                                "POST", 
+                                chunk_request, 
+                                timeout_seconds=timeout_seconds
+                            )
+                            
+                            if "error" in chunk_response:
+                                if retry_attempt < max_retries - 1:
+                                    logger.warning(f"Chunk {chunk_index} failed (attempt {retry_attempt + 1}): {chunk_response['error']}. Retrying...")
+                                    await asyncio.sleep(5 * (retry_attempt + 1))  # Exponential backoff
+                                    continue
+                                else:
+                                    logger.error(f"Failed to download chunk {chunk_index} for session {session_id} after {max_retries} attempts: {chunk_response['error']}")
+                                    break
+                            
+                            chunk_data = chunk_response.get("data", [])
+                            logger.info(f"Successfully downloaded chunk {chunk_index + 1}/{chunk_count} with {len(chunk_data)} records")
+                            break  # Success, exit retry loop
+                            
+                        except Exception as e:
+                            if retry_attempt < max_retries - 1:
+                                logger.warning(f"Chunk {chunk_index} download exception (attempt {retry_attempt + 1}): {str(e)}. Retrying...")
+                                await asyncio.sleep(5 * (retry_attempt + 1))  # Exponential backoff
+                                continue
+                            else:
+                                logger.error(f"Failed to download chunk {chunk_index} for session {session_id} after {max_retries} attempts due to exception: {str(e)}")
+                                break
                     
-                    chunk_data = chunk_response.get("data", [])
-                    session_chunks.extend(chunk_data)
+                    # Only add data if we successfully got it
+                    if chunk_data:
+                        session_chunks.extend(chunk_data)
+                    else:
+                        logger.warning(f"Skipping empty chunk {chunk_index} for session {session_id}")
                 
                 # Add complete session data
                 all_sessions_data.append({

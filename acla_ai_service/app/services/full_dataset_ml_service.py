@@ -1085,7 +1085,7 @@ class Full_dataset_TelemetryMLService:
     async def process_large_dataset_efficiently(self, trackName: str,
                                         max_memory_records: int = 50000) -> Tuple[List[Dict[str, Any]], str]:
         """
-        Process very large cached datasets efficiently using streaming and Dask
+        Process very large cached datasets efficiently using streaming with CSV chunks
         Optimized for datasets that cannot fit in memory - stores bottom laps in cache instead of memory
         
         Args:
@@ -1097,7 +1097,7 @@ class Full_dataset_TelemetryMLService:
             Tuple of (top_laps_telemetry_list, bottom_laps_cache_key) where cache_key is used to access bottom laps via data_cache
         """
         print(f"[INFO] Processing very large dataset for {trackName} with conservative memory limit {max_memory_records}")
-        print(f"[INFO] Using streaming approach with Dask/HDF5 backend")
+        print(f"[INFO] Using streaming approach with CSV chunked processing backend")
         
         def process_chunk(chunk_df: pd.DataFrame) -> Dict[str, Any]:
             """Process a single chunk of data with optimized memory usage"""
@@ -1262,13 +1262,15 @@ class Full_dataset_TelemetryMLService:
             print("")
         
         print(f"Memory Cache: {info['memory_cache']['entries']}/{info['memory_cache']['max_entries']} datasets")
-        print(f"Dask Enabled: {info['dask_enabled']}")
-        if info.get('dask_client'):
-            print(f"Dask Client: {info['dask_client']}")
+        
+        processing_info = info.get('processing', {})
+        print(f"Processing: {processing_info.get('storage_format', 'CSV with gzip compression')}")
+        print(f"Chunk Size: {processing_info.get('chunk_size', 10000)} records")
         
         disk_info = info['disk_cache']
         print(f"Disk Cache: {len(disk_info['entries'])} entries, {disk_info['total_size_mb']:.1f}MB")
         print(f"Storage Directory: {disk_info['storage_directory']}")
+        print(f"CSV Directory: {disk_info.get('csv_directory', 'N/A')}")
         
         if disk_info['entries']:
             print("\nCached Datasets:")

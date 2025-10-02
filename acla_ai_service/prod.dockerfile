@@ -2,31 +2,35 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
+# Set production environment variables
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PYTHONOPTIMIZE=2
+
+# Install system dependencies and create user in single layer
+RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     g++ \
     curl \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* \
+    && adduser --disabled-password --gecos '' appuser
 
 # Copy requirements first for better caching
 COPY requirements.txt .
 
-# Install Python dependencies (CPU baseline)
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Attempt to install CUDA-enabled PyTorch to leverage GPUs when available.
-# Falls back to CPU-only PyTorch if matching CUDA wheels aren't present for this env.
-RUN set -eux; \
-    (pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cu118 "torch==2.0.1+cu118" \
-    && echo "Installed CUDA-enabled PyTorch (cu118)." ) \
+# Install Python dependencies and attempt CUDA PyTorch upgrade
+RUN pip install --no-cache-dir -r requirements.txt \
+    && (pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cu118 "torch==2.0.1+cu118" \
+    && echo "Installed CUDA-enabled PyTorch (cu118).") \
     || echo "CUDA-enabled PyTorch wheel not available; using CPU-only PyTorch."
 
-# Copy application code
+# Copy application code and set ownership
 COPY . .
+RUN chown -R appuser:appuser /app
 
-# Create non-root user for security
-RUN adduser --disabled-password --gecos '' appuser && chown -R appuser /app
+# Switch to non-root user for security
 USER appuser
 
 # Expose port

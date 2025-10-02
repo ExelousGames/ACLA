@@ -1,4 +1,4 @@
-import { Controller, Get, UseGuards, Request, Post, Body, Query, BadRequestException, Inject, forwardRef } from '@nestjs/common';
+import { Controller, Get, UseGuards, Request, Post, Body, Query, BadRequestException, Inject, forwardRef, Logger } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { RacingSessionDetailedInfoDto, SessionBasicInfoListDto, UploadReacingSessionInitDto, AllSessionsInitResponseDto, SessionChunkDto, AllSessionsChunkRequestDto, ImitationLearningGuidanceRequestDto, ImitationLearningGuidanceResponseDto } from 'src/dto/racing-session.dto';
 import { AiModelResponseDto } from 'src/dto/ai-model.dto';
@@ -8,9 +8,13 @@ import { UserInfoService } from '../user-info/user-info.service';
 import { UserACCTrackAIModel } from 'src/schemas/session-ai-model.schema';
 import { AiServiceClient, ModelsConfig, TrainModelsResponse, ImitationLearningGuidanceRequest } from '../../shared/ai/ai-service.client';
 import { model, Types } from 'mongoose';
+import * as path from 'path';
+import * as fs from 'fs/promises';
 
 @Controller('racing-session')
 export class RacingSessionController {
+    private readonly logger = new Logger(RacingSessionController.name);
+
     private uploadStates = new Map<string, {
         metadata: UploadReacingSessionInitDto;
         session_data_chunks: string[][];
@@ -29,7 +33,12 @@ export class RacingSessionController {
         private aiModelService: UserSessionAiModelService,
         private aiServiceClient: AiServiceClient,
         private userInfoService: UserInfoService
-    ) { }
+    ) {
+        // Clean up old assembled files every hour
+        setInterval(() => {
+            this.cleanupOldAssembledFiles();
+        }, 60 * 60 * 1000); // 1 hour
+    }
 
     @UseGuards(AuthGuard('jwt'))
     @Post('sessionbasiclist')
@@ -122,6 +131,52 @@ export class RacingSessionController {
             if (state.createdAt < oneHourAgo) {
                 this.downloadStates.delete(downloadId);
             }
+        }
+    }
+
+    /**
+     * Clean up assembled file after successful upload completion
+     */
+    private async cleanupAssembledFile(uploadId: string): Promise<void> {
+        try {
+            const assembledFilePath = path.resolve(process.cwd(), 'session_recording', 'temp', 'assembled', `${uploadId}.bin`);
+            await fs.unlink(assembledFilePath);
+            this.logger.log(`Cleaned up assembled file for upload ${uploadId}`);
+        } catch (error) {
+            // File might not exist or already deleted, which is fine
+            this.logger.debug(`Could not clean up assembled file for upload ${uploadId}: ${error.message}`);
+        }
+    }
+
+    /**
+     * Clean up old assembled files (older than 2 hours)
+     */
+    private async cleanupOldAssembledFiles(): Promise<void> {
+        try {
+            const assembledDir = path.resolve(process.cwd(), 'session_recording', 'temp', 'assembled');
+            const files = await fs.readdir(assembledDir);
+            const twoHoursAgo = Date.now() - (2 * 60 * 60 * 1000); // 2 hours
+            let cleanedCount = 0;
+
+            for (const file of files) {
+                try {
+                    const filePath = path.join(assembledDir, file);
+                    const stats = await fs.stat(filePath);
+
+                    if (stats.mtime.getTime() < twoHoursAgo) {
+                        await fs.unlink(filePath);
+                        cleanedCount++;
+                    }
+                } catch (error) {
+                    this.logger.debug(`Could not process file ${file}: ${error.message}`);
+                }
+            }
+
+            if (cleanedCount > 0) {
+                this.logger.log(`Cleaned up ${cleanedCount} old assembled files`);
+            }
+        } catch (error) {
+            this.logger.debug(`Could not clean up old assembled files: ${error.message}`);
         }
     }
 
@@ -315,7 +370,14 @@ export class RacingSessionController {
 
         } catch (error) {
             console.error('Error creating Racing Session:', error);
+        } finally {
+            // Clean up upload state from memory to prevent memory leaks
+            this.uploadStates.delete(uploadId);
+
+            // Clean up any assembled files for this upload
+            await this.cleanupAssembledFile(uploadId);
         }
+
         return {
             message: 'Upload completed successfully',
             sessionId: uploadId,
