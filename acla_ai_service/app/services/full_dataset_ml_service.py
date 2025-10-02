@@ -1085,151 +1085,129 @@ class Full_dataset_TelemetryMLService:
     async def process_large_dataset_efficiently(self, trackName: str,
                                         max_memory_records: int = 50000) -> Tuple[List[Dict[str, Any]], str]:
         """
-        Process large cached datasets efficiently using streamlined Parquet-based cache
-        Optimized for datasets that cannot fit in memory - stores bottom laps in cache instead of memory
+        Streamlined processing of large cached datasets with minimal memory footprint
         
         Args:
             trackName: Track name for data retrieval
-            max_memory_records: Maximum records to keep in memory at once (reduced for large datasets)
+            max_memory_records: Maximum records per chunk
             
         Returns:
-            Tuple of (top_laps_telemetry_list, bottom_laps_cache_key) where cache_key is used to access bottom laps via data_cache
+            Tuple of (top_laps_telemetry_list, bottom_laps_cache_key)
         """
-        print(f"[INFO] Processing large dataset for {trackName} with memory limit {max_memory_records}")
-        print(f"[INFO] Using training-optimized Parquet cache with streaming processing")
+        print(f"[INFO] Processing {trackName} dataset with {max_memory_records} chunk size")
         
-        def process_chunk(chunk_df: pd.DataFrame) -> Dict[str, Any]:
-            """Process a single chunk of data with optimized memory usage"""
+        # Simple direct processing - maintain only top 5 laps
+        top_5_laps = {}  # lap_num -> {lap_time_ms, records}
+        bottom_laps_cache_key = f"bottom_laps_{trackName}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        bottom_laps_sessions = []
+        total_processed = 0
+        chunk_idx = 0
+        
+        chunk_iterator = self.data_cache.get_cached_data_chunks(
+            track_name=trackName,
+            chunk_size=max_memory_records
+        )
+        
+        for chunk_df in chunk_iterator:
+            if chunk_df.empty:
+                continue
+            
             try:
-                if chunk_df.empty:
-                    return {"top_laps": [], "bottom_laps": [], "processed_records": 0}
-                
-                print(f"[DEBUG] Processing chunk with {len(chunk_df)} records")
-
-                print(f"[DEBUG] Chunk keys: {chunk_df.keys()}")
-                feature_processor = FeatureProcessor(chunk_df)
-                
-                # Clean and filter data
-                processed_df = feature_processor.general_cleaning_for_analysis()
+                # Process and filter data
+                processor = FeatureProcessor(chunk_df)
+                processed_df = processor.general_cleaning_for_analysis()
                 
                 if processed_df.empty:
-                    return {"top_laps": [], "bottom_laps": [], "processed_records": 0}
+                    continue
                 
-                # Filter to relevant features early to reduce memory usage
-                telemetry_features = TelemetryFeatures()
-                relevant_features = telemetry_features.get_features_for_imitate_expert()
-                processed_df = feature_processor.filter_features_by_list(processed_df, relevant_features)
-                
-                if processed_df.empty:
-                    return {"top_laps": [], "bottom_laps": [], "processed_records": 0}
-                
-                # Extract performance laps with strict filtering
-                _, lap_df_list = feature_processor._filter_top_performance_laps(processed_df, 1)
+                # Extract performance laps first
+                _, lap_df_list = processor._filter_top_performance_laps(processed_df, 1)
                 
                 if not lap_df_list:
-                    return {"top_laps": [], "bottom_laps": [], "processed_records": len(processed_df)}
+                    continue
                 
-                # Take top 0.5% for very large datasets
-                top_laps_df_count = max(1, int(len(lap_df_list) * 0.005))
-                top_laps_df = lap_df_list[:top_laps_df_count]
+                # Filter to relevant features on each lap
+                features = self._imitate_expert_feature_names or TelemetryFeatures().get_features_for_imitate_expert()
+                for lap_df in lap_df_list:
+                    filtered_lap_df = processor.filter_features_by_list(lap_df, features)
+                    if filtered_lap_df.empty:
+                        continue
+                    
+                    # Get lap info
+                    lap_records = filtered_lap_df.to_dict('records')
+                    lap_num = lap_records[0].get('lap_number', 0)
+                    lap_time = min(r.get('lap_time_ms', float('inf')) for r in lap_records)
+                    
+                    # Check if this lap should be in top 5
+                    if len(top_5_laps) < 5:
+                        # Still have space, add this lap
+                        top_5_laps[lap_num] = {"lap_time_ms": lap_time, "records": lap_records}
+                    else:
+                        # Find slowest lap in current top 5
+                        slowest_lap = max(top_5_laps.items(), key=lambda x: x[1]["lap_time_ms"])
+                        
+                        if lap_time < slowest_lap[1]["lap_time_ms"]:
+                            # This lap is faster, replace the slowest
+                            # Move slowest to bottom laps
+                            bottom_laps_sessions.append({
+                                "sessionId": f"bottom_lap_{slowest_lap[0]}_{chunk_idx}",
+                                "data": slowest_lap[1]["records"]
+                            })
+                            
+                            # Remove slowest and add new lap
+                            del top_5_laps[slowest_lap[0]]
+                            top_5_laps[lap_num] = {"lap_time_ms": lap_time, "records": lap_records}
+                        else:
+                            # This lap is slower than top 5, add to bottom laps
+                            bottom_laps_sessions.append({
+                                "sessionId": f"bottom_lap_{lap_num}_{chunk_idx}",
+                                "data": lap_records
+                            })
                 
-                # Use remaining laps as bottom laps for training
-                bottom_laps_df = lap_df_list[top_laps_df_count:]
+                total_processed += len(chunk_df)
+                chunk_idx += 1
                 
-                # Convert to records efficiently
-                top_records = []
-                for lap_df in top_laps_df:
-                    top_records.extend(lap_df.to_dict('records'))
-                
-                bottom_records = []
-                for lap_df in bottom_laps_df:
-                    bottom_records.extend(lap_df.to_dict('records'))
-                
-                # Clear DataFrames to free memory
-                del processed_df, lap_df_list, top_laps_df, bottom_laps_df
-                
-                return {
-                    "top_laps": top_records,
-                    "bottom_laps": bottom_records,
-                    "processed_records": len(chunk_df)
-                }
-                
+                if chunk_idx % 10 == 0:
+                    print(f"[INFO] Processed {chunk_idx} chunks, {total_processed} records")
+                    
             except Exception as e:
-                print(f"[WARNING] Failed to process chunk of {len(chunk_df) if not chunk_df.empty else 0} records: {e}")
-                return {"top_laps": [], "bottom_laps": [], "processed_records": 0}
+                print(f"[WARNING] Chunk processing failed: {e}")
+                continue
+        
+        # Cache all bottom laps
+        async def cache_bottom_laps():
+            for session in bottom_laps_sessions:
+                yield session
         
         try:
-            print("[INFO] Starting streaming processing with training-optimized cache")
-            
-            # Use training-optimized cache streaming processing
-            chunk_results = self.data_cache.process_large_dataset_streaming(
-                track_name=trackName,
-                processing_func=process_chunk,
-                chunk_size=max_memory_records
-            )
-            
-            if not chunk_results:
-                raise ValueError(f"No data chunks returned from cache for {trackName}")
-            
-            # Aggregate top laps in memory but cache bottom laps to avoid memory overflow
-            top_laps_telemetry_list = []
-            bottom_laps_cache_key = f"bottom_laps_{trackName}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-            total_processed = 0
-            chunks_processed = 0
-                            
-            # Process results from streaming
-            chunk_results_list = list(chunk_results)
-            total_bottom_laps_count = 0
-            
-            for result in chunk_results_list:
-                if isinstance(result, dict) and result:
-                    top_laps_telemetry_list.extend(result.get("top_laps", []))
-                    total_bottom_laps_count += len(result.get("bottom_laps", []))
-                    total_processed += result.get("processed_records", 0)
-                    chunks_processed += 1
-                    
-                    # Progress logging for large datasets
-                    if chunks_processed % 10 == 0:
-                        print(f"[INFO] Processed {chunks_processed} chunks, {total_processed} total records")
-            
-            # Cache bottom laps using streaming to avoid memory accumulation
-            print(f"[INFO] Caching {total_bottom_laps_count} bottom laps to training-optimized cache")
-            
-            async def create_bottom_laps_generator():
-                """Create async generator for caching bottom laps"""
-                chunk_idx = 0
-                for result in chunk_results_list:
-                    if isinstance(result, dict) and result:
-                        bottom_laps = result.get("bottom_laps", [])
-                        if bottom_laps:
-                            yield {
-                                "sessionId": f"bottom_laps_chunk_{chunk_idx}",
-                                "data": bottom_laps
-                            }
-                            chunk_idx += 1
-            
-            # Cache bottom laps with Parquet storage
             cache_success = await self.data_cache.cache_sessions_streaming(
                 track_name=bottom_laps_cache_key,
-                sessions_iterator=create_bottom_laps_generator()
+                sessions_iterator=cache_bottom_laps()
             )
             
             if not cache_success:
-                print(f"[WARNING] Failed to cache bottom laps - memory usage may be high")
+                raise MemoryError("Failed to cache bottom laps")
             
-            if not top_laps_telemetry_list and total_bottom_laps_count == 0:
-                raise ValueError(f"No valid telemetry data extracted from {trackName} dataset")
+            if len(top_5_laps) == 0 and chunk_idx == 0:
+                raise ValueError(f"No valid telemetry data found for {trackName}")
             
-            print(f"[SUCCESS] Processed {chunks_processed} chunks, {total_processed} records total")
-            print(f"[SUCCESS] Extracted {len(top_laps_telemetry_list)} expert records, cached {total_bottom_laps_count} training records")
-            print(f"[INFO] Bottom laps cached with key: {bottom_laps_cache_key}")
+            if len(top_5_laps) < 5:
+                raise ValueError(f"Insufficient top laps found: {len(top_5_laps)}/5 required. Need at least 5 expert laps for training.")
+            
+            # Extract records from top 5 laps
+            top_laps_telemetry_list = []
+            for lap_info in top_5_laps.values():
+                top_laps_telemetry_list.extend(lap_info["records"])
+            
+            print(f"[SUCCESS] Processed {chunk_idx} chunks, {total_processed} records")
+            print(f"[SUCCESS] Selected top 5 laps: {len(top_laps_telemetry_list)} records, cached {len(bottom_laps_sessions)} bottom sessions")
+            print(f"[SUCCESS] Bottom laps cached with key: {bottom_laps_cache_key}")
             
             return top_laps_telemetry_list, bottom_laps_cache_key
             
         except Exception as e:
-            print(f"[ERROR] Large dataset processing failed: {e}")
-            print(f"[ERROR] Issue with training-optimized cache or data processing pipeline")
-            raise Exception(f"Failed to process large dataset for {trackName}: {str(e)}")
+            print(f"[ERROR] Dataset processing failed: {e}")
+            raise Exception(f"Failed to process dataset for {trackName}: {str(e)}")
 
     def get_data_cache_info(self) -> Dict[str, Any]:
         """Get information about the training-optimized data cache"""
