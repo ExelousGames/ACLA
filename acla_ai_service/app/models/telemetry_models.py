@@ -829,6 +829,7 @@ class FeatureProcessor:
         
         # Handle Graphics_car_coordinates array - extract player car position
         if 'Graphics_car_coordinates' in df.columns:
+            print("found Graphics_car_coordinates column, processing...")
             try:
                 # Extract first car coordinates (player car) if it's a list
                 for idx in df.index:
