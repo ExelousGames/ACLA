@@ -967,7 +967,7 @@ class Full_dataset_TelemetryMLService:
                 raise Exception(f"Failed to stream sessions: {sessions_metadata.get('message', 'Unknown error')}")
             
             print(f"[INFO] Successfully streamed {sessions_metadata['total_sessions']} sessions directly to cache")
-            print(f"[INFO] Estimated {sessions_metadata['summary']['estimated_total_records']} total records")
+            print(f"[INFO] Processed {sessions_metadata['summary']['data_points_processed']} total records")
             
         except Exception as e:
             print(f"[ERROR] Failed to stream sessions from backend: {str(e)}")
@@ -975,7 +975,7 @@ class Full_dataset_TelemetryMLService:
 
         # Validate that we have sessions from backend streaming
         total_sessions = sessions_metadata.get("total_sessions", 0)
-        total_records = sessions_metadata.get("summary", {}).get("estimated_total_records", 0)
+        total_records = sessions_metadata.get("summary", {}).get("data_points_processed", 0)
         
         if total_sessions == 0:
             raise ValueError("No sessions found")

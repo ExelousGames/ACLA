@@ -22,13 +22,13 @@ warnings.filterwarnings('ignore', category=UserWarning)
 
 class TrainingOptimizedCache:
     """
-    Streamlined cache for ML training pipelines
+    Large Dataset Cache for ML Training Pipelines
     
-    Key principles:
-    - Single Parquet format (no fallbacks or legacy paths)
-    - Direct streaming for training (minimal memory usage)
-    - Fast columnar access for feature extraction
-    - Clean, simple API for model training workflows
+    Designed for processing massive datasets (GB to TB scale):
+    - Multi-part Parquet storage for memory efficiency
+    - Streaming processing to avoid memory overflow
+    - Aggressive chunking for optimal resource usage
+    - Manifest-based file management for large datasets
     """
     
     def __init__(self, cache_directory: str = "telemetry_data_cache"):
@@ -44,9 +44,9 @@ class TrainingOptimizedCache:
         self.metadata_db = self.cache_dir / "cache_metadata.db"
         self._init_metadata_db()
         
-        # Training-optimized settings
-        self.compression = 'snappy'  # Standard Parquet compression
-        self.row_group_size = 100000  # Optimal for training batch access
+        # Large dataset optimization settings
+        self.compression = 'snappy'  # Fast compression for large files
+        self.row_group_size = 50000   # Conservative row groups for memory efficiency
         
         print(f"[INFO] Training-optimized cache initialized: {self.cache_dir}")
         print(f"[INFO] Parquet-only storage with snappy compression")
@@ -106,15 +106,18 @@ class TrainingOptimizedCache:
     async def _cache_to_parquet(self, cache_key: str, track_name: str, 
                                car_name: Optional[str], 
                                sessions_iterator: Iterator[Dict[str, Any]]) -> bool:
-        """Stream sessions directly to single Parquet file"""
+        """Stream sessions directly to single Parquet file using efficient batching"""
         parquet_file = self.parquet_dir / f"{cache_key}.parquet"
         
         try:
             all_records = []
             session_count = 0
             total_records = 0
+            chunk_files = []  # Keep track of temporary chunk files
             
-            # Collect all data (streaming approach for large datasets)
+            print(f"[INFO] Starting parquet caching for {cache_key}")
+            
+            # Collect all data with improved memory management
             async for session in sessions_iterator:
                 session_id = session.get("sessionId", f"session_{session_count}")
                 session_data = session.get("data", [])
@@ -130,33 +133,50 @@ class TrainingOptimizedCache:
                 session_count += 1
                 total_records += len(session_data)
                 
-                # Process in chunks to avoid memory issues
-                if len(all_records) >= self.row_group_size:
+                # Process in optimal chunks for large datasets - aggressive chunking for memory efficiency
+                chunk_size = 5000  # Optimal chunk size for large datasets to minimize memory footprint
+                
+                if len(all_records) >= chunk_size:
+                    # Write chunk to temporary file instead of loading entire existing file
+                    chunk_file = self.parquet_dir / f"{cache_key}_chunk_{len(chunk_files)}.parquet"
                     df_chunk = pd.DataFrame(all_records)
+                    df_chunk.to_parquet(chunk_file, compression=self.compression, index=False)
+                    chunk_files.append(chunk_file)
                     
-                    # Write first chunk or append
-                    if not parquet_file.exists():
-                        df_chunk.to_parquet(parquet_file, compression=self.compression, index=False)
-                    else:
-                        # Append to existing file
-                        existing_df = pd.read_parquet(parquet_file)
-                        combined_df = pd.concat([existing_df, df_chunk], ignore_index=True)
-                        combined_df.to_parquet(parquet_file, compression=self.compression, index=False)
+                    all_records = []  # Clear memory immediately
                     
-                    all_records = []  # Clear memory
+                    print(f"[INFO] Cached chunk {len(chunk_files)} with {len(df_chunk)} records")
             
             # Write remaining records
             if all_records:
+                chunk_file = self.parquet_dir / f"{cache_key}_chunk_{len(chunk_files)}.parquet"
                 df_final = pd.DataFrame(all_records)
-                if not parquet_file.exists():
-                    df_final.to_parquet(parquet_file, compression=self.compression, index=False)
-                else:
-                    existing_df = pd.read_parquet(parquet_file)
-                    combined_df = pd.concat([existing_df, df_final], ignore_index=True)
-                    combined_df.to_parquet(parquet_file, compression=self.compression, index=False)
+                df_final.to_parquet(chunk_file, compression=self.compression, index=False)
+                chunk_files.append(chunk_file)
+                print(f"[INFO] Cached final chunk {len(chunk_files)} with {len(df_final)} records")
+            
+            # Always use multi-part parquet files for large datasets (this is a cache service for large data)
+            if chunk_files:
+                total_size_mb = sum(f.stat().st_size for f in chunk_files if f.exists()) / (1024 * 1024)
+                print(f"[INFO] Large dataset: {total_size_mb:.1f}MB across {len(chunk_files)} chunks")
+                print(f"[INFO] Using multi-part parquet storage for optimal memory efficiency")
+                
+                # Rename chunk files to have consistent naming and keep them separate
+                for i, chunk_file in enumerate(chunk_files):
+                    new_name = self.parquet_dir / f"{cache_key}_part_{i:03d}.parquet"
+                    if chunk_file != new_name:
+                        chunk_file.rename(new_name)
+                
+                # Create a manifest file to track all parts
+                manifest_file = self.parquet_dir / f"{cache_key}_manifest.txt"
+                with open(manifest_file, 'w') as f:
+                    for i in range(len(chunk_files)):
+                        f.write(f"{cache_key}_part_{i:03d}.parquet\n")
+                
+                print(f"[INFO] Created {len(chunk_files)} parquet files with manifest for memory-efficient processing")
             
             # Calculate final size
-            file_size_mb = parquet_file.stat().st_size / (1024 * 1024)
+            file_size_mb = parquet_file.stat().st_size / (1024 * 1024) if parquet_file.exists() else 0
             
             # Update metadata
             self._update_cache_metadata(
@@ -175,14 +195,38 @@ class TrainingOptimizedCache:
             return False
 
     def _load_parquet_data(self, cached_info: Dict[str, Any]) -> Dict[str, Any]:
-        """Load data from Parquet file"""
+        """Load data from Parquet file(s) - supports both single files and multiple parts"""
         parquet_file = Path(cached_info["file_path"])
         
-        if not parquet_file.exists():
-            raise FileNotFoundError(f"Parquet file not found: {parquet_file}")
+        # Check if this is a multi-part dataset
+        manifest_file = parquet_file.parent / f"{parquet_file.stem}_manifest.txt"
         
-        # Load Parquet data
-        df = pd.read_parquet(parquet_file)
+        if manifest_file.exists():
+            # Multi-part dataset - load from manifest
+            print(f"[INFO] Loading multi-part parquet dataset using manifest")
+            
+            with open(manifest_file, 'r') as f:
+                part_files = [line.strip() for line in f.readlines() if line.strip()]
+            
+            # Load all parts
+            all_dfs = []
+            for part_name in part_files:
+                part_path = parquet_file.parent / part_name
+                if part_path.exists():
+                    part_df = pd.read_parquet(part_path)
+                    all_dfs.append(part_df)
+            
+            if all_dfs:
+                df = pd.concat(all_dfs, ignore_index=True)
+            else:
+                raise FileNotFoundError(f"No valid parquet parts found for manifest: {manifest_file}")
+                
+        else:
+            # Single parquet file
+            if not parquet_file.exists():
+                raise FileNotFoundError(f"Parquet file not found: {parquet_file}")
+            
+            df = pd.read_parquet(parquet_file)
         
         # Convert back to session format
         sessions_data = self._convert_df_to_sessions(df)
@@ -222,18 +266,55 @@ class TrainingOptimizedCache:
 
     
     def _process_parquet_streaming(self, file_path: str, processing_func: callable, chunk_size: int) -> Any:
-        """Process Parquet data in streaming chunks"""
+        """Process Parquet data in streaming chunks - handles both single files and multi-part datasets"""
         parquet_file = Path(file_path)
         results = []
+        total_rows = 0
         
-        # Read Parquet in chunks to minimize memory usage
-        df = pd.read_parquet(parquet_file)
-        total_rows = len(df)
+        # Check if this is a multi-part dataset
+        manifest_file = parquet_file.parent / f"{parquet_file.stem}_manifest.txt"
         
-        for i in range(0, total_rows, chunk_size):
-            chunk = df.iloc[i:i+chunk_size]
-            result = processing_func(chunk)
-            results.append(result)
+        if manifest_file.exists():
+            # Multi-part dataset - process each part
+            print(f"[INFO] Processing multi-part parquet dataset using manifest")
+            
+            with open(manifest_file, 'r') as f:
+                part_files = [line.strip() for line in f.readlines() if line.strip()]
+            
+            for i, part_name in enumerate(part_files):
+                part_path = parquet_file.parent / part_name
+                if not part_path.exists():
+                    print(f"[WARNING] Part file not found: {part_path}")
+                    continue
+                
+                print(f"[INFO] Processing part {i+1}/{len(part_files)}: {part_name}")
+                
+                # Read this part in chunks
+                df_part = pd.read_parquet(part_path)
+                part_rows = len(df_part)
+                total_rows += part_rows
+                
+                for j in range(0, part_rows, chunk_size):
+                    chunk = df_part.iloc[j:j+chunk_size]
+                    result = processing_func(chunk)
+                    results.append(result)
+                
+                # Free memory
+                del df_part
+                
+        else:
+            # Single parquet file
+            if not parquet_file.exists():
+                raise FileNotFoundError(f"Parquet file not found: {parquet_file}")
+            
+            # Read Parquet in chunks to minimize memory usage
+            df = pd.read_parquet(parquet_file)
+            total_rows = len(df)
+            
+            for i in range(0, total_rows, chunk_size):
+                chunk = df.iloc[i:i+chunk_size]
+                result = processing_func(chunk)
+                results.append(result)
         
         print(f"[INFO] Processed {total_rows} records in {len(results)} chunks")
         return results
@@ -267,11 +348,11 @@ class TrainingOptimizedCache:
         with sqlite3.connect(self.metadata_db) as conn:
             conn.execute("""
                 INSERT OR REPLACE INTO cached_datasets 
-                (cache_key, track_name, car_name, cached_at, file_path,
+                (cache_key, track_name, car_name, cached_at, storage_type, file_path,
                  data_size_mb, session_count, record_count, last_accessed)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
-                cache_key, track_name, car_name, datetime.now(), file_path,
+                cache_key, track_name, car_name, datetime.now(), 'parquet', file_path,
                 data_size_mb, session_count, record_count, datetime.now()
             ))
     
