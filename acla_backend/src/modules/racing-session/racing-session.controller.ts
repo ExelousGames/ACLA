@@ -1,5 +1,6 @@
-import { Controller, Get, UseGuards, Request, Post, Body, Query, BadRequestException, Inject, forwardRef, Logger } from '@nestjs/common';
+import { Controller, Get, UseGuards, Request, Post, Body, Query, BadRequestException, Inject, forwardRef, Logger, Res } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
+import { Response } from 'express';
 import { RacingSessionDetailedInfoDto, SessionBasicInfoListDto, UploadReacingSessionInitDto, AllSessionsInitResponseDto, SessionChunkDto, AllSessionsChunkRequestDto, ImitationLearningGuidanceRequestDto, ImitationLearningGuidanceResponseDto } from 'src/dto/racing-session.dto';
 import { AiModelResponseDto } from 'src/dto/ai-model.dto';
 import { RacingSessionService } from './racing-session.service';
@@ -10,6 +11,7 @@ import { AiServiceClient, ModelsConfig, TrainModelsResponse, ImitationLearningGu
 import { model, Types } from 'mongoose';
 import * as path from 'path';
 import * as fs from 'fs/promises';
+import { createReadStream } from 'fs';
 
 @Controller('racing-session')
 export class RacingSessionController {
@@ -24,6 +26,8 @@ export class RacingSessionController {
     private downloadStates = new Map<string, {
         initData: AllSessionsInitResponseDto;
         downloadedChunks: Set<string>; // Track downloaded chunks by "sessionId:chunkIndex"
+        streamingFiles?: Map<string, { filePath: string; fileSize: number; }>; // Track streaming file paths by sessionId
+        tempDir?: string; // Directory containing temporary streaming files
         createdAt: Date;
     }>();
 
@@ -38,6 +42,16 @@ export class RacingSessionController {
         setInterval(() => {
             this.cleanupOldAssembledFiles();
         }, 60 * 60 * 1000); // 1 hour
+
+        // Clean up old streaming files every hour
+        setInterval(() => {
+            this.racingSessionService.cleanupOldStreamingFiles();
+        }, 60 * 60 * 1000); // 1 hour
+
+        // Clean up old download states every 30 minutes
+        setInterval(() => {
+            this.cleanupOldDownloadStates();
+        }, 30 * 60 * 1000); // 30 minutes
     }
 
     @UseGuards(AuthGuard('jwt'))
@@ -61,13 +75,35 @@ export class RacingSessionController {
         @Body() body: { trackName?: string, carName?: string, chunkSize?: number }
     ): Promise<AllSessionsInitResponseDto> {
         try {
-            const chunkSize = body.chunkSize || 1000; // Default chunk size
-            const initData = await this.racingSessionService.initializeSessionsDownload(body.trackName, body.carName, chunkSize);
+            const chunkSize = body.chunkSize || 1000; // Legacy parameter, ignored in streaming mode
+            const initDataWithContext = await this.racingSessionService.initializeSessionsDownload(body.trackName, body.carName, chunkSize);
 
-            // Store download state for tracking
+            // Store download state for tracking with streaming file information
+            const streamingFiles = new Map<string, { filePath: string; fileSize: number; }>();
+
+            // Populate streaming files map from the context
+            if (initDataWithContext.streamingContext?.sessionFiles) {
+                for (const sessionFile of initDataWithContext.streamingContext.sessionFiles) {
+                    streamingFiles.set(sessionFile.sessionId, {
+                        filePath: sessionFile.filePath,
+                        fileSize: sessionFile.fileSize
+                    });
+                }
+            }
+
+            // Remove streaming context from response (internal use only)
+            const initData: AllSessionsInitResponseDto = {
+                downloadId: initDataWithContext.downloadId,
+                totalSessions: initDataWithContext.totalSessions,
+                totalChunks: initDataWithContext.totalChunks,
+                sessionMetadata: initDataWithContext.sessionMetadata
+            };
+
             this.downloadStates.set(initData.downloadId, {
                 initData,
                 downloadedChunks: new Set<string>(),
+                streamingFiles,
+                tempDir: initDataWithContext.streamingContext?.tempDir,
                 createdAt: new Date()
             });
 
@@ -84,8 +120,9 @@ export class RacingSessionController {
     @Post('download/chunk')
     async downloadSessionChunk(
         @Request() req,
-        @Body() body: AllSessionsChunkRequestDto
-    ): Promise<SessionChunkDto> {
+        @Body() body: AllSessionsChunkRequestDto,
+        @Res() res: Response
+    ): Promise<void> {
         try {
             // Validate download state exists
             const downloadState = this.downloadStates.get(body.downloadId);
@@ -101,36 +138,86 @@ export class RacingSessionController {
                 throw new BadRequestException('Session not found in download');
             }
 
-            const chunkSize = 1000; // Use consistent chunk size
-            const chunk = await this.racingSessionService.getSessionChunk(
-                body.sessionId,
-                body.chunkIndex,
-                chunkSize
-            );
+            // Get streaming file information
+            const streamingFile = downloadState.streamingFiles?.get(body.sessionId);
+            if (!streamingFile) {
+                throw new BadRequestException('Session streaming file not found');
+            }
 
-            // Set the download ID from the request
-            chunk.downloadId = body.downloadId;
+            const { filePath, fileSize } = streamingFile;
 
-            // Track downloaded chunk
-            const chunkKey = `${body.sessionId}:${body.chunkIndex}`;
+            // Verify file exists
+            try {
+                await fs.access(filePath);
+            } catch (error) {
+                throw new BadRequestException('Session file not accessible');
+            }
+
+            // Set response headers for streaming
+            res.setHeader('Content-Type', 'application/json');
+            res.setHeader('Content-Length', fileSize.toString());
+            res.setHeader('Content-Disposition', `attachment; filename="session_${body.sessionId}.json"`);
+            res.setHeader('X-Download-Id', body.downloadId);
+            res.setHeader('X-Session-Id', body.sessionId);
+
+            // Track downloaded session
+            const chunkKey = `${body.sessionId}:0`; // Always index 0 for streaming mode
             downloadState.downloadedChunks.add(chunkKey);
 
-            return chunk;
+            // Create read stream and pipe to response
+            const readStream = createReadStream(filePath);
+
+            // Handle stream errors
+            readStream.on('error', (error) => {
+                this.logger.error(`Error streaming file ${filePath}: ${error.message}`);
+                if (!res.headersSent) {
+                    res.status(500).json({ error: 'Failed to stream session data' });
+                }
+            });
+
+            readStream.on('end', () => {
+                this.logger.log(`Successfully streamed session ${body.sessionId} (${fileSize} bytes)`);
+            });
+
+            // Pipe the file stream to response
+            readStream.pipe(res);
+
         } catch (error) {
-            throw new BadRequestException(`Failed to download chunk: ${error.message}`);
+            this.logger.error(`Failed to stream session chunk: ${error.message}`);
+            if (!res.headersSent) {
+                throw new BadRequestException(`Failed to download chunk: ${error.message}`);
+            }
         }
     }
 
     /**
-     * Clean up download states older than 1 hour
+     * Clean up download states older than 1 hour and associated streaming files
      */
-    private cleanupOldDownloadStates(): void {
+    private async cleanupOldDownloadStates(): Promise<void> {
         const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
 
         for (const [downloadId, state] of this.downloadStates.entries()) {
             if (state.createdAt < oneHourAgo) {
-                this.downloadStates.delete(downloadId);
+                await this.cleanupDownloadSession(downloadId);
             }
+        }
+    }
+
+    /**
+     * Clean up a specific download session and its associated streaming files
+     */
+    private async cleanupDownloadSession(downloadId: string): Promise<void> {
+        try {
+            const state = this.downloadStates.get(downloadId);
+            if (state) {
+                // Clean up associated streaming files
+                await this.racingSessionService.cleanupStreamingFiles(downloadId);
+                // Remove from memory
+                this.downloadStates.delete(downloadId);
+                this.logger.log(`Cleaned up download session: ${downloadId}`);
+            }
+        } catch (error) {
+            this.logger.warn(`Failed to cleanup download session ${downloadId}: ${error.message}`);
         }
     }
 
@@ -191,9 +278,18 @@ export class RacingSessionController {
             throw new BadRequestException('Download session not found or expired');
         }
 
-        const totalPossibleChunks = downloadState.initData.totalChunks;
+        const totalPossibleChunks = downloadState.initData.totalChunks || 0;
         const downloadedChunks = downloadState.downloadedChunks.size;
         const progress = totalPossibleChunks > 0 ? (downloadedChunks / totalPossibleChunks) * 100 : 0;
+
+        const isComplete = downloadedChunks >= totalPossibleChunks;
+
+        // If download is complete, schedule cleanup
+        if (isComplete) {
+            setTimeout(async () => {
+                await this.cleanupDownloadSession(body.downloadId);
+            }, 5 * 60 * 1000); // Clean up after 5 minutes
+        }
 
         return {
             downloadId: body.downloadId,
@@ -201,7 +297,7 @@ export class RacingSessionController {
             totalChunks: totalPossibleChunks,
             downloadedChunks,
             progress: Math.round(progress * 100) / 100, // Round to 2 decimal places
-            isComplete: downloadedChunks >= totalPossibleChunks,
+            isComplete,
             createdAt: downloadState.createdAt
         };
     }
@@ -416,6 +512,20 @@ export class RacingSessionController {
         } catch (error) {
             console.error('Imitation learning guidance failed:', error);
             throw new BadRequestException(`Failed to get imitation learning guidance: ${error.message}`);
+        }
+    }
+
+    @UseGuards(AuthGuard('jwt'))
+    @Post('download/cleanup')
+    async cleanupDownload(
+        @Request() req,
+        @Body() body: { downloadId: string }
+    ) {
+        try {
+            await this.cleanupDownloadSession(body.downloadId);
+            return { message: 'Download session cleaned up successfully' };
+        } catch (error) {
+            throw new BadRequestException(`Failed to cleanup download: ${error.message}`);
         }
     }
 

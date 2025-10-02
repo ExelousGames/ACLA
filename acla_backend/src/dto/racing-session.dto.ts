@@ -41,7 +41,7 @@ export class RacingSessionDetailedInfoDto {
 export class AllSessionsInitResponseDto {
     downloadId: string;
     totalSessions: number;
-    totalChunks: number;
+    totalChunks?: number; // Legacy field for backward compatibility
     sessionMetadata: {
         sessionId: string;
         session_name: string;
@@ -49,17 +49,24 @@ export class AllSessionsInitResponseDto {
         car_name: string;
         userId: string;
         dataSize: number;
-        chunkCount: number;
+        chunkCount?: number; // Legacy field
+        fileSize?: number; // New field for streaming
+        dataPoints?: number; // New field for streaming
     }[];
 }
 
 export class SessionChunkDto {
     downloadId: string;
     sessionId: string;
-    chunkIndex: number;
-    totalChunks: number;
-    data: any[];
-    isComplete: boolean;
+    chunkIndex?: number; // Legacy field for backward compatibility
+    totalChunks?: number; // Legacy field for backward compatibility
+    data?: any[]; // Legacy field for backward compatibility
+    isComplete?: boolean; // Legacy field for backward compatibility
+    // New streaming fields
+    filePath?: string;
+    fileSize?: number;
+    contentType?: string;
+    dataPoints?: number;
 }
 
 export class AllSessionsChunkRequestDto {
