@@ -51,7 +51,7 @@ from .backend_service import backend_service
 from .model_cache_service import model_cache_service
 
 # Import hybrid data cache service
-from .hybrid_data_cache_service import hybrid_data_cache, get_shared_data_cache
+from .Training_data_cache_service import training_cache
 
 # PyTorch imports (for transformer model)
 try:
@@ -110,10 +110,10 @@ class Full_dataset_TelemetryMLService:
         # Model cache service integration
         self.model_cache = model_cache_service
         
-        # Use shared hybrid data cache for large datasets
-        self.data_cache = hybrid_data_cache
-        print(f"[INFO] Using shared hybrid data cache for large dataset processing")
-        print(f"[INFO] Shared cache can be reused across backend_service, full_dataset_ml_service, and imitate_expert_learning_service")
+        # Use training-optimized data cache for large datasets
+        self.data_cache = training_cache
+        print(f"[INFO] Using training-optimized data cache for large dataset processing")
+        print(f"[INFO] Parquet-only storage optimized for ML training pipelines")
         
         # Add a simple lock mechanism to prevent concurrent fetches of the same model
         self._model_fetch_locks = {}
@@ -1085,19 +1085,18 @@ class Full_dataset_TelemetryMLService:
     async def process_large_dataset_efficiently(self, trackName: str,
                                         max_memory_records: int = 50000) -> Tuple[List[Dict[str, Any]], str]:
         """
-        Process very large cached datasets efficiently using streaming with CSV chunks
+        Process large cached datasets efficiently using streamlined Parquet-based cache
         Optimized for datasets that cannot fit in memory - stores bottom laps in cache instead of memory
         
         Args:
             trackName: Track name for data retrieval
-            segment_length: Length of segments for processing
             max_memory_records: Maximum records to keep in memory at once (reduced for large datasets)
             
         Returns:
             Tuple of (top_laps_telemetry_list, bottom_laps_cache_key) where cache_key is used to access bottom laps via data_cache
         """
-        print(f"[INFO] Processing very large dataset for {trackName} with conservative memory limit {max_memory_records}")
-        print(f"[INFO] Using streaming approach with CSV chunked processing backend")
+        print(f"[INFO] Processing large dataset for {trackName} with memory limit {max_memory_records}")
+        print(f"[INFO] Using training-optimized Parquet cache with streaming processing")
         
         def process_chunk(chunk_df: pd.DataFrame) -> Dict[str, Any]:
             """Process a single chunk of data with optimized memory usage"""
@@ -1106,7 +1105,8 @@ class Full_dataset_TelemetryMLService:
                     return {"top_laps": [], "bottom_laps": [], "processed_records": 0}
                 
                 print(f"[DEBUG] Processing chunk with {len(chunk_df)} records")
-                
+
+                print(f"[DEBUG] Chunk keys: {chunk_df.keys()}")
                 feature_processor = FeatureProcessor(chunk_df)
                 
                 # Clean and filter data
@@ -1129,11 +1129,11 @@ class Full_dataset_TelemetryMLService:
                 if not lap_df_list:
                     return {"top_laps": [], "bottom_laps": [], "processed_records": len(processed_df)}
                 
-                # More aggressive filtering for very large datasets - take only top 0.5%
-                top_laps_df_count = max(1, int(len(lap_df_list) * 0.005))  # Top 0.5% for very large datasets
+                # Take top 0.5% for very large datasets
+                top_laps_df_count = max(1, int(len(lap_df_list) * 0.005))
                 top_laps_df = lap_df_list[:top_laps_df_count]
                 
-                # Use ALL remaining laps as bottom laps (all non-expert laps for training)
+                # Use remaining laps as bottom laps for training
                 bottom_laps_df = lap_df_list[top_laps_df_count:]
                 
                 # Convert to records efficiently
@@ -1159,9 +1159,9 @@ class Full_dataset_TelemetryMLService:
                 return {"top_laps": [], "bottom_laps": [], "processed_records": 0}
         
         try:
-            print("[INFO] Initiating streaming processing with hybrid cache backend")
+            print("[INFO] Starting streaming processing with training-optimized cache")
             
-            # Use hybrid cache streaming processing with conservative chunk size
+            # Use training-optimized cache streaming processing
             chunk_results = self.data_cache.process_large_dataset_streaming(
                 track_name=trackName,
                 processing_func=process_chunk,
@@ -1177,7 +1177,7 @@ class Full_dataset_TelemetryMLService:
             total_processed = 0
             chunks_processed = 0
                             
-            # Re-iterate through results for processing since generator was consumed
+            # Process results from streaming
             chunk_results_list = list(chunk_results)
             total_bottom_laps_count = 0
             
@@ -1193,10 +1193,10 @@ class Full_dataset_TelemetryMLService:
                         print(f"[INFO] Processed {chunks_processed} chunks, {total_processed} total records")
             
             # Cache bottom laps using streaming to avoid memory accumulation
-            print(f"[INFO] Caching {total_bottom_laps_count} bottom laps to avoid memory overflow")
+            print(f"[INFO] Caching {total_bottom_laps_count} bottom laps to training-optimized cache")
             
             async def create_bottom_laps_generator():
-                """Recreate async generator for caching"""
+                """Create async generator for caching bottom laps"""
                 chunk_idx = 0
                 for result in chunk_results_list:
                     if isinstance(result, dict) and result:
@@ -1208,17 +1208,14 @@ class Full_dataset_TelemetryMLService:
                             }
                             chunk_idx += 1
             
-            # Estimate size for caching decision
-            estimated_size_mb = (total_bottom_laps_count * 50) / (1024 * 1024)  # Rough estimate: 50 bytes per record
-            
+            # Cache bottom laps with Parquet storage
             cache_success = await self.data_cache.cache_sessions_streaming(
                 track_name=bottom_laps_cache_key,
-                sessions_iterator=create_bottom_laps_generator(),
-                estimated_size_mb=estimated_size_mb
+                sessions_iterator=create_bottom_laps_generator()
             )
             
             if not cache_success:
-                print(f"[WARNING] Failed to cache bottom laps, this may cause memory issues")
+                print(f"[WARNING] Failed to cache bottom laps - memory usage may be high")
             
             if not top_laps_telemetry_list and total_bottom_laps_count == 0:
                 raise ValueError(f"No valid telemetry data extracted from {trackName} dataset")
@@ -1231,52 +1228,36 @@ class Full_dataset_TelemetryMLService:
             
         except Exception as e:
             print(f"[ERROR] Large dataset processing failed: {e}")
-            print(f"[ERROR] This indicates an issue with the hybrid cache or data processing pipeline")
+            print(f"[ERROR] Issue with training-optimized cache or data processing pipeline")
             raise Exception(f"Failed to process large dataset for {trackName}: {str(e)}")
 
     def get_data_cache_info(self) -> Dict[str, Any]:
-        """Get information about the shared hybrid data cache"""
-        from .hybrid_data_cache_service import get_shared_cache_info
-        return get_shared_cache_info()
+        """Get information about the training-optimized data cache"""
+        return self.data_cache.get_cache_info()
 
     def clear_data_cache(self, track_name: Optional[str] = None):
-        """Clear hybrid data cache"""
+        """Clear training-optimized data cache"""
         self.data_cache.clear_cache(track_name)
         print(f"[INFO] Cleared data cache" + (f" for {track_name}" if track_name else ""))
 
     def print_data_cache_info(self):
-        """Print detailed shared data cache information"""
+        """Print detailed training-optimized cache information"""
         info = self.get_data_cache_info()
         print("\n" + "="*60)
-        print("SHARED HYBRID DATA CACHE INFORMATION")
+        print("TRAINING-OPTIMIZED DATA CACHE INFORMATION")
         print("="*60)
         
-        # Print sharing information
-        sharing_info = info.get('sharing_info', {})
-        if sharing_info.get('is_shared'):
-            print("Cache Sharing: ENABLED")
-            print(f"Shared across: {', '.join(sharing_info.get('shared_across', []))}")
-            print("Benefits:")
-            for benefit in sharing_info.get('benefits', []):
-                print(f"  • {benefit}")
-            print("")
+        print(f"Cache Entries: {info.get('cache_entries', 0)}")
+        print(f"Total Size: {info.get('total_size_mb', 0):.1f}MB")
+        print(f"Storage Format: {info.get('storage_format', 'Parquet with snappy compression')}")
+        print(f"Cache Directory: {info.get('cache_directory', 'N/A')}")
         
-        print(f"Memory Cache: {info['memory_cache']['entries']}/{info['memory_cache']['max_entries']} datasets")
-        
-        processing_info = info.get('processing', {})
-        print(f"Processing: {processing_info.get('storage_format', 'CSV with gzip compression')}")
-        print(f"Chunk Size: {processing_info.get('chunk_size', 10000)} records")
-        
-        disk_info = info['disk_cache']
-        print(f"Disk Cache: {len(disk_info['entries'])} entries, {disk_info['total_size_mb']:.1f}MB")
-        print(f"Storage Directory: {disk_info['storage_directory']}")
-        print(f"CSV Directory: {disk_info.get('csv_directory', 'N/A')}")
-        
-        if disk_info['entries']:
-            print("\nCached Datasets:")
-            for entry in disk_info['entries'][:5]:  # Show first 5
-                print(f"  - {entry['track_name']}: {entry['record_count']} records "
-                      f"({entry['size_mb']:.1f}MB, {entry['storage_type']})")
+        print("\nOptimizations:")
+        print("  • Parquet-only storage for consistency")
+        print("  • Snappy compression for fast I/O")
+        print("  • Multi-part files for large datasets")
+        print("  • Streaming processing with minimal memory footprint")
+        print("  • Zero-copy operations for ML training pipelines")
         print("="*60 + "\n")
 
     async def _train_expert_action_transformer(self, 

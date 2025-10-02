@@ -204,7 +204,7 @@ class BackendService:
         """
         if not data_cache:
             # Import shared cache here to avoid circular imports
-            from .hybrid_data_cache_service import get_shared_data_cache
+            from .Training_data_cache_service import get_shared_data_cache
             data_cache = get_shared_data_cache()
             
         try:

@@ -319,14 +319,6 @@ class TrainingOptimizedCache:
         print(f"[INFO] Processed {total_rows} records in {len(results)} chunks")
         return results
     
-
-    
-
-    
-
-
-
-    
     def _get_cache_metadata(self, cache_key: str, max_age_hours: int) -> Optional[Dict[str, Any]]:
         """Get cache metadata from database"""
         with sqlite3.connect(self.metadata_db) as conn:

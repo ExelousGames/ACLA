@@ -634,7 +634,7 @@ class ExpertImitateLearningService:
     
     def get_shared_data_cache(self):
         """Get shared data cache instance"""
-        from .hybrid_data_cache_service import get_shared_data_cache
+        from .Training_data_cache_service import get_shared_data_cache
         return get_shared_data_cache()
 
     def train_ai_model(self, telemetry_data: List[Dict[str, Any]], learning_objectives: List[str] = None) -> Tuple[Dict[str, Any]]:
