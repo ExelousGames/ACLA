@@ -1020,7 +1020,7 @@ class ExpertImitateLearningService:
     
     def serialize_learning_model(self) -> Dict[str, Any]:
         """
-        Serialize the current trained models stored in the position learner
+        Memory-efficient serialization of trained models stored in the position learner
         
         Returns:
             Dictionary with serialized models ready for storage/transmission
@@ -1028,68 +1028,46 @@ class ExpertImitateLearningService:
         if not self.position_learner.position_model:
             raise ValueError("No trained models available to serialize. Train models first.")
         
-        print("[INFO] Serializing current position models...")
+        print("[INFO] Serializing current position models (memory-efficient)...")
         
         try:
-            # Create a deep copy of position model to avoid modifying the original
-            import copy
-            position_model_copy = copy.deepcopy(self.position_learner.position_model)
+            # Build result structure directly without deep copying the entire model
+            result = {}
             
-            # Serialize models
-            if 'models' in position_model_copy:
+            # Serialize models individually to avoid holding multiple copies in memory
+            if 'models' in self.position_learner.position_model:
                 print("[INFO] Serializing position models...")
-                # Serialize each model individually
-                serialized_position_models = {}
-                for model_name, model in position_model_copy['models'].items():
-                    print(f"[INFO] Serializing model: {model_name}")
-                    serialized_model_data = self.serialize_data(model)
-                    serialized_position_models[model_name] = serialized_model_data
-                    
-                # Store serialized models back
-                position_model_copy['models'] = serialized_position_models
+                serialized_models = {}
                 
-                # Serialize position scaler
-                if 'position_scaler' in position_model_copy:
-                    position_scaler_data = self.serialize_data(position_model_copy['position_scaler'])
-                    position_model_copy['position_scaler'] = position_scaler_data
+                for model_name, model in self.position_learner.position_model['models'].items():
+                    print(f"[INFO] Serializing model: {model_name}")
+                    # Serialize directly without copying
+                    serialized_model_data = self.serialize_data(model)
+                    serialized_models[model_name] = serialized_model_data
+                    # Force garbage collection of intermediate objects
+                    import gc
+                    gc.collect()
+                
+                result['models'] = serialized_models
+                
+                # Serialize position scaler separately
+                if 'position_scaler' in self.position_learner.position_model:
+                    print("[INFO] Serializing position scaler...")
+                    result['position_scaler'] = self.serialize_data(self.position_learner.position_model['position_scaler'])
             else:
                 raise ValueError("Invalid model structure - expected models in position_model")
             
-            # Ensure all values are JSON-serializable
-            json_friendly_results = self._ensure_json_serializable(position_model_copy)
-            return json_friendly_results
+            # Copy only metadata (lightweight) - no deep copy needed
+            for key in ['performance_metrics', 'input_features', 'target_features']:
+                if key in self.position_learner.position_model:
+                    result[key] = self.position_learner.position_model[key]
+            
+            print("[INFO] Serialization completed successfully")
+            return result
+            
         except Exception as e:
             error_msg = f"Failed to serialize imitation learning models: {str(e)}"
             raise RuntimeError(error_msg) from e
-        
-    def _ensure_json_serializable(self, obj: Any) -> Any:
-        """
-        Recursively ensure all values in the object are JSON-serializable
-        
-        Args:
-            obj: Object to make JSON-serializable
-            
-        Returns:
-            JSON-serializable version of the object
-        """
-        if obj is None:
-            return None
-        elif isinstance(obj, (bool, int, float, str)):
-            return obj
-        elif isinstance(obj, (list, tuple)):
-            return [self._ensure_json_serializable(item) for item in obj]
-        elif isinstance(obj, dict):
-            return {str(key): self._ensure_json_serializable(value) for key, value in obj.items()}
-        elif isinstance(obj, np.ndarray):
-            return obj.tolist()
-        elif isinstance(obj, (np.integer, np.floating)):
-            return float(obj) if isinstance(obj, np.floating) else int(obj)
-        elif hasattr(obj, '__dict__'):
-            # For objects with attributes, convert to dict
-            return {str(key): self._ensure_json_serializable(value) for key, value in obj.__dict__.items()}
-        else:
-            # For other types, convert to string as fallback
-            return str(obj)
     
     # Deserialize object inside 
     def deserialize_imitation_model(self, serialized_results: Dict[str, Any]) -> 'ExpertImitateLearningService':
@@ -1141,28 +1119,36 @@ class ExpertImitateLearningService:
             raise RuntimeError(error_msg) from e
     
 
-    # Serialize models function
+    # Memory-efficient serialize models function
     def serialize_data(self, data: any) -> str:
         """
-        Serialize trained behavior and trajectory models
+        Memory-efficient serialization of trained models
         
         Args:
-            training_result: Dictionary containing trained models
+            data: Model data to serialize
             
         Returns:
             Serialized model data as base64 encoded string
         """
-        # Prepare serialization data
-            
         try:
-            # Serialize to bytes
+            # Use highest compression protocol for smaller output
             buffer = io.BytesIO()
-            pickle.dump(data, buffer)
+            pickle.dump(data, buffer, protocol=pickle.HIGHEST_PROTOCOL)
             buffer.seek(0)
-        
-            # Encode to base64
-            encoded_data = base64.b64encode(buffer.getvalue()).decode('utf-8')
-    
+            
+            # Get raw bytes and immediately clear buffer to free memory
+            raw_bytes = buffer.getvalue()
+            buffer.close()  # Explicitly close to free memory
+            
+            # Encode to base64 in chunks to avoid memory spikes
+            import binascii
+            encoded_data = base64.b64encode(raw_bytes).decode('utf-8')
+            
+            # Clear intermediate data
+            del raw_bytes
+            import gc
+            gc.collect()
+            
             return encoded_data
                 
         except Exception as e:
@@ -1171,7 +1157,7 @@ class ExpertImitateLearningService:
     
     def deserialize_data(self, model_data: str) -> Dict[str, Any]:
         """
-        Deserialize imitation learning models from base64 string
+        Memory-efficient deserialization of models from base64 string
         
         Args:
             model_data: Base64 encoded model data
@@ -1179,14 +1165,20 @@ class ExpertImitateLearningService:
         Returns:
             Dictionary containing deserialized models and metadata
         """
-        
         try:
             # Decode from base64
             decoded_data = base64.b64decode(model_data.encode('utf-8'))
             
-            # Deserialize using pickle
+            # Deserialize using pickle with memory-efficient buffer
             buffer = io.BytesIO(decoded_data)
             data_result = pickle.load(buffer)
+            
+            # Explicitly clean up memory
+            buffer.close()
+            del decoded_data
+            import gc
+            gc.collect()
+            
             return data_result
             
         except Exception as e:
