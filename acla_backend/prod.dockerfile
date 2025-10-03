@@ -17,6 +17,8 @@ FROM node:24 AS production
 WORKDIR /app
 
 ENV NODE_ENV production
+# Set Node.js memory limit to 2GB
+ENV NODE_OPTIONS="--max-old-space-size=2048"
 
 COPY package*.json ./
 

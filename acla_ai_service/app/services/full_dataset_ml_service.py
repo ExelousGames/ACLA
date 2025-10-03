@@ -1465,319 +1465,277 @@ class Full_dataset_TelemetryMLService:
                 "error": str(e)
             }
 
-    async def _extract_features_from_chunk_async(self, chunk_data: List[Dict[str, Any]], imitation_learning, corner_service, tire_service, feature_sources: List[str]) -> List[Dict[str, Any]]:
+
+
+    async def _enrich_chunk_with_context(self, chunk_data: List[Dict[str, Any]], 
+                                        imitation_learning, corner_service, tire_service) -> List[Dict[str, Any]]:
         """
-        Extract features from a chunk of telemetry data with proper async handling
+        Enrich a single chunk with all contextual features
         
         Args:
             chunk_data: List of telemetry records
-            imitation_learning: Imitation learning service instance
-            corner_service: Corner identification service instance  
-            tire_service: Tire grip service instance
-            feature_sources: List to track active feature sources
+            imitation_learning: Trained imitation learning service
+            corner_service: Trained corner identification service  
+            tire_service: Trained tire grip service
             
         Returns:
-            List of combined telemetry records with context features
+            List of enriched telemetry records
+        """
+        if not chunk_data:
+            return []
+        
+        # Extract all feature types for the chunk
+        chunk_imitation_features = []
+        try:
+            chunk_imitation_features = imitation_learning.extract_expert_state_for_telemetry(chunk_data)
+        except Exception as e:
+            print(f"[WARNING] Failed to extract expert state features: {str(e)}")
+        
+        chunk_corner_features = []
+        try:
+            chunk_corner_features = await corner_service.extract_corner_features_for_telemetry(chunk_data)
+        except Exception as e:
+            print(f"[WARNING] Failed to extract corner features: {str(e)}")
+        
+        chunk_grip_features = []
+        try:
+            chunk_grip_features = await tire_service.extract_tire_grip_features(chunk_data)
+        except Exception as e:
+            print(f"[WARNING] Failed to extract tire grip features: {str(e)}")
+        
+        # Combine all features into enriched records
+        enriched_chunk = []
+        for i, telemetry_record in enumerate(chunk_data):
+            enriched_record = telemetry_record.copy()
+            
+            # Add expert state features
+            if i < len(chunk_imitation_features):
+                enriched_record.update(chunk_imitation_features[i])
+            
+            # Add corner features  
+            if i < len(chunk_corner_features):
+                enriched_record.update(chunk_corner_features[i])
+            
+            # Add tire grip features
+            if i < len(chunk_grip_features):
+                enriched_record.update(chunk_grip_features[i])
+            
+            enriched_chunk.append(enriched_record)
+        
+        return enriched_chunk
+    
+    async def _cache_segment_batch(self, segments_batch: List[List[Dict[str, Any]]], 
+                                 base_cache_key: str, batch_number: int) -> bool:
+        """
+        Cache a batch of segments to keep memory usage reasonable
+        
+        Args:
+            segments_batch: List of segments to cache
+            base_cache_key: Base cache key for segment storage (used directly)
+            batch_number: Batch number for unique session IDs
+            
+        Returns:
+            bool - Success status
         """
         try:
-            if not chunk_data:
-                return []
+            # Use base cache key directly, not batch-specific key
+            # This allows transformer training to find all segments under one key
             
-            combined_chunk_data = []
+            async def segments_generator():
+                """Generator for caching segments"""
+                for idx, segment in enumerate(segments_batch):
+                    yield {
+                        "sessionId": f"segment_{batch_number}_{idx}",
+                        "data": segment
+                    }
             
-            # Extract expert state features for chunk
-            chunk_imitation_features = []
-            try:
-                chunk_imitation_features = imitation_learning.extract_expert_state_for_telemetry(chunk_data)
-                if "expert_state" not in feature_sources:
-                    feature_sources.append("expert_state")
-            except Exception as e:
-                print(f"[WARNING] Failed to extract expert state features for chunk: {str(e)}")
+            # Estimate size for this batch
+            total_records = sum(len(segment) for segment in segments_batch)
+            estimated_size_mb = (total_records * 60) / (1024 * 1024)  # 60 bytes per enriched record
             
-            # Extract corner features for chunk (with proper async)
-            chunk_corner_features = []
-            try:
-                chunk_corner_features = await corner_service.extract_corner_features_for_telemetry(chunk_data)
-                if "corner_identification" not in feature_sources:
-                    feature_sources.append("corner_identification") 
-            except Exception as e:
-                print(f"[WARNING] Failed to extract corner features for chunk: {str(e)}")
+            # Cache using base cache key so transformer can find all segments
+            cache_success = await self.data_cache.cache_sessions_streaming(
+                track_name=base_cache_key,  # Use base key directly
+                sessions_iterator=segments_generator(),
+                estimated_size_mb=estimated_size_mb
+            )
             
-            # Extract tire grip features for chunk (with proper async)
-            chunk_grip_features = []
-            try:
-                chunk_grip_features = await tire_service.extract_tire_grip_features(chunk_data)
-                if "tire_grip_analysis" not in feature_sources:
-                    feature_sources.append("tire_grip_analysis")
-            except Exception as e:
-                print(f"[WARNING] Failed to extract tire grip features for chunk: {str(e)}")
-            
-            # Combine telemetry with all context features for this chunk
-            for i, telemetry_record in enumerate(chunk_data):
-                combined_record = telemetry_record.copy()
+            if cache_success:
+                print(f"[DEBUG] Cached batch {batch_number}: {len(segments_batch)} segments (~{estimated_size_mb:.1f}MB) to key: {base_cache_key}")
+                return True
+            else:
+                print(f"[ERROR] Failed to cache segment batch {batch_number}")
+                return False
                 
-                # Add expert state features if available
-                if i < len(chunk_imitation_features):
-                    combined_record.update(chunk_imitation_features[i])
-                
-                # Add corner features if available  
-                if i < len(chunk_corner_features):
-                    combined_record.update(chunk_corner_features[i])
-                
-                # Add tire grip features if available
-                if i < len(chunk_grip_features):
-                    combined_record.update(chunk_grip_features[i])
-                
-                combined_chunk_data.append(combined_record)
-            
-            return combined_chunk_data
-            
         except Exception as e:
-            print(f"[WARNING] Failed to process chunk: {str(e)}")
-            return []
+            print(f"[ERROR] Exception caching segment batch {batch_number}: {str(e)}")
+            return False
 
     async def enriched_contextual_data(self, top_laps_telemetry_list: List[Dict[str, Any]], bottom_laps_cache_key: str, track_name: str, segment_length: int) -> str:
         """
-        Extract enriched contextual features from telemetry data using trained models. It adds expert state, corner identification, and tire grip features,
-        and helps transformer model to better understand track geometry, physics constraints, extra expert insights to differentiate actions that
-        converge towards feature expert state.
+        Streamlined contextual data enrichment using chunk iterator approach.
         
-        This method returns combined segmented data for the unified transformer model.
-        IMPORTANT: This method uses an iterator approach to process cached bottom laps data efficiently without memory overflow.
+        1. Train all enrichment models using expert data
+        2. Use chunk_iterator to process all bottom laps data  
+        3. Enrich each chunk with contextual features
+        4. Filter into segments and cache them in reasonable chunks
         
         Args:
-            top_laps_telemetry_list: List of expert telemetry record dictionaries (flat list)
-            bottom_laps_cache_key: Cache key for accessing bottom laps data via data_cache iterator (avoids memory overflow)
+            top_laps_telemetry_list: List of expert telemetry records for training models
+            bottom_laps_cache_key: Cache key for bottom laps (not used, processing via iterator)
             track_name: Track name for model identification
-            segment_length: Length of segments for processing
+            segment_length: Length of segments for transformer training
             
         Returns:
-            str - Cache key for accessing the combined telemetry+context segments
+            str - Cache key for accessing the enriched segments
         """
-
-        print(f"[INFO] Processing contextual data:")
-        print(f"  - Top laps (expert): {len(top_laps_telemetry_list)} records")
-        print(f"  - Bottom laps (training): cached with key '{bottom_laps_cache_key}'")
         
-        # Validate cached data exists by testing the iterator
-        try:
-            print(f"[DEBUG] Validating cached bottom laps data for track '{track_name}'")
+        print(f"[INFO] Starting streamlined contextual data enrichment:")
+        print(f"  - Expert data for training: {len(top_laps_telemetry_list)} records")
+        print(f"  - Bottom laps will be processed via chunk iterator")
+        
+        # Step 1: Train all enrichment models using expert data
+        self._print_section_divider("TRAINING ENRICHMENT MODELS WITH EXPERT DATA")
+        
+        # Train imitation learning model
+        imitation_learning = ExpertImitateLearningService()
+        imitation_result = imitation_learning.train_ai_model(top_laps_telemetry_list)
+        serialized_data = imitation_learning.serialize_learning_model()
+        if not serialized_data:
+            raise Exception("No serialized model data available from imitation learning")
+        
+        await backend_service.save_ai_model(
+            model_type="imitation_learning",
+            track_name=track_name,
+            car_name='AllCars',
+            model_data=serialized_data,
+            metadata=imitation_result.get("learning_summary", {}),
+            is_active=True
+        )
+        print("[INFO] ✓ Imitation learning model trained and saved")
+        
+        # Train corner identification model
+        from .corner_identification_unsupervised_service import CornerIdentificationUnsupervisedService
+        corner_service = CornerIdentificationUnsupervisedService()
+        corner_model = await corner_service.learn_track_corner_patterns(top_laps_telemetry_list)
+        corner_serialized = corner_service.serialize_corner_identification_model(track_name=track_name, car_name="all_cars")
+        
+        await self.backend_service.save_ai_model(
+            model_type="corner_identification",
+            track_name=corner_serialized.get("track_name"),
+            car_name='all_cars',
+            model_data=corner_serialized,
+            metadata={
+                "total_corners": corner_serialized.get("total_corners"),
+                "clusters": len(corner_serialized.get("corner_clusters", [])),
+                "serialization_timestamp": corner_serialized.get("serialized_timestamp")
+            },
+            is_active=True
+        )
+        print("[INFO] ✓ Corner identification model trained and saved")
+        
+        # Train tire grip analysis model
+        from .tire_grip_analysis_service import TireGripAnalysisService
+        tire_service = TireGripAnalysisService()
+        tire_grip_model = await tire_service.train_tire_grip_model(top_laps_telemetry_list)
+        tire_service_serialized = tire_service.serialize_tire_grip_model()
+        
+        await self.backend_service.save_ai_model(
+            model_type="tire_grip_analysis",
+            track_name="generic",
+            car_name="all_cars",
+            model_data=tire_service_serialized,
+            metadata={
+                "model_info": tire_service_serialized.get("model_info", {}),
+                "serialization_timestamp": tire_service_serialized.get("serialized_timestamp")
+            },
+            is_active=True
+        )
+        print("[INFO] ✓ Tire grip analysis model trained and saved")
+        
+        # Step 2: Process bottom laps via chunk iterator with enrichment
+        self._print_section_divider("PROCESSING BOTTOM LAPS VIA CHUNK ITERATOR")
+        
+        chunk_size = 15000  # Process chunks without worrying about individual chunk size
+        segments_cache_key = f"enriched_segments_{track_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        
+        chunk_iterator = self.data_cache.get_cached_data_chunks(
+            track_name=track_name,
+            chunk_size=chunk_size
+        )
+        
+        processed_chunks = 0
+        total_segments_cached = 0
+        segments_per_cache_batch = 1000  # Cache segments in batches to keep reasonable cache size
+        
+        print(f"[INFO] Processing chunks of {chunk_size} records each")
+        print(f"[INFO] Will cache segments in batches of {segments_per_cache_batch}")
+        
+        current_segment_batch = []
+        cache_batch_number = 0
+        
+        for chunk_df in chunk_iterator:
+            if chunk_df is None or chunk_df.empty:
+                continue
             
-            # Test if iterator can access the cached data using original track name
-            test_iterator = self.data_cache.get_cached_data_chunks(
-                track_name=track_name,  # Use original track name directly
-                chunk_size=1000
+            processed_chunks += 1
+            chunk_data = chunk_df.to_dict('records')
+            
+            print(f"[INFO] Processing chunk {processed_chunks}: {len(chunk_data)} records")
+            
+            # Step 3: Enrich chunk with contextual features
+            enriched_chunk_data = await self._enrich_chunk_with_context(
+                chunk_data, imitation_learning, corner_service, tire_service
             )
             
-            # Try to get first chunk to validate cache exists
-            first_chunk = next(test_iterator, None)
-            if first_chunk is None:
-                print(f"[ERROR] No cached bottom laps data found for track '{track_name}'")
-                raise ValueError(f"No cached bottom laps data found for track '{track_name}' - unable to proceed with contextual data enrichment")
+            # Step 4: Filter enriched chunk into segments
+            chunk_segments = imitation_learning.filter_optimal_telemetry_segments(
+                enriched_chunk_data, segment_length=segment_length
+            )
             
-            total_bottom_laps_count = len(first_chunk)  # Approximate count from first chunk
-            print(f"  - Bottom laps data validated: first chunk has {total_bottom_laps_count} records")
+            print(f"[INFO] Chunk {processed_chunks}: Generated {len(chunk_segments)} segments")
             
-        except StopIteration:
-            print(f"[ERROR] Iterator returned no chunks for track '{track_name}'")
-            raise ValueError(f"No cached bottom laps data found - iterator returned no chunks")
-        except Exception as e:
-            print(f"[ERROR] Failed to validate cached data: {str(e)}")
-            raise ValueError(f"Failed to validate cached bottom laps data: {str(e)}")
+            # Add segments to current batch
+            current_segment_batch.extend(chunk_segments)
+            
+            # Cache segments when batch is full or we've processed enough segments
+            if len(current_segment_batch) >= segments_per_cache_batch:
+                await self._cache_segment_batch(
+                    current_segment_batch[:segments_per_cache_batch],
+                    segments_cache_key,
+                    cache_batch_number
+                )
+                total_segments_cached += segments_per_cache_batch
+                cache_batch_number += 1
+                
+                # Keep remaining segments for next batch
+                current_segment_batch = current_segment_batch[segments_per_cache_batch:]
+                
+                print(f"[INFO] Cached batch {cache_batch_number}: {total_segments_cached} total segments cached")
+            
+            # Clear chunk data to free memory
+            del chunk_data, enriched_chunk_data, chunk_segments
+            
+            if processed_chunks % 5 == 0:
+                print(f"[INFO] Progress: {processed_chunks} chunks processed, {total_segments_cached} segments cached")
         
-        print(f"[INFO] Using ALL data without sampling since we're processing via cache streaming")
+        # Cache remaining segments in final batch
+        if current_segment_batch:
+            await self._cache_segment_batch(
+                current_segment_batch,
+                segments_cache_key,
+                cache_batch_number
+            )
+            total_segments_cached += len(current_segment_batch)
+            cache_batch_number += 1
         
-        try:
-            # Use only expert data for training enrichment models (memory efficient)
-            # We'll process bottom laps via streaming later for feature extraction
-            top_laps_training_telemetry_list = top_laps_telemetry_list  # Small dataset, safe to reference
-            
-            print(f"[INFO] Training enrichment models with expert data:")
-            print(f"  - Expert samples: {len(top_laps_training_telemetry_list)}")
-            print(f"  - Bottom laps will be processed via streaming from cache")
-
-            self._print_section_divider("TRAINING IMITATION LEARNING MODEL")
-            try:        
-                imitation_learning = ExpertImitateLearningService()
-                # Train imitation model only on top (expert) telemetry laps
-                imitation_result = imitation_learning.train_ai_model(top_laps_training_telemetry_list)
-            
-                # Extract only serialized data for backend storage (same fix as in train_imitation_model)
-                serialized_data = imitation_learning.serialize_learning_model()
-                if not serialized_data:
-                    print("[ERROR] No serialized_modelData found in imitation results!")
-                    raise Exception("No serialized model data available from imitation learning")
-                # Save imitation learning model to backend
-                await backend_service.save_ai_model(
-                    model_type="imitation_learning",
-                    track_name=track_name,
-                    car_name='AllCars',
-                    model_data=serialized_data,
-                    metadata=imitation_result.get("learning_summary", {}),
-                    is_active=True
-                )
-            except Exception as e:
-                raise Exception(f"[ERROR] Imitation learning training failed: {str(e)}")
-
-            # Train corner identification model using training data
-            self._print_section_divider("Training corner identification model...")
-            try:
-                from .corner_identification_unsupervised_service import CornerIdentificationUnsupervisedService
-                corner_service = CornerIdentificationUnsupervisedService()
-                corner_model = await corner_service.learn_track_corner_patterns(top_laps_training_telemetry_list)
-
-                corner_serialized = corner_service.serialize_corner_identification_model(track_name=track_name, car_name="all_cars")
-                await self.backend_service.save_ai_model(
-                    model_type="corner_identification",
-                    track_name=corner_serialized.get("track_name"),
-                    car_name='all_cars',
-                    model_data=corner_serialized,
-                    metadata={
-                        "total_corners": corner_serialized.get("total_corners"),
-                        "clusters": len(corner_serialized.get("corner_clusters", [])),
-                        "serialization_timestamp": corner_serialized.get("serialized_timestamp")
-                        },
-                        is_active=True
-                    )
-            except Exception as e:
-                raise Exception(f"[ERROR] Corner identification training failed: {str(e)}")
-            
-            # Train tire grip analysis model using training data (use expert samples for training)
-            self._print_section_divider("Training tire grip analysis model...")
-            try:
-                # The tire grip service is now heuristic-only: it computes features deterministically from physics telemetry
-                from .tire_grip_analysis_service import TireGripAnalysisService
-                tire_service = TireGripAnalysisService()
-                # Use expert data for training the tire grip model
-                tire_grip_model = await tire_service.train_tire_grip_model(top_laps_training_telemetry_list)
-                
-                tire_service_serialized = tire_service.serialize_tire_grip_model()
-                await self.backend_service.save_ai_model(
-                    model_type="tire_grip_analysis",
-                    track_name="generic",
-                    car_name="all_cars",
-                    model_data=tire_service_serialized,
-                    metadata={
-                        "model_info": tire_service_serialized.get("model_info", {}),
-                        "serialization_timestamp": tire_service_serialized.get("serialized_timestamp")
-                    },
-                    is_active=True
-                )
-            except Exception as e:
-                raise Exception(f"[ERROR] Tire grip analysis training failed: {str(e)}")
-            
-            # First, combine telemetry with context features using iterator-based processing
-            self._print_section_divider("COMBINING TELEMETRY WITH CONTEXT FEATURES VIA ITERATOR")
-            
-            # Process feature extraction using iterator to loop through all bottom laps efficiently
-            chunk_size = 10000  # Process 10k records at a time
-            all_combined_telemetry_data = []
-            feature_sources = []
-            
-            print(f"[INFO] Processing feature extraction via iterator in chunks of {chunk_size} records")
-            
-            # Use iterator approach to process all bottom laps data with async feature extraction
-            async def process_cached_data_with_iterator():
-                """Process cached data using iterator approach for memory efficiency"""
-                all_combined_data = []
-                processed_chunks = 0
-                
-                # Use the data_cache iterator to loop through all bottom laps chunks
-                # Use original track name directly since that's how data is cached
-                chunk_iterator = self.data_cache.get_cached_data_chunks(
-                    track_name=track_name,  # Use original track name directly
-                    chunk_size=chunk_size
-                )
-                
-                print(f"[DEBUG] Created chunk iterator for bottom laps processing (track: '{track_name}')")
-                
-                for chunk_df in chunk_iterator:
-                    if chunk_df is None or chunk_df.empty:
-                        print(f"[DEBUG] Skipping empty chunk")
-                        continue
-                    
-                    processed_chunks += 1
-                    
-                    # Convert DataFrame to list of dictionaries for feature extraction
-                    chunk_data = chunk_df.to_dict('records')
-                    
-                    print(f"[INFO] Processing chunk {processed_chunks}: {len(chunk_data)} records")
-                    
-                    # Extract features for this chunk (with proper async handling)
-                    chunk_combined_data = await self._extract_features_from_chunk_async(
-                        chunk_data, imitation_learning, corner_service, tire_service, feature_sources
-                    )
-                    
-                    all_combined_data.extend(chunk_combined_data)
-                    
-                    # Clear chunk data to free memory
-                    del chunk_data, chunk_combined_data
-                    
-                    if processed_chunks % 10 == 0:
-                        print(f"[INFO] Processed {processed_chunks} chunks, {len(all_combined_data)} total records")
-                
-                print(f"[INFO] Completed processing {processed_chunks} chunks via iterator")
-                return all_combined_data
-            
-            # Execute the iterator-based processing
-            all_combined_telemetry_data = await process_cached_data_with_iterator()
-            
-            print(f"[INFO] Successfully processed {len(all_combined_telemetry_data)} records via iterator")
-            print(f"[INFO] Active feature sources: {feature_sources}")
-            
-            print(f"[INFO] Combined {len(all_combined_telemetry_data)} telemetry records with context features")
-            
-            # Filter the combined data into optimal segments and cache them instead of keeping in memory
-            self._print_section_divider("FILTERING COMBINED DATA INTO SEGMENTS AND CACHING")
-            try:
-                # Use the imitation learning service to filter the combined data into segments
-                combined_segments = imitation_learning.filter_optimal_telemetry_segments(all_combined_telemetry_data, segment_length=segment_length)
-                print(f"[INFO] Created {len(combined_segments)} combined segments from filtered data")
-                
-                # Clear all_combined_telemetry_data to free memory since we now have segments
-                del all_combined_telemetry_data
-                
-                # Cache the segments to avoid memory accumulation
-                segments_cache_key = f"segments_{track_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-                
-                async def segments_generator():
-                    """Async generator that yields segments for caching"""
-                    for idx, segment in enumerate(combined_segments):
-                        yield {
-                            "sessionId": f"segment_{idx}",
-                            "data": segment
-                        }
-                        
-                # Estimate size for caching decision
-                total_segment_records = sum(len(segment) for segment in combined_segments)
-                estimated_size_mb = (total_segment_records * 50) / (1024 * 1024)  # Rough estimate: 50 bytes per record
-                
-                print(f"[INFO] Caching {len(combined_segments)} segments (~{estimated_size_mb:.1f}MB) to avoid memory accumulation")
-                
-                cache_success = await self.data_cache.cache_sessions_streaming(
-                    track_name=segments_cache_key,
-                    sessions_iterator=segments_generator(),
-                    estimated_size_mb=estimated_size_mb
-                )
-                
-                if not cache_success:
-                    print(f"[WARNING] Failed to cache segments, keeping in memory as fallback")
-                    # Return the segments directly if caching fails
-                    return combined_segments
-                
-                # Clear segments from memory since they're now cached
-                del combined_segments
-                
-                print(f"[INFO] Successfully cached segments with key: {segments_cache_key}")
-                
-                # Return cache key instead of segments
-                return segments_cache_key
-                
-            except Exception as e:
-                raise Exception(f"Failed to filter combined data into segments: {str(e)}")
-            
-        except Exception as e:
-            raise Exception(f"{self.__dir__} Failed to enrich contextual data: {str(e)}")
+        print(f"[SUCCESS] Enrichment completed:")
+        print(f"  - Processed {processed_chunks} chunks")  
+        print(f"  - Generated and cached {total_segments_cached} enriched segments")
+        print(f"  - Segments cached in {cache_batch_number} batches")
+        print(f"  - Cache key: {segments_cache_key}")
+        
+        return segments_cache_key
     
 if __name__ == "__main__":
     # Example usage

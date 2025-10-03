@@ -1800,7 +1800,8 @@ class ExpertActionTrainer:
         print(f"[DEBUG] Creating DataLoader...")
         # Create DataLoader for efficient batch processing
         # NOTE: shuffle=False to preserve temporal order within segments
-        dataloader = DataLoader(dataset, batch_size=32, shuffle=False, num_workers=2)
+        # NOTE: num_workers=0 to avoid multiprocessing issues in Docker/Windows
+        dataloader = DataLoader(dataset, batch_size=32, shuffle=False, num_workers=0)
         print(f"[DEBUG] DataLoader created successfully")
         
         print(f"[INFO] Training on {len(dataset)} unified sequences in batches...")
@@ -1870,7 +1871,8 @@ class ExpertActionTrainer:
         
         # Create DataLoader for efficient batch processing
         # NOTE: shuffle=False to preserve temporal order within segments
-        dataloader = DataLoader(dataset, batch_size=32, shuffle=False, num_workers=2)
+        # NOTE: num_workers=0 to avoid multiprocessing issues in Docker/Windows
+        dataloader = DataLoader(dataset, batch_size=32, shuffle=False, num_workers=0)
         
         # Get context feature names from the dataset
         context_feature_names = dataset.get_context_feature_names()
@@ -2205,7 +2207,8 @@ class ExpertActionTrainer:
         # Create DataLoader for efficient batch processing (same as training)
         # Use larger batch size for evaluation since we don't need gradients
         batch_size = 64  # Larger batch size for faster evaluation
-        dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=2)
+        # NOTE: num_workers=0 to avoid multiprocessing issues in Docker/Windows
+        dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=0)
         
         num_batches = len(dataloader)
         print(f"[INFO] Processing {num_batches} batches with batch size {batch_size}")

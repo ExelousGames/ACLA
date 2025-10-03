@@ -3,7 +3,7 @@
 # Copy this file to: %USERPROFILE%\.wslconfig
 
 [wsl2]
-# Limits VM memory to use no more than 12GB (increased for better ML training performance)
+# Limits VM memory to use no more than 12GB (allows for full container limits + overhead)
 memory=12GB
 
 # Sets the VM to use more processors for better performance
@@ -21,8 +21,11 @@ swap=2GB
 # Sets swapfile path location, default is %USERPROFILE%\AppData\Local\Temp\swap.vhdx
 # swapfile=C:\\temp\\wsl-swap.vhdx
 
-# Disable page reporting so WSL retains all allocated memory claimed from Windows and releases none back when free
-# localhostforwarding=true
+# Enable page reporting so WSL releases memory back to Windows when free
+pageReporting=true
+
+# Enable memory reclaim to return unused memory to Windows
+vmIdleTimeout=60000
 
 # Turn on default connection to bind WSL 2 localhost to Windows localhost
 localhostforwarding=true

@@ -24,6 +24,12 @@ services:
     tty: true
     depends_on:
       - backend_proxy
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 1G
 
   backend_proxy:
     image: nginx:stable-perl
