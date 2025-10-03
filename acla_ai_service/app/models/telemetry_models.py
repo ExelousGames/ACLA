@@ -7,6 +7,8 @@ from typing import Dict, List, Any, Optional
 import pandas as pd
 import math
 import numpy as np
+import json
+import ast
 
 def _safe_float(value):
     """Convert value to float, handling NaN and infinity"""
@@ -17,6 +19,63 @@ def _safe_float(value):
         return float_val
     except (ValueError, TypeError):
         return 0.0
+
+def _parse_car_coordinates(value):
+    """
+    Safely parse car coordinates which might be stored as:
+    - Actual Python list
+    - String representation of a list  
+    - JSON string
+    - Numpy array
+    """
+    if isinstance(value, list):
+        return value
+    
+    # Handle numpy arrays
+    if isinstance(value, np.ndarray):
+        try:
+            # Convert numpy array to list and return
+            return value.tolist()
+        except Exception:
+            pass
+    
+    if isinstance(value, str):
+        # Remove any extra whitespace and newlines
+        value = value.strip()
+        
+        try:
+            # Try JSON parsing first
+            return json.loads(value)
+        except (json.JSONDecodeError, ValueError):
+            pass
+            
+        try:
+            # Try ast.literal_eval for Python literal strings
+            return ast.literal_eval(value)
+        except (ValueError, SyntaxError):
+            pass
+        
+        try:
+            # Handle case where it's formatted like the debug output
+            # Replace the formatted string with proper JSON
+            if 'x\': ' in value and 'y\': ' in value and 'z\': ' in value:
+                # This looks like the formatted output, try to extract coordinates
+                import re
+                coord_pattern = r"{'x': ([-\d.]+), 'y': ([-\d.]+), 'z': ([-\d.]+)}"
+                matches = re.findall(coord_pattern, value)
+                if matches:
+                    coords = []
+                    for match in matches:
+                        coords.append({
+                            'x': float(match[0]),
+                            'y': float(match[1]), 
+                            'z': float(match[2])
+                        })
+                    return coords
+        except Exception:
+            pass
+    
+    return None
 
 class TelemetryFeatures:
     """
@@ -829,20 +888,41 @@ class FeatureProcessor:
         
         # Handle Graphics_car_coordinates array - extract player car position
         if 'Graphics_car_coordinates' in df.columns:
-            print("found Graphics_car_coordinates column, processing...")
             try:
                 # Extract first car coordinates (player car) if it's a list
                 for idx in df.index:
-                    car_coords = df.loc[idx, 'Graphics_car_coordinates']
+                    car_coords_raw = df.loc[idx, 'Graphics_car_coordinates']
                     player_car_id = df.loc[idx, 'Graphics_player_car_id']
+
+                    # Parse car coordinates using the helper function
+                    car_coords = _parse_car_coordinates(car_coords_raw)
                     
-                    if isinstance(car_coords, list) and len(car_coords) > 0:
-                        player_coord = car_coords[player_car_id]
-                        if isinstance(player_coord, dict):
-                            df.loc[idx, 'Graphics_player_pos_x'] = player_coord.get('x', 0)
-                            df.loc[idx, 'Graphics_player_pos_y'] = player_coord.get('y', 0)
-                            df.loc[idx, 'Graphics_player_pos_z'] = player_coord.get('z', 0)
-                
+                    if car_coords is not None and isinstance(car_coords, list) and len(car_coords) > 0:
+                        # Ensure player_car_id is valid
+                        try:
+                            player_car_id = int(player_car_id) if player_car_id is not None else 0
+                        except (ValueError, TypeError):
+                            player_car_id = 0
+                            
+                        if 0 <= player_car_id < len(car_coords):
+                            player_coord = car_coords[player_car_id]
+                            if isinstance(player_coord, dict):
+                                df.loc[idx, 'Graphics_player_pos_x'] = _safe_float(player_coord.get('x', 0))
+                                df.loc[idx, 'Graphics_player_pos_y'] = _safe_float(player_coord.get('y', 0))
+                                df.loc[idx, 'Graphics_player_pos_z'] = _safe_float(player_coord.get('z', 0))
+                        else:
+                            print(f"[DEBUG] Invalid player_car_id {player_car_id} for car_coords length {len(car_coords)}")
+                            # Set default values
+                            df.loc[idx, 'Graphics_player_pos_x'] = 0.0
+                            df.loc[idx, 'Graphics_player_pos_y'] = 0.0
+                            df.loc[idx, 'Graphics_player_pos_z'] = 0.0
+                    else:
+                        print(f"[DEBUG] Could not parse car_coords for row {idx}: {type(car_coords_raw)} -> {car_coords}")
+                        # Set default values
+                        df.loc[idx, 'Graphics_player_pos_x'] = 0.0
+                        df.loc[idx, 'Graphics_player_pos_y'] = 0.0
+                        df.loc[idx, 'Graphics_player_pos_z'] = 0.0
+                        
                 # Remove the complex column after extraction
                 df.drop('Graphics_car_coordinates', axis=1, inplace=True)
                 
@@ -961,13 +1041,13 @@ class FeatureProcessor:
         # Filter DataFrame to include only the available features
         filtered_df = df[available_features].copy()
         
-        print(f"[INFO] Filtered DataFrame to {len(available_features)} features out of {len(feature_list)} requested")
+        #print(f"[INFO] Filtered DataFrame to {len(available_features)} features out of {len(feature_list)} requested")
         if missing_features:
             print(f"[INFO] Missing {len(missing_features)} features: {missing_features[:5]}{'...' if len(missing_features) > 5 else ''}")
         
         return filtered_df
 
-    def _filter_top_performance_laps(self, df: pd.DataFrame, keepTopLapsPercent: float=0.01) -> tuple[pd.DataFrame, List[pd.DataFrame]]:
+    def _filter_top_performance_laps(self, df: pd.DataFrame, keepTopLapsPercent: float=0.01) -> tuple[List[float], List[pd.DataFrame]]:
         """Simpler fastest-lap filter.
 
         Steps:
@@ -982,10 +1062,10 @@ class FeatureProcessor:
             keepTopLapsPercent: Fraction (0-1] of fastest laps to retain (default 0.01 = top 1%).
 
         Returns:
-            (combined_df, list_of_lap_dfs)
+            (list_of_lap_times_ms, list_of_lap_dfs)
         """
         if df.empty:
-            return pd.DataFrame(), []
+            return [], []
 
         required = [
             'Graphics_is_valid_lap',
@@ -996,7 +1076,16 @@ class FeatureProcessor:
         missing = [c for c in required if c not in df.columns]
         if missing:
             # If we cannot validate laps, just return everything as one block (backwards compatible fallback)
-            return df.copy(), [df.copy()] if not df.empty else []
+            if not df.empty:
+                # Try to get lap time from Graphics_last_time or Graphics_current_time
+                lap_time_ms = 0
+                if 'Graphics_last_time' in df.columns:
+                    lap_time_ms = pd.to_numeric(df['Graphics_last_time'], errors='coerce').max()
+                elif 'Graphics_current_time' in df.columns:
+                    lap_time_ms = pd.to_numeric(df['Graphics_current_time'], errors='coerce').max()
+                
+                return [lap_time_ms if lap_time_ms > 0 else float('inf')], [df.copy()]
+            return [], []
 
         work = df.copy()
 
@@ -1035,16 +1124,15 @@ class FeatureProcessor:
             if valid_ratio < 0.95:
                 continue
 
-            # Lap time: take last current_time (milliseconds) convert to seconds
+            # Lap time: take last current_time (milliseconds)
             lap_time_ms = lap_df['Graphics_current_time'].iloc[-1]
             if lap_time_ms <= 0:
                 continue
-            lap_time_s = lap_time_ms / 1000.0
 
-            laps.append((lap_id, lap_time_s, lap_df))
+            laps.append((lap_id, lap_time_ms, lap_df))
 
         if not laps:
-            return pd.DataFrame(), []
+            return [], []
 
         # Sort by lap time ascending
         laps.sort(key=lambda x: x[1])
@@ -1054,9 +1142,9 @@ class FeatureProcessor:
         n_keep = max(1, int(np.ceil(len(laps) * pct)))
         selected = laps[:n_keep]
 
+        lap_times_ms = [l[1] for l in selected]
         individual = [l[2].copy() for l in selected]
-        combined = pd.concat(individual, ignore_index=True)
-        return combined, individual
+        return lap_times_ms, individual
 
     # ========================= Console Plotting Utilities ========================= #
     def plot_features_console(

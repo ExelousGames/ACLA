@@ -44,6 +44,10 @@ class TrainingOptimizedCache:
         self.metadata_db = self.cache_dir / "cache_metadata.db"
         self._init_metadata_db()
         
+        # Clean cache on initialization to ensure fresh start
+        print(f"[INFO] Cleaning cache directory on initialization...")
+        self.clear_cache()
+        
         # Large dataset optimization settings
         self.compression = 'snappy'  # Fast compression for large files
         self.row_group_size = 50000   # Conservative row groups for memory efficiency

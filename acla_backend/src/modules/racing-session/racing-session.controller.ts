@@ -48,10 +48,12 @@ export class RacingSessionController {
             this.racingSessionService.cleanupOldStreamingFiles();
         }, 60 * 60 * 1000); // 1 hour
 
-        // Clean up old download states every 30 minutes
+        // Clean up old download states every hour (less aggressive)
         setInterval(() => {
-            this.cleanupOldDownloadStates();
-        }, 30 * 60 * 1000); // 30 minutes
+            this.cleanupOldDownloadStates().catch(error => {
+                this.logger.error(`Error during download state cleanup: ${error.message}`);
+            });
+        }, 60 * 60 * 1000); // 1 hour
     }
 
     @UseGuards(AuthGuard('jwt'))
@@ -107,8 +109,12 @@ export class RacingSessionController {
                 createdAt: new Date()
             });
 
-            // Clean up old download states (older than 1 hour)
-            this.cleanupOldDownloadStates();
+            this.logger.log(`Initialized download session ${initData.downloadId} with ${initData.totalSessions} sessions`);
+
+            // Clean up old download states (older than 2 hours)
+            this.cleanupOldDownloadStates().catch(error => {
+                this.logger.error(`Error during download state cleanup: ${error.message}`);
+            });
 
             return initData;
         } catch (error) {
@@ -127,20 +133,26 @@ export class RacingSessionController {
             // Validate download state exists
             const downloadState = this.downloadStates.get(body.downloadId);
             if (!downloadState) {
+                this.logger.warn(`Download session not found: ${body.downloadId}, available sessions: ${Array.from(this.downloadStates.keys()).join(', ')}`);
                 throw new BadRequestException('Download session not found or expired');
             }
+
+            // Update last access time to prevent premature cleanup
+            downloadState.createdAt = new Date();
 
             // Validate session exists in the download
             const sessionExists = downloadState.initData.sessionMetadata.some(
                 session => session.sessionId === body.sessionId
             );
             if (!sessionExists) {
+                this.logger.error(`Session ${body.sessionId} not found in download ${body.downloadId}`);
                 throw new BadRequestException('Session not found in download');
             }
 
             // Get streaming file information
             const streamingFile = downloadState.streamingFiles?.get(body.sessionId);
             if (!streamingFile) {
+                this.logger.error(`Session streaming file not found for session ${body.sessionId}`);
                 throw new BadRequestException('Session streaming file not found');
             }
 
@@ -150,6 +162,7 @@ export class RacingSessionController {
             try {
                 await fs.access(filePath);
             } catch (error) {
+                this.logger.error(`Session file not accessible: ${filePath}, error: ${error.message}`);
                 throw new BadRequestException('Session file not accessible');
             }
 
@@ -191,15 +204,31 @@ export class RacingSessionController {
     }
 
     /**
-     * Clean up download states older than 1 hour and associated streaming files
+     * Clean up download states older than 2 hours and associated streaming files
+     * Increased timeout to prevent premature cleanup during active downloads
      */
     private async cleanupOldDownloadStates(): Promise<void> {
-        const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
+        const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000); // Increased to 2 hours
+        const statestoCleanup: string[] = [];
 
+        // First, identify states that need cleanup
         for (const [downloadId, state] of this.downloadStates.entries()) {
-            if (state.createdAt < oneHourAgo) {
-                await this.cleanupDownloadSession(downloadId);
+            if (state.createdAt < twoHoursAgo) {
+                statestoCleanup.push(downloadId);
             }
+        }
+
+        // Then clean them up to avoid concurrent modification
+        for (const downloadId of statestoCleanup) {
+            try {
+                await this.cleanupDownloadSession(downloadId);
+            } catch (error) {
+                this.logger.warn(`Failed to cleanup download session ${downloadId}: ${error.message}`);
+            }
+        }
+
+        if (statestoCleanup.length > 0) {
+            this.logger.log(`Cleaned up ${statestoCleanup.length} expired download sessions`);
         }
     }
 
@@ -210,6 +239,13 @@ export class RacingSessionController {
         try {
             const state = this.downloadStates.get(downloadId);
             if (state) {
+                // Check if the session was recently accessed (within last 30 minutes)
+                const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000);
+                if (state.createdAt > thirtyMinutesAgo) {
+                    this.logger.debug(`Skipping cleanup for recently accessed download session: ${downloadId}`);
+                    return;
+                }
+
                 // Clean up associated streaming files
                 await this.racingSessionService.cleanupStreamingFiles(downloadId);
                 // Remove from memory
@@ -275,8 +311,12 @@ export class RacingSessionController {
     ) {
         const downloadState = this.downloadStates.get(body.downloadId);
         if (!downloadState) {
+            this.logger.warn(`Download status requested for non-existent session: ${body.downloadId}`);
             throw new BadRequestException('Download session not found or expired');
         }
+
+        // Update last access time to prevent premature cleanup
+        downloadState.createdAt = new Date();
 
         const totalPossibleChunks = downloadState.initData.totalChunks || 0;
         const downloadedChunks = downloadState.downloadedChunks.size;
@@ -284,11 +324,15 @@ export class RacingSessionController {
 
         const isComplete = downloadedChunks >= totalPossibleChunks;
 
-        // If download is complete, schedule cleanup
+        // If download is complete, schedule cleanup with longer delay
         if (isComplete) {
             setTimeout(async () => {
-                await this.cleanupDownloadSession(body.downloadId);
-            }, 5 * 60 * 1000); // Clean up after 5 minutes
+                try {
+                    await this.cleanupDownloadSession(body.downloadId);
+                } catch (error) {
+                    this.logger.warn(`Failed to cleanup completed download session ${body.downloadId}: ${error.message}`);
+                }
+            }, 10 * 60 * 1000); // Increased to 10 minutes to allow for slower connections
         }
 
         return {
@@ -527,6 +571,25 @@ export class RacingSessionController {
         } catch (error) {
             throw new BadRequestException(`Failed to cleanup download: ${error.message}`);
         }
+    }
+
+    @UseGuards(AuthGuard('jwt'))
+    @Get('download/debug')
+    async getDownloadDebugInfo(@Request() req) {
+        const activeDownloads = Array.from(this.downloadStates.entries()).map(([id, state]) => ({
+            downloadId: id,
+            createdAt: state.createdAt,
+            sessionCount: state.initData.totalSessions,
+            downloadedChunks: state.downloadedChunks.size,
+            hasStreamingFiles: !!state.streamingFiles && state.streamingFiles.size > 0,
+            tempDir: state.tempDir
+        }));
+
+        return {
+            activeDownloadSessions: activeDownloads.length,
+            downloads: activeDownloads,
+            currentTime: new Date()
+        };
     }
 
 

@@ -1030,34 +1030,38 @@ class ExpertImitateLearningService:
         
         print("[INFO] Serializing current position models...")
         
-        # Create a deep copy of position model to avoid modifying the original
-        import copy
-        position_model_copy = copy.deepcopy(self.position_learner.position_model)
-        
-        # Serialize models
-        if 'models' in position_model_copy:
-            print("[INFO] Serializing position models...")
-            # Serialize each model individually
-            serialized_position_models = {}
-            for model_name, model in position_model_copy['models'].items():
-                print(f"[INFO] Serializing model: {model_name}")
-                serialized_model_data = self.serialize_data(model)
-                serialized_position_models[model_name] = serialized_model_data
-                
-            # Store serialized models back
-            position_model_copy['models'] = serialized_position_models
+        try:
+            # Create a deep copy of position model to avoid modifying the original
+            import copy
+            position_model_copy = copy.deepcopy(self.position_learner.position_model)
             
-            # Serialize position scaler
-            if 'position_scaler' in position_model_copy:
-                position_scaler_data = self.serialize_data(position_model_copy['position_scaler'])
-                position_model_copy['position_scaler'] = position_scaler_data
-        else:
-            raise ValueError("Invalid model structure - expected models in position_model")
+            # Serialize models
+            if 'models' in position_model_copy:
+                print("[INFO] Serializing position models...")
+                # Serialize each model individually
+                serialized_position_models = {}
+                for model_name, model in position_model_copy['models'].items():
+                    print(f"[INFO] Serializing model: {model_name}")
+                    serialized_model_data = self.serialize_data(model)
+                    serialized_position_models[model_name] = serialized_model_data
+                    
+                # Store serialized models back
+                position_model_copy['models'] = serialized_position_models
+                
+                # Serialize position scaler
+                if 'position_scaler' in position_model_copy:
+                    position_scaler_data = self.serialize_data(position_model_copy['position_scaler'])
+                    position_model_copy['position_scaler'] = position_scaler_data
+            else:
+                raise ValueError("Invalid model structure - expected models in position_model")
+            
+            # Ensure all values are JSON-serializable
+            json_friendly_results = self._ensure_json_serializable(position_model_copy)
+            return json_friendly_results
+        except Exception as e:
+            error_msg = f"Failed to serialize imitation learning models: {str(e)}"
+            raise RuntimeError(error_msg) from e
         
-        # Ensure all values are JSON-serializable
-        json_friendly_results = self._ensure_json_serializable(position_model_copy)
-        return json_friendly_results
-    
     def _ensure_json_serializable(self, obj: Any) -> Any:
         """
         Recursively ensure all values in the object are JSON-serializable

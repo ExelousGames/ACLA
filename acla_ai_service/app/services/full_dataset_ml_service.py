@@ -1099,49 +1099,93 @@ class Full_dataset_TelemetryMLService:
         # Simple direct processing - maintain only top 5 laps
         top_5_laps = {}  # lap_num -> {lap_time_ms, records}
         bottom_laps_cache_key = f"bottom_laps_{trackName}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        bottom_laps_sessions = []
         total_processed = 0
         chunk_idx = 0
+        total_bottom_laps_cached = 0
         
         chunk_iterator = self.data_cache.get_cached_data_chunks(
             track_name=trackName,
             chunk_size=max_memory_records
         )
         
+        # Debug: Check if iterator is properly created
+        print(f"[DEBUG] Created chunk iterator for track: {trackName}")
+        
+        chunks_processed = 0
         for chunk_df in chunk_iterator:
-            if chunk_df.empty:
+            chunks_processed += 1
+            print(f"[DEBUG] Processing chunk {chunks_processed}, size: {len(chunk_df) if chunk_df is not None else 0}")
+            
+            if chunk_df is None or chunk_df.empty:
+                print(f"[DEBUG] Chunk {chunks_processed} is empty, skipping")
                 continue
             
             try:
                 # Process and filter data
                 processor = FeatureProcessor(chunk_df)
                 processed_df = processor.general_cleaning_for_analysis()
-                
+
                 if processed_df.empty:
                     continue
                 
                 # Extract performance laps first
-                _, lap_df_list = processor._filter_top_performance_laps(processed_df, 1)
+                lap_times_ms, lap_df_list = processor._filter_top_performance_laps(processed_df, 1)
                 
+                print(f"[DEBUG] Chunk {chunk_idx}: Found {len(lap_df_list) if lap_df_list else 0} performance laps")
+                
+                # Fallback: if no top performance laps found, try to get all laps
                 if not lap_df_list:
-                    continue
+                    print(f"[DEBUG] Chunk {chunk_idx}: No performance laps found, trying to extract all laps as fallback")
+                    try:
+                        # Try to extract all laps if no top performance laps found
+                        lap_times_ms, lap_df_list = processor._filter_top_performance_laps(processed_df, 100)  # Get up to 100 laps
+                        if not lap_df_list:
+                            print(f"[DEBUG] Chunk {chunk_idx}: No laps found at all, skipping chunk")
+                            continue
+                        print(f"[DEBUG] Chunk {chunk_idx}: Fallback found {len(lap_df_list)} total laps")
+                    except Exception as fallback_error:
+                        print(f"[DEBUG] Chunk {chunk_idx}: Fallback lap extraction failed: {fallback_error}")
+                        continue
+                
+                # Collect bottom laps from this chunk
+                chunk_bottom_laps = []
                 
                 # Filter to relevant features on each lap
                 features = self._imitate_expert_feature_names or TelemetryFeatures().get_features_for_imitate_expert()
-                for lap_df in lap_df_list:
+                laps_processed_in_chunk = 0
+                for lap_idx, lap_df in enumerate(lap_df_list):
                     filtered_lap_df = processor.filter_features_by_list(lap_df, features)
                     if filtered_lap_df.empty:
+                        print(f"[DEBUG] Chunk {chunk_idx}: Lap {lap_idx} filtered out - no features remaining")
                         continue
                     
                     # Get lap info
                     lap_records = filtered_lap_df.to_dict('records')
-                    lap_num = lap_records[0].get('lap_number', 0)
-                    lap_time = min(r.get('lap_time_ms', float('inf')) for r in lap_records)
+                    lap_num = lap_records[0].get('lap_number', lap_idx)
+                    
+                    # Use lap time from the method instead of calculating manually
+                    if lap_idx < len(lap_times_ms):
+                        lap_time = lap_times_ms[lap_idx]
+                    else:
+                        print(f"[DEBUG] Chunk {chunk_idx}: Lap {lap_idx} missing lap time, skipping")
+                        continue
+                    
+                    if lap_time <= 0 or lap_time == float('inf'):
+                        print(f"[DEBUG] Chunk {chunk_idx}: Lap {lap_num} has invalid lap time {lap_time}, skipping")
+                        continue
+                        
+                    laps_processed_in_chunk += 1
+                    
+                    # Create unique lap identifier to avoid overwrites
+                    unique_lap_id = f"{chunk_idx}_{lap_num}_{len(lap_records)}_{lap_time}"
+                    
+                    print(f"[DEBUG] Chunk {chunk_idx}: Processing lap {lap_num} with time {lap_time}ms ({len(lap_records)} records) [ID: {unique_lap_id}]")
                     
                     # Check if this lap should be in top 5
                     if len(top_5_laps) < 5:
                         # Still have space, add this lap
-                        top_5_laps[lap_num] = {"lap_time_ms": lap_time, "records": lap_records}
+                        top_5_laps[unique_lap_id] = {"lap_time_ms": lap_time, "records": lap_records, "lap_num": lap_num}
+                        print(f"[DEBUG] Added lap {unique_lap_id} to top laps (position {len(top_5_laps)}/5, time: {lap_time}ms)")
                     else:
                         # Find slowest lap in current top 5
                         slowest_lap = max(top_5_laps.items(), key=lambda x: x[1]["lap_time_ms"])
@@ -1149,65 +1193,92 @@ class Full_dataset_TelemetryMLService:
                         if lap_time < slowest_lap[1]["lap_time_ms"]:
                             # This lap is faster, replace the slowest
                             # Move slowest to bottom laps
-                            bottom_laps_sessions.append({
+                            chunk_bottom_laps.append({
                                 "sessionId": f"bottom_lap_{slowest_lap[0]}_{chunk_idx}",
                                 "data": slowest_lap[1]["records"]
                             })
                             
                             # Remove slowest and add new lap
                             del top_5_laps[slowest_lap[0]]
-                            top_5_laps[lap_num] = {"lap_time_ms": lap_time, "records": lap_records}
+                            top_5_laps[unique_lap_id] = {"lap_time_ms": lap_time, "records": lap_records, "lap_num": lap_num}
+                            print(f"[DEBUG] Replaced slowest lap with {unique_lap_id} (time: {lap_time}ms)")
                         else:
                             # This lap is slower than top 5, add to bottom laps
-                            bottom_laps_sessions.append({
-                                "sessionId": f"bottom_lap_{lap_num}_{chunk_idx}",
+                            chunk_bottom_laps.append({
+                                "sessionId": f"bottom_lap_{unique_lap_id}_{chunk_idx}",
                                 "data": lap_records
                             })
+                
+                print(f"[DEBUG] Chunk {chunk_idx}: Processed {laps_processed_in_chunk} laps. Current top laps: {len(top_5_laps)}, bottom laps: {len(chunk_bottom_laps)}")
+                
+                # Cache bottom laps from this chunk immediately
+                if chunk_bottom_laps:
+                    try:
+                        async def cache_chunk_bottom_laps():
+                            for session in chunk_bottom_laps:
+                                yield session
+                        
+                        cache_success = await self.data_cache.cache_sessions_streaming(
+                            track_name=trackName,  # Use original track name, not the generated cache key
+                            sessions_iterator=cache_chunk_bottom_laps()
+                        )
+                        
+                        if cache_success:
+                            total_bottom_laps_cached += len(chunk_bottom_laps)
+                            print(f"[INFO] Cached {len(chunk_bottom_laps)} bottom laps from chunk {chunk_idx}")
+                        else:
+                            print(f"[WARNING] Failed to cache bottom laps from chunk {chunk_idx}")
+                            
+                    except Exception as cache_error:
+                        print(f"[WARNING] Error caching bottom laps from chunk {chunk_idx}: {cache_error}")
                 
                 total_processed += len(chunk_df)
                 chunk_idx += 1
                 
                 if chunk_idx % 10 == 0:
-                    print(f"[INFO] Processed {chunk_idx} chunks, {total_processed} records")
+                    print(f"[INFO] Processed {chunk_idx} chunks, {total_processed} records, {total_bottom_laps_cached} bottom laps cached")
+                    print(f"[INFO] Current top laps count: {len(top_5_laps)}")
                     
             except Exception as e:
                 print(f"[WARNING] Chunk processing failed: {e}")
                 continue
         
-        # Cache all bottom laps
-        async def cache_bottom_laps():
-            for session in bottom_laps_sessions:
-                yield session
+        # Debug information before validation
+        print(f"[DEBUG] Finished processing all chunks:")
+        print(f"[DEBUG] - Total chunks processed: {chunks_processed}")
+        print(f"[DEBUG] - Valid chunks processed: {chunk_idx}")
+        print(f"[DEBUG] - Total records processed: {total_processed}")
+        print(f"[DEBUG] - Top laps found: {len(top_5_laps)}")
+        print(f"[DEBUG] - Bottom laps cached: {total_bottom_laps_cached}")
         
-        try:
-            cache_success = await self.data_cache.cache_sessions_streaming(
-                track_name=bottom_laps_cache_key,
-                sessions_iterator=cache_bottom_laps()
-            )
-            
-            if not cache_success:
-                raise MemoryError("Failed to cache bottom laps")
-            
-            if len(top_5_laps) == 0 and chunk_idx == 0:
-                raise ValueError(f"No valid telemetry data found for {trackName}")
-            
-            if len(top_5_laps) < 5:
-                raise ValueError(f"Insufficient top laps found: {len(top_5_laps)}/5 required. Need at least 5 expert laps for training.")
-            
-            # Extract records from top 5 laps
-            top_laps_telemetry_list = []
-            for lap_info in top_5_laps.values():
-                top_laps_telemetry_list.extend(lap_info["records"])
-            
-            print(f"[SUCCESS] Processed {chunk_idx} chunks, {total_processed} records")
-            print(f"[SUCCESS] Selected top 5 laps: {len(top_laps_telemetry_list)} records, cached {len(bottom_laps_sessions)} bottom sessions")
-            print(f"[SUCCESS] Bottom laps cached with key: {bottom_laps_cache_key}")
-            
-            return top_laps_telemetry_list, bottom_laps_cache_key
-            
-        except Exception as e:
-            print(f"[ERROR] Dataset processing failed: {e}")
-            raise Exception(f"Failed to process dataset for {trackName}: {str(e)}")
+        if len(top_5_laps) > 0:
+            lap_times = [lap_info["lap_time_ms"] for lap_info in top_5_laps.values()]
+            print(f"[DEBUG] Top lap times: {sorted(lap_times)}")
+        
+        # Validation and final processing
+        if len(top_5_laps) == 0 and chunk_idx == 0:
+            raise ValueError(f"No valid telemetry data found for {trackName}. No chunks were successfully processed.")
+        
+        if chunks_processed == 0:
+            raise ValueError(f"No chunks were returned by iterator for track {trackName}. Check if data exists in cache.")
+        
+        if chunk_idx == 0:
+            raise ValueError(f"All {chunks_processed} chunks failed processing for track {trackName}. Check data quality.")
+        
+        if len(top_5_laps) < 5:
+            raise ValueError(f"Insufficient top laps found: {len(top_5_laps)}/5 required. Need at least 5 expert laps for training. Processed {chunk_idx} valid chunks with {total_processed} records.")
+        
+        # Extract records from top 5 laps
+        top_laps_telemetry_list = []
+        for lap_info in top_5_laps.values():
+            top_laps_telemetry_list.extend(lap_info["records"])
+        
+        print(f"[SUCCESS] Processed {chunk_idx} chunks, {total_processed} records")
+        print(f"[SUCCESS] Selected top 5 laps: {len(top_laps_telemetry_list)} records")
+        print(f"[SUCCESS] Cached {total_bottom_laps_cached} bottom laps across {chunk_idx} chunks")
+        
+        # Return the base cache key (without chunk suffix) so the caller can find all chunks
+        return top_laps_telemetry_list, bottom_laps_cache_key
 
     def get_data_cache_info(self) -> Dict[str, Any]:
         """Get information about the training-optimized data cache"""
@@ -1467,16 +1538,16 @@ class Full_dataset_TelemetryMLService:
 
     async def enriched_contextual_data(self, top_laps_telemetry_list: List[Dict[str, Any]], bottom_laps_cache_key: str, track_name: str, segment_length: int) -> str:
         """
-        Extract enriched contextual features from telemetry data using trained models. it adds expert state, corner identification, and tire grip features,
+        Extract enriched contextual features from telemetry data using trained models. It adds expert state, corner identification, and tire grip features,
         and helps transformer model to better understand track geometry, physics constraints, extra expert insights to differentiate actions that
         converge towards feature expert state.
         
         This method returns combined segmented data for the unified transformer model.
-        IMPORTANT: This method processes cached bottom laps data in streaming chunks to avoid memory overflow.
+        IMPORTANT: This method uses an iterator approach to process cached bottom laps data efficiently without memory overflow.
         
         Args:
             top_laps_telemetry_list: List of expert telemetry record dictionaries (flat list)
-            bottom_laps_cache_key: Cache key for accessing bottom laps data via data_cache (avoids memory overflow)
+            bottom_laps_cache_key: Cache key for accessing bottom laps data via data_cache iterator (avoids memory overflow)
             track_name: Track name for model identification
             segment_length: Length of segments for processing
             
@@ -1488,15 +1559,31 @@ class Full_dataset_TelemetryMLService:
         print(f"  - Top laps (expert): {len(top_laps_telemetry_list)} records")
         print(f"  - Bottom laps (training): cached with key '{bottom_laps_cache_key}'")
         
-        # Validate cached data exists
-        cached_bottom_laps = self.data_cache.get_cached_sessions(bottom_laps_cache_key, max_age_hours=24)
-        if not cached_bottom_laps:
-            print("[ERROR] No cached bottom laps data found")
-            raise ValueError("No cached bottom laps data found - unable to proceed with contextual data enrichment")
-        
-        # Get total count from cached data for logging
-        total_bottom_laps_count = cached_bottom_laps.get("summary", {}).get("total_telemetry_records", 0)
-        print(f"  - Bottom laps total count: {total_bottom_laps_count} records (cached)")
+        # Validate cached data exists by testing the iterator
+        try:
+            print(f"[DEBUG] Validating cached bottom laps data for track '{track_name}'")
+            
+            # Test if iterator can access the cached data using original track name
+            test_iterator = self.data_cache.get_cached_data_chunks(
+                track_name=track_name,  # Use original track name directly
+                chunk_size=1000
+            )
+            
+            # Try to get first chunk to validate cache exists
+            first_chunk = next(test_iterator, None)
+            if first_chunk is None:
+                print(f"[ERROR] No cached bottom laps data found for track '{track_name}'")
+                raise ValueError(f"No cached bottom laps data found for track '{track_name}' - unable to proceed with contextual data enrichment")
+            
+            total_bottom_laps_count = len(first_chunk)  # Approximate count from first chunk
+            print(f"  - Bottom laps data validated: first chunk has {total_bottom_laps_count} records")
+            
+        except StopIteration:
+            print(f"[ERROR] Iterator returned no chunks for track '{track_name}'")
+            raise ValueError(f"No cached bottom laps data found - iterator returned no chunks")
+        except Exception as e:
+            print(f"[ERROR] Failed to validate cached data: {str(e)}")
+            raise ValueError(f"Failed to validate cached bottom laps data: {str(e)}")
         
         print(f"[INFO] Using ALL data without sampling since we're processing via cache streaming")
         
@@ -1579,58 +1666,63 @@ class Full_dataset_TelemetryMLService:
             except Exception as e:
                 raise Exception(f"[ERROR] Tire grip analysis training failed: {str(e)}")
             
-            # First, combine telemetry with context features using cache-based streaming
-            self._print_section_divider("COMBINING TELEMETRY WITH CONTEXT FEATURES VIA CACHE STREAMING")
+            # First, combine telemetry with context features using iterator-based processing
+            self._print_section_divider("COMBINING TELEMETRY WITH CONTEXT FEATURES VIA ITERATOR")
             
-            # Process feature extraction using cache streaming to avoid memory issues
+            # Process feature extraction using iterator to loop through all bottom laps efficiently
             chunk_size = 10000  # Process 10k records at a time
             all_combined_telemetry_data = []
             feature_sources = []
             
-            print(f"[INFO] Processing feature extraction via cache streaming in chunks of {chunk_size} records")
+            print(f"[INFO] Processing feature extraction via iterator in chunks of {chunk_size} records")
             
-            # Use cache streaming to process all bottom laps data with async feature extraction
-            async def process_cached_data_with_async_features():
-                """Process cached data with proper async feature extraction"""
-                cached_sessions = self.data_cache.get_cached_sessions(bottom_laps_cache_key, max_age_hours=24)
-                if not cached_sessions:
-                    raise ValueError(f"No cached data found for {bottom_laps_cache_key}")
-                
+            # Use iterator approach to process all bottom laps data with async feature extraction
+            async def process_cached_data_with_iterator():
+                """Process cached data using iterator approach for memory efficiency"""
                 all_combined_data = []
                 processed_chunks = 0
                 
-                # Process each session chunk from cache
-                for session in cached_sessions.get("sessions", []):
-                    session_data = session.get("data", [])
-                    if not session_data:
+                # Use the data_cache iterator to loop through all bottom laps chunks
+                # Use original track name directly since that's how data is cached
+                chunk_iterator = self.data_cache.get_cached_data_chunks(
+                    track_name=track_name,  # Use original track name directly
+                    chunk_size=chunk_size
+                )
+                
+                print(f"[DEBUG] Created chunk iterator for bottom laps processing (track: '{track_name}')")
+                
+                for chunk_df in chunk_iterator:
+                    if chunk_df is None or chunk_df.empty:
+                        print(f"[DEBUG] Skipping empty chunk")
                         continue
                     
-                    # Process in chunks to avoid memory overflow
-                    for i in range(0, len(session_data), chunk_size):
-                        chunk_data = session_data[i:i + chunk_size]
-                        processed_chunks += 1
-                        
-                        print(f"[INFO] Processing chunk {processed_chunks}: {len(chunk_data)} records")
-                        
-                        # Extract features for this chunk (with proper async handling)
-                        chunk_combined_data = await self._extract_features_from_chunk_async(
-                            chunk_data, imitation_learning, corner_service, tire_service, feature_sources
-                        )
-                        
-                        all_combined_data.extend(chunk_combined_data)
-                        
-                        # Clear chunk data to free memory
-                        del chunk_data, chunk_combined_data
-                        
-                        if processed_chunks % 10 == 0:
-                            print(f"[INFO] Processed {processed_chunks} chunks, {len(all_combined_data)} total records")
+                    processed_chunks += 1
+                    
+                    # Convert DataFrame to list of dictionaries for feature extraction
+                    chunk_data = chunk_df.to_dict('records')
+                    
+                    print(f"[INFO] Processing chunk {processed_chunks}: {len(chunk_data)} records")
+                    
+                    # Extract features for this chunk (with proper async handling)
+                    chunk_combined_data = await self._extract_features_from_chunk_async(
+                        chunk_data, imitation_learning, corner_service, tire_service, feature_sources
+                    )
+                    
+                    all_combined_data.extend(chunk_combined_data)
+                    
+                    # Clear chunk data to free memory
+                    del chunk_data, chunk_combined_data
+                    
+                    if processed_chunks % 10 == 0:
+                        print(f"[INFO] Processed {processed_chunks} chunks, {len(all_combined_data)} total records")
                 
+                print(f"[INFO] Completed processing {processed_chunks} chunks via iterator")
                 return all_combined_data
             
-            # Execute the async processing
-            all_combined_telemetry_data = await process_cached_data_with_async_features()
+            # Execute the iterator-based processing
+            all_combined_telemetry_data = await process_cached_data_with_iterator()
             
-            print(f"[INFO] Successfully processed {len(all_combined_telemetry_data)} records via cache streaming")
+            print(f"[INFO] Successfully processed {len(all_combined_telemetry_data)} records via iterator")
             print(f"[INFO] Active feature sources: {feature_sources}")
             
             print(f"[INFO] Combined {len(all_combined_telemetry_data)} telemetry records with context features")

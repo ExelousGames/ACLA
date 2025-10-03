@@ -3,11 +3,11 @@
 # Copy this file to: %USERPROFILE%\.wslconfig
 
 [wsl2]
-# Limits VM memory to use no more than 4 GB, aggressive memory limiting
-memory=5GB
+# Limits VM memory to use no more than 12GB (increased for better ML training performance)
+memory=12GB
 
-# Sets the VM to use two virtual processors
-processors=2
+# Sets the VM to use more processors for better performance
+processors=4
 
 # Specify a custom Linux kernel to use with your installed distros. The default kernel used can be found at https://github.com/microsoft/WSL2-Linux-Kernel
 # kernel=C:\\temp\\myCustomKernel
@@ -15,8 +15,8 @@ processors=2
 # Sets additional kernel parameters, in this case enabling nested virtualization
 # kernelCommandLine = vsyscall=emulate
 
-# Sets amount of swap space to 1GB, reduced for memory conservation
-swap=1GB
+# Sets amount of swap space to 2GB for better performance
+swap=2GB
 
 # Sets swapfile path location, default is %USERPROFILE%\AppData\Local\Temp\swap.vhdx
 # swapfile=C:\\temp\\wsl-swap.vhdx
@@ -32,7 +32,3 @@ localhostforwarding=true
 
 # Turns on output console showing contents of dmesg when opening a WSL 2 distro for debugging
 # debugConsole=true
-
-# Enable experimental features
-[experimental]
-sparseVhd=true
