@@ -974,8 +974,12 @@ class Full_dataset_TelemetryMLService:
         
         # Always fetch from backend (no cache check)
         try:
+            # Generate explicit cache key for this dataset
+            dataset_cache_key = f"racing_sessions_{trackName}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            
             # Stream sessions directly to cache without loading into memory
             sessions_metadata = await backend_service.get_all_racing_sessions_streaming(
+                cache_key=dataset_cache_key,
                 trackName=trackName
             )
             
@@ -1006,6 +1010,7 @@ class Full_dataset_TelemetryMLService:
         # Always use efficient processing for large datasets - no fallback
         # sessions_summary data is already cached, process directly from cache
         top_laps_telemetry_list, bottom_laps_cache_key = await self.process_large_dataset_efficiently(
+            data_cache_key=dataset_cache_key,
             trackName=trackName,
             max_memory_records=100000
         )
@@ -1098,7 +1103,7 @@ class Full_dataset_TelemetryMLService:
         
         print(f"[INFO] Completed streaming processing of {processed_sessions} sessions")
 
-    async def process_large_dataset_efficiently(self, trackName: str,
+    async def process_large_dataset_efficiently(self, data_cache_key: str, trackName: str,
                                         max_memory_records: int = 50000) -> Tuple[List[Dict[str, Any]], str]:
         """
         Streamlined processing of large cached datasets with minimal memory footprint
@@ -1120,11 +1125,11 @@ class Full_dataset_TelemetryMLService:
         total_bottom_laps_cached = 0
         
         chunk_iterator = self.data_cache.get_cached_data_chunks(
-            track_name=trackName
+            cache_key=data_cache_key
         )
         
         # Debug: Check if iterator is properly created
-        print(f"[DEBUG] Created chunk iterator for track: {trackName}")
+        print(f"[DEBUG] Created chunk iterator for cache key: {data_cache_key}")
         
         chunks_processed = 0
         for chunk_df in chunk_iterator:
@@ -1556,7 +1561,7 @@ class Full_dataset_TelemetryMLService:
                 """Generator for caching segments"""
                 for idx, segment in enumerate(segments_batch):
                     yield {
-                        "chunkId": f"segment_{batch_number}_{idx}",
+                        "segmentId": f"segment_{batch_number}_{idx}",
                         "data": segment
                     }
             
@@ -1566,7 +1571,7 @@ class Full_dataset_TelemetryMLService:
             
             # Cache using base cache key so transformer can find all segments
             cache_success = await self.data_cache.cache_chunks_streaming(
-                track_name=base_cache_key,  # Use base key directly
+                cache_key=base_cache_key,  # Use base key directly with correct parameter name
                 chunks_iterator=segments_generator(),
                 estimated_size_mb=estimated_size_mb
             )
@@ -1665,21 +1670,17 @@ class Full_dataset_TelemetryMLService:
         print("[INFO] ✓ Tire grip analysis model trained and saved")
         
         # Step 2: Process bottom laps via chunk iterator with enrichment
-        self._print_section_divider("PROCESSING BOTTOM LAPS VIA CHUNK ITERATOR")
+        self._print_section_divider("PROCESSING BOTTOM get_cached_data_chunksLAPS VIA CHUNK ITERATOR")
         
-        chunk_size = 15000  # Process chunks without worrying about individual chunk size
         segments_cache_key = f"enriched_segments_{track_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         
         chunk_iterator = self.data_cache.get_cached_data_chunks(
-            track_name=bottom_laps_cache_key  # Use the cache key where bottom laps are stored
+            cache_key=bottom_laps_cache_key  # Use the cache key where bottom laps are stored
         )
         
         processed_chunks = 0
         total_segments_cached = 0
-        segments_per_cache = 1000  # Number of segments per cache batch
-        
-        print(f"[INFO] Processing chunks of {chunk_size} records each")
-        print(f"[INFO] Will cache segments in batches of {segments_per_cache} segments each")
+        segments_per_cache = 10000  # Number of segments per cache batch
         
         current_segment_batch = []
         cache_batch_number = 0

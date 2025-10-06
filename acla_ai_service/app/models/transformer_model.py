@@ -1502,8 +1502,8 @@ class TelemetryActionDataset(Dataset):
             if not chunk_files:
                 raise ValueError("No chunk files found in manifest")
             
-            # Build segment index by reading all chunk files and extracting sessions (segments)
-            self.segment_index = []  # [(chunk_file_path, session_id)]
+            # Build segment index by reading all chunk files and extracting segments
+            self.segment_index = []  # [(chunk_file_path, segment_id)]
             self.total_segments = 0
             
             print(f"[INFO] Scanning {len(chunk_files)} chunk files for segments...")
@@ -1513,26 +1513,31 @@ class TelemetryActionDataset(Dataset):
                 if not chunk_path.exists():
                     continue
                 
-                # Read the chunk file to get sessions
+                # Read the chunk file to get segment IDs
                 chunk_df = pd.read_parquet(chunk_path)
                 
-                # Each chunk contains multiple segments, group by chunk_id
-                if 'chunk_id' in chunk_df.columns:
-                    chunk_ids = chunk_df['chunk_id'].unique()
-                    for chunk_id in chunk_ids:
-                        # Each chunk_id represents one segment
-                        self.segment_index.append((chunk_path, chunk_id))
+                # Each chunk file may contain multiple segments, identified by segment_id column
+                if 'segment_id' in chunk_df.columns:
+                    segment_ids = chunk_df['segment_id'].unique()
+                    for segment_id in segment_ids:
+                        # Add each unique segment_id found in this chunk file to the index
+                        self.segment_index.append((chunk_path, segment_id))
                         self.total_segments += 1
                 else:
-                    print(f"[WARNING] No chunk_id column in chunk file: {chunk_filename}")
+                    print(f"[WARNING] No segment_id column in chunk file: {chunk_filename}")
             
             if self.total_segments == 0:
                 raise ValueError("No valid segments found in chunk files")
             
             # Load feature names from first segment
-            first_chunk_path, first_chunk_id = self.segment_index[0]
+            first_chunk_path, first_segment_id = self.segment_index[0]
             first_chunk_df = pd.read_parquet(first_chunk_path)
-            first_segment_df = first_chunk_df[first_chunk_df['chunk_id'] == first_chunk_id].drop(columns=['chunk_id'])
+            
+            # Load the first segment to get feature names
+            if 'segment_id' in first_chunk_df.columns:
+                first_segment_df = first_chunk_df[first_chunk_df['segment_id'] == first_segment_id].drop(columns=['segment_id'])
+            else:
+                raise ValueError(f"No segment_id column found in first chunk file")
             
             if len(first_segment_df) != self.fixed_segment_length:
                 raise ValueError(f"Segment length mismatch: {len(first_segment_df)} != {self.fixed_segment_length}")
@@ -1545,23 +1550,21 @@ class TelemetryActionDataset(Dataset):
         except Exception as e:
             raise ValueError(f"Failed to build segment index: {str(e)}")
     
-    def _load_segment_on_demand(self, chunk_path: Path, chunk_id: str) -> List[Dict[str, Any]]:
-        """Load a specific segment from chunk file by chunk_id"""
+    def _load_segment_on_demand(self, chunk_path: Path, segment_id: str) -> List[Dict[str, Any]]:
+        """Load a specific segment from chunk file by segment_id"""
         try:
             # Load chunk data from parquet file
             chunk_df = pd.read_parquet(chunk_path)
             
             # Filter to get the specific segment
-            if 'chunk_id' not in chunk_df.columns:
-                raise ValueError(f"No chunk_id column found in chunk file: {chunk_path}")
-            
-            segment_df = chunk_df[chunk_df['chunk_id'] == chunk_id]
-            
-            if segment_df.empty:
-                raise ValueError(f"Chunk {chunk_id} not found in chunk file: {chunk_path}")
-            
-            # Remove chunk_id column to get actual data
-            segment_df = segment_df.drop(columns=['chunk_id'])
+            if 'segment_id' in chunk_df.columns:
+                segment_df = chunk_df[chunk_df['segment_id'] == segment_id]
+                if segment_df.empty:
+                    raise ValueError(f"Segment {segment_id} not found in chunk file: {chunk_path}")
+                # Remove segment_id column to get actual data
+                segment_df = segment_df.drop(columns=['segment_id'])
+            else:
+                raise ValueError(f"No segment_id column found in chunk file: {chunk_path}")
             
             # Validate segment length
             if len(segment_df) != self.fixed_segment_length:
@@ -1573,7 +1576,7 @@ class TelemetryActionDataset(Dataset):
             return segment_data
             
         except Exception as e:
-            raise ValueError(f"Failed to load segment {chunk_id} from {chunk_path}: {str(e)}")
+            raise ValueError(f"Failed to load segment {segment_id} from {chunk_path}: {str(e)}")
     
     def _ensure_features_fitted(self):
         """Ensure feature scaling is fitted using sampling approach"""
@@ -1640,10 +1643,10 @@ class TelemetryActionDataset(Dataset):
         self._ensure_features_fitted()
         
         # Get segment location from index
-        chunk_path, chunk_id = self.segment_index[idx]
+        chunk_path, segment_id = self.segment_index[idx]
         
         # Load segment from chunk file on-demand
-        segment = self._load_segment_on_demand(chunk_path, chunk_id)
+        segment = self._load_segment_on_demand(chunk_path, segment_id)
         
         # Build feature matrix for this segment
         feature_matrix = self._build_matrix(segment, self.unified_features)

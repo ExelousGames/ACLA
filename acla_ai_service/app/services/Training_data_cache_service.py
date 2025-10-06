@@ -1,12 +1,13 @@
 """
-Streamlined Training-Optimized Cache Service for Large Telemetry Datasets
+Streamlined Training-Optimized Cache Service for Large Datasets
 
 Clean, efficient cache service designed specifically for ML model training:
 - Single Parquet storage format (no fallbacks)
 - Direct streaming processing for training pipelines
 - Minimal memory footprint with zero-copy operations
 - Fast columnar access optimized for feature extraction
-- No legacy paths or duplicate logic
+- Chunk-agnostic: treats each chunk as opaque part of larger dataset
+- No assumptions about chunk contents or structure
 """
 
 import sqlite3
@@ -62,7 +63,7 @@ class TrainingOptimizedCache:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS cached_datasets (
                     cache_key TEXT PRIMARY KEY,
-                    track_name TEXT NOT NULL,
+                    track_name TEXT,
                     car_name TEXT,
                     cached_at TIMESTAMP NOT NULL,
                     file_path TEXT NOT NULL,
@@ -72,44 +73,32 @@ class TrainingOptimizedCache:
                     last_accessed TIMESTAMP
                 )
             """)
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_track_name ON cached_datasets(track_name)")
     
-    def _generate_cache_key(self, track_name: str, car_name: Optional[str] = None) -> str:
-        """Generate cache key"""
-        key_data = f"{track_name}_{car_name or 'all_cars'}"
-        return str(hash(key_data) % (10**10))
+    # Removed _generate_cache_key - cache service now only works with explicit keys
     
-    def get_cached_chunks(self, track_name: str, car_name: Optional[str] = None,
-                           max_age_hours: int = 24) -> Optional[Dict[str, Any]]:
-        """Get cached chunk data (Parquet only)"""
-        cache_key = self._generate_cache_key(track_name, car_name)
-        
+    def get_cached_chunks(self, cache_key: str, max_age_hours: int = 24) -> Optional[Dict[str, Any]]:
+        """Get cached chunks - agnostic to chunk contents"""
         # Check for valid cache
         cached_info = self._get_cache_metadata(cache_key, max_age_hours)
         if cached_info:
             try:
                 return self._load_parquet_data(cached_info)
             except Exception as e:
-                print(f"[WARNING] Cache load failed for {track_name}: {e}")
+                print(f"[WARNING] Cache load failed for {cache_key}: {e}")
                 self._remove_cache_entry(cache_key)
         
         return None
     
-    async def cache_chunks_streaming(self, track_name: str, chunks_iterator: Iterator[Dict[str, Any]], 
-                               car_name: Optional[str] = None,
+    async def cache_chunks_streaming(self, cache_key: str, chunks_iterator: Iterator[Dict[str, Any]], 
                                estimated_size_mb: Optional[float] = None) -> bool:
-        """Cache chunk data to Parquet format (training optimized)"""
-        cache_key = self._generate_cache_key(track_name, car_name)
-        
+        """Cache chunk data to Parquet format (training optimized)"""        
         try:
-            return await self._cache_to_parquet(cache_key, track_name, car_name, chunks_iterator)
+            return await self._cache_to_parquet(cache_key, chunks_iterator)
         except Exception as e:
-            print(f"[ERROR] Failed to cache chunks for {track_name}: {e}")
+            print(f"[ERROR] Failed to cache chunks for {cache_key}: {e}")
             return False
     
-    async def _cache_to_parquet(self, cache_key: str, track_name: str, 
-                               car_name: Optional[str], 
-                               chunks_iterator: Iterator[Dict[str, Any]]) -> bool:
+    async def _cache_to_parquet(self, cache_key: str, chunks_iterator: Iterator[Dict[str, Any]]) -> bool:
         """Cache each chunk as a separate Parquet file"""
         
         try:
@@ -119,21 +108,21 @@ class TrainingOptimizedCache:
             
             print(f"[INFO] Starting chunk-based parquet caching for {cache_key}")
             
-            # Process each chunk separately
+            # Process each chunk separately - agnostic to chunk contents
             async for chunk in chunks_iterator:
-                chunk_id = chunk.get("chunkId", f"chunk_{chunk_count}")
+                segment_id = chunk.get("segmentId", f"segment_{chunk_count}")
                 chunk_data = chunk.get("data", [])
                 
                 if not chunk_data:
-                    print(f"[WARNING] Skipping empty chunk: {chunk_id}")
+                    print(f"[WARNING] Skipping empty segment: {segment_id}")
                     continue
                 
-                # Create chunk-specific file
-                chunk_file = self.parquet_dir / f"{cache_key}_chunk_{chunk_id}.parquet"
+                # Create segment-specific file
+                chunk_file = self.parquet_dir / f"{cache_key}_segment_{segment_id}.parquet"
                 
-                # Convert chunk data to DataFrame and save
+                # Convert segment data to DataFrame and save - no assumptions about structure
                 chunk_df = pd.DataFrame(chunk_data)
-                chunk_df['chunk_id'] = chunk_id  # Add chunk metadata
+                chunk_df['segment_id'] = segment_id  # Add segment metadata
                 
                 chunk_df.to_parquet(chunk_file, compression=self.compression, index=False)
                 chunk_files.append(chunk_file)
@@ -179,19 +168,18 @@ class TrainingOptimizedCache:
             
             total_all_records = existing_records + total_records
             
-            print(f"[INFO] chunk-based storage: {total_size_mb:.1f}MB across {total_chunk_count} total chunk files ({len(chunk_files)} new)")
+            print(f"[INFO] Chunk-based storage: {total_size_mb:.1f}MB across {total_chunk_count} total chunk files ({len(chunk_files)} new)")
             
             # Update metadata - use the manifest file as the primary file path
             self._update_cache_metadata(
-                cache_key, track_name, car_name, str(manifest_file), 
-                total_size_mb, total_chunk_count, total_all_records
+                cache_key, str(manifest_file), total_size_mb, total_chunk_count, total_all_records
             )
             
             print(f"[INFO] Cached {chunk_count} new chunks, {total_records} new records. Total: {total_chunk_count} chunks, {total_all_records} records ({total_size_mb:.1f}MB)")
             return True
             
         except Exception as e:
-            print(f"[ERROR] chunk-based parquet caching failed: {e}")
+            print(f"[ERROR] Chunk-based parquet caching failed: {e}")
             # Clean up failed files
             try:
                 manifest_file = self.parquet_dir / f"{cache_key}_manifest.txt"
@@ -230,25 +218,34 @@ class TrainingOptimizedCache:
             chunk_path = manifest_file.parent / chunk_filename
             
             if not chunk_path.exists():
-                print(f"[WARNING] chunk file not found: {chunk_path}")
+                print(f"[WARNING] Chunk file not found: {chunk_path}")
                 continue
             
-            # Load chunk data
+            # Load chunk data - agnostic to what's inside
             chunk_df = pd.read_parquet(chunk_path)
             
-            # Extract chunk_id and clean the data
-            if 'chunk_id' in chunk_df.columns:
-                chunk_id = chunk_df['chunk_id'].iloc[0]  # All rows should have same chunk_id
+            # Extract segment_id and clean the data (backward compatibility with chunk_id)
+            if 'segment_id' in chunk_df.columns:
+                segment_id = chunk_df['segment_id'].iloc[0]  # All rows should have same segment_id
+                # Remove segment_id column from the data
+                data_df = chunk_df.drop(columns=['segment_id'])
+            elif 'chunk_id' in chunk_df.columns:
+                # Backward compatibility: treat chunk_id as segment_id
+                segment_id = chunk_df['chunk_id'].iloc[0]  # All rows should have same chunk_id
                 # Remove chunk_id column from the data
                 data_df = chunk_df.drop(columns=['chunk_id'])
             else:
-                # Extract chunk_id from filename if not in data
-                chunk_id = chunk_filename.replace('.parquet', '').split('_chunk_')[-1]
+                # Extract segment_id from filename if not in data
+                if '_segment_' in chunk_filename:
+                    segment_id = chunk_filename.replace('.parquet', '').split('_segment_')[-1]
+                else:
+                    # Backward compatibility with old chunk naming
+                    segment_id = chunk_filename.replace('.parquet', '').split('_chunk_')[-1]
                 data_df = chunk_df
             
-            # Convert to chunk format
+            # Convert to chunk format - preserve original structure
             chunks_data.append({
-                "chunkId": str(chunk_id),
+                "segmentId": str(segment_id),
                 "data": data_df.to_dict('records')
             })
             
@@ -258,56 +255,54 @@ class TrainingOptimizedCache:
         
         return {
             "success": True,
-            "track_name": cached_info.get("track_name"),
-            "car_name": cached_info.get("car_name"),
             "chunks": chunks_data,
             "summary": {
                 "total_chunks_retrieved": len(chunks_data),
-                "total_telemetry_records": total_records
+                "total_records": total_records
             }
         }
     
     def _convert_df_to_chunks(self, df: pd.DataFrame) -> List[Dict[str, Any]]:
-        """Convert DataFrame back to chunk format"""
-        if 'chunk_id' not in df.columns:
-            # Single chunk data
+        """Convert DataFrame back to segment format"""
+        if 'segment_id' not in df.columns and 'chunk_id' not in df.columns:
+            # Single segment data
             return [{
-                "chunkId": "chunk_0",
+                "segmentId": "segment_0",
                 "data": df.to_dict('records')
             }]
         
         chunks_data = []
-        for chunk_id, group in df.groupby('chunk_id', sort=False):
-            # Remove chunk metadata columns
-            data_df = group.drop(columns=['chunk_id'], errors='ignore')
+        # Use segment_id if available, otherwise fall back to chunk_id for backward compatibility
+        group_column = 'segment_id' if 'segment_id' in df.columns else 'chunk_id'
+        
+        for segment_id, group in df.groupby(group_column, sort=False):
+            # Remove metadata columns
+            data_df = group.drop(columns=[group_column], errors='ignore')
             
             chunks_data.append({
-                "chunkId": str(chunk_id),
+                "segmentId": str(segment_id),
                 "data": data_df.to_dict('records')
             })
         
         return chunks_data
     
-    def get_cached_data_chunks(self, track_name: str, car_name: Optional[str] = None, 
-                              max_age_hours: int = 24) -> Iterator[pd.DataFrame]:
+    def get_cached_data_chunks(self, cache_key: str, max_age_hours: int = 24) -> Iterator[pd.DataFrame]:
         """
         Get a lazy iterator that yields DataFrame chunks from cached data only when accessed.
         Each chunk is yielded as a single chunk. Data is loaded on-demand during iteration 
         to minimize memory usage.
         
         Args:
-            track_name: Name of the track to get cached data for
-            car_name: Optional car name filter
+            cache_key: Cache key to get data for
             max_age_hours: Maximum age of cache to consider valid
             
         Yields:
-            pd.DataFrame: chunk chunks of cached data (loaded only when accessed)
+            pd.DataFrame: Individual chunks of cached data (loaded only when accessed)
         """
-        cache_key = self._generate_cache_key(track_name, car_name)
         cached_info = self._get_cache_metadata(cache_key, max_age_hours)
         
         if not cached_info:
-            raise ValueError(f"No cached data found for track: {track_name}")
+            raise ValueError(f"No cached data found for cache key: {cache_key}")
         
         manifest_file = Path(cached_info["file_path"])
         
@@ -318,7 +313,7 @@ class TrainingOptimizedCache:
         with open(manifest_file, 'r') as f:
             chunk_files = [line.strip() for line in f.readlines() if line.strip()]
         
-        print(f"[INFO] Lazy iterator ready for {len(chunk_files)} chunk chunks")
+        print(f"[INFO] Lazy iterator ready for {len(chunk_files)} cached chunks")
         
         # Generator function - data is only loaded when yielded
         for chunk_filename in chunk_files:
@@ -334,7 +329,7 @@ class TrainingOptimizedCache:
             if 'chunk_id' in chunk_df.columns:
                 chunk_df = chunk_df.drop(columns=['chunk_id'])
             
-            # Yield entire chunk as one chunk
+            # Yield entire chunk as one piece
             yield chunk_df
             
             # Clean up memory immediately after processing this chunk
@@ -356,8 +351,8 @@ class TrainingOptimizedCache:
         
         return None
     
-    def _update_cache_metadata(self, cache_key: str, track_name: str, car_name: Optional[str],
-                             file_path: str, data_size_mb: float, chunk_count: int, record_count: int):
+    def _update_cache_metadata(self, cache_key: str, file_path: str, data_size_mb: float, 
+                             chunk_count: int, record_count: int):
         """Update cache metadata in database"""
         with sqlite3.connect(self.metadata_db) as conn:
             conn.execute("""
@@ -366,7 +361,7 @@ class TrainingOptimizedCache:
                  data_size_mb, chunk_count, record_count, last_accessed)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
-                cache_key, track_name, car_name, datetime.now(), file_path,
+                cache_key, None, None, datetime.now(), file_path,
                 data_size_mb, chunk_count, record_count, datetime.now()
             ))
     
@@ -408,10 +403,9 @@ class TrainingOptimizedCache:
     
 
     
-    def clear_cache(self, track_name: Optional[str] = None):
-        """Clear cache for specific track or all tracks"""
-        if track_name:
-            cache_key = self._generate_cache_key(track_name)
+    def clear_cache(self, cache_key: Optional[str] = None):
+        """Clear cache for specific cache key or all cache entries"""
+        if cache_key:
             self._remove_cache_entry(cache_key)
         else:
             with sqlite3.connect(self.metadata_db) as conn:
@@ -484,17 +478,17 @@ def get_shared_data_cache():
     """Get the shared training-optimized cache instance"""
     return training_cache
 
-async def cache_telemetry_chunks(track_name: str, chunks_iterator, estimated_size_mb: float = None):
-    """Cache telemetry chunks using the training-optimized cache"""
+async def cache_telemetry_chunks(cache_key: str, chunks_iterator, estimated_size_mb: float = None):
+    """Cache chunks using the training-optimized cache"""
     return await training_cache.cache_chunks_streaming(
-        track_name=track_name,
+        cache_key=cache_key,
         chunks_iterator=chunks_iterator,
         estimated_size_mb=estimated_size_mb
     )
 
-def get_cached_telemetry_chunks(track_name: str, max_age_hours: int = 24):
-    """Get cached telemetry chunks"""
-    return training_cache.get_cached_chunks(track_name, max_age_hours=max_age_hours)
+def get_cached_telemetry_chunks(cache_key: str, max_age_hours: int = 24):
+    """Get cached chunks"""
+    return training_cache.get_cached_chunks(cache_key, max_age_hours=max_age_hours)
 
 def get_shared_cache_info():
     """Get training cache information"""

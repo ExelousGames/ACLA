@@ -188,12 +188,13 @@ class BackendService:
             logger.error(f"Backend request to {endpoint} failed: {str(e)}")
             raise Exception(f"Backend function call failed: {str(e)}\n")
 
-    async def get_all_racing_sessions_streaming(self, trackName: Optional[str] = None, carName: Optional[str] = None, chunk_size: int = 1000, data_cache=None) -> Dict[str, Any]:
+    async def get_all_racing_sessions_streaming(self, cache_key: str, trackName: Optional[str] = None, carName: Optional[str] = None, chunk_size: int = 1000, data_cache=None) -> Dict[str, Any]:
         """
         Stream all racing sessions directly to cache without loading into memory
         Uses file streaming implementation for memory-efficient TB-scale data processing
         
         Args:
+            cache_key: User-specified cache key name for storing the data
             trackName: Optional track name filter
             carName: Optional car name filter  
             chunk_size: Unused parameter (kept for API compatibility)
@@ -313,7 +314,7 @@ class BackendService:
             
             # Stream sessions to cache
             cache_success = await data_cache.cache_chunks_streaming(
-                track_name=trackName or "all_tracks",
+                cache_key=cache_key,
                 chunks_iterator=streamer,
                 estimated_size_mb=estimated_size_mb
             )
@@ -341,7 +342,7 @@ class BackendService:
                 "total_sessions": total_sessions,
                 "total_data_points": total_data_points,
                 "cached": True,
-                "cache_key": trackName or "all_tracks",
+                "cache_key": cache_key,
                 "streaming_mode": "file_based",
                 "memory_efficient": True,
                 "summary": {
