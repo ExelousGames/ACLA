@@ -59,6 +59,15 @@ class TrainingOptimizedCache:
     def _init_metadata_db(self):
         """Initialize simple metadata database"""
         with sqlite3.connect(self.metadata_db) as conn:
+            # Check if table exists and has correct schema
+            cursor = conn.execute("PRAGMA table_info(cached_datasets)")
+            columns = [row[1] for row in cursor.fetchall()]
+            
+            # If table doesn't exist or missing chunk_count column, recreate it
+            if not columns or 'chunk_count' not in columns:
+                conn.execute("DROP TABLE IF EXISTS cached_datasets")
+                print("[INFO] Recreating cached_datasets table with updated schema")
+            
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS cached_datasets (
                     cache_key TEXT PRIMARY KEY,
@@ -67,7 +76,7 @@ class TrainingOptimizedCache:
                     cached_at TIMESTAMP NOT NULL,
                     file_path TEXT NOT NULL,
                     data_size_mb REAL,
-                    session_count INTEGER,
+                    chunk_count INTEGER,
                     record_count INTEGER,
                     last_accessed TIMESTAMP
                 )
@@ -79,9 +88,9 @@ class TrainingOptimizedCache:
         key_data = f"{track_name}_{car_name or 'all_cars'}"
         return str(hash(key_data) % (10**10))
     
-    def get_cached_sessions(self, track_name: str, car_name: Optional[str] = None,
+    def get_cached_chunks(self, track_name: str, car_name: Optional[str] = None,
                            max_age_hours: int = 24) -> Optional[Dict[str, Any]]:
-        """Get cached session data (Parquet only)"""
+        """Get cached chunk data (Parquet only)"""
         cache_key = self._generate_cache_key(track_name, car_name)
         
         # Check for valid cache
@@ -95,190 +104,213 @@ class TrainingOptimizedCache:
         
         return None
     
-    async def cache_sessions_streaming(self, track_name: str, sessions_iterator: Iterator[Dict[str, Any]], 
+    async def cache_chunks_streaming(self, track_name: str, chunks_iterator: Iterator[Dict[str, Any]], 
                                car_name: Optional[str] = None,
                                estimated_size_mb: Optional[float] = None) -> bool:
-        """Cache session data to Parquet format (training optimized)"""
+        """Cache chunk data to Parquet format (training optimized)"""
         cache_key = self._generate_cache_key(track_name, car_name)
         
         try:
-            return await self._cache_to_parquet(cache_key, track_name, car_name, sessions_iterator)
+            return await self._cache_to_parquet(cache_key, track_name, car_name, chunks_iterator)
         except Exception as e:
-            print(f"[ERROR] Failed to cache sessions for {track_name}: {e}")
+            print(f"[ERROR] Failed to cache chunks for {track_name}: {e}")
             return False
     
     async def _cache_to_parquet(self, cache_key: str, track_name: str, 
                                car_name: Optional[str], 
-                               sessions_iterator: Iterator[Dict[str, Any]]) -> bool:
-        """Cache each session as a separate Parquet file"""
+                               chunks_iterator: Iterator[Dict[str, Any]]) -> bool:
+        """Cache each chunk as a separate Parquet file"""
         
         try:
-            session_count = 0
+            chunk_count = 0
             total_records = 0
-            session_files = []  # Keep track of session files
+            chunk_files = []  # Keep track of chunk files
             
-            print(f"[INFO] Starting session-based parquet caching for {cache_key}")
+            print(f"[INFO] Starting chunk-based parquet caching for {cache_key}")
             
-            # Process each session separately
-            async for session in sessions_iterator:
-                session_id = session.get("sessionId", f"session_{session_count}")
-                session_data = session.get("data", [])
+            # Process each chunk separately
+            async for chunk in chunks_iterator:
+                chunk_id = chunk.get("chunkId", f"chunk_{chunk_count}")
+                chunk_data = chunk.get("data", [])
                 
-                if not session_data:
-                    print(f"[WARNING] Skipping empty session: {session_id}")
+                if not chunk_data:
+                    print(f"[WARNING] Skipping empty chunk: {chunk_id}")
                     continue
                 
-                # Create session-specific file
-                session_file = self.parquet_dir / f"{cache_key}_session_{session_id}.parquet"
+                # Create chunk-specific file
+                chunk_file = self.parquet_dir / f"{cache_key}_chunk_{chunk_id}.parquet"
                 
-                # Convert session data to DataFrame and save
-                session_df = pd.DataFrame(session_data)
-                session_df['session_id'] = session_id  # Add session metadata
+                # Convert chunk data to DataFrame and save
+                chunk_df = pd.DataFrame(chunk_data)
+                chunk_df['chunk_id'] = chunk_id  # Add chunk metadata
                 
-                session_df.to_parquet(session_file, compression=self.compression, index=False)
-                session_files.append(session_file)
+                chunk_df.to_parquet(chunk_file, compression=self.compression, index=False)
+                chunk_files.append(chunk_file)
                 
-                session_count += 1
-                total_records += len(session_data)
-                
-                print(f"[INFO] Cached session {session_id}: {len(session_data)} records -> {session_file.name}")
-            
-            if not session_files:
-                print(f"[WARNING] No sessions to cache for {cache_key}")
+                chunk_count += 1
+                total_records += len(chunk_data)
+
+            if not chunk_files:
+                print(f"[WARNING] No chunks to cache for {cache_key}")
                 return False
             
-            # Create a manifest file to track all session files
+            # Create or append to manifest file to track all chunk files
             manifest_file = self.parquet_dir / f"{cache_key}_manifest.txt"
+            
+            # Check if manifest already exists (for accumulating multiple cache operations)
+            existing_chunks = []
+            if manifest_file.exists():
+                with open(manifest_file, 'r') as f:
+                    existing_chunks = [line.strip() for line in f.readlines() if line.strip()]
+            
+            # Append new chunks to existing ones
+            all_chunks = existing_chunks + [chunk_file.name for chunk_file in chunk_files]
+            
+            # Write complete manifest
             with open(manifest_file, 'w') as f:
-                for session_file in session_files:
-                    f.write(f"{session_file.name}\n")
+                for chunk_name in all_chunks:
+                    f.write(f"{chunk_name}\n")
             
-            # Calculate total size
-            total_size_mb = sum(f.stat().st_size for f in session_files if f.exists()) / (1024 * 1024)
+            # Calculate total size for all chunks (existing + new)
+            all_chunk_paths = [self.parquet_dir / chunk_name for chunk_name in all_chunks]
+            total_size_mb = sum(f.stat().st_size for f in all_chunk_paths if f.exists()) / (1024 * 1024)
             
-            print(f"[INFO] Session-based storage: {total_size_mb:.1f}MB across {len(session_files)} session files")
+            # Calculate total counts for all chunks
+            total_chunk_count = len(all_chunks)
+            
+            # Calculate total records for new chunks only (existing records already counted)
+            existing_records = 0
+            if existing_chunks:
+                # Get existing record count from database
+                existing_info = self._get_cache_metadata(cache_key, max_age_hours=24)
+                if existing_info:
+                    existing_records = existing_info.get('record_count', 0)
+            
+            total_all_records = existing_records + total_records
+            
+            print(f"[INFO] chunk-based storage: {total_size_mb:.1f}MB across {total_chunk_count} total chunk files ({len(chunk_files)} new)")
             
             # Update metadata - use the manifest file as the primary file path
             self._update_cache_metadata(
                 cache_key, track_name, car_name, str(manifest_file), 
-                total_size_mb, session_count, total_records
+                total_size_mb, total_chunk_count, total_all_records
             )
             
-            print(f"[INFO] Cached {session_count} sessions, {total_records} records ({total_size_mb:.1f}MB)")
+            print(f"[INFO] Cached {chunk_count} new chunks, {total_records} new records. Total: {total_chunk_count} chunks, {total_all_records} records ({total_size_mb:.1f}MB)")
             return True
             
         except Exception as e:
-            print(f"[ERROR] Session-based parquet caching failed: {e}")
+            print(f"[ERROR] chunk-based parquet caching failed: {e}")
             # Clean up failed files
             try:
                 manifest_file = self.parquet_dir / f"{cache_key}_manifest.txt"
                 if manifest_file.exists():
                     manifest_file.unlink()
                 
-                # Clean up any session files that were created
-                session_pattern = f"{cache_key}_session_*.parquet"
-                for file_path in self.parquet_dir.glob(session_pattern):
+                # Clean up any chunk files that were created
+                chunk_pattern = f"{cache_key}_chunk_*.parquet"
+                for file_path in self.parquet_dir.glob(chunk_pattern):
                     file_path.unlink()
             except Exception:
                 pass
             return False
 
     def _load_parquet_data(self, cached_info: Dict[str, Any]) -> Dict[str, Any]:
-        """Load data from session-based Parquet files using manifest"""
+        """Load data from chunk-based Parquet files using manifest"""
         manifest_file = Path(cached_info["file_path"])
         
         if not manifest_file.exists():
             raise FileNotFoundError(f"Manifest file not found: {manifest_file}")
         
-        print(f"[INFO] Loading session-based parquet dataset using manifest")
+        print(f"[INFO] Loading chunk-based parquet dataset using manifest")
         
-        # Read manifest to get all session files
+        # Read manifest to get all chunk files
         with open(manifest_file, 'r') as f:
-            session_files = [line.strip() for line in f.readlines() if line.strip()]
+            chunk_files = [line.strip() for line in f.readlines() if line.strip()]
         
-        if not session_files:
+        if not chunk_files:
             raise ValueError(f"Empty manifest file: {manifest_file}")
         
-        # Load each session file separately
-        sessions_data = []
+        # Load each chunk file separately
+        chunks_data = []
         total_records = 0
         
-        for session_filename in session_files:
-            session_path = manifest_file.parent / session_filename
+        for chunk_filename in chunk_files:
+            chunk_path = manifest_file.parent / chunk_filename
             
-            if not session_path.exists():
-                print(f"[WARNING] Session file not found: {session_path}")
+            if not chunk_path.exists():
+                print(f"[WARNING] chunk file not found: {chunk_path}")
                 continue
             
-            # Load session data
-            session_df = pd.read_parquet(session_path)
+            # Load chunk data
+            chunk_df = pd.read_parquet(chunk_path)
             
-            # Extract session_id and clean the data
-            if 'session_id' in session_df.columns:
-                session_id = session_df['session_id'].iloc[0]  # All rows should have same session_id
-                # Remove session_id column from the data
-                data_df = session_df.drop(columns=['session_id'])
+            # Extract chunk_id and clean the data
+            if 'chunk_id' in chunk_df.columns:
+                chunk_id = chunk_df['chunk_id'].iloc[0]  # All rows should have same chunk_id
+                # Remove chunk_id column from the data
+                data_df = chunk_df.drop(columns=['chunk_id'])
             else:
-                # Extract session_id from filename if not in data
-                session_id = session_filename.replace('.parquet', '').split('_session_')[-1]
-                data_df = session_df
+                # Extract chunk_id from filename if not in data
+                chunk_id = chunk_filename.replace('.parquet', '').split('_chunk_')[-1]
+                data_df = chunk_df
             
-            # Convert to session format
-            sessions_data.append({
-                "sessionId": str(session_id),
+            # Convert to chunk format
+            chunks_data.append({
+                "chunkId": str(chunk_id),
                 "data": data_df.to_dict('records')
             })
             
             total_records += len(data_df)
         
-        print(f"[INFO] Loaded {len(sessions_data)} sessions with {total_records} total records")
+        print(f"[INFO] Loaded {len(chunks_data)} chunks with {total_records} total records")
         
         return {
             "success": True,
             "track_name": cached_info.get("track_name"),
             "car_name": cached_info.get("car_name"),
-            "sessions": sessions_data,
+            "chunks": chunks_data,
             "summary": {
-                "total_sessions_retrieved": len(sessions_data),
+                "total_chunks_retrieved": len(chunks_data),
                 "total_telemetry_records": total_records
             }
         }
     
-    def _convert_df_to_sessions(self, df: pd.DataFrame) -> List[Dict[str, Any]]:
-        """Convert DataFrame back to session format"""
-        if 'session_id' not in df.columns:
-            # Single session data
+    def _convert_df_to_chunks(self, df: pd.DataFrame) -> List[Dict[str, Any]]:
+        """Convert DataFrame back to chunk format"""
+        if 'chunk_id' not in df.columns:
+            # Single chunk data
             return [{
-                "sessionId": "session_0",
+                "chunkId": "chunk_0",
                 "data": df.to_dict('records')
             }]
         
-        sessions_data = []
-        for session_id, group in df.groupby('session_id', sort=False):
-            # Remove session metadata columns
-            data_df = group.drop(columns=['session_id'], errors='ignore')
+        chunks_data = []
+        for chunk_id, group in df.groupby('chunk_id', sort=False):
+            # Remove chunk metadata columns
+            data_df = group.drop(columns=['chunk_id'], errors='ignore')
             
-            sessions_data.append({
-                "sessionId": str(session_id),
+            chunks_data.append({
+                "chunkId": str(chunk_id),
                 "data": data_df.to_dict('records')
             })
         
-        return sessions_data
+        return chunks_data
     
-    def get_cached_data_chunks(self, track_name: str, chunk_size: int = 50000, 
-                              car_name: Optional[str] = None, max_age_hours: int = 24) -> Iterator[pd.DataFrame]:
+    def get_cached_data_chunks(self, track_name: str, car_name: Optional[str] = None, 
+                              max_age_hours: int = 24) -> Iterator[pd.DataFrame]:
         """
         Get a lazy iterator that yields DataFrame chunks from cached data only when accessed.
-        Data is loaded on-demand during iteration to minimize memory usage.
+        Each chunk is yielded as a single chunk. Data is loaded on-demand during iteration 
+        to minimize memory usage.
         
         Args:
             track_name: Name of the track to get cached data for
-            chunk_size: Size of each chunk to yield
             car_name: Optional car name filter
             max_age_hours: Maximum age of cache to consider valid
             
         Yields:
-            pd.DataFrame: Chunks of cached data (loaded only when accessed)
+            pd.DataFrame: chunk chunks of cached data (loaded only when accessed)
         """
         cache_key = self._generate_cache_key(track_name, car_name)
         cached_info = self._get_cache_metadata(cache_key, max_age_hours)
@@ -291,34 +323,31 @@ class TrainingOptimizedCache:
         if not manifest_file.exists():
             raise FileNotFoundError(f"Manifest file not found: {manifest_file}")
         
-        # Read manifest to get session file list (minimal memory impact)
+        # Read manifest to get chunk file list (minimal memory impact)
         with open(manifest_file, 'r') as f:
-            session_files = [line.strip() for line in f.readlines() if line.strip()]
+            chunk_files = [line.strip() for line in f.readlines() if line.strip()]
         
-        print(f"[INFO] Lazy iterator ready for {len(session_files)} sessions with chunk size {chunk_size}")
+        print(f"[INFO] Lazy iterator ready for {len(chunk_files)} chunk chunks")
         
         # Generator function - data is only loaded when yielded
-        for session_filename in session_files:
-            session_path = manifest_file.parent / session_filename
+        for chunk_filename in chunk_files:
+            chunk_path = manifest_file.parent / chunk_filename
             
-            if not session_path.exists():
+            if not chunk_path.exists():
                 continue
             
-            # Load session data only when this iteration is reached
-            session_df = pd.read_parquet(session_path)
-            session_rows = len(session_df)
+            # Load chunk data only when this iteration is reached
+            chunk_df = pd.read_parquet(chunk_path)
             
-            if session_rows <= chunk_size:
-                # Yield entire session as one chunk
-                yield session_df
-            else:
-                # Yield session in smaller chunks
-                for j in range(0, session_rows, chunk_size):
-                    chunk = session_df.iloc[j:j+chunk_size].copy()
-                    yield chunk
+            # Remove chunk_id column if present for consistency
+            if 'chunk_id' in chunk_df.columns:
+                chunk_df = chunk_df.drop(columns=['chunk_id'])
             
-            # Clean up memory immediately after processing this session
-            del session_df
+            # Yield entire chunk as one chunk
+            yield chunk_df
+            
+            # Clean up memory immediately after processing this chunk
+            del chunk_df
 
     
     def _get_cache_metadata(self, cache_key: str, max_age_hours: int) -> Optional[Dict[str, Any]]:
@@ -337,21 +366,21 @@ class TrainingOptimizedCache:
         return None
     
     def _update_cache_metadata(self, cache_key: str, track_name: str, car_name: Optional[str],
-                             file_path: str, data_size_mb: float, session_count: int, record_count: int):
+                             file_path: str, data_size_mb: float, chunk_count: int, record_count: int):
         """Update cache metadata in database"""
         with sqlite3.connect(self.metadata_db) as conn:
             conn.execute("""
                 INSERT OR REPLACE INTO cached_datasets 
-                (cache_key, track_name, car_name, cached_at, storage_type, file_path,
-                 data_size_mb, session_count, record_count, last_accessed)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (cache_key, track_name, car_name, cached_at, file_path,
+                 data_size_mb, chunk_count, record_count, last_accessed)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
-                cache_key, track_name, car_name, datetime.now(), 'parquet', file_path,
-                data_size_mb, session_count, record_count, datetime.now()
+                cache_key, track_name, car_name, datetime.now(), file_path,
+                data_size_mb, chunk_count, record_count, datetime.now()
             ))
     
     def _remove_cache_entry(self, cache_key: str):
-        """Remove cache entry and all associated session files"""
+        """Remove cache entry and all associated chunk files"""
         with sqlite3.connect(self.metadata_db) as conn:
             cursor = conn.execute(
                 "SELECT file_path FROM cached_datasets WHERE cache_key = ?", 
@@ -363,22 +392,22 @@ class TrainingOptimizedCache:
                 try:
                     manifest_file = Path(row[0])
                     
-                    # If manifest exists, remove all session files it references
+                    # If manifest exists, remove all chunk files it references
                     if manifest_file.exists():
                         with open(manifest_file, 'r') as f:
-                            session_files = [line.strip() for line in f.readlines() if line.strip()]
+                            chunk_files = [line.strip() for line in f.readlines() if line.strip()]
                         
-                        # Remove each session file
-                        for session_filename in session_files:
-                            session_path = manifest_file.parent / session_filename
-                            session_path.unlink(missing_ok=True)
+                        # Remove each chunk file
+                        for chunk_filename in chunk_files:
+                            chunk_path = manifest_file.parent / chunk_filename
+                            chunk_path.unlink(missing_ok=True)
                         
                         # Remove manifest file
                         manifest_file.unlink(missing_ok=True)
                     
-                    # Also clean up any orphaned session files for this cache_key
-                    session_pattern = f"{cache_key}_session_*.parquet"
-                    for file_path in self.parquet_dir.glob(session_pattern):
+                    # Also clean up any orphaned chunk files for this cache_key
+                    chunk_pattern = f"{cache_key}_chunk_*.parquet"
+                    for file_path in self.parquet_dir.glob(chunk_pattern):
                         file_path.unlink(missing_ok=True)
                         
                 except Exception as e:
@@ -396,11 +425,41 @@ class TrainingOptimizedCache:
         else:
             with sqlite3.connect(self.metadata_db) as conn:
                 conn.execute("DELETE FROM cached_datasets")
-            # Clear parquet directory
+            # Clear parquet directory with better error handling
             import shutil
+            import os
             if self.parquet_dir.exists():
-                shutil.rmtree(self.parquet_dir)
-                self.parquet_dir.mkdir(exist_ok=True)
+                try:
+                    shutil.rmtree(self.parquet_dir)
+                    self.parquet_dir.mkdir(exist_ok=True)
+                except OSError as e:
+                    print(f"[WARNING] Could not remove directory {self.parquet_dir}: {e}")
+                    print("[INFO] Attempting to clear individual files...")
+                    try:
+                        # Try to remove individual files first
+                        for file_path in self.parquet_dir.rglob("*"):
+                            if file_path.is_file():
+                                try:
+                                    file_path.unlink()
+                                except OSError as file_error:
+                                    print(f"[WARNING] Could not remove file {file_path}: {file_error}")
+                        
+                        # Try to remove empty directories
+                        for dir_path in sorted(self.parquet_dir.rglob("*"), key=lambda p: len(p.parts), reverse=True):
+                            if dir_path.is_dir() and dir_path != self.parquet_dir:
+                                try:
+                                    dir_path.rmdir()
+                                except OSError:
+                                    pass  # Directory not empty, skip
+                        
+                        print("[INFO] Individual file cleanup completed")
+                    except Exception as cleanup_error:
+                        print(f"[ERROR] File cleanup failed: {cleanup_error}")
+                        print("[INFO] Cache directory may contain residual files")
+                    
+                    # Ensure the main directory exists
+                    if not self.parquet_dir.exists():
+                        self.parquet_dir.mkdir(exist_ok=True)
     
     def get_cache_info(self) -> Dict[str, Any]:
         """Get cache information"""
@@ -434,17 +493,17 @@ def get_shared_data_cache():
     """Get the shared training-optimized cache instance"""
     return training_cache
 
-async def cache_telemetry_sessions(track_name: str, sessions_iterator, estimated_size_mb: float = None):
-    """Cache telemetry sessions using the training-optimized cache"""
-    return await training_cache.cache_sessions_streaming(
+async def cache_telemetry_chunks(track_name: str, chunks_iterator, estimated_size_mb: float = None):
+    """Cache telemetry chunks using the training-optimized cache"""
+    return await training_cache.cache_chunks_streaming(
         track_name=track_name,
-        sessions_iterator=sessions_iterator,
+        chunks_iterator=chunks_iterator,
         estimated_size_mb=estimated_size_mb
     )
 
-def get_cached_telemetry_sessions(track_name: str, max_age_hours: int = 24):
-    """Get cached telemetry sessions"""
-    return training_cache.get_cached_sessions(track_name, max_age_hours=max_age_hours)
+def get_cached_telemetry_chunks(track_name: str, max_age_hours: int = 24):
+    """Get cached telemetry chunks"""
+    return training_cache.get_cached_chunks(track_name, max_age_hours=max_age_hours)
 
 def get_shared_cache_info():
     """Get training cache information"""

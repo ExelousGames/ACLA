@@ -335,16 +335,21 @@ class ExpertActionTransformer(nn.Module):
     
     def forward(self, 
                 unified_input: torch.Tensor,
-                prediction_steps: int = None) -> torch.Tensor:
+                prediction_steps: int = None,
+                use_teacher_forcing: bool = None) -> torch.Tensor:
         """
-        Forward pass - Autoregressive State Prediction
+        Forward pass - Teacher Forcing (Training) or Autoregressive (Inference)
         
-        This method generates predictions autoregressively where each new prediction
-        is based on all previous states (real + predicted). This mimics realistic
-        decision-making where each action depends on the complete history including
-        previous actions taken.
+        This method supports two modes:
+        1. TEACHER FORCING (Training): Direct prediction from input to target without feedback
+        2. AUTOREGRESSIVE (Inference): Sequential prediction where each output feeds into next input
         
-        AUTOREGRESSIVE FLOW:
+        TEACHER FORCING FLOW (use_teacher_forcing=True or training mode):
+        1. Process input sequence through transformer
+        2. Predict all target states simultaneously 
+        3. Much faster and more stable for training
+        
+        AUTOREGRESSIVE FLOW (use_teacher_forcing=False or inference mode):
         1. Start with input sequence (real states)
         2. For each prediction step:
            - Process current sequence through transformer
@@ -356,30 +361,29 @@ class ExpertActionTransformer(nn.Module):
             unified_input: Initial unified states [batch_size, input_length, total_features]
                           Each timestep contains: [context_features + action_features]  
             prediction_steps: Number of future steps to predict (if None, predicts 1 step)
+            use_teacher_forcing: If True, use teacher forcing. If None, auto-detect based on training mode
             
         Returns:
             Generated predictions [batch_size, prediction_steps, total_features]
-            Each prediction is based on all previous states (real + predicted)
         """
         if prediction_steps is None:
             prediction_steps = 1
+        
+        # Auto-detect teacher forcing mode if not specified
+        if use_teacher_forcing is None:
+            use_teacher_forcing = self.training  # Use teacher forcing during training
             
         batch_size = unified_input.shape[0]
         device = unified_input.device
         
-        # Start with input sequence
-        current_sequence = unified_input
-        predictions = []
-        
-        # Generate predictions autoregressively
-        for step in range(prediction_steps):
-            # Validate current sequence dimensions
+        if use_teacher_forcing:
+            # Validate input sequence dimensions
             expected_features = self.total_features_count
-            actual_features = current_sequence.shape[-1]
+            actual_features = unified_input.shape[-1]
             assert actual_features == expected_features, f"Expected {expected_features} features, got {actual_features}"
             
-            # Embed current sequence
-            embedded_input = self.input_embedding(current_sequence)
+            # Embed input sequence
+            embedded_input = self.input_embedding(unified_input)
             
             # Apply positional encoding
             encoded_input = self.pos_encoding(embedded_input)
@@ -390,22 +394,58 @@ class ExpertActionTransformer(nn.Module):
             # Project to unified feature space
             sequence_predictions = self.output_projection(transformer_output)
             
-            # Take the last prediction as next state
-            next_state = sequence_predictions[:, -1:, :]  # [B, 1, features]
-            
-            # Store prediction
-            predictions.append(next_state)
-            
-            # Append prediction to sequence for next iteration (autoregressive)
-            current_sequence = torch.cat([current_sequence, next_state], dim=1)
-            
-            # Limit sequence length to prevent memory issues
-            max_context = 100
-            if current_sequence.shape[1] > max_context:
-                current_sequence = current_sequence[:, -max_context:, :]
+            # For teacher forcing, we predict the next states directly
+            # Take all predictions except the first one (since input[0] -> target[1], etc.)
+            if sequence_predictions.shape[1] >= prediction_steps:
+                result = sequence_predictions[:, -prediction_steps:, :]
+            else:
+                # If we need more predictions than available, pad with last prediction
+                last_pred = sequence_predictions[:, -1:, :].repeat(1, prediction_steps, 1)
+                result = last_pred
+                
+            return result
         
-        # Return all predictions
-        return torch.cat(predictions, dim=1) if len(predictions) > 1 else predictions[0]
+        else:
+            # Start with input sequence
+            current_sequence = unified_input
+            predictions = []
+            
+            # Generate predictions autoregressively
+            for step in range(prediction_steps):
+                # Validate current sequence dimensions
+                expected_features = self.total_features_count
+                actual_features = current_sequence.shape[-1]
+                assert actual_features == expected_features, f"Expected {expected_features} features, got {actual_features}"
+                
+                # Embed current sequence
+                embedded_input = self.input_embedding(current_sequence)
+                
+                # Apply positional encoding
+                encoded_input = self.pos_encoding(embedded_input)
+                
+                # Process through transformer
+                transformer_output = self.transformer(encoded_input)
+                
+                # Project to unified feature space
+                sequence_predictions = self.output_projection(transformer_output)
+                
+                # Take the last prediction as next state
+                next_state = sequence_predictions[:, -1:, :]  # [B, 1, features]
+                
+                # Store prediction
+                predictions.append(next_state)
+                
+                # Append prediction to sequence for next iteration (autoregressive)
+                current_sequence = torch.cat([current_sequence, next_state], dim=1)
+                
+                # Limit sequence length to prevent memory issues
+                max_context = 100
+                if current_sequence.shape[1] > max_context:
+                    current_sequence = current_sequence[:, -max_context:, :]
+            
+            # Return all predictions
+            result = torch.cat(predictions, dim=1) if len(predictions) > 1 else predictions[0]
+            return result
 
     def unified_loss(self, 
                     predictions: torch.Tensor, 
@@ -945,8 +985,6 @@ class ExpertActionTransformer(nn.Module):
         print(f"🔍 DATASET QUALITY ANALYSIS: {dataset_name}")
         print(f"{'='*80}")
         
-        print(f"[DEBUG] Starting check_dataset_quality for {dataset_name}")
-        
         quality_report = {
             'dataset_name': dataset_name,
             'timestamp': datetime.now().isoformat(),
@@ -996,42 +1034,66 @@ class ExpertActionTransformer(nn.Module):
                     f"Insufficient total samples: {segment_info['total_samples']} < {min_samples_required} (minimum required)"
                 )
             
-            # Analyze tensor data quality
-            print(f"\n🔬 Tensor Data Quality Analysis:")
-            input_tensor = dataset.input_tensor
-            target_tensor = dataset.target_tensor  # In unified approach, target and action are the same
+            # Sample-based quality analysis for streaming dataset
+            print(f"\n🔬 Sample-Based Quality Analysis:")
+            sample_size = min(50, len(dataset))  # Sample up to 50 segments
+            import random
+            sample_indices = random.sample(range(len(dataset)), sample_size)
             
-            # Check for NaN/Inf values
-            input_nan_count = torch.isnan(input_tensor).sum().item()
-            input_inf_count = torch.isinf(input_tensor).sum().item()
-            target_nan_count = torch.isnan(target_tensor).sum().item()
-            target_inf_count = torch.isinf(target_tensor).sum().item()
+            print(f"   • Analyzing {sample_size} sample segments for quality...")
             
-            print(f"   • Input tensor NaN values: {input_nan_count:,}")
-            print(f"   • Input tensor Inf values: {input_inf_count:,}")
-            print(f"   • Target tensor NaN values: {target_nan_count:,}")
-            print(f"   • Target tensor Inf values: {target_inf_count:,}")
+            # Collect sample data
+            sample_inputs = []
+            sample_targets = []
+            nan_count = 0
+            inf_count = 0
             
-            if input_nan_count > 0 or target_nan_count > 0:
-                quality_report['critical_issues'].append(f"NaN values detected: Input={input_nan_count}, Target={target_nan_count}")
+            for idx in sample_indices:
+                try:
+                    input_seq, target_seq = dataset[idx]
+                    sample_inputs.append(input_seq)
+                    sample_targets.append(target_seq)
+                    
+                    # Check for NaN/Inf in this sample
+                    nan_count += torch.isnan(input_seq).sum().item() + torch.isnan(target_seq).sum().item()
+                    inf_count += torch.isinf(input_seq).sum().item() + torch.isinf(target_seq).sum().item()
+                    
+                except Exception as e:
+                    quality_report['critical_issues'].append(f"Failed to load segment {idx}: {str(e)}")
             
-            if input_inf_count > 0 or target_inf_count > 0:
-                quality_report['critical_issues'].append(f"Infinite values detected: Input={input_inf_count}, Target={target_inf_count}")
+            if not sample_inputs:
+                quality_report['critical_issues'].append("Failed to load any sample segments")
+                quality_report['overall_quality'] = 'ERROR'
+                return quality_report
             
-            # Statistical analysis
-            print(f"\n📈 Statistical Distribution Analysis:")
+            # Stack samples for analysis
+            sample_input_tensor = torch.stack(sample_inputs)
+            sample_target_tensor = torch.stack(sample_targets)
             
-            # Input features statistics
-            input_mean = torch.mean(input_tensor, dim=(0, 1))
-            input_std = torch.std(input_tensor, dim=(0, 1))
-            input_min = torch.min(input_tensor.view(-1, input_tensor.size(-1)), dim=0)[0]
-            input_max = torch.max(input_tensor.view(-1, input_tensor.size(-1)), dim=0)[0]
+            print(f"   • Sample input shape: {sample_input_tensor.shape}")
+            print(f"   • Sample target shape: {sample_target_tensor.shape}")
+            print(f"   • NaN values in samples: {nan_count}")
+            print(f"   • Inf values in samples: {inf_count}")
             
-            # Target features statistics  
-            target_mean = torch.mean(target_tensor, dim=(0, 1))
-            target_std = torch.std(target_tensor, dim=(0, 1))
-            target_min = torch.min(target_tensor.view(-1, target_tensor.size(-1)), dim=0)[0]
-            target_max = torch.max(target_tensor.view(-1, target_tensor.size(-1)), dim=0)[0]
+            # Store sample metrics
+            quality_report['metrics'].update({
+                'sample_size': sample_size,
+                'sample_nan_count': nan_count,
+                'sample_inf_count': inf_count
+            })
+            
+            # Critical issues for NaN/Inf values
+            if nan_count > 0:
+                quality_report['critical_issues'].append(f"NaN values detected in samples: {nan_count}")
+            if inf_count > 0:
+                quality_report['critical_issues'].append(f"Infinite values detected in samples: {inf_count}")
+            
+            # Statistical distribution analysis on samples
+            print(f"\n� Sample Statistical Analysis:")
+            input_mean = torch.mean(sample_input_tensor)
+            input_std = torch.std(sample_input_tensor)
+            input_min = torch.min(sample_input_tensor)
+            input_max = torch.max(sample_input_tensor)
             
             # Check for zero variance features
             zero_var_input = (input_std < 1e-6).sum().item()
@@ -1254,37 +1316,31 @@ class ExpertActionTransformer(nn.Module):
             print(f"\n🎯 Context Feature Validation:")
             
             if len(context_features) > 0:
-                # Get sample of context data to validate
-                sample_segment = dataset.unified_segments[0] if dataset.unified_segments else []
-                if sample_segment:
-                    context_sample = sample_segment[0] if sample_segment else {}
-                    
-                    expert_context_count = 0
-                    corner_context_count = 0
-                    tire_context_count = 0
-                    
-                    for feature_name in context_features:
-                        if 'expert' in feature_name.lower():
-                            expert_context_count += 1
-                        elif 'corner' in feature_name.lower():
-                            corner_context_count += 1
-                        elif 'tire' in feature_name.lower() or 'grip' in feature_name.lower():
-                            tire_context_count += 1
-                    
-                    print(f"   • Expert context features: {expert_context_count}")
-                    print(f"   • Corner context features: {corner_context_count}")
-                    print(f"   • Tire grip context features: {tire_context_count}")
-                    
-                    quality_report['metrics']['context_features'] = {
-                        'expert_features': expert_context_count,
-                        'corner_features': corner_context_count,
-                        'tire_features': tire_context_count
-                    }
-                    
-                    if expert_context_count == 0:
-                        quality_report['warnings'].append("No expert context features detected")
-                else:
-                    quality_report['warnings'].append("Cannot validate context features - no sample data available")
+                # Count context features by type (no need to access actual data)
+                expert_context_count = 0
+                corner_context_count = 0
+                tire_context_count = 0
+                
+                for feature_name in context_features:
+                    if 'expert' in feature_name.lower():
+                        expert_context_count += 1
+                    elif 'corner' in feature_name.lower():
+                        corner_context_count += 1
+                    elif 'tire' in feature_name.lower() or 'grip' in feature_name.lower():
+                        tire_context_count += 1
+                
+                print(f"   • Expert context features: {expert_context_count}")
+                print(f"   • Corner context features: {corner_context_count}")
+                print(f"   • Tire grip context features: {tire_context_count}")
+                
+                quality_report['metrics']['context_features'] = {
+                    'expert_features': expert_context_count,
+                    'corner_features': corner_context_count,
+                    'tire_features': tire_context_count
+                }
+                
+                if expert_context_count == 0:
+                    quality_report['warnings'].append("No expert context features detected")
             else:
                 quality_report['warnings'].append("No context features available")
             
@@ -1379,11 +1435,11 @@ class ExpertActionTransformer(nn.Module):
 
 class TelemetryActionDataset(Dataset):
     """
-    Unified State Dataset for sequence prediction
+    Unified State Dataset for sequence prediction - Streaming Implementation
     
-    This dataset handles unified feature vectors where each timestep contains both context
-    and action features combined into a single vector. The model learns to predict the
-    next timestep's complete state (context + actions) from the current state.
+    This dataset efficiently handles large datasets by streaming segments from cache
+    without loading all segments into memory at once. PyTorch DataLoader handles
+    the efficient loading during training.
     
     Each segment represents a temporal sequence where:
     - Input: state[t] = [context_features + action_features] at timestep t
@@ -1393,107 +1449,161 @@ class TelemetryActionDataset(Dataset):
     """
     
     def __init__(self,
-                 unified_segments: List[List[Dict[str, Any]]],
+                 data_cache,
+                 segments_cache_key: str,
                  fixed_segment_length: int):
         """
-        Initialize the unified state dataset
+        Initialize the streaming unified state dataset
         
         Args:
-            unified_segments: List of segments, where each segment is a list of 
-                             dictionaries containing unified features (context + actions).
-                             All segments must have exactly fixed_segment_length elements.
+            data_cache: Training cache instance to load segments from
+            segments_cache_key: Cache key where segments are stored
             fixed_segment_length: Required length for all segments
         """
-        # Basic validation
-        assert len(unified_segments) > 0, "At least one segment must be provided"
-        assert fixed_segment_length > 0, f"Fixed segment length must be positive, got {fixed_segment_length}"
-        
-        # Validate that all segments have exactly the fixed length
-        invalid_segments = []
-        for i, segment in enumerate(unified_segments):
-            if len(segment) != fixed_segment_length:
-                invalid_segments.append(f"Unified segment {i}: length {len(segment)} != {fixed_segment_length}")
-        
-        if invalid_segments:
-            error_msg = f"Fixed-size validation failed for {len(invalid_segments)} segment(s):\n" + "\n".join(invalid_segments[:10])
-            if len(invalid_segments) > 10:
-                error_msg += f"\n... and {len(invalid_segments) - 10} more segments"
-            raise ValueError(error_msg)
-        
-        # Store validated segments
-        self.unified_segments = unified_segments
-        self.num_segments = len(unified_segments)
+        self.data_cache = data_cache
+        self.segments_cache_key = segments_cache_key
         self.fixed_segment_length = fixed_segment_length
         
-        # Extract all unified feature names from first segment
-        if unified_segments and unified_segments[0]:
-            # All features are treated as unified (context + actions combined)
-            self.unified_features = list(unified_segments[0][0].keys())
-        else:
-            raise ValueError("Empty unified segments provided")
+        # Cache the manifest path and session files list for efficiency
+        self._manifest_path = None
+        self._session_files = []
         
-        print(f"[INFO] ✓ Validated unified state dataset with {self.num_segments} segments")
-        print(f"[INFO] ✓ All segments have fixed length: {fixed_segment_length}")
-        print(f"[INFO] ✓ Total unified features: {len(self.unified_features)}")
+        # Load segment index from cache without loading actual segment data
+        self._build_segment_index()
         
-        # Preprocess all validated segments
-        self._preprocess_segments()
-    
-    def _preprocess_segments(self):
-        """
-        Preprocess and normalize unified feature segments.
-        
-        This method processes each segment containing unified features (context + actions)
-        and creates input-target pairs for next-state prediction training.
-        
-        Processing steps:
-        1. Collect all unified data points for global normalization
-        2. Fit scaler on complete unified dataset
-        3. Create input-target pairs: input[t] -> target[t+1]
-        4. Store as tensors ready for batch processing
-        """
-        print("[INFO] Preprocessing unified feature segments...")
-        
-        # Collect all data points from all segments for global normalization
-        all_unified_data = []
-        for segment in self.unified_segments:
-            all_unified_data.extend(segment)
-        
-        # Build global unified feature matrix for fitting scaler
-        global_unified_matrix = self._build_matrix(all_unified_data, self.unified_features)
-        
-        # Fit scaler on global unified data for consistent normalization
+        # Initialize feature preprocessing components
         self.feature_scaler = StandardScaler()
-        self.feature_scaler.fit(global_unified_matrix)
+        self._features_fitted = False
         
-        # Process segments to create input-target pairs
-        # Input: state[t], Target: state[t+1]
-        input_sequences = []
-        target_sequences = []
-        
-        for segment in self.unified_segments:
-            # Build unified matrix for this segment (preserving temporal order)
-            seg_unified_matrix = self._build_matrix(segment, self.unified_features)
+        print(f"[INFO] ✓ Streaming dataset initialized with {self.total_segments} segments")
+        print(f"[INFO] ✓ Fixed segment length: {fixed_segment_length}")
+        print(f"[INFO] ✓ Memory efficient streaming from cache key: {segments_cache_key}")
+        print(f"[INFO] ✓ Direct parquet file access for optimal performance")
+    
+    def _build_segment_index(self):
+        """Build index of segments from cached session files"""
+        try:
+            # The segments_cache_key is already a complete cache key, use it directly
+            cache_key = self.data_cache._generate_cache_key(self.segments_cache_key)
+            cached_info = self.data_cache._get_cache_metadata(cache_key, max_age_hours=24)
             
-            # Apply normalization
-            seg_normalized = self.feature_scaler.transform(seg_unified_matrix)
+            if not cached_info:
+                raise ValueError(f"No cached segments found for key: {self.segments_cache_key}")
             
-            # Create input-target pairs: input[0:n-1] -> target[1:n]
-            if len(seg_normalized) > 1:
-                input_seq = seg_normalized[:-1]  # states t=0 to t=n-2
-                target_seq = seg_normalized[1:]  # states t=1 to t=n-1
+            # Get manifest file path directly
+            manifest_file = Path(cached_info["file_path"])
+            if not manifest_file.exists():
+                raise FileNotFoundError(f"Manifest file not found: {manifest_file}")
+            
+            # Read chunk files from manifest (these contain session data, not segments directly)
+            with open(manifest_file, 'r') as f:
+                chunk_files = [line.strip() for line in f.readlines() if line.strip()]
+            
+            if not chunk_files:
+                raise ValueError("No chunk files found in manifest")
+            
+            # Build segment index by reading all chunk files and extracting sessions (segments)
+            self.segment_index = []  # [(chunk_file_path, session_id)]
+            self.total_segments = 0
+            
+            print(f"[INFO] Scanning {len(chunk_files)} chunk files for segments...")
+            
+            for chunk_filename in chunk_files:
+                chunk_path = manifest_file.parent / chunk_filename
+                if not chunk_path.exists():
+                    continue
                 
-                input_sequences.append(input_seq)
-                target_sequences.append(target_seq)
+                # Read the chunk file to get sessions
+                chunk_df = pd.read_parquet(chunk_path)
+                
+                # Each chunk contains multiple segments, group by chunk_id
+                if 'chunk_id' in chunk_df.columns:
+                    chunk_ids = chunk_df['chunk_id'].unique()
+                    for chunk_id in chunk_ids:
+                        # Each chunk_id represents one segment
+                        self.segment_index.append((chunk_path, chunk_id))
+                        self.total_segments += 1
+                else:
+                    print(f"[WARNING] No chunk_id column in chunk file: {chunk_filename}")
+            
+            if self.total_segments == 0:
+                raise ValueError("No valid segments found in chunk files")
+            
+            # Load feature names from first segment
+            first_chunk_path, first_chunk_id = self.segment_index[0]
+            first_chunk_df = pd.read_parquet(first_chunk_path)
+            first_segment_df = first_chunk_df[first_chunk_df['chunk_id'] == first_chunk_id].drop(columns=['chunk_id'])
+            
+            if len(first_segment_df) != self.fixed_segment_length:
+                raise ValueError(f"Segment length mismatch: {len(first_segment_df)} != {self.fixed_segment_length}")
+            
+            self.unified_features = list(first_segment_df.columns)
+            
+            print(f"[INFO] ✓ Segment index built: {self.total_segments} segments across {len(chunk_files)} chunk files")
+            print(f"[INFO] ✓ Found {len(self.unified_features)} unified features")
+            
+        except Exception as e:
+            raise ValueError(f"Failed to build segment index: {str(e)}")
+    
+    def _load_segment_on_demand(self, chunk_path: Path, chunk_id: str) -> List[Dict[str, Any]]:
+        """Load a specific segment from chunk file by chunk_id"""
+        try:
+            # Load chunk data from parquet file
+            chunk_df = pd.read_parquet(chunk_path)
+            
+            # Filter to get the specific segment
+            if 'chunk_id' not in chunk_df.columns:
+                raise ValueError(f"No chunk_id column found in chunk file: {chunk_path}")
+            
+            segment_df = chunk_df[chunk_df['chunk_id'] == chunk_id]
+            
+            if segment_df.empty:
+                raise ValueError(f"Chunk {chunk_id} not found in chunk file: {chunk_path}")
+            
+            # Remove chunk_id column to get actual data
+            segment_df = segment_df.drop(columns=['chunk_id'])
+            
+            # Validate segment length
+            if len(segment_df) != self.fixed_segment_length:
+                raise ValueError(f"Segment length mismatch: {len(segment_df)} != {self.fixed_segment_length}")
+            
+            # Convert to list of dictionaries
+            segment_data = segment_df.to_dict('records')
+            
+            return segment_data
+            
+        except Exception as e:
+            raise ValueError(f"Failed to load segment {chunk_id} from {chunk_path}: {str(e)}")
+    
+    def _ensure_features_fitted(self):
+        """Ensure feature scaling is fitted using sampling approach"""
+        if self._features_fitted:
+            return
         
-        # Convert to tensors - shape: [num_segments, seq_len-1, unified_features]
-        self.input_tensor = torch.tensor(np.array(input_sequences), dtype=torch.float32)
-        self.target_tensor = torch.tensor(np.array(target_sequences), dtype=torch.float32)
+        print(f"[INFO] Fitting feature scaling using sample segments...")
         
-        print(f"[INFO] Preprocessed {len(input_sequences)} unified sequences")
-        print(f"[INFO] ✓ Temporal order preserved within each segment")
-        print(f"[INFO] Tensor shapes - Input: {self.input_tensor.shape}, Target: {self.target_tensor.shape}")
-        print(f"[INFO] Global normalization: {global_unified_matrix.shape[0]} total samples")
+        # Sample a few segments to fit the scaler (memory efficient)
+        sample_size = min(100, self.total_segments)  # Sample max 100 segments
+        import random
+        sample_indices = random.sample(range(self.total_segments), sample_size)
+        
+        all_sample_data = []
+        for idx in sample_indices:
+            chunk_path, chunk_id = self.segment_index[idx]
+            segment_data = self._load_segment_on_demand(chunk_path, chunk_id)
+            all_sample_data.extend(segment_data)
+        
+        # Build feature matrix from sample
+        feature_matrix = self._build_matrix(all_sample_data, self.unified_features)
+        
+        # Fit scaler
+        self.feature_scaler.fit(feature_matrix)
+        self._features_fitted = True
+        
+        print(f"[INFO] ✓ Feature scaling fitted using {len(all_sample_data)} sample records")
+        
+        # Clear sample data immediately
+        del all_sample_data, feature_matrix
     
     def _build_matrix(self, data_list: List[Dict[str, Any]], feature_names: List[str]) -> np.ndarray:
         """Extract features and build a matrix from list of dictionaries"""
@@ -1516,70 +1626,56 @@ class TelemetryActionDataset(Dataset):
         
         return np.array(matrix, dtype=np.float32)
     
-    def _build_context_matrix_canonical(self, data_list: List[Dict[str, Any]], feature_names: List[str]) -> np.ndarray:
-        """
-        Extract contextual features and build matrix using canonical feature ordering.
-        
-        This method ensures contextual features are extracted in the exact same order
-        during training and prediction, using the canonical feature order defined by
-        the feature catalogs. Missing features are filled with 0.0.
-        
-        Args:
-            data_list: List of contextual data dictionaries
-            feature_names: List of feature names in canonical order
-            
-        Returns:
-            np.ndarray: Feature matrix with consistent ordering
-        """
-        matrix = []
-        for record in data_list:
-            # Use the canonical extraction function to ensure consistency
-            row = extract_context_features_canonical_order(record)
-            matrix.append(row)
-        
-        return np.array(matrix, dtype=np.float32)
-    
     def __len__(self) -> int:
-        """Return number of segments"""
-        return self.num_segments
+        return self.total_segments
     
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Get a training sequence pair
+        Get a training sample (segment) - loads on-demand for memory efficiency
         
-        Args:
-            idx: Sequence index
-            
         Returns:
-            Tuple of (input_states, target_states) as tensors
-            input_states: [seq_len, unified_features] - states at t=0 to t=n-2
-            target_states: [seq_len, unified_features] - states at t=1 to t=n-1
+            Tuple of (input_sequence, target_sequence) tensors
         """
-        if idx >= self.num_segments:
-            raise IndexError(f"Sequence index {idx} out of range (0-{self.num_segments-1})")
+        # Ensure features are fitted
+        self._ensure_features_fitted()
         
-        return self.input_tensor[idx], self.target_tensor[idx]
+        # Get segment location from index
+        chunk_path, chunk_id = self.segment_index[idx]
+        
+        # Load segment from chunk file on-demand
+        segment = self._load_segment_on_demand(chunk_path, chunk_id)
+        
+        # Build feature matrix for this segment
+        feature_matrix = self._build_matrix(segment, self.unified_features)
+        
+        # Scale features
+        scaled_features = self.feature_scaler.transform(feature_matrix)
+        
+        # Create input sequence (all timesteps except last)
+        input_sequence = scaled_features[:-1]  # [seq_len-1, features]
+        
+        # Create target sequence (all timesteps except first)
+        target_sequence = scaled_features[1:]  # [seq_len-1, features]
+        
+        return torch.FloatTensor(input_sequence), torch.FloatTensor(target_sequence)
     
     def get_feature_names(self) -> Tuple[List[str], List[str]]:
-        """Get unified feature names - returns (input_features, target_features)"""
-        # In unified model, input and target features are the same
-        return self.unified_features, self.unified_features
+        return self.unified_features, ["gas", "brake", "steer_angle", "gear"]
     
     def get_scalers(self) -> StandardScaler:
-        """Get the fitted scaler for denormalization"""
         return self.feature_scaler
     
     def get_segment_info(self) -> Dict[str, Any]:
-        """Get information about the unified sequences in the dataset"""
         return {
-            'num_segments': self.num_segments,
-            'segment_length': self.fixed_segment_length,
-            'sequence_length': len(self.input_tensor[0]) if len(self.input_tensor) > 0 else 0,
-            'total_unified_features': len(self.unified_features),
-            'total_samples': self.num_segments * self.fixed_segment_length,
-            'tensor_shapes': {
-                'input': list(self.input_tensor.shape),
-                'target': list(self.target_tensor.shape)
+            "num_segments": self.total_segments,
+            "segment_length": self.fixed_segment_length,
+            "sequence_length": self.fixed_segment_length - 1,  # Input/target sequences are segment_length - 1
+            "total_features": len(self.unified_features),
+            "total_samples": self.total_segments * (self.fixed_segment_length - 1),  # Total training samples
+            "feature_names": self.unified_features,
+            "tensor_shapes": {
+                "input": [self.fixed_segment_length - 1, len(self.unified_features)],
+                "target": [self.fixed_segment_length - 1, len(self.unified_features)]
             }
         }
     
@@ -1594,6 +1690,42 @@ class TelemetryActionDataset(Dataset):
             ]):
                 context_features.append(feature)
         return context_features
+    
+    @staticmethod
+    def validate_segments(unified_segments: List[List[Dict[str, Any]]], expected_length: int) -> Dict[str, Any]:
+        """
+        Validate that all segments have the expected fixed length
+        
+        Args:
+            unified_segments: List of segments to validate
+            expected_length: Expected length for each segment
+            
+        Returns:
+            Dict with validation results
+        """
+        errors = []
+        valid_segments = 0
+        invalid_segments = 0
+        
+        for i, segment in enumerate(unified_segments):
+            if len(segment) == expected_length:
+                valid_segments += 1
+            else:
+                invalid_segments += 1
+                errors.append(f"Segment {i}: length {len(segment)} != expected {expected_length}")
+        
+        is_valid = len(errors) == 0
+        
+        return {
+            'is_valid': is_valid,
+            'errors': errors,
+            'num_segments': len(unified_segments),
+            'statistics': {
+                'valid_segments': valid_segments,
+                'invalid_segments': invalid_segments,
+                'expected_length': expected_length
+            }
+        }
     
     @staticmethod
     def validate_segments(unified_segments: List[List[Dict[str, Any]]],
@@ -1792,22 +1924,24 @@ class ExpertActionTrainer:
         Returns:
             Average loss across all batches
         """
-        print(f"[DEBUG] train_epoch called with dataset of size: {len(dataset)}")
         self.model.train()
         total_loss = 0.0
         num_batches = 0
         
-        print(f"[DEBUG] Creating DataLoader...")
-        # Create DataLoader for efficient batch processing
-        # NOTE: shuffle=False to preserve temporal order within segments
-        # NOTE: num_workers=0 to avoid multiprocessing issues in Docker/Windows
-        dataloader = DataLoader(dataset, batch_size=32, shuffle=False, num_workers=0)
-        print(f"[DEBUG] DataLoader created successfully")
-        
+        # Create DataLoader optimized for streaming large datasets
+        # NOTE: shuffle=True for better training (segments are independent sequences)
+        # NOTE: num_workers=0 to avoid multiprocessing with parquet files (can cause locks)
+        # NOTE: Larger batch size for better GPU utilization with streaming
+        dataloader = DataLoader(
+            dataset, 
+            batch_size=64,  # Larger batch for better GPU utilization
+            shuffle=True,   # Shuffle segments for better training
+            num_workers=0,  # Avoid multiprocessing with file I/O
+            pin_memory=True if self._cuda else False,  # Pin memory for faster GPU transfer
+            persistent_workers=False  # Don't persist workers to save memory
+        )
+
         print(f"[INFO] Training on {len(dataset)} unified sequences in batches...")
-        print(f"[INFO] Preserving temporal order within each sequence")
-        
-        print(f"[DEBUG] Starting DataLoader iteration...")
         
         for batch_data in dataloader:
             # Debug: Check what the dataloader is actually returning
@@ -1825,11 +1959,13 @@ class ExpertActionTrainer:
 
             # Autocast for mixed precision on GPU
             with torch.autocast(device_type='cuda', dtype=self.amp_dtype, enabled=self._cuda and self.amp_dtype is not None):
-                # Forward pass: predict sequence autoregressively
-                # batch_input_states: [B, seq_len, features] - input sequence
-                # We predict the same number of steps as target sequence length
+                # Forward pass: use teacher forcing for fast training
                 target_seq_len = batch_target_states.shape[1]
-                predictions = self.model(unified_input=batch_input_states, prediction_steps=target_seq_len)
+                predictions = self.model(
+                    unified_input=batch_input_states, 
+                    prediction_steps=target_seq_len, 
+                    use_teacher_forcing=True  # Explicit teacher forcing for training
+                )
             
             # Loss computation: unified state prediction loss
             loss = self.model.unified_loss(
@@ -1869,10 +2005,15 @@ class ExpertActionTrainer:
         total_loss = 0.0
         num_batches = 0
         
-        # Create DataLoader for efficient batch processing
-        # NOTE: shuffle=False to preserve temporal order within segments
-        # NOTE: num_workers=0 to avoid multiprocessing issues in Docker/Windows
-        dataloader = DataLoader(dataset, batch_size=32, shuffle=False, num_workers=0)
+        # Create DataLoader optimized for streaming validation
+        dataloader = DataLoader(
+            dataset, 
+            batch_size=64,  # Larger batch for better GPU utilization 
+            shuffle=False,  # No shuffle for validation
+            num_workers=0,  # Avoid multiprocessing with file I/O
+            pin_memory=True if self._cuda else False,
+            persistent_workers=False
+        )
         
         # Get context feature names from the dataset
         context_feature_names = dataset.get_context_feature_names()
@@ -1892,7 +2033,11 @@ class ExpertActionTrainer:
                 
                 # Forward pass - no mixed precision for validation to avoid dtype issues
                 target_seq_len = batch_target_states.shape[1]
-                predictions = self.model(unified_input=batch_input_states, prediction_steps=target_seq_len)
+                predictions = self.model(
+                    unified_input=batch_input_states, 
+                    prediction_steps=target_seq_len,
+                    use_teacher_forcing=True  # Use teacher forcing for validation too
+                )
                 
                 # Loss computation: unified state prediction loss
                 loss = self.model.unified_loss(
@@ -1995,14 +2140,9 @@ class ExpertActionTrainer:
         best_val_loss = float('inf')
         epochs_without_improvement = 0
         
-        print(f"[DEBUG] Starting training loop for {epochs} epochs...")
-        
         for epoch in range(epochs):
-            print(f"[DEBUG] Starting epoch {epoch+1}/{epochs}")
             # Train on segments
-            print(f"[DEBUG] Calling train_epoch...")
             train_loss = self.train_epoch(train_dataset)
-            print(f"[DEBUG] train_epoch completed with loss: {train_loss}")
             self.train_losses.append(train_loss)
             
             # Validate on segments
@@ -2079,8 +2219,6 @@ class ExpertActionTrainer:
         print(f"\n🔍 COMPREHENSIVE DATASET QUALITY VALIDATION")
         print(f"{'='*80}")
         
-        print(f"[DEBUG] About to start dataset quality validation...")
-        
         quality_results = {
             'validation_timestamp': datetime.now().isoformat(),
             'datasets_checked': [],
@@ -2088,11 +2226,8 @@ class ExpertActionTrainer:
         }
         
         # Check training dataset quality
-        print(f"[DEBUG] Validating training dataset...")
-        print(f"[DEBUG] Calling check_dataset_quality method...")
         try:
             train_quality = self.model.check_dataset_quality(train_dataset, "Training Dataset")
-            print(f"[DEBUG] check_dataset_quality completed successfully")
         except Exception as e:
             print(f"[ERROR] check_dataset_quality failed: {str(e)}")
             raise e
@@ -2238,10 +2373,14 @@ class ExpertActionTrainer:
                 batch_size_actual = batch_input_states.shape[0]
                 segment_length = batch_input_states.shape[1]
                 
-                # Use standard forward (autoregressive) under AMP for GPU (evaluation mode)
+                # Use teacher forcing for evaluation consistency with training
                 with torch.autocast(device_type='cuda', dtype=self.amp_dtype, enabled=self._cuda and self.amp_dtype is not None):
                     target_seq_len = batch_target_states.shape[1]
-                    predictions = self.model(unified_input=batch_input_states, prediction_steps=target_seq_len)
+                    predictions = self.model(
+                        unified_input=batch_input_states, 
+                        prediction_steps=target_seq_len,
+                        use_teacher_forcing=True  # Use teacher forcing for consistent evaluation
+                    )
                 
                 # Loss computation outside autocast: unified state prediction loss
                 loss = self.model.unified_loss(

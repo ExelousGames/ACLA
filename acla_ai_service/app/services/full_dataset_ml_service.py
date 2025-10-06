@@ -824,7 +824,23 @@ class Full_dataset_TelemetryMLService:
             }
         
         try:
+            # Convert telemetry_dict to DataFrame for processing
+            import pandas as pd
+            telemetry_df = pd.DataFrame([telemetry_dict])
             
+            # Process and filter data
+            processor = FeatureProcessor(telemetry_df)
+            processed_df = processor.general_cleaning_for_analysis()
+            features = self._imitate_expert_feature_names or TelemetryFeatures().get_features_for_imitate_expert()
+
+            filtered_telemetry_df = processor.filter_features_by_list(processed_df, features)
+            
+            # Convert back to dict for further processing
+            if not filtered_telemetry_df.empty:
+                processed_telemetry_dict = filtered_telemetry_df.iloc[0].to_dict()
+            else:
+                processed_telemetry_dict = telemetry_dict
+                    
             # Fetch and load the trained model using the class method deserializer
             transformer_model, model_metadata = await self._get_cached_model_or_fetch(
                 model_type="transformer_expert_action",
@@ -849,8 +865,8 @@ class Full_dataset_TelemetryMLService:
                 )
                 
                 # Extract corner features from telemetry
-                # Use the single telemetry record as a list for extraction
-                corner_features_list = await corner_service.extract_corner_features_for_telemetry([telemetry_dict])
+                # Use the processed telemetry record as a list for extraction
+                corner_features_list = await corner_service.extract_corner_features_for_telemetry([processed_telemetry_dict])
                 if corner_features_list and len(corner_features_list) > 0:
                     # Since we passed a single telemetry record, extract the single result dictionary
                     corner_features = corner_features_list[0]
@@ -873,7 +889,7 @@ class Full_dataset_TelemetryMLService:
                 )
                 
                 # Extract tire grip features from telemetry (async; returns List[Dict])
-                tire_features_list = await tire_grip_service.extract_tire_grip_features([telemetry_dict])
+                tire_features_list = await tire_grip_service.extract_tire_grip_features([processed_telemetry_dict])
                 if tire_features_list and len(tire_features_list) > 0:
                     # Since we passed a single telemetry record, extract the single result dictionary
                     tire_features = tire_features_list[0]
@@ -892,7 +908,7 @@ class Full_dataset_TelemetryMLService:
                     model_subtype="imitation_model_data",
                     deserializer_func=expert_service.deserialize_imitation_model
                 )
-                expert_state_list = expert_service.extract_expert_state_for_telemetry([telemetry_dict])
+                expert_state_list = expert_service.extract_expert_state_for_telemetry([processed_telemetry_dict])
                 if expert_state_list and len(expert_state_list) > 0:
                     # Since we passed a single telemetry record, extract the single result dictionary
                     expert_state_features = expert_state_list[0]
@@ -904,10 +920,10 @@ class Full_dataset_TelemetryMLService:
             # Use transformer model's predict_human_readable method
             print(f"[INFO] Generating predictions with sequence length: {sequence_length}")
             print(f"[INFO] Context data keys: {list(context_data.keys()) if context_data else 'No context data'}")
-            print(f"[INFO] Total context features: {len(context_data)}")
+            print(f"telemetry data: {processed_telemetry_dict}, context data: {context_data}")
             
             predictions = transformer_model.predict_human_readable(
-                current_telemetry=telemetry_dict,
+                current_telemetry=processed_telemetry_dict,
                 context_data=context_data if context_data else None,
                 sequence_length=sequence_length
             )
@@ -1104,8 +1120,7 @@ class Full_dataset_TelemetryMLService:
         total_bottom_laps_cached = 0
         
         chunk_iterator = self.data_cache.get_cached_data_chunks(
-            track_name=trackName,
-            chunk_size=max_memory_records
+            track_name=trackName
         )
         
         # Debug: Check if iterator is properly created
@@ -1138,7 +1153,7 @@ class Full_dataset_TelemetryMLService:
                     print(f"[DEBUG] Chunk {chunk_idx}: No performance laps found, trying to extract all laps as fallback")
                     try:
                         # Try to extract all laps if no top performance laps found
-                        lap_times_ms, lap_df_list = processor._filter_top_performance_laps(processed_df, 100)  # Get up to 100 laps
+                        lap_times_ms, lap_df_list = processor._filter_top_performance_laps(processed_df, 1)  # Get up to 100%
                         if not lap_df_list:
                             print(f"[DEBUG] Chunk {chunk_idx}: No laps found at all, skipping chunk")
                             continue
@@ -1194,7 +1209,7 @@ class Full_dataset_TelemetryMLService:
                             # This lap is faster, replace the slowest
                             # Move slowest to bottom laps
                             chunk_bottom_laps.append({
-                                "sessionId": f"bottom_lap_{slowest_lap[0]}_{chunk_idx}",
+                                "chunkId": f"bottom_lap_{slowest_lap[0]}_{chunk_idx}",
                                 "data": slowest_lap[1]["records"]
                             })
                             
@@ -1205,7 +1220,7 @@ class Full_dataset_TelemetryMLService:
                         else:
                             # This lap is slower than top 5, add to bottom laps
                             chunk_bottom_laps.append({
-                                "sessionId": f"bottom_lap_{unique_lap_id}_{chunk_idx}",
+                                "chunkId": f"bottom_lap_{unique_lap_id}_{chunk_idx}",
                                 "data": lap_records
                             })
                 
@@ -1218,9 +1233,9 @@ class Full_dataset_TelemetryMLService:
                             for session in chunk_bottom_laps:
                                 yield session
                         
-                        cache_success = await self.data_cache.cache_sessions_streaming(
-                            track_name=trackName,  # Use original track name, not the generated cache key
-                            sessions_iterator=cache_chunk_bottom_laps()
+                        cache_success = await self.data_cache.cache_chunks_streaming(
+                            track_name=bottom_laps_cache_key,  # Use the generated cache key for bottom laps
+                            chunks_iterator=cache_chunk_bottom_laps()
                         )
                         
                         if cache_success:
@@ -1312,16 +1327,14 @@ class Full_dataset_TelemetryMLService:
     async def _train_expert_action_transformer(self, 
                                              segments_cache_key: str,
                                              trackName: str,
-                                             fixed_segment_length: int = 50,
-                                             enrichment_result: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+                                             fixed_segment_length: int = 50) -> Dict[str, Any]:
         """
         Train the transformer model to learn non-expert driver progression toward expert performance using fixed-size segments
         
         Args:
-            segments_cache_key: Cache key to access segments from data cache
+            segments_cache_key: Cache key to access enriched segments from data cache (complete key, not track name)
             trackName: Track name for model identification
             fixed_segment_length: Length that all segments must have (default: 50)
-            enrichment_result: Pre-computed enrichment result to avoid re-training models
             
         Returns:
             Training results and model performance metrics
@@ -1334,44 +1347,42 @@ class Full_dataset_TelemetryMLService:
                     "success": False   
                 }
             
-            # Load segments from cache
-            print(f"[INFO] Loading segments from cache key: {segments_cache_key}")
-            cached_segments_data = self.data_cache.get_cached_sessions(segments_cache_key, max_age_hours=24)
+            # Create streaming dataset that loads segments on-demand from cache
+            print(f"[INFO] Creating streaming dataset from segments cache key: {segments_cache_key}")
             
-            if not cached_segments_data:
-                raise ValueError(f"No cached segments found for key: {segments_cache_key}")
-            
-            # Extract segments from cached data structure
-            combined_segments = []
-            for session in cached_segments_data.get("sessions", []):
-                segment_data = session.get("data", [])
-                if segment_data:
-                    combined_segments.append(segment_data)
-            
-            print(f"[INFO] Starting transformer training with {len(combined_segments)} fixed-size segments loaded from cache")
-            print(f"[INFO] Each segment has fixed length: {fixed_segment_length}")
-            
-            # Validate segments before creating dataset
-            validation_result = TelemetryActionDataset.validate_segments(
-                unified_segments=combined_segments,
-                expected_length=fixed_segment_length
-            )
-            
-            if not validation_result['is_valid']:
-                error_details = "\n".join(validation_result['errors'][:5])  # Show first 5 errors
-                raise ValueError(f"Segment validation failed:\n{error_details}")
-            
-            print(f"[INFO] ✓ Validated {validation_result['num_segments']} segments")
-            print(f"[INFO] ✓ Valid segments: {validation_result['statistics']['valid_segments']}")
-            
-            # Create fixed-size segmented dataset
+            # Use streaming dataset that doesn't load all segments into memory
+            # segments_cache_key is already the complete cache key returned by enriched_contextual_data
             dataset = TelemetryActionDataset(
-                unified_segments=combined_segments,
+                data_cache=self.data_cache,
+                segments_cache_key=segments_cache_key,
                 fixed_segment_length=fixed_segment_length
             )
             
-            # Clear combined_segments to free memory since dataset now has the data
-            del combined_segments
+            print(f"[INFO] ✓ Streaming dataset created with {len(dataset)} segments")
+            print(f"[INFO] ✓ Memory efficient: segments loaded on-demand during training")
+            
+            # Quick validation by sampling a few segments
+            print(f"[INFO] Validating segments using sampling approach...")
+            sample_size = min(10, len(dataset))
+            import random
+            sample_indices = random.sample(range(len(dataset)), sample_size)
+            
+            validation_errors = []
+            for idx in sample_indices:
+                try:
+                    # This will load the segment and validate its length
+                    input_seq, target_seq = dataset[idx]
+                    expected_seq_len = fixed_segment_length - 1  # Due to input/target shift
+                    if len(input_seq) != expected_seq_len or len(target_seq) != expected_seq_len:
+                        validation_errors.append(f"Segment {idx}: sequence length mismatch")
+                except Exception as e:
+                    validation_errors.append(f"Segment {idx}: {str(e)}")
+            
+            if validation_errors:
+                error_details = "\n".join(validation_errors)
+                raise ValueError(f"Segment validation failed:\n{error_details}")
+            
+            print(f"[INFO] ✓ Validated {sample_size} sample segments successfully")
             
             # Configure PyTorch optimizations
             use_cuda = torch.cuda.is_available()
@@ -1412,9 +1423,9 @@ class Full_dataset_TelemetryMLService:
             print(f"[DEBUG] Creating trainer on device: {device}")
             trainer = ExpertActionTrainer(model, device=device, learning_rate=1e-4)
         
-            print(f"[DEBUG] Starting data quality validation...")
-            trainer.validate_training_data_quality(dataset)
-            print(f"[DEBUG] Data quality validation completed")
+            print(f"[DEBUG] Skipping data quality validation for streaming dataset...")
+            # Note: Quality validation is disabled for streaming datasets to avoid memory issues
+            # The streaming approach already performs basic validation during segment loading
             
             # Train model using the new fixed-size segment approach
             print(f"[DEBUG] Starting training loop...")
@@ -1545,7 +1556,7 @@ class Full_dataset_TelemetryMLService:
                 """Generator for caching segments"""
                 for idx, segment in enumerate(segments_batch):
                     yield {
-                        "sessionId": f"segment_{batch_number}_{idx}",
+                        "chunkId": f"segment_{batch_number}_{idx}",
                         "data": segment
                     }
             
@@ -1554,9 +1565,9 @@ class Full_dataset_TelemetryMLService:
             estimated_size_mb = (total_records * 60) / (1024 * 1024)  # 60 bytes per enriched record
             
             # Cache using base cache key so transformer can find all segments
-            cache_success = await self.data_cache.cache_sessions_streaming(
+            cache_success = await self.data_cache.cache_chunks_streaming(
                 track_name=base_cache_key,  # Use base key directly
-                sessions_iterator=segments_generator(),
+                chunks_iterator=segments_generator(),
                 estimated_size_mb=estimated_size_mb
             )
             
@@ -1582,7 +1593,7 @@ class Full_dataset_TelemetryMLService:
         
         Args:
             top_laps_telemetry_list: List of expert telemetry records for training models
-            bottom_laps_cache_key: Cache key for bottom laps (not used, processing via iterator)
+            bottom_laps_cache_key: Cache key for accessing cached bottom laps data via iterator
             track_name: Track name for model identification
             segment_length: Length of segments for transformer training
             
@@ -1592,7 +1603,7 @@ class Full_dataset_TelemetryMLService:
         
         print(f"[INFO] Starting streamlined contextual data enrichment:")
         print(f"  - Expert data for training: {len(top_laps_telemetry_list)} records")
-        print(f"  - Bottom laps will be processed via chunk iterator")
+        print(f"  - Bottom laps will be processed via chunk iterator from cache: {bottom_laps_cache_key}")
         
         # Step 1: Train all enrichment models using expert data
         self._print_section_divider("TRAINING ENRICHMENT MODELS WITH EXPERT DATA")
@@ -1660,16 +1671,15 @@ class Full_dataset_TelemetryMLService:
         segments_cache_key = f"enriched_segments_{track_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         
         chunk_iterator = self.data_cache.get_cached_data_chunks(
-            track_name=track_name,
-            chunk_size=chunk_size
+            track_name=bottom_laps_cache_key  # Use the cache key where bottom laps are stored
         )
         
         processed_chunks = 0
         total_segments_cached = 0
-        segments_per_cache_batch = 1000  # Cache segments in batches to keep reasonable cache size
+        segments_per_cache = 1000  # Number of segments per cache batch
         
         print(f"[INFO] Processing chunks of {chunk_size} records each")
-        print(f"[INFO] Will cache segments in batches of {segments_per_cache_batch}")
+        print(f"[INFO] Will cache segments in batches of {segments_per_cache} segments each")
         
         current_segment_batch = []
         cache_batch_number = 0
@@ -1698,20 +1708,22 @@ class Full_dataset_TelemetryMLService:
             # Add segments to current batch
             current_segment_batch.extend(chunk_segments)
             
-            # Cache segments when batch is full or we've processed enough segments
-            if len(current_segment_batch) >= segments_per_cache_batch:
+            # Cache segments in batches of segments_per_cache size
+            while len(current_segment_batch) >= segments_per_cache:
+                # Take exactly segments_per_cache segments for caching
+                batch_to_cache = current_segment_batch[:segments_per_cache]
                 await self._cache_segment_batch(
-                    current_segment_batch[:segments_per_cache_batch],
+                    batch_to_cache,
                     segments_cache_key,
                     cache_batch_number
                 )
-                total_segments_cached += segments_per_cache_batch
+                total_segments_cached += len(batch_to_cache)
                 cache_batch_number += 1
                 
-                # Keep remaining segments for next batch
-                current_segment_batch = current_segment_batch[segments_per_cache_batch:]
+                # Remove the cached segments from current batch
+                current_segment_batch = current_segment_batch[segments_per_cache:]
                 
-                print(f"[INFO] Cached batch {cache_batch_number}: {total_segments_cached} total segments cached")
+                print(f"[INFO] Cached batch {cache_batch_number}: {len(batch_to_cache)} segments, {total_segments_cached} total segments cached")
             
             # Clear chunk data to free memory
             del chunk_data, enriched_chunk_data, chunk_segments

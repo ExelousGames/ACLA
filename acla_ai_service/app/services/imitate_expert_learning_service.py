@@ -873,22 +873,36 @@ class ExpertImitateLearningService:
                                          improvement_threshold: float = 0.55,
                                          min_segments: int = 5) -> List[List[Dict[str, Any]]]:
         """
-        Filter telemetry data to only those segments with consistent improvement rate towards expert behavior.
-        Uses ContextFeature enum values to identify segments where the driver is progressively 
-        getting closer to expert performance.
+        Filter telemetry data using streamlined no-fallback approach.
+        
+        Streamlined Logic:
+        - Calculate both overall improvement rate AND overall consistency rate for each segment
+        - Accept segment if EITHER improvement rate OR consistency rate meets the threshold
+        - No fallback mechanisms - clean pass/fail based on the higher of the two rates
+        
+        Expert-level thresholds (determine which metrics use improvement vs consistency):
+        - Velocity alignment: ≥90% alignment = expert-level → use consistency (80% of points ≥90% alignment)
+        - Speed difference: ≤5km/h from expert = expert-level → use consistency (75% of points ≤5km/h difference)  
+        - Distance to expert: ≤1m from racing line = expert-level → use consistency (80% of points ≤1m)
+        - Sub-expert performance uses improvement trends instead
 
         Args:
             telemetry_data: List of telemetry records containing ContextFeature values
-            segment_length: Length of each segment to analyze for improvement trends
-            improvement_threshold: Fraction of metrics that must show improvement (0.0-1.0)
+            segment_length: Length of each segment to analyze
+            improvement_threshold: Minimum rate (0.0-1.0) for either improvement OR consistency to pass
             min_segments: Minimum number of segments required to return results
             
         Returns:
-            List[List[Dict[str, Any]]]: List of segments, where each segment is a list of telemetry records
+            List[List[Dict[str, Any]]]: List of segments meeting streamlined criteria
         """
         
         print(f"[INFO] Filtering optimal telemetry segments from {len(telemetry_data)} records...")
         print(f"[INFO] Using segment_length={segment_length}, improvement_threshold={improvement_threshold}")
+        print(f"[INFO] Streamlined filtering criteria:")
+        print(f"[INFO] - Velocity alignment: ≥90% = check consistency (80% of points ≥90% alignment), <90% = check improvement")
+        print(f"[INFO] - Speed difference: ≤5km/h = check consistency (75% of points ≤5km/h diff), >5km/h = check improvement") 
+        print(f"[INFO] - Distance to expert: ≤1m = check consistency (80% of points ≤1m), >1m = check improvement")
+        print(f"[INFO] - Segment passes if improvement rate ≥{improvement_threshold*100:.0f}% OR consistency rate ≥{improvement_threshold*100:.0f}%")
         
         if len(telemetry_data) < segment_length * 2:
             raise ValueError(f"[WARNING] Insufficient data for segment analysis. Need at least {segment_length * 2} records, got {len(telemetry_data)}")
@@ -921,10 +935,11 @@ class ExpertImitateLearningService:
 
         # Create segments and analyze improvement trends
         optimal_segments = []
+        adaptive_stats = {'combined_passed': 0}
         # Calculate total segments ensuring each has exactly segment_length
         total_segments = (len(df) - segment_length) // (segment_length // 2) + 1  # Overlapping segments
         
-        print(f"[INFO] Analyzing {total_segments} potential segments...")
+        print(f"[INFO] Analyzing {total_segments} potential segments with adaptive criteria...")
         
         '''
         Why Overlap is Needed
@@ -947,15 +962,30 @@ class ExpertImitateLearningService:
             # Analyze improvement trends for each context feature
             improvement_scores = self._analyze_segment_improvement(segment, required_features)
             
-            # Check if segment meets improvement threshold
+            # Track combined pass rate using streamlined approach
+            if (improvement_scores['overall_improvement_rate'] >= improvement_threshold or 
+                improvement_scores['overall_consistency_rate'] >= improvement_threshold):
+                adaptive_stats['combined_passed'] += 1
+            
+            # Streamlined no-fallback approach: use improvement rate if above threshold, otherwise use consistency rate
+            segment_passes = False
             if improvement_scores['overall_improvement_rate'] >= improvement_threshold:
+                segment_passes = True
+                # Use improvement rate criteria
+            elif improvement_scores['overall_consistency_rate'] >= 0.8:
+                segment_passes = True
+                # Use consistency rate criteria
+            
+            if segment_passes:
                 segment_dict = segment.to_dict('records')
                 optimal_segments.append(segment_dict)
-                #print(f"[INFO] Added improving segment {start_idx}-{end_idx} (improvement rate: {improvement_scores['overall_improvement_rate']:.2f})")
         
-        print(f"[INFO] Filtered segments analysis complete:")
+        print(f"[INFO] Dual-rate filtering analysis complete:")
         print(f"[INFO] - Original records: {len(telemetry_data)}")
+        print(f"[INFO] - Segments analyzed: {total_segments}")
         print(f"[INFO] - Optimal segments found: {len(optimal_segments)}")
+        print(f"[INFO] - Overall pass rate: {len(optimal_segments)/total_segments*100:.1f}%")
+        print(f"[INFO] - Overall improvement rate: {improvement_scores['overall_improvement_rate']*100:.1f}%, consistency rate: {improvement_scores['overall_consistency_rate']*100:.1f}%")
         
         # Ensure we have minimum required segments
         if len(optimal_segments) < min_segments:
@@ -965,53 +995,112 @@ class ExpertImitateLearningService:
     
     def _analyze_segment_improvement(self, segment: pd.DataFrame, required_features: List[str]) -> Dict[str, float]:
         """
-        Analyze improvement trends within a telemetry segment
+        Analyze improvement trends vs consistency within a telemetry segment.
+        Calculates BOTH overall improvement rate AND overall consistency rate for ALL metrics.
+        
+        Dual Rating System:
+        - overall_improvement_rate: Calculated by checking trend improvement across ALL 3 metrics
+        - overall_consistency_rate: Calculated by checking percentile consistency across ALL 3 metrics
+        
+        Individual Metric Logic (for detailed analysis):
+        - If driver is far from expert level: Uses improvement mode in individual analysis
+        - If driver is close to expert level: Uses consistency mode in individual analysis
         
         Args:
             segment: DataFrame containing telemetry segment
             required_features: List of context feature names to analyze
             
         Returns:
-            Dictionary with improvement analysis results
+            Dictionary with improvement analysis results including:
+            - overall_improvement_rate: Rate calculated from ALL metrics using trend analysis
+            - overall_consistency_rate: Rate calculated from ALL metrics using percentile analysis
+            - Individual metric analysis with detailed mode-specific results
         """
         ContextFeature = ExpertFeatureCatalog.ContextFeature
         improvement_metrics = {}
         
+        # Expert-level thresholds (when driver is considered "close to expert")
+        EXPERT_VELOCITY_ALIGNMENT = 0.9  # 90% alignment considered expert-level
+        EXPERT_SPEED_DIFF_MAX = 5.0     # Within 5 km/h considered expert-level
+        EXPERT_DISTANCE_MAX = 1.0        # Within 1 meter considered expert-level
+        
         try:
-            # Analyze expert_velocity_alignment - should increase toward 1.0
+            # Analyze velocity alignment
             velocity_alignment = segment[ContextFeature.EXPERT_VELOCITY_ALIGNMENT.value].values
             if len(velocity_alignment) > 1:
+                velocity_mean = np.mean(velocity_alignment)
                 velocity_trend = np.polyfit(range(len(velocity_alignment)), velocity_alignment, 1)[0]
-                improvement_metrics['velocity_alignment_improving'] = velocity_trend > 0  # Should be increasing
+                expert_performance_points = np.sum(velocity_alignment >= EXPERT_VELOCITY_ALIGNMENT)
+                velocity_consistency_rate = expert_performance_points / len(velocity_alignment)
+                
+                improvement_metrics['velocity_alignment_mean'] = float(velocity_mean)
+                improvement_metrics['velocity_alignment_trend'] = float(velocity_trend)
+                improvement_metrics['velocity_consistency_rate'] = float(velocity_consistency_rate)
+                improvement_metrics['velocity_expert_points'] = int(expert_performance_points)
             else:
-                improvement_metrics['velocity_alignment_improving'] = False
+                improvement_metrics['velocity_alignment_mean'] = 0.0
+                improvement_metrics['velocity_alignment_trend'] = 0.0
+                improvement_metrics['velocity_consistency_rate'] = 0.0
+                improvement_metrics['velocity_expert_points'] = 0
             
-            # Analyze speed_difference - absolute value should decrease (getting closer to expert)
+            # Analyze speed difference
             speed_diff = segment[ContextFeature.SPEED_DIFFERENCE.value].values
             if len(speed_diff) > 1:
                 abs_speed_diff = np.abs(speed_diff)
+                speed_diff_mean = np.mean(abs_speed_diff)
                 speed_trend = np.polyfit(range(len(abs_speed_diff)), abs_speed_diff, 1)[0]
-                improvement_metrics['speed_difference_improving'] = speed_trend < 0  # Should be decreasing
+                expert_performance_points = np.sum(abs_speed_diff <= EXPERT_SPEED_DIFF_MAX)
+                speed_consistency_rate = expert_performance_points / len(abs_speed_diff)
+                
+                improvement_metrics['speed_difference_mean'] = float(speed_diff_mean)
+                improvement_metrics['speed_difference_trend'] = float(speed_trend)
+                improvement_metrics['speed_consistency_rate'] = float(speed_consistency_rate)
+                improvement_metrics['speed_expert_points'] = int(expert_performance_points)
             else:
-                improvement_metrics['speed_difference_improving'] = False
+                improvement_metrics['speed_difference_mean'] = 0.0
+                improvement_metrics['speed_difference_trend'] = 0.0
+                improvement_metrics['speed_consistency_rate'] = 0.0
+                improvement_metrics['speed_expert_points'] = 0
             
-            # Analyze distance_to_expert_line - should decrease (getting closer to racing line)
+            # Analyze distance to expert line
             distance_to_line = segment[ContextFeature.DISTANCE_TO_EXPERT_LINE.value].values
             if len(distance_to_line) > 1:
+                distance_mean = np.mean(distance_to_line)
                 distance_trend = np.polyfit(range(len(distance_to_line)), distance_to_line, 1)[0]
-                improvement_metrics['distance_to_line_improving'] = distance_trend < 0  # Should be decreasing
+                expert_performance_points = np.sum(distance_to_line <= EXPERT_DISTANCE_MAX)
+                distance_consistency_rate = expert_performance_points / len(distance_to_line)
+                
+                improvement_metrics['distance_to_line_mean'] = float(distance_mean)
+                improvement_metrics['distance_to_line_trend'] = float(distance_trend)
+                improvement_metrics['distance_consistency_rate'] = float(distance_consistency_rate)
+                improvement_metrics['distance_expert_points'] = int(expert_performance_points)
             else:
-                improvement_metrics['distance_to_line_improving'] = False
+                improvement_metrics['distance_to_line_mean'] = 0.0
+                improvement_metrics['distance_to_line_trend'] = 0.0
+                improvement_metrics['distance_consistency_rate'] = 0.0
+                improvement_metrics['distance_expert_points'] = 0
             
-            # Calculate overall improvement rate
-            improving_count = sum(improvement_metrics.values())
-            total_metrics = len(improvement_metrics)
-            improvement_metrics['overall_improvement_rate'] = improving_count / total_metrics if total_metrics > 0 else 0.0
+            # Calculate BOTH improvement and consistency rates for ALL metrics regardless of their mode
             
-            # Add detailed trend values for debugging
-            improvement_metrics['velocity_alignment_trend'] = velocity_trend if 'velocity_trend' in locals() else 0.0
-            improvement_metrics['speed_difference_trend'] = speed_trend if 'speed_trend' in locals() else 0.0  
-            improvement_metrics['distance_to_line_trend'] = distance_trend if 'distance_trend' in locals() else 0.0
+            # For improvement rate - check ALL metrics for improvement (trends)
+            velocity_improvement = velocity_trend > 0 if len(velocity_alignment) > 1 else False
+            speed_improvement = speed_trend < 0 if len(speed_diff) > 1 else False  # Decreasing difference is improvement
+            distance_improvement = distance_trend < 0 if len(distance_to_line) > 1 else False  # Getting closer is improvement
+            
+            improvement_criteria = [velocity_improvement, speed_improvement, distance_improvement]
+            improvement_metrics['overall_improvement_rate'] = sum(improvement_criteria) / len(improvement_criteria)
+            
+            # For consistency rate - use already calculated individual consistency rates directly
+            consistency_rates = [
+                improvement_metrics['velocity_consistency_rate'],
+                improvement_metrics['speed_consistency_rate'], 
+                improvement_metrics['distance_consistency_rate']
+            ]
+            improvement_metrics['overall_consistency_rate'] = sum(consistency_rates) / len(consistency_rates)
+            
+            # Legacy fields for backward compatibility (simplified)
+            improvement_metrics['criteria_passed'] = int(improvement_metrics['overall_improvement_rate'] * 3)
+            improvement_metrics['total_criteria'] = 3
             
         except Exception as e:
             raise Exception(f"Error analyzing segment improvement: {e}")

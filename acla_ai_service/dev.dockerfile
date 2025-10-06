@@ -43,8 +43,8 @@ RUN pip install --no-cache-dir \
     joblib==1.3.2 \
     river==0.21.0 \
     && pip install --no-cache-dir \
-    # PyTorch (separate for memory efficiency)
-    torch==2.0.1 --index-url https://download.pytorch.org/whl/cpu \
+    # PyTorch with CUDA support (separate for memory efficiency)
+    torch==2.0.1 --index-url https://download.pytorch.org/whl/cu118 \
     && pip install --no-cache-dir \
     # Visualization and data processing
     plotly==5.17.0 \

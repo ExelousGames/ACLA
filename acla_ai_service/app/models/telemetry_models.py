@@ -1077,11 +1077,9 @@ class FeatureProcessor:
         if missing:
             # If we cannot validate laps, just return everything as one block (backwards compatible fallback)
             if not df.empty:
-                # Try to get lap time from Graphics_last_time or Graphics_current_time
+                # Try to get lap time from Graphics_current_time
                 lap_time_ms = 0
-                if 'Graphics_last_time' in df.columns:
-                    lap_time_ms = pd.to_numeric(df['Graphics_last_time'], errors='coerce').max()
-                elif 'Graphics_current_time' in df.columns:
+                if 'Graphics_current_time' in df.columns:
                     lap_time_ms = pd.to_numeric(df['Graphics_current_time'], errors='coerce').max()
                 
                 return [lap_time_ms if lap_time_ms > 0 else float('inf')], [df.copy()]

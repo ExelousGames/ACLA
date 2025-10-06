@@ -250,10 +250,8 @@ class BackendService:
                             session_data = await self._stream_session_file(session_id, session_meta)
                             
                             yield {
-                                "sessionId": session_id,
-                                "metadata": session_meta,
-                                "data": session_data,
-                                "total_telemetry_records": len(session_data) if session_data else 0
+                                "chunkId": session_id,
+                                "data": session_data
                             }
                             
                         except Exception as e:
@@ -314,9 +312,9 @@ class BackendService:
             streamer = FileStreamSessionIterator(session_metadata, download_id, self)
             
             # Stream sessions to cache
-            cache_success = await data_cache.cache_sessions_streaming(
+            cache_success = await data_cache.cache_chunks_streaming(
                 track_name=trackName or "all_tracks",
-                sessions_iterator=streamer,
+                chunks_iterator=streamer,
                 estimated_size_mb=estimated_size_mb
             )
             
@@ -372,7 +370,7 @@ class BackendService:
                     "sessionId": "string",
                     "metadata": { ... },  # session metadata
                     "data": [ ... ],      # list of telemetry data points
-                    "total_telemetry_records": 1000
+                    "total_telemetry_records": 100
                 },
                 ...
             ]
