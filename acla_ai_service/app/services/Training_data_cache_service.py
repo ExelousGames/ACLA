@@ -59,15 +59,6 @@ class TrainingOptimizedCache:
     def _init_metadata_db(self):
         """Initialize simple metadata database"""
         with sqlite3.connect(self.metadata_db) as conn:
-            # Check if table exists and has correct schema
-            cursor = conn.execute("PRAGMA table_info(cached_datasets)")
-            columns = [row[1] for row in cursor.fetchall()]
-            
-            # If table doesn't exist or missing chunk_count column, recreate it
-            if not columns or 'chunk_count' not in columns:
-                conn.execute("DROP TABLE IF EXISTS cached_datasets")
-                print("[INFO] Recreating cached_datasets table with updated schema")
-            
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS cached_datasets (
                     cache_key TEXT PRIMARY KEY,
