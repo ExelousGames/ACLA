@@ -108,27 +108,26 @@ class TrainingOptimizedCache:
             
             print(f"[INFO] Starting chunk-based parquet caching for {cache_key}")
             
-            # Process each chunk separately - agnostic to chunk contents
-            async for chunk in chunks_iterator:
-                segment_id = chunk.get("segmentId", f"segment_{chunk_count}")
-                chunk_data = chunk.get("data", [])
-                
+            # Process each chunk - completely agnostic to contents
+            async for chunk_data in chunks_iterator:
                 if not chunk_data:
-                    print(f"[WARNING] Skipping empty segment: {segment_id}")
+                    print(f"[WARNING] Skipping empty chunk {chunk_count}")
                     continue
                 
-                # Create segment-specific file
-                chunk_file = self.parquet_dir / f"{cache_key}_segment_{segment_id}.parquet"
+                # Create chunk file - no assumptions about content
+                chunk_file = self.parquet_dir / f"{cache_key}_chunk_{chunk_count}.parquet"
                 
-                # Convert segment data to DataFrame and save - no assumptions about structure
-                chunk_df = pd.DataFrame(chunk_data)
-                chunk_df['segment_id'] = segment_id  # Add segment metadata
-                
-                chunk_df.to_parquet(chunk_file, compression=self.compression, index=False)
-                chunk_files.append(chunk_file)
-                
-                chunk_count += 1
-                total_records += len(chunk_data)
+                # Store chunk data directly as DataFrame - agnostic approach
+                try:
+                    chunk_df = pd.DataFrame([chunk_data])  # Treat entire chunk as single record
+                    chunk_df.to_parquet(chunk_file, compression=self.compression, index=False)
+                    chunk_files.append(chunk_file)
+                    
+                    chunk_count += 1
+                    total_records += 1  # Each chunk is one record
+                except Exception as e:
+                    print(f"[WARNING] Failed to save chunk {chunk_count}: {e}")
+                    continue
 
             if not chunk_files:
                 print(f"[WARNING] No chunks to cache for {cache_key}")
@@ -221,35 +220,18 @@ class TrainingOptimizedCache:
                 print(f"[WARNING] Chunk file not found: {chunk_path}")
                 continue
             
-            # Load chunk data - agnostic to what's inside
+            # Load chunk data - completely agnostic approach
             chunk_df = pd.read_parquet(chunk_path)
             
-            # Extract segment_id and clean the data (backward compatibility with chunk_id)
-            if 'segment_id' in chunk_df.columns:
-                segment_id = chunk_df['segment_id'].iloc[0]  # All rows should have same segment_id
-                # Remove segment_id column from the data
-                data_df = chunk_df.drop(columns=['segment_id'])
-            elif 'chunk_id' in chunk_df.columns:
-                # Backward compatibility: treat chunk_id as segment_id
-                segment_id = chunk_df['chunk_id'].iloc[0]  # All rows should have same chunk_id
-                # Remove chunk_id column from the data
-                data_df = chunk_df.drop(columns=['chunk_id'])
-            else:
-                # Extract segment_id from filename if not in data
-                if '_segment_' in chunk_filename:
-                    segment_id = chunk_filename.replace('.parquet', '').split('_segment_')[-1]
-                else:
-                    # Backward compatibility with old chunk naming
-                    segment_id = chunk_filename.replace('.parquet', '').split('_chunk_')[-1]
-                data_df = chunk_df
+            # Return chunk data as-is without interpretation
+            for _, chunk_row in chunk_df.iterrows():
+                chunk_dict = chunk_row.to_dict()
+                chunks_data.append({
+                    "chunkId": f"chunk_{len(chunks_data)}",
+                    "data": chunk_dict  # Return raw chunk data
+                })
             
-            # Convert to chunk format - preserve original structure
-            chunks_data.append({
-                "segmentId": str(segment_id),
-                "data": data_df.to_dict('records')
-            })
-            
-            total_records += len(data_df)
+            total_records += len(chunk_df)
         
         print(f"[INFO] Loaded {len(chunks_data)} chunks with {total_records} total records")
         

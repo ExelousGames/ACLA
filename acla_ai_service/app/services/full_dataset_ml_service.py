@@ -803,7 +803,7 @@ class Full_dataset_TelemetryMLService:
                                    telemetry_dict: Dict[str, Any],
                                    trackName: str, 
                                    carName: Optional[str] = 'AllCars',
-                                   sequence_length: int = 10) -> Dict[str, Any]:
+                                   sequence_length: int = 120) -> Dict[str, Any]:
         """
         Fetch transformer model and predict expert actions from telemetry data
         
@@ -850,32 +850,9 @@ class Full_dataset_TelemetryMLService:
                 deserializer_func=ExpertActionTransformer.deserialize_transformer_model
             )
             
-            # Extract context data by running corner and tire grip analysis
+            # Extract context data by running tire grip analysis
             context_data = {}
-            
-            # Get corner identification features
-            try:
-                corner_service = CornerIdentificationUnsupervisedService()
-                corner_service, corner_metadata = await self._get_cached_model_or_fetch(
-                    model_type="corner_identification",
-                    track_name=trackName,
-                    car_name='all_cars',
-                    model_subtype="corner_model_data",
-                    deserializer_func=corner_service.deserialize_corner_identification_model
-                )
-                
-                # Extract corner features from telemetry
-                # Use the processed telemetry record as a list for extraction
-                corner_features_list = await corner_service.extract_corner_features_for_telemetry([processed_telemetry_dict])
-                if corner_features_list and len(corner_features_list) > 0:
-                    # Since we passed a single telemetry record, extract the single result dictionary
-                    corner_features = corner_features_list[0]
-                    print(f"[DEBUG] Corner features extracted: {corner_features}")
-                    context_data.update(corner_features)
-                    print(f"[INFO] Added {len(corner_features)} corner features to context")
-                
-            except Exception as e:
-                print(f"[Error] Corner identification failed: {e}")
+
             
             # Get tire grip features
             try:
@@ -1239,15 +1216,15 @@ class Full_dataset_TelemetryMLService:
                                 yield session
                         
                         cache_success = await self.data_cache.cache_chunks_streaming(
-                            track_name=bottom_laps_cache_key,  # Use the generated cache key for bottom laps
+                            cache_key=bottom_laps_cache_key,  # Use the generated cache key for bottom laps
                             chunks_iterator=cache_chunk_bottom_laps()
                         )
                         
                         if cache_success:
                             total_bottom_laps_cached += len(chunk_bottom_laps)
-                            print(f"[INFO] Cached {len(chunk_bottom_laps)} bottom laps from chunk {chunk_idx}")
+                            print(f"[INFO] Successfully cached {len(chunk_bottom_laps)} bottom laps from chunk {chunk_idx} with key: {bottom_laps_cache_key}")
                         else:
-                            print(f"[WARNING] Failed to cache bottom laps from chunk {chunk_idx}")
+                            print(f"[WARNING] Failed to cache bottom laps from chunk {chunk_idx} with key: {bottom_laps_cache_key}")
                             
                     except Exception as cache_error:
                         print(f"[WARNING] Error caching bottom laps from chunk {chunk_idx}: {cache_error}")
@@ -1411,7 +1388,6 @@ class Full_dataset_TelemetryMLService:
             
             print(f"[INFO] Dataset info: {input_features_count} combined input features, "
                   f"{len(action_feature_names)} action features")
-            print(f"[INFO] Model will output 4 action features: gas, brake, steer_angle, gear")
             print(f"[INFO] Fixed segment length: {fixed_segment_length}")
             
             # Create model with unified input features
@@ -1484,14 +1460,13 @@ class Full_dataset_TelemetryMLService:
 
 
     async def _enrich_chunk_with_context(self, chunk_data: List[Dict[str, Any]], 
-                                        imitation_learning, corner_service, tire_service) -> List[Dict[str, Any]]:
+                                        imitation_learning, tire_service) -> List[Dict[str, Any]]:
         """
         Enrich a single chunk with all contextual features
         
         Args:
             chunk_data: List of telemetry records
             imitation_learning: Trained imitation learning service
-            corner_service: Trained corner identification service  
             tire_service: Trained tire grip service
             
         Returns:
@@ -1507,12 +1482,6 @@ class Full_dataset_TelemetryMLService:
         except Exception as e:
             print(f"[WARNING] Failed to extract expert state features: {str(e)}")
         
-        chunk_corner_features = []
-        try:
-            chunk_corner_features = await corner_service.extract_corner_features_for_telemetry(chunk_data)
-        except Exception as e:
-            print(f"[WARNING] Failed to extract corner features: {str(e)}")
-        
         chunk_grip_features = []
         try:
             chunk_grip_features = await tire_service.extract_tire_grip_features(chunk_data)
@@ -1527,10 +1496,6 @@ class Full_dataset_TelemetryMLService:
             # Add expert state features
             if i < len(chunk_imitation_features):
                 enriched_record.update(chunk_imitation_features[i])
-            
-            # Add corner features  
-            if i < len(chunk_corner_features):
-                enriched_record.update(chunk_corner_features[i])
             
             # Add tire grip features
             if i < len(chunk_grip_features):
@@ -1554,16 +1519,20 @@ class Full_dataset_TelemetryMLService:
             bool - Success status
         """
         try:
-            # Use base cache key directly, not batch-specific key
-            # This allows transformer training to find all segments under one key
+            # Store segments as structured chunk - cache service doesn't need to know about segments
             
             async def segments_generator():
-                """Generator for caching segments"""
-                for idx, segment in enumerate(segments_batch):
-                    yield {
-                        "segmentId": f"segment_{batch_number}_{idx}",
-                        "data": segment
-                    }
+                """Generator for caching - store complete chunk with segments intact"""
+                # Package segments as a complete chunk - cache service treats this as opaque data
+                chunk_data = {
+                    "batch_number": batch_number,
+                    "segments": segments_batch,  # Complete segments as nested lists
+                    "segment_count": len(segments_batch),
+                    "total_records": sum(len(segment) for segment in segments_batch)
+                }
+                
+                # Yield the complete chunk
+                yield chunk_data
             
             # Estimate size for this batch
             total_records = sum(len(segment) for segment in segments_batch)
@@ -1577,10 +1546,10 @@ class Full_dataset_TelemetryMLService:
             )
             
             if cache_success:
-                print(f"[DEBUG] Cached batch {batch_number}: {len(segments_batch)} segments (~{estimated_size_mb:.1f}MB) to key: {base_cache_key}")
+                print(f"[DEBUG] Cached batch {batch_number}: {len(segments_batch)} segments as chunk (~{estimated_size_mb:.1f}MB) to key: {base_cache_key}")
                 return True
             else:
-                print(f"[ERROR] Failed to cache segment batch {batch_number}")
+                print(f"[ERROR] Failed to cache segment batch {batch_number} as chunk")
                 return False
                 
         except Exception as e:
@@ -1696,7 +1665,7 @@ class Full_dataset_TelemetryMLService:
             
             # Step 3: Enrich chunk with contextual features
             enriched_chunk_data = await self._enrich_chunk_with_context(
-                chunk_data, imitation_learning, corner_service, tire_service
+                chunk_data, imitation_learning, tire_service
             )
             
             # Step 4: Filter enriched chunk into segments
@@ -1724,7 +1693,7 @@ class Full_dataset_TelemetryMLService:
                 # Remove the cached segments from current batch
                 current_segment_batch = current_segment_batch[segments_per_cache:]
                 
-                print(f"[INFO] Cached batch {cache_batch_number}: {len(batch_to_cache)} segments, {total_segments_cached} total segments cached")
+                print(f"[INFO] Cached chunk {cache_batch_number}: {len(batch_to_cache)} segments as single chunk, {total_segments_cached} total segments cached")
             
             # Clear chunk data to free memory
             del chunk_data, enriched_chunk_data, chunk_segments
@@ -1743,10 +1712,10 @@ class Full_dataset_TelemetryMLService:
             cache_batch_number += 1
         
         print(f"[SUCCESS] Enrichment completed:")
-        print(f"  - Processed {processed_chunks} chunks")  
+        print(f"  - Processed {processed_chunks} data chunks from cache")  
         print(f"  - Generated and cached {total_segments_cached} enriched segments")
-        print(f"  - Segments cached in {cache_batch_number} batches")
-        print(f"  - Cache key: {segments_cache_key}")
+        print(f"  - Segments grouped into {cache_batch_number} cache chunks ({segments_per_cache} segments per chunk)")
+        print(f"  - Cache key for all chunks: {segments_cache_key}")
         
         return segments_cache_key
     

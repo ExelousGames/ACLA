@@ -19,7 +19,6 @@ from sklearn.metrics import mean_squared_error, mean_absolute_error
 
 # Import contextual feature catalogs for quality weighting
 from ..services.tire_grip_analysis_service import TireGripFeatureCatalog
-from ..services.corner_identification_unsupervised_service import CornerFeatureCatalog
 from ..services.imitate_expert_learning_service import ExpertFeatureCatalog
 from .telemetry_models import TelemetryFeatures
 
@@ -39,8 +38,7 @@ def get_canonical_context_feature_order() -> List[str]:
     This function defines the exact order that contextual features should appear in
     across training and prediction phases. Features are ordered by:
     1. ExpertFeatureCatalog.ContextFeature
-    2. CornerFeatureCatalog.ContextFeature  
-    3. TireGripFeatureCatalog.ContextFeature
+    2. TireGripFeatureCatalog.ContextFeature
     
     Returns:
         List[str]: Ordered list of feature names
@@ -49,9 +47,6 @@ def get_canonical_context_feature_order() -> List[str]:
     
     # Add expert context features in enum order
     context_features.extend([f.value for f in ExpertFeatureCatalog.ContextFeature])
-    
-    # Add corner context features in enum order
-    context_features.extend([f.value for f in CornerFeatureCatalog.ContextFeature])
     
     # Add tire grip context features in enum order
     context_features.extend([f.value for f in TireGripFeatureCatalog.ContextFeature])
@@ -557,18 +552,15 @@ class ExpertActionTransformer(nn.Module):
         """
         # Get all possible context features from catalogs
         expert_features = [f.value for f in ExpertFeatureCatalog.ContextFeature]
-        corner_features = [f.value for f in CornerFeatureCatalog.ContextFeature]
         tire_grip_features = [f.value for f in TireGripFeatureCatalog.ContextFeature]
         
         # Filter to only those present in the dataset
         available_expert = [f for f in expert_features if f in context_feature_names]
-        available_corner = [f for f in corner_features if f in context_feature_names]
         available_tire_grip = [f for f in tire_grip_features if f in context_feature_names]
         
         return {
-            'available_for_weighting': available_expert + available_corner + available_tire_grip,
+            'available_for_weighting': available_expert + available_tire_grip,
             'expert_features': available_expert,
-            'corner_features': available_corner,
             'tire_grip_features': available_tire_grip,
             'total_context_features': len(context_feature_names)
         }
@@ -607,11 +599,11 @@ class ExpertActionTransformer(nn.Module):
                          - expert_velocity_alignment: How aligned current velocity is with expert
                          - speed_difference: Speed difference from expert optimal
                          - distance_to_expert_line: Distance from expert racing line
-                         Can include: corner info, tire grip levels, weather conditions
+                         Can include: tire grip levels, weather conditions
             sequence_length: Number of future action steps to predict (default: 10)
             
         Returns:
-            Structured JSON dictionary with human-readable predictions:
+            Structured JSON dictionary with complete target predictions:
             {
                 "status": "success" | "error",
                 "timestamp": ISO timestamp,
@@ -619,10 +611,13 @@ class ExpertActionTransformer(nn.Module):
                     {
                         "step": 1,
                         "time_ahead": "0.1s",
-                        "action": "Begin braking",
-                        "throttle": 0.2,
-                        "brake": 0.6,
-                        "steering": -0.15
+                        "all_targets": {
+                            "Physics_gas": 0.2,
+                            "Physics_brake": 0.6,
+                            "Physics_steer_angle": -0.15,
+                            "Physics_gear": 3,
+                            "... all other features": "... values"
+                        }
                     }
                 ]
             }
@@ -734,48 +729,29 @@ class ExpertActionTransformer(nn.Module):
         return combined_features
     
     def _create_sequence_predictions(self, predictions: np.ndarray, sequence_length: int) -> List[Dict[str, Any]]:
-        """Create sequence of future predictions from unified feature vectors"""
+        """Create sequence of future predictions from unified feature vectors - includes ALL targets"""
         sequence = []
         
-        # Get feature names and find physics action indices
+        # Get all feature names for complete output
         from ..models.telemetry_models import TelemetryFeatures
         feature_names = TelemetryFeatures.get_features_for_imitate_expert()
-        
-        # Find indices for physics actions
-        gas_idx = feature_names.index("Physics_gas")
-        brake_idx = feature_names.index("Physics_brake") 
-        steer_idx = feature_names.index("Physics_steer_angle")
-        gear_idx = feature_names.index("Physics_gear")
         
         for i in range(min(sequence_length, len(predictions))):
             pred = predictions[i]
             
-            # Extract physics actions from their positions in the unified feature vector
-            gas = pred[gas_idx]
-            brake = pred[brake_idx]
-            steering = pred[steer_idx]
-            gear = int(pred[gear_idx])
-            
-            # Determine main action for this step
-            if brake > 0.1:
-                action = "Apply brakes"
-            elif gas > 0.1:
-                action = "Accelerate"
-            elif abs(steering) > 0.1:
-                direction = "right" if steering > 0 else "left"
-                action = f"Turn {direction}"
-            else:
-                action = "Maintain course"
-            
-            sequence.append({
+            # Create prediction step with ALL target features
+            step_data = {
                 "step": i + 1,
                 "time_ahead": f"{(i + 1) * self.time_step_seconds:.1f}s",
-                "action": action,
-                "throttle": round(float(gas), 2),
-                "brake": round(float(brake), 2), 
-                "steering": round(float(steering), 2),
-                "gear": int(gear)
-            })
+                "all_targets": {}
+            }
+            
+            # Include all features in the prediction output
+            for j, feature_name in enumerate(feature_names):
+                if j < len(pred):
+                    step_data["all_targets"][feature_name] = round(float(pred[j]), 4)
+            
+            sequence.append(step_data)
         
         return sequence
     
@@ -999,8 +975,6 @@ class ExpertActionTransformer(nn.Module):
             # Get basic dataset information
             print(f"[DEBUG] Getting segment info...")
             segment_info = dataset.get_segment_info()
-            print(f"[DEBUG] Getting feature names...")
-            input_features, action_features = dataset.get_feature_names()
             print(f"[DEBUG] Feature names obtained successfully")
             context_features = dataset.get_context_feature_names()
             
@@ -1008,15 +982,14 @@ class ExpertActionTransformer(nn.Module):
             print(f"   • Total segments: {segment_info['num_segments']:,}")
             print(f"   • Segment length: {segment_info['segment_length']}")
             print(f"   • Total samples: {segment_info['total_samples']:,}")
-            print(f"   • Input features: {len(input_features)}")
-            print(f"   • Action features: {len(action_features)}")
+            input_features = dataset.get_input_feature_names()
             print(f"   • Context features: {len(context_features)}")
             
             quality_report['metrics']['basic_info'] = {
                 'num_segments': segment_info['num_segments'],
                 'segment_length': segment_info['segment_length'],
                 'total_samples': segment_info['total_samples'],
-                'total_features_count': len(input_features) + len(action_features),
+                'total_features_count': len(input_features),
                 'context_features_count': len(context_features)
             }
             
@@ -1095,6 +1068,11 @@ class ExpertActionTransformer(nn.Module):
             input_min = torch.min(sample_input_tensor)
             input_max = torch.max(sample_input_tensor)
             
+            target_mean = torch.mean(sample_target_tensor)
+            target_std = torch.std(sample_target_tensor)
+            target_min = torch.min(sample_target_tensor)
+            target_max = torch.max(sample_target_tensor)
+            
             # Check for zero variance features
             zero_var_input = (input_std < 1e-6).sum().item()
             zero_var_target = (target_std < 1e-6).sum().item()
@@ -1131,14 +1109,14 @@ class ExpertActionTransformer(nn.Module):
             print(f"\n🎯 Outlier Detection Analysis:")
             
             # Calculate z-scores and identify outliers (>3 standard deviations)
-            input_z_scores = torch.abs((input_tensor - input_mean) / (input_std + 1e-8))
-            target_z_scores = torch.abs((target_tensor - target_mean) / (target_std + 1e-8))
+            input_z_scores = torch.abs((sample_input_tensor - input_mean) / (input_std + 1e-8))
+            target_z_scores = torch.abs((sample_target_tensor - target_mean) / (target_std + 1e-8))
             
             input_outliers = (input_z_scores > 3.0).sum().item()
             target_outliers = (target_z_scores > 3.0).sum().item()
             
-            input_outlier_percentage = (input_outliers / input_tensor.numel()) * 100
-            target_outlier_percentage = (target_outliers / target_tensor.numel()) * 100
+            input_outlier_percentage = (input_outliers / sample_input_tensor.numel()) * 100
+            target_outlier_percentage = (target_outliers / sample_target_tensor.numel()) * 100
             
             print(f"   • Input outliers (>3σ): {input_outliers:,} ({input_outlier_percentage:.2f}%)")
             print(f"   • Target outliers (>3σ): {target_outliers:,} ({target_outlier_percentage:.2f}%)")
@@ -1160,8 +1138,8 @@ class ExpertActionTransformer(nn.Module):
             print(f"\n⏱️ Temporal Consistency Analysis:")
             
             # Calculate temporal derivatives (changes between consecutive timesteps)
-            input_derivatives = torch.diff(input_tensor, dim=1)  # [segments, seq_len-1, features]
-            target_derivatives = torch.diff(target_tensor, dim=1)
+            input_derivatives = torch.diff(sample_input_tensor, dim=1)  # [segments, seq_len-1, features]
+            target_derivatives = torch.diff(sample_target_tensor, dim=1)
             
             # Calculate mean absolute temporal changes
             input_temporal_change = torch.mean(torch.abs(input_derivatives))
@@ -1176,10 +1154,10 @@ class ExpertActionTransformer(nn.Module):
             print(f"   • Large input jumps: {input_large_jumps:,}")
             print(f"   • Large target jumps: {target_large_jumps:,}")
             
-            if input_large_jumps > input_tensor.numel() * 0.01:  # >1% of values
+            if input_large_jumps > sample_input_tensor.numel() * 0.01:  # >1% of values
                 quality_report['warnings'].append(f"Many large temporal jumps in input data: {input_large_jumps}")
             
-            if target_large_jumps > target_tensor.numel() * 0.01:
+            if target_large_jumps > sample_target_tensor.numel() * 0.01:
                 quality_report['warnings'].append(f"Many large temporal jumps in target data: {target_large_jumps}")
             
             quality_report['metrics']['temporal_consistency'] = {
@@ -1193,8 +1171,8 @@ class ExpertActionTransformer(nn.Module):
             print(f"\n🔗 Feature Correlation Analysis:")
             
             # Flatten tensors for correlation analysis
-            input_flat = input_tensor.view(-1, input_tensor.size(-1)).numpy()
-            target_flat = target_tensor.view(-1, target_tensor.size(-1)).numpy()
+            input_flat = sample_input_tensor.view(-1, sample_input_tensor.size(-1)).numpy()
+            target_flat = sample_target_tensor.view(-1, sample_target_tensor.size(-1)).numpy()
             
             # Calculate correlation matrices with proper handling of zero variance features
             high_corr_input_pairs = []
@@ -1318,24 +1296,19 @@ class ExpertActionTransformer(nn.Module):
             if len(context_features) > 0:
                 # Count context features by type (no need to access actual data)
                 expert_context_count = 0
-                corner_context_count = 0
                 tire_context_count = 0
                 
                 for feature_name in context_features:
                     if 'expert' in feature_name.lower():
                         expert_context_count += 1
-                    elif 'corner' in feature_name.lower():
-                        corner_context_count += 1
                     elif 'tire' in feature_name.lower() or 'grip' in feature_name.lower():
                         tire_context_count += 1
                 
                 print(f"   • Expert context features: {expert_context_count}")
-                print(f"   • Corner context features: {corner_context_count}")
                 print(f"   • Tire grip context features: {tire_context_count}")
                 
                 quality_report['metrics']['context_features'] = {
                     'expert_features': expert_context_count,
-                    'corner_features': corner_context_count,
                     'tire_features': tire_context_count
                 }
                 
@@ -1481,11 +1454,10 @@ class TelemetryActionDataset(Dataset):
         print(f"[INFO] ✓ Direct parquet file access for optimal performance")
     
     def _build_segment_index(self):
-        """Build index of segments from cached session files"""
+        """Build index of segments from cached chunk files with new chunked structure"""
         try:
             # The segments_cache_key is already a complete cache key, use it directly
-            cache_key = self.data_cache._generate_cache_key(self.segments_cache_key)
-            cached_info = self.data_cache._get_cache_metadata(cache_key, max_age_hours=24)
+            cached_info = self.data_cache._get_cache_metadata(self.segments_cache_key, max_age_hours=24)
             
             if not cached_info:
                 raise ValueError(f"No cached segments found for key: {self.segments_cache_key}")
@@ -1495,54 +1467,61 @@ class TelemetryActionDataset(Dataset):
             if not manifest_file.exists():
                 raise FileNotFoundError(f"Manifest file not found: {manifest_file}")
             
-            # Read chunk files from manifest (these contain session data, not segments directly)
+            # Read chunk files from manifest
             with open(manifest_file, 'r') as f:
                 chunk_files = [line.strip() for line in f.readlines() if line.strip()]
             
             if not chunk_files:
                 raise ValueError("No chunk files found in manifest")
             
-            # Build segment index by reading all chunk files and extracting segments
-            self.segment_index = []  # [(chunk_file_path, segment_id)]
+            # Build segment index by extracting segments from cached chunks
+            self.segment_index = []  # [(chunk_file_path, segment_idx_in_chunk)]
             self.total_segments = 0
             
-            print(f"[INFO] Scanning {len(chunk_files)} chunk files for segments...")
+            print(f"[INFO] Loading segments from {len(chunk_files)} chunk files...")
             
             for chunk_filename in chunk_files:
                 chunk_path = manifest_file.parent / chunk_filename
                 if not chunk_path.exists():
                     continue
                 
-                # Read the chunk file to get segment IDs
-                chunk_df = pd.read_parquet(chunk_path)
-                
-                # Each chunk file may contain multiple segments, identified by segment_id column
-                if 'segment_id' in chunk_df.columns:
-                    segment_ids = chunk_df['segment_id'].unique()
-                    for segment_id in segment_ids:
-                        # Add each unique segment_id found in this chunk file to the index
-                        self.segment_index.append((chunk_path, segment_id))
-                        self.total_segments += 1
-                else:
-                    print(f"[WARNING] No segment_id column in chunk file: {chunk_filename}")
+                try:
+                    # Load chunk data
+                    chunk_df = pd.read_parquet(chunk_path)
+                    
+                    # Extract chunk data - cache stored it as single record
+                    for _, chunk_row in chunk_df.iterrows():
+                        chunk_dict = chunk_row.to_dict()
+                        
+                        # Extract segments from the chunk
+                        segments = chunk_dict.get('segments', [])
+                        if not segments:
+                            print(f"[WARNING] No segments found in chunk: {chunk_filename}")
+                            continue
+                        
+                        # Add each segment to index
+                        for segment_idx, segment_data in enumerate(segments):
+                            if len(segment_data) == self.fixed_segment_length:
+                                self.segment_index.append((chunk_path, f"{chunk_dict.get('batch_number', 0)}_{segment_idx}"))
+                                self.total_segments += 1
+                            else:
+                                print(f"[WARNING] Segment {segment_idx} in chunk {chunk_filename} has wrong length {len(segment_data)}, expected {self.fixed_segment_length}")
+                            
+                except Exception as e:
+                    print(f"[WARNING] Failed to process chunk file {chunk_filename}: {str(e)}")
+                    continue
             
             if self.total_segments == 0:
                 raise ValueError("No valid segments found in chunk files")
             
             # Load feature names from first segment
             first_chunk_path, first_segment_id = self.segment_index[0]
-            first_chunk_df = pd.read_parquet(first_chunk_path)
+            first_segment_data = self._load_segment_on_demand(first_chunk_path, first_segment_id)
             
-            # Load the first segment to get feature names
-            if 'segment_id' in first_chunk_df.columns:
-                first_segment_df = first_chunk_df[first_chunk_df['segment_id'] == first_segment_id].drop(columns=['segment_id'])
-            else:
-                raise ValueError(f"No segment_id column found in first chunk file")
+            if len(first_segment_data) != self.fixed_segment_length:
+                raise ValueError(f"Segment length mismatch: {len(first_segment_data)} != {self.fixed_segment_length}")
             
-            if len(first_segment_df) != self.fixed_segment_length:
-                raise ValueError(f"Segment length mismatch: {len(first_segment_df)} != {self.fixed_segment_length}")
-            
-            self.unified_features = list(first_segment_df.columns)
+            self.unified_features = list(first_segment_data[0].keys())
             
             print(f"[INFO] ✓ Segment index built: {self.total_segments} segments across {len(chunk_files)} chunk files")
             print(f"[INFO] ✓ Found {len(self.unified_features)} unified features")
@@ -1556,22 +1535,28 @@ class TelemetryActionDataset(Dataset):
             # Load chunk data from parquet file
             chunk_df = pd.read_parquet(chunk_path)
             
-            # Filter to get the specific segment
-            if 'segment_id' in chunk_df.columns:
-                segment_df = chunk_df[chunk_df['segment_id'] == segment_id]
-                if segment_df.empty:
-                    raise ValueError(f"Segment {segment_id} not found in chunk file: {chunk_path}")
-                # Remove segment_id column to get actual data
-                segment_df = segment_df.drop(columns=['segment_id'])
-            else:
-                raise ValueError(f"No segment_id column found in chunk file: {chunk_path}")
+            # Extract the chunk data (cache stored it as single record)
+            chunk_row = chunk_df.iloc[0]  # First (and only) row contains the chunk
+            chunk_dict = chunk_row.to_dict()
+            
+            # Extract segments from chunk
+            segments = chunk_dict.get('segments', [])
+            if not segments:
+                raise ValueError(f"No segments found in chunk: {chunk_path}")
+            
+            # Parse segment_id to get batch_number and segment_index
+            batch_number, segment_idx = segment_id.split('_')
+            segment_idx = int(segment_idx)
+            
+            # Get the specific segment
+            if segment_idx >= len(segments):
+                raise ValueError(f"Segment index {segment_idx} out of range for chunk with {len(segments)} segments")
+            
+            segment_data = segments[segment_idx]
             
             # Validate segment length
-            if len(segment_df) != self.fixed_segment_length:
-                raise ValueError(f"Segment length mismatch: {len(segment_df)} != {self.fixed_segment_length}")
-            
-            # Convert to list of dictionaries
-            segment_data = segment_df.to_dict('records')
+            if len(segment_data) != self.fixed_segment_length:
+                raise ValueError(f"Segment length mismatch: {len(segment_data)} != {self.fixed_segment_length}")
             
             return segment_data
             
@@ -1592,8 +1577,8 @@ class TelemetryActionDataset(Dataset):
         
         all_sample_data = []
         for idx in sample_indices:
-            chunk_path, chunk_id = self.segment_index[idx]
-            segment_data = self._load_segment_on_demand(chunk_path, chunk_id)
+            chunk_path, segment_id = self.segment_index[idx]
+            segment_data = self._load_segment_on_demand(chunk_path, segment_id)
             all_sample_data.extend(segment_data)
         
         # Build feature matrix from sample
@@ -1663,7 +1648,16 @@ class TelemetryActionDataset(Dataset):
         return torch.FloatTensor(input_sequence), torch.FloatTensor(target_sequence)
     
     def get_feature_names(self) -> Tuple[List[str], List[str]]:
-        return self.unified_features, ["gas", "brake", "steer_angle", "gear"]
+        """
+        Get feature names for unified state prediction model.
+        
+        In the unified approach, both input and target use the same feature set,
+        as we're predicting the next state which has the same structure as input state.
+        
+        Returns:
+            Tuple of (input_features, target_features) where both are identical unified_features
+        """
+        return self.unified_features, self.unified_features
     
     def get_scalers(self) -> StandardScaler:
         return self.feature_scaler
@@ -1688,7 +1682,7 @@ class TelemetryActionDataset(Dataset):
         context_features = []
         for feature in self.unified_features:
             if any(context_prefix in feature.lower() for context_prefix in [
-                'expert_', 'corner_', 'tire_', 'grip_', 'distance_', 
+                'expert_', 'tire_', 'grip_', 'distance_', 
                 'velocity_alignment', 'speed_difference'
             ]):
                 context_features.append(feature)
@@ -2137,8 +2131,6 @@ class ExpertActionTrainer:
                 print(f"[INFO]   - Tire grip features: {context_summary['tire_grip_features']}")
             if context_summary['expert_features']:
                 print(f"[INFO]   - Expert alignment features: {context_summary['expert_features']}")
-            if context_summary['corner_features']:
-                print(f"[INFO]   - Corner context features: {context_summary['corner_features']}")
         
         best_val_loss = float('inf')
         epochs_without_improvement = 0
