@@ -2,23 +2,20 @@
 Streamlined Training-Optimized Cache Service for Large Datasets
 
 Clean, efficient cache service designed specifically for ML model training:
-- Single Parquet storage format (no fallbacks)
+- Simple JSON storage format for maximum compatibility
 - Direct streaming processing for training pipelines
-- Minimal memory footprint with zero-copy operations
-- Fast columnar access optimized for feature extraction
+- Minimal memory footprint with direct dictionary operations
+- Fast access optimized for feature extraction
 - Chunk-agnostic: treats each chunk as opaque part of larger dataset
 - No assumptions about chunk contents or structure
 """
 
+import json
 import sqlite3
-import warnings
+import pandas as pd
 from pathlib import Path
 from typing import Dict, List, Any, Optional, Iterator
 from datetime import datetime, timedelta
-import pandas as pd
-
-# Suppress warnings for clean output
-warnings.filterwarnings('ignore', category=UserWarning)
 
 
 class TrainingOptimizedCache:
@@ -228,7 +225,7 @@ class TrainingOptimizedCache:
                 chunk_dict = chunk_row.to_dict()
                 chunks_data.append({
                     "chunkId": f"chunk_{len(chunks_data)}",
-                    "data": chunk_dict  # Return raw chunk data
+                    "data": chunk_dict  # Return raw chunk data completely agnostic to content
                 })
             
             total_records += len(chunk_df)
@@ -245,28 +242,12 @@ class TrainingOptimizedCache:
         }
     
     def _convert_df_to_chunks(self, df: pd.DataFrame) -> List[Dict[str, Any]]:
-        """Convert DataFrame back to segment format"""
-        if 'segment_id' not in df.columns and 'chunk_id' not in df.columns:
-            # Single segment data
-            return [{
-                "segmentId": "segment_0",
-                "data": df.to_dict('records')
-            }]
-        
-        chunks_data = []
-        # Use segment_id if available, otherwise fall back to chunk_id for backward compatibility
-        group_column = 'segment_id' if 'segment_id' in df.columns else 'chunk_id'
-        
-        for segment_id, group in df.groupby(group_column, sort=False):
-            # Remove metadata columns
-            data_df = group.drop(columns=[group_column], errors='ignore')
-            
-            chunks_data.append({
-                "segmentId": str(segment_id),
-                "data": data_df.to_dict('records')
-            })
-        
-        return chunks_data
+        """Convert DataFrame back to chunk format - content agnostic"""
+        # Simply convert entire DataFrame to single chunk - no assumptions about structure
+        return [{
+            "chunkId": "chunk_0",
+            "data": df.to_dict('records')
+        }]
     
     def get_cached_data_chunks(self, cache_key: str, max_age_hours: int = 24) -> Iterator[pd.DataFrame]:
         """
@@ -307,11 +288,7 @@ class TrainingOptimizedCache:
             # Load chunk data only when this iteration is reached
             chunk_df = pd.read_parquet(chunk_path)
             
-            # Remove chunk_id column if present for consistency
-            if 'chunk_id' in chunk_df.columns:
-                chunk_df = chunk_df.drop(columns=['chunk_id'])
-            
-            # Yield entire chunk as one piece
+            # No column filtering - completely content agnostic
             yield chunk_df
             
             # Clean up memory immediately after processing this chunk
