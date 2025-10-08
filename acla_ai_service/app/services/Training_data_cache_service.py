@@ -188,6 +188,13 @@ class TrainingOptimizedCache:
         manifest_file = self.parquet_dir / f"{cache_key}_manifest.txt"
         
         # Read chunk file list directly from manifest
+        try:
+            if not manifest_file.exists():
+                print(f"[ERROR] Manifest file not found for cache key {cache_key}")
+                return
+        except Exception as e:
+            raise RuntimeError(f"Could not access manifest file for {cache_key}: {e}")
+        
         with open(manifest_file, 'r') as f:
             chunk_files = [line.strip() for line in f.readlines() if line.strip()]
         
