@@ -898,10 +898,6 @@ class ExpertImitateLearningService:
         
         print(f"[INFO] Filtering optimal telemetry segments from {len(telemetry_data)} records...")
         print(f"[INFO] Using segment_length={segment_length}, improvement_threshold={improvement_threshold}")
-        print(f"[INFO] Streamlined filtering criteria:")
-        print(f"[INFO] - Velocity alignment: ≥90% = check consistency (80% of points ≥90% alignment), <90% = check improvement")
-        print(f"[INFO] - Speed difference: ≤5km/h = check consistency (75% of points ≤5km/h diff), >5km/h = check improvement") 
-        print(f"[INFO] - Distance to expert: ≤1m = check consistency (80% of points ≤1m), >1m = check improvement")
         print(f"[INFO] - Segment passes if improvement rate ≥{improvement_threshold*100:.0f}% OR consistency rate ≥{improvement_threshold*100:.0f}%")
         
         if len(telemetry_data) < segment_length * 2:

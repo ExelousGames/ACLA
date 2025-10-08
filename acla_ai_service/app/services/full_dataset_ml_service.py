@@ -1111,15 +1111,18 @@ class Full_dataset_TelemetryMLService:
         chunks_processed = 0
         for chunk_df in chunk_iterator:
             chunks_processed += 1
-            print(f"[DEBUG] Processing chunk {chunks_processed}, size: {len(chunk_df) if chunk_df is not None else 0}")
-            
+
             if chunk_df is None or chunk_df.empty:
                 print(f"[DEBUG] Chunk {chunks_processed} is empty, skipping")
                 continue
             
             try:
+                # chunk_df now contains the actual telemetry data (extracted automatically by get_cached_data_chunks)
+                telemetry_df = chunk_df
+                print(f"[DEBUG] Processing {len(telemetry_df)} telemetry records from chunk {chunks_processed}")
+                
                 # Process and filter data
-                processor = FeatureProcessor(chunk_df)
+                processor = FeatureProcessor(telemetry_df)
                 processed_df = processor.general_cleaning_for_analysis()
 
                 if processed_df.empty:
@@ -1541,8 +1544,7 @@ class Full_dataset_TelemetryMLService:
             # Cache using base cache key so transformer can find all segments
             cache_success = await self.data_cache.cache_chunks_streaming(
                 cache_key=base_cache_key,  # Use base key directly with correct parameter name
-                chunks_iterator=segments_generator(),
-                estimated_size_mb=estimated_size_mb
+                chunks_iterator=segments_generator()
             )
             
             if cache_success:

@@ -175,14 +175,14 @@ class TrainingOptimizedCache:
     
     def get_cached_data_chunks(self, cache_key: str) -> Iterator[pd.DataFrame]:
         """
-        Direct iterator that yields DataFrame chunks from cached data - no fallbacks or validation.
-        Pure streaming approach that assumes cache exists and is valid.
+        Direct iterator that yields telemetry DataFrame chunks from cached data.
+        Automatically extracts telemetry data from chunk structure.
         
         Args:
             cache_key: Cache key to get data for
             
         Yields:
-            pd.DataFrame: Individual chunks of cached data (loaded only when accessed)
+            pd.DataFrame: Individual chunks of telemetry data (ready to use)
         """
         # Direct manifest file access - no metadata checks
         manifest_file = self.parquet_dir / f"{cache_key}_manifest.txt"
@@ -198,16 +198,22 @@ class TrainingOptimizedCache:
         with open(manifest_file, 'r') as f:
             chunk_files = [line.strip() for line in f.readlines() if line.strip()]
         
-        # Pure generator - direct chunk iteration with no validation
+        # Pure generator - direct chunk iteration with automatic data extraction
         for chunk_filename in chunk_files:
             chunk_path = self.parquet_dir / chunk_filename
             
-            # Load and yield chunk data directly
+            # Load chunk and extract telemetry data
             chunk_df = pd.read_parquet(chunk_path)
-            yield chunk_df
+            
+            # Extract telemetry data from cached chunk structure
+            # Backend service stores data as: {'chunkId': session_id, 'data': numpy_array_of_telemetry}
+            data_field = chunk_df.iloc[0]['data']
+            telemetry_df = pd.DataFrame(data_field.tolist())
+            
+            yield telemetry_df
             
             # Immediate memory cleanup
-            del chunk_df
+            del chunk_df, telemetry_df
 
     
     def _get_cache_metadata(self, cache_key: str, max_age_hours: int) -> Optional[Dict[str, Any]]:
