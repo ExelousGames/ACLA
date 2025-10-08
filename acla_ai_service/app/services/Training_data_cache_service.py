@@ -71,33 +71,8 @@ class TrainingOptimizedCache:
                 )
             """)
     
-    # Removed _generate_cache_key - cache service now only works with explicit keys
-    
-    def get_cached_chunks(self, cache_key: str, max_age_hours: int = 24) -> Optional[Dict[str, Any]]:
-        """Get cached chunks - agnostic to chunk contents"""
-        # Check for valid cache
-        cached_info = self._get_cache_metadata(cache_key, max_age_hours)
-        if cached_info:
-            try:
-                return self._load_parquet_data(cached_info)
-            except Exception as e:
-                print(f"[WARNING] Cache load failed for {cache_key}: {e}")
-                self._remove_cache_entry(cache_key)
-        
-        return None
-    
-    async def cache_chunks_streaming(self, cache_key: str, chunks_iterator: Iterator[Dict[str, Any]], 
-                               estimated_size_mb: Optional[float] = None) -> bool:
-        """Cache chunk data to Parquet format (training optimized)"""        
-        try:
-            return await self._cache_to_parquet(cache_key, chunks_iterator)
-        except Exception as e:
-            print(f"[ERROR] Failed to cache chunks for {cache_key}: {e}")
-            return False
-    
-    async def _cache_to_parquet(self, cache_key: str, chunks_iterator: Iterator[Dict[str, Any]]) -> bool:
-        """Cache each chunk as a separate Parquet file"""
-        
+    async def cache_chunks_streaming(self, cache_key: str, chunks_iterator: Iterator[Dict[str, Any]]) -> bool:
+        """Cache chunk data to Parquet format (training optimized) - Cache each chunk as a separate Parquet file"""
         try:
             chunk_count = 0
             total_records = 0
@@ -175,7 +150,7 @@ class TrainingOptimizedCache:
             return True
             
         except Exception as e:
-            print(f"[ERROR] Chunk-based parquet caching failed: {e}")
+            print(f"[ERROR] Failed to cache chunks for {cache_key}: {e}")
             # Clean up failed files
             try:
                 manifest_file = self.parquet_dir / f"{cache_key}_manifest.txt"
@@ -190,57 +165,6 @@ class TrainingOptimizedCache:
                 pass
             return False
 
-    def _load_parquet_data(self, cached_info: Dict[str, Any]) -> Dict[str, Any]:
-        """Load data from chunk-based Parquet files using manifest"""
-        manifest_file = Path(cached_info["file_path"])
-        
-        if not manifest_file.exists():
-            raise FileNotFoundError(f"Manifest file not found: {manifest_file}")
-        
-        print(f"[INFO] Loading chunk-based parquet dataset using manifest")
-        
-        # Read manifest to get all chunk files
-        with open(manifest_file, 'r') as f:
-            chunk_files = [line.strip() for line in f.readlines() if line.strip()]
-        
-        if not chunk_files:
-            raise ValueError(f"Empty manifest file: {manifest_file}")
-        
-        # Load each chunk file separately
-        chunks_data = []
-        total_records = 0
-        
-        for chunk_filename in chunk_files:
-            chunk_path = manifest_file.parent / chunk_filename
-            
-            if not chunk_path.exists():
-                print(f"[WARNING] Chunk file not found: {chunk_path}")
-                continue
-            
-            # Load chunk data - completely agnostic approach
-            chunk_df = pd.read_parquet(chunk_path)
-            
-            # Return chunk data as-is without interpretation
-            for _, chunk_row in chunk_df.iterrows():
-                chunk_dict = chunk_row.to_dict()
-                chunks_data.append({
-                    "chunkId": f"chunk_{len(chunks_data)}",
-                    "data": chunk_dict  # Return raw chunk data completely agnostic to content
-                })
-            
-            total_records += len(chunk_df)
-        
-        print(f"[INFO] Loaded {len(chunks_data)} chunks with {total_records} total records")
-        
-        return {
-            "success": True,
-            "chunks": chunks_data,
-            "summary": {
-                "total_chunks_retrieved": len(chunks_data),
-                "total_records": total_records
-            }
-        }
-    
     def _convert_df_to_chunks(self, df: pd.DataFrame) -> List[Dict[str, Any]]:
         """Convert DataFrame back to chunk format - content agnostic"""
         # Simply convert entire DataFrame to single chunk - no assumptions about structure
@@ -427,28 +351,6 @@ class TrainingOptimizedCache:
 # Create shared service instance - clean and simple
 training_cache = TrainingOptimizedCache()
 
-# Backward compatibility aliases
-HybridDataCache = TrainingOptimizedCache
-OptimizedDataCache = TrainingOptimizedCache
-hybrid_data_cache = training_cache
-optimized_data_cache = training_cache
-
 def get_shared_data_cache():
     """Get the shared training-optimized cache instance"""
     return training_cache
-
-async def cache_telemetry_chunks(cache_key: str, chunks_iterator, estimated_size_mb: float = None):
-    """Cache chunks using the training-optimized cache"""
-    return await training_cache.cache_chunks_streaming(
-        cache_key=cache_key,
-        chunks_iterator=chunks_iterator,
-        estimated_size_mb=estimated_size_mb
-    )
-
-def get_cached_telemetry_chunks(cache_key: str, max_age_hours: int = 24):
-    """Get cached chunks"""
-    return training_cache.get_cached_chunks(cache_key, max_age_hours=max_age_hours)
-
-def get_shared_cache_info():
-    """Get training cache information"""
-    return training_cache.get_cache_info()

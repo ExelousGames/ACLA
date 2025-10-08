@@ -198,7 +198,7 @@ class BackendService:
             trackName: Optional track name filter
             carName: Optional car name filter  
             chunk_size: Unused parameter (kept for API compatibility)
-            data_cache: HybridDataCache instance to stream data to (uses shared cache if None)
+            data_cache:  instance to stream data to (uses shared cache if None)
             
         Returns:
             Dictionary with metadata only (no session data in memory)
