@@ -173,49 +173,33 @@ class TrainingOptimizedCache:
             "data": df.to_dict('records')
         }]
     
-    def get_cached_data_chunks(self, cache_key: str, max_age_hours: int = 24) -> Iterator[pd.DataFrame]:
+    def get_cached_data_chunks(self, cache_key: str) -> Iterator[pd.DataFrame]:
         """
-        Get a lazy iterator that yields DataFrame chunks from cached data only when accessed.
-        Each chunk is yielded as a single chunk. Data is loaded on-demand during iteration 
-        to minimize memory usage.
+        Direct iterator that yields DataFrame chunks from cached data - no fallbacks or validation.
+        Pure streaming approach that assumes cache exists and is valid.
         
         Args:
             cache_key: Cache key to get data for
-            max_age_hours: Maximum age of cache to consider valid
             
         Yields:
             pd.DataFrame: Individual chunks of cached data (loaded only when accessed)
         """
-        cached_info = self._get_cache_metadata(cache_key, max_age_hours)
+        # Direct manifest file access - no metadata checks
+        manifest_file = self.parquet_dir / f"{cache_key}_manifest.txt"
         
-        if not cached_info:
-            raise ValueError(f"No cached data found for cache key: {cache_key}")
-        
-        manifest_file = Path(cached_info["file_path"])
-        
-        if not manifest_file.exists():
-            raise FileNotFoundError(f"Manifest file not found: {manifest_file}")
-        
-        # Read manifest to get chunk file list (minimal memory impact)
+        # Read chunk file list directly from manifest
         with open(manifest_file, 'r') as f:
             chunk_files = [line.strip() for line in f.readlines() if line.strip()]
         
-        print(f"[INFO] Lazy iterator ready for {len(chunk_files)} cached chunks")
-        
-        # Generator function - data is only loaded when yielded
+        # Pure generator - direct chunk iteration with no validation
         for chunk_filename in chunk_files:
-            chunk_path = manifest_file.parent / chunk_filename
+            chunk_path = self.parquet_dir / chunk_filename
             
-            if not chunk_path.exists():
-                continue
-            
-            # Load chunk data only when this iteration is reached
+            # Load and yield chunk data directly
             chunk_df = pd.read_parquet(chunk_path)
-            
-            # No column filtering - completely content agnostic
             yield chunk_df
             
-            # Clean up memory immediately after processing this chunk
+            # Immediate memory cleanup
             del chunk_df
 
     
