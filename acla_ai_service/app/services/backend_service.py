@@ -316,7 +316,6 @@ class BackendService:
             cache_success = await data_cache.cache_chunks_streaming(
                 cache_key=cache_key,
                 chunks_iterator=streamer,
-                estimated_size_mb=estimated_size_mb
             )
             
             if not cache_success:
