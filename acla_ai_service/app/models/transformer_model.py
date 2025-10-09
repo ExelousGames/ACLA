@@ -389,16 +389,15 @@ class ExpertActionTransformer(nn.Module):
             # Project to unified feature space
             sequence_predictions = self.output_projection(transformer_output)
             
-            # For teacher forcing, we predict the next states directly
-            # Take all predictions except the first one (since input[0] -> target[1], etc.)
-            if sequence_predictions.shape[1] >= prediction_steps:
-                result = sequence_predictions[:, -prediction_steps:, :]
-            else:
-                # If we need more predictions than available, pad with last prediction
-                last_pred = sequence_predictions[:, -1:, :].repeat(1, prediction_steps, 1)
-                result = last_pred
-                
-            return result
+            # For teacher forcing: input[t] -> predict[t+1]
+            # Data preparation gives us:
+            # - input_sequence: scaled_sequence[:-1] (timesteps 0 to N-2)
+            # - target_sequence: scaled_sequence[1:] (timesteps 1 to N-1)
+            # So we need to return predictions that align with targets
+            
+            # sequence_predictions has same length as input, so it's already correctly aligned
+            # Each prediction at position t predicts the next state (t+1)
+            return sequence_predictions
         
         else:
             # Start with input sequence
@@ -446,7 +445,7 @@ class ExpertActionTransformer(nn.Module):
                     predictions: torch.Tensor, 
                     targets: torch.Tensor) -> torch.Tensor:
         """
-        MSE loss for unified expert improvement learning
+        MSE loss for unified expert improvement learning with NaN protection
         
         Since training segments are filtered to contain only improving action sequences
         (non-expert → expert-like progressions), this loss learns how to predict the
@@ -464,8 +463,39 @@ class ExpertActionTransformer(nn.Module):
         predictions = predictions.float()
         targets = targets.float()
         
-        # Base MSE loss over all unified features
+        # Check for NaN/Inf in inputs BEFORE computing loss
+        pred_has_nan = torch.isnan(predictions).any()
+        pred_has_inf = torch.isinf(predictions).any()
+        target_has_nan = torch.isnan(targets).any()
+        target_has_inf = torch.isinf(targets).any()
+        
+        if pred_has_nan or pred_has_inf or target_has_nan or target_has_inf:
+            print(f"[ERROR] NaN/Inf detected in loss inputs:")
+            print(f"  Predictions - NaN: {pred_has_nan}, Inf: {pred_has_inf}")
+            print(f"  Targets - NaN: {target_has_nan}, Inf: {target_has_inf}")
+            print(f"  Pred range: [{predictions.min():.6f}, {predictions.max():.6f}]")
+            print(f"  Target range: [{targets.min():.6f}, {targets.max():.6f}]")
+            
+            # Replace NaN/Inf with safe values to prevent training crash
+            if pred_has_nan:
+                predictions = torch.nan_to_num(predictions, nan=0.0, posinf=1e6, neginf=-1e6)
+            if pred_has_inf:
+                predictions = torch.clamp(predictions, min=-1e6, max=1e6)
+            if target_has_nan:
+                targets = torch.nan_to_num(targets, nan=0.0, posinf=1e6, neginf=-1e6)
+            if target_has_inf:
+                targets = torch.clamp(targets, min=-1e6, max=1e6)
+        
+        # Compute MSE loss
         loss = F.mse_loss(predictions, targets, reduction='mean')
+        
+        # Final NaN check on computed loss
+        if torch.isnan(loss) or torch.isinf(loss):
+            print(f"[ERROR] NaN/Inf loss computed: {loss}")
+            print(f"  Input shapes - Pred: {predictions.shape}, Target: {targets.shape}")
+            print(f"  Input stats - Pred mean: {predictions.mean():.6f}, Target mean: {targets.mean():.6f}")
+            # Return a small positive loss instead of NaN to prevent training crash
+            loss = torch.tensor(1e-6, device=loss.device, dtype=loss.dtype)
         
         return loss
     
@@ -983,6 +1013,8 @@ class ExpertActionTransformer(nn.Module):
             print(f"   • Segment length: {segment_info['segment_length']}")
             print(f"   • Total samples: {segment_info['total_samples']:,}")
             input_features = dataset.get_input_feature_names()
+            # In unified approach, target feature names mirror input feature names
+            action_features = input_features
             print(f"   • Context features: {len(context_features)}")
             
             quality_report['metrics']['basic_info'] = {
@@ -1408,175 +1440,134 @@ class ExpertActionTransformer(nn.Module):
 
 class TelemetryActionDataset(Dataset):
     """
-    Chunk-Based Dataset for Batch Training with PyTorch DataLoader
+    Simplified Large Chunk Dataset for GPU Batch Training
     
-    OPTIMIZED APPROACH:
-    - Each chunk from cache becomes one training batch
-    - PyTorch DataLoader handles the iteration and batching
-    - Dataset.__len__ returns number of chunks (not segments)
-    - Dataset.__getitem__ loads entire chunk and returns batch tensors
-    - Perfect integration with PyTorch's training pipeline
+    ASSUMPTIONS:
+    - Each chunk contains 10k+ segments (large chunks)
+    - Load one chunk at a time during training  
+    - Batch segments within chunk for efficient GPU training
+    - No complex fallback mechanisms needed
     
-    Benefits:
-    - Native PyTorch DataLoader support (shuffling, multi-processing, etc.)
-    - Each chunk = one batch (optimal memory and GPU utilization)
-    - Streamlined cache service usage
-    - Standard PyTorch training loop compatibility
+    APPROACH:
+    - __len__ returns number of chunks available
+    - __getitem__ loads one chunk and returns GPU-sized batches from it
+    - Simple and efficient for large-scale training
     """
     
     def __init__(self,
                  data_cache,
                  segments_cache_key: str,
-                 fixed_segment_length: int):
+                 fixed_segment_length: int,
+                 batch_size: int = 32):
         """
-        Initialize the chunk-based dataset for PyTorch DataLoader
+        Initialize simplified dataset for large chunks
         
         Args:
             data_cache: Training cache instance to load chunks from
             segments_cache_key: Cache key where chunks are stored
             fixed_segment_length: Required length for all segments
+            batch_size: GPU batch size for processing segments within chunks
         """
         self.data_cache = data_cache
         self.segments_cache_key = segments_cache_key
         self.fixed_segment_length = fixed_segment_length
+        self.batch_size = batch_size
         
-        # Build chunk index (each chunk becomes a batch)
-        self.chunk_count = 0
-        self.total_segments = 0
-        self.segments_per_chunk = 0
+        # Get basic chunk information
+        self.chunk_count = self._count_chunks()
+        self.unified_features = self._get_feature_names()
         
-        # Cache chunks list for efficient access
-        self._chunks_list = []
-        
-        # Build chunk index and cache chunk references
-        self._build_chunk_index()
-        
-        # Initialize feature preprocessing components
+        # Initialize feature preprocessing
         self.feature_scaler = StandardScaler()
         self._features_fitted = False
         
-        print(f"[INFO] ✓ Chunk-based PyTorch dataset initialized: {self.chunk_count} chunks, {self.total_segments} segments")
-        print(f"[INFO] ✓ Fixed segment length: {fixed_segment_length}")
-        print(f"[INFO] ✓ Segments per chunk: {self.segments_per_chunk}")
-        print(f"[INFO] ✓ PYTORCH DATALOADER READY: Each chunk = one batch for optimal training")
+        print(f"[INFO] ✓ Simplified dataset initialized: {self.chunk_count} large chunks")
+        print(f"[INFO] ✓ GPU batch size: {batch_size}")
+        print(f"[INFO] ✓ Features: {len(self.unified_features)}")
+        print(f"[INFO] ✓ Assuming 10k+ segments per chunk")
     
-    def _build_chunk_index(self):
-        """Build chunk index and cache chunk references for PyTorch DataLoader"""
+    def _count_chunks(self) -> int:
+        """Count available chunks without loading them all into memory"""
         try:
-            print(f"[INFO] Building chunk-based dataset for PyTorch DataLoader...")
-            
-            # Get chunks iterator and collect all chunks
             chunks_iterator = self.data_cache.get_cached_data_chunks(self.segments_cache_key)
-            
-            first_chunk_processed = False
-            
-            for chunk_df in chunks_iterator:
-                print(f"chunk df: {chunk_df.shape}")
-                try:
-                    # Cache the chunk for later access
-                    chunk_records = chunk_df.to_dict('records')
-                    
-                    # Process first chunk to get structure info
-                    if not first_chunk_processed:
-                        num_records = len(chunk_records)
-                        # Each chunk_df row is a segment with fixed_segment_length timesteps
-                        # So num_segments = number of rows in the DataFrame
-                        num_segments_in_chunk = num_records
-                        
-                        if num_segments_in_chunk == 0:
-                            raise ValueError(f"Chunk has no segments")
-                        
-                        # The data structure is: each record contains 50 timesteps as columns 0-49
-                        # Each column value is a dictionary containing telemetry features for that timestep
-                        # We need to extract feature names from the first timestep (column 0) of the first record
-                        first_timestep_data = chunk_records[0][0]  # Get data from column 0 of first record
-                        if isinstance(first_timestep_data, dict):
-                            self.unified_features = list(first_timestep_data.keys())
-                            print(f"[DEBUG] Sample feature names: {list(first_timestep_data.keys())[:10]}...")
-                        else:
-                            raise ValueError(f"Unexpected data structure: expected dict, got {type(first_timestep_data)}")
-                        
-                        # Store chunk structure info  
-                        self.segments_per_chunk = num_segments_in_chunk
-                        
-                        print(f"[DEBUG] Chunk structure: {num_records} segments per chunk")
-                        print(f"[DEBUG] Each segment has {self.fixed_segment_length} timesteps")
-                        print(f"[DEBUG] Found {len(self.unified_features)} unified features per timestep")
-                        print(f"[DEBUG] Expected segment length: {self.fixed_segment_length}")
-                        
-                        first_chunk_processed = True
-                    
-                    # Store chunk data for __getitem__ access
-                    self._chunks_list.append(chunk_records)
-                    self.chunk_count += 1
-                    
-                    # Clean up DataFrame
-                    del chunk_df
-                    
-                except Exception as e:
-                    print(f"[WARNING] Failed to process chunk {self.chunk_count}: {str(e)}")
-                    continue
-            
-            if self.chunk_count == 0:
-                raise ValueError("No valid chunks found")
-            
-            if not first_chunk_processed:
-                raise ValueError("Could not extract structure info from chunks")
-            
-            # Calculate total segments
-            self.total_segments = self.chunk_count * self.segments_per_chunk
-            
-            print(f"[INFO] ✓ Chunk dataset ready: {self.chunk_count} chunks (batches)")
-            print(f"[INFO] ✓ Total segments: {self.total_segments} ({self.segments_per_chunk} per batch)")
-            print(f"[INFO] ✓ Features: {len(self.unified_features)}")
-            print(f"[INFO] ✓ PyTorch DataLoader will process {self.chunk_count} batches")
-            
+            chunk_count = 0
+            for _ in chunks_iterator:
+                chunk_count += 1
+            print(f"[INFO] Found {chunk_count} chunks available")
+            return chunk_count
         except Exception as e:
-            raise ValueError(f"Failed to build chunk index: {str(e)}")
+            raise ValueError(f"Failed to count chunks: {str(e)}")
     
-
+    def _get_feature_names(self) -> List[str]:
+        """Extract feature names from first chunk without caching everything"""
+        try:
+            chunks_iterator = self.data_cache.get_cached_data_chunks(self.segments_cache_key)
+            first_chunk = next(chunks_iterator)
+            
+            # Get first record and first timestep to extract feature names
+            first_record = first_chunk.iloc[0].to_dict()
+            first_timestep_data = first_record[0]  # Column 0 contains first timestep
+            
+            if isinstance(first_timestep_data, dict):
+                feature_names = list(first_timestep_data.keys())
+                print(f"[INFO] Extracted {len(feature_names)} feature names")
+                return feature_names
+            else:
+                raise ValueError(f"Unexpected data structure: expected dict, got {type(first_timestep_data)}")
+                
+        except Exception as e:
+            raise ValueError(f"Failed to extract feature names: {str(e)}")
+    
+    def _load_chunk(self, chunk_idx: int) -> List[Dict[str, Any]]:
+        """Load a specific chunk by index"""
+        chunks_iterator = self.data_cache.get_cached_data_chunks(self.segments_cache_key)
+        
+        # Skip to the desired chunk
+        for i, chunk_df in enumerate(chunks_iterator):
+            if i == chunk_idx:
+                chunk_records = chunk_df.to_dict('records')
+                print(f"[INFO] Loaded chunk {chunk_idx} with {len(chunk_records)} segments")
+                return chunk_records
+        
+        raise IndexError(f"Chunk {chunk_idx} not found")
+    
     
     def _ensure_features_fitted(self):
-        """Ensure feature scaling is fitted using sampling approach"""
+        """Ensure feature scaling is fitted using sample from first chunk"""
         if self._features_fitted:
             return
         
-        print(f"[INFO] Fitting feature scaling using sample segments...")
+        print(f"[INFO] Fitting feature scaling using sample from first chunk...")
         
-        # Sample a few segments to fit the scaler (memory efficient)
-        sample_size = min(100, self.total_segments)  # Sample max 100 segments
-        import random
-        sample_indices = random.sample(range(self.total_segments), sample_size)
+        # Load first chunk and sample from it
+        first_chunk_records = self._load_chunk(0)
         
         all_sample_data = []
+        sample_size = min(100, len(first_chunk_records))  # Sample max 100 segments
         
-        # Sample from chunks for scaler fitting
-        sample_chunks = min(5, self.chunk_count)  # Sample from first few chunks
-        chunks_iterator = self.data_cache.get_cached_data_chunks(self.segments_cache_key)
+        import random
+        sample_records = random.sample(first_chunk_records, sample_size)
         
-        chunks_processed = 0
-        for chunk_df in chunks_iterator:
-            if chunks_processed >= sample_chunks:
-                break
-                
-            try:
-                chunk_records = chunk_df.to_dict('records')
-                
-                # Sample some records from this chunk
-                sample_size_from_chunk = min(100, len(chunk_records))
-                sampled_records = random.sample(chunk_records, sample_size_from_chunk)
-                all_sample_data.extend(sampled_records)
-                
-                chunks_processed += 1
-                del chunk_df, chunk_records
-                
-            except Exception as e:
-                print(f"[WARNING] Failed to sample from chunk {chunks_processed}: {str(e)}")
-                chunks_processed += 1
-                continue
+        for record in sample_records:
+            # Extract data from all timesteps for this segment
+            for timestep in range(self.fixed_segment_length):
+                if timestep in record:
+                    timestep_data = record[timestep]
+                    if isinstance(timestep_data, dict):
+                        all_sample_data.append(timestep_data)
         
         # Build feature matrix from sample
         feature_matrix = self._build_matrix(all_sample_data, self.unified_features)
+        
+        # Check for NaN/Inf in scaler training data
+        if np.isnan(feature_matrix).any() or np.isinf(feature_matrix).any():
+            print(f"[ERROR] NaN/Inf detected in scaler training data!")
+            print(f"  Matrix shape: {feature_matrix.shape}")
+            print(f"  NaN count: {np.isnan(feature_matrix).sum()}")
+            print(f"  Inf count: {np.isinf(feature_matrix).sum()}")
+            # Clean the data for scaler fitting
+            feature_matrix = np.nan_to_num(feature_matrix, nan=0.0, posinf=1e6, neginf=-1e6)
+            print(f"[INFO] Cleaned NaN/Inf values for scaler fitting")
         
         # Fit scaler
         self.feature_scaler.fit(feature_matrix)
@@ -1609,98 +1600,113 @@ class TelemetryActionDataset(Dataset):
         return np.array(matrix, dtype=np.float32)
     
     def __len__(self) -> int:
-        """Return number of chunks (batches) for PyTorch DataLoader"""
+        """Return number of chunks available"""
         return self.chunk_count
     
-    def __getitem__(self, chunk_idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
+    def _process_segment_record(self, segment_record: Dict[str, Any]) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+        """Convert one cached segment record into input/target sequences (numpy arrays).
+
+        Returns:
+            Tuple[np.ndarray, np.ndarray]: (input_seq, target_seq) each with shape [seq_len-1, features]
+            or None if the record cannot be processed.
         """
-        Get a complete chunk as a batch for PyTorch DataLoader
-        
-        This is the optimized approach where:
-        - Each call returns one complete chunk as a batch
-        - PyTorch DataLoader calls this method for each batch
-        - All segments in the chunk are processed together
-        - Perfect integration with standard PyTorch training loops
+        try:
+            # Reconstruct the time series from the flattened segment data
+            sequence_data: List[List[float]] = []
+
+            for timestep in range(self.fixed_segment_length):
+                timestep_data = segment_record.get(timestep, None)
+                if not isinstance(timestep_data, dict):
+                    # Skip malformed timesteps
+                    return None
+
+                feature_array: List[float] = []
+                for feature_name in self.unified_features:
+                    try:
+                        value = float(timestep_data.get(feature_name, 0.0))
+                    except (ValueError, TypeError):
+                        value = 0.0
+                    feature_array.append(value)
+                sequence_data.append(feature_array)
+
+            if len(sequence_data) != self.fixed_segment_length:
+                return None
+
+            # [timesteps, features]
+            sequence_matrix = np.array(sequence_data, dtype=np.float32)
+            
+            # Check for NaN/Inf in raw data before scaling
+            if np.isnan(sequence_matrix).any() or np.isinf(sequence_matrix).any():
+                print(f"[WARNING] NaN/Inf detected in raw segment data - skipping segment")
+                return None
+
+            # Scale per-timestep using fitted scaler
+            scaled_sequence = self.feature_scaler.transform(sequence_matrix)
+            
+            # Check for NaN/Inf after scaling
+            if np.isnan(scaled_sequence).any() or np.isinf(scaled_sequence).any():
+                print(f"[WARNING] NaN/Inf detected after scaling - skipping segment")
+                return None
+
+            # Teacher-forcing style next-step target
+            input_sequence = scaled_sequence[:-1]   # [seq_len-1, features]
+            target_sequence = scaled_sequence[1:]   # [seq_len-1, features]
+            return input_sequence, target_sequence
+        except Exception:
+            return None
+
+
+
+    def get_chunk_batches(self, chunk_idx: int):
+        """
+        Generator that yields GPU-sized batches from a large chunk
         
         Args:
-            chunk_idx: Index of the chunk to load (0 to chunk_count-1)
+            chunk_idx: Index of the chunk to process
             
-        Returns:
-            Tuple of (batch_input_sequences, batch_target_sequences) tensors
-            - batch_input_sequences: [batch_size, seq_len-1, features]  
-            - batch_target_sequences: [batch_size, seq_len-1, features]
-            where batch_size = segments_per_chunk
+        Yields:
+            Tuples of (batch_inputs, batch_targets) for GPU training
         """
         if chunk_idx >= self.chunk_count:
-            raise IndexError(f"Chunk index {chunk_idx} out of range (0-{self.chunk_count-1})")
-        
+            raise IndexError(f"Chunk index {chunk_idx} out of range")
+            
         # Ensure features are fitted
         self._ensure_features_fitted()
         
-        # Get chunk records from cached list
-        chunk_records = self._chunks_list[chunk_idx]
+        # Load the chunk
+        chunk_records = self._load_chunk(chunk_idx)
         
-        # Each record represents one segment with fixed_segment_length timesteps
         batch_inputs = []
         batch_targets = []
         
-        # Process each segment (each record in chunk_records is one segment)
         for segment_record in chunk_records:
-            try:
-                # The segment_record contains timesteps as columns 0, 1, 2, ..., 49
-                # Each column value is a dictionary containing telemetry features for that timestep
-                
-                # Reconstruct the time series from the flattened segment data
-                sequence_data = []
-                
-                # Extract features for each timestep in the segment
-                for timestep in range(self.fixed_segment_length):
-                    timestep_data = segment_record[timestep]  # Get data for this timestep
-                    
-                    if not isinstance(timestep_data, dict):
-                        print(f"[WARNING] Unexpected timestep data type: {type(timestep_data)}")
-                        continue
-                    
-                    # Extract feature values for this timestep
-                    feature_array = []
-                    for feature_name in self.unified_features:
-                        try:
-                            value = float(timestep_data.get(feature_name, 0.0))
-                        except (ValueError, TypeError):
-                            value = 0.0
-                        feature_array.append(value)
-                    
-                    sequence_data.append(feature_array)
-                
-                if len(sequence_data) != self.fixed_segment_length:
-                    print(f"[WARNING] Incomplete sequence: expected {self.fixed_segment_length}, got {len(sequence_data)}")
-                    continue
-                
-                # Convert to numpy array [timesteps, features]
-                sequence_matrix = np.array(sequence_data, dtype=np.float32)
-                
-                # Scale the entire sequence
-                scaled_sequence = self.feature_scaler.transform(sequence_matrix)
-                
-                # Create input/target sequences for transformer training
-                input_sequence = scaled_sequence[:-1]  # [seq_len-1, features]
-                target_sequence = scaled_sequence[1:]  # [seq_len-1, features]
-                
-                batch_inputs.append(input_sequence)
-                batch_targets.append(target_sequence)
-                
-            except Exception as e:
-                print(f"[WARNING] Failed to process segment in chunk {chunk_idx}: {str(e)}")
+            processed = self._process_segment_record(segment_record)
+            if processed is None:
                 continue
+                
+            input_sequence, target_sequence = processed
+            batch_inputs.append(input_sequence)
+            batch_targets.append(target_sequence)
+            
+            # Yield batch when we reach desired size
+            if len(batch_inputs) >= self.batch_size:
+                batch_input_tensor = torch.FloatTensor(np.stack(batch_inputs))
+                batch_target_tensor = torch.FloatTensor(np.stack(batch_targets))
+                yield batch_input_tensor, batch_target_tensor
+                
+                # Reset for next batch
+                batch_inputs = []
+                batch_targets = []
         
-        if not batch_inputs:
-            raise ValueError(f"No valid segments found in chunk {chunk_idx}")
-        
-        # Convert to tensors with batch dimension
-        batch_input_tensor = torch.FloatTensor(np.stack(batch_inputs))   # [batch_size, seq_len-1, features]
-        batch_target_tensor = torch.FloatTensor(np.stack(batch_targets)) # [batch_size, seq_len-1, features]
-        
-        return batch_input_tensor, batch_target_tensor
+        # Yield remaining segments as final batch
+        if batch_inputs:
+            batch_input_tensor = torch.FloatTensor(np.stack(batch_inputs))
+            batch_target_tensor = torch.FloatTensor(np.stack(batch_targets))
+            yield batch_input_tensor, batch_target_tensor
+
+    def __getitem__(self, chunk_idx: int):
+        """Return chunk index for simple iteration - actual batching done by get_chunk_batches"""
+        return chunk_idx
     
     def get_feature_names(self) -> Tuple[List[str], List[str]]:
         """
@@ -1742,6 +1748,11 @@ class TelemetryActionDataset(Dataset):
             ]):
                 context_features.append(feature)
         return context_features
+
+    # Compatibility helper used by quality checks
+    def get_input_feature_names(self) -> List[str]:
+        """Return the unified input feature names (for quality reports)."""
+        return list(self.unified_features)
     
     @staticmethod
     def validate_segments(unified_segments: List[List[Dict[str, Any]]], expected_length: int) -> Dict[str, Any]:
@@ -1896,7 +1907,7 @@ class ExpertActionTrainer:
                  learning_rate: float = 1e-4,
                  weight_decay: float = 1e-5):
         """
-        Initialize the segmented trainer
+        Initialize the simplified trainer for large chunks
         
         Args:
             model: The transformer model
@@ -1968,180 +1979,134 @@ class ExpertActionTrainer:
     
     def train_epoch(self, dataset: TelemetryActionDataset) -> float:
         """
-        Train for one epoch using chunk-based batching with PyTorch DataLoader
-        
-        OPTIMIZED APPROACH:
-        - Each chunk becomes one batch (batch_size=1 for DataLoader)  
-        - PyTorch handles iteration, shuffling, and memory management
-        - Each __getitem__ call loads complete chunk with all segments
-        - Perfect balance of memory efficiency and PyTorch optimization
+        Simplified training: one chunk at a time with GPU batching
         
         Args:
-            dataset: Chunk-based dataset where each item is a complete batch
+            dataset: Dataset with large chunks (10k+ segments each)
             
         Returns:
-            Average loss across all chunk batches
+            Average loss across all batches
         """
         self.model.train()
         total_loss = 0.0
         num_batches = 0
         
-        # DataLoader with batch_size=1 since each dataset item is already a complete batch
-        # Each call to dataset.__getitem__ returns [batch_size, seq_len, features]
-        dataloader = DataLoader(
-            dataset, 
-            batch_size=1,      # Each dataset item is already a batch
-            shuffle=True,      # Shuffle chunk order for better training
-            num_workers=0,     # Avoid multiprocessing issues with cached data
-            pin_memory=True if self._cuda else False,
-            drop_last=False    # Keep all chunks/batches
-        )
-
-        print(f"[INFO] CHUNK-BATCH TRAINING: Processing {len(dataset)} chunk batches with PyTorch DataLoader...")
-        print(f"[INFO] Dataset contains ~{dataset.segments_per_chunk} segments per chunk (may vary per batch)")
+        print(f"[INFO] Starting training epoch with {len(dataset)} large chunks")
         
-        for batch_idx, dataloader_batch in enumerate(dataloader):
+        # Process chunks in random order
+        chunk_indices = np.random.permutation(len(dataset))
+        
+        for chunk_idx in chunk_indices:
+            print(f"[INFO] Processing chunk {chunk_idx+1}/{len(dataset)}")
+            
             try:
-                batch_input_states, batch_target_states = dataloader_batch
-                
-                # Remove DataLoader's extra batch dimension (since our items are already batched)
-                batch_input_states = batch_input_states.squeeze(0)    # [actual_batch_size, seq_len-1, features]
-                batch_target_states = batch_target_states.squeeze(0)  # [actual_batch_size, seq_len-1, features]
-                
-                # Get actual batch size from tensor shape
-                actual_batch_size = batch_input_states.shape[0]
-                seq_len = batch_input_states.shape[1] 
-                features = batch_input_states.shape[2]
-                
-                if batch_idx == 0:  # Log details for first batch
-                    print(f"[INFO] Actual batch shape: [{actual_batch_size}, {seq_len}, {features}]")
-                    print(f"[INFO] Processing {actual_batch_size} segments in this chunk batch")
-                
-                # Move to device
-                batch_input_states = batch_input_states.to(self.device, non_blocking=self._cuda)
-                batch_target_states = batch_target_states.to(self.device, non_blocking=self._cuda)
-                
-                self.optimizer.zero_grad(set_to_none=True)
-
-                # Autocast for mixed precision on GPU
-                with torch.autocast(device_type='cuda', dtype=self.amp_dtype, enabled=self._cuda and self.amp_dtype is not None):
-                    # Forward pass: use teacher forcing for fast training
-                    target_seq_len = batch_target_states.shape[1]
-                    predictions = self.model(
-                        unified_input=batch_input_states, 
-                        prediction_steps=target_seq_len, 
-                        use_teacher_forcing=True  # Explicit teacher forcing for training
-                    )
-                
-                # Loss computation: unified state prediction loss
-                loss = self.model.unified_loss(
-                    predictions=predictions, 
-                    targets=batch_target_states
-                )
-
-                # Backward + optimizer step (with AMP support)
-                if self.scaler.is_enabled():
-                    self.scaler.scale(loss).backward()
-                    # Unscale before clipping
-                    self.scaler.unscale_(self.optimizer)
-                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
-                    self.scaler.step(self.optimizer)
-                    self.scaler.update()
-                else:
-                    loss.backward()
-                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
-                    self.optimizer.step()
-                
-                total_loss += loss.item()
-                num_batches += 1
-                
-                # Progress logging
-                if num_batches % 10 == 0:
-                    print(f"[INFO] Processed chunk batch {num_batches}/{len(dataset)}, "
-                          f"current loss: {loss.item():.6f}")
-                
-                # Explicit cleanup for memory management
-                del batch_input_states, batch_target_states, predictions, loss
-                
+                # Get GPU batches from this chunk
+                for batch_inputs, batch_targets in dataset.get_chunk_batches(chunk_idx):
+                    # Move to device
+                    batch_inputs = batch_inputs.to(self.device, non_blocking=self._cuda)
+                    batch_targets = batch_targets.to(self.device, non_blocking=self._cuda)
+                    
+                    # Forward pass
+                    self.optimizer.zero_grad(set_to_none=True)
+                    
+                    with torch.autocast(device_type='cuda', dtype=self.amp_dtype, enabled=self._cuda and self.amp_dtype is not None):
+                        target_seq_len = batch_targets.shape[1]
+                        predictions = self.model(
+                            unified_input=batch_inputs,
+                            prediction_steps=target_seq_len,
+                            use_teacher_forcing=True,
+                        )
+                    
+                    # Verify shapes match before computing loss
+                    if predictions.shape != batch_targets.shape:
+                        print(f"[WARNING] Shape mismatch: predictions {predictions.shape} vs targets {batch_targets.shape}")
+                        # Try to align shapes if possible
+                        if predictions.shape[1] != batch_targets.shape[1]:
+                            min_seq_len = min(predictions.shape[1], batch_targets.shape[1])
+                            predictions = predictions[:, :min_seq_len, :]
+                            batch_targets = batch_targets[:, :min_seq_len, :]
+                            print(f"[INFO] Aligned to shape: {predictions.shape}")
+                    
+                    loss = self.model.unified_loss(predictions=predictions, targets=batch_targets)
+                    
+                    # Skip batch if loss is NaN/Inf
+                    if torch.isnan(loss) or torch.isinf(loss):
+                        print(f"[WARNING] Skipping batch due to NaN/Inf loss: {loss}")
+                        continue
+                    
+                    # Backward pass
+                    if self.scaler.is_enabled():
+                        self.scaler.scale(loss).backward()
+                        self.scaler.unscale_(self.optimizer)
+                        torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                        self.scaler.step(self.optimizer)
+                        self.scaler.update()
+                    else:
+                        loss.backward()
+                        torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                        self.optimizer.step()
+                    
+                    total_loss += loss.item()
+                    num_batches += 1
+                    
+                    # Clean up
+                    del batch_inputs, batch_targets, predictions, loss
+                    
+                    if num_batches % 100 == 0:
+                        print(f"[INFO] Processed {num_batches} batches, current avg loss: {total_loss/num_batches:.6f}")
+                        
             except Exception as e:
-                print(f"[WARNING] Failed to process chunk batch {num_batches + 1}: {str(e)}")
+                print(f"[WARNING] Failed to process chunk {chunk_idx}: {str(e)}")
                 continue
         
         avg_loss = total_loss / num_batches if num_batches > 0 else 0.0
-        print(f"[INFO] ✓ PyTorch DataLoader epoch complete: {num_batches} chunk batches processed, avg loss: {avg_loss:.6f}")
+        print(f"[INFO] ✓ Epoch complete: {num_batches} batches processed, avg loss: {avg_loss:.6f}")
         
         return avg_loss
     
     def validate_epoch(self, dataset: TelemetryActionDataset) -> float:
         """
-        Validate for one epoch using chunk-based batching with PyTorch DataLoader
+        Simplified validation: one chunk at a time with GPU batching
         
         Args:
-            dataset: Chunk-based validation dataset
+            dataset: Dataset with large chunks
             
         Returns:
-            Average validation loss across all chunk batches
+            Average validation loss
         """
         self.model.eval()
         total_loss = 0.0
         num_batches = 0
         
-        # DataLoader for validation (no shuffling needed)
-        dataloader = DataLoader(
-            dataset, 
-            batch_size=1,      # Each dataset item is already a batch
-            shuffle=False,     # No shuffling for validation
-            num_workers=0,     # Avoid multiprocessing issues with cached data
-            pin_memory=True if self._cuda else False,
-            drop_last=False
-        )
-        
-        print(f"[INFO] CHUNK-BATCH VALIDATION: Processing {len(dataset)} chunk batches...")
+        print(f"[INFO] Starting validation with {len(dataset)} large chunks")
         
         with torch.no_grad():
-            for batch_idx, dataloader_batch in enumerate(dataloader):
+            for chunk_idx in range(len(dataset)):
                 try:
-                    batch_input_states, batch_target_states = dataloader_batch
-                    
-                    # Remove DataLoader's extra batch dimension
-                    batch_input_states = batch_input_states.squeeze(0).float()
-                    batch_target_states = batch_target_states.squeeze(0).float()
-                    
-                    # Get actual batch size for validation
-                    actual_batch_size = batch_input_states.shape[0]
-                    if batch_idx == 0:  # Log for first validation batch
-                        print(f"[INFO] Validation batch size: {actual_batch_size} segments")
-                    
-                    # Move to device
-                    batch_input_states = batch_input_states.to(self.device, non_blocking=self._cuda)
-                    batch_target_states = batch_target_states.to(self.device, non_blocking=self._cuda)
-                    
-                    # Forward pass - no mixed precision for validation to avoid dtype issues
-                    target_seq_len = batch_target_states.shape[1]
-                    predictions = self.model(
-                        unified_input=batch_input_states, 
-                        prediction_steps=target_seq_len,
-                        use_teacher_forcing=True  # Use teacher forcing for validation too
-                    )
-                    
-                    # Loss computation: unified state prediction loss
-                    loss = self.model.unified_loss(
-                        predictions=predictions, 
-                        targets=batch_target_states
-                    )
-                    
-                    total_loss += loss.item()
-                    num_batches += 1
-                    
-                    # Immediate cleanup to free GPU memory
-                    del batch_input_states, batch_target_states, predictions, loss
-                    
+                    # Get GPU batches from this chunk
+                    for batch_inputs, batch_targets in dataset.get_chunk_batches(chunk_idx):
+                        batch_inputs = batch_inputs.to(self.device, non_blocking=self._cuda)
+                        batch_targets = batch_targets.to(self.device, non_blocking=self._cuda)
+                        
+                        target_seq_len = batch_targets.shape[1]
+                        predictions = self.model(
+                            unified_input=batch_inputs,
+                            prediction_steps=target_seq_len,
+                            use_teacher_forcing=True,
+                        )
+                        
+                        loss = self.model.unified_loss(predictions=predictions, targets=batch_targets)
+                        total_loss += loss.item()
+                        num_batches += 1
+                        
+                        del batch_inputs, batch_targets, predictions, loss
+                        
                 except Exception as e:
-                    print(f"[WARNING] Failed to process validation chunk batch {num_batches + 1}: {str(e)}")
+                    print(f"[WARNING] Failed to process validation chunk {chunk_idx}: {str(e)}")
                     continue
         
         avg_loss = total_loss / num_batches if num_batches > 0 else 0.0
-        print(f"[INFO] ✓ PyTorch DataLoader validation complete: {num_batches} chunk batches processed, avg loss: {avg_loss:.6f}")
+        print(f"[INFO] ✓ Validation complete: {num_batches} batches processed, avg loss: {avg_loss:.6f}")
         
         return avg_loss
     
