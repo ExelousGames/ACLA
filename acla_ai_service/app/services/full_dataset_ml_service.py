@@ -1355,11 +1355,21 @@ class Full_dataset_TelemetryMLService:
             validation_errors = []
             for idx in sample_indices:
                 try:
-                    # This will load the segment and validate its length
-                    input_seq, target_seq = dataset[idx]
+                    # This will load the chunk and validate its structure
+                    batch_input_seq, batch_target_seq = dataset[idx]
+                    
+                    # The returned tensors have shape [batch_size, seq_len, features]
+                    batch_size, seq_len, num_features = batch_input_seq.shape
                     expected_seq_len = fixed_segment_length - 1  # Due to input/target shift
-                    if len(input_seq) != expected_seq_len or len(target_seq) != expected_seq_len:
-                        validation_errors.append(f"Segment {idx}: sequence length mismatch")
+                    
+                    print(f"[DEBUG] Chunk {idx}: batch_size={batch_size}, seq_len={seq_len}, features={num_features}")
+                    print(f"[DEBUG] Expected seq_len={expected_seq_len}")
+                    
+                    if seq_len != expected_seq_len:
+                        validation_errors.append(f"Segment {idx}: sequence length mismatch (got {seq_len}, expected {expected_seq_len})")
+                    if batch_target_seq.shape != batch_input_seq.shape:
+                        validation_errors.append(f"Segment {idx}: input/target shape mismatch")
+                        
                 except Exception as e:
                     validation_errors.append(f"Segment {idx}: {str(e)}")
             
@@ -1528,8 +1538,9 @@ class Full_dataset_TelemetryMLService:
                 """Generator for caching - store complete chunk with segments intact"""
                 # Package segments as a complete chunk - cache service treats this as opaque data
                 chunk_data = {
+                    "chunkId": f"batch_{batch_number}",  # Use chunkId format expected by cache service
+                    "data": segments_batch,  # Store segments as data payload
                     "batch_number": batch_number,
-                    "segments": segments_batch,  # Complete segments as nested lists
                     "segment_count": len(segments_batch),
                     "total_records": sum(len(segment) for segment in segments_batch)
                 }
@@ -1541,9 +1552,9 @@ class Full_dataset_TelemetryMLService:
             total_records = sum(len(segment) for segment in segments_batch)
             estimated_size_mb = (total_records * 60) / (1024 * 1024)  # 60 bytes per enriched record
             
-            # Cache using base cache key so transformer can find all segments
+            # Cache using the proper cache service method with correct parameters
             cache_success = await self.data_cache.cache_chunks_streaming(
-                cache_key=base_cache_key,  # Use base key directly with correct parameter name
+                cache_key=base_cache_key,
                 chunks_iterator=segments_generator()
             )
             
@@ -1651,7 +1662,7 @@ class Full_dataset_TelemetryMLService:
         
         processed_chunks = 0
         total_segments_cached = 0
-        segments_per_cache = 10000  # Number of segments per cache batch
+        segments_per_cache = 128  # Number of segments per cache batch
         
         current_segment_batch = []
         cache_batch_number = 0

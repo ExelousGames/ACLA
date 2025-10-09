@@ -1471,6 +1471,7 @@ class TelemetryActionDataset(Dataset):
             first_chunk_processed = False
             
             for chunk_df in chunks_iterator:
+                print(f"chunk df: {chunk_df.shape}")
                 try:
                     # Cache the chunk for later access
                     chunk_records = chunk_df.to_dict('records')
@@ -1478,19 +1479,30 @@ class TelemetryActionDataset(Dataset):
                     # Process first chunk to get structure info
                     if not first_chunk_processed:
                         num_records = len(chunk_records)
-                        num_segments_in_chunk = num_records // self.fixed_segment_length
+                        # Each chunk_df row is a segment with fixed_segment_length timesteps
+                        # So num_segments = number of rows in the DataFrame
+                        num_segments_in_chunk = num_records
                         
                         if num_segments_in_chunk == 0:
-                            raise ValueError(f"Chunk has insufficient records ({num_records}) for fixed segment length ({self.fixed_segment_length})")
+                            raise ValueError(f"Chunk has no segments")
                         
-                        # Extract feature names from first record
-                        self.unified_features = list(chunk_records[0].keys())
+                        # The data structure is: each record contains 50 timesteps as columns 0-49
+                        # Each column value is a dictionary containing telemetry features for that timestep
+                        # We need to extract feature names from the first timestep (column 0) of the first record
+                        first_timestep_data = chunk_records[0][0]  # Get data from column 0 of first record
+                        if isinstance(first_timestep_data, dict):
+                            self.unified_features = list(first_timestep_data.keys())
+                            print(f"[DEBUG] Sample feature names: {list(first_timestep_data.keys())[:10]}...")
+                        else:
+                            raise ValueError(f"Unexpected data structure: expected dict, got {type(first_timestep_data)}")
                         
                         # Store chunk structure info  
                         self.segments_per_chunk = num_segments_in_chunk
                         
-                        print(f"[DEBUG] Chunk structure: {num_records} records -> {num_segments_in_chunk} segments per chunk")
-                        print(f"[DEBUG] Found {len(self.unified_features)} unified features")
+                        print(f"[DEBUG] Chunk structure: {num_records} segments per chunk")
+                        print(f"[DEBUG] Each segment has {self.fixed_segment_length} timesteps")
+                        print(f"[DEBUG] Found {len(self.unified_features)} unified features per timestep")
+                        print(f"[DEBUG] Expected segment length: {self.fixed_segment_length}")
                         
                         first_chunk_processed = True
                     
@@ -1628,33 +1640,58 @@ class TelemetryActionDataset(Dataset):
         # Get chunk records from cached list
         chunk_records = self._chunks_list[chunk_idx]
         
-        # Split records into segments and create batch
+        # Each record represents one segment with fixed_segment_length timesteps
         batch_inputs = []
         batch_targets = []
         
-        num_segments = len(chunk_records) // self.fixed_segment_length
-        
-        for segment_idx in range(num_segments):
-            start_idx = segment_idx * self.fixed_segment_length
-            end_idx = start_idx + self.fixed_segment_length
-            
-            if end_idx > len(chunk_records):
-                continue  # Skip incomplete segments
-            
-            segment_data = chunk_records[start_idx:end_idx]
-            
-            # Build feature matrix for this segment
-            feature_matrix = self._build_matrix(segment_data, self.unified_features)
-            
-            # Scale features
-            scaled_features = self.feature_scaler.transform(feature_matrix)
-            
-            # Create input/target sequences
-            input_sequence = scaled_features[:-1]  # [seq_len-1, features]
-            target_sequence = scaled_features[1:]  # [seq_len-1, features]
-            
-            batch_inputs.append(input_sequence)
-            batch_targets.append(target_sequence)
+        # Process each segment (each record in chunk_records is one segment)
+        for segment_record in chunk_records:
+            try:
+                # The segment_record contains timesteps as columns 0, 1, 2, ..., 49
+                # Each column value is a dictionary containing telemetry features for that timestep
+                
+                # Reconstruct the time series from the flattened segment data
+                sequence_data = []
+                
+                # Extract features for each timestep in the segment
+                for timestep in range(self.fixed_segment_length):
+                    timestep_data = segment_record[timestep]  # Get data for this timestep
+                    
+                    if not isinstance(timestep_data, dict):
+                        print(f"[WARNING] Unexpected timestep data type: {type(timestep_data)}")
+                        continue
+                    
+                    # Extract feature values for this timestep
+                    feature_array = []
+                    for feature_name in self.unified_features:
+                        try:
+                            value = float(timestep_data.get(feature_name, 0.0))
+                        except (ValueError, TypeError):
+                            value = 0.0
+                        feature_array.append(value)
+                    
+                    sequence_data.append(feature_array)
+                
+                if len(sequence_data) != self.fixed_segment_length:
+                    print(f"[WARNING] Incomplete sequence: expected {self.fixed_segment_length}, got {len(sequence_data)}")
+                    continue
+                
+                # Convert to numpy array [timesteps, features]
+                sequence_matrix = np.array(sequence_data, dtype=np.float32)
+                
+                # Scale the entire sequence
+                scaled_sequence = self.feature_scaler.transform(sequence_matrix)
+                
+                # Create input/target sequences for transformer training
+                input_sequence = scaled_sequence[:-1]  # [seq_len-1, features]
+                target_sequence = scaled_sequence[1:]  # [seq_len-1, features]
+                
+                batch_inputs.append(input_sequence)
+                batch_targets.append(target_sequence)
+                
+            except Exception as e:
+                print(f"[WARNING] Failed to process segment in chunk {chunk_idx}: {str(e)}")
+                continue
         
         if not batch_inputs:
             raise ValueError(f"No valid segments found in chunk {chunk_idx}")
@@ -1961,15 +1998,24 @@ class ExpertActionTrainer:
         )
 
         print(f"[INFO] CHUNK-BATCH TRAINING: Processing {len(dataset)} chunk batches with PyTorch DataLoader...")
-        print(f"[INFO] Expected ~{dataset.segments_per_chunk} segments per chunk batch")
+        print(f"[INFO] Dataset contains ~{dataset.segments_per_chunk} segments per chunk (may vary per batch)")
         
         for batch_idx, dataloader_batch in enumerate(dataloader):
             try:
                 batch_input_states, batch_target_states = dataloader_batch
                 
                 # Remove DataLoader's extra batch dimension (since our items are already batched)
-                batch_input_states = batch_input_states.squeeze(0)    # [segments_per_chunk, seq_len-1, features]
-                batch_target_states = batch_target_states.squeeze(0)  # [segments_per_chunk, seq_len-1, features]
+                batch_input_states = batch_input_states.squeeze(0)    # [actual_batch_size, seq_len-1, features]
+                batch_target_states = batch_target_states.squeeze(0)  # [actual_batch_size, seq_len-1, features]
+                
+                # Get actual batch size from tensor shape
+                actual_batch_size = batch_input_states.shape[0]
+                seq_len = batch_input_states.shape[1] 
+                features = batch_input_states.shape[2]
+                
+                if batch_idx == 0:  # Log details for first batch
+                    print(f"[INFO] Actual batch shape: [{actual_batch_size}, {seq_len}, {features}]")
+                    print(f"[INFO] Processing {actual_batch_size} segments in this chunk batch")
                 
                 # Move to device
                 batch_input_states = batch_input_states.to(self.device, non_blocking=self._cuda)
@@ -2060,6 +2106,11 @@ class ExpertActionTrainer:
                     # Remove DataLoader's extra batch dimension
                     batch_input_states = batch_input_states.squeeze(0).float()
                     batch_target_states = batch_target_states.squeeze(0).float()
+                    
+                    # Get actual batch size for validation
+                    actual_batch_size = batch_input_states.shape[0]
+                    if batch_idx == 0:  # Log for first validation batch
+                        print(f"[INFO] Validation batch size: {actual_batch_size} segments")
                     
                     # Move to device
                     batch_input_states = batch_input_states.to(self.device, non_blocking=self._cuda)
