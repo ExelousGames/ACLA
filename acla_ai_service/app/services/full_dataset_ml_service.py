@@ -992,7 +992,7 @@ class Full_dataset_TelemetryMLService:
             max_memory_records=100000
         )
 
-        segment_length = 50  # Default segment length for transformer training
+        segment_length = 120  # Default segment length for transformer training
         segments_cache_key = None
         transformer_results = {"success": False, "error": "Training not started"}  # Initialize with failure
         
