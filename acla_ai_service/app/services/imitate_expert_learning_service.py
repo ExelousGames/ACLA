@@ -898,8 +898,7 @@ class ExpertImitateLearningService:
         
         print(f"[INFO] Filtering optimal telemetry segments from {len(telemetry_data)} records...")
         print(f"[INFO] Using segment_length={segment_length}, improvement_threshold={improvement_threshold}")
-        print(f"[INFO] - Segment passes if improvement rate ≥{improvement_threshold*100:.0f}% OR consistency rate ≥{improvement_threshold*100:.0f}%")
-        
+
         if len(telemetry_data) < segment_length * 2:
             raise ValueError(f"[WARNING] Insufficient data for segment analysis. Need at least {segment_length * 2} records, got {len(telemetry_data)}")
         
@@ -968,7 +967,7 @@ class ExpertImitateLearningService:
             if improvement_scores['overall_improvement_rate'] >= improvement_threshold:
                 segment_passes = True
                 # Use improvement rate criteria
-            elif improvement_scores['overall_consistency_rate'] >= 0.8:
+            elif improvement_scores['overall_consistency_rate'] >= 0.90:
                 segment_passes = True
                 # Use consistency rate criteria
             

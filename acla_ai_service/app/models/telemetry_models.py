@@ -1122,8 +1122,9 @@ class FeatureProcessor:
             if valid_ratio < 0.95:
                 continue
 
-            # Lap time: take last current_time (milliseconds)
-            lap_time_ms = lap_df['Graphics_current_time'].iloc[-1]
+            # Lap time: take maximum current_time (milliseconds) to avoid next lap contamination
+            # Graphics_current_time represents current lap time, so max should be the actual lap time
+            lap_time_ms = lap_df['Graphics_current_time'].max()
             if lap_time_ms <= 0:
                 continue
 

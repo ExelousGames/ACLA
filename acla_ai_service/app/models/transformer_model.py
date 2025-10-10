@@ -1047,24 +1047,37 @@ class ExpertActionTransformer(nn.Module):
             
             print(f"   • Analyzing {sample_size} sample segments for quality...")
             
-            # Collect sample data
+            # Collect sample data using chunk-based approach
             sample_inputs = []
             sample_targets = []
             nan_count = 0
             inf_count = 0
             
-            for idx in sample_indices:
+            # Sample from the first few chunks instead of using dataset[idx]
+            sample_chunks = min(3, len(sample_indices))  # Use first 3 chunks for quality check
+            batches_sampled = 0
+            
+            for chunk_idx in range(sample_chunks):
                 try:
-                    input_seq, target_seq = dataset[idx]
-                    sample_inputs.append(input_seq)
-                    sample_targets.append(target_seq)
-                    
-                    # Check for NaN/Inf in this sample
-                    nan_count += torch.isnan(input_seq).sum().item() + torch.isnan(target_seq).sum().item()
-                    inf_count += torch.isinf(input_seq).sum().item() + torch.isinf(target_seq).sum().item()
+                    batch_count = 0
+                    # Get a few batches from each chunk for quality assessment
+                    for input_batch, target_batch in dataset.get_chunk_batches(chunk_idx):
+                        sample_inputs.append(input_batch)
+                        sample_targets.append(target_batch)
+                        
+                        # Check for NaN/Inf in this batch
+                        nan_count += torch.isnan(input_batch).sum().item() + torch.isnan(target_batch).sum().item()
+                        inf_count += torch.isinf(input_batch).sum().item() + torch.isinf(target_batch).sum().item()
+                        
+                        batch_count += 1
+                        batches_sampled += 1
+                        
+                        # Only sample a few batches per chunk for efficiency
+                        if batch_count >= 2:
+                            break
                     
                 except Exception as e:
-                    quality_report['critical_issues'].append(f"Failed to load segment {idx}: {str(e)}")
+                    quality_report['critical_issues'].append(f"Failed to load chunk {chunk_idx}: {str(e)}")
             
             if not sample_inputs:
                 quality_report['critical_issues'].append("Failed to load any sample segments")
@@ -1725,11 +1738,10 @@ class TelemetryActionDataset(Dataset):
     
     def get_segment_info(self) -> Dict[str, Any]:
         return {
-            "num_segments": self.total_segments,
+            "num_chunks": self.chunk_count,
             "segment_length": self.fixed_segment_length,
             "sequence_length": self.fixed_segment_length - 1,  # Input/target sequences are segment_length - 1
             "total_features": len(self.unified_features),
-            "total_samples": self.total_segments * (self.fixed_segment_length - 1),  # Total training samples
             "feature_names": self.unified_features,
             "tensor_shapes": {
                 "input": [self.fixed_segment_length - 1, len(self.unified_features)],
@@ -1790,64 +1802,7 @@ class TelemetryActionDataset(Dataset):
             }
         }
     
-    @staticmethod
-    def validate_segments(unified_segments: List[List[Dict[str, Any]]],
-                         expected_length: int) -> Dict[str, Any]:
-        """
-        Validate unified segment data before creating dataset
-        
-        Args:
-            unified_segments: List of unified segments to validate
-            expected_length: Expected length for all segments
-            
-        Returns:
-            Dict with validation results and statistics
-        """
-        validation_result = {
-            'is_valid': True,
-            'num_segments': len(unified_segments),
-            'expected_length': expected_length,
-            'errors': [],
-            'warnings': [],
-            'statistics': {
-                'segment_lengths': [],
-                'valid_segments': 0,
-                'invalid_segments': 0
-            }
-        }
-        
-        if len(unified_segments) == 0:
-            validation_result['is_valid'] = False
-            validation_result['errors'].append("No segments provided")
-            return validation_result
-        
-        # Validate each segment
-        for i, segment in enumerate(unified_segments):
-            seg_len = len(segment)
-            validation_result['statistics']['segment_lengths'].append(seg_len)
-            
-            segment_valid = True
-            
-            if seg_len != expected_length:
-                validation_result['errors'].append(f"Segment {i}: length {seg_len} != expected {expected_length}")
-                segment_valid = False
-            
-            if segment_valid:
-                validation_result['statistics']['valid_segments'] += 1
-            else:
-                validation_result['statistics']['invalid_segments'] += 1
-                validation_result['is_valid'] = False
-        
-        # Add summary statistics
-        if validation_result['statistics']['segment_lengths']:
-            lengths = validation_result['statistics']['segment_lengths']
-            
-            validation_result['statistics'].update({
-                'length_range': (min(lengths), max(lengths)),
-                'all_segments_same_length': len(set(lengths)) == 1,
-            })
-        
-        return validation_result
+
 
 class ExpertActionTrainer:
     """
@@ -2183,8 +2138,8 @@ class ExpertActionTrainer:
         
         # Display dataset and contextual feature information
         segment_info = train_dataset.get_segment_info()
-        print(f"[INFO] Training dataset: {segment_info['num_segments']} segments, "
-              f"each with length {segment_info['segment_length']}")
+        print(f"[INFO] Training dataset: {segment_info['num_chunks']} chunks, "
+              f"each segment with length {segment_info['segment_length']}")
         
         context_feature_names = train_dataset.get_context_feature_names()
         if context_feature_names:
@@ -2378,10 +2333,10 @@ class ExpertActionTrainer:
     
     def evaluate(self, dataset: TelemetryActionDataset) -> Dict[str, float]:
         """
-        Evaluate the model on segmented test data using efficient batch processing
+        Evaluate the model on chunk-based test data using efficient batch processing
         
         Args:
-            dataset: Test dataset with segmented data
+            dataset: Test dataset with chunk-based data
             
         Returns:
             Evaluation metrics across all segments
@@ -2393,70 +2348,68 @@ class ExpertActionTrainer:
         all_targets = []
         
         context_feature_names = dataset.get_context_feature_names()
-        num_segments = len(dataset)
+        num_chunks = len(dataset)
         
-        print(f"[INFO] Evaluating on {num_segments} segments using batch processing...")
+        print(f"[INFO] Evaluating on {num_chunks} chunks using chunk-based processing...")
         
-        # Create DataLoader for efficient batch processing (same as training)
-        # Use larger batch size for evaluation since we don't need gradients
-        batch_size = 64  # Larger batch size for faster evaluation
-        # NOTE: num_workers=0 to avoid multiprocessing issues in Docker/Windows
-        dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=0)
-        
-        num_batches = len(dataloader)
-        print(f"[INFO] Processing {num_batches} batches with batch size {batch_size}")
+        total_batches_processed = 0
         
         with torch.no_grad():
-            for batch_idx, batch_data in enumerate(dataloader):
-                # Debug: Check what the dataloader is actually returning
-                if len(batch_data) != 2:
-                    print(f"[ERROR] DataLoader returning {len(batch_data)} items instead of 2")
-                    print(f"[ERROR] Items: {[type(item) for item in batch_data]}")
-                    raise ValueError(f"DataLoader returning {len(batch_data)} items, expected 2")
-                
-                batch_input_states, batch_target_states = batch_data
-                
-                # Show progress updates
-                if batch_idx % max(1, num_batches // 10) == 0 or batch_idx == num_batches - 1:
-                    progress_pct = (batch_idx + 1) / num_batches * 100
-                    segments_processed = (batch_idx + 1) * batch_size
-                    if segments_processed > num_segments:
-                        segments_processed = num_segments
-                    print(f"[INFO] Evaluation progress: batch {batch_idx + 1}/{num_batches} ({progress_pct:.1f}%) - {segments_processed}/{num_segments} segments")
-                
-                # Move to device
-                batch_input_states = batch_input_states.to(self.device, non_blocking=self._cuda)
-                batch_target_states = batch_target_states.to(self.device, non_blocking=self._cuda)
-                
-                batch_size_actual = batch_input_states.shape[0]
-                segment_length = batch_input_states.shape[1]
-                
-                # Use teacher forcing for evaluation consistency with training
-                with torch.autocast(device_type='cuda', dtype=self.amp_dtype, enabled=self._cuda and self.amp_dtype is not None):
-                    target_seq_len = batch_target_states.shape[1]
-                    predictions = self.model(
-                        unified_input=batch_input_states, 
-                        prediction_steps=target_seq_len,
-                        use_teacher_forcing=True  # Use teacher forcing for consistent evaluation
-                    )
-                
-                # Loss computation outside autocast: unified state prediction loss
-                loss = self.model.unified_loss(
-                    predictions=predictions, 
-                    targets=batch_target_states
-                )
-                
-                batch_samples = batch_size_actual * segment_length
-                total_loss += loss.item() * batch_samples
-                total_samples += batch_samples
-                
-                # Show running average loss periodically
-                if batch_idx > 0 and (batch_idx % max(1, num_batches // 10) == 0 or batch_idx == num_batches - 1):
-                    running_avg_loss = total_loss / total_samples
-                    print(f"[INFO] Running average loss: {running_avg_loss:.6f}")
-                
-                all_predictions.append(predictions.cpu().numpy())
-                all_targets.append(batch_target_states.cpu().numpy())
+            for chunk_idx in range(num_chunks):
+                try:
+                    print(f"[INFO] Processing evaluation chunk {chunk_idx + 1}/{num_chunks}")
+                    chunk_batches_processed = 0
+                    
+                    # Process all batches in this chunk
+                    for batch_inputs, batch_targets in dataset.get_chunk_batches(chunk_idx):
+                        batch_inputs = batch_inputs.to(self.device, non_blocking=self._cuda)
+                        batch_targets = batch_targets.to(self.device, non_blocking=self._cuda)
+                        
+                        batch_size_actual = batch_inputs.shape[0]
+                        segment_length = batch_inputs.shape[1]
+                        
+                        # Use teacher forcing for evaluation consistency with training
+                        with torch.autocast(device_type='cuda', dtype=self.amp_dtype, enabled=self._cuda and self.amp_dtype is not None):
+                            target_seq_len = batch_targets.shape[1]
+                            predictions = self.model(
+                                unified_input=batch_inputs, 
+                                prediction_steps=target_seq_len,
+                                use_teacher_forcing=True  # Use teacher forcing for consistent evaluation
+                            )
+                        
+                        # Loss computation outside autocast: unified state prediction loss
+                        loss = self.model.unified_loss(
+                            predictions=predictions, 
+                            targets=batch_targets
+                        )
+                        
+                        batch_samples = batch_size_actual * segment_length
+                        total_loss += loss.item() * batch_samples
+                        total_samples += batch_samples
+                        
+                        # Store predictions and targets for metrics (convert to numpy for memory efficiency)
+                        predictions_np = predictions.detach().cpu().numpy()
+                        targets_np = batch_targets.detach().cpu().numpy()
+                        
+                        all_predictions.append(predictions_np)
+                        all_targets.append(targets_np)
+                        
+                        # Clean up GPU memory
+                        del batch_inputs, batch_targets, predictions, loss
+                        
+                        chunk_batches_processed += 1
+                        total_batches_processed += 1
+                        
+                        # Show progress updates
+                        if total_batches_processed % 100 == 0:
+                            running_avg_loss = total_loss / total_samples if total_samples > 0 else 0.0
+                            print(f"[INFO] Evaluation progress: {total_batches_processed} batches processed, running avg loss: {running_avg_loss:.6f}")
+                    
+                    print(f"[INFO] Chunk {chunk_idx + 1} complete: {chunk_batches_processed} batches processed")
+                    
+                except Exception as e:
+                    print(f"[WARNING] Failed to process evaluation chunk {chunk_idx}: {str(e)}")
+                    continue
         
         # Compute additional metrics - concatenate all batch data efficiently
         print(f"[INFO] Computing final evaluation metrics...")
@@ -2487,7 +2440,8 @@ class ExpertActionTrainer:
         
         # Display final evaluation results
         print(f"\n[INFO] ===== EVALUATION COMPLETE =====")
-        print(f"[INFO] Segments processed: {num_segments}")
+        print(f"[INFO] Chunks processed: {num_chunks}")
+        print(f"[INFO] Batches processed: {total_batches_processed}")
         print(f"[INFO] Total samples: {total_samples}")
         print(f"[INFO] Test Loss: {final_test_loss:.6f}")
         print(f"[INFO] Mean Squared Error (MSE): {mse:.6f}")
@@ -2501,7 +2455,8 @@ class ExpertActionTrainer:
             'mae': mae,
             'r2': r2,
             'num_samples': total_samples,
-            'num_segments': num_segments
+            'num_chunks': num_chunks,
+            'num_batches': total_batches_processed
         })
     
     def get_model_info(self) -> Dict[str, Any]:

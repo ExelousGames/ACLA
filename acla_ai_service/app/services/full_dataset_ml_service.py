@@ -1346,38 +1346,51 @@ class Full_dataset_TelemetryMLService:
             print(f"[INFO] ✓ Streaming dataset created with {len(dataset)} segments")
             print(f"[INFO] ✓ Memory efficient: segments loaded on-demand during training")
             
-            # Quick validation by sampling a few segments
+            # Quick validation by sampling a few chunks and their batches
             print(f"[INFO] Validating segments using sampling approach...")
-            sample_size = min(10, len(dataset))
+            sample_size = min(3, len(dataset))  # Sample fewer chunks since each has many segments
             import random
-            sample_indices = random.sample(range(len(dataset)), sample_size)
+            sample_chunk_indices = random.sample(range(len(dataset)), sample_size)
             
             validation_errors = []
-            for idx in sample_indices:
+            total_batches_validated = 0
+            
+            for chunk_idx in sample_chunk_indices:
                 try:
-                    # This will load the chunk and validate its structure
-                    batch_input_seq, batch_target_seq = dataset[idx]
+                    print(f"[DEBUG] Validating chunk {chunk_idx}...")
+                    batch_count = 0
                     
-                    # The returned tensors have shape [batch_size, seq_len, features]
-                    batch_size, seq_len, num_features = batch_input_seq.shape
-                    expected_seq_len = fixed_segment_length - 1  # Due to input/target shift
+                    # Use get_chunk_batches to get actual data from the chunk
+                    for batch_input_seq, batch_target_seq in dataset.get_chunk_batches(chunk_idx):
+                        batch_count += 1
+                        total_batches_validated += 1
+                        
+                        # Validate batch structure
+                        if batch_input_seq.shape != batch_target_seq.shape:
+                            validation_errors.append(f"Chunk {chunk_idx}, Batch {batch_count}: input/target shape mismatch")
+                            continue
+                            
+                        # The returned tensors have shape [batch_size, seq_len, features]
+                        batch_size, seq_len, num_features = batch_input_seq.shape
+                        expected_seq_len = fixed_segment_length - 1  # Due to input/target shift
+                        
+                        if seq_len != expected_seq_len:
+                            validation_errors.append(f"Chunk {chunk_idx}, Batch {batch_count}: sequence length mismatch (got {seq_len}, expected {expected_seq_len})")
+                        
+                        # Only validate first few batches per chunk to avoid excessive validation time
+                        if batch_count >= 3:
+                            break
                     
-                    print(f"[DEBUG] Chunk {idx}: batch_size={batch_size}, seq_len={seq_len}, features={num_features}")
-                    print(f"[DEBUG] Expected seq_len={expected_seq_len}")
-                    
-                    if seq_len != expected_seq_len:
-                        validation_errors.append(f"Segment {idx}: sequence length mismatch (got {seq_len}, expected {expected_seq_len})")
-                    if batch_target_seq.shape != batch_input_seq.shape:
-                        validation_errors.append(f"Segment {idx}: input/target shape mismatch")
+                    print(f"[DEBUG] Chunk {chunk_idx}: validated {batch_count} batches successfully")
                         
                 except Exception as e:
-                    validation_errors.append(f"Segment {idx}: {str(e)}")
+                    validation_errors.append(f"Chunk {chunk_idx}: {str(e)}")
             
             if validation_errors:
                 error_details = "\n".join(validation_errors)
                 raise ValueError(f"Segment validation failed:\n{error_details}")
             
-            print(f"[INFO] ✓ Validated {sample_size} sample segments successfully")
+            print(f"[INFO] ✓ Validated {total_batches_validated} batches from {sample_size} sample chunks successfully")
             
             # Configure PyTorch optimizations
             use_cuda = torch.cuda.is_available()
@@ -1662,7 +1675,7 @@ class Full_dataset_TelemetryMLService:
         
         processed_chunks = 0
         total_segments_cached = 0
-        segments_per_cache = 128  # Number of segments per cache batch
+        segments_per_cache = 5000  # Number of segments per cache batch
         
         current_segment_batch = []
         cache_batch_number = 0
