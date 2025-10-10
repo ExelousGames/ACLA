@@ -876,14 +876,19 @@ class ExpertActionTransformer(nn.Module):
         This method processes input unified states and predicts the next sequence of
         unified states (context + actions) for the specified prediction length.
         
+        NOTE: This method expects input data to be in the same format as used during training
+        (i.e., if model was trained on scaled data, input should be pre-scaled by the caller).
+        
         Args:
             combined_input: Unified state features [batch_size, input_len, total_features]
                            Contains combined context + action features for autoregressive prediction
+                           Should be pre-processed to match training data format
             prediction_length: Number of future steps to predict. If None, uses model's sequence_length
             
         Returns:
             Predicted unified state progression [batch_size, prediction_length, total_features]
             Shows next sequence of unified states (context + improved actions)
+            Output format matches the input format (scaled if input was scaled)
         """
         self.eval()
         
@@ -1290,54 +1295,22 @@ class ExpertActionTransformer(nn.Module):
                 if unexpected:
                     print(f"[WARNING] Unexpected keys during load: {unexpected}")
             
-            # Restore multi-feature scaler if available (with backward compatibility)
-            import pickle
-            
-            # Try new multi-feature scaler first
+            # Restore variance-based multi-scaler
             if 'feature_scaler' in serialized_data and serialized_data['feature_scaler'] is not None:
                 try:
-                    # Check if it's the new VarianceBasedMultiScaler format (dict with scalers)
+                    # Only support VarianceBasedMultiScaler format
                     if isinstance(serialized_data['feature_scaler'], dict):
-                        scaler_type = serialized_data['feature_scaler'].get('scaler_type', 'MultiFeatureScaler')
+                        scaler_type = serialized_data['feature_scaler'].get('scaler_type', '')
                         if scaler_type == 'VarianceBasedMultiScaler':
                             model.feature_scaler = VarianceBasedMultiScaler.deserialize_scalers(serialized_data['feature_scaler'])
                             print("[INFO] - Restored variance-based multi-scaler")
                         else:
-                            # Legacy multi-feature scaler - convert to variance-based
-                            model.feature_scaler = VarianceBasedMultiScaler()
-                            model.feature_scaler.is_fitted = True
-                            print("[INFO] - Converted legacy multi-feature scaler to variance-based scaler")
+                            raise ValueError(f"Unsupported scaler type: {scaler_type}")
                     else:
-                        # Old format (single scaler) - load as StandardScaler and wrap in VarianceBasedMultiScaler
-                        scaler_bytes = base64.b64decode(serialized_data['feature_scaler'])
-                        scaler_buffer = io.BytesIO(scaler_bytes)
-                        old_scaler = pickle.load(scaler_buffer)
-                        
-                        # Create new VarianceBasedMultiScaler and use old scaler for both variance groups
-                        model.feature_scaler = VarianceBasedMultiScaler()
-                        model.feature_scaler.high_variance_scaler = old_scaler
-                        model.feature_scaler.low_variance_scaler = old_scaler  
-                        model.feature_scaler.is_fitted = True
-                        print("[INFO] - Converted legacy unified scaler to variance-based multi-scaler")
+                        raise ValueError("Invalid feature_scaler format - must be VarianceBasedMultiScaler dict")
                 except Exception as e:
-                    print(f"[WARNING] Failed to restore feature scaler: {e}")
-                    model.feature_scaler = None
-            # Backward compatibility: try to load old input_scaler as feature_scaler
-            elif 'input_scaler' in serialized_data and serialized_data['input_scaler'] is not None:
-                try:
-                    scaler_bytes = base64.b64decode(serialized_data['input_scaler'])
-                    scaler_buffer = io.BytesIO(scaler_bytes)
-                    old_scaler = pickle.load(scaler_buffer)
-                    
-                    # Create new VarianceBasedMultiScaler and use old scaler for both variance groups
-                    model.feature_scaler = VarianceBasedMultiScaler()
-                    model.feature_scaler.high_variance_scaler = old_scaler
-                    model.feature_scaler.low_variance_scaler = old_scaler
-                    model.feature_scaler.is_fitted = True
-                    print("[INFO] - Converted legacy input scaler to variance-based multi-scaler (backward compatibility)")
-                except Exception as e:
-                    print(f"[WARNING] Failed to restore legacy input scaler: {e}")
-                    model.feature_scaler = None
+                    print(f"[ERROR] Failed to restore feature scaler: {e}")
+                    raise ValueError(f"Cannot load model - incompatible scaler format: {e}")
             else:
                 model.feature_scaler = None
             
