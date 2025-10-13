@@ -700,7 +700,8 @@ class TelemetryFeatures:
             "Physics_velocity_z",
             "Graphics_track_grip_status",
             "Graphics_current_tyre_set",
-            "Graphics_is_valid_lap"
+            "Graphics_is_valid_lap",
+            "time_delta_seconds"
         ]
         
         
@@ -1144,6 +1145,45 @@ class FeatureProcessor:
         lap_times_ms = [l[1] for l in selected]
         individual = [l[2].copy() for l in selected]
         return lap_times_ms, individual
+
+    def add_time_delta(
+        self,
+        new_column: str = "time_delta_seconds",
+    ) -> pd.DataFrame:
+        """Compute in-place time deltas (seconds) from Graphics_current_time and return self.df."""
+
+        if self.df is None:
+            self.df = pd.DataFrame()
+
+        if self.df.empty:
+            self.df[new_column] = []
+            return self.df
+
+        time_column_name = "Graphics_current_time"
+        if time_column_name not in self.df.columns:
+            print(f"[INFO] Time column '{time_column_name}' missing; defaulting {new_column} to zeros")
+            self.df[new_column] = 0.0
+            return self.df
+
+        time_series = self.df[time_column_name]
+        numeric_series = pd.to_numeric(time_series, errors="coerce")
+
+        if numeric_series.isna().any():
+            fill_mask = numeric_series.isna()
+            if time_series.dtype == object:
+                numeric_series.loc[fill_mask] = time_series[fill_mask].apply(self._parse_time_string)
+            numeric_series = numeric_series.ffill().fillna(0)
+
+        # Graphics_current_time is stored in milliseconds; convert explicitly to seconds.
+        time_seconds = numeric_series / 1000.0
+
+        deltas = time_seconds.diff().fillna(0.0)
+        if (deltas < 0).any():
+            deltas = deltas.clip(lower=0.0)
+
+        self.df[new_column] = deltas.values
+
+        return self.df
 
     # ========================= Console Plotting Utilities ========================= #
     def plot_features_console(

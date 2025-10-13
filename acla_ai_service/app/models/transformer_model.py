@@ -11,13 +11,10 @@ import os
 import math
 import json
 import joblib
-import io
-import base64
-import pickle
-from typing import Dict, List, Any, Optional, Tuple, Union
+from typing import Dict, List, Any, Optional, Tuple, Union, Callable
 from datetime import datetime
 from pathlib import Path
-from sklearn.preprocessing import StandardScaler, MinMaxScaler, RobustScaler
+from sklearn.preprocessing import StandardScaler, MinMaxScaler
 from sklearn.metrics import mean_squared_error, mean_absolute_error
 
 # Import contextual feature catalogs for quality weighting
@@ -29,363 +26,6 @@ from .telemetry_models import TelemetryFeatures
 import os
 os.environ['PYTHONUNBUFFERED'] = '1'
 sys.stdout.reconfigure(line_buffering=True)
-
-
-class VarianceBasedMultiScaler:
-    """
-    Adaptive multi-feature scaler that automatically categorizes features based on variance and range.
-    
-    This class analyzes the actual data distribution of each feature and automatically
-    assigns the most appropriate scaler based on statistical properties:
-    
-    **AUTOMATIC CATEGORIZATION APPROACH:**
-    
-    1. **HIGH VARIANCE FEATURES** → StandardScaler
-       - Features with large ranges and high variance (e.g., speed: 0-300, rpm: 0-9000)
-       - These benefit from StandardScaler which handles wide distributions well
-       - Examples: Physics_speed_kmh, Physics_rpm, temperatures, positions
-    
-    2. **LOW VARIANCE FEATURES** → RobustScaler  
-       - Features with small ranges or many outliers (e.g., gas: 0-1, slip_angles: ±30°)
-       - These benefit from RobustScaler which is resistant to outliers
-       - Examples: Physics_gas, Physics_brake, Physics_steer_angle, slip ratios
-    
-    **ADAPTIVE THRESHOLDING:**
-    - Analyzes coefficient of variation (std/mean) and range for each feature
-    - Automatically determines which scaler works best for each feature's distribution
-    - No manual feature categorization needed - purely data-driven
-    
-    **BENEFITS:**
-    - Automatic feature analysis - no manual categorization required
-    - Optimal scaler selection based on actual data characteristics  
-    - Better gradient flow with feature-specific normalization
-    - Robust handling of features with different variance patterns
-    - Adapts to any dataset without prior knowledge of feature types
-    """
-    
-    def __init__(self, variance_threshold: float = 1.0, range_threshold: float = 10.0):
-        """
-        Initialize variance-based multi-scaler.
-        
-        Args:
-            variance_threshold: Coefficient of variation threshold (std/mean) 
-                               Higher values indicate high-variance features
-            range_threshold: Range threshold (max-min) to identify wide-range features
-                            Features with range > threshold get StandardScaler
-        """
-        self.variance_threshold = variance_threshold
-        self.range_threshold = range_threshold
-        
-        # Feature group assignments (determined automatically during fit)
-        self.high_variance_features = []  # Features with high variance → StandardScaler
-        self.low_variance_features = []   # Features with low variance → RobustScaler
-        
-        # Scalers for each group
-        self.high_variance_scaler = StandardScaler()  # For features like speed, rpm, positions
-        self.low_variance_scaler = RobustScaler()     # For features like gas, brake, slip angles
-        
-        # Feature analysis results (for debugging and info)
-        self.feature_stats = {}
-        
-        # Fitted status tracking
-        self.is_fitted = False
-        
-    def _analyze_feature_variance(self, data: np.ndarray, feature_names: List[str]):
-        """
-        Analyze feature variance and range to automatically categorize features.
-        
-        This method examines each feature's statistical properties:
-        - Coefficient of variation (std/mean) 
-        - Range (max - min)
-        - Distribution characteristics
-        
-        Features are then assigned to appropriate scaler groups:
-        - High variance/range features → StandardScaler (e.g., speed: 0-300, rpm: 0-9000)
-        - Low variance/range features → RobustScaler (e.g., gas: 0-1, brake: 0-1)
-        
-        Args:
-            data: Feature matrix [n_samples, n_features]
-            feature_names: List of feature names corresponding to columns
-        """
-        self.high_variance_features = []
-        self.low_variance_features = []
-        self.feature_stats = {}
-        
-        print(f"[VarianceBasedMultiScaler] Analyzing {len(feature_names)} features for optimal scaling...")
-        
-        for i, feature_name in enumerate(feature_names):
-            feature_data = data[:, i]
-            
-            # Calculate statistical properties
-            mean_val = np.mean(feature_data)
-            std_val = np.std(feature_data)
-            min_val = np.min(feature_data)
-            max_val = np.max(feature_data)
-            range_val = max_val - min_val
-            
-            # Coefficient of variation (avoid division by zero)
-            coeff_var = std_val / abs(mean_val) if abs(mean_val) > 1e-8 else float('inf')
-            
-            # Store stats for debugging
-            self.feature_stats[feature_name] = {
-                'mean': float(mean_val),
-                'std': float(std_val), 
-                'min': float(min_val),
-                'max': float(max_val),
-                'range': float(range_val),
-                'coeff_var': float(coeff_var)
-            }
-            
-            # Decision logic: Use actual data characteristics to determine scaler
-            # High variance OR wide range → StandardScaler
-            # Low variance AND narrow range → RobustScaler
-            
-            is_high_variance = (coeff_var > self.variance_threshold or 
-                              range_val > self.range_threshold)
-            
-            if is_high_variance:
-                self.high_variance_features.append(feature_name)
-                scaler_type = "StandardScaler"
-            else:
-                self.low_variance_features.append(feature_name)  
-                scaler_type = "RobustScaler"
-                
-            # Log decision for important features
-            if i < 10 or range_val > 50 or coeff_var > 2.0:  # Log first 10 or notable features
-                print(f"  {feature_name}: range={range_val:.2f}, coeff_var={coeff_var:.2f} → {scaler_type}")
-        
-        print(f"[VarianceBasedMultiScaler] Feature categorization complete:")
-        print(f"  High variance features ({len(self.high_variance_features)}): StandardScaler")
-        print(f"  Low variance features ({len(self.low_variance_features)}): RobustScaler")
-        
-        # Show some examples for verification
-        if self.high_variance_features:
-            examples = self.high_variance_features[:3]
-            print(f"  High variance examples: {examples}")
-        if self.low_variance_features:
-            examples = self.low_variance_features[:3]  
-            print(f"  Low variance examples: {examples}")
-        
-    def fit(self, data: np.ndarray, feature_names: List[str]):
-        """
-        Analyze features and fit appropriate scalers based on variance characteristics.
-        
-        Args:
-            data: Feature matrix [n_samples, n_features]
-            feature_names: List of feature names corresponding to columns
-        """
-        # Analyze feature variance and automatically categorize
-        self._analyze_feature_variance(data, feature_names)
-        
-        # Get indices for each variance group
-        high_var_indices = [i for i, name in enumerate(feature_names) if name in self.high_variance_features]
-        low_var_indices = [i for i, name in enumerate(feature_names) if name in self.low_variance_features]
-        
-        # Fit scalers on respective variance groups
-        if high_var_indices:
-            high_var_data = data[:, high_var_indices]
-            print(f"[VarianceBasedMultiScaler] Fitting StandardScaler on {len(high_var_indices)} high-variance features")
-            self.high_variance_scaler.fit(high_var_data)
-        
-        if low_var_indices:
-            low_var_data = data[:, low_var_indices]
-            print(f"[VarianceBasedMultiScaler] Fitting RobustScaler on {len(low_var_indices)} low-variance features")
-            self.low_variance_scaler.fit(low_var_data)
-            
-        self.is_fitted = True
-        print(f"[VarianceBasedMultiScaler] ✓ All scalers fitted successfully")
-        
-    def transform(self, data: np.ndarray, feature_names: List[str]) -> np.ndarray:
-        """
-        Transform data using variance-appropriate fitted scalers.
-        
-        Args:
-            data: Feature matrix [n_samples, n_features]  
-            feature_names: List of feature names corresponding to columns
-            
-        Returns:
-            Scaled feature matrix
-        """
-        if not self.is_fitted:
-            raise ValueError("Scalers must be fitted before transform")
-            
-        # Get indices for each variance group
-        high_var_indices = [i for i, name in enumerate(feature_names) if name in self.high_variance_features]
-        low_var_indices = [i for i, name in enumerate(feature_names) if name in self.low_variance_features]
-        
-        # Apply transformations to respective variance groups
-        scaled_data = np.copy(data)
-        
-        if high_var_indices:
-            high_var_data = data[:, high_var_indices]
-            scaled_data[:, high_var_indices] = self.high_variance_scaler.transform(high_var_data)
-            
-        if low_var_indices:
-            low_var_data = data[:, low_var_indices]  
-            scaled_data[:, low_var_indices] = self.low_variance_scaler.transform(low_var_data)
-            
-        return scaled_data
-        
-    def inverse_transform(self, scaled_data: np.ndarray, feature_names: List[str]) -> np.ndarray:
-        """
-        Inverse transform scaled data back to original scale using variance-appropriate scalers.
-        
-        Args:
-            scaled_data: Scaled feature matrix [n_samples, n_features]
-            feature_names: List of feature names corresponding to columns
-            
-        Returns:
-            Data in original scale
-        """
-        if not self.is_fitted:
-            raise ValueError("Scalers must be fitted before inverse_transform")
-            
-        # Get indices for each variance group  
-        high_var_indices = [i for i, name in enumerate(feature_names) if name in self.high_variance_features]
-        low_var_indices = [i for i, name in enumerate(feature_names) if name in self.low_variance_features]
-        
-        # Apply inverse transformations to respective variance groups
-        unscaled_data = np.copy(scaled_data)
-        
-        if high_var_indices:
-            high_var_data = scaled_data[:, high_var_indices]
-            unscaled_data[:, high_var_indices] = self.high_variance_scaler.inverse_transform(high_var_data)
-            
-        if low_var_indices:
-            low_var_data = scaled_data[:, low_var_indices]
-            unscaled_data[:, low_var_indices] = self.low_variance_scaler.inverse_transform(low_var_data)
-            
-        return unscaled_data
-        
-    def fit_transform(self, data: np.ndarray, feature_names: List[str]) -> np.ndarray:
-        """
-        Fit scalers and transform data in one step.
-        
-        Args:
-            data: Feature matrix [n_samples, n_features]
-            feature_names: List of feature names corresponding to columns
-            
-        Returns:
-            Scaled feature matrix
-        """
-        self.fit(data, feature_names)
-        return self.transform(data, feature_names)
-        
-    def get_feature_group_info(self) -> Dict[str, Any]:
-        """
-        Get information about variance-based feature groups and their assigned scalers.
-        
-        Returns:
-            Dictionary with feature group information including variance analysis
-        """
-        return {
-            'high_variance': {
-                'features': self.high_variance_features,
-                'count': len(self.high_variance_features),
-                'scaler_type': 'StandardScaler',
-                'description': 'Features with high variance/range (e.g., speed, rpm, positions)'
-            },
-            'low_variance': {
-                'features': self.low_variance_features,
-                'count': len(self.low_variance_features), 
-                'scaler_type': 'RobustScaler',
-                'description': 'Features with low variance/range (e.g., gas, brake, slip angles)'
-            },
-            'thresholds': {
-                'variance_threshold': self.variance_threshold,
-                'range_threshold': self.range_threshold
-            },
-            'feature_stats': self.feature_stats,
-            'is_fitted': self.is_fitted
-        }
-        
-    def serialize_scalers(self) -> Dict[str, Any]:
-        """
-        Serialize variance-based scalers for model saving.
-        
-        Returns:
-            Dictionary containing serialized scaler data
-        """
-        if not self.is_fitted:
-            return None
-            
-        scaler_data = {}
-        
-        # Serialize each variance-based scaler using pickle
-        for scaler_name, scaler in [
-            ('high_variance_scaler', self.high_variance_scaler),
-            ('low_variance_scaler', self.low_variance_scaler)
-        ]:
-            try:
-                buffer = io.BytesIO()
-                pickle.dump(scaler, buffer)
-                scaler_data[scaler_name] = base64.b64encode(buffer.getvalue()).decode('utf-8')
-            except Exception as e:
-                print(f"[WARNING] Failed to serialize {scaler_name}: {e}")
-                scaler_data[scaler_name] = None
-                
-        # Include variance-based feature group information and analysis
-        scaler_data['feature_groups'] = {
-            'high_variance_features': self.high_variance_features,
-            'low_variance_features': self.low_variance_features
-        }
-        
-        # Include thresholds and feature statistics
-        scaler_data['thresholds'] = {
-            'variance_threshold': self.variance_threshold,
-            'range_threshold': self.range_threshold
-        }
-        
-        scaler_data['feature_stats'] = self.feature_stats
-        scaler_data['scaler_type'] = 'VarianceBasedMultiScaler'
-        
-        return scaler_data
-        
-    @classmethod  
-    def deserialize_scalers(cls, serialized_data: Dict[str, Any]) -> 'VarianceBasedMultiScaler':
-        """
-        Deserialize variance-based scalers from saved model data.
-        
-        Args:
-            serialized_data: Dictionary containing serialized scaler data
-            
-        Returns:
-            VarianceBasedMultiScaler instance with loaded scalers
-        """
-        # Load thresholds if available
-        thresholds = serialized_data.get('thresholds', {})
-        variance_threshold = thresholds.get('variance_threshold', 1.0)
-        range_threshold = thresholds.get('range_threshold', 10.0)
-        
-        multi_scaler = cls(variance_threshold=variance_threshold, range_threshold=range_threshold)
-        
-        # Load feature group information
-        if 'feature_groups' in serialized_data:
-            feature_groups = serialized_data['feature_groups']
-            multi_scaler.high_variance_features = feature_groups.get('high_variance_features', [])
-            multi_scaler.low_variance_features = feature_groups.get('low_variance_features', [])
-        
-        # Load feature statistics
-        multi_scaler.feature_stats = serialized_data.get('feature_stats', {})
-        
-        # Deserialize each variance-based scaler
-        for scaler_name, scaler_attr in [
-            ('high_variance_scaler', 'high_variance_scaler'),
-            ('low_variance_scaler', 'low_variance_scaler')
-        ]:
-            if scaler_name in serialized_data and serialized_data[scaler_name] is not None:
-                try:
-                    scaler_bytes = base64.b64decode(serialized_data[scaler_name])
-                    buffer = io.BytesIO(scaler_bytes)
-                    scaler = pickle.load(buffer)
-                    setattr(multi_scaler, scaler_attr, scaler)
-                except Exception as e:
-                    print(f"[WARNING] Failed to deserialize {scaler_name}: {e}")
-                    
-        multi_scaler.is_fitted = True
-        print(f"[VarianceBasedMultiScaler] ✓ Deserialized variance-based scalers successfully")
-        
-        return multi_scaler
 
 
 # -----------------------------
@@ -435,6 +75,270 @@ def extract_context_features_canonical_order(context_data: Dict[str, Any]) -> Li
             features.append(0.0)
     
     return features
+
+
+# -----------------------------
+# Per-feature scaling utilities
+# -----------------------------
+class PerFeatureScaler:
+    """Feature-wise scaler that maintains an independent scaler per feature.
+
+    This wrapper allows the training pipeline to apply tailor-made scaling for
+    every telemetry/context feature instead of relying on a single scaler that
+    treats the feature matrix homogeneously. Each feature receives its own
+    ``StandardScaler`` instance by default, but a custom ``scaler_factory`` can
+    be provided to build alternative scalers (e.g., ``MinMaxScaler``) on a
+    per-feature basis.
+
+    Notes:
+        * The scaler enforces explicit feature ordering – callers must supply
+          the feature list at fit-time and preserve that ordering for all
+          subsequent transforms.
+        * Zero-variance features are stabilised by forcing their scale to 1.0
+          to avoid division-by-zero and keep their transformed value anchored
+          at 0.
+    """
+
+    def __init__(self,
+                 feature_names: Optional[List[str]] = None,
+                 scaler_factory: Optional[Callable[[str], Any]] = None):
+        self.feature_names: List[str] = list(feature_names) if feature_names else []
+        self.scaler_factory = scaler_factory or self._default_factory
+        self._scalers: Dict[str, StandardScaler] = {}
+        self._fitted: bool = False
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+    def _require_fitted(self) -> None:
+        if not self._fitted:
+            raise RuntimeError("PerFeatureScaler must be fitted before use")
+
+    def _normalise_input(self, data: Union[List[float], np.ndarray]) -> Tuple[np.ndarray, bool]:
+        array = np.asarray(data, dtype=np.float32)
+        was_one_dimensional = False
+        if array.ndim == 1:
+            array = array.reshape(1, -1)
+            was_one_dimensional = True
+        if array.ndim != 2:
+            raise ValueError(f"Expected 2D data matrix, got shape {array.shape}")
+        if array.shape[1] != len(self.feature_names):
+            raise ValueError(
+                f"Data has {array.shape[1]} features but scaler was fitted with {len(self.feature_names)}"
+            )
+        return array, was_one_dimensional
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+    def fit(self, data: Union[List[List[float]], np.ndarray], feature_names: Optional[List[str]] = None) -> 'PerFeatureScaler':
+        if feature_names is not None:
+            self.feature_names = list(feature_names)
+        if not self.feature_names:
+            raise ValueError("Feature names are required to fit PerFeatureScaler")
+
+        array, _ = self._normalise_input(data)
+
+        self._scalers.clear()
+        for idx, feature in enumerate(self.feature_names):
+            scaler = self.scaler_factory(feature)
+            column = array[:, idx].reshape(-1, 1)
+            scaler.fit(column)
+
+            # Guard against zero variance to keep transforms stable.
+            if hasattr(scaler, 'scale_'):
+                scale = float(np.asarray(scaler.scale_).reshape(-1)[0])
+                if scale == 0.0:
+                    scaler.scale_ = np.array([1.0], dtype=np.float64)
+                    if hasattr(scaler, 'var_'):
+                        scaler.var_ = np.array([0.0], dtype=np.float64)
+
+            self._scalers[feature] = scaler
+
+        self._fitted = True
+        return self
+
+    def transform(self, data: Union[List[List[float]], List[float], np.ndarray]) -> np.ndarray:
+        self._require_fitted()
+        array, was_one_dimensional = self._normalise_input(data)
+
+        transformed = np.zeros_like(array, dtype=np.float32)
+        for idx, feature in enumerate(self.feature_names):
+            scaler = self._scalers.get(feature)
+            if scaler is None:
+                raise KeyError(f"No scaler fitted for feature '{feature}'")
+            transformed[:, idx] = scaler.transform(array[:, idx].reshape(-1, 1)).reshape(-1)
+
+        return transformed[0] if was_one_dimensional else transformed
+
+    def inverse_transform(self, data: Union[List[List[float]], List[float], np.ndarray]) -> np.ndarray:
+        self._require_fitted()
+        array, was_one_dimensional = self._normalise_input(data)
+
+        inversed = np.zeros_like(array, dtype=np.float32)
+        for idx, feature in enumerate(self.feature_names):
+            scaler = self._scalers.get(feature)
+            if scaler is None:
+                raise KeyError(f"No scaler fitted for feature '{feature}'")
+            inversed[:, idx] = scaler.inverse_transform(array[:, idx].reshape(-1, 1)).reshape(-1)
+
+        return inversed[0] if was_one_dimensional else inversed
+
+    def get_feature_names(self) -> List[str]:
+        return list(self.feature_names)
+
+    def is_fitted(self) -> bool:
+        return self._fitted
+
+    def __repr__(self) -> str:  # pragma: no cover - debug helper
+        status = 'fitted' if self._fitted else 'unfitted'
+        return f"PerFeatureScaler(features={len(self.feature_names)}, status={status})"
+
+    # ------------------------------------------------------------------
+    # Serialization helpers
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _default_factory(_: str) -> StandardScaler:
+        return StandardScaler()
+
+    @staticmethod
+    def _as_1d_array(value: Any, default: float) -> np.ndarray:
+        if isinstance(value, np.ndarray):
+            arr = value.astype(np.float64)
+        elif isinstance(value, (list, tuple)):
+            arr = np.asarray(value, dtype=np.float64)
+        elif value is None:
+            arr = np.asarray([default], dtype=np.float64)
+        else:
+            arr = np.asarray([value], dtype=np.float64)
+        if arr.ndim == 0:
+            arr = arr.reshape(1)
+        return arr
+
+    def to_serializable(self) -> Dict[str, Any]:
+        """Return a JSON-serializable snapshot of all feature scalers."""
+        self._require_fitted()
+
+        serialized_scalers: List[Dict[str, Any]] = []
+        for feature in self.feature_names:
+            scaler = self._scalers.get(feature)
+            if scaler is None:
+                raise KeyError(f"Missing scaler for feature '{feature}' during serialization")
+
+            scaler_class = type(scaler).__name__
+            if scaler_class != 'StandardScaler':
+                raise ValueError(
+                    f"PerFeatureScaler serialization currently supports StandardScaler instances only (feature '{feature}')"
+                )
+
+            serialized_scalers.append({
+                'feature': feature,
+                'class': scaler_class,
+                'with_mean': getattr(scaler, 'with_mean', True),
+                'with_std': getattr(scaler, 'with_std', True),
+                'data': {
+                    'mean': self._as_1d_array(getattr(scaler, 'mean_', None), 0.0).tolist(),
+                    'scale': self._as_1d_array(getattr(scaler, 'scale_', None), 1.0).tolist(),
+                    'var': self._as_1d_array(getattr(scaler, 'var_', None), 0.0).tolist(),
+                    'n_samples_seen': self._as_1d_array(getattr(scaler, 'n_samples_seen_', None), 1.0).tolist()
+                }
+            })
+
+        return {
+            'version': 1,
+            'feature_names': list(self.feature_names),
+            'scalers': serialized_scalers
+        }
+
+    @classmethod
+    def from_serializable(cls, payload: Dict[str, Any], scaler_factory: Optional[Callable[[str], Any]] = None) -> 'PerFeatureScaler':
+        """Rehydrate a PerFeatureScaler from its serialized dictionary."""
+        if not isinstance(payload, dict):
+            raise ValueError("Serialized scaler payload must be a dictionary")
+
+        feature_names = payload.get('feature_names')
+        if not feature_names:
+            raise ValueError("Serialized scaler payload missing 'feature_names'")
+
+        scaler = cls(feature_names=feature_names, scaler_factory=scaler_factory)
+        scaler._scalers.clear()
+
+        scalers_payload = payload.get('scalers', [])
+        if len(scalers_payload) != len(feature_names):
+            raise ValueError(
+                f"Serialized scaler payload contains {len(scalers_payload)} scaler entries for {len(feature_names)} features"
+            )
+
+        for entry in scalers_payload:
+            feature = entry.get('feature')
+            if feature not in scaler.feature_names:
+                raise ValueError(f"Serialized scaler entry references unknown feature '{feature}'")
+
+            scaler_class = entry.get('class', 'StandardScaler')
+            if scaler_class != 'StandardScaler':
+                raise ValueError(
+                    f"PerFeatureScaler deserialization currently supports StandardScaler instances only (got '{scaler_class}')"
+                )
+
+            scaler_instance = scaler.scaler_factory(feature) if scaler_factory else StandardScaler()
+            scaler_instance.with_mean = entry.get('with_mean', True)
+            scaler_instance.with_std = entry.get('with_std', True)
+
+            data = entry.get('data', {})
+            scaler_instance.mean_ = cls._as_1d_array(data.get('mean'), 0.0)
+            scaler_instance.scale_ = cls._as_1d_array(data.get('scale'), 1.0)
+            scaler_instance.var_ = cls._as_1d_array(data.get('var'), 0.0)
+
+            n_samples_seen = data.get('n_samples_seen', [1.0])
+            if isinstance(n_samples_seen, (int, float)):
+                n_samples_seen = [n_samples_seen]
+            scaler_instance.n_samples_seen_ = cls._as_1d_array(n_samples_seen, 1.0)
+            scaler_instance.n_features_in_ = 1
+
+            scaler._scalers[feature] = scaler_instance
+
+        scaler._fitted = True
+        return scaler
+
+    @classmethod
+    def from_feature_statistics(cls,
+                                feature_names: List[str],
+                                means: np.ndarray,
+                                variances: np.ndarray,
+                                counts: np.ndarray,
+                                scaler_factory: Optional[Callable[[str], Any]] = None) -> 'PerFeatureScaler':
+        if len(feature_names) == 0:
+            raise ValueError("feature_names must not be empty")
+
+        scaler = cls(feature_names=feature_names, scaler_factory=scaler_factory)
+        scaler._scalers.clear()
+
+        means = np.asarray(means, dtype=np.float64)
+        variances = np.asarray(variances, dtype=np.float64)
+        counts = np.asarray(counts, dtype=np.float64)
+
+        if means.shape[0] != len(feature_names) or variances.shape[0] != len(feature_names) or counts.shape[0] != len(feature_names):
+            raise ValueError("Statistic arrays must match length of feature_names")
+
+        for idx, feature in enumerate(feature_names):
+            this_count = counts[idx]
+            if this_count <= 0:
+                this_count = 1.0
+
+            var = max(float(variances[idx]), 0.0)
+            scale_value = math.sqrt(var) if var > 0 else 1.0
+
+            scaler_instance = scaler.scaler_factory(feature)
+            scaler_instance.mean_ = np.array([float(means[idx])], dtype=np.float64)
+            scaler_instance.var_ = np.array([var], dtype=np.float64)
+            scaler_instance.scale_ = np.array([scale_value], dtype=np.float64)
+            scaler_instance.n_samples_seen_ = np.array([this_count], dtype=np.float64)
+            scaler_instance.n_features_in_ = 1
+
+            scaler._scalers[feature] = scaler_instance
+
+        scaler._fitted = True
+        return scaler
 
 
 # -----------------------------
@@ -630,8 +534,8 @@ class ExpertActionTransformer(nn.Module):
         self.sequence_length = sequence_length
         self.time_step_seconds = time_step_seconds
         
-        # Variance-based multi-scaler for normalization during inference (adaptive scalers for feature variance groups)
-        self.feature_scaler: Optional[VarianceBasedMultiScaler] = None
+        # Scaler for normalization during inference (feature-wise scaler)
+        self.feature_scaler: Optional[PerFeatureScaler] = None
         
         # Input embedding for unified features
         self.input_embedding = nn.Linear(total_features_count, d_model)
@@ -679,12 +583,12 @@ class ExpertActionTransformer(nn.Module):
             if p.dim() > 1:
                 nn.init.xavier_uniform_(p)
     
-    def set_scalers(self, feature_scaler: Optional[VarianceBasedMultiScaler] = None):
+    def set_scalers(self, feature_scaler: Optional[PerFeatureScaler] = None):
         """
-        Set the variance-based multi-scaler for different feature variance groups.
+        Set the scaler for unified features (context + actions combined).
         
         Args:
-            feature_scaler: VarianceBasedMultiScaler fitted on variance-based feature groups
+            feature_scaler: PerFeatureScaler fitted on unified feature vectors
         """
         self.feature_scaler = feature_scaler
     
@@ -876,19 +780,14 @@ class ExpertActionTransformer(nn.Module):
         This method processes input unified states and predicts the next sequence of
         unified states (context + actions) for the specified prediction length.
         
-        NOTE: This method expects input data to be in the same format as used during training
-        (i.e., if model was trained on scaled data, input should be pre-scaled by the caller).
-        
         Args:
             combined_input: Unified state features [batch_size, input_len, total_features]
                            Contains combined context + action features for autoregressive prediction
-                           Should be pre-processed to match training data format
             prediction_length: Number of future steps to predict. If None, uses model's sequence_length
             
         Returns:
             Predicted unified state progression [batch_size, prediction_length, total_features]
             Shows next sequence of unified states (context + improved actions)
-            Output format matches the input format (scaled if input was scaled)
         """
         self.eval()
         
@@ -908,13 +807,12 @@ class ExpertActionTransformer(nn.Module):
             self.sequence_length = original_sequence_length
     
     
-    def _apply_unified_inverse_scaling(self, scaled_predictions: torch.Tensor, feature_names: List[str]) -> torch.Tensor:
+    def _apply_unified_inverse_scaling(self, scaled_predictions: torch.Tensor) -> torch.Tensor:
         """
         Apply inverse scaling to unified model predictions to convert from normalized to original scale.
         
         Args:
             scaled_predictions: Scaled unified predictions [batch_size, seq_len, total_features]
-            feature_names: List of feature names for multi-scaler inverse transform
             
         Returns:
             Unscaled unified predictions [batch_size, seq_len, total_features]
@@ -929,8 +827,8 @@ class ExpertActionTransformer(nn.Module):
         # Reshape to 2D: (batch_size * seq_len, total_features)
         predictions_2d = scaled_predictions.view(-1, original_shape[-1]).cpu().numpy()
         
-        # Apply inverse transform with feature names for multi-scaler
-        unscaled_predictions = self.feature_scaler.inverse_transform(predictions_2d, feature_names)
+        # Apply inverse transform
+        unscaled_predictions = self.feature_scaler.inverse_transform(predictions_2d)
         
         # Convert back to tensor and reshape
         unscaled_tensor = torch.from_numpy(unscaled_predictions).float().to(device)
@@ -1038,13 +936,7 @@ class ExpertActionTransformer(nn.Module):
                         prediction_length=sequence_length
                     )
                     # During inference, apply inverse scaling to get original unified feature values
-                    # Get feature names for inverse scaling
-                    from ..models.telemetry_models import TelemetryFeatures
-                    all_feature_names = TelemetryFeatures.get_features_for_imitate_expert()
-                    context_feature_names = get_canonical_context_feature_order()
-                    unified_feature_names = all_feature_names + context_feature_names
-                    
-                    predictions = self._apply_unified_inverse_scaling(predictions, unified_feature_names)
+                    predictions = self._apply_unified_inverse_scaling(predictions)
             except Exception as e:
                 raise RuntimeError(f"Error during model prediction: {str(e)}")
             
@@ -1121,17 +1013,11 @@ class ExpertActionTransformer(nn.Module):
         elif len(combined_features) > expected_len:
             combined_features = combined_features[:expected_len]
 
-        # Apply multi-feature scaler if available
+        # Apply unified feature scaler if available
         if self.feature_scaler is not None:
-            # Get feature names for multi-scaler
-            from ..models.telemetry_models import TelemetryFeatures
-            all_feature_names = TelemetryFeatures.get_features_for_imitate_expert()
-            context_feature_names = get_canonical_context_feature_order()
-            unified_feature_names = all_feature_names + context_feature_names
-            
             import numpy as np
             features_array = np.array(combined_features).reshape(1, -1)
-            scaled_features = self.feature_scaler.transform(features_array, unified_feature_names)
+            scaled_features = self.feature_scaler.transform(features_array)
             combined_features = scaled_features.flatten().tolist()
 
         return combined_features
@@ -1179,11 +1065,11 @@ class ExpertActionTransformer(nn.Module):
         torch.save(self.state_dict(), buffer)
         state_dict_bytes = buffer.getvalue()
         
-        # Serialize multi-feature scaler
+        # Serialize unified feature scaler
         feature_scaler_data = None
         
         if self.feature_scaler is not None:
-            feature_scaler_data = self.feature_scaler.serialize_scalers()
+            feature_scaler_data = self.feature_scaler.to_serializable()
         
         model_data = {
             'model_type': 'ExpertActionTransformer',
@@ -1295,24 +1181,15 @@ class ExpertActionTransformer(nn.Module):
                 if unexpected:
                     print(f"[WARNING] Unexpected keys during load: {unexpected}")
             
-            # Restore variance-based multi-scaler
-            if 'feature_scaler' in serialized_data and serialized_data['feature_scaler'] is not None:
-                try:
-                    # Only support VarianceBasedMultiScaler format
-                    if isinstance(serialized_data['feature_scaler'], dict):
-                        scaler_type = serialized_data['feature_scaler'].get('scaler_type', '')
-                        if scaler_type == 'VarianceBasedMultiScaler':
-                            model.feature_scaler = VarianceBasedMultiScaler.deserialize_scalers(serialized_data['feature_scaler'])
-                            print("[INFO] - Restored variance-based multi-scaler")
-                        else:
-                            raise ValueError(f"Unsupported scaler type: {scaler_type}")
-                    else:
-                        raise ValueError("Invalid feature_scaler format - must be VarianceBasedMultiScaler dict")
-                except Exception as e:
-                    print(f"[ERROR] Failed to restore feature scaler: {e}")
-                    raise ValueError(f"Cannot load model - incompatible scaler format: {e}")
-            else:
+            # Restore unified feature scaler if available (with backward compatibility)
+            scaler_payload = serialized_data.get('feature_scaler')
+            if scaler_payload is None:
                 model.feature_scaler = None
+            elif not isinstance(scaler_payload, dict):
+                raise ValueError("Serialized model 'feature_scaler' must be a dictionary payload")
+            else:
+                model.feature_scaler = PerFeatureScaler.from_serializable(scaler_payload)
+                print("[INFO] - Restored unified feature scaler from serialized payload")
             
             # Set model to evaluation mode (ready for inference)
             model.eval()
@@ -1819,6 +1696,32 @@ class ExpertActionTransformer(nn.Module):
 
 
 
+class _RunningFeatureStats:
+    """Streaming aggregator for per-feature statistics across all dataset chunks."""
+
+    def __init__(self, num_features: int):
+        self.counts = np.zeros(num_features, dtype=np.float64)
+        self.sums = np.zeros(num_features, dtype=np.float64)
+        self.sums_sq = np.zeros(num_features, dtype=np.float64)
+
+    def update(self, matrix: np.ndarray) -> None:
+        if matrix.size == 0:
+            return
+        # Ensure float64 for numerical stability
+        data = matrix.astype(np.float64, copy=False)
+        self.counts += data.shape[0]
+        self.sums += np.sum(data, axis=0, dtype=np.float64)
+        self.sums_sq += np.sum(np.square(data, dtype=np.float64), axis=0, dtype=np.float64)
+
+    def finalize(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        means = np.divide(self.sums, self.counts, out=np.zeros_like(self.sums), where=self.counts > 0)
+        averaged_sq = np.divide(self.sums_sq, self.counts, out=np.zeros_like(self.sums_sq), where=self.counts > 0)
+        variances = averaged_sq - np.square(means)
+        variances = np.clip(variances, 0.0, None)
+        counts = np.where(self.counts > 0, self.counts, 1.0)
+        return counts, means, variances
+
+
 class TelemetryActionDataset(Dataset):
     """
     Simplified Large Chunk Dataset for GPU Batch Training
@@ -1857,11 +1760,11 @@ class TelemetryActionDataset(Dataset):
         # Get basic chunk information
         self.chunk_count = self._count_chunks()
         self.unified_features = self._get_feature_names()
-        
-        # Initialize feature preprocessing with variance-based multi-scaler
-        self.feature_scaler = VarianceBasedMultiScaler()
+
+        # Initialize feature preprocessing
+        self.feature_scaler = PerFeatureScaler(self.unified_features)
         self._features_fitted = False
-        
+
         print(f"[INFO] ✓ Simplified dataset initialized: {self.chunk_count} large chunks")
         print(f"[INFO] ✓ GPU batch size: {batch_size}")
         print(f"[INFO] ✓ Features: {len(self.unified_features)}")
@@ -1918,46 +1821,57 @@ class TelemetryActionDataset(Dataset):
         if self._features_fitted:
             return
         
-        print(f"[INFO] Fitting feature scaling using sample from first chunk...")
-        
-        # Load first chunk and sample from it
-        first_chunk_records = self._load_chunk(0)
-        
-        all_sample_data = []
-        sample_size = min(100, len(first_chunk_records))  # Sample max 100 segments
-        
-        import random
-        sample_records = random.sample(first_chunk_records, sample_size)
-        
-        for record in sample_records:
-            # Extract data from all timesteps for this segment
-            for timestep in range(self.fixed_segment_length):
-                if timestep in record:
-                    timestep_data = record[timestep]
-                    if isinstance(timestep_data, dict):
-                        all_sample_data.append(timestep_data)
-        
-        # Build feature matrix from sample
-        feature_matrix = self._build_matrix(all_sample_data, self.unified_features)
-        
-        # Check for NaN/Inf in scaler training data
-        if np.isnan(feature_matrix).any() or np.isinf(feature_matrix).any():
-            print(f"[ERROR] NaN/Inf detected in scaler training data!")
-            print(f"  Matrix shape: {feature_matrix.shape}")
-            print(f"  NaN count: {np.isnan(feature_matrix).sum()}")
-            print(f"  Inf count: {np.isinf(feature_matrix).sum()}")
-            # Clean the data for scaler fitting
-            feature_matrix = np.nan_to_num(feature_matrix, nan=0.0, posinf=1e6, neginf=-1e6)
-            print(f"[INFO] Cleaned NaN/Inf values for scaler fitting")
-        
-        # Fit multi-feature scaler with feature names
-        self.feature_scaler.fit(feature_matrix, self.unified_features)
+        print(f"[INFO] Fitting feature scaling using all available chunks...")
+
+        stats = _RunningFeatureStats(len(self.unified_features))
+        total_rows = 0
+
+        chunk_iterator = self.data_cache.get_cached_data_chunks(self.segments_cache_key)
+
+        for chunk_idx, chunk_df in enumerate(chunk_iterator):
+            chunk_records = chunk_df.to_dict('records')
+            chunk_rows: List[List[float]] = []
+
+            for record in chunk_records:
+                for timestep in range(self.fixed_segment_length):
+                    timestep_data = record.get(timestep)
+                    if not isinstance(timestep_data, dict):
+                        continue
+
+                    row: List[float] = []
+                    for feature in self.unified_features:
+                        value = timestep_data.get(feature, 0.0)
+                        try:
+                            row.append(float(value))
+                        except (ValueError, TypeError):
+                            row.append(0.0)
+                    chunk_rows.append(row)
+
+            if chunk_rows:
+                chunk_matrix = np.array(chunk_rows, dtype=np.float32)
+                if np.isnan(chunk_matrix).any() or np.isinf(chunk_matrix).any():
+                    print(f"[WARNING] NaN/Inf detected in chunk {chunk_idx}; applying cleaning before stats update")
+                    chunk_matrix = np.nan_to_num(chunk_matrix, nan=0.0, posinf=1e6, neginf=-1e6)
+
+                stats.update(chunk_matrix)
+                total_rows += chunk_matrix.shape[0]
+
+            print(f"[DEBUG] Processed chunk {chunk_idx}: rows accumulated={total_rows}")
+
+        if total_rows == 0:
+            raise ValueError("No data available across chunks to fit feature scaler")
+
+        counts, means, variances = stats.finalize()
+        self.feature_scaler = PerFeatureScaler.from_feature_statistics(
+            self.unified_features,
+            means,
+            variances,
+            counts,
+            scaler_factory=self.feature_scaler.scaler_factory if self.feature_scaler else None
+        )
         self._features_fitted = True
-        
-        print(f"[INFO] ✓ Feature scaling fitted using {len(all_sample_data)} sample records")
-        
-        # Clear sample data immediately
-        del all_sample_data, feature_matrix
+
+        print(f"[INFO] ✓ Feature scaling fitted across {total_rows} timesteps from all chunks")
     
     def _build_matrix(self, data_list: List[Dict[str, Any]], feature_names: List[str]) -> np.ndarray:
         """Extract features and build a matrix from list of dictionaries"""
@@ -2021,8 +1935,8 @@ class TelemetryActionDataset(Dataset):
                 print(f"[WARNING] NaN/Inf detected in raw segment data - skipping segment")
                 return None
 
-            # Scale per-timestep using fitted multi-feature scaler with feature names
-            scaled_sequence = self.feature_scaler.transform(sequence_matrix, self.unified_features)
+            # Scale per-timestep using fitted scaler
+            scaled_sequence = self.feature_scaler.transform(sequence_matrix)
             
             # Check for NaN/Inf after scaling
             if np.isnan(scaled_sequence).any() or np.isinf(scaled_sequence).any():
@@ -2101,7 +2015,7 @@ class TelemetryActionDataset(Dataset):
         """
         return self.unified_features, self.unified_features
     
-    def get_scalers(self) -> VarianceBasedMultiScaler:
+    def get_scalers(self) -> PerFeatureScaler:
         return self.feature_scaler
     
     def get_segment_info(self) -> Dict[str, Any]:
@@ -2288,26 +2202,17 @@ class ExpertActionTrainer:
     
     def set_scalers_from_dataset(self, dataset: TelemetryActionDataset):
         """
-        Extract and set variance-based multi-scaler from the unified dataset on the model.
+        Extract and set scaler from the unified dataset on the model.
         
         Args:
-            dataset: Training dataset containing fitted variance-based multi-scaler
+            dataset: Training dataset containing fitted scaler
         """
         feature_scaler = dataset.get_scalers()
         
         # Set scaler on the model
         self.model.set_scalers(feature_scaler)
         
-        # Display variance-based scaler information
-        if feature_scaler and feature_scaler.is_fitted:
-            scaler_info = feature_scaler.get_feature_group_info()
-            print(f"[INFO] Set variance-based multi-scaler on model: ✓")
-            print(f"  High variance features: {scaler_info['high_variance']['count']} ({scaler_info['high_variance']['scaler_type']})")
-            print(f"  Low variance features: {scaler_info['low_variance']['count']} ({scaler_info['low_variance']['scaler_type']})")
-            print(f"  Variance threshold: {scaler_info['thresholds']['variance_threshold']}")
-            print(f"  Range threshold: {scaler_info['thresholds']['range_threshold']}")
-        else:
-            print(f"[INFO] Set variance-based multi-scaler on model: ✗")
+        print(f"[INFO] Set unified feature scaler on model: {'✓' if feature_scaler else '✗'}")
     
     def train_epoch(self, dataset: TelemetryActionDataset) -> float:
         """

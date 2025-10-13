@@ -1124,7 +1124,8 @@ class Full_dataset_TelemetryMLService:
                 # Process and filter data
                 processor = FeatureProcessor(telemetry_df)
                 processed_df = processor.general_cleaning_for_analysis()
-
+                processed_df = processor.add_time_delta()
+                
                 if processed_df.empty:
                     continue
                 
