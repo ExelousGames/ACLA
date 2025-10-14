@@ -20,7 +20,7 @@ import io
 import asyncio
 import time
 from collections import Counter
-from typing import Dict, List, Any, Optional, Tuple, Union, Iterator
+from typing import Dict, List, Any, Optional, Tuple, Union, Iterator, AsyncIterator
 from datetime import datetime
 from pathlib import Path
 from app.models import AiModelDto, ActiveModelData
@@ -499,306 +499,7 @@ class Full_dataset_TelemetryMLService:
                 "cleared_count": len(cleared_locks),
                 "timestamp": datetime.now().isoformat()
             }
-    
-    async def validate_and_preload_model(self, 
-                                        model_type: str,
-                                        track_name: Optional[str] = None,
-                                        car_name: Optional[str] = None,
-                                        model_subtype: str = "complete_model_data",
-                                        deserializer_func=None,
-                                        force_refresh: bool = False) -> Dict[str, Any]:
-        """
-        Validate a cached model or preload it from backend.
-        Useful for warming up cache or verifying model integrity.
-        
-        Args:
-            model_type: Type of model
-            track_name: Track name (optional)
-            car_name: Car name (optional)
-            model_subtype: Subtype identifier
-            deserializer_func: Deserializer function
-            force_refresh: If True, bypass cache and refetch from backend
-            
-        Returns:
-            Dictionary with validation/preload results
-        """
-        cache_key = self.model_cache._generate_cache_key(
-            model_type=model_type,
-            track_name=track_name,
-            car_name=car_name,
-            model_subtype=model_subtype
-        )
-        
-        start_time = datetime.now()
-        
-        try:
-            if force_refresh:
-                # Clear existing cache entry
-                self.model_cache.invalidate(
-                    model_type=model_type,
-                    track_name=track_name,
-                    car_name=car_name,
-                    model_subtype=model_subtype
-                )
-                print(f"[DEBUG] Force refresh - cleared cache for {cache_key}")
-            
-            # Get or fetch the model
-            model_instance, metadata = await self._get_cached_model_or_fetch(
-                model_type=model_type,
-                track_name=track_name,
-                car_name=car_name,
-                model_subtype=model_subtype,
-                deserializer_func=deserializer_func
-            )
-            
-            end_time = datetime.now()
-            load_time = (end_time - start_time).total_seconds()
-            
-            return {
-                "success": True,
-                "cache_key": cache_key,
-                "load_time_seconds": load_time,
-                "model_loaded": model_instance is not None,
-                "metadata": metadata,
-                "timestamp": end_time.isoformat()
-            }
-            
-        except Exception as e:
-            end_time = datetime.now()
-            load_time = (end_time - start_time).total_seconds()
-            
-            return {
-                "success": False,
-                "cache_key": cache_key,
-                "load_time_seconds": load_time,
-                "error": str(e),
-                "error_type": type(e).__name__,
-                "timestamp": end_time.isoformat()
-            }
 
-    
-    async def test_caching_performance(self, 
-                                      model_type: str,
-                                      track_name: Optional[str] = None,
-                                      car_name: Optional[str] = None,
-                                      deserializer_func=None,
-                                      num_tests: int = 3) -> Dict[str, Any]:
-        """
-        Test caching performance by making multiple requests for the same model
-        
-        Args:
-            model_type: Type of model to test
-            track_name: Track name (optional)
-            car_name: Car name (optional)
-            deserializer_func: Deserializer function
-            num_tests: Number of test iterations
-            
-        Returns:
-            Performance test results
-        """
-        print(f"[INFO] Testing cache performance for {model_type} ({num_tests} iterations)")
-        
-        results = {
-            "model_type": model_type,
-            "track_name": track_name,
-            "car_name": car_name,
-            "num_tests": num_tests,
-            "test_times": [],
-            "cache_hits": 0,
-            "cache_misses": 0
-        }
-        
-        # Get initial cache stats
-        initial_stats = self.model_cache.get_stats()
-        
-        for i in range(num_tests):
-            start_time = datetime.now()
-            
-            try:
-                model_instance, metadata = await self._get_cached_model_or_fetch(
-                    model_type=model_type,
-                    track_name=track_name,
-                    car_name=car_name,
-                    deserializer_func=deserializer_func
-                )
-                
-                end_time = datetime.now()
-                test_time = (end_time - start_time).total_seconds()
-                results["test_times"].append(test_time)
-                
-                print(f"[TEST {i+1}/{num_tests}] Load time: {test_time:.4f}s")
-                
-            except Exception as e:
-                print(f"[TEST {i+1}/{num_tests}] Failed: {str(e)}")
-                results["test_times"].append(None)
-        
-        # Get final cache stats
-        final_stats = self.model_cache.get_stats()
-        results["cache_hits"] = final_stats["hits"] - initial_stats["hits"]
-        results["cache_misses"] = final_stats["misses"] - initial_stats["misses"]
-        
-        # Calculate performance metrics
-        valid_times = [t for t in results["test_times"] if t is not None]
-        if valid_times:
-            results["avg_time"] = sum(valid_times) / len(valid_times)
-            results["min_time"] = min(valid_times)
-            results["max_time"] = max(valid_times)
-        
-        print(f"[RESULTS] Avg: {results.get('avg_time', 0):.4f}s, "
-              f"Min: {results.get('min_time', 0):.4f}s, "
-              f"Max: {results.get('max_time', 0):.4f}s")
-        print(f"[RESULTS] Cache hits: {results['cache_hits']}, misses: {results['cache_misses']}")
-        
-        return results
-    
-    def analyze_large_model_cache_usage(self) -> Dict[str, Any]:
-        """
-        Analyze cache usage specifically for large models and provide optimization recommendations
-        
-        Returns:
-            Analysis results with recommendations
-        """
-        cache_stats = self.model_cache.get_stats()
-        large_model_threshold_mb = 500
-        
-        analysis = {
-            "total_memory_mb": cache_stats["memory_usage_mb"],
-            "max_memory_mb": cache_stats["max_memory_mb"],
-            "memory_usage_percent": (cache_stats["memory_usage_mb"] / cache_stats["max_memory_mb"]) * 100,
-            "large_models": [],
-            "small_models": [],
-            "recommendations": [],
-            "timestamp": datetime.now().isoformat()
-        }
-        
-        # Analyze individual models
-        for entry_info in cache_stats.get("entries", []):
-            size_mb = entry_info["size_mb"]
-            model_info = {
-                "key": entry_info["key"],
-                "size_mb": size_mb,
-                "access_count": entry_info["access_count"],
-                "ttl_remaining_seconds": entry_info.get("ttl_remaining_seconds")
-            }
-            
-            if size_mb >= large_model_threshold_mb:
-                analysis["large_models"].append(model_info)
-            else:
-                analysis["small_models"].append(model_info)
-        
-        # Generate recommendations
-        if analysis["memory_usage_percent"] > 90:
-            analysis["recommendations"].append("Memory usage is very high (>90%). Consider increasing max_memory_mb or clearing unused models.")
-        
-        if len(analysis["large_models"]) > 5:
-            analysis["recommendations"].append(f"Many large models cached ({len(analysis['large_models'])}). Consider preloading only essential models.")
-        
-        if analysis["memory_usage_percent"] > 70 and len(analysis["small_models"]) > 10:
-            analysis["recommendations"].append("Consider clearing small models to make room for large models.")
-        
-        total_large_mb = sum(m["size_mb"] for m in analysis["large_models"])
-        if total_large_mb > analysis["max_memory_mb"] * 0.8:
-            analysis["recommendations"].append("Large models are consuming >80% of cache memory. Consider increasing max_memory_mb or clearing unused models.")
-        
-        return analysis
-    
-    def optimize_cache_for_large_models(self) -> Dict[str, Any]:
-        """
-        Optimize cache configuration for handling large models
-        
-        Returns:
-            Optimization results
-        """
-        print("[INFO] Optimizing cache for large models...")
-        
-        # Analyze current usage
-        analysis = self.analyze_large_model_cache_usage()
-        
-        optimization_actions = []
-        
-        # Clear small models if memory is tight
-        if analysis["memory_usage_percent"] > 80:
-            small_models_cleared = 0
-            for model_info in analysis["small_models"]:
-                # Try to extract model details from key for invalidation
-                key_parts = model_info["key"].split(":")
-                if len(key_parts) >= 3:
-                    model_type, track_name, car_name = key_parts[0], key_parts[1], key_parts[2]
-                    if self.model_cache.invalidate(
-                        model_type=model_type,
-                        track_name=track_name if track_name != 'any' else None,
-                        car_name=car_name if car_name != 'any' else None
-                    ):
-                        small_models_cleared += 1
-            
-            if small_models_cleared > 0:
-                optimization_actions.append(f"Cleared {small_models_cleared} small models to free memory")
-        
-        # Models are now cached as instances directly - no additional configuration needed
-        optimization_actions.append("Model instances are cached directly for optimal performance")
-        
-        # Clean up expired entries
-        expired_before = len([m for m in analysis["large_models"] + analysis["small_models"] 
-                            if m.get("ttl_remaining_seconds", 1) <= 0])
-        
-        # Force cleanup by accessing cache stats (which triggers cleanup)
-        self.model_cache._cleanup_expired()
-        
-        optimization_actions.append("Cleaned up expired cache entries")
-        
-        return {
-            "success": True,
-            "actions_taken": optimization_actions,
-            "analysis_before": analysis,
-            "timestamp": datetime.now().isoformat()
-        }
-    
-    async def emergency_cache_reset_for_large_models(self) -> Dict[str, Any]:
-        """
-        Emergency cache reset specifically designed for large model issues.
-        Use this when models keep re-downloading despite cache configuration.
-        
-        Returns:
-            Reset operation results
-        """
-        print("[WARNING] Performing emergency cache reset for large models...")
-        
-        # Get pre-reset stats
-        pre_stats = self.model_cache.get_stats()
-        
-        results = {
-            "pre_reset_memory_mb": pre_stats["memory_usage_mb"],
-            "pre_reset_models": pre_stats["cache_size"],
-            "actions_taken": [],
-            "timestamp": datetime.now().isoformat()
-        }
-        
-        # 1. Clear all stuck fetch locks
-        cleared_locks = await self.clear_stuck_fetch_locks()
-        if cleared_locks["cleared_count"] > 0:
-            results["actions_taken"].append(f"Cleared {cleared_locks['cleared_count']} stuck fetch locks")
-        
-        # 2. Clear entire cache
-        self.model_cache.clear()
-        results["actions_taken"].append("Cleared entire model cache")
-        
-        # 3. Log new configuration
-        self._log_cache_configuration()
-        results["actions_taken"].append("Logged new cache configuration")
-        
-        # Get post-reset stats
-        post_stats = self.model_cache.get_stats()
-        results["post_reset_memory_mb"] = post_stats["memory_usage_mb"]
-        results["post_reset_models"] = post_stats["cache_size"]
-        results["memory_freed_mb"] = results["pre_reset_memory_mb"] - results["post_reset_memory_mb"]
-        
-        print("[INFO] Emergency cache reset completed")
-        for action in results["actions_taken"]:
-            print(f"  ✓ {action}")
-        print(f"Memory freed: {results['memory_freed_mb']:.1f}MB")
-        
-        return results
-    
     async def predict_expert_actions(self, 
                                    telemetry_dict: Dict[str, Any],
                                    trackName: str, 
@@ -928,25 +629,7 @@ class Full_dataset_TelemetryMLService:
         # Check PyTorch availability for transformer training
         if not TORCH_AVAILABLE:
             raise ImportError("PyTorch is not available - transformer functionality is disabled. Please install PyTorch to use this pipeline.")
-        
-        # Validate backend service
-        if not hasattr(self, 'backend_service') or self.backend_service is None:
-            raise ValueError("Backend service is not initialized - cannot proceed with pipeline")
-        
-        # Validate data cache service
-        if not hasattr(self, 'data_cache') or self.data_cache is None:
-            raise ValueError("Data cache service is not initialized - cannot proceed with pipeline")
-        
-        # Validate track name
-        if not trackName or not isinstance(trackName, str) or len(trackName.strip()) == 0:
-            raise ValueError("Invalid trackName provided - must be a non-empty string")
-        
-        print(f"[INFO] ✓ All dependencies validated successfully")
-        print(f"[INFO] ✓ PyTorch available: {TORCH_AVAILABLE}")
-        print(f"[INFO] ✓ Backend service initialized")
-        print(f"[INFO] ✓ Data cache service initialized") 
-        print(f"[INFO] ✓ Track name validated: '{trackName}'")
-        
+
         self._print_section_divider("STREAMING TELEMETRY DATA FROM BACKEND DIRECTLY TO CACHE")
         
         # Always fetch from backend (no cache check)
@@ -989,7 +672,7 @@ class Full_dataset_TelemetryMLService:
         top_laps_telemetry_list, bottom_laps_cache_key = await self.process_large_dataset_efficiently(
             data_cache_key=dataset_cache_key,
             trackName=trackName,
-            max_memory_records=100000
+            max_memory_records=10000
         )
 
         segment_length = 120  # Default segment length for transformer training
@@ -1081,33 +764,119 @@ class Full_dataset_TelemetryMLService:
         print(f"[INFO] Completed streaming processing of {processed_sessions} sessions")
 
     async def process_large_dataset_efficiently(self, data_cache_key: str, trackName: str,
-                                        max_memory_records: int = 50000) -> Tuple[List[Dict[str, Any]], str]:
+                                        max_memory_records: int = 10000) -> Tuple[List[Dict[str, Any]], str]:
         """
-        Streamlined processing of large cached datasets with minimal memory footprint
-        
+        Streamlined processing of large cached datasets with a bounded memory footprint for bottom laps.
+
         Args:
             trackName: Track name for data retrieval
-            max_memory_records: Maximum records per chunk
-            
+            max_memory_records: Maximum number of bottom-lap telemetry records kept in memory before flushing to cache
+
         Returns:
             Tuple of (top_laps_telemetry_list, bottom_laps_cache_key)
         """
-        print(f"[INFO] Processing {trackName} dataset with {max_memory_records} chunk size")
-        
-        # Simple direct processing - maintain only top 5 laps
-        top_5_laps = {}  # lap_num -> {lap_time_ms, records}
+        print(f"[INFO] Processing {trackName} dataset with {max_memory_records} in-memory bottom records")
+
+        top_laps: List[Dict[str, Any]] = []
         bottom_laps_cache_key = f"bottom_laps_{trackName}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        bottom_buffer: List[Dict[str, Any]] = []
+        bottom_buffer_records = 0
+        total_bottom_laps_cached = 0
         total_processed = 0
         chunk_idx = 0
-        total_bottom_laps_cached = 0
-        
-        chunk_iterator = self.data_cache.get_cached_data_chunks(
-            cache_key=data_cache_key
-        )
-        
-        # Debug: Check if iterator is properly created
+
+        features = self._imitate_expert_feature_names or self.telemetry_features.get_features_for_imitate_expert()
+
+        async def flush_bottom_buffer(reason: str) -> None:
+            nonlocal bottom_buffer, bottom_buffer_records, total_bottom_laps_cached
+            if not bottom_buffer:
+                return
+
+            async def buffer_iterator() -> AsyncIterator[Dict[str, Any]]:
+                for entry in bottom_buffer:
+                    yield entry
+
+            try:
+                cache_success = await self.data_cache.cache_chunks_streaming(
+                    cache_key=bottom_laps_cache_key,
+                    chunks_iterator=buffer_iterator()
+                )
+            except Exception as cache_error:
+                print(f"[WARNING] Exception while flushing bottom laps during {reason}: {cache_error}")
+                return
+
+            if cache_success:
+                cached_count = len(bottom_buffer)
+                print(f"[INFO] Cached {cached_count} bottom laps ({bottom_buffer_records} records) [{reason}] -> {bottom_laps_cache_key}")
+                total_bottom_laps_cached += cached_count
+                bottom_buffer = []
+                bottom_buffer_records = 0
+            else:
+                print(f"[WARNING] Cache service reported failure while flushing bottom laps during {reason}")
+
+        async def stage_bottom_lap(lap_entry: Dict[str, Any], current_chunk_idx: int) -> None:
+            nonlocal bottom_buffer_records
+
+            lap_records = lap_entry.get("records", [])
+            record_count = len(lap_records)
+            if record_count == 0:
+                return
+
+            if bottom_buffer_records and bottom_buffer_records + record_count > max_memory_records:
+                await flush_bottom_buffer("memory limit reached")
+
+            if bottom_buffer_records and bottom_buffer_records + record_count > max_memory_records:
+                print(f"[WARNING] Unable to clear bottom lap buffer; proceeding with {record_count} additional records")
+
+            if record_count > max_memory_records:
+                print(
+                    f"[WARNING] Single lap {lap_entry['id']} ({record_count} records) exceeds memory limit {max_memory_records}; caching immediately"
+                )
+                bottom_buffer.append({
+                    "chunkId": f"bottom_lap_{lap_entry['id']}_{current_chunk_idx}",
+                    "data": lap_records
+                })
+                bottom_buffer_records = record_count
+                await flush_bottom_buffer("single lap overflow")
+                return
+
+            bottom_buffer.append({
+                "chunkId": f"bottom_lap_{lap_entry['id']}_{current_chunk_idx}",
+                "data": lap_records
+            })
+            bottom_buffer_records += record_count
+
+        def make_lap_entry(lap_id: str, lap_time_ms: float, lap_num: Any, lap_records: List[Dict[str, Any]]) -> Dict[str, Any]:
+            return {
+                "id": lap_id,
+                "lap_time_ms": lap_time_ms,
+                "lap_num": lap_num,
+                "records": lap_records
+            }
+
+        def update_top_laps(candidate: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+            """Maintain the five fastest laps; return lap treated as bottom if applicable."""
+            if len(top_laps) < 5:
+                top_laps.append(candidate)
+                print(
+                    f"[DEBUG] Added lap {candidate['id']} to top laps ({len(top_laps)}/5, time: {candidate['lap_time_ms']}ms)"
+                )
+                return None
+
+            slowest_idx = max(range(len(top_laps)), key=lambda idx: top_laps[idx]["lap_time_ms"])
+            slowest = top_laps[slowest_idx]
+            if candidate["lap_time_ms"] < slowest["lap_time_ms"]:
+                top_laps[slowest_idx] = candidate
+                print(
+                    f"[DEBUG] Replaced slowest lap {slowest['id']} with {candidate['id']} (time: {candidate['lap_time_ms']}ms)"
+                )
+                return slowest
+
+            return candidate
+
+        chunk_iterator = self.data_cache.get_cached_data_chunks(cache_key=data_cache_key)
         print(f"[DEBUG] Created chunk iterator for cache key: {data_cache_key}")
-        
+
         chunks_processed = 0
         for chunk_df in chunk_iterator:
             chunks_processed += 1
@@ -1115,170 +884,109 @@ class Full_dataset_TelemetryMLService:
             if chunk_df is None or chunk_df.empty:
                 print(f"[DEBUG] Chunk {chunks_processed} is empty, skipping")
                 continue
-            
+
             try:
-                # chunk_df now contains the actual telemetry data (extracted automatically by get_cached_data_chunks)
                 telemetry_df = chunk_df
                 print(f"[DEBUG] Processing {len(telemetry_df)} telemetry records from chunk {chunks_processed}")
-                
-                # Process and filter data
+
                 processor = FeatureProcessor(telemetry_df)
                 processed_df = processor.general_cleaning_for_analysis()
                 processed_df = processor.add_time_delta()
-                
+
                 if processed_df.empty:
                     continue
-                
-                # Extract performance laps first
+
                 lap_times_ms, lap_df_list = processor._filter_top_performance_laps(processed_df, 1)
-                
-                print(f"[DEBUG] Chunk {chunk_idx}: Found {len(lap_df_list) if lap_df_list else 0} performance laps")
-                
-                # Fallback: if no top performance laps found, try to get all laps
                 if not lap_df_list:
-                    print(f"[DEBUG] Chunk {chunk_idx}: No performance laps found, trying to extract all laps as fallback")
-                    try:
-                        # Try to extract all laps if no top performance laps found
-                        lap_times_ms, lap_df_list = processor._filter_top_performance_laps(processed_df, 1)  # Get up to 100%
-                        if not lap_df_list:
-                            print(f"[DEBUG] Chunk {chunk_idx}: No laps found at all, skipping chunk")
-                            continue
-                        print(f"[DEBUG] Chunk {chunk_idx}: Fallback found {len(lap_df_list)} total laps")
-                    except Exception as fallback_error:
-                        print(f"[DEBUG] Chunk {chunk_idx}: Fallback lap extraction failed: {fallback_error}")
-                        continue
-                
-                # Collect bottom laps from this chunk
-                chunk_bottom_laps = []
-                
-                # Filter to relevant features on each lap
-                features = self._imitate_expert_feature_names or TelemetryFeatures().get_features_for_imitate_expert()
+                    print(f"[DEBUG] Chunk {chunk_idx}: No performance laps found, skipping chunk")
+                    continue
+
                 laps_processed_in_chunk = 0
                 for lap_idx, lap_df in enumerate(lap_df_list):
                     filtered_lap_df = processor.filter_features_by_list(lap_df, features)
                     if filtered_lap_df.empty:
                         print(f"[DEBUG] Chunk {chunk_idx}: Lap {lap_idx} filtered out - no features remaining")
                         continue
-                    
-                    # Get lap info
-                    lap_records = filtered_lap_df.to_dict('records')
-                    lap_num = lap_records[0].get('lap_number', lap_idx)
-                    
-                    # Use lap time from the method instead of calculating manually
-                    if lap_idx < len(lap_times_ms):
-                        lap_time = lap_times_ms[lap_idx]
-                    else:
+
+                    if lap_idx >= len(lap_times_ms):
                         print(f"[DEBUG] Chunk {chunk_idx}: Lap {lap_idx} missing lap time, skipping")
                         continue
-                    
+
+                    lap_time = lap_times_ms[lap_idx]
                     if lap_time <= 0 or lap_time == float('inf'):
-                        print(f"[DEBUG] Chunk {chunk_idx}: Lap {lap_num} has invalid lap time {lap_time}, skipping")
+                        print(f"[DEBUG] Chunk {chunk_idx}: Lap {lap_idx} has invalid lap time {lap_time}, skipping")
                         continue
-                        
-                    laps_processed_in_chunk += 1
-                    
-                    # Create unique lap identifier to avoid overwrites
+
+                    lap_records = filtered_lap_df.to_dict('records')
+                    if not lap_records:
+                        continue
+
+                    lap_num = lap_records[0].get('lap_number', lap_idx)
                     unique_lap_id = f"{chunk_idx}_{lap_num}_{len(lap_records)}_{lap_time}"
-                    
-                    print(f"[DEBUG] Chunk {chunk_idx}: Processing lap {lap_num} with time {lap_time}ms ({len(lap_records)} records) [ID: {unique_lap_id}]")
-                    
-                    # Check if this lap should be in top 5
-                    if len(top_5_laps) < 5:
-                        # Still have space, add this lap
-                        top_5_laps[unique_lap_id] = {"lap_time_ms": lap_time, "records": lap_records, "lap_num": lap_num}
-                        print(f"[DEBUG] Added lap {unique_lap_id} to top laps (position {len(top_5_laps)}/5, time: {lap_time}ms)")
-                    else:
-                        # Find slowest lap in current top 5
-                        slowest_lap = max(top_5_laps.items(), key=lambda x: x[1]["lap_time_ms"])
-                        
-                        if lap_time < slowest_lap[1]["lap_time_ms"]:
-                            # This lap is faster, replace the slowest
-                            # Move slowest to bottom laps
-                            chunk_bottom_laps.append({
-                                "chunkId": f"bottom_lap_{slowest_lap[0]}_{chunk_idx}",
-                                "data": slowest_lap[1]["records"]
-                            })
-                            
-                            # Remove slowest and add new lap
-                            del top_5_laps[slowest_lap[0]]
-                            top_5_laps[unique_lap_id] = {"lap_time_ms": lap_time, "records": lap_records, "lap_num": lap_num}
-                            print(f"[DEBUG] Replaced slowest lap with {unique_lap_id} (time: {lap_time}ms)")
-                        else:
-                            # This lap is slower than top 5, add to bottom laps
-                            chunk_bottom_laps.append({
-                                "chunkId": f"bottom_lap_{unique_lap_id}_{chunk_idx}",
-                                "data": lap_records
-                            })
-                
-                print(f"[DEBUG] Chunk {chunk_idx}: Processed {laps_processed_in_chunk} laps. Current top laps: {len(top_5_laps)}, bottom laps: {len(chunk_bottom_laps)}")
-                
-                # Cache bottom laps from this chunk immediately
-                if chunk_bottom_laps:
-                    try:
-                        async def cache_chunk_bottom_laps():
-                            for session in chunk_bottom_laps:
-                                yield session
-                        
-                        cache_success = await self.data_cache.cache_chunks_streaming(
-                            cache_key=bottom_laps_cache_key,  # Use the generated cache key for bottom laps
-                            chunks_iterator=cache_chunk_bottom_laps()
-                        )
-                        
-                        if cache_success:
-                            total_bottom_laps_cached += len(chunk_bottom_laps)
-                            print(f"[INFO] Successfully cached {len(chunk_bottom_laps)} bottom laps from chunk {chunk_idx} with key: {bottom_laps_cache_key}")
-                        else:
-                            print(f"[WARNING] Failed to cache bottom laps from chunk {chunk_idx} with key: {bottom_laps_cache_key}")
-                            
-                    except Exception as cache_error:
-                        print(f"[WARNING] Error caching bottom laps from chunk {chunk_idx}: {cache_error}")
-                
-                total_processed += len(chunk_df)
+
+                    laps_processed_in_chunk += 1
+                    print(
+                        f"[DEBUG] Chunk {chunk_idx}: Lap {lap_num} ({len(lap_records)} records) time {lap_time}ms [ID: {unique_lap_id}]"
+                    )
+
+                    candidate = make_lap_entry(unique_lap_id, lap_time, lap_num, lap_records)
+                    bottom_candidate = update_top_laps(candidate)
+                    if bottom_candidate:
+                        await stage_bottom_lap(bottom_candidate, chunk_idx)
+
+                print(
+                    f"[DEBUG] Chunk {chunk_idx}: Processed {laps_processed_in_chunk} laps. Top laps: {len(top_laps)} Bottom buffer records: {bottom_buffer_records}"
+                )
+
+                total_processed += len(telemetry_df)
                 chunk_idx += 1
-                
+
                 if chunk_idx % 10 == 0:
-                    print(f"[INFO] Processed {chunk_idx} chunks, {total_processed} records, {total_bottom_laps_cached} bottom laps cached")
-                    print(f"[INFO] Current top laps count: {len(top_5_laps)}")
-                    
-            except Exception as e:
-                print(f"[WARNING] Chunk processing failed: {e}")
+                    print(
+                        f"[INFO] Processed {chunk_idx} chunks, {total_processed} records, {total_bottom_laps_cached} bottom laps cached"
+                    )
+                    print(f"[INFO] Current top lap count: {len(top_laps)}")
+
+            except Exception as error:
+                print(f"[WARNING] Chunk processing failed: {error}")
                 continue
-        
-        # Debug information before validation
+
+        await flush_bottom_buffer("final flush")
+
         print(f"[DEBUG] Finished processing all chunks:")
         print(f"[DEBUG] - Total chunks processed: {chunks_processed}")
         print(f"[DEBUG] - Valid chunks processed: {chunk_idx}")
         print(f"[DEBUG] - Total records processed: {total_processed}")
-        print(f"[DEBUG] - Top laps found: {len(top_5_laps)}")
+        print(f"[DEBUG] - Top laps found: {len(top_laps)}")
         print(f"[DEBUG] - Bottom laps cached: {total_bottom_laps_cached}")
-        
-        if len(top_5_laps) > 0:
-            lap_times = [lap_info["lap_time_ms"] for lap_info in top_5_laps.values()]
+
+        if top_laps:
+            lap_times = [lap_info["lap_time_ms"] for lap_info in top_laps]
             print(f"[DEBUG] Top lap times: {sorted(lap_times)}")
-        
-        # Validation and final processing
-        if len(top_5_laps) == 0 and chunk_idx == 0:
-            raise ValueError(f"No valid telemetry data found for {trackName}. No chunks were successfully processed.")
-        
-        if chunks_processed == 0:
-            raise ValueError(f"No chunks were returned by iterator for track {trackName}. Check if data exists in cache.")
-        
-        if chunk_idx == 0:
-            raise ValueError(f"All {chunks_processed} chunks failed processing for track {trackName}. Check data quality.")
-        
-        if len(top_5_laps) < 5:
-            raise ValueError(f"Insufficient top laps found: {len(top_5_laps)}/5 required. Need at least 5 expert laps for training. Processed {chunk_idx} valid chunks with {total_processed} records.")
-        
-        # Extract records from top 5 laps
-        top_laps_telemetry_list = []
-        for lap_info in top_5_laps.values():
+
+        if not chunks_processed:
+            raise ValueError(
+                f"No chunks were returned by iterator for track {trackName}. Check if data exists in cache."
+            )
+
+        if not chunk_idx:
+            raise ValueError(
+                f"All {chunks_processed} chunks failed processing for track {trackName}. Check data quality."
+            )
+
+        if len(top_laps) < 5:
+            raise ValueError(
+                f"Insufficient top laps found: {len(top_laps)}/5 required. Processed {chunk_idx} valid chunks with {total_processed} records."
+            )
+
+        top_laps_telemetry_list: List[Dict[str, Any]] = []
+        for lap_info in top_laps:
             top_laps_telemetry_list.extend(lap_info["records"])
-        
+
         print(f"[SUCCESS] Processed {chunk_idx} chunks, {total_processed} records")
         print(f"[SUCCESS] Selected top 5 laps: {len(top_laps_telemetry_list)} records")
         print(f"[SUCCESS] Cached {total_bottom_laps_cached} bottom laps across {chunk_idx} chunks")
-        
-        # Return the base cache key (without chunk suffix) so the caller can find all chunks
+
         return top_laps_telemetry_list, bottom_laps_cache_key
 
     def get_data_cache_info(self) -> Dict[str, Any]:
