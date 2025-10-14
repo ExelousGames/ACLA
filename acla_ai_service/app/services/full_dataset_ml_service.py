@@ -898,7 +898,7 @@ class Full_dataset_TelemetryMLService:
 
                 lap_times_ms, lap_df_list = processor._filter_top_performance_laps(processed_df, 1)
                 if not lap_df_list:
-                    print(f"[DEBUG] Chunk {chunk_idx}: No performance laps found, skipping chunk")
+                    print(f"[DEBUG] No performance laps found, skipping chunk")
                     continue
 
                 laps_processed_in_chunk = 0
@@ -906,16 +906,16 @@ class Full_dataset_TelemetryMLService:
                 for lap_idx, lap_df in enumerate(lap_df_list):
                     filtered_lap_df = processor.filter_features_by_list(lap_df, features)
                     if filtered_lap_df.empty:
-                        print(f"[DEBUG] Chunk {chunk_idx}: Lap {lap_idx} filtered out - no features remaining")
+                        print(f"[DEBUG] Lap {lap_idx} filtered out - no features remaining")
                         continue
 
                     if lap_idx >= len(lap_times_ms):
-                        print(f"[DEBUG] Chunk {chunk_idx}: Lap {lap_idx} missing lap time, skipping")
+                        print(f"[DEBUG] Lap {lap_idx} missing lap time, skipping")
                         continue
 
                     lap_time = lap_times_ms[lap_idx]
                     if lap_time <= 0 or lap_time == float('inf'):
-                        print(f"[DEBUG] Chunk {chunk_idx}: Lap {lap_idx} has invalid lap time {lap_time}, skipping")
+                        print(f"[DEBUG] Lap {lap_idx} has invalid lap time {lap_time}, skipping")
                         continue
 
                     lap_records = filtered_lap_df.to_dict('records')
