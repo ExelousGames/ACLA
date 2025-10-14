@@ -1086,7 +1086,7 @@ class FeatureProcessor:
         # Get the intersection of DataFrame columns and the feature list
         available_features = [col for col in feature_list if col in df.columns]
         missing_features = [col for col in feature_list if col not in df.columns]
-        print(f"all features: {df.columns.tolist()}")
+
         if not available_features:
             print(f"[WARNING] No features from the provided list are available in the DataFrame")
             print(f"[INFO] Requested features: {feature_list[:10]}{'...' if len(feature_list) > 10 else ''}")
