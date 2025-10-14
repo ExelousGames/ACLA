@@ -874,20 +874,20 @@ class Full_dataset_TelemetryMLService:
 
             return candidate
 
-        chunk_iterator = self.data_cache.get_cached_data_chunks(cache_key=data_cache_key)
+        session_chunks_iterator = self.data_cache.get_cached_data_chunks(cache_key=data_cache_key)
         print(f"[DEBUG] Created chunk iterator for cache key: {data_cache_key}")
 
-        chunks_processed = 0
-        for chunk_df in chunk_iterator:
-            chunks_processed += 1
+        session_chunks_processed = 0
+        for session_chunk_df in session_chunks_iterator:
+            session_chunks_processed += 1
 
-            if chunk_df is None or chunk_df.empty:
-                print(f"[DEBUG] Chunk {chunks_processed} is empty, skipping")
+            if session_chunk_df is None or session_chunk_df.empty:
+                print(f"[DEBUG] Chunk {session_chunks_processed} is empty, skipping")
                 continue
 
             try:
-                telemetry_df = chunk_df
-                print(f"[DEBUG] Processing {len(telemetry_df)} telemetry records from chunk {chunks_processed}")
+                telemetry_df = session_chunk_df
+                print(f"[DEBUG] Processing {len(telemetry_df)} telemetry records from chunk {session_chunks_processed}")
 
                 processor = FeatureProcessor(telemetry_df)
                 processed_df = processor.general_cleaning_for_analysis()
@@ -902,6 +902,7 @@ class Full_dataset_TelemetryMLService:
                     continue
 
                 laps_processed_in_chunk = 0
+
                 for lap_idx, lap_df in enumerate(lap_df_list):
                     filtered_lap_df = processor.filter_features_by_list(lap_df, features)
                     if filtered_lap_df.empty:
@@ -921,7 +922,7 @@ class Full_dataset_TelemetryMLService:
                     if not lap_records:
                         continue
 
-                    lap_num = lap_records[0].get('lap_number', lap_idx)
+                    lap_num = lap_records[0].get('lap_id', lap_idx)
                     unique_lap_id = f"{chunk_idx}_{lap_num}_{len(lap_records)}_{lap_time}"
 
                     laps_processed_in_chunk += 1
@@ -954,7 +955,7 @@ class Full_dataset_TelemetryMLService:
         await flush_bottom_buffer("final flush")
 
         print(f"[DEBUG] Finished processing all chunks:")
-        print(f"[DEBUG] - Total chunks processed: {chunks_processed}")
+        print(f"[DEBUG] - Total chunks processed: {session_chunks_processed}")
         print(f"[DEBUG] - Valid chunks processed: {chunk_idx}")
         print(f"[DEBUG] - Total records processed: {total_processed}")
         print(f"[DEBUG] - Top laps found: {len(top_laps)}")
@@ -964,14 +965,14 @@ class Full_dataset_TelemetryMLService:
             lap_times = [lap_info["lap_time_ms"] for lap_info in top_laps]
             print(f"[DEBUG] Top lap times: {sorted(lap_times)}")
 
-        if not chunks_processed:
+        if not session_chunks_processed:
             raise ValueError(
                 f"No chunks were returned by iterator for track {trackName}. Check if data exists in cache."
             )
 
         if not chunk_idx:
             raise ValueError(
-                f"All {chunks_processed} chunks failed processing for track {trackName}. Check data quality."
+                f"All {session_chunks_processed} chunks failed processing for track {trackName}. Check data quality."
             )
 
         if len(top_laps) < 5:
