@@ -942,12 +942,6 @@ class Full_dataset_TelemetryMLService:
                 total_processed += len(telemetry_df)
                 chunk_idx += 1
 
-                if chunk_idx % 10 == 0:
-                    print(
-                        f"[INFO] Processed {chunk_idx} chunks, {total_processed} records, {total_bottom_laps_cached} bottom laps cached"
-                    )
-                    print(f"[INFO] Current top lap count: {len(top_laps)}")
-
             except Exception as error:
                 print(f"[WARNING] Chunk processing failed: {error}")
                 continue
@@ -1196,7 +1190,7 @@ class Full_dataset_TelemetryMLService:
 
 
     async def _enrich_chunk_with_context(self, chunk_data: List[Dict[str, Any]], 
-                                        imitation_learning, tire_service) -> List[Dict[str, Any]]:
+                                        imitation_learning: ExpertImitateLearningService, tire_service: TireGripAnalysisService) -> List[Dict[str, Any]]:
         """
         Enrich a single chunk with all contextual features
         
@@ -1216,13 +1210,13 @@ class Full_dataset_TelemetryMLService:
         try:
             chunk_imitation_features = imitation_learning.extract_expert_state_for_telemetry(chunk_data)
         except Exception as e:
-            print(f"[WARNING] Failed to extract expert state features: {str(e)}")
+            raise RuntimeError(f"Failed to extract imitation features: {str(e)}")
         
         chunk_grip_features = []
         try:
             chunk_grip_features = await tire_service.extract_tire_grip_features(chunk_data)
         except Exception as e:
-            print(f"[WARNING] Failed to extract tire grip features: {str(e)}")
+            raise RuntimeError(f"Failed to extract tire grip features: {str(e)}")
         
         # Combine all features into enriched records
         enriched_chunk = []
@@ -1310,11 +1304,6 @@ class Full_dataset_TelemetryMLService:
         Returns:
             str - Cache key for accessing the enriched segments
         """
-        
-        print(f"[INFO] Starting streamlined contextual data enrichment:")
-        print(f"  - Expert data for training: {len(top_laps_telemetry_list)} records")
-        print(f"  - Bottom laps will be processed via chunk iterator from cache: {bottom_laps_cache_key}")
-        
         # Step 1: Train all enrichment models using expert data
         self._print_section_divider("TRAINING ENRICHMENT MODELS WITH EXPERT DATA")
         
@@ -1379,7 +1368,7 @@ class Full_dataset_TelemetryMLService:
         
         segments_cache_key = f"enriched_segments_{track_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         
-        chunk_iterator = self.data_cache.get_cached_data_chunks(
+        lao_chunks_iterator = self.data_cache.get_cached_data_chunks(
             cache_key=bottom_laps_cache_key  # Use the cache key where bottom laps are stored
         )
         
@@ -1390,12 +1379,12 @@ class Full_dataset_TelemetryMLService:
         current_segment_batch = []
         cache_batch_number = 0
         
-        for chunk_df in chunk_iterator:
-            if chunk_df is None or chunk_df.empty:
+        for lap_chunk_df in lao_chunks_iterator:
+            if lap_chunk_df is None or lap_chunk_df.empty:
                 continue
             
             processed_chunks += 1
-            chunk_data = chunk_df.to_dict('records')
+            chunk_data = lap_chunk_df.to_dict('records')
             
             print(f"[INFO] Processing chunk {processed_chunks}: {len(chunk_data)} records")
             

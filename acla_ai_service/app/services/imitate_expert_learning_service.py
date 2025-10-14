@@ -779,7 +779,6 @@ class ExpertImitateLearningService:
         expert_feature_rows: List[Dict[str, Any]] = []
 
         # Position models should already be loaded/deserialized
-        print("[INFO] Using pre-loaded position models...")
         if not self.position_learner.position_model:
             raise ValueError("Position model not loaded. Call train_ai_model() or deserialize_imitation_model() first.")
 
@@ -790,8 +789,7 @@ class ExpertImitateLearningService:
             try:
                 # Extract normalized positions from batch
                 if 'Graphics_normalized_car_position' not in batch_df.columns:
-                    print("[WARNING] No normalized position data available for expert predictions")
-                    return [{} for _ in range(len(batch_df))]
+                    raise ValueError("Graphics_normalized_car_position not found in batch data")
                 
                 normalized_positions = batch_df['Graphics_normalized_car_position'].values
                 batch_predictions = self.position_learner.predict_expert_actions_at_position(normalized_positions)
@@ -800,11 +798,9 @@ class ExpertImitateLearningService:
                 raise Exception(f"Batch prediction failed: {e}")
 
         total_rows = len(processed_df)
-        print(f"[INFO] Processing {total_rows} rows for expert state extraction...")
-        
+
         # OPTIMIZATION: Process in batches instead of row-by-row for massive speedup
         batch_size = min(1000, total_rows)  # Process up to 1000 rows at once
-        print(f"[INFO] Using batch processing with batch size: {batch_size}")
 
         # Process all data in batches
         for batch_start in range(0, total_rows, batch_size):
@@ -827,21 +823,25 @@ class ExpertImitateLearningService:
                         # Current velocity values from telemetry
                         curr_velocity_x = float(current_row.get('Physics_velocity_x', 0.0))
                         curr_velocity_y = float(current_row.get('Physics_velocity_y', 0.0))
+                        curr_velocity_z = float(current_row.get('Physics_velocity_z', 0.0))
 
                         # Expert optimal velocities from predictions (using ExpertOptimalFeature mapping)
                         EO = ExpertFeatureCatalog.ExpertOptimalFeature
                         exp_velocity_x = float(row_predictions.get(EO.EXPERT_OPTIMAL_VELOCITY_X.value, curr_velocity_x))
                         exp_velocity_y = float(row_predictions.get(EO.EXPERT_OPTIMAL_VELOCITY_Y.value, curr_velocity_y))
+                        exp_velocity_z = float(row_predictions.get('expert_optimal_velocity_z', curr_velocity_z))
 
                         # Calculate velocity alignment (dot product normalized)
                         # If moving in same direction as expert, alignment = 1.0
-                        curr_velocity_magnitude = np.sqrt(curr_velocity_x**2 + curr_velocity_y**2)
-                        exp_velocity_magnitude = np.sqrt(exp_velocity_x**2 + exp_velocity_y**2)
+                        curr_velocity_vector = np.array([curr_velocity_x, curr_velocity_y, curr_velocity_z])
+                        exp_velocity_vector = np.array([exp_velocity_x, exp_velocity_y, exp_velocity_z])
+                        curr_velocity_magnitude = np.linalg.norm(curr_velocity_vector)
+                        exp_velocity_magnitude = np.linalg.norm(exp_velocity_vector)
                         
                         if curr_velocity_magnitude > 1e-6 and exp_velocity_magnitude > 1e-6:
                             # Normalize vectors and calculate dot product
-                            curr_velocity_norm = np.array([curr_velocity_x / curr_velocity_magnitude, curr_velocity_y / curr_velocity_magnitude])
-                            exp_velocity_norm = np.array([exp_velocity_x / exp_velocity_magnitude, exp_velocity_y / exp_velocity_magnitude])
+                            curr_velocity_norm = curr_velocity_vector / curr_velocity_magnitude
+                            exp_velocity_norm = exp_velocity_vector / exp_velocity_magnitude
                             velocity_alignment = np.dot(curr_velocity_norm, exp_velocity_norm)
                         else:
                             velocity_alignment = 0.0
@@ -854,7 +854,18 @@ class ExpertImitateLearningService:
                         row_features[ContextFeature.SPEED_DIFFERENCE.value] = float(speed_difference)
 
                         # Calculate distance to expert line (negative if off to left, positive if off to right)
-                        distance_to_expert_line = np.sqrt((row_predictions.get(EO.EXPERT_OPTIMAL_PLAYER_POS_X.value, 0.0) - current_row.get('Graphics_player_pos_x', 0.0))**2 + (row_predictions.get(EO.EXPERT_OPTIMAL_PLAYER_POS_Y.value, 0.0) - current_row.get('Graphics_player_pos_y', 0.0))**2)    
+                        expert_pos_x = row_predictions.get(EO.EXPERT_OPTIMAL_PLAYER_POS_X.value, 0.0)
+                        expert_pos_y = row_predictions.get(EO.EXPERT_OPTIMAL_PLAYER_POS_Y.value, 0.0)
+                        expert_pos_z = row_predictions.get(EO.EXPERT_OPTIMAL_PLAYER_POS_Z.value, 0.0)
+                        current_pos_x = current_row.get('Graphics_player_pos_x', 0.0)
+                        current_pos_y = current_row.get('Graphics_player_pos_y', 0.0)
+                        current_pos_z = current_row.get('Graphics_player_pos_z', 0.0)
+
+                        distance_to_expert_line = np.sqrt(
+                            (expert_pos_x - current_pos_x) ** 2 +
+                            (expert_pos_y - current_pos_y) ** 2 +
+                            (expert_pos_z - current_pos_z) ** 2
+                        )
                         row_features[ContextFeature.DISTANCE_TO_EXPERT_LINE.value] = float(distance_to_expert_line)
 
                     except Exception as _e:
