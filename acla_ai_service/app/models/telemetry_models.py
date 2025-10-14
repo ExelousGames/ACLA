@@ -77,6 +77,57 @@ def _parse_car_coordinates(value):
     
     return None
 
+def strip_dataframe_by_time_gap(df: pd.DataFrame, gap_between: float) -> pd.DataFrame:
+    """Down-sample rows using Graphics_current_time and enforce maximum gaps.
+
+    Args:
+        df: Input DataFrame containing telemetry records.
+        gap_between: Minimum spacing between retained records in milliseconds.
+
+    Returns:
+        DataFrame with rows spaced by at least ``gap_between`` milliseconds. If any
+        consecutive telemetry samples are separated by more than ``gap_between`` the
+        function returns an empty DataFrame.
+    """
+
+    if gap_between <= 0:
+        raise ValueError("gap_between must be a positive value in milliseconds")
+
+    if df.empty:
+        return df.copy()
+
+    if 'Graphics_current_time' not in df.columns:
+        raise KeyError("Graphics_current_time column is required for gap stripping")
+
+    time_ms = pd.to_numeric(df['Graphics_current_time'], errors='coerce')
+    valid_mask = time_ms.notna()
+
+    if not valid_mask.any():
+        return df.iloc[0:0].copy()
+
+    working_df = df.loc[valid_mask].copy()
+    working_df['_time_ms'] = time_ms.loc[valid_mask]
+    working_df.sort_values('_time_ms', inplace=True)
+
+    time_values = working_df['_time_ms'].to_numpy(dtype=float)
+    if time_values.size == 0:
+        return df.iloc[0:0].copy()
+
+    diffs = np.diff(time_values)
+    if diffs.size and np.nanmax(diffs) > gap_between:
+        return df.iloc[0:0].copy()
+
+    keep_mask = np.zeros(len(working_df), dtype=bool)
+    last_selected = None
+
+    for idx, time_value in enumerate(time_values):
+        if last_selected is None or (time_value - last_selected) >= gap_between:
+            keep_mask[idx] = True
+            last_selected = time_value
+
+    stripped_df = working_df.loc[keep_mask].drop(columns=['_time_ms'])
+    return stripped_df.reset_index(drop=True)
+
 class TelemetryFeatures:
     """
     Complete set of AC Competizione telemetry features for AI analysis
@@ -1148,7 +1199,7 @@ class FeatureProcessor:
 
     def add_time_delta(
         self,
-        new_column: str = "time_delta_seconds",
+        new_column: str = "time_delta_seconds", default_delta: float = 0.0
     ) -> pd.DataFrame:
         """Compute in-place time deltas (seconds) from Graphics_current_time and return self.df."""
 
@@ -1156,13 +1207,13 @@ class FeatureProcessor:
             self.df = pd.DataFrame()
 
         if self.df.empty:
-            self.df[new_column] = []
+            self.df[new_column] = default_delta
             return self.df
 
         time_column_name = "Graphics_current_time"
         if time_column_name not in self.df.columns:
-            print(f"[INFO] Time column '{time_column_name}' missing; defaulting {new_column} to zeros")
-            self.df[new_column] = 0.0
+            print(f"[INFO] Time column '{time_column_name}' missing; defaulting {new_column} to {default_delta}")
+            self.df[new_column] = default_delta
             return self.df
 
         time_series = self.df[time_column_name]
