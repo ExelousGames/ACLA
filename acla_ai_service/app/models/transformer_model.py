@@ -2613,132 +2613,205 @@ class ExpertActionTrainer:
         
         return make_json_safe(quality_results)
     
-    def evaluate(self, dataset: TelemetryActionDataset) -> Dict[str, float]:
+    def evaluate(self, dataset: TelemetryActionDataset) -> Dict[str, Any]:
         """
-        Evaluate the model on chunk-based test data using efficient batch processing
+        Run a targeted single-sequence evaluation comparing teacher-forced and
+        autoregressive predictions against the ground-truth target sequence.
         
         Args:
-            dataset: Test dataset with chunk-based data
+            dataset: Dataset providing cached unified telemetry segments.
             
         Returns:
-            Evaluation metrics across all segments
+            Dictionary describing prediction quality for both inference modes.
         """
+        if len(dataset) == 0:
+            raise ValueError("Dataset is empty – cannot run evaluation")
+
         self.model.eval()
-        total_loss = 0.0
-        total_samples = 0
-        all_predictions = []
-        all_targets = []
-        
-        context_feature_names = dataset.get_context_feature_names()
-        num_chunks = len(dataset)
-        
-        print(f"[INFO] Evaluating on {num_chunks} chunks using chunk-based processing...")
-        
-        total_batches_processed = 0
-        
-        with torch.no_grad():
-            for chunk_idx in range(num_chunks):
-                try:
-                    print(f"[INFO] Processing evaluation chunk {chunk_idx + 1}/{num_chunks}")
-                    chunk_batches_processed = 0
-                    
-                    # Process all batches in this chunk
-                    for batch_inputs, batch_targets in dataset.get_chunk_batches(chunk_idx):
-                        batch_inputs = batch_inputs.to(self.device, non_blocking=self._cuda)
-                        batch_targets = batch_targets.to(self.device, non_blocking=self._cuda)
-                        
-                        batch_size_actual = batch_inputs.shape[0]
-                        segment_length = batch_inputs.shape[1]
-                        
-                        # Use teacher forcing for evaluation consistency with training
-                        with torch.autocast(device_type='cuda', dtype=self.amp_dtype, enabled=self._cuda and self.amp_dtype is not None):
-                            target_seq_len = batch_targets.shape[1]
-                            predictions = self.model(
-                                unified_input=batch_inputs, 
-                                prediction_steps=target_seq_len,
-                                use_teacher_forcing=True  # Use teacher forcing for consistent evaluation
-                            )
-                        
-                        # Loss computation outside autocast: unified state prediction loss
-                        loss = self.model.unified_loss(
-                            predictions=predictions, 
-                            targets=batch_targets
-                        )
-                        
-                        batch_samples = batch_size_actual * segment_length
-                        total_loss += loss.item() * batch_samples
-                        total_samples += batch_samples
-                        
-                        # Store predictions and targets for metrics (convert to numpy for memory efficiency)
-                        predictions_np = predictions.detach().cpu().numpy()
-                        targets_np = batch_targets.detach().cpu().numpy()
-                        
-                        all_predictions.append(predictions_np)
-                        all_targets.append(targets_np)
-                        
-                        # Clean up GPU memory
-                        del batch_inputs, batch_targets, predictions, loss
-                        
-                        chunk_batches_processed += 1
-                        total_batches_processed += 1
-                        
-                        # Show progress updates
-                        if total_batches_processed % 100 == 0:
-                            running_avg_loss = total_loss / total_samples if total_samples > 0 else 0.0
-                            print(f"[INFO] Evaluation progress: {total_batches_processed} batches processed, running avg loss: {running_avg_loss:.6f}")
-                    
-                    print(f"[INFO] Chunk {chunk_idx + 1} complete: {chunk_batches_processed} batches processed")
-                    
-                except Exception as e:
-                    print(f"[WARNING] Failed to process evaluation chunk {chunk_idx}: {str(e)}")
+
+        print("[INFO] Evaluating model on a single representative segment...")
+
+        # Ensure feature scaling is ready and gather one valid segment
+        dataset._ensure_features_fitted()
+
+        selected_input = None
+        selected_target = None
+        segment_metadata: Dict[str, int] = {}
+
+        for chunk_idx in range(len(dataset)):
+            chunk_records = dataset._load_chunk(chunk_idx)
+            for segment_idx, segment_record in enumerate(chunk_records):
+                processed = dataset._process_segment_record(segment_record)
+                if processed is None:
                     continue
-        
-        # Compute additional metrics - concatenate all batch data efficiently
-        print(f"[INFO] Computing final evaluation metrics...")
-        
-        # Concatenate along the batch dimension first, then reshape
-        predictions_array = np.concatenate(all_predictions, axis=0)  # Shape: [total_segments, seq_len, features]
-        targets_array = np.concatenate(all_targets, axis=0)
-        
-        print(f"[INFO] Evaluation data shape - Predictions: {predictions_array.shape}, Targets: {targets_array.shape}")
-        
-        # Flatten for overall metrics (more efficient than reshaping twice)
-        pred_flat = predictions_array.flatten()
-        target_flat = targets_array.flatten()
-        
-        print(f"[INFO] Computing metrics on {len(pred_flat):,} prediction values...")
-        
-        # Compute metrics efficiently
-        mse = np.mean((target_flat - pred_flat) ** 2)
-        mae = np.mean(np.abs(target_flat - pred_flat))
-        
-        # R² score (vectorized computation)
-        target_mean = np.mean(target_flat)
-        ss_res = np.sum((target_flat - pred_flat) ** 2)
-        ss_tot = np.sum((target_flat - target_mean) ** 2)
-        r2 = 1 - (ss_res / ss_tot) if ss_tot != 0 else 0
-        
-        final_test_loss = total_loss / total_samples if total_samples > 0 else 0.0
-        
-        # Display final evaluation results
-        print(f"\n[INFO] ===== EVALUATION COMPLETE =====")
-        print(f"[INFO] Chunks processed: {num_chunks}")
-        print(f"[INFO] Batches processed: {total_batches_processed}")
-        print(f"[INFO] Total samples: {total_samples}")
-        print(f"[INFO] Test Loss: {final_test_loss:.6f}")
-        print(f"[INFO] Mean Squared Error (MSE): {mse:.6f}")
-        print(f"[INFO] Mean Absolute Error (MAE): {mae:.6f}")
-        print(f"[INFO] R² Score: {r2:.4f}")
-        print(f"[INFO] ================================\n")
-        
+
+                input_seq_np, target_seq_np = processed
+                selected_input = input_seq_np
+                selected_target = target_seq_np
+                segment_metadata = {
+                    'chunk_index': chunk_idx,
+                    'segment_index': segment_idx
+                }
+                break
+
+            if selected_input is not None:
+                break
+
+        if selected_input is None or selected_target is None:
+            raise ValueError("Unable to locate a valid segment for evaluation")
+
+        print(
+            f"[INFO] Using chunk {segment_metadata['chunk_index']} "
+            f"segment {segment_metadata['segment_index']} for evaluation"
+        )
+
+        input_sequence_serialized = selected_input.tolist()
+
+        # Prepare tensors
+        input_tensor = torch.from_numpy(np.expand_dims(selected_input, axis=0)).to(self.device)
+        target_tensor = torch.from_numpy(np.expand_dims(selected_target, axis=0)).to(self.device)
+
+        target_seq_len = target_tensor.shape[1]
+        feature_count = target_tensor.shape[-1]
+
+        print(f"[INFO] Sequence length: {target_seq_len} | Features: {feature_count}")
+
+        def _compute_metrics(predictions: torch.Tensor, targets: torch.Tensor) -> Dict[str, float]:
+            diff = predictions - targets
+            mse = torch.mean(diff ** 2).item()
+            mae = torch.mean(torch.abs(diff)).item()
+            rmse = float(np.sqrt(max(mse, 0.0)))
+            max_abs = torch.max(torch.abs(diff)).item()
+            final_step_mae = torch.mean(torch.abs(diff[:, -1, :])).item()
+            return {
+                'mse': mse,
+                'rmse': rmse,
+                'mae': mae,
+                'max_abs_error': max_abs,
+                'final_step_mae': final_step_mae
+            }
+
+        with torch.no_grad():
+            # Teacher-forced prediction (mirrors training behaviour)
+            with torch.autocast(
+                device_type='cuda',
+                dtype=self.amp_dtype,
+                enabled=self._cuda and self.amp_dtype is not None
+            ):
+                teacher_predictions = self.model(
+                    unified_input=input_tensor,
+                    prediction_steps=target_seq_len,
+                    use_teacher_forcing=True
+                )
+
+            # Autoregressive rollout using model predictions as future inputs
+            with torch.autocast(
+                device_type='cuda',
+                dtype=self.amp_dtype,
+                enabled=self._cuda and self.amp_dtype is not None
+            ):
+                autoregressive_predictions = self.model(
+                    unified_input=input_tensor,
+                    prediction_steps=target_seq_len,
+                    use_teacher_forcing=False
+                )
+
+        # Align shapes if autoregressive path returns squeezed tensor for single step
+        if autoregressive_predictions.dim() == 3:
+            autoreg_tensor = autoregressive_predictions
+        else:
+            autoreg_tensor = autoregressive_predictions.unsqueeze(0)
+
+        if teacher_predictions.shape[1] != target_seq_len:
+            raise ValueError(
+                f"Teacher-forced prediction length {teacher_predictions.shape[1]} "
+                f"does not match target length {target_seq_len}"
+            )
+
+        if autoreg_tensor.shape[1] != target_seq_len:
+            raise ValueError(
+                f"Autoregressive prediction length {autoreg_tensor.shape[1]} "
+                f"does not match target length {target_seq_len}"
+            )
+
+        teacher_tensor = teacher_predictions.float()
+        autoreg_tensor = autoreg_tensor.float()
+        target_eval_tensor = target_tensor.float()
+
+        teacher_metrics = _compute_metrics(teacher_tensor, target_eval_tensor)
+        autoreg_metrics = _compute_metrics(autoreg_tensor, target_eval_tensor)
+
+        # Collect comparison snapshots (detach to CPU for readability)
+        teacher_np = teacher_tensor.detach().cpu().numpy()
+        autoreg_np = autoreg_tensor.detach().cpu().numpy()
+        target_np = target_eval_tensor.detach().cpu().numpy()
+        input_np = input_tensor.detach().cpu().numpy()
+
+        # Build per-step breakdowns
+        teacher_per_step: List[Dict[str, Any]] = []
+        autoreg_per_step: List[Dict[str, Any]] = []
+
+        teacher_seq = teacher_np[0]
+        autoreg_seq = autoreg_np[0]
+        input_seq = input_np[0]
+        target_seq = target_np[0]
+
+        if input_seq.shape[0] != target_seq_len:
+            raise ValueError(
+                f"Input sequence length {input_seq.shape[0]} does not match target length {target_seq_len}"
+            )
+
+        if teacher_seq.shape[0] != target_seq_len:
+            raise ValueError(
+                f"Teacher-forced sequence length {teacher_seq.shape[0]} does not match target length {target_seq_len}"
+            )
+
+        if autoreg_seq.shape[0] != target_seq_len:
+            raise ValueError(
+                f"Autoregressive sequence length {autoreg_seq.shape[0]} does not match target length {target_seq_len}"
+            )
+
+        for step_idx in range(target_seq_len):
+            teacher_per_step.append({
+                'step': step_idx,
+                'input_state': input_seq[step_idx].tolist(),
+                'prediction': teacher_seq[step_idx].tolist(),
+                'target_state': target_seq[step_idx].tolist()
+            })
+
+            autoreg_per_step.append({
+                'step': step_idx,
+                'generated_state': autoreg_seq[step_idx].tolist(),
+                'target_state': target_seq[step_idx].tolist()
+            })
+
+        print(
+            "[INFO] Teacher-forced MSE: {:.6f} | MAE: {:.6f}".format(
+                teacher_metrics['mse'], teacher_metrics['mae']
+            )
+        )
+        print(
+            "[INFO] Autoregressive MSE: {:.6f} | MAE: {:.6f}".format(
+                autoreg_metrics['mse'], autoreg_metrics['mae']
+            )
+        )
+
         return make_json_safe({
-            'test_loss': final_test_loss,
-            'mse': mse,
-            'mae': mae,
-            'r2': r2,
-            'num_samples': total_samples,
-            'num_chunks': num_chunks,
-            'num_batches': total_batches_processed
+            'segment': segment_metadata,
+            'sequence_length': int(target_seq_len),
+            'feature_count': int(feature_count),
+            'input_sequence': input_sequence_serialized,
+            'teacher_forcing': {
+                'metrics': teacher_metrics,
+                'predictions': teacher_np.tolist(),
+                'per_step': teacher_per_step
+            },
+            'autoregressive': {
+                'metrics': autoreg_metrics,
+                'predictions': autoreg_np.tolist(),
+                'per_step': autoreg_per_step
+            },
+            'target_sequence': target_np.tolist()
         })
     
     def get_model_info(self) -> Dict[str, Any]:

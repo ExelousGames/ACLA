@@ -42,7 +42,11 @@ from sklearn.pipeline import Pipeline
 from sklearn.compose import ColumnTransformer
 
 # Import your telemetry models
-from ..models.telemetry_models import TelemetryFeatures, FeatureProcessor, _safe_float
+from ..models.telemetry_models import (
+    TelemetryFeatures,
+    FeatureProcessor,
+    _safe_float,
+)
 
 # Import backend service
 from .backend_service import backend_service
@@ -114,6 +118,9 @@ class Full_dataset_TelemetryMLService:
         self.data_cache = training_cache
         print(f"[INFO] Using training-optimized data cache for large dataset processing")
         print(f"[INFO] Parquet-only storage optimized for ML training pipelines")
+
+        # Default telemetry time-gap (ms) used when stripping densely-sampled data
+        self.telemetry_time_gap_ms = 100
         
         # Add a simple lock mechanism to prevent concurrent fetches of the same model
         self._model_fetch_locks = {}
@@ -890,9 +897,10 @@ class Full_dataset_TelemetryMLService:
                 print(f"[DEBUG] Processing {len(telemetry_df)} telemetry records from chunk {session_chunks_processed}")
 
                 processor = FeatureProcessor(telemetry_df)
-                processed_df = processor.general_cleaning_for_analysis()
+                processor.general_cleaning_for_analysis()
+                processor.strip_dataframe_by_time_gap(self.telemetry_time_gap_ms)
                 processed_df = processor.add_time_delta()
-
+                
                 if processed_df.empty:
                     continue
 
@@ -942,6 +950,8 @@ class Full_dataset_TelemetryMLService:
                 total_processed += len(telemetry_df)
                 chunk_idx += 1
 
+            except ValueError as gap_error:
+                raise gap_error
             except Exception as error:
                 print(f"[WARNING] Chunk processing failed: {error}")
                 continue
@@ -1048,54 +1058,6 @@ class Full_dataset_TelemetryMLService:
             )
             
             print(f"[INFO] ✓ Streaming dataset created with {len(dataset)} segments")
-            print(f"[INFO] ✓ Memory efficient: segments loaded on-demand during training")
-            
-            # Quick validation by sampling a few chunks and their batches
-            print(f"[INFO] Validating segments using sampling approach...")
-            sample_size = min(3, len(dataset))  # Sample fewer chunks since each has many segments
-            import random
-            sample_chunk_indices = random.sample(range(len(dataset)), sample_size)
-            
-            validation_errors = []
-            total_batches_validated = 0
-            
-            for chunk_idx in sample_chunk_indices:
-                try:
-                    print(f"[DEBUG] Validating chunk {chunk_idx}...")
-                    batch_count = 0
-                    
-                    # Use get_chunk_batches to get actual data from the chunk
-                    for batch_input_seq, batch_target_seq in dataset.get_chunk_batches(chunk_idx):
-                        batch_count += 1
-                        total_batches_validated += 1
-                        
-                        # Validate batch structure
-                        if batch_input_seq.shape != batch_target_seq.shape:
-                            validation_errors.append(f"Chunk {chunk_idx}, Batch {batch_count}: input/target shape mismatch")
-                            continue
-                            
-                        # The returned tensors have shape [batch_size, seq_len, features]
-                        batch_size, seq_len, num_features = batch_input_seq.shape
-                        expected_seq_len = fixed_segment_length - 1  # Due to input/target shift
-                        
-                        if seq_len != expected_seq_len:
-                            validation_errors.append(f"Chunk {chunk_idx}, Batch {batch_count}: sequence length mismatch (got {seq_len}, expected {expected_seq_len})")
-                        
-                        # Only validate first few batches per chunk to avoid excessive validation time
-                        if batch_count >= 3:
-                            break
-                    
-                    print(f"[DEBUG] Chunk {chunk_idx}: validated {batch_count} batches successfully")
-                        
-                except Exception as e:
-                    validation_errors.append(f"Chunk {chunk_idx}: {str(e)}")
-            
-            if validation_errors:
-                error_details = "\n".join(validation_errors)
-                raise ValueError(f"Segment validation failed:\n{error_details}")
-            
-            print(f"[INFO] ✓ Validated {total_batches_validated} batches from {sample_size} sample chunks successfully")
-            
             # Configure PyTorch optimizations
             use_cuda = torch.cuda.is_available()
             
@@ -1110,7 +1072,6 @@ class Full_dataset_TelemetryMLService:
             print(f"[INFO] Using all {len(dataset)} segments for training")
             print(f"[INFO] Total training samples: {len(dataset) * fixed_segment_length}")
             print(f"[INFO] Device: {'CUDA' if use_cuda else 'CPU'}")
-            print(f"[INFO] No validation split - using full dataset for training")
             
             # Get feature dimensions from dataset
             input_feature_names, action_feature_names = dataset.get_feature_names()
@@ -1123,8 +1084,8 @@ class Full_dataset_TelemetryMLService:
             # Create model with unified input features
             model = ExpertActionTransformer(
                 total_features_count=input_features_count,
-                d_model=256,
-                nhead=8,
+                d_model=256, # Embedding dimension
+                nhead=16,  # Number of attention heads
                 num_layers=20,  # Smaller model for faster training
                 sequence_length=fixed_segment_length  # Use fixed segment length
             )
@@ -1134,10 +1095,6 @@ class Full_dataset_TelemetryMLService:
             print(f"[DEBUG] Creating trainer on device: {device}")
             trainer = ExpertActionTrainer(model, device=device, learning_rate=1e-4)
         
-            print(f"[DEBUG] Skipping data quality validation for streaming dataset...")
-            # Note: Quality validation is disabled for streaming datasets to avoid memory issues
-            # The streaming approach already performs basic validation during segment loading
-            
             # Train model using the new fixed-size segment approach
             print(f"[DEBUG] Starting training loop...")
             training_history = trainer.train(

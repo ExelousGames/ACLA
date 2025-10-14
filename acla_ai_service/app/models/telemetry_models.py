@@ -77,56 +77,7 @@ def _parse_car_coordinates(value):
     
     return None
 
-def strip_dataframe_by_time_gap(df: pd.DataFrame, gap_between: float) -> pd.DataFrame:
-    """Down-sample rows using Graphics_current_time and enforce maximum gaps.
-
-    Args:
-        df: Input DataFrame containing telemetry records.
-        gap_between: Minimum spacing between retained records in milliseconds.
-
-    Returns:
-        DataFrame with rows spaced by at least ``gap_between`` milliseconds. If any
-        consecutive telemetry samples are separated by more than ``gap_between`` the
-        function returns an empty DataFrame.
-    """
-
-    if gap_between <= 0:
-        raise ValueError("gap_between must be a positive value in milliseconds")
-
-    if df.empty:
-        return df.copy()
-
-    if 'Graphics_current_time' not in df.columns:
-        raise KeyError("Graphics_current_time column is required for gap stripping")
-
-    time_ms = pd.to_numeric(df['Graphics_current_time'], errors='coerce')
-    valid_mask = time_ms.notna()
-
-    if not valid_mask.any():
-        return df.iloc[0:0].copy()
-
-    working_df = df.loc[valid_mask].copy()
-    working_df['_time_ms'] = time_ms.loc[valid_mask]
-    working_df.sort_values('_time_ms', inplace=True)
-
-    time_values = working_df['_time_ms'].to_numpy(dtype=float)
-    if time_values.size == 0:
-        return df.iloc[0:0].copy()
-
-    diffs = np.diff(time_values)
-    if diffs.size and np.nanmax(diffs) > gap_between:
-        return df.iloc[0:0].copy()
-
-    keep_mask = np.zeros(len(working_df), dtype=bool)
-    last_selected = None
-
-    for idx, time_value in enumerate(time_values):
-        if last_selected is None or (time_value - last_selected) >= gap_between:
-            keep_mask[idx] = True
-            last_selected = time_value
-
-    stripped_df = working_df.loc[keep_mask].drop(columns=['_time_ms'])
-    return stripped_df.reset_index(drop=True)
+    
 
 class TelemetryFeatures:
     """
@@ -937,6 +888,62 @@ class FeatureProcessor:
 
         return processed_df
     
+    def strip_dataframe_by_time_gap(self, gap_between: float) -> pd.DataFrame:
+        """Down-sample rows based on Graphics_current_time and update self.df in-place.
+
+        Args:
+            gap_between: Minimum spacing between retained records in milliseconds.
+
+        Returns:
+            The filtered DataFrame stored on the processor.
+        """
+
+        if gap_between <= 0:
+            raise ValueError("gap_between must be a positive value in milliseconds")
+
+        if self.df is None:
+            self.df = pd.DataFrame()
+            return self.df
+
+        if self.df.empty:
+            return self.df
+
+        if 'Graphics_current_time' not in self.df.columns:
+            raise KeyError("Graphics_current_time column is required for gap stripping")
+
+        time_ms = pd.to_numeric(self.df['Graphics_current_time'], errors='coerce')
+        valid_mask = time_ms.notna()
+
+        if not valid_mask.any():
+            self.df = self.df.iloc[0:0].copy()
+            return self.df
+
+        working_df = self.df.loc[valid_mask].copy()
+        working_df['_time_ms'] = time_ms.loc[valid_mask]
+        working_df.sort_values('_time_ms', inplace=True)
+
+        time_values = working_df['_time_ms'].to_numpy(dtype=float)
+        if time_values.size == 0:
+            self.df = self.df.iloc[0:0].copy()
+            return self.df
+
+        diffs = np.diff(time_values)
+        if diffs.size and np.nanmax(diffs) > gap_between:
+            self.df = self.df.iloc[0:0].copy()
+            return self.df
+
+        keep_mask = np.zeros(len(working_df), dtype=bool)
+        last_selected = None
+
+        for idx, time_value in enumerate(time_values):
+            if last_selected is None or (time_value - last_selected) >= gap_between:
+                keep_mask[idx] = True
+                last_selected = time_value
+
+        stripped_df = working_df.loc[keep_mask].drop(columns=['_time_ms']).reset_index(drop=True)
+        self.df = stripped_df
+        return self.df
+
     def _handle_complex_fields(self, df: pd.DataFrame) -> None:
         """Handle complex nested fields from AC Competizione telemetry
         player car coordinates is extracted from array of car coordinates, and named as Graphics_player_pos_x, Graphics_player_pos_y, Graphics_player_pos_z"""
@@ -1240,6 +1247,7 @@ class FeatureProcessor:
 
         return self.df
 
+    
     # ========================= Console Plotting Utilities ========================= #
     def plot_features_console(
         self,
