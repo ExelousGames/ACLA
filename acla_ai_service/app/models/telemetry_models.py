@@ -915,15 +915,15 @@ class FeatureProcessor:
         
         # Handle complex nested structures from AC Competizione telemetry
         self._handle_complex_fields(processed_df)
-        
+
         # Handle missing values
         numeric_columns = processed_df.select_dtypes(include=['number']).columns
         processed_df[numeric_columns] = processed_df[numeric_columns].fillna(0)
-        
+
         # Convert string boolean values to actual booleans
-        boolean_features = [col for col in processed_df.columns if 
+        boolean_features = [col for col in processed_df.columns if
                           isinstance(col, str) and any(keyword in col.lower() for keyword in ['on', 'enabled', 'valid', 'running', 'controlled'])]
-        
+
         for col in boolean_features:
             if col in processed_df.columns:
                 if processed_df[col].dtype == 'object':
@@ -931,7 +931,10 @@ class FeatureProcessor:
                         'True': True, 'False': False, 'true': True, 'false': False,
                         '1': True, '0': False, 1: True, 0: False
                     }).fillna(False)
-        
+
+        # Persist cleaned frame so downstream helpers (e.g., add_time_delta) operate on enriched data
+        self.df = processed_df
+
         return processed_df
     
     def _handle_complex_fields(self, df: pd.DataFrame) -> None:
