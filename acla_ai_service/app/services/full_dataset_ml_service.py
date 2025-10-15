@@ -511,7 +511,7 @@ class Full_dataset_TelemetryMLService:
                                    telemetry_dict: Dict[str, Any],
                                    trackName: str, 
                                    carName: Optional[str] = 'AllCars',
-                                   sequence_length: int = 120) -> Dict[str, Any]:
+                                   sequence_length: int = 20) -> Dict[str, Any]:
         """
         Fetch transformer model and predict expert actions from telemetry data
         
@@ -679,10 +679,11 @@ class Full_dataset_TelemetryMLService:
         top_laps_telemetry_list, bottom_laps_cache_key = await self.process_large_dataset_efficiently(
             data_cache_key=dataset_cache_key,
             trackName=trackName,
-            max_memory_records=10000
+            max_memory_records=10000,
+            telemetry_time_gap_ms=self.telemetry_time_gap_ms
         )
 
-        segment_length = 120  # Default segment length for transformer training
+        segment_length = 30  # Default segment length for transformer training
         segments_cache_key = None
         transformer_results = {"success": False, "error": "Training not started"}  # Initialize with failure
         
@@ -771,7 +772,7 @@ class Full_dataset_TelemetryMLService:
         print(f"[INFO] Completed streaming processing of {processed_sessions} sessions")
 
     async def process_large_dataset_efficiently(self, data_cache_key: str, trackName: str,
-                                        max_memory_records: int = 10000) -> Tuple[List[Dict[str, Any]], str]:
+                                        max_memory_records: int = 10000, telemetry_time_gap_ms: int = 1000) -> Tuple[List[Dict[str, Any]], str]:
         """
         Streamlined processing of large cached datasets with a bounded memory footprint for bottom laps.
 
@@ -898,7 +899,7 @@ class Full_dataset_TelemetryMLService:
 
                 processor = FeatureProcessor(telemetry_df)
                 processor.general_cleaning_for_analysis()
-                processor.strip_dataframe_by_time_gap(self.telemetry_time_gap_ms)
+                processor.strip_dataframe_by_time_gap(telemetry_time_gap_ms)
                 processed_df = processor.add_time_delta()
                 
                 if processed_df.empty:
@@ -1050,7 +1051,6 @@ class Full_dataset_TelemetryMLService:
             print(f"[INFO] Creating streaming dataset from segments cache key: {segments_cache_key}")
             
             # Use streaming dataset that doesn't load all segments into memory
-            # segments_cache_key is already the complete cache key returned by enriched_contextual_data
             dataset = TelemetryActionDataset(
                 data_cache=self.data_cache,
                 segments_cache_key=segments_cache_key,
@@ -1070,7 +1070,6 @@ class Full_dataset_TelemetryMLService:
                     pass
             
             print(f"[INFO] Using all {len(dataset)} segments for training")
-            print(f"[INFO] Total training samples: {len(dataset) * fixed_segment_length}")
             print(f"[INFO] Device: {'CUDA' if use_cuda else 'CPU'}")
             
             # Get feature dimensions from dataset
@@ -1079,7 +1078,6 @@ class Full_dataset_TelemetryMLService:
             
             print(f"[INFO] Dataset info: {input_features_count} combined input features, "
                   f"{len(action_feature_names)} action features")
-            print(f"[INFO] Fixed segment length: {fixed_segment_length}")
             
             # Create model with unified input features
             model = ExpertActionTransformer(

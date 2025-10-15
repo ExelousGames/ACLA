@@ -540,7 +540,11 @@ class ExpertActionTransformer(nn.Module):
         # Input embedding for unified features
         self.input_embedding = nn.Linear(total_features_count, d_model)
 
-        # Positional encoding : Without positional encoding: The transformer can't distinguish between [brake, throttle, steer] and [steer, brake, throttle], it adds unique positional information
+        # Positional encoding injects timestep order so the transformer knows which state comes next;
+        # without it, self-attention would treat the sequence as orderless and lose the progression signal.
+        # If max_len were set to exactly sequence_length, 
+        # the moment autoregressive inference asked for a timestep beyond that budget you’d hit an index error (positional cache too short). 
+        # Multiplying by two gives a safety margin so the model can consume the original context and a comparably long stretch of generated future steps without rebuilding the positional encoding table.
         self.pos_encoding = PositionalEncoding(d_model, dropout, max_len=sequence_length * 2)
         
         # Transformer encoder for processing unified state sequences
