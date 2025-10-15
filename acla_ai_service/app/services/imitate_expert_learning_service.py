@@ -882,7 +882,7 @@ class ExpertImitateLearningService:
     def filter_optimal_telemetry_segments(self, telemetry_data: List[Dict[str, Any]], 
                                          segment_length: int = 20, 
                                          improvement_threshold: float = 0.55,
-                                         min_segments: int = 5) -> List[List[Dict[str, Any]]]:
+                                         min_segments: int = 0) -> List[List[Dict[str, Any]]]:
         """
         Filter telemetry data using streamlined no-fallback approach.
         

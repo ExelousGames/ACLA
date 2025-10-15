@@ -29,55 +29,6 @@ sys.stdout.reconfigure(line_buffering=True)
 
 
 # -----------------------------
-# Contextual Feature Ordering
-# -----------------------------
-def get_canonical_context_feature_order() -> List[str]:
-    """
-    Get the canonical ordering of contextual features for consistent training/prediction.
-    
-    This function defines the exact order that contextual features should appear in
-    across training and prediction phases. Features are ordered by:
-    1. ExpertFeatureCatalog.ContextFeature
-    2. TireGripFeatureCatalog.ContextFeature
-    
-    Returns:
-        List[str]: Ordered list of feature names
-    """
-    context_features = []
-    
-    # Add expert context features in enum order
-    context_features.extend([f.value for f in ExpertFeatureCatalog.ContextFeature])
-    
-    # Add tire grip context features in enum order
-    context_features.extend([f.value for f in TireGripFeatureCatalog.ContextFeature])
-    
-    return context_features
-
-
-def extract_context_features_canonical_order(context_data: Dict[str, Any]) -> List[float]:
-    """
-    Extract contextual features in canonical order, filling missing values with 0.0.
-    
-    Args:
-        context_data: Dictionary containing contextual features
-        
-    Returns:
-        List[float]: Features in canonical order with missing values filled as 0.0
-    """
-    canonical_order = get_canonical_context_feature_order()
-    features = []
-    
-    for feature_name in canonical_order:
-        value = context_data.get(feature_name, 0.0)
-        try:
-            features.append(float(value))
-        except (ValueError, TypeError):
-            features.append(0.0)
-    
-    return features
-
-
-# -----------------------------
 # Per-feature scaling utilities
 # -----------------------------
 class PerFeatureScaler:
@@ -865,7 +816,6 @@ class ExpertActionTransformer(nn.Module):
     
     def predict_human_readable(self, 
                               current_telemetry: Dict[str, Any],
-                              context_data: Optional[Dict[str, Any]] = None,
                               sequence_length: int = 10) -> Dict[str, Any]:
         """
         Generate human-readable driving improvement predictions from current telemetry data.
@@ -892,12 +842,6 @@ class ExpertActionTransformer(nn.Module):
         Args:
             current_telemetry: Dictionary containing current driver telemetry data
                               Expected keys: speed, position, forces, steering, throttle, brake, etc.
-            context_data: Optional dictionary with gap and environmental context information
-                         Should include gap features from ExpertFeatureCatalog.ContextFeature:
-                         - expert_velocity_alignment: How aligned current velocity is with expert
-                         - speed_difference: Speed difference from expert optimal
-                         - distance_to_expert_line: Distance from expert racing line
-                         Can include: tire grip levels, weather conditions
             sequence_length: Number of future action steps to predict (default: 10)
             
         Returns:
@@ -924,12 +868,9 @@ class ExpertActionTransformer(nn.Module):
             # Get device from model parameters first
             device = next(self.parameters()).device
             
-            # Prepare combined input data for model input
-            combined_features = self._extract_combined_features_for_prediction(current_telemetry, context_data)
-            
             # For inference, create a single timestep input (not repeated sequence)
             # The model will use autoregressive generation to create the sequence
-            combined_tensor = torch.tensor([[combined_features]], dtype=torch.float32).to(device)  # [1, 1, features]
+            combined_tensor = torch.tensor([[current_telemetry]], dtype=torch.float32).to(device)  # [1, 1, features]
             
             # Generate predictions
             try:
@@ -967,64 +908,6 @@ class ExpertActionTransformer(nn.Module):
                 "error_type": type(e).__name__
             })
             raise RuntimeError(json.dumps(error_payload))
-    
-    def _extract_combined_features_for_prediction(self, telemetry: Dict[str, Any], context_data: Optional[Dict[str, Any]] = None) -> List[float]:
-        """
-        Extract combined telemetry and gap features for model input.
-        
-        Args:
-            telemetry: Dictionary containing non-expert telemetry data
-            context_data: Optional dictionary containing gap features from ExpertFeatureCatalog.ContextFeature:
-                         - expert_velocity_alignment: Alignment with expert velocity direction
-                         - speed_difference: Speed difference from expert optimal
-                         - distance_to_expert_line: Distance from expert racing line
-            
-        Returns:
-            List[float]: Combined features for model input (telemetry + gap features + environmental context)
-        """
-        # Extract telemetry features
-        try:
-            from ..services.imitate_expert_learning_service import get_features_for_imitate_expert
-            telemetry_feature_names = get_features_for_imitate_expert()
-        except Exception:
-            try:
-                telemetry_feature_names = TelemetryFeatures.get_features_for_imitate_expert()
-            except Exception:
-                raise ValueError("Could not get telemetry feature names")
-        
-        telemetry_features = []
-        for feature_name in telemetry_feature_names:
-            try:
-                value = float(telemetry.get(feature_name, 0.0))
-                telemetry_features.append(value)
-            except (ValueError, TypeError):
-                telemetry_features.append(0.0)
-        
-        # Extract context features if available
-        context_features = []
-        if context_data:
-            context_features = extract_context_features_canonical_order(context_data)
-        else:
-            raise ValueError("Context data is required for gap features")
-        
-        # Combine telemetry and context features
-        combined_features = telemetry_features + context_features
-        
-        # Ensure the feature vector matches the model's expected input size
-        expected_len = self.total_features_count
-        if len(combined_features) < expected_len:
-            combined_features.extend([0.0] * (expected_len - len(combined_features)))
-        elif len(combined_features) > expected_len:
-            combined_features = combined_features[:expected_len]
-
-        # Apply unified feature scaler if available
-        if self.feature_scaler is not None:
-            import numpy as np
-            features_array = np.array(combined_features).reshape(1, -1)
-            scaled_features = self.feature_scaler.transform(features_array)
-            combined_features = scaled_features.flatten().tolist()
-
-        return combined_features
     
     def _create_sequence_predictions(self, predictions: np.ndarray, sequence_length: int) -> List[Dict[str, Any]]:
         """Create sequence of future predictions from unified feature vectors - includes ALL targets"""
@@ -2751,14 +2634,34 @@ class ExpertActionTrainer:
         target_np = target_eval_tensor.detach().cpu().numpy()
         input_np = input_tensor.detach().cpu().numpy()
 
+        # Restore original scale for easier interpretation if scaler is available
+        feature_scaler = dataset.get_scalers()
+
+        def _inverse_scale(array: np.ndarray) -> np.ndarray:
+            flat = array.reshape(-1, feature_count)
+            unscaled = feature_scaler.inverse_transform(flat)
+            return np.asarray(unscaled, dtype=np.float32).reshape(array.shape)
+
+        teacher_np_unscaled = _inverse_scale(teacher_np)
+        autoreg_np_unscaled = _inverse_scale(autoreg_np)
+        target_np_unscaled = _inverse_scale(target_np)
+        input_np_unscaled = _inverse_scale(input_np)
+
         # Build per-step breakdowns
         teacher_per_step: List[Dict[str, Any]] = []
         autoreg_per_step: List[Dict[str, Any]] = []
 
         teacher_seq = teacher_np[0]
+        teacher_seq_unscaled = teacher_np_unscaled[0]
         autoreg_seq = autoreg_np[0]
+        autoreg_seq_unscaled = autoreg_np_unscaled[0]
         input_seq = input_np[0]
+        input_seq_unscaled = input_np_unscaled[0]
         target_seq = target_np[0]
+        target_seq_unscaled = target_np_unscaled[0]
+        feature_names, _ = dataset.get_feature_names()
+        if len(feature_names) != feature_count:
+            feature_names = [f"feature_{idx}" for idx in range(feature_count)]
 
         if input_seq.shape[0] != target_seq_len:
             raise ValueError(
@@ -2775,19 +2678,54 @@ class ExpertActionTrainer:
                 f"Autoregressive sequence length {autoreg_seq.shape[0]} does not match target length {target_seq_len}"
             )
 
+        def _named(values: np.ndarray) -> Dict[str, float]:
+            return {name: float(val) for name, val in zip(feature_names, values)}
+
+        teacher_predictions_named: List[Dict[str, float]] = []
+        teacher_predictions_unscaled_named: List[Dict[str, float]] = []
+        autoreg_predictions_named: List[Dict[str, float]] = []
+        autoreg_predictions_unscaled_named: List[Dict[str, float]] = []
+        target_named: List[Dict[str, float]] = []
+        target_unscaled_named: List[Dict[str, float]] = []
+        input_named: List[Dict[str, float]] = []
+        input_unscaled_named: List[Dict[str, float]] = []
+
         for step_idx in range(target_seq_len):
+            teacher_named = _named(teacher_seq[step_idx])
+            teacher_unscaled_named = _named(teacher_seq_unscaled[step_idx])
+            autoreg_named = _named(autoreg_seq[step_idx])
+            autoreg_unscaled_named = _named(autoreg_seq_unscaled[step_idx])
+            target_named_step = _named(target_seq[step_idx])
+            target_unscaled_named_step = _named(target_seq_unscaled[step_idx])
+            input_named_step = _named(input_seq[step_idx])
+            input_unscaled_named_step = _named(input_seq_unscaled[step_idx])
+
             teacher_per_step.append({
                 'step': step_idx,
-                'input_state': input_seq[step_idx].tolist(),
-                'prediction': teacher_seq[step_idx].tolist(),
-                'target_state': target_seq[step_idx].tolist()
+                'input_state': input_named_step,
+                'input_state_unscaled': input_unscaled_named_step,
+                'prediction': teacher_named,
+                'prediction_unscaled': teacher_unscaled_named,
+                'target_state': target_named_step,
+                'target_state_unscaled': target_unscaled_named_step
             })
 
             autoreg_per_step.append({
                 'step': step_idx,
-                'generated_state': autoreg_seq[step_idx].tolist(),
-                'target_state': target_seq[step_idx].tolist()
+                'generated_state': autoreg_named,
+                'generated_state_unscaled': autoreg_unscaled_named,
+                'target_state': target_named_step,
+                'target_state_unscaled': target_unscaled_named_step
             })
+
+            teacher_predictions_named.append(teacher_named)
+            teacher_predictions_unscaled_named.append(teacher_unscaled_named)
+            autoreg_predictions_named.append(autoreg_named)
+            autoreg_predictions_unscaled_named.append(autoreg_unscaled_named)
+            target_named.append(target_named_step)
+            target_unscaled_named.append(target_unscaled_named_step)
+            input_named.append(input_named_step)
+            input_unscaled_named.append(input_unscaled_named_step)
 
         print(
             "[INFO] Teacher-forced MSE: {:.6f} | MAE: {:.6f}".format(
@@ -2799,24 +2737,55 @@ class ExpertActionTrainer:
                 autoreg_metrics['mse'], autoreg_metrics['mae']
             )
         )
-
-        return make_json_safe({
+        evaluation_payload = {
             'segment': segment_metadata,
             'sequence_length': int(target_seq_len),
             'feature_count': int(feature_count),
+            'feature_names': feature_names,
             'input_sequence': input_sequence_serialized,
+             'input_sequence_unscaled': input_np_unscaled[0].tolist(),
+            'input_sequence_named': input_named,
+            'input_sequence_unscaled_named': input_unscaled_named,
             'teacher_forcing': {
                 'metrics': teacher_metrics,
                 'predictions': teacher_np.tolist(),
+                'predictions_named': teacher_predictions_named,
+                'predictions_unscaled': teacher_np_unscaled.tolist(),
+                'predictions_unscaled_named': teacher_predictions_unscaled_named,
                 'per_step': teacher_per_step
             },
             'autoregressive': {
                 'metrics': autoreg_metrics,
                 'predictions': autoreg_np.tolist(),
+                'predictions_named': autoreg_predictions_named,
+                'predictions_unscaled': autoreg_np_unscaled.tolist(),
+                'predictions_unscaled_named': autoreg_predictions_unscaled_named,
                 'per_step': autoreg_per_step
             },
-            'target_sequence': target_np.tolist()
-        })
+            'target_sequence': target_np.tolist(),
+            'target_sequence_unscaled': target_np_unscaled.tolist(),
+            'target_sequence_named': target_named,
+            'target_sequence_unscaled_named': target_unscaled_named
+        }
+
+        evaluation_payload_safe = make_json_safe(evaluation_payload)
+
+        try:
+            output_dir = Path(__file__).resolve().parent.parent / 'scripts' / 'debug_output' / 'transformer_eval'
+            output_dir.mkdir(parents=True, exist_ok=True)
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            filename = (
+                f"eval_segment_{segment_metadata['chunk_index']}_"
+                f"{segment_metadata['segment_index']}_{timestamp}.json"
+            )
+            output_path = output_dir / filename
+            with output_path.open('w', encoding='utf-8') as outfile:
+                json.dump(evaluation_payload_safe, outfile, indent=2)
+            print(f"[INFO] Raw prediction comparisons saved to {output_path}")
+        except Exception as file_error:
+            print(f"[WARN] Failed to persist raw prediction outputs: {file_error}")
+
+        return evaluation_payload_safe
     
     def get_model_info(self) -> Dict[str, Any]:
         """Get model information and training state"""

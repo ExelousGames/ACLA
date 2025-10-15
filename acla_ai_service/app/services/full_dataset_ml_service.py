@@ -539,6 +539,7 @@ class Full_dataset_TelemetryMLService:
             # Process and filter data
             processor = FeatureProcessor(telemetry_df)
             processed_df = processor.general_cleaning_for_analysis()
+            processor.add_time_delta()
             features = self._imitate_expert_feature_names or TelemetryFeatures().get_features_for_imitate_expert()
 
             filtered_telemetry_df = processor.filter_features_by_list(processed_df, features)
@@ -558,10 +559,7 @@ class Full_dataset_TelemetryMLService:
                 deserializer_func=ExpertActionTransformer.deserialize_transformer_model
             )
             
-            # Extract context data by running tire grip analysis
-            context_data = {}
-
-            
+            # Enrich processed telemetry with additional model-derived features
             # Get tire grip features
             try:
                 tire_grip_service = TireGripAnalysisService()
@@ -578,8 +576,8 @@ class Full_dataset_TelemetryMLService:
                 if tire_features_list and len(tire_features_list) > 0:
                     # Since we passed a single telemetry record, extract the single result dictionary
                     tire_features = tire_features_list[0]
-                    context_data.update(tire_features)
-                    print(f"[INFO] Added {len(tire_features)} tire grip features to context")
+                    processed_telemetry_dict.update(tire_features)
+                    print(f"[INFO] Added {len(tire_features)} tire grip features to telemetry payload")
                 
             except Exception as e:
                 print(f"[Error] Tire grip analysis failed: {e}")
@@ -596,20 +594,17 @@ class Full_dataset_TelemetryMLService:
                 expert_state_list = expert_service.extract_expert_state_for_telemetry([processed_telemetry_dict])
                 if expert_state_list and len(expert_state_list) > 0:
                     # Since we passed a single telemetry record, extract the single result dictionary
-                    expert_state_features = expert_state_list[0]
-                    context_data.update(expert_state_features)
-                    print(f"[INFO] Added {len(expert_state_features)} expert state features to context")
+                    processed_telemetry_dict.update(expert_state_list[0])
             except Exception as e:
                 print(f"[Error] Expert service failed: {e}")   
                 
             # Use transformer model's predict_human_readable method
             print(f"[INFO] Generating predictions with sequence length: {sequence_length}")
-            print(f"[INFO] Context data keys: {list(context_data.keys()) if context_data else 'No context data'}")
-            print(f"telemetry data: {processed_telemetry_dict}, context data: {context_data}")
+            print(f"[INFO] Telemetry payload keys: {list(processed_telemetry_dict.keys())}")
+            print(f"telemetry data: {processed_telemetry_dict}")
             
             predictions = transformer_model.predict_human_readable(
                 current_telemetry=processed_telemetry_dict,
-                context_data=context_data if context_data else None,
                 sequence_length=sequence_length
             )
             
@@ -683,7 +678,7 @@ class Full_dataset_TelemetryMLService:
             telemetry_time_gap_ms=self.telemetry_time_gap_ms
         )
 
-        segment_length = 30  # Default segment length for transformer training
+        segment_length = 20  # Default segment length for transformer training
         segments_cache_key = None
         transformer_results = {"success": False, "error": "Training not started"}  # Initialize with failure
         
@@ -895,7 +890,7 @@ class Full_dataset_TelemetryMLService:
 
             try:
                 telemetry_df = session_chunk_df
-                print(f"[DEBUG] Processing {len(telemetry_df)} telemetry records from chunk {session_chunks_processed}")
+                print(f"[DEBUG] Processing {len(telemetry_df)} number of telemetry records from the session {session_chunks_processed}")
 
                 processor = FeatureProcessor(telemetry_df)
                 processor.general_cleaning_for_analysis()
@@ -960,8 +955,8 @@ class Full_dataset_TelemetryMLService:
         await flush_bottom_buffer("final flush")
 
         print(f"[DEBUG] Finished processing all chunks:")
-        print(f"[DEBUG] - Total chunks processed: {session_chunks_processed}")
-        print(f"[DEBUG] - Valid chunks processed: {chunk_idx}")
+        print(f"[DEBUG] - Total sessions processed: {session_chunks_processed}")
+        print(f"[DEBUG] - Valid sessions processed: {chunk_idx}")
         print(f"[DEBUG] - Total records processed: {total_processed}")
         print(f"[DEBUG] - Top laps found: {len(top_laps)}")
         print(f"[DEBUG] - Bottom laps cached: {total_bottom_laps_cached}")
