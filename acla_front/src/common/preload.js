@@ -14,6 +14,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     //run script in main process using async
     runPythonScript: (scriptPath, options) => ipcRenderer.invoke('run-python-script', scriptPath, options),
 
+    writeTempFile: (options) => ipcRenderer.invoke('write-temp-file', options),
+    deleteTempFile: (filePath) => ipcRenderer.invoke('delete-temp-file', filePath),
+
     //
     onPythonEnd: (callback) => {
         ipcRenderer.once('python-end', (event, ...args) => callback(...args))

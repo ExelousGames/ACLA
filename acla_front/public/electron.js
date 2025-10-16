@@ -92,6 +92,52 @@ ipcMain.handle('run-python-script', (event, script, options) => {
   }
 });
 
+ipcMain.handle('write-temp-file', async (event, options = {}) => {
+  const {
+    content,
+    directory,
+    prefix = 'acla_temp',
+    extension = '.json'
+  } = options;
+
+  if (typeof content !== 'string') {
+    throw new Error('write-temp-file: content must be a string');
+  }
+
+  const baseDir = directory
+    ? path.resolve(directory)
+    : path.join(app.getPath('userData'), 'acla-temp');
+
+  await fs.promises.mkdir(baseDir, { recursive: true });
+
+  const safeExtension = extension.startsWith('.') ? extension : `.${extension}`;
+  const fileName = `${prefix}_${Date.now()}_${Math.random().toString(16).slice(2)}${safeExtension}`;
+  const fullPath = path.join(baseDir, fileName);
+
+  await fs.promises.writeFile(fullPath, content, 'utf8');
+
+  return {
+    success: true,
+    path: fullPath
+  };
+});
+
+ipcMain.handle('delete-temp-file', async (event, filePath) => {
+  if (!filePath) {
+    return { success: false, error: 'No file path provided' };
+  }
+
+  try {
+    await fs.promises.unlink(filePath);
+    return { success: true };
+  } catch (error) {
+    if (error.code === 'ENOENT') {
+      return { success: true, skipped: true };
+    }
+    return { success: false, error: error.message };
+  }
+});
+
 //renderer process send message to a python shell
 ipcMain.handle('send-message-to-python', async (event, shellId, message) => {
   const pyshell = activeShells.get(shellId);

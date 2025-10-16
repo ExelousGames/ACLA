@@ -24,6 +24,8 @@ declare global {
              * @returns 
              */
             runPythonScript: (script: string, options: PythonShellOptions) => { shellId: number };
+            writeTempFile: (options: { content: string; directory?: string; prefix?: string; extension?: string }) => Promise<{ success: boolean; path?: string; error?: string; skipped?: boolean }>;
+            deleteTempFile: (filePath: string) => Promise<{ success: boolean; error?: string; skipped?: boolean }>;
 
             /**
              * 

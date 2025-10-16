@@ -4,6 +4,7 @@ import TelemetryOverview from './charts/TelemetryOverview';
 import LapTimeChart from './charts/LapTimeChart';
 import MapVisualization from './charts/MapVisualization';
 import ImitationGuidanceChart from './charts/ImitationGuidanceChart';
+import ExpertActionsChart from './charts/ExpertActionsChart';
 
 // Register all visualization components
 export const initializeVisualizations = () => {
@@ -61,6 +62,16 @@ export const initializeVisualizations = () => {
         minWidth: 380,
         minHeight: 500,
         preferredAspectRatio: 3 / 4
+    });
+
+    visualizationRegistry.register('expert-actions-chart', {
+        component: ExpertActionsChart,
+        name: 'Expert Actions Chart',
+        description: 'Shows predicted expert actions across the lap using imitation learning models',
+        defaultConfig: {},
+        minWidth: 380,
+        minHeight: 420,
+        preferredAspectRatio: 4 / 5
     });
 };
 

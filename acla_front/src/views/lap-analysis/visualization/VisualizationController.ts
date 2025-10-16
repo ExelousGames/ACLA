@@ -128,6 +128,10 @@ export class VisualizationController {
         return this.executeCommand({ action: 'add', type: 'lap-time-chart', data });
     }
 
+    addExpertActionsChart(data?: any) {
+        return this.executeCommand({ action: 'add', type: 'expert-actions-chart', data });
+    }
+
     getAvailableTypes(): string[] {
         return visualizationRegistry.getAllTypes();
     }
