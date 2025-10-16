@@ -796,34 +796,6 @@ class ExpertActionTransformer(nn.Module):
             # Restore original sequence length
             self.sequence_length = original_sequence_length
     
-    
-    def _apply_unified_inverse_scaling(self, scaled_predictions: torch.Tensor) -> torch.Tensor:
-        """
-        Apply inverse scaling to unified model predictions to convert from normalized to original scale.
-        
-        Args:
-            scaled_predictions: Scaled unified predictions [batch_size, seq_len, total_features]
-            
-        Returns:
-            Unscaled unified predictions [batch_size, seq_len, total_features]
-        """
-        if self.feature_scaler is None:
-            return scaled_predictions
-            
-        # Convert to numpy for sklearn scaler
-        device = scaled_predictions.device
-        original_shape = scaled_predictions.shape
-        
-        # Reshape to 2D: (batch_size * seq_len, total_features)
-        predictions_2d = scaled_predictions.view(-1, original_shape[-1]).cpu().numpy()
-        
-        # Apply inverse transform
-        unscaled_predictions = self.feature_scaler.inverse_transform(predictions_2d)
-        
-        # Convert back to tensor and reshape
-        unscaled_tensor = torch.from_numpy(unscaled_predictions).float().to(device)
-        return unscaled_tensor.view(original_shape)
-    
     def get_contextual_features_summary(self, context_feature_names: List[str]) -> Dict[str, Any]:
         """
         Get summary of contextual features available for loss weighting
@@ -974,9 +946,13 @@ class ExpertActionTransformer(nn.Module):
         """Create sequence of future predictions from unified feature vectors - includes ALL targets"""
         sequence = []
         
-        # Get all feature names for complete output
-        from ..models.telemetry_models import TelemetryFeatures
-        feature_names = TelemetryFeatures.get_features_for_imitate_expert()
+        # Prefer the scaler's feature metadata to keep ordering identical to training tensors.
+        if self.feature_scaler is not None and self.feature_scaler.is_fitted():
+            feature_names = self.feature_scaler.get_feature_names()
+        else:
+            feature_names = TelemetryFeatures.get_features_for_imitate_expert()
+
+        feature_count = len(feature_names)
         
         for i in range(min(sequence_length, len(predictions))):
             pred = predictions[i]
@@ -989,9 +965,12 @@ class ExpertActionTransformer(nn.Module):
             }
             
             # Include all features in the prediction output
-            for j, feature_name in enumerate(feature_names):
-                if j < len(pred):
-                    step_data["all_targets"][feature_name] = round(float(pred[j]), 4)
+            for feature_idx, value in enumerate(pred):
+                if feature_idx < feature_count:
+                    feature_name = feature_names[feature_idx]
+                else:
+                    feature_name = f"feature_{feature_idx}"
+                step_data["all_targets"][feature_name] = round(float(value), 4)
             
             sequence.append(step_data)
         
