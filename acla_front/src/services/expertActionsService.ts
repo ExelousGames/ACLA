@@ -250,57 +250,57 @@ export const runExpertActionPrediction = async (
         );
 
         return await new Promise<ExpertPredictionResult>((resolve, reject) => {
-        let resolved = false;
-        let lastMessage: ExpertPredictionResult | null = null;
-        let removedListener = false;
+            let resolved = false;
+            let lastMessage: ExpertPredictionResult | null = null;
+            let removedListener = false;
 
-        const removeListener = window.electronAPI.onPythonMessage((returnedShellId, message) => {
-            if (returnedShellId !== shellId) return;
-            if (!message) return;
-            try {
-                const parsed = JSON.parse(message) as ExpertPredictionResult;
-                lastMessage = parsed;
-                if (parsed.status === 'success' || parsed.status === 'error') {
-                    resolved = true;
-                    if (!removedListener) {
-                        removeListener();
-                        removedListener = true;
+            const removeListener = window.electronAPI.onPythonMessage((returnedShellId, message) => {
+                if (returnedShellId !== shellId) return;
+                if (!message) return;
+                try {
+                    const parsed = JSON.parse(message) as ExpertPredictionResult;
+                    lastMessage = parsed;
+                    if (parsed.status === 'success' || parsed.status === 'error') {
+                        resolved = true;
+                        if (!removedListener) {
+                            removeListener();
+                            removedListener = true;
+                        }
+                        void deleteTempFileSafely(modelFilePath);
+                        void deleteTempFileSafely(telemetryFilePath);
+                        if (parsed.status === 'success') {
+                            resolve(parsed);
+                        } else {
+                            reject(new Error(parsed.message || 'Python script reported an error'));
+                        }
                     }
-                    void deleteTempFileSafely(modelFilePath);
-                    void deleteTempFileSafely(telemetryFilePath);
-                    if (parsed.status === 'success') {
-                        resolve(parsed);
+                } catch (error) {
+                    console.warn('Non-JSON message from Python script', message, error);
+                }
+            });
+
+            window.electronAPI.onPythonEnd((returnedShellId) => {
+                if (returnedShellId !== shellId) return;
+                if (!removedListener) {
+                    removeListener();
+                    removedListener = true;
+                }
+                void deleteTempFileSafely(modelFilePath);
+                void deleteTempFileSafely(telemetryFilePath);
+                if (resolved) {
+                    return;
+                }
+                if (lastMessage) {
+                    if (lastMessage.status === 'success') {
+                        resolve(lastMessage);
                     } else {
-                        reject(new Error(parsed.message || 'Python script reported an error'));
+                        reject(new Error(lastMessage.message || 'Python script reported an error'));
                     }
-                }
-            } catch (error) {
-                console.warn('Non-JSON message from Python script', message, error);
-            }
-        });
-
-        window.electronAPI.onPythonEnd((returnedShellId) => {
-            if (returnedShellId !== shellId) return;
-            if (!removedListener) {
-                removeListener();
-                removedListener = true;
-            }
-            void deleteTempFileSafely(modelFilePath);
-            void deleteTempFileSafely(telemetryFilePath);
-            if (resolved) {
-                return;
-            }
-            if (lastMessage) {
-                if (lastMessage.status === 'success') {
-                    resolve(lastMessage);
                 } else {
-                    reject(new Error(lastMessage.message || 'Python script reported an error'));
+                    reject(new Error('Python script completed without returning data'));
                 }
-            } else {
-                reject(new Error('Python script completed without returning data'));
-            }
+            });
         });
-    });
     } catch (error) {
         await deleteTempFileSafely(modelFilePath);
         await deleteTempFileSafely(telemetryFilePath);
