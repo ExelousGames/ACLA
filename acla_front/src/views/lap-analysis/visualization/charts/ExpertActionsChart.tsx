@@ -11,6 +11,7 @@ import {
 } from 'services/expertActionsService';
 
 const MAX_TELEMETRY_SAMPLES = 2000;
+const MODEL_CAR_NAME = 'AllCars';
 
 const METRIC_LABELS: Record<string, string> = {
     expert_optimal_speed: 'Speed (km/h)',
@@ -53,12 +54,20 @@ const ExpertActionsChart: React.FC<VisualizationProps> = ({ width = '100%', heig
     const [prediction, setPrediction] = useState<ExpertPredictionResult | null>(null);
     const [loading, setLoading] = useState<boolean>(false);
     const [error, setError] = useState<string | null>(null);
-    type ModelHandle = { cacheKey: string; data: any; trackName?: string; carName?: string };
+
+    type ModelHandle = {
+        cacheKey: string;
+        data: any;
+        trackName?: string;
+        carName?: string;
+    };
 
     const modelHandleRef = useRef<ModelHandle | null>(null);
 
     const trackName = analysisContext.recordedSessioStaticsData?.track || 'Unknown Track';
     const carName = analysisContext.recordedSessioStaticsData?.car_model || 'Unknown Car';
+    const sanitizedTrackName = trackName === 'Unknown Track' ? undefined : trackName;
+    const sanitizedCarName = MODEL_CAR_NAME; // Always use the pooled AllCars imitation model variant.
 
     const ensureTelemetrySamples = useCallback(async (): Promise<any[]> => {
         if (telemetrySamples && telemetrySamples.length > 0) {
@@ -121,25 +130,29 @@ const ExpertActionsChart: React.FC<VisualizationProps> = ({ width = '100%', heig
 
             let handle = modelHandleRef.current;
 
-            if (!handle || handle.trackName !== trackName || handle.carName !== carName) {
+            if (!handle || handle.trackName !== sanitizedTrackName || handle.carName !== sanitizedCarName) {
                 if (handle?.cacheKey) {
                     releasePersistentImitationModel(handle.cacheKey);
                     modelHandleRef.current = null;
                 }
 
-                const acquired = await acquirePersistentImitationModel({
-                    trackName,
-                    carName,
+                const acquiredHandle = await acquirePersistentImitationModel({
+                    trackName: sanitizedTrackName,
+                    carName: sanitizedCarName,
                     modelType: 'imitation_learning'
                 });
 
                 handle = {
-                    cacheKey: acquired.cacheKey,
-                    data: acquired.data,
-                    trackName,
-                    carName
+                    cacheKey: acquiredHandle.cacheKey,
+                    data: acquiredHandle.data,
+                    trackName: sanitizedTrackName,
+                    carName: sanitizedCarName
                 };
                 modelHandleRef.current = handle;
+            }
+
+            if (!handle) {
+                throw new Error('Model handle is not available after acquisition');
             }
 
             const result = await runExpertActionPrediction(handle.data, sanitizedSamples);
@@ -150,7 +163,7 @@ const ExpertActionsChart: React.FC<VisualizationProps> = ({ width = '100%', heig
         } finally {
             setLoading(false);
         }
-    }, [environment, ensureTelemetrySamples, trackName, carName]);
+    }, [environment, ensureTelemetrySamples, sanitizedTrackName, sanitizedCarName]);
 
     const summaryMetrics = useMemo(() => extractKeySubset(prediction?.prediction), [prediction]);
 
@@ -176,12 +189,12 @@ const ExpertActionsChart: React.FC<VisualizationProps> = ({ width = '100%', heig
         }
 
         const { trackName: cachedTrack, carName: cachedCar, cacheKey } = modelHandleRef.current;
-        if (cachedTrack !== trackName || cachedCar !== carName) {
+        if (cachedTrack !== sanitizedTrackName || cachedCar !== sanitizedCarName) {
             releasePersistentImitationModel(cacheKey);
             modelHandleRef.current = null;
             setPrediction(null);
         }
-    }, [trackName, carName]);
+    }, [sanitizedTrackName, sanitizedCarName]);
 
     return (
         <Card style={{ width, height, padding: '16px', display: 'flex', flexDirection: 'column' }}>

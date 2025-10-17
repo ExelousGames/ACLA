@@ -59,7 +59,7 @@ const buildCacheKey = (options: NormalizedModelOptions): string => {
 const imitationModelCache = new Map<string, ModelCacheEntry>();
 
 export interface ExpertPredictionResult {
-    status: 'success' | 'error';
+    status: 'success' | 'error' | 'log';
     prediction?: Record<string, number>;
     metadata?: {
         telemetry_samples_used: number;
@@ -69,6 +69,8 @@ export interface ExpertPredictionResult {
     position_series?: Array<Record<string, number>>;
     message?: string;
     traceback?: string;
+    logs?: string[];
+    stage?: string;
 }
 
 const base64ToUint8Array = (base64: string): Uint8Array => {
