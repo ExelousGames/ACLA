@@ -3,7 +3,7 @@
 
 This script expects two arguments:
     1. Path to a JSON file containing the serialized imitation learning model data
-    2. Path to a JSON file containing telemetry samples (array of dicts or JSONL)
+    2. JSON string containing telemetry samples (array of dicts or JSONL-style string)
 
 It loads the model, processes telemetry with FeatureProcessor, and outputs
 predicted expert actions along with a normalized-position sweep for visualization.
@@ -70,6 +70,31 @@ def _ensure_package(package_name: str, path: Optional[Path] = None) -> None:
             existing_path.append(path_str)
             module.__path__ = existing_path  # type: ignore[attr-defined]
 
+
+def _import_module_from_path(module_name: str, module_path: Path, stage: str) -> types.ModuleType:
+    """Import module from an explicit path and capture stdout for structured logs."""
+
+    existing = sys.modules.get(module_name)
+    if isinstance(existing, types.ModuleType):
+        return existing
+
+    if not module_path.exists():
+        raise FileNotFoundError(f"Required module file not found: {module_path}")
+
+    spec = importlib.util.spec_from_file_location(module_name, module_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Unable to load module spec for {module_name} from {module_path}")
+
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+
+    with _capture_stdout() as captured_stdout:
+        spec.loader.exec_module(module)
+
+    captured = captured_stdout.getvalue().strip()
+    _emit_log(captured, stage)
+    return module
+
 REPO_ROOT = CURRENT_DIR.parents[2] if len(CURRENT_DIR.parents) > 2 else None
 if REPO_ROOT is not None:
     ai_service_app_dir = REPO_ROOT / 'acla_ai_service' / 'app'
@@ -84,7 +109,6 @@ src_dir: Path = CURRENT_DIR.parent
 _ensure_package('acla_front', front_dir)
 _ensure_package('acla_front.src', src_dir)
 _ensure_package('acla_front.src.py_scripts', CURRENT_DIR)
-_ensure_package('acla_front.src.models', CURRENT_DIR)
 
 _MODULE_LOGS: List[str] = []
 
@@ -100,59 +124,19 @@ def _emit_log(raw: str, stage: str) -> None:
     _MODULE_LOGS.append(tagged)
     _emit({'status': 'log', 'stage': stage, 'message': line})
 
-
-def _patch_decision_tree_monotonic() -> None:
-    """Ensure pickled DecisionTree models with monotonic constraints deserialize cleanly."""
-
-    def _ensure_property(tree_cls: Optional[type]) -> None:
-        if tree_cls is None or hasattr(tree_cls, 'monotonic_cst'):
-            return
-
-        attr_name = '_monotonic_cst'
-
-        def _getter(self: Any) -> Any:  # type: ignore[misc]
-            return getattr(self, attr_name, None)
-
-        def _setter(self: Any, value: Any) -> None:  # type: ignore[misc]
-            setattr(self, attr_name, value)
-
-        setattr(tree_cls, 'monotonic_cst', property(_getter, _setter))
-
-    _ensure_property(DecisionTreeRegressor)
-    _ensure_property(DecisionTreeClassifier)
-
-
-_patch_decision_tree_monotonic()
-
-telemetry_module_name = 'acla_front.src.models.telemetry_models'
+telemetry_module_name = 'acla_front.src.py_scripts.telemetry_models'
 telemetry_module_path = CURRENT_DIR / 'telemetry_models.py'
-if telemetry_module_path.exists() and telemetry_module_name not in sys.modules:
-    telemetry_spec = importlib.util.spec_from_file_location(telemetry_module_name, telemetry_module_path)
-    if telemetry_spec is None or telemetry_spec.loader is None:
-        raise ImportError(f'Unable to load telemetry_models module from {telemetry_module_path}')
-    telemetry_module = importlib.util.module_from_spec(telemetry_spec)
-    sys.modules[telemetry_module_name] = telemetry_module
-    with _capture_stdout() as telemetry_stdout:
-        telemetry_spec.loader.exec_module(telemetry_module)
-    captured = telemetry_stdout.getvalue().strip()
-    _emit_log(captured, 'import.telemetry_models')
+telemetry_module = _import_module_from_path(telemetry_module_name, telemetry_module_path, 'import.telemetry_models')
 
 module_name = 'acla_front.src.py_scripts.imitate_expert_learning_service'
 
 module_path = CURRENT_DIR / 'imitate_expert_learning_service.py'
-spec = importlib.util.spec_from_file_location(module_name, module_path)
-if spec is None or spec.loader is None:
-    raise ImportError(f'Unable to load imitate_expert_learning_service module from {module_path}')
-
-imitate_module = importlib.util.module_from_spec(spec)
-sys.modules[module_name] = imitate_module
-with _capture_stdout() as imitate_stdout:
-    spec.loader.exec_module(imitate_module)
-captured_import_logs = imitate_stdout.getvalue().strip()
-_emit_log(captured_import_logs, 'import.imitate_expert_learning_service')
+imitate_module = _import_module_from_path(module_name, module_path, 'import.imitate_expert_learning_service')
 
 ExpertImitateLearningService = imitate_module.ExpertImitateLearningService
-FeatureProcessor = imitate_module.FeatureProcessor
+if not hasattr(telemetry_module, 'FeatureProcessor'):
+    raise AttributeError('FeatureProcessor not found in telemetry_models module')
+FeatureProcessor = getattr(telemetry_module, 'FeatureProcessor')
 
 
 def _load_json_file(path: Path) -> Any:
@@ -174,6 +158,25 @@ def _load_json_file(path: Path) -> Any:
         if not content:
             return []
         return json.loads(content)
+
+
+def _load_json_payload(raw: str) -> Any:
+    payload = raw.strip()
+    if not payload:
+        return []
+
+    try:
+        return json.loads(payload)
+    except json.JSONDecodeError:
+        records: List[Any] = []
+        for line in payload.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            records.append(json.loads(line))
+        if not records:
+            raise
+        return records
 
 
 def _ensure_dataframe(data: Any) -> pd.DataFrame:
@@ -219,11 +222,11 @@ def _build_position_series(service: ExpertImitateLearningService, points: int = 
 
 def main() -> None:
     if len(sys.argv) < 3:
-        _emit({'status': 'error', 'message': 'Usage: run_expert_actions_prediction.py <model_json_path> <telemetry_json_path>'})
+        _emit({'status': 'error', 'message': 'Usage: run_expert_actions_prediction.py <model_json_path> <telemetry_json_payload>'})
         return
 
     model_path = Path(sys.argv[1]).expanduser().resolve()
-    telemetry_path = Path(sys.argv[2]).expanduser().resolve()
+    telemetry_payload_raw = sys.argv[2]
 
     runtime_capture: Optional[io.StringIO] = None
 
@@ -232,7 +235,7 @@ def main() -> None:
             runtime_capture = captured_stdout
 
             model_payload = _load_json_file(model_path)
-            telemetry_payload = _load_json_file(telemetry_path)
+            telemetry_payload = _load_json_payload(telemetry_payload_raw)
 
             if not model_payload:
                 raise ValueError('Model data is empty')
@@ -246,11 +249,6 @@ def main() -> None:
             sample_count = len(telemetry_df)
             if sample_count == 0:
                 raise ValueError('Telemetry dataframe is empty after conversion')
-
-            max_samples = 2000
-            if sample_count > max_samples:
-                telemetry_df = telemetry_df.tail(max_samples)
-                sample_count = len(telemetry_df)
 
             processor = FeatureProcessor(telemetry_df)
             processed_df = processor.general_cleaning_for_analysis()

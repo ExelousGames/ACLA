@@ -10,7 +10,6 @@ import {
     ExpertPredictionResult
 } from 'services/expertActionsService';
 
-const MAX_TELEMETRY_SAMPLES = 2000;
 const MODEL_CAR_NAME = 'AllCars';
 
 const METRIC_LABELS: Record<string, string> = {
@@ -50,7 +49,6 @@ const ExpertActionsChart: React.FC<VisualizationProps> = ({ width = '100%', heig
     const analysisContext = useContext(AnalysisContext);
     const environment = useEnvironment();
 
-    const [telemetrySamples, setTelemetrySamples] = useState<any[] | null>(null);
     const [prediction, setPrediction] = useState<ExpertPredictionResult | null>(null);
     const [loading, setLoading] = useState<boolean>(false);
     const [error, setError] = useState<string | null>(null);
@@ -68,42 +66,18 @@ const ExpertActionsChart: React.FC<VisualizationProps> = ({ width = '100%', heig
     const carName = analysisContext.recordedSessioStaticsData?.car_model || 'Unknown Car';
     const sanitizedTrackName = trackName === 'Unknown Track' ? undefined : trackName;
     const sanitizedCarName = MODEL_CAR_NAME; // Always use the pooled AllCars imitation model variant.
+    const hasLiveTelemetry = useMemo(() => {
+        return Boolean(analysisContext.liveData && Object.keys(analysisContext.liveData).length > 0);
+    }, [analysisContext.liveData]);
 
-    const ensureTelemetrySamples = useCallback(async (): Promise<any[]> => {
-        if (telemetrySamples && telemetrySamples.length > 0) {
-            return telemetrySamples;
+    const handleRefreshTelemetry = useCallback(() => {
+        if (!hasLiveTelemetry) {
+            setError('Live telemetry not available. Start or resume a live session to capture data.');
+            return;
         }
 
-        if (analysisContext.liveData && Object.keys(analysisContext.liveData).length > 0) {
-            const samples = [analysisContext.liveData];
-            setTelemetrySamples(samples);
-            return samples;
-        }
-
-        if (analysisContext.recordedSessionDataFilePath) {
-            const samples = await analysisContext.readRecordedSessionData();
-            setTelemetrySamples(samples);
-            return samples;
-        }
-
-        throw new Error('No telemetry data available. Start a recording or live session to capture data.');
-    }, [
-        telemetrySamples,
-        analysisContext.recordedSessionDataFilePath,
-        analysisContext.liveData,
-        analysisContext.readRecordedSessionData
-    ]);
-
-    const handleRefreshTelemetry = useCallback(async () => {
-        try {
-            setError(null);
-            const samples = await analysisContext.readRecordedSessionData();
-            setTelemetrySamples(samples);
-        } catch (refreshError) {
-            console.error(refreshError);
-            setError((refreshError as Error).message);
-        }
-    }, [analysisContext.readRecordedSessionData]);
+        setError(null);
+    }, [hasLiveTelemetry]);
 
     const handleComputePrediction = useCallback(async () => {
         if (environment !== 'electron') {
@@ -115,15 +89,12 @@ const ExpertActionsChart: React.FC<VisualizationProps> = ({ width = '100%', heig
         setError(null);
 
         try {
-            const samples = await ensureTelemetrySamples();
-            if (!samples || samples.length === 0) {
-                throw new Error('No telemetry samples available for prediction.');
+            if (!hasLiveTelemetry) {
+                throw new Error('Live telemetry not available. Start or resume a live session to capture data.');
             }
 
-            const sanitizedSamples = samples
-                .filter((sample) => sample && typeof sample === 'object')
-                .slice(-MAX_TELEMETRY_SAMPLES);
-
+            const liveTelemetry = analysisContext.liveData;
+            const sanitizedSamples = [liveTelemetry].filter((sample) => sample && typeof sample === 'object');
             if (sanitizedSamples.length === 0) {
                 throw new Error('Telemetry samples could not be processed.');
             }
@@ -163,7 +134,7 @@ const ExpertActionsChart: React.FC<VisualizationProps> = ({ width = '100%', heig
         } finally {
             setLoading(false);
         }
-    }, [environment, ensureTelemetrySamples, sanitizedTrackName, sanitizedCarName]);
+    }, [analysisContext.liveData, environment, hasLiveTelemetry, sanitizedTrackName, sanitizedCarName]);
 
     const summaryMetrics = useMemo(() => extractKeySubset(prediction?.prediction), [prediction]);
 
@@ -205,9 +176,9 @@ const ExpertActionsChart: React.FC<VisualizationProps> = ({ width = '100%', heig
                 </Box>
                 <Flex gap="2">
                     <Button variant="soft" size="2" onClick={handleRefreshTelemetry} disabled={loading}>
-                        Refresh Telemetry
+                        Sync Live Telemetry
                     </Button>
-                    <Button variant="solid" size="2" onClick={handleComputePrediction} disabled={loading}>
+                    <Button variant="solid" size="2" onClick={handleComputePrediction} disabled={loading || !hasLiveTelemetry}>
                         {loading ? 'Computing…' : 'Compute Predictions'}
                     </Button>
                 </Flex>
@@ -227,6 +198,12 @@ const ExpertActionsChart: React.FC<VisualizationProps> = ({ width = '100%', heig
             {error && (
                 <Box mb="3" style={{ background: 'var(--red-3)', borderRadius: 8, padding: '12px' }}>
                     <Text size="2" color="red" weight="medium">{error}</Text>
+                </Box>
+            )}
+
+            {!error && !hasLiveTelemetry && (
+                <Box mb="3" style={{ background: 'var(--gray-2)', borderRadius: 8, padding: '12px' }}>
+                    <Text size="2" color="gray">Waiting for live telemetry. Start or resume a live session to enable expert predictions.</Text>
                 </Box>
             )}
 
@@ -274,7 +251,7 @@ const ExpertActionsChart: React.FC<VisualizationProps> = ({ width = '100%', heig
             ) : (
                 <Box style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                     <Text color="gray" align="center">
-                        {loading ? 'Loading telemetry and computing expert actions…' : 'Run predictions to view expert guidance based on your telemetry.'}
+                        {loading ? 'Loading telemetry and computing expert actions…' : 'Start a live session and run predictions to view expert guidance based on your telemetry.'}
                     </Text>
                 </Box>
             )}

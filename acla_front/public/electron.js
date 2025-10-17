@@ -6,6 +6,36 @@ const { spawn, execSync } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 
+function getPythonExecutable() {
+  const manualOverride = process.env.ACLA_PYTHON_PATH;
+  if (manualOverride && fs.existsSync(manualOverride)) {
+    return manualOverride;
+  }
+
+  const envDir = app.isPackaged
+    ? path.join(process.resourcesPath, 'python-env')
+    : path.join(__dirname, '../.venv/py-scripts');
+
+  const candidates = process.platform === 'win32'
+    ? [
+      path.join(envDir, 'Scripts', 'python.exe'),
+      path.join(envDir, 'Scripts', 'python3.exe')
+    ]
+    : [
+      path.join(envDir, 'bin', 'python3'),
+      path.join(envDir, 'bin', 'python')
+    ];
+
+  for (const candidate of candidates) {
+    if (candidate && fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
+  // Fall back to system Python if the managed environments are not available.
+  return process.platform === 'win32' ? 'python' : 'python3';
+}
+
 const devMode = app.isPackaged ? false : isDev;
 let mainWindow;
 
@@ -49,47 +79,80 @@ function createWindow() {
 }
 
 // start running Python scripts
-ipcMain.handle('run-python-script', (event, script, options) => {
+function resolveScriptDirectory(customPath) {
+  if (app.isPackaged) {
+    const packagedBase = path.join(process.resourcesPath, 'py-scripts');
+    if (customPath && path.isAbsolute(customPath) && fs.existsSync(customPath)) {
+      return customPath;
+    }
+    return packagedBase;
+  }
+
+  if (customPath) {
+    if (path.isAbsolute(customPath) && fs.existsSync(customPath)) {
+      return customPath;
+    }
+
+    const viaApp = path.join(app.getAppPath(), customPath);
+    if (fs.existsSync(viaApp)) {
+      return viaApp;
+    }
+
+    const viaCwd = path.resolve(process.cwd(), customPath);
+    if (fs.existsSync(viaCwd)) {
+      return viaCwd;
+    }
+  }
+
+  return app.isPackaged
+    ? path.join(process.resourcesPath, 'py-scripts')
+    : path.join(__dirname, '../src/py-scripts');
+}
+
+ipcMain.handle('run-python-script', (event, script, options = {}) => {
   const shellId = nextShellId++;
-  const newShell = new Promise((resolve, reject) => {
 
-    const pyshell = new PythonShell(script, options);
+  const pythonPath = options.pythonPath || getPythonExecutable();
+  const scriptDirectory = resolveScriptDirectory(options.scriptPath);
+  const shellOptions = {
+    ...options,
+    pythonPath,
+    scriptPath: scriptDirectory,
+  };
 
-    // Receive messages from Python script -  line of text from stdout
-    pyshell.on('message', (message) => {
-      if (mainWindow) {
-        mainWindow.webContents.send('python-message', shellId, message);
-      }
-    });
+  const pyshell = new PythonShell(script, shellOptions);
+  activeShells.set(shellId, pyshell);
 
-    //Indicates that the stream has no more data to read, Used when you're reading from process output streams, Doesn't necessarily mean the process has terminated
-    pyshell.end(function (err, code, signal) {
-      if (err) throw err;
-    });
-
-    //The process has definitely terminated, callback is invoked when the process is terminated.
-    pyshell.on('close', () => {
-
-      activeShells.delete(shellId);
-      if (mainWindow) {
-        mainWindow.webContents.send('python-end', shellId);
-      }
-      resolve({ shellId }); // Resolve with the shellId
-    });
-
-
-    pyshell.on('error', (error) => {
-      activeShells.delete(shellId);
-      reject(error);
-    });
-
-
+  pyshell.on('message', (message) => {
+    if (mainWindow) {
+      mainWindow.webContents.send('python-message', shellId, message);
+    }
   });
 
-  activeShells.set(shellId, newShell);
+  pyshell.end((err) => {
+    if (err) {
+      console.error(`Python shell ${shellId} ended with error:`, err);
+    }
+  });
+
+  pyshell.on('close', () => {
+    activeShells.delete(shellId);
+    if (mainWindow) {
+      mainWindow.webContents.send('python-end', shellId);
+    }
+  });
+
+  pyshell.on('error', (error) => {
+    activeShells.delete(shellId);
+    if (mainWindow) {
+      mainWindow.webContents.send('python-end', shellId);
+    }
+    console.error('Python shell error:', error);
+  });
+
   return {
-    shellId: shellId
-  }
+    shellId
+  };
 });
 
 ipcMain.handle('write-temp-file', async (event, options = {}) => {
@@ -164,7 +227,7 @@ ipcMain.handle('start-speech-recognition', async (event) => {
     }
 
     // Use the enhanced speech recognition script
-    const enhancedScriptPath = path.join(__dirname, '../src/py-scripts/enhanced_speech_recognition.py');
+    const enhancedScriptPath = path.join(resolveScriptDirectory(), 'enhanced_speech_recognition.py');
 
     // Check if enhanced script exists, otherwise create it
     if (!fs.existsSync(enhancedScriptPath)) {
@@ -174,9 +237,10 @@ ipcMain.handle('start-speech-recognition', async (event) => {
     }
 
     // Start the enhanced Python speech recognition process with 30-second timeout
-    speechRecognitionProcess = spawn('python', [enhancedScriptPath, '30'], {
+    const pythonExec = getPythonExecutable();
+    speechRecognitionProcess = spawn(pythonExec, [enhancedScriptPath, '30'], {
       stdio: 'pipe',
-      shell: true,
+      shell: false,
       cwd: path.dirname(enhancedScriptPath)
     });
 
@@ -317,9 +381,10 @@ if __name__ == "__main__":
     fs.writeFileSync(scriptPath, speechScript);
 
     // Start the Python speech recognition process
-    speechRecognitionProcess = spawn('python', [scriptPath], {
+    const pythonExec = getPythonExecutable();
+    speechRecognitionProcess = spawn(pythonExec, [scriptPath], {
       stdio: 'pipe',
-      shell: true
+      shell: false
     });
 
     let recognitionResult = null;

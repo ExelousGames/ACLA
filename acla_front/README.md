@@ -1,70 +1,77 @@
-# Getting Started with Create React App
+# ACLA Frontend & Desktop Companion
 
-This project was bootstrapped with [Create React App](https://github.com/facebook/create-react-app).
+This package contains the React UI and the Electron desktop shell that executes all Python automation located in `src/py-scripts/`.
 
-## Available Scripts
+## Prerequisites
 
-In the project directory, you can run:
+- Node.js 18+
+- npm 9+
+- Python 3.10 or newer (system interpreter used to create virtual environments)
+- FFmpeg (required for Whisper-based speech recognition; optional otherwise)
 
-### `npm start`
+## Python environments for desktop scripts
 
-Runs the app in the development mode.\
-Open [http://localhost:3000](http://localhost:3000) to view it in your browser.
+All Electron-only Python entry points live under `src/py-scripts/`. We manage their dependencies with
+virtual environments so that development and production builds are reproducible.
 
-The page will reload when you make changes.\
-You may also see any lint errors in the console.
+| Mode | Virtual environment location | How it is created |
+| --- | --- | --- |
+| Development | `acla_front/.venv/py-scripts` | `npm run start:electron` (via pre script) or `npm run setup:python -- --mode=dev` |
+| Production (packaged app) | `acla_front/.venv/py-scripts-prod` (bundled as `resources/python-env`) | `npm run build:electron` (via pre script) or `npm run setup:python -- --mode=prod` |
 
-### `npm test`
+The managed environments install everything from `src/py-scripts/requirements.txt` including
+scikit-learn, pandas, speech recognition, and audio tooling.
 
-Launches the test runner in the interactive watch mode.\
-See the section about [running tests](https://facebook.github.io/create-react-app/docs/running-tests) for more information.
+### One-time manual setup
 
-### `npm run build`
+```bash
+# Install Node dependencies
+npm install
 
-Builds the app for production to the `build` folder.\
-It correctly bundles React in production mode and optimizes the build for the best performance.
+# Prepare the development Python environment (optional – start:electron runs it automatically)
+npm run setup:python -- --mode=dev
+```
 
-The build is minified and the filenames include the hashes.\
-Your app is ready to be deployed!
+> **Tip:** Set `PYTHON=/path/to/python3` if your system Python command is named differently.
 
-See the section about [deployment](https://facebook.github.io/create-react-app/docs/deployment) for more information.
+### Run the desktop app in development
 
-### `npm run eject`
+```bash
+npm run start:electron
+```
 
-**Note: this is a one-way operation. Once you `eject`, you can't go back!**
+The pre-script will:
 
-If you aren't satisfied with the build tool and configuration choices, you can `eject` at any time. This command will remove the single build dependency from your project.
+1. Create/refresh `.venv/py-scripts`
+2. Install every package in `src/py-scripts/requirements.txt`
+3. Run the enhanced speech setup script
+4. Launch the React dev server and Electron shell
 
-Instead, it will copy all the configuration files and the transitive dependencies (webpack, Babel, ESLint, etc) right into your project so you have full control over them. All of the commands except `eject` will still work, but they will point to the copied scripts so you can tweak them. At this point you're on your own.
+### Build the production bundle
 
-You don't have to ever use `eject`. The curated feature set is suitable for small and middle deployments, and you shouldn't feel obligated to use this feature. However we understand that this tool wouldn't be useful if you couldn't customize it when you are ready for it.
+```bash
+npm run build:electron
+```
 
-## Learn More
+This command:
 
-You can learn more in the [Create React App documentation](https://facebook.github.io/create-react-app/docs/getting-started).
+1. Creates/refreshes the production env in `.venv/py-scripts-prod`
+2. Installs requirements inside that env
+3. Runs the speech dependency installer
+4. Builds the React bundle and packages Electron via `electron-builder`
 
-To learn React, check out the [React documentation](https://reactjs.org/).
+The packaged app ships with the Python runtime under `resources/python-env`. The Electron
+main process automatically selects that interpreter; override it with the environment variable
+`ACLA_PYTHON_PATH=/absolute/path/to/python` if needed.
 
-### Code Splitting
+### Additional scripts
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/code-splitting](https://facebook.github.io/create-react-app/docs/code-splitting)
+- `npm run setup:python` — Run the Python environment bootstrap in on-demand mode.
+- `npm run setup-speech` — Install/verify speech recognition dependencies (used by the pre-scripts).
+- `npm run electron` — Launch Electron pointing at the compiled build output.
 
-### Analyzing the Bundle Size
+### Troubleshooting
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size](https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size)
-
-### Making a Progressive Web App
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app](https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app)
-
-### Advanced Configuration
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/advanced-configuration](https://facebook.github.io/create-react-app/docs/advanced-configuration)
-
-### Deployment
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/deployment](https://facebook.github.io/create-react-app/docs/deployment)
-
-### `npm run build` fails to minify
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify](https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify)
+- Delete `acla_front/.venv/` and re-run `npm run setup:python -- --mode=dev` if packages become inconsistent.
+- If FFmpeg or system audio drivers are missing, the speech setup script will print manual installation hints.
+- On Windows, ensure that Visual C++ Build Tools are installed for PyAudio.

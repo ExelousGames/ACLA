@@ -3,6 +3,8 @@ const os = require('os');
 const path = require('path');
 const fs = require('fs');
 
+const requirementsPath = path.join(__dirname, '..', 'src', 'py-scripts', 'requirements.txt');
+
 function checkAndInstallSpeechDeps() {
     console.log('========================================');
     console.log(' Enhanced Speech Recognition Setup');
@@ -117,15 +119,15 @@ function checkPackages(packages) {
 
 function installBasicPackages() {
     try {
-        console.log('Installing core packages from requirements.txt...');
+        console.log(`Installing core packages from ${requirementsPath}...`);
 
         try {
             // Try to install all requirements at once
-            execSync('pip install -r requirements.txt', { stdio: 'inherit' });
+            execSync(`pip install -r "${requirementsPath}"`, { stdio: 'inherit' });
             console.log('✅ All speech recognition dependencies installed successfully');
             return;
         } catch (requirementsError) {
-            console.log('⚠️  Installing from requirements.txt failed, trying individual packages...');
+            console.log(`⚠️  Installing from ${requirementsPath} failed, trying individual packages...`);
 
             // Fallback to individual installation
             const basicCommands = [
@@ -250,7 +252,7 @@ function installWhisperPackages() {
 }
 
 function setupEnhancedScript() {
-    const enhancedScriptPath = path.join(__dirname, 'src', 'py-scripts', 'enhanced_speech_recognition.py');
+    const enhancedScriptPath = path.join(__dirname, '..', 'src', 'py-scripts', 'enhanced_speech_recognition.py');
 
     if (fs.existsSync(enhancedScriptPath)) {
         console.log('✅ Enhanced speech recognition script found in src/py-scripts/');
@@ -577,7 +579,7 @@ if __name__ == "__main__":
     main()
 `;
 
-    const fallbackPath = path.join(__dirname, 'public', 'enhanced_speech_recognition.py');
+    const fallbackPath = path.join(__dirname, '..', 'public', 'enhanced_speech_recognition.py');
     try {
         fs.writeFileSync(fallbackPath, fallbackScript);
         console.log('✅ Enhanced speech recognition script created');

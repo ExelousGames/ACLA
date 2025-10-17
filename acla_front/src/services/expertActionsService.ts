@@ -234,13 +234,13 @@ export const runExpertActionPrediction = async (
     }
 
     const modelFilePath = await writeTempJsonFile(modelData, 'imitation_model');
-    const telemetryFilePath = await writeTempJsonFile(telemetryData, 'telemetry_samples');
+    const telemetryPayloadArg = JSON.stringify(telemetryData);
 
     const pythonOptions: PythonShellOptions = {
         mode: 'text',
         pythonOptions: ['-u'],
         scriptPath: 'src/py-scripts',
-        args: [modelFilePath, telemetryFilePath]
+        args: [modelFilePath, telemetryPayloadArg]
     };
 
     try {
@@ -267,7 +267,6 @@ export const runExpertActionPrediction = async (
                             removedListener = true;
                         }
                         void deleteTempFileSafely(modelFilePath);
-                        void deleteTempFileSafely(telemetryFilePath);
                         if (parsed.status === 'success') {
                             resolve(parsed);
                         } else {
@@ -286,7 +285,6 @@ export const runExpertActionPrediction = async (
                     removedListener = true;
                 }
                 void deleteTempFileSafely(modelFilePath);
-                void deleteTempFileSafely(telemetryFilePath);
                 if (resolved) {
                     return;
                 }
@@ -303,7 +301,6 @@ export const runExpertActionPrediction = async (
         });
     } catch (error) {
         await deleteTempFileSafely(modelFilePath);
-        await deleteTempFileSafely(telemetryFilePath);
         throw error;
     }
 };

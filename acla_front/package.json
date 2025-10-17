@@ -33,9 +33,12 @@
     "test": "react-scripts test",
     "eject": "react-scripts eject",
     "electron": "electron .",
-    "setup-speech": "node setup-speech.js",
-    "start:electron": "npm run setup-speech && concurrently \"env-cmd -f ../.dev.env react-scripts start\" \"wait-on http://localhost:3000 && electron .\"",
-    "build:electron": "npm run setup-speech && env-cmd -f ../.prod.env react-scripts build && npx electron-builder"
+    "setup-speech": "node scripts/setup-speech.js",
+    "setup:python": "node scripts/setup-python.js",
+    "prestart:electron": "node scripts/setup-python.js --mode=dev && node scripts/setup-speech.js",
+    "prebuild:electron": "node scripts/setup-python.js --mode=prod && node scripts/setup-speech.js",
+    "start:electron": "concurrently \"env-cmd -f ../.dev.env react-scripts start\" \"wait-on http://localhost:3000 && electron .\"",
+    "build:electron": "env-cmd -f ../.prod.env react-scripts build && npx electron-builder"
   },
   "eslintConfig": {
     "extends": [
@@ -73,7 +76,25 @@
     },
     "files": [
       "build/**/*",
-      "node_modules/**/*"
+      "node_modules/**/*",
+      "public/electron.js",
+      "src/common/preload.js"
+    ],
+    "extraResources": [
+      {
+        "from": ".venv/py-scripts-prod",
+        "to": "python-env",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "src/py-scripts",
+        "to": "py-scripts",
+        "filter": [
+          "**/*"
+        ]
+      }
     ],
     "directories": {
       "buildResources": "assets"
