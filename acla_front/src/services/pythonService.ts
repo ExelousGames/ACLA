@@ -23,7 +23,7 @@ declare global {
              * @param options 
              * @returns 
              */
-            runPythonScript: (script: string, options: PythonShellOptions) => { shellId: number };
+            runPythonScript: (script: string, options: PythonShellOptions) => Promise<{ shellId: number }>;
             writeTempFile: (options: { content: string; directory?: string; prefix?: string; extension?: string }) => Promise<{ success: boolean; path?: string; error?: string; skipped?: boolean }>;
             deleteTempFile: (filePath: string) => Promise<{ success: boolean; error?: string; skipped?: boolean }>;
 
@@ -41,7 +41,7 @@ declare global {
              * @param callback function used for handling termination of a script 
              * @returns 
              */
-            onPythonEnd: (callback: (shellId: number) => void) => void;
+            onPythonEnd: (callback: (shellId: number) => void) => () => void;
 
             /**
              * Send message to a script running in main process 
@@ -49,7 +49,7 @@ declare global {
              * @param message 
              * @returns 
              */
-            sendMessageToPython: (shellId: number, message: string) => void;
+            sendMessageToPython: (shellId: number, message: string) => Promise<{ success: boolean; error?: string }>;
 
             /**
              * Start local speech recognition (offline)

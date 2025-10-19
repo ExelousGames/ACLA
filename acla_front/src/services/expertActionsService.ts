@@ -59,7 +59,7 @@ const buildCacheKey = (options: NormalizedModelOptions): string => {
 const imitationModelCache = new Map<string, ModelCacheEntry>();
 
 export interface ExpertPredictionResult {
-    status: 'success' | 'error' | 'log';
+    status: 'success' | 'error' | 'log' | 'ready' | 'shutdown' | 'pong';
     prediction?: Record<string, number>;
     metadata?: {
         telemetry_samples_used: number;
@@ -71,6 +71,7 @@ export interface ExpertPredictionResult {
     traceback?: string;
     logs?: string[];
     stage?: string;
+    request_id?: string;
 }
 
 const base64ToUint8Array = (base64: string): Uint8Array => {
@@ -225,82 +226,372 @@ const deleteTempFileSafely = async (path: string | undefined) => {
     }
 };
 
-export const runExpertActionPrediction = async (
-    modelData: any,
-    telemetryData: any[]
-): Promise<ExpertPredictionResult> => {
-    if (!window?.electronAPI?.runPythonScript) {
-        throw new Error('Python execution API is not available in this environment');
+const STREAM_READY_TIMEOUT_MS = 10000;
+const STREAM_READY_MAX_ATTEMPTS = 12;
+const STREAM_REQUEST_TIMEOUT_MS = 15000;
+
+interface PendingPrediction {
+    resolve: (value: ExpertPredictionResult) => void;
+    reject: (error: Error) => void;
+    logs: string[];
+    timeoutId: number;
+}
+
+export interface ExpertActionsRunner {
+    predict: (telemetryData: any[]) => Promise<ExpertPredictionResult>;
+    dispose: () => Promise<void>;
+}
+
+let predictionRequestSequence = 0;
+
+const ensureElectronStreamingSupport = () => {
+    if (
+        !window?.electronAPI?.runPythonScript ||
+        !window.electronAPI.sendMessageToPython ||
+        typeof window.electronAPI.onPythonMessage !== 'function' ||
+        typeof window.electronAPI.onPythonEnd !== 'function'
+    ) {
+        throw new Error('Python streaming API is not available in this environment');
     }
+};
+
+export const createExpertActionsRunner = async (
+    modelData: any
+): Promise<ExpertActionsRunner> => {
+    ensureElectronStreamingSupport();
 
     const modelFilePath = await writeTempJsonFile(modelData, 'imitation_model');
-    const telemetryPayloadArg = JSON.stringify(telemetryData);
 
     const pythonOptions: PythonShellOptions = {
         mode: 'text',
         pythonOptions: ['-u'],
         scriptPath: 'src/py-scripts',
-        args: [modelFilePath, telemetryPayloadArg]
+        args: [modelFilePath, '--stream']
     };
 
-    try {
-        const { shellId } = await window.electronAPI.runPythonScript(
-            'run_expert_actions_prediction.py',
-            pythonOptions
-        );
+    const { shellId } = await window.electronAPI.runPythonScript(
+        'run_expert_actions_prediction.py',
+        pythonOptions
+    );
 
-        return await new Promise<ExpertPredictionResult>((resolve, reject) => {
-            let resolved = false;
-            let lastMessage: ExpertPredictionResult | null = null;
-            let removedListener = false;
+    const pending = new Map<string, PendingPrediction>();
+    let isReady = false;
+    let isClosed = false;
+    let isDisposed = false;
+    let removeMessageListener: (() => void) | null = null;
+    let removeEndListener: (() => void) | null = null;
 
-            const removeListener = window.electronAPI.onPythonMessage((returnedShellId, message) => {
-                if (returnedShellId !== shellId) return;
-                if (!message) return;
-                try {
-                    const parsed = JSON.parse(message) as ExpertPredictionResult;
-                    lastMessage = parsed;
-                    if (parsed.status === 'success' || parsed.status === 'error') {
-                        resolved = true;
-                        if (!removedListener) {
-                            removeListener();
-                            removedListener = true;
-                        }
-                        void deleteTempFileSafely(modelFilePath);
-                        if (parsed.status === 'success') {
-                            resolve(parsed);
-                        } else {
-                            reject(new Error(parsed.message || 'Python script reported an error'));
-                        }
-                    }
-                } catch (error) {
-                    console.warn('Non-JSON message from Python script', message, error);
+    let readyResolve: (() => void) | null = null;
+    let readyReject: ((error: Error) => void) | null = null;
+
+    const readyPromise = new Promise<void>((resolve, reject) => {
+        readyResolve = resolve;
+        readyReject = reject;
+    });
+
+    const clearReadyCallbacks = () => {
+        readyResolve = null;
+        readyReject = null;
+    };
+
+    let readyWatchdogId: number | null = null;
+    let readyPingAttempts = 0;
+
+    const stopReadyWatchdog = (resetAttempts = false) => {
+        if (readyWatchdogId !== null) {
+            window.clearTimeout(readyWatchdogId);
+            readyWatchdogId = null;
+        }
+        if (resetAttempts) {
+            readyPingAttempts = 0;
+        }
+    };
+
+    const scheduleReadyWatchdog = () => {
+        if (isClosed || isReady) {
+            return;
+        }
+
+        stopReadyWatchdog(false);
+
+        readyWatchdogId = window.setTimeout(() => {
+            if (isClosed || isReady) {
+                return;
+            }
+
+            if (readyPingAttempts >= STREAM_READY_MAX_ATTEMPTS) {
+                handleSessionFailure(new Error('Timed out while waiting for expert prediction session to start'));
+                return;
+            }
+
+            readyPingAttempts += 1;
+
+            window.electronAPI.sendMessageToPython(shellId, JSON.stringify({
+                action: 'ping',
+                request_id: `ready-ping-${shellId}-${Date.now()}-${readyPingAttempts}`
+            })).then((response) => {
+                if (!response?.success) {
+                    throw new Error(response?.error || 'Python session unavailable');
                 }
+            }).catch((error) => {
+                handleSessionFailure(error instanceof Error ? error : new Error(String(error)));
             });
 
-            window.electronAPI.onPythonEnd((returnedShellId) => {
-                if (returnedShellId !== shellId) return;
-                if (!removedListener) {
-                    removeListener();
-                    removedListener = true;
+            scheduleReadyWatchdog();
+        }, STREAM_READY_TIMEOUT_MS);
+    };
+
+    const cleanup = () => {
+        if (removeMessageListener) {
+            removeMessageListener();
+            removeMessageListener = null;
+        }
+        if (removeEndListener) {
+            removeEndListener();
+            removeEndListener = null;
+        }
+        void deleteTempFileSafely(modelFilePath);
+    };
+
+    const handleSessionFailure = (error: Error) => {
+        if (!isClosed) {
+            isClosed = true;
+        }
+
+        stopReadyWatchdog(true);
+
+        if (!isReady) {
+            if (readyReject) {
+                readyReject(error);
+            }
+            clearReadyCallbacks();
+        }
+
+        pending.forEach((entry) => {
+            window.clearTimeout(entry.timeoutId);
+            entry.reject(error);
+        });
+        pending.clear();
+        cleanup();
+    };
+
+    readyPingAttempts = 0;
+    scheduleReadyWatchdog();
+
+    const handlePythonMessage = (returnedShellId: number, message: string) => {
+        if (returnedShellId !== shellId || !message || isClosed) {
+            return;
+        }
+
+        let parsed: ExpertPredictionResult & { request_id?: string };
+        try {
+            parsed = JSON.parse(message);
+        } catch (error) {
+            console.warn('Non-JSON message from Python script', message, error);
+            return;
+        }
+
+        const requestKey = parsed.request_id ?? (parsed as any).requestId ?? null;
+        const status = parsed.status;
+
+        if (!isReady) {
+            if (status === 'ready') {
+                isReady = true;
+                stopReadyWatchdog(true);
+                if (readyResolve) {
+                    readyResolve();
                 }
-                void deleteTempFileSafely(modelFilePath);
-                if (resolved) {
+                clearReadyCallbacks();
+                return;
+            }
+
+            if (status === 'error') {
+                handleSessionFailure(new Error(parsed.message || 'Failed to initialize expert prediction session'));
+                return;
+            }
+
+            if (status === 'log') {
+                readyPingAttempts = 0;
+                scheduleReadyWatchdog();
+                return;
+            }
+        }
+
+        if (status === 'pong') {
+            if (!isReady) {
+                readyPingAttempts = 0;
+                scheduleReadyWatchdog();
+            }
+            return;
+        }
+
+        if (status === 'log' && requestKey != null) {
+            const pendingEntry = pending.get(String(requestKey));
+            if (pendingEntry && parsed.message) {
+                pendingEntry.logs.push(parsed.message);
+            }
+            return;
+        }
+
+        if (requestKey != null) {
+            const key = String(requestKey);
+            const pendingEntry = pending.get(key);
+            if (pendingEntry) {
+                window.clearTimeout(pendingEntry.timeoutId);
+
+                if (status === 'success') {
+                    pending.delete(key);
+                    const aggregatedLogs = [...pendingEntry.logs];
+                    if (Array.isArray(parsed.logs)) {
+                        parsed.logs.forEach((log) => {
+                            if (!aggregatedLogs.includes(log)) {
+                                aggregatedLogs.push(log);
+                            }
+                        });
+                    }
+
+                    const payload: ExpertPredictionResult = {
+                        ...parsed,
+                        logs: aggregatedLogs.length > 0 ? aggregatedLogs : parsed.logs
+                    };
+
+                    pendingEntry.resolve(payload);
                     return;
                 }
-                if (lastMessage) {
-                    if (lastMessage.status === 'success') {
-                        resolve(lastMessage);
-                    } else {
-                        reject(new Error(lastMessage.message || 'Python script reported an error'));
-                    }
-                } else {
-                    reject(new Error('Python script completed without returning data'));
+
+                if (status === 'error') {
+                    pending.delete(key);
+                    const error = new Error(parsed.message || 'Python script reported an error');
+                    (error as Error & { detail?: ExpertPredictionResult }).detail = parsed;
+                    pendingEntry.reject(error);
+                    return;
                 }
-            });
-        });
+
+                if (status === 'shutdown') {
+                    pending.delete(key);
+                    pendingEntry.reject(new Error('Expert prediction session ended unexpectedly'));
+                    return;
+                }
+            }
+        }
+
+        if (status === 'shutdown') {
+            handleSessionFailure(new Error('Expert prediction session ended unexpectedly'));
+            return;
+        }
+
+        if (status === 'error' && requestKey == null) {
+            handleSessionFailure(new Error(parsed.message || 'Python session error'));
+        }
+    };
+
+    removeMessageListener = window.electronAPI.onPythonMessage(handlePythonMessage);
+    removeEndListener = window.electronAPI.onPythonEnd((returnedShellId: number) => {
+        if (returnedShellId !== shellId) {
+            return;
+        }
+
+        handleSessionFailure(new Error('Expert prediction session terminated'));
+    });
+
+    try {
+        await readyPromise;
     } catch (error) {
-        await deleteTempFileSafely(modelFilePath);
         throw error;
     }
+
+    const predict = async (telemetryData: any[]): Promise<ExpertPredictionResult> => {
+        if (isClosed) {
+            throw new Error('Expert prediction session is not available');
+        }
+
+        if (!Array.isArray(telemetryData) || telemetryData.length === 0) {
+            throw new Error('Telemetry data is empty');
+        }
+
+        if (pending.size > 0) {
+            throw new Error('Another prediction request is already running');
+        }
+
+        const requestId = `req-${shellId}-${Date.now()}-${++predictionRequestSequence}`;
+
+        return new Promise<ExpertPredictionResult>((resolve, reject) => {
+            const timeoutId = window.setTimeout(() => {
+                if (!pending.has(requestId)) {
+                    return;
+                }
+                const timedOut = pending.get(requestId);
+                if (timedOut) {
+                    pending.delete(requestId);
+                    timedOut.reject(new Error('Prediction timed out'));
+                }
+            }, STREAM_REQUEST_TIMEOUT_MS);
+
+            const pendingEntry: PendingPrediction = {
+                resolve,
+                reject: (error: Error) => {
+                    reject(error);
+                },
+                logs: [],
+                timeoutId
+            };
+
+            pending.set(requestId, pendingEntry);
+
+            window.electronAPI.sendMessageToPython(shellId, JSON.stringify({
+                action: 'predict',
+                request_id: requestId,
+                telemetry: telemetryData
+            })).then((response) => {
+                if (!response?.success) {
+                    throw new Error(response?.error || 'Python session unavailable');
+                }
+            }).catch((error) => {
+                const normalizedError = error instanceof Error ? error : new Error(String(error));
+                if (pending.delete(requestId)) {
+                    window.clearTimeout(timeoutId);
+                    pendingEntry.reject(normalizedError);
+                }
+                handleSessionFailure(normalizedError);
+            });
+        });
+    };
+
+    const dispose = async (): Promise<void> => {
+        if (isDisposed) {
+            return;
+        }
+        isDisposed = true;
+
+        stopReadyWatchdog(true);
+
+        if (isClosed) {
+            cleanup();
+            return;
+        }
+
+        isClosed = true;
+
+        pending.forEach((entry, key) => {
+            window.clearTimeout(entry.timeoutId);
+            entry.reject(new Error('Expert prediction session disposed'));
+            pending.delete(key);
+        });
+
+        try {
+            await window.electronAPI.sendMessageToPython(shellId, JSON.stringify({
+                action: 'shutdown',
+                request_id: `shutdown-${shellId}`
+            }));
+        } catch (error) {
+            console.warn('Failed to send shutdown message to expert prediction session', error);
+        } finally {
+            cleanup();
+        }
+    };
+
+    return {
+        predict,
+        dispose
+    };
 };

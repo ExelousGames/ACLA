@@ -25,8 +25,7 @@ from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier
 from sklearn.metrics import mean_squared_error, mean_absolute_error, accuracy_score, f1_score
 from sklearn.decomposition import PCA
 
-# Import your telemetry models
-from ..models.telemetry_models import TelemetryFeatures, FeatureProcessor
+from .telemetry_models import TelemetryFeatures, FeatureProcessor
 
 warnings.filterwarnings('ignore', category=UserWarning)
 

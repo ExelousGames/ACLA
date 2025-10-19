@@ -123,17 +123,22 @@ ipcMain.handle('run-python-script', (event, script, options = {}) => {
   const pyshell = new PythonShell(script, shellOptions);
   activeShells.set(shellId, pyshell);
 
+  const args = Array.isArray(options.args) ? options.args : [];
+  const keepAlive = args.includes('--stream');
+
   pyshell.on('message', (message) => {
     if (mainWindow) {
       mainWindow.webContents.send('python-message', shellId, message);
     }
   });
 
-  pyshell.end((err) => {
-    if (err) {
-      console.error(`Python shell ${shellId} ended with error:`, err);
-    }
-  });
+  if (!keepAlive) {
+    pyshell.end((err) => {
+      if (err) {
+        console.error(`Python shell ${shellId} ended with error:`, err);
+      }
+    });
+  }
 
   pyshell.on('close', () => {
     activeShells.delete(shellId);
@@ -205,7 +210,8 @@ ipcMain.handle('delete-temp-file', async (event, filePath) => {
 ipcMain.handle('send-message-to-python', async (event, shellId, message) => {
   const pyshell = activeShells.get(shellId);
   if (!pyshell) {
-    throw new Error(`Python shell ${shellId} not found`);
+    console.warn(`Attempted to send message to missing python shell ${shellId}`);
+    return { success: false, error: `Python shell ${shellId} not found` };
   }
   pyshell.send(message);
   return { success: true };

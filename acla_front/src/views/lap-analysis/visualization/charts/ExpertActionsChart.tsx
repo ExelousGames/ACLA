@@ -6,7 +6,8 @@ import { useEnvironment } from 'contexts/EnvironmentContext';
 import {
     acquirePersistentImitationModel,
     releasePersistentImitationModel,
-    runExpertActionPrediction,
+    createExpertActionsRunner,
+    ExpertActionsRunner,
     ExpertPredictionResult
 } from 'services/expertActionsService';
 
@@ -52,6 +53,9 @@ const ExpertActionsChart: React.FC<VisualizationProps> = ({ width = '100%', heig
     const [prediction, setPrediction] = useState<ExpertPredictionResult | null>(null);
     const [loading, setLoading] = useState<boolean>(false);
     const [error, setError] = useState<string | null>(null);
+    const [sessionReady, setSessionReady] = useState<boolean>(false);
+    const [initializing, setInitializing] = useState<boolean>(false);
+    const [sessionNonce, setSessionNonce] = useState<number>(0);
 
     type ModelHandle = {
         cacheKey: string;
@@ -61,6 +65,26 @@ const ExpertActionsChart: React.FC<VisualizationProps> = ({ width = '100%', heig
     };
 
     const modelHandleRef = useRef<ModelHandle | null>(null);
+    const sessionRef = useRef<ExpertActionsRunner | null>(null);
+    const lastAutoPredictionSignatureRef = useRef<string | null>(null);
+
+    const teardownSession = useCallback(async () => {
+        if (sessionRef.current) {
+            try {
+                await sessionRef.current.dispose();
+            } catch (disposeError) {
+                console.warn('Failed to dispose expert prediction session', disposeError);
+            }
+            sessionRef.current = null;
+        }
+
+        if (modelHandleRef.current?.cacheKey) {
+            releasePersistentImitationModel(modelHandleRef.current.cacheKey);
+        }
+
+        modelHandleRef.current = null;
+        lastAutoPredictionSignatureRef.current = null;
+    }, []);
 
     const trackName = analysisContext.recordedSessioStaticsData?.track || 'Unknown Track';
     const carName = analysisContext.recordedSessioStaticsData?.car_model || 'Unknown Car';
@@ -85,6 +109,13 @@ const ExpertActionsChart: React.FC<VisualizationProps> = ({ width = '100%', heig
             return;
         }
 
+        const runner = sessionRef.current;
+
+        if (initializing || !sessionReady || !runner) {
+            setError('Expert prediction session is still preparing. Please try again shortly.');
+            return;
+        }
+
         setLoading(true);
         setError(null);
 
@@ -99,42 +130,23 @@ const ExpertActionsChart: React.FC<VisualizationProps> = ({ width = '100%', heig
                 throw new Error('Telemetry samples could not be processed.');
             }
 
-            let handle = modelHandleRef.current;
-
-            if (!handle || handle.trackName !== sanitizedTrackName || handle.carName !== sanitizedCarName) {
-                if (handle?.cacheKey) {
-                    releasePersistentImitationModel(handle.cacheKey);
-                    modelHandleRef.current = null;
-                }
-
-                const acquiredHandle = await acquirePersistentImitationModel({
-                    trackName: sanitizedTrackName,
-                    carName: sanitizedCarName,
-                    modelType: 'imitation_learning'
-                });
-
-                handle = {
-                    cacheKey: acquiredHandle.cacheKey,
-                    data: acquiredHandle.data,
-                    trackName: sanitizedTrackName,
-                    carName: sanitizedCarName
-                };
-                modelHandleRef.current = handle;
-            }
-
-            if (!handle) {
-                throw new Error('Model handle is not available after acquisition');
-            }
-
-            const result = await runExpertActionPrediction(handle.data, sanitizedSamples);
+            const result = await runner.predict(sanitizedSamples);
             setPrediction(result);
         } catch (predictionError) {
             console.error(predictionError);
-            setError((predictionError as Error).message);
+            const message = (predictionError as Error).message || 'Failed to compute expert actions.';
+            setError(message);
+
+            const normalized = message.toLowerCase();
+            if (normalized.includes('session')) {
+                await teardownSession();
+                setSessionReady(false);
+                setSessionNonce((value) => value + 1);
+            }
         } finally {
             setLoading(false);
         }
-    }, [analysisContext.liveData, environment, hasLiveTelemetry, sanitizedTrackName, sanitizedCarName]);
+    }, [analysisContext.liveData, environment, hasLiveTelemetry, initializing, sessionReady, teardownSession]);
 
     const summaryMetrics = useMemo(() => extractKeySubset(prediction?.prediction), [prediction]);
 
@@ -146,26 +158,126 @@ const ExpertActionsChart: React.FC<VisualizationProps> = ({ width = '100%', heig
     }, [prediction]);
 
     useEffect(() => {
-        return () => {
-            if (modelHandleRef.current?.cacheKey) {
-                releasePersistentImitationModel(modelHandleRef.current.cacheKey);
-                modelHandleRef.current = null;
+        let cancelled = false;
+
+        lastAutoPredictionSignatureRef.current = null;
+
+        const initializeSession = async () => {
+            if (environment !== 'electron') {
+                await teardownSession();
+                if (!cancelled) {
+                    setSessionReady(false);
+                    setInitializing(false);
+                    setPrediction(null);
+                }
+                return;
+            }
+
+            setInitializing(true);
+            setSessionReady(false);
+            setError(null);
+            setPrediction(null);
+
+            await teardownSession();
+
+            try {
+                const acquiredHandle = await acquirePersistentImitationModel({
+                    trackName: sanitizedTrackName,
+                    carName: sanitizedCarName,
+                    modelType: 'imitation_learning'
+                });
+
+                if (cancelled) {
+                    releasePersistentImitationModel(acquiredHandle.cacheKey);
+                    return;
+                }
+
+                const newHandle: ModelHandle = {
+                    cacheKey: acquiredHandle.cacheKey,
+                    data: acquiredHandle.data,
+                    trackName: sanitizedTrackName,
+                    carName: sanitizedCarName
+                };
+
+                modelHandleRef.current = newHandle;
+
+                const runner = await createExpertActionsRunner(newHandle.data);
+
+                if (cancelled) {
+                    await runner.dispose().catch(() => undefined);
+                    releasePersistentImitationModel(newHandle.cacheKey);
+                    modelHandleRef.current = null;
+                    return;
+                }
+
+                sessionRef.current = runner;
+                setSessionReady(true);
+            } catch (initError) {
+                if (!cancelled) {
+                    console.error('Failed to initialize expert prediction session', initError);
+                    setError((initError as Error).message);
+                }
+                await teardownSession();
+            } finally {
+                if (!cancelled) {
+                    setInitializing(false);
+                }
             }
         };
-    }, []);
+
+        void initializeSession();
+
+        return () => {
+            cancelled = true;
+            void teardownSession();
+        };
+    }, [environment, sanitizedTrackName, sanitizedCarName, sessionNonce, teardownSession]);
 
     useEffect(() => {
-        if (!modelHandleRef.current) {
+        if (!sessionReady) {
+            lastAutoPredictionSignatureRef.current = null;
+        }
+    }, [sessionReady, sanitizedTrackName, sanitizedCarName, sessionNonce]);
+
+    useEffect(() => {
+        if (environment !== 'electron') {
+            lastAutoPredictionSignatureRef.current = null;
+        }
+    }, [environment]);
+
+    useEffect(() => {
+        if (environment !== 'electron') {
             return;
         }
 
-        const { trackName: cachedTrack, carName: cachedCar, cacheKey } = modelHandleRef.current;
-        if (cachedTrack !== sanitizedTrackName || cachedCar !== sanitizedCarName) {
-            releasePersistentImitationModel(cacheKey);
-            modelHandleRef.current = null;
-            setPrediction(null);
+        if (!sessionReady || initializing || loading) {
+            return;
         }
-    }, [sanitizedTrackName, sanitizedCarName]);
+
+        const liveTelemetry = analysisContext.liveData;
+        if (!liveTelemetry || typeof liveTelemetry !== 'object') {
+            return;
+        }
+
+        const liveKeys = Object.keys(liveTelemetry);
+        if (liveKeys.length === 0) {
+            return;
+        }
+
+        let signature: string;
+        try {
+            signature = JSON.stringify(liveTelemetry);
+        } catch (error) {
+            signature = `fallback-${Date.now()}`;
+        }
+
+        if (lastAutoPredictionSignatureRef.current === signature) {
+            return;
+        }
+
+        lastAutoPredictionSignatureRef.current = signature;
+        void handleComputePrediction();
+    }, [analysisContext.liveData, environment, sessionReady, initializing, loading, handleComputePrediction]);
 
     return (
         <Card style={{ width, height, padding: '16px', display: 'flex', flexDirection: 'column' }}>
@@ -178,7 +290,7 @@ const ExpertActionsChart: React.FC<VisualizationProps> = ({ width = '100%', heig
                     <Button variant="soft" size="2" onClick={handleRefreshTelemetry} disabled={loading}>
                         Sync Live Telemetry
                     </Button>
-                    <Button variant="solid" size="2" onClick={handleComputePrediction} disabled={loading || !hasLiveTelemetry}>
+                    <Button variant="solid" size="2" onClick={handleComputePrediction} disabled={loading || initializing || !hasLiveTelemetry || !sessionReady}>
                         {loading ? 'Computing…' : 'Compute Predictions'}
                     </Button>
                 </Flex>
@@ -198,6 +310,12 @@ const ExpertActionsChart: React.FC<VisualizationProps> = ({ width = '100%', heig
             {error && (
                 <Box mb="3" style={{ background: 'var(--red-3)', borderRadius: 8, padding: '12px' }}>
                     <Text size="2" color="red" weight="medium">{error}</Text>
+                </Box>
+            )}
+
+            {!error && environment === 'electron' && initializing && (
+                <Box mb="3" style={{ background: 'var(--gray-2)', borderRadius: 8, padding: '12px' }}>
+                    <Text size="2" color="gray">Loading imitation model and preparing expert prediction session…</Text>
                 </Box>
             )}
 
@@ -251,7 +369,11 @@ const ExpertActionsChart: React.FC<VisualizationProps> = ({ width = '100%', heig
             ) : (
                 <Box style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                     <Text color="gray" align="center">
-                        {loading ? 'Loading telemetry and computing expert actions…' : 'Start a live session and run predictions to view expert guidance based on your telemetry.'}
+                        {loading
+                            ? 'Loading telemetry and computing expert actions…'
+                            : initializing
+                                ? 'Preparing expert model. This may take a moment…'
+                                : 'Start a live session and run predictions to view expert guidance based on your telemetry.'}
                     </Text>
                 </Box>
             )}

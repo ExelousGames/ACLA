@@ -19,7 +19,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
     //
     onPythonEnd: (callback) => {
-        ipcRenderer.once('python-end', (event, ...args) => callback(...args))
+        const subscription = (event, ...args) => {
+            callback(...args);
+            ipcRenderer.off('python-end', subscription);
+        };
+        ipcRenderer.on('python-end', subscription);
+        return () => {
+            ipcRenderer.off('python-end', subscription);
+        };
     },
 
     onPythonMessage: (callback) => {
