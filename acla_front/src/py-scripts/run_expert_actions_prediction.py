@@ -201,27 +201,14 @@ def _serialize_value(value: Any) -> Any:
     return value
 
 
-def _build_position_series(service: ExpertImitateLearningService, points: int = 51) -> List[Dict[str, Any]]:
-    try:
-        positions = np.linspace(0.0, 1.0, points)
-        predictions = service.position_learner.predict_expert_actions_at_position(positions)
-    except Exception:
+def _build_position_series(optimal_actions: Any, normalized_position: Optional[float]) -> List[Dict[str, Any]]:
+    if not isinstance(optimal_actions, dict):
         return []
 
-    series: List[Dict[str, Any]] = []
-    if isinstance(predictions, list):
-        for pos, prediction in zip(positions, predictions):
-            if isinstance(prediction, dict):
-                entry = {k: _serialize_value(v) for k, v in prediction.items()}
-            else:
-                entry = {'value': _serialize_value(prediction)}
-            entry['normalized_position'] = float(pos)
-            series.append(entry)
-    elif isinstance(predictions, dict):
-        entry = {k: _serialize_value(v) for k, v in predictions.items()}
-        entry['normalized_position'] = float(positions[0])
-        series.append(entry)
-    return series
+    entry = {k: _serialize_value(v) for k, v in optimal_actions.items()}
+    if normalized_position is not None:
+        entry['normalized_position'] = float(normalized_position)
+    return [entry]
 
 
 def _normalize_telemetry_payload(payload: Any) -> Any:
@@ -274,8 +261,7 @@ def _run_prediction(
                 raise ValueError('Telemetry data is empty')
 
             telemetry_df = _ensure_dataframe(telemetry_data)
-            sample_count = len(telemetry_df)
-            if sample_count == 0:
+            if len(telemetry_df) == 0:
                 raise ValueError('Telemetry dataframe is empty after conversion')
 
             processor = FeatureProcessor(telemetry_df)
@@ -283,17 +269,19 @@ def _run_prediction(
             if processed_df is None or processed_df.empty:
                 raise ValueError('Processed telemetry dataframe is empty')
 
+            if len(processed_df) > 1:
+                print(f"[INFO] Processed telemetry generated {len(processed_df)} rows; using the first row for prediction.")
+                processed_df = processed_df.iloc[[0]].copy()
+
             predictions = service.predict_expert_actions(processed_df)
             optimal_actions = predictions.get('optimal_actions', {}) if isinstance(predictions, dict) else predictions
 
-            normalized_positions: List[float] = []
+            normalized_position: Optional[float] = None
             if 'Graphics_normalized_car_position' in processed_df.columns:
-                normalized_positions = [
-                    float(_serialize_value(val))
-                    for val in processed_df['Graphics_normalized_car_position'].tolist()
-                ]
+                normalized_position = float(_serialize_value(processed_df['Graphics_normalized_car_position'].iloc[0]))
 
-            position_series = _build_position_series(service)
+            normalized_positions: List[float] = [normalized_position] if normalized_position is not None else []
+            position_series = _build_position_series(optimal_actions, normalized_position)
 
         runtime_logs = runtime_capture.getvalue().strip() if runtime_capture is not None else ''
         _emit_log(runtime_logs, 'runtime', request_id)
@@ -302,7 +290,7 @@ def _run_prediction(
             'status': 'success',
             'prediction': {k: _serialize_value(v) for k, v in optimal_actions.items()} if isinstance(optimal_actions, dict) else optimal_actions,
             'metadata': {
-                'telemetry_samples_used': sample_count,
+                'telemetry_samples_used': 1,
                 'has_normalized_positions': bool(normalized_positions),
             },
             'normalized_positions': normalized_positions,

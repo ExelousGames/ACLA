@@ -217,6 +217,28 @@ ipcMain.handle('send-message-to-python', async (event, shellId, message) => {
   return { success: true };
 });
 
+ipcMain.handle('stop-python-script', async (event, shellId) => {
+  const pyshell = activeShells.get(shellId);
+  if (!pyshell) {
+    return { success: false, error: `Python shell ${shellId} not found` };
+  }
+
+  try {
+    if (typeof pyshell.terminate === 'function') {
+      pyshell.terminate();
+    } else if (pyshell.childProcess && typeof pyshell.childProcess.kill === 'function') {
+      pyshell.childProcess.kill();
+    } else {
+      return { success: false, error: 'Unable to terminate python shell' };
+    }
+
+    return { success: true };
+  } catch (error) {
+    console.error(`Failed to stop python shell ${shellId}:`, error);
+    return { success: false, error: error.message };
+  }
+});
+
 // Speech Recognition IPC Handlers
 ipcMain.handle('check-speech-recognition-availability', async () => {
   return await checkSpeechRecognitionAvailability();

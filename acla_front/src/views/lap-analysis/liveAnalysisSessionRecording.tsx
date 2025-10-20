@@ -9,11 +9,22 @@ import { PythonShellOptions } from 'services/pythonService';
 
 enum RecordingState { CHECKING = 'CHECKING', READY = 'READY', RECORDING = 'RECORDING', UPLOAD_READY = 'UPLOAD_READY' }
 
+type StopReason = 'manual' | 'pause' | 'error' | 'complete';
+
 const CHECK_SESSION_INTERVAL_MS = 2000;
 const SESSION_CHECK_TIMEOUT_MS = 10000;
 const UPLOAD_CHUNK_SIZE = 5;
 const POST_UPLOAD_RESET_DELAY_MS = 1200;
 const POST_SUCCESS_DIALOG_CLOSE_MS = 800;
+
+const toAccStatus = (value: unknown): ACC_STATUS | null => {
+    const numeric = typeof value === 'string' ? Number(value) : value;
+    if (typeof numeric !== 'number' || Number.isNaN(numeric)) {
+        return null;
+    }
+
+    return ACC_STATUS[numeric as ACC_STATUS] !== undefined ? numeric as ACC_STATUS : null;
+};
 
 export default function LiveAnalysisSessionRecording() {
     const analysisContext = useContext(AnalysisContext);
@@ -22,10 +33,18 @@ export default function LiveAnalysisSessionRecording() {
     const [state, setState] = useState<RecordingState>(RecordingState.CHECKING);
     const isRecording = state === RecordingState.RECORDING;
     const canRecord = state === RecordingState.READY;
+    const liveStatus = analysisContext.liveStatus;
 
     const isCheckingRef = useRef(false);
     const lastCheckRef = useRef<number | null>(null);
     const intervalRef = useRef<NodeJS.Timeout | null>(null);
+
+    const recordingShellIdRef = useRef<number | null>(null);
+    const pythonMessageCleanupRef = useRef<(() => void) | null>(null);
+    const pythonEndCleanupRef = useRef<(() => void) | null>(null);
+    const stopReasonRef = useRef<StopReason | null>(null);
+    const resumeAfterPauseRef = useRef(false);
+    const startInFlightRef = useRef(false);
 
     const [isUploading, setIsUploading] = useState(false);
     const [uploadProgress, setUploadProgress] = useState(0);
@@ -54,6 +73,92 @@ export default function LiveAnalysisSessionRecording() {
 
     const stopInterval = useCallback(() => { if (intervalRef.current) { clearInterval(intervalRef.current); intervalRef.current = null; } }, []);
 
+    const applyStopOutcome = useCallback((reason: StopReason) => {
+        if (pythonMessageCleanupRef.current) {
+            pythonMessageCleanupRef.current();
+            pythonMessageCleanupRef.current = null;
+        }
+        if (pythonEndCleanupRef.current) {
+            pythonEndCleanupRef.current();
+            pythonEndCleanupRef.current = null;
+        }
+
+        recordingShellIdRef.current = null;
+        stopReasonRef.current = null;
+        startInFlightRef.current = false;
+
+        switch (reason) {
+            case 'pause': {
+                resumeAfterPauseRef.current = true;
+                analysisContext.setLiveStatus(ACC_STATUS.ACC_PAUSE);
+                analysisContext.clearRecordingSession();
+                isCheckingRef.current = false;
+                lastCheckRef.current = null;
+                setState(RecordingState.CHECKING);
+                break;
+            }
+            case 'error': {
+                resumeAfterPauseRef.current = false;
+                analysisContext.clearRecordingSession();
+                setState(RecordingState.READY);
+                break;
+            }
+            case 'manual': {
+                resumeAfterPauseRef.current = false;
+                setState(RecordingState.UPLOAD_READY);
+                break;
+            }
+            default: {
+                resumeAfterPauseRef.current = false;
+                setState(RecordingState.UPLOAD_READY);
+            }
+        }
+    }, [analysisContext, setState]);
+
+    const stopRecordingProcess = useCallback(async (reason: StopReason) => {
+        if (stopReasonRef.current && stopReasonRef.current !== 'complete') {
+            return;
+        }
+
+        if (reason === 'pause') {
+            analysisContext.setLiveStatus(ACC_STATUS.ACC_PAUSE);
+        }
+
+        if (state !== RecordingState.RECORDING) {
+            applyStopOutcome(reason);
+            return;
+        }
+
+        stopReasonRef.current = reason;
+
+        if (reason === 'pause') {
+            resumeAfterPauseRef.current = true;
+        } else {
+            resumeAfterPauseRef.current = false;
+        }
+
+        if (pythonMessageCleanupRef.current) {
+            pythonMessageCleanupRef.current();
+            pythonMessageCleanupRef.current = null;
+        }
+
+        const shellId = recordingShellIdRef.current;
+        if (shellId == null || !window?.electronAPI?.stopPythonScript) {
+            applyStopOutcome(reason);
+            return;
+        }
+
+        try {
+            const result = await window.electronAPI.stopPythonScript(shellId);
+            if (!result?.success) {
+                applyStopOutcome('error');
+            }
+        } catch (error) {
+            console.error('Failed to stop python script', error);
+            applyStopOutcome('error');
+        }
+    }, [analysisContext, applyStopOutcome, state]);
+
     const sessionCheck = useCallback(async () => {
         if (state !== RecordingState.CHECKING || isCheckingRef.current) return;
         isCheckingRef.current = true; lastCheckRef.current = Date.now();
@@ -68,7 +173,11 @@ export default function LiveAnalysisSessionRecording() {
                     if (_id !== shellId) return;
                     try {
                         const obj = JSON.parse(message);
-                        if (obj.Graphics?.status === ACC_STATUS.ACC_LIVE) {
+                        const status = toAccStatus(obj.Graphics?.status);
+                        if (status !== null) {
+                            analysisContext.setLiveStatus(status);
+                        }
+                        if (status === ACC_STATUS.ACC_LIVE) {
                             analysisContext.setRecordedSessionStaticsData(obj.Static);
                             setState(RecordingState.READY);
                             stopInterval();
@@ -98,8 +207,20 @@ export default function LiveAnalysisSessionRecording() {
         return () => stopInterval();
     }, [state, sessionCheck, startInterval, stopInterval]);
 
+    useEffect(() => {
+        if (state === RecordingState.RECORDING && liveStatus !== null && liveStatus !== ACC_STATUS.ACC_LIVE) {
+            void stopRecordingProcess('pause');
+        }
+    }, [liveStatus, state, stopRecordingProcess]);
+
+
     const startRecording = useCallback(async () => {
-        if (!canRecord || !analysisContext.recordedSessioStaticsData) return;
+        if (!canRecord || !analysisContext.recordedSessioStaticsData || startInFlightRef.current) {
+            return;
+        }
+
+        startInFlightRef.current = true;
+
         analysisContext.setMap(analysisContext.recordedSessioStaticsData.track || 'Unknown Track');
         const now = new Date();
         const filename = `acc_${now.getFullYear()}_${now.getMonth()}_${now.getDate()}_${now.getHours()}_${now.getMinutes()}_${now.getSeconds()}.csv`;
@@ -107,7 +228,6 @@ export default function LiveAnalysisSessionRecording() {
         const options: PythonShellOptions = { mode: 'text', pythonOptions: ['-u'], scriptPath: 'src/py-scripts', args: [folder, filename] };
         const script = 'ACCMemoryExtractor.py';
 
-        // Always create a new session with a fresh timestamp-based name
         const newSessionName = `Racing Session ${new Date().toLocaleString()}`;
         analysisContext.setSession({
             session_name: newSessionName,
@@ -122,18 +242,64 @@ export default function LiveAnalysisSessionRecording() {
         setState(RecordingState.RECORDING);
         try {
             const { shellId } = await window.electronAPI.runPythonScript(script, options);
-            const cleanup = window.electronAPI.onPythonMessage((incomingId: number, message: string) => {
-                if (incomingId === shellId) {
-                    try { const obj = JSON.parse(message); analysisContext.setLiveSessionData(obj); analysisContext.writeRecordedLiveSessionData(obj); } catch { }
-                }
-            });
-            window.electronAPI.onPythonEnd((incomingId: number) => {
-                if (incomingId === shellId) { setState(RecordingState.UPLOAD_READY); if (typeof cleanup === 'function') cleanup(); }
-            });
-        } catch { setState(RecordingState.READY); }
-    }, [canRecord, analysisContext]);
+            recordingShellIdRef.current = shellId;
+            stopReasonRef.current = null;
+            resumeAfterPauseRef.current = false;
 
-    const manualStop = useCallback(() => { if (state === RecordingState.RECORDING) setState(RecordingState.UPLOAD_READY); }, [state]);
+            const messageCleanup = window.electronAPI.onPythonMessage((incomingId: number, message: string) => {
+                if (incomingId !== shellId) {
+                    return;
+                }
+                try {
+                    const obj = JSON.parse(message);
+                    const status = toAccStatus((obj as any)?.Graphics_status ?? (obj as any)?.Graphics?.status);
+                    if (status !== null) {
+                        analysisContext.setLiveStatus(status);
+                    }
+                    analysisContext.setLiveSessionData(obj);
+                    void analysisContext.writeRecordedLiveSessionData(obj);
+                } catch { }
+            });
+            pythonMessageCleanupRef.current = messageCleanup;
+
+            const removeEndListener = window.electronAPI.onPythonEnd((incomingId: number) => {
+                if (incomingId !== shellId) {
+                    return;
+                }
+
+                if (pythonMessageCleanupRef.current) {
+                    pythonMessageCleanupRef.current();
+                    pythonMessageCleanupRef.current = null;
+                }
+
+                removeEndListener();
+                pythonEndCleanupRef.current = null;
+
+                const reason = stopReasonRef.current ?? 'complete';
+                applyStopOutcome(reason);
+            });
+            pythonEndCleanupRef.current = removeEndListener;
+        } catch (error) {
+            console.error('Failed to start recording session', error);
+            applyStopOutcome('error');
+        } finally {
+            startInFlightRef.current = false;
+        }
+    }, [analysisContext, applyStopOutcome, canRecord]);
+
+    useEffect(() => {
+        if (state === RecordingState.READY && resumeAfterPauseRef.current && liveStatus === ACC_STATUS.ACC_LIVE) {
+            resumeAfterPauseRef.current = false;
+            void startRecording();
+        }
+    }, [liveStatus, state, startRecording]);
+
+    const manualStop = useCallback(() => {
+        if (state !== RecordingState.RECORDING) {
+            return;
+        }
+        void stopRecordingProcess('manual');
+    }, [state, stopRecordingProcess]);
 
     const cleanupTelemetryFile = useCallback(async (filePath: string) => {
         try { const options: PythonShellOptions = { mode: 'text', pythonOptions: ['-u'], scriptPath: 'src/py-scripts', args: [filePath] }; await window.electronAPI.runPythonScript('delete_telemetry_file.py', options); } catch { }
@@ -146,6 +312,8 @@ export default function LiveAnalysisSessionRecording() {
         uploadInFlightRef.current = false;
         setUploadProgress(0); setUploadStatus(''); setUploadError(null); setShowRetryButton(false); setUploadDialogOpen(false); setIsUploading(false);
         isCheckingRef.current = false; lastCheckRef.current = null; setState(RecordingState.CHECKING);
+        resumeAfterPauseRef.current = false;
+        stopReasonRef.current = null;
     }, [analysisContext]);
 
     const handleUpload = useCallback(async () => {

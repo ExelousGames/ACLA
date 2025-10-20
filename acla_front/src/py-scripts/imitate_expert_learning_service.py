@@ -669,49 +669,50 @@ class ExpertImitateLearningService:
 
         return results
     
-    def predict_expert_actions(self, 
+    def predict_expert_actions(self,
                              processed_df: pd.DataFrame) -> Dict[str, Any]:
         """
-        Predict what an expert would do in the current situation
-        
+        Predict what an expert would do in the current situation.
+
         Args:
-            processed_df: Current telemetry DataFrame (may be single row)
-            
+            processed_df: Current telemetry DataFrame (expects a single row).
+
         Returns:
-            Predicted expert actions and recommendations
+            Dictionary with the predicted expert actions keyed by canonical metric names.
         """
-        predictions = {}
-        
-        # Check if models exist
+        predictions: Dict[str, Any] = {}
+
         if not self.position_learner.position_model:
             print("[WARNING] No position model available")
             return {"error": "No trained models available"}
-        
+
+        row_count = len(processed_df)
+        if row_count == 0:
+            raise ValueError("Telemetry dataframe is empty")
+        if row_count > 1:
+            # Use the first telemetry sample when multiple rows slip through preprocessing.
+            print(f"[INFO] Received {row_count} telemetry rows; using the first row for prediction.")
+            processed_df = processed_df.iloc[[0]].copy()
+        else:
+            processed_df = processed_df.copy()
+
+        if 'Graphics_normalized_car_position' not in processed_df.columns:
+            raise ValueError("No normalized track position data available")
+
+        normalized_position = processed_df['Graphics_normalized_car_position'].iloc[0]
         try:
-            
-            # Extract normalized positions from the input data
-            if 'Graphics_normalized_car_position' in processed_df.columns:
-                normalized_positions = processed_df['Graphics_normalized_car_position'].values
-                optimal_actions = self.position_learner.predict_expert_actions_at_position(normalized_positions)
-                
-                # If multiple rows, average the predictions for consistency with old interface
-                if isinstance(optimal_actions, list):
-                    averaged_actions = {}
-                    for key in optimal_actions[0].keys():
-                        averaged_actions[key] = np.mean([action[key] for action in optimal_actions])
-                    predictions['optimal_actions'] = averaged_actions
-                else:
-                    predictions['optimal_actions'] = optimal_actions
-            else:
-                predictions['optimal_actions'] = {"error": "No normalized track position data available"}
-                
-        except Exception as e:
-            raise Exception(f"[WARNING] Could not predict expert actions: {e}")
-        
-        # If no specific models are available, provide error
+            optimal_actions = self.position_learner.predict_expert_actions_at_position(float(normalized_position))
+        except Exception as exc:
+            raise Exception(f"[WARNING] Could not predict expert actions: {exc}") from exc
+
+        if not isinstance(optimal_actions, dict):
+            raise ValueError("Expert model returned unexpected payload for optimal actions")
+
+        predictions['optimal_actions'] = optimal_actions
+
         if not predictions or all('error' in v for v in predictions.values() if isinstance(v, dict)):
             raise Exception("[Error] No valid model available for predictions")
-        
+
         return predictions
     
     def _generate_learning_summary(self, results: Dict[str, Any]) -> Dict[str, Any]:

@@ -7,13 +7,14 @@ import {
 
 import SessionList from './session-list/session-list';
 import MapList from './map-list/map-list';
-import React, { useEffect, useState, createContext, Dispatch, SetStateAction, useRef } from 'react';
+import React, { useEffect, useState, createContext, Dispatch, SetStateAction, useRef, useCallback } from 'react';
 import { RacingSessionDetailedInfoDto } from 'data/live-analysis/live-analysis-type';
 import SessionAnalysisSplit from './sessionAnalysis/session-analysis-split';
 import { useEnvironment } from 'contexts/EnvironmentContext';
 import LiveAnalysisSessionRecording from './liveAnalysisSessionRecording';
 import { VisualizationInstance } from './visualization/VisualizationRegistry';
 import { PythonShellOptions } from 'services/pythonService';
+import { ACC_STATUS } from 'data/live-analysis/live-map-data';
 
 //use interface when create a context, help prevent runtime error and type safe
 interface AnalysisContextType {
@@ -23,6 +24,10 @@ interface AnalysisContextType {
      * live data at runtime
      */
     liveData: any;
+    /**
+     * Latest ACC status from live telemetry
+     */
+    liveStatus: ACC_STATUS | null;
     recordedSessionDataFilePath: string | null;
     recordedTelemetryDataCount: number;
     recordedSessioStaticsData: any;
@@ -74,6 +79,11 @@ interface AnalysisContextType {
      * Send a guidance message from components to AI chat
      */
     sendGuidanceToChat: (message: string) => void;
+
+    /**
+     * Update the detected ACC status for consumers that rely on it
+     */
+    setLiveStatus: (status: ACC_STATUS | null) => void;
 };
 
 
@@ -82,6 +92,7 @@ export const AnalysisContext = createContext<AnalysisContextType>({
     mapSelected: '',
     sessionSelected: {} as RacingSessionDetailedInfoDto,
     liveData: {} as any,
+    liveStatus: null,
     recordedSessionDataFilePath: null,
     recordedTelemetryDataCount: 0,
     recordedSessioStaticsData: {} as any,
@@ -112,7 +123,19 @@ export const AnalysisContext = createContext<AnalysisContextType>({
     sendGuidanceToChat: (message: string) => {
         console.warn('No provider for AnalysisContext');
     },
+    setLiveStatus: (status: ACC_STATUS | null) => {
+        console.warn('No provider for AnalysisContext');
+    }
 });
+
+const normalizeAccStatus = (value: unknown): ACC_STATUS | null => {
+    const numeric = typeof value === 'string' ? Number(value) : value;
+    if (typeof numeric !== 'number' || Number.isNaN(numeric)) {
+        return null;
+    }
+
+    return ACC_STATUS[numeric as ACC_STATUS] !== undefined ? numeric as ACC_STATUS : null;
+};
 
 const SessionAnalysis = () => {
 
@@ -121,6 +144,7 @@ const SessionAnalysis = () => {
     const [sessionSelected, setSession] = useState<RacingSessionDetailedInfoDto | null>(null);
     const [activeTab, setActiveTab] = useState('mapLists');
     const [liveData, setLiveData] = useState({});
+    const [liveStatus, setLiveStatus] = useState<ACC_STATUS | null>(null);
     const [recordedSessioStaticsData, setRecordedSessionStaticsData] = useState({});
     const [recordedSessionDataFilePath, setRecordedSessionDataFilePath] = useState<string | null>(null);
     const [recordedTelemetryDataCount, setRecordedTelemetryDataCount] = useState<number>(0);
@@ -256,6 +280,21 @@ const SessionAnalysis = () => {
     const sendGuidanceToChat = (message: string) => {
         setLatestGuidanceMessage(message);
     };
+
+    const updateLiveStatus = useCallback((status: ACC_STATUS | null) => {
+        setLiveStatus(status);
+    }, []);
+
+    useEffect(() => {
+        if (!liveData || typeof liveData !== 'object') {
+            return;
+        }
+
+        const nextStatus = normalizeAccStatus((liveData as any)?.Graphics_status ?? (liveData as any)?.Graphics?.status);
+        if (nextStatus !== null && nextStatus !== liveStatus) {
+            setLiveStatus(nextStatus);
+        }
+    }, [liveData, liveStatus]);
     //switch tab when a map or a session is selected
     useEffect(() => {
         if (mapSelected != null) {
@@ -305,6 +344,9 @@ const SessionAnalysis = () => {
             clearRecordingSession,
             setActiveVisualizations,
             sendGuidanceToChat
+            ,
+            liveStatus,
+            setLiveStatus: updateLiveStatus
         }}>
             <Tabs.Root className="LiveAnalysisTabsRoot" defaultValue="mapLists" value={activeTab} onValueChange={setActiveTab}>
                 <Tabs.List className="live-analysis-tablists" justify="start">

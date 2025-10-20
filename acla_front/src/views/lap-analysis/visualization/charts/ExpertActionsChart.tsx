@@ -1,5 +1,5 @@
 import React, { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
-import { Card, Text, Box, Flex, Button, Badge, Separator, Table, ScrollArea } from '@radix-ui/themes';
+import { Card, Text, Box, Flex, Badge, Separator, Table, ScrollArea } from '@radix-ui/themes';
 import { AnalysisContext } from '../../session-analysis';
 import { VisualizationProps } from '../VisualizationRegistry';
 import { useEnvironment } from 'contexts/EnvironmentContext';
@@ -10,6 +10,7 @@ import {
     ExpertActionsRunner,
     ExpertPredictionResult
 } from 'services/expertActionsService';
+import { ACC_STATUS } from 'data/live-analysis/live-map-data';
 
 const MODEL_CAR_NAME = 'AllCars';
 
@@ -90,18 +91,78 @@ const ExpertActionsChart: React.FC<VisualizationProps> = ({ width = '100%', heig
     const carName = analysisContext.recordedSessioStaticsData?.car_model || 'Unknown Car';
     const sanitizedTrackName = trackName === 'Unknown Track' ? undefined : trackName;
     const sanitizedCarName = MODEL_CAR_NAME; // Always use the pooled AllCars imitation model variant.
+    const liveStatus = analysisContext.liveStatus;
     const hasLiveTelemetry = useMemo(() => {
-        return Boolean(analysisContext.liveData && Object.keys(analysisContext.liveData).length > 0);
-    }, [analysisContext.liveData]);
+        if (!analysisContext.liveData || Object.keys(analysisContext.liveData).length === 0) {
+            return false;
+        }
+        return liveStatus === ACC_STATUS.ACC_LIVE;
+    }, [analysisContext.liveData, liveStatus]);
+    const statusSummary = useMemo(() => {
+        switch (liveStatus) {
+            case ACC_STATUS.ACC_LIVE:
+                return { label: 'Live', color: 'green' as const };
+            case ACC_STATUS.ACC_PAUSE:
+                return { label: 'Paused', color: 'amber' as const };
+            case ACC_STATUS.ACC_REPLAY:
+                return { label: 'Replay', color: 'blue' as const };
+            case ACC_STATUS.ACC_OFF:
+                return { label: 'Idle', color: 'gray' as const };
+            default:
+                return { label: 'Unknown', color: 'gray' as const };
+        }
+    }, [liveStatus]);
 
-    const handleRefreshTelemetry = useCallback(() => {
+    const statusMessage = useMemo(() => {
+        switch (liveStatus) {
+            case ACC_STATUS.ACC_PAUSE:
+                return 'Game paused. Waiting for live telemetry to resume.';
+            case ACC_STATUS.ACC_REPLAY:
+                return 'Replay detected. Expert predictions pause until live driving continues.';
+            case ACC_STATUS.ACC_OFF:
+                return 'Waiting for Assetto Corsa Competizione telemetry.';
+            default:
+                return null;
+        }
+    }, [liveStatus]);
+
+    const telemetryNotice = useMemo(() => {
+        if (statusMessage) {
+            return statusMessage;
+        }
+        return 'Waiting for live telemetry. Start or resume a live session to enable expert predictions.';
+    }, [statusMessage]);
+
+    const fallbackText = useMemo(() => {
+        if (environment !== 'electron') {
+            return 'Predictions require the Electron desktop environment.';
+        }
+        if (loading) {
+            return 'Loading telemetry and computing expert actions…';
+        }
+        if (initializing) {
+            return 'Preparing expert model. This may take a moment…';
+        }
+        if (statusMessage) {
+            return statusMessage;
+        }
         if (!hasLiveTelemetry) {
-            setError('Live telemetry not available. Start or resume a live session to capture data.');
-            return;
+            return 'Waiting for live telemetry. Start or resume a live session to enable expert predictions.';
+        }
+        return 'Start a live session and run predictions to view expert guidance based on your telemetry.';
+    }, [environment, hasLiveTelemetry, initializing, loading, statusMessage]);
+
+    useEffect(() => {
+        if (liveStatus !== ACC_STATUS.ACC_LIVE) {
+            setLoading(false);
+            setPrediction(null);
+            lastAutoPredictionSignatureRef.current = null;
         }
 
-        setError(null);
-    }, [hasLiveTelemetry]);
+        if (liveStatus !== ACC_STATUS.ACC_LIVE && error) {
+            setError(null);
+        }
+    }, [liveStatus, error]);
 
     const handleComputePrediction = useCallback(async () => {
         if (environment !== 'electron') {
@@ -116,21 +177,29 @@ const ExpertActionsChart: React.FC<VisualizationProps> = ({ width = '100%', heig
             return;
         }
 
+        if (liveStatus !== ACC_STATUS.ACC_LIVE) {
+            setLoading(false);
+            return;
+        }
+
         setLoading(true);
         setError(null);
 
         try {
             if (!hasLiveTelemetry) {
-                throw new Error('Live telemetry not available. Start or resume a live session to capture data.');
+                setLoading(false);
+                return;
             }
 
             const liveTelemetry = analysisContext.liveData;
+
             const sanitizedSamples = [liveTelemetry].filter((sample) => sample && typeof sample === 'object');
             if (sanitizedSamples.length === 0) {
                 throw new Error('Telemetry samples could not be processed.');
             }
-
+            console.log('Computing expert actions for telemetry sample:', sanitizedSamples);
             const result = await runner.predict(sanitizedSamples);
+            console.log('Received expert prediction result:', result);
             setPrediction(result);
         } catch (predictionError) {
             console.error(predictionError);
@@ -146,7 +215,7 @@ const ExpertActionsChart: React.FC<VisualizationProps> = ({ width = '100%', heig
         } finally {
             setLoading(false);
         }
-    }, [analysisContext.liveData, environment, hasLiveTelemetry, initializing, sessionReady, teardownSession]);
+    }, [analysisContext.liveData, environment, hasLiveTelemetry, initializing, liveStatus, sessionReady, teardownSession]);
 
     const summaryMetrics = useMemo(() => extractKeySubset(prediction?.prediction), [prediction]);
 
@@ -254,6 +323,10 @@ const ExpertActionsChart: React.FC<VisualizationProps> = ({ width = '100%', heig
             return;
         }
 
+        if (liveStatus !== ACC_STATUS.ACC_LIVE) {
+            return;
+        }
+
         const liveTelemetry = analysisContext.liveData;
         if (!liveTelemetry || typeof liveTelemetry !== 'object') {
             return;
@@ -277,7 +350,7 @@ const ExpertActionsChart: React.FC<VisualizationProps> = ({ width = '100%', heig
 
         lastAutoPredictionSignatureRef.current = signature;
         void handleComputePrediction();
-    }, [analysisContext.liveData, environment, sessionReady, initializing, loading, handleComputePrediction]);
+    }, [analysisContext.liveData, environment, sessionReady, initializing, loading, liveStatus, handleComputePrediction]);
 
     return (
         <Card style={{ width, height, padding: '16px', display: 'flex', flexDirection: 'column' }}>
@@ -286,13 +359,9 @@ const ExpertActionsChart: React.FC<VisualizationProps> = ({ width = '100%', heig
                     <Text size="3" weight="bold">Expert Action Insights</Text>
                     <Text size="1" color="gray">Track: {trackName} • Car: {carName}</Text>
                 </Box>
-                <Flex gap="2">
-                    <Button variant="soft" size="2" onClick={handleRefreshTelemetry} disabled={loading}>
-                        Sync Live Telemetry
-                    </Button>
-                    <Button variant="solid" size="2" onClick={handleComputePrediction} disabled={loading || initializing || !hasLiveTelemetry || !sessionReady}>
-                        {loading ? 'Computing…' : 'Compute Predictions'}
-                    </Button>
+                <Flex align="center" gap="2">
+                    <Badge color={statusSummary.color}>{statusSummary.label}</Badge>
+                    {loading && <Text size="1" color="gray">Computing…</Text>}
                 </Flex>
             </Flex>
 
@@ -321,7 +390,7 @@ const ExpertActionsChart: React.FC<VisualizationProps> = ({ width = '100%', heig
 
             {!error && !hasLiveTelemetry && (
                 <Box mb="3" style={{ background: 'var(--gray-2)', borderRadius: 8, padding: '12px' }}>
-                    <Text size="2" color="gray">Waiting for live telemetry. Start or resume a live session to enable expert predictions.</Text>
+                    <Text size="2" color="gray">{telemetryNotice}</Text>
                 </Box>
             )}
 
@@ -333,7 +402,7 @@ const ExpertActionsChart: React.FC<VisualizationProps> = ({ width = '100%', heig
                     </Box>
 
                     <Box>
-                        <Text size="2" weight="medium" mb="2">Trajectory Samples</Text>
+                        <Text size="2" weight="medium" mb="2">Latest Expert Sample</Text>
                         <ScrollArea type="hover" style={{ maxHeight: 180 }}>
                             <Table.Root>
                                 <Table.Header>
@@ -369,11 +438,7 @@ const ExpertActionsChart: React.FC<VisualizationProps> = ({ width = '100%', heig
             ) : (
                 <Box style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                     <Text color="gray" align="center">
-                        {loading
-                            ? 'Loading telemetry and computing expert actions…'
-                            : initializing
-                                ? 'Preparing expert model. This may take a moment…'
-                                : 'Start a live session and run predictions to view expert guidance based on your telemetry.'}
+                        {fallbackText}
                     </Text>
                 </Box>
             )}
