@@ -6,13 +6,12 @@ import { ACC_STATUS } from 'data/live-analysis/live-map-data';
 import { useAuth } from 'hooks/AuthProvider';
 import apiService from 'services/api.service';
 import { PythonShellOptions } from 'services/pythonService';
+import { createPythonStreamSession, PythonStreamEvent, PythonStreamSession } from 'services/pythonStreaming';
 
 enum RecordingState { CHECKING = 'CHECKING', READY = 'READY', RECORDING = 'RECORDING', UPLOAD_READY = 'UPLOAD_READY' }
 
 type StopReason = 'manual' | 'pause' | 'error' | 'complete';
 
-const CHECK_SESSION_INTERVAL_MS = 2000;
-const SESSION_CHECK_TIMEOUT_MS = 10000;
 const UPLOAD_CHUNK_SIZE = 5;
 const POST_UPLOAD_RESET_DELAY_MS = 1200;
 const POST_SUCCESS_DIALOG_CLOSE_MS = 800;
@@ -35,10 +34,6 @@ export default function LiveAnalysisSessionRecording() {
     const canRecord = state === RecordingState.READY;
     const liveStatus = analysisContext.liveStatus;
 
-    const isCheckingRef = useRef(false);
-    const lastCheckRef = useRef<number | null>(null);
-    const intervalRef = useRef<NodeJS.Timeout | null>(null);
-
     const recordingShellIdRef = useRef<number | null>(null);
     const pythonMessageCleanupRef = useRef<(() => void) | null>(null);
     const pythonEndCleanupRef = useRef<(() => void) | null>(null);
@@ -47,6 +42,10 @@ export default function LiveAnalysisSessionRecording() {
     const startInFlightRef = useRef(false);
     const waitingForLiveStatusRef = useRef(false);
     const recordingFileInfoRef = useRef<{ folder: string; filename: string } | null>(null);
+
+    const sessionStreamRef = useRef<PythonStreamSession<Record<string, unknown>> | null>(null);
+    const sessionStreamCleanupRef = useRef<(() => void) | null>(null);
+    const sessionStreamStartingRef = useRef(false);
 
     const [isUploading, setIsUploading] = useState(false);
     const [uploadProgress, setUploadProgress] = useState(0);
@@ -77,8 +76,6 @@ export default function LiveAnalysisSessionRecording() {
         }
     }, [state]);
 
-    const stopInterval = useCallback(() => { if (intervalRef.current) { clearInterval(intervalRef.current); intervalRef.current = null; } }, []);
-
     const applyStopOutcome = useCallback((reason: StopReason) => {
         if (pythonMessageCleanupRef.current) {
             pythonMessageCleanupRef.current();
@@ -98,8 +95,6 @@ export default function LiveAnalysisSessionRecording() {
             case 'pause': {
                 resumeAfterPauseRef.current = true;
                 analysisContext.setLiveStatus(ACC_STATUS.ACC_PAUSE);
-                isCheckingRef.current = false;
-                lastCheckRef.current = null;
                 setState(RecordingState.CHECKING);
                 break;
             }
@@ -121,6 +116,121 @@ export default function LiveAnalysisSessionRecording() {
             }
         }
     }, [analysisContext, setState]);
+
+    const processSessionStreamUpdate = useCallback((event: PythonStreamEvent<Record<string, unknown>>) => {
+        if (!event) {
+            return;
+        }
+
+        if (event.status === 'update') {
+            const data = (event.data ?? {}) as Record<string, any>;
+            const graphics = (data as any).Graphics ?? {};
+            const status = toAccStatus(graphics.status);
+
+            if (status !== null) {
+                analysisContext.setLiveStatus(status);
+
+                if (status === ACC_STATUS.ACC_LIVE) {
+                    if ((data as any).Static) {
+                        analysisContext.setRecordedSessionStaticsData((data as any).Static);
+                    }
+                    setState((prev) => (prev === RecordingState.CHECKING ? RecordingState.READY : prev));
+                } else if (status === ACC_STATUS.ACC_OFF) {
+                    setState((prev) => (prev === RecordingState.READY ? RecordingState.CHECKING : prev));
+                }
+            } else if (data.available === false) {
+                analysisContext.setLiveStatus(ACC_STATUS.ACC_OFF);
+                setState((prev) => (prev === RecordingState.READY ? RecordingState.CHECKING : prev));
+            }
+        } else if (event.status === 'ready') {
+            if (analysisContext.liveStatus == null) {
+                analysisContext.setLiveStatus(ACC_STATUS.ACC_OFF);
+            }
+        } else if (event.status === 'error') {
+            console.error('ACC session checker error:', event.message ?? 'Unknown error', event.traceback ?? '');
+        } else if (event.status === 'shutdown') {
+            sessionStreamCleanupRef.current?.();
+            sessionStreamCleanupRef.current = null;
+            sessionStreamRef.current = null;
+            sessionStreamStartingRef.current = false;
+        }
+    }, [analysisContext]);
+
+    const stopSessionStream = useCallback(async ({ force = false } = {}) => {
+        sessionStreamStartingRef.current = false;
+
+        const cleanup = sessionStreamCleanupRef.current;
+        sessionStreamCleanupRef.current = null;
+        cleanup?.();
+
+        const stream = sessionStreamRef.current;
+        sessionStreamRef.current = null;
+
+        if (!stream) {
+            return;
+        }
+
+        try {
+            await stream.dispose({ force });
+        } catch (error) {
+            console.warn('Failed to dispose ACC session checker stream', error);
+        }
+    }, []);
+
+    const startSessionStream = useCallback(async () => {
+        if (sessionStreamStartingRef.current || sessionStreamRef.current) {
+            return sessionStreamRef.current;
+        }
+
+        sessionStreamStartingRef.current = true;
+        try {
+            const stream = await createPythonStreamSession<Record<string, unknown>>({
+                scriptName: 'ACCCheckAvailableSession.py',
+                pythonOptions: { mode: 'text', pythonOptions: ['-u'], scriptPath: 'src/py-scripts', args: [] },
+                readyTimeoutMs: 8000
+            });
+
+            sessionStreamRef.current = stream;
+            sessionStreamCleanupRef.current = stream.onMessage(processSessionStreamUpdate);
+
+            await stream.waitUntilReady();
+            await stream.send('request_update');
+            return stream;
+        } catch (error) {
+            console.error('Failed to start ACC session checker stream', error);
+            await stopSessionStream({ force: true });
+            throw error;
+        } finally {
+            sessionStreamStartingRef.current = false;
+        }
+    }, [processSessionStreamUpdate, stopSessionStream]);
+
+    const shouldMaintainSessionStream = state === RecordingState.CHECKING || state === RecordingState.READY;
+
+    useEffect(() => {
+        let cancelled = false;
+
+        const ensureStream = async () => {
+            if (shouldMaintainSessionStream) {
+                try {
+                    await startSessionStream();
+                } catch (error) {
+                    if (!cancelled) {
+                        console.error('Unable to ensure ACC session checker stream', error);
+                    }
+                }
+            } else {
+                await stopSessionStream();
+            }
+        };
+
+        void ensureStream();
+
+        return () => {
+            cancelled = true;
+            void stopSessionStream({ force: true });
+        };
+    }, [shouldMaintainSessionStream, startSessionStream, stopSessionStream]);
 
     const stopRecordingProcess = useCallback(async (reason: StopReason) => {
         if (stopReasonRef.current && stopReasonRef.current !== 'complete') {
@@ -165,57 +275,6 @@ export default function LiveAnalysisSessionRecording() {
             applyStopOutcome('error');
         }
     }, [analysisContext, applyStopOutcome, state]);
-
-    const sessionCheck = useCallback(async () => {
-        if (state !== RecordingState.CHECKING || isCheckingRef.current) return;
-        if (analysisContext.liveStatus === ACC_STATUS.ACC_LIVE) {
-            analysisContext.setLiveStatus(ACC_STATUS.ACC_OFF);
-        }
-        isCheckingRef.current = true; lastCheckRef.current = Date.now();
-        const options: PythonShellOptions = { mode: 'text', pythonOptions: ['-u'], scriptPath: 'src/py-scripts', args: [] };
-        try {
-            const { shellId } = await window.electronAPI.runPythonScript('ACCOneTimeMemoryExtractor.py', options);
-            await new Promise<void>((resolve) => {
-                let done = false;
-                const timeout = setTimeout(() => { if (!done) { done = true; isCheckingRef.current = false; resolve(); } }, SESSION_CHECK_TIMEOUT_MS);
-                const finish = () => { if (!done) { done = true; clearTimeout(timeout); isCheckingRef.current = false; resolve(); } };
-                const handleMessage = (_id: number, message: string) => {
-                    if (_id !== shellId) return;
-                    try {
-                        const obj = JSON.parse(message);
-                        const status = toAccStatus(obj.Graphics?.status);
-                        if (status !== null) {
-                            analysisContext.setLiveStatus(status);
-                        }
-                        if (status === ACC_STATUS.ACC_LIVE) {
-                            analysisContext.setRecordedSessionStaticsData(obj.Static);
-                            setState(RecordingState.READY);
-                            stopInterval();
-                        }
-                    } catch { }
-                    finish();
-                };
-                const handleEnd = (_id: number) => { if (_id === shellId) finish(); };
-                window.electronAPI.OnPythonMessageOnce(handleMessage);
-                window.electronAPI.onPythonEnd(handleEnd);
-            });
-        } catch { isCheckingRef.current = false; }
-    }, [state, analysisContext, stopInterval]);
-
-    const startInterval = useCallback(() => {
-        if (intervalRef.current) return;
-        intervalRef.current = setInterval(() => {
-            if (state === RecordingState.CHECKING) {
-                sessionCheck();
-                if (lastCheckRef.current && Date.now() - lastCheckRef.current > SESSION_CHECK_TIMEOUT_MS * 1.5) isCheckingRef.current = false;
-            }
-        }, CHECK_SESSION_INTERVAL_MS);
-    }, [sessionCheck, state]);
-
-    useEffect(() => {
-        if (state === RecordingState.CHECKING) { sessionCheck(); startInterval(); } else { stopInterval(); }
-        return () => stopInterval();
-    }, [state, sessionCheck, startInterval, stopInterval]);
 
     useEffect(() => {
         if (state === RecordingState.RECORDING && !waitingForLiveStatusRef.current && liveStatus !== null && liveStatus !== ACC_STATUS.ACC_LIVE) {
@@ -336,8 +395,8 @@ export default function LiveAnalysisSessionRecording() {
         recordingFileInfoRef.current = null;
         uploadInFlightRef.current = false;
         setUploadProgress(0); setUploadStatus(''); setUploadError(null); setShowRetryButton(false); setUploadDialogOpen(false); setIsUploading(false);
-        analysisContext.setLiveStatus(ACC_STATUS.ACC_OFF);
-        isCheckingRef.current = false; lastCheckRef.current = null; setState(RecordingState.CHECKING);
+    analysisContext.setLiveStatus(ACC_STATUS.ACC_OFF);
+    setState(RecordingState.CHECKING);
         resumeAfterPauseRef.current = false;
         stopReasonRef.current = null;
     }, [analysisContext]);
@@ -387,24 +446,21 @@ export default function LiveAnalysisSessionRecording() {
     const handleRetryUpload = useCallback(() => { setUploadError(null); setShowRetryButton(false); setUploadProgress(0); handleUpload(); }, [handleUpload]);
 
     useEffect(() => {
-        if (state === RecordingState.RECORDING) {
+        if (state === RecordingState.UPLOAD_READY && hasRecordedData) {
+            setUploadDialogOpen(true);
+            return;
+        }
+
+        if (state !== RecordingState.UPLOAD_READY && uploadDialogOpen) {
             setUploadDialogOpen(false);
         }
-    }, [state]);
+    }, [state, hasRecordedData, uploadDialogOpen]);
 
     return (
         <Box position="absolute" left="0" right="0" bottom="0" mb="5" height="64px" style={{ borderRadius: '100px', boxShadow: 'var(--shadow-6)', marginLeft: 200, marginRight: 200 }}>
             <Flex height="100%" justify="between" position="relative">
                 <Flex gap="4" align="center" p="3">
                     <IconButton radius="full" size="3" onClick={isRecording ? manualStop : (() => { void startRecording(); })} color={isRecording ? 'red' : 'blue'} disabled={state === RecordingState.CHECKING}>{icon}</IconButton>
-                    <IconButton radius="full" size="3" onClick={() => {
-                        if (isRecording || isUploading || !hasRecordedData) {
-                            return;
-                        }
-                        setUploadDialogOpen(true);
-                    }} disabled={isRecording || isUploading || !hasRecordedData}>
-                        <svg width="15" height="15" viewBox="0 0 15 15" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M7.81825 1.18188C7.64251 1.00615 7.35759 1.00615 7.18185 1.18188L4.18185 4.18188C4.00611 4.35762 4.00611 4.64254 4.18185 4.81828C4.35759 4.99401 4.64251 4.99401 4.81825 4.81828L7.05005 2.58648V9.49996C7.05005 9.74849 7.25152 9.94996 7.50005 9.94996C7.74858 9.94996 7.95005 9.74849 7.95005 9.49996V2.58648L10.1819 4.81828C10.3576 4.99401 10.6425 4.99401 10.8182 4.81828C10.994 4.64254 10.994 4.35762 10.8182 4.18188L7.81825 1.18188ZM2.5 9.99997C2.77614 9.99997 3 10.2238 3 10.5V12C3 12.5538 3.44565 13 3.99635 13H11.0012C11.5529 13 12 12.5528 12 12V10.5C12 10.2238 12.2239 9.99997 12.5 9.99997C12.7761 9.99997 13 10.2238 13 10.5V12C13 13.104 12.1062 14 11.0012 14H3.99635C2.89019 14 2 13.103 2 12V10.5C2 10.2238 2.22386 9.99997 2.5 9.99997Z" fill="currentColor" /></svg>
-                    </IconButton>
                     <AlertDialog.Root open={uploadDialogOpen} onOpenChange={(open) => { if (isUploading) return; setUploadDialogOpen(open); }}>
                         <AlertDialog.Content maxWidth="450px" onEscapeKeyDown={(e) => { if (isUploading) e.preventDefault(); }}>
                             <AlertDialog.Title>Upload Racing Session</AlertDialog.Title>
