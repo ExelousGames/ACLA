@@ -9,7 +9,7 @@ import {
 } from "@radix-ui/themes";
 import { ScrollArea } from "radix-ui";
 import { MapOption, RacingSessionDetailedInfoDto, SessionBasicInfoListDto, SessionOption } from 'data/live-analysis/live-analysis-type';
-import { AnalysisContext } from '../session-analysis';
+import { AnalysisContext } from '../analysis-context';
 import { useEnvironment } from 'contexts/EnvironmentContext';
 import { Environment } from 'utils/environment';
 import apiService from 'services/api.service';

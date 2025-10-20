@@ -4,7 +4,7 @@ import { AddControlPoints } from 'utils/curve-tobezier/curve-to-bezier';
 import { offsetBezierPoints, Point, getBezierTangent, getEndDirection, pointOnCubicBezierSpline, calculateSegmentLengths } from 'utils/curve-tobezier/points-on-curve';
 import apiService from 'services/api.service';
 import { MapInfo, RacingSessionDetailedInfoDto } from 'data/live-analysis/live-analysis-type';
-import { AnalysisContext } from '../session-analysis';
+import { AnalysisContext } from '../analysis-context';
 import LiveAnalysisSessionRecording from '../liveAnalysisSessionRecording';
 import { useEnvironment } from 'contexts/EnvironmentContext';
 import { IconButton } from '@radix-ui/themes';

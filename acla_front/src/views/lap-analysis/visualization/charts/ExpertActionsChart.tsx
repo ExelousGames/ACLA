@@ -1,6 +1,6 @@
 import React, { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { Card, Text, Box, Flex, Badge, Separator, Table, ScrollArea } from '@radix-ui/themes';
-import { AnalysisContext } from '../../session-analysis';
+import { AnalysisContext } from '../../analysis-context';
 import { VisualizationProps } from '../VisualizationRegistry';
 import { useEnvironment } from 'contexts/EnvironmentContext';
 import {

@@ -3,7 +3,7 @@ import { Box, Button, DropdownMenu, IconButton, Flex, Text } from '@radix-ui/the
 import { PlusIcon, Cross2Icon, DragHandleDots2Icon } from '@radix-ui/react-icons';
 import { visualizationRegistry, VisualizationInstance } from './VisualizationRegistry';
 import { visualizationController } from './VisualizationController';
-import { AnalysisContext } from '../session-analysis';
+import { AnalysisContext } from '../analysis-context';
 import './DynamicVisualizationManager.css';
 
 interface DynamicVisualizationManagerProps {

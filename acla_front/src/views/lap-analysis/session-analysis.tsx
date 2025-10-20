@@ -7,7 +7,7 @@ import {
 
 import SessionList from './session-list/session-list';
 import MapList from './map-list/map-list';
-import React, { useEffect, useState, createContext, Dispatch, SetStateAction, useRef, useCallback } from 'react';
+import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { RacingSessionDetailedInfoDto } from 'data/live-analysis/live-analysis-type';
 import SessionAnalysisSplit from './sessionAnalysis/session-analysis-split';
 import { useEnvironment } from 'contexts/EnvironmentContext';
@@ -15,118 +15,7 @@ import LiveAnalysisSessionRecording from './liveAnalysisSessionRecording';
 import { VisualizationInstance } from './visualization/VisualizationRegistry';
 import { PythonShellOptions } from 'services/pythonService';
 import { ACC_STATUS } from 'data/live-analysis/live-map-data';
-
-//use interface when create a context, help prevent runtime error and type safe
-interface AnalysisContextType {
-    mapSelected: string | null,
-    sessionSelected: RacingSessionDetailedInfoDto | null,
-    /**
-     * live data at runtime
-     */
-    liveData: any;
-    /**
-     * Latest ACC status from live telemetry
-     */
-    liveStatus: ACC_STATUS | null;
-    recordedSessionDataFilePath: string | null;
-    recordedTelemetryDataCount: number;
-    recordedSessioStaticsData: any;
-    /**
-     * Active visualizations in the multi-info container
-     */
-    activeVisualizations: VisualizationInstance[];
-    /**
-     * Latest guidance message from ImitationGuidanceChart
-     */
-    latestGuidanceMessage: string | null;
-    setMap: (map: string | null) => void;
-    setSession: Dispatch<SetStateAction<RacingSessionDetailedInfoDto | null>>;
-    setLiveSessionData: (data: {}) => void;
-
-    /**
-     * Data that are initialized when the instance starts and never changes until the instance is closed.
-     * @param data 
-     * @returns 
-     */
-    setRecordedSessionStaticsData: (data: {}) => void;
-
-    /**
-     * Set the file path for recorded telemetry data
-     */
-    setRecordedSessionDataFilePath: (filePath: string | null) => void;
-
-    /**
-     * Write telemetry data to file
-     */
-    writeRecordedLiveSessionData: (data: any) => Promise<void>;
-
-    /**
-     * Read all recorded session data from file
-     */
-    readRecordedSessionData: (onProgress?: (read: number, total: number | null) => void) => Promise<any[]>;
-
-    /**
-     * Clear recording file path (call when recording stops)
-     */
-    clearRecordingSession: () => void;
-
-    /**
-     * Update active visualizations
-     */
-    setActiveVisualizations: Dispatch<SetStateAction<VisualizationInstance[]>>;
-
-    /**
-     * Send a guidance message from components to AI chat
-     */
-    sendGuidanceToChat: (message: string) => void;
-
-    /**
-     * Update the detected ACC status for consumers that rely on it
-     */
-    setLiveStatus: (status: ACC_STATUS | null) => void;
-};
-
-
-//defined the structure here, pass down the props to child, must have init value here, otherwise createContext and useContext don't like it
-export const AnalysisContext = createContext<AnalysisContextType>({
-    mapSelected: '',
-    sessionSelected: {} as RacingSessionDetailedInfoDto,
-    liveData: {} as any,
-    liveStatus: null,
-    recordedSessionDataFilePath: null,
-    recordedTelemetryDataCount: 0,
-    recordedSessioStaticsData: {} as any,
-    activeVisualizations: [],
-    latestGuidanceMessage: null,
-    setMap: (map: string | null) => { },
-    setSession: ((value: RacingSessionDetailedInfoDto | null) => {
-        console.warn('No provider for AnalysisContext');
-    }) as Dispatch<SetStateAction<RacingSessionDetailedInfoDto | null>>,
-    setLiveSessionData: (data: {}) => { },
-    setRecordedSessionStaticsData: (data: {}) => { },
-    setRecordedSessionDataFilePath: (filePath: string | null) => {
-        console.warn('No provider for AnalysisContext');
-    },
-    writeRecordedLiveSessionData: async (data: any) => {
-        console.warn('No provider for AnalysisContext');
-    },
-    readRecordedSessionData: async () => {
-        console.warn('No provider for AnalysisContext');
-        return [];
-    },
-    clearRecordingSession: () => {
-        console.warn('No provider for AnalysisContext');
-    },
-    setActiveVisualizations: ((value: VisualizationInstance[]) => {
-        console.warn('No provider for AnalysisContext');
-    }) as Dispatch<SetStateAction<VisualizationInstance[]>>,
-    sendGuidanceToChat: (message: string) => {
-        console.warn('No provider for AnalysisContext');
-    },
-    setLiveStatus: (status: ACC_STATUS | null) => {
-        console.warn('No provider for AnalysisContext');
-    }
-});
+import { AnalysisContext } from './analysis-context';
 
 const normalizeAccStatus = (value: unknown): ACC_STATUS | null => {
     const numeric = typeof value === 'string' ? Number(value) : value;

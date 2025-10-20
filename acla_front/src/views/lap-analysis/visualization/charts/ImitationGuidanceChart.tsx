@@ -1,6 +1,6 @@
 import React, { useContext, useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { Card, Text, Box, Grid, Badge, Separator, Progress, Flex, Button } from '@radix-ui/themes';
-import { AnalysisContext } from '../../session-analysis';
+import { AnalysisContext } from '../../analysis-context';
 import { VisualizationProps } from '../VisualizationRegistry';
 import apiService from 'services/api.service';
 import styles from './ImitationGuidanceChart.module.css';

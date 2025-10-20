@@ -1,6 +1,6 @@
 import { Card, Flex, Box, IconButton, Heading, Grid, Text, Slider, Spinner, AlertDialog, Button } from '@radix-ui/themes';
 import { useContext, useEffect, useRef, useState, useMemo, useCallback, JSX } from 'react';
-import { AnalysisContext } from './session-analysis';
+import { AnalysisContext } from './analysis-context';
 import { UploadReacingSessionInitDto, UploadRacingSessionInitReturnDto, RacingSessionDetailedInfoDto } from 'data/live-analysis/live-analysis-type';
 import { ACC_STATUS } from 'data/live-analysis/live-map-data';
 import { useAuth } from 'hooks/AuthProvider';
@@ -162,6 +162,9 @@ export default function LiveAnalysisSessionRecording() {
 
     const sessionCheck = useCallback(async () => {
         if (state !== RecordingState.CHECKING || isCheckingRef.current) return;
+        if (analysisContext.liveStatus === ACC_STATUS.ACC_LIVE) {
+            analysisContext.setLiveStatus(ACC_STATUS.ACC_OFF);
+        }
         isCheckingRef.current = true; lastCheckRef.current = Date.now();
         const options: PythonShellOptions = { mode: 'text', pythonOptions: ['-u'], scriptPath: 'src/py-scripts', args: [] };
         try {
@@ -318,6 +321,7 @@ export default function LiveAnalysisSessionRecording() {
         analysisContext.setSession(null);
         uploadInFlightRef.current = false;
         setUploadProgress(0); setUploadStatus(''); setUploadError(null); setShowRetryButton(false); setUploadDialogOpen(false); setIsUploading(false);
+        analysisContext.setLiveStatus(ACC_STATUS.ACC_OFF);
         isCheckingRef.current = false; lastCheckRef.current = null; setState(RecordingState.CHECKING);
         resumeAfterPauseRef.current = false;
         stopReasonRef.current = null;

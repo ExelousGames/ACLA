@@ -3,7 +3,7 @@ import { Box, Button, Card, Flex, Text, TextField, ScrollArea, Separator, Badge,
 import { PaperPlaneIcon, ChatBubbleIcon, PersonIcon } from '@radix-ui/react-icons';
 import apiService from 'services/api.service';
 import './ai-chat.css';
-import { AnalysisContext } from 'views/lap-analysis/session-analysis';
+import { AnalysisContext } from 'views/lap-analysis/analysis-context';
 import { visualizationController } from 'views/lap-analysis/visualization';
 import { detectEnvironment } from 'utils/environment';
 

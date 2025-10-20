@@ -1,6 +1,6 @@
 import React, { useContext } from 'react';
 import { Card, Text, Box, Grid } from '@radix-ui/themes';
-import { AnalysisContext } from '../../session-analysis';
+import { AnalysisContext } from '../../analysis-context';
 import { VisualizationProps } from '../VisualizationRegistry';
 
 const TelemetryOverview: React.FC<VisualizationProps> = ({ id, data, config, width = '100%', height = 200 }) => {

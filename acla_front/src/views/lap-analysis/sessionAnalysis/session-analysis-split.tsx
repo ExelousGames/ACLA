@@ -1,7 +1,7 @@
 import React, { useContext } from 'react';
 import { Box, Flex, Card, Separator } from '@radix-ui/themes';
 import AiChat from '../ai-chat/ai-chat';
-import { AnalysisContext } from '../session-analysis';
+import { AnalysisContext } from '../analysis-context';
 import DynamicVisualizationManager from '../visualization/DynamicVisualizationManager';
 import '../visualization'; // Initialize visualizations
 import './session-analysis-split.css';
