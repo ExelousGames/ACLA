@@ -46,6 +46,7 @@ export default function LiveAnalysisSessionRecording() {
     const resumeAfterPauseRef = useRef(false);
     const startInFlightRef = useRef(false);
     const waitingForLiveStatusRef = useRef(false);
+    const recordingFileInfoRef = useRef<{ folder: string; filename: string } | null>(null);
 
     const [isUploading, setIsUploading] = useState(false);
     const [uploadProgress, setUploadProgress] = useState(0);
@@ -54,6 +55,10 @@ export default function LiveAnalysisSessionRecording() {
     const [showRetryButton, setShowRetryButton] = useState(false);
     const [uploadDialogOpen, setUploadDialogOpen] = useState(false);
     const uploadInFlightRef = useRef(false);
+    const hasRecordedData = analysisContext.recordedTelemetryDataCount > 0 && Boolean(analysisContext.recordedSessionDataFilePath);
+
+    const uploadStatusLabel = isUploading ? 'Uploading...' : hasRecordedData ? 'Ready to upload' : 'No data recorded';
+    const uploadStatusColor = isUploading ? 'blue' : hasRecordedData ? 'green' : 'gray';
 
     const icon = useMemo((): JSX.Element => {
         switch (state) {
@@ -100,6 +105,7 @@ export default function LiveAnalysisSessionRecording() {
             }
             case 'error': {
                 resumeAfterPauseRef.current = false;
+                recordingFileInfoRef.current = null;
                 analysisContext.clearRecordingSession();
                 setState(RecordingState.READY);
                 break;
@@ -227,9 +233,17 @@ export default function LiveAnalysisSessionRecording() {
         startInFlightRef.current = true;
 
         analysisContext.setMap((analysisContext.recordedSessioStaticsData as any)?.track || analysisContext.mapSelected || 'Unknown Track');
-        const now = new Date();
-        const filename = `acc_${now.getFullYear()}_${now.getMonth()}_${now.getDate()}_${now.getHours()}_${now.getMinutes()}_${now.getSeconds()}.csv`;
-        const folder = '../session_recording';
+        let folder = '../session_recording';
+        let filename: string;
+
+        if (resumeFromPause && recordingFileInfoRef.current) {
+            ({ folder, filename } = recordingFileInfoRef.current);
+        } else {
+            const now = new Date();
+            filename = `acc_${now.getFullYear()}_${now.getMonth()}_${now.getDate()}_${now.getHours()}_${now.getMinutes()}_${now.getSeconds()}.csv`;
+            recordingFileInfoRef.current = { folder, filename };
+        }
+
         const options: PythonShellOptions = { mode: 'text', pythonOptions: ['-u'], scriptPath: 'src/py-scripts', args: [folder, filename] };
         const script = 'ACCMemoryExtractor.py';
 
@@ -319,6 +333,7 @@ export default function LiveAnalysisSessionRecording() {
         analysisContext.clearRecordingSession();
         // Clear the current session to ensure a fresh one is created for the next recording
         analysisContext.setSession(null);
+        recordingFileInfoRef.current = null;
         uploadInFlightRef.current = false;
         setUploadProgress(0); setUploadStatus(''); setUploadError(null); setShowRetryButton(false); setUploadDialogOpen(false); setIsUploading(false);
         analysisContext.setLiveStatus(ACC_STATUS.ACC_OFF);
@@ -329,8 +344,9 @@ export default function LiveAnalysisSessionRecording() {
 
     const handleUpload = useCallback(async () => {
         if (uploadInFlightRef.current) return false;
-        if (!analysisContext.sessionSelected?.session_name || !analysisContext.mapSelected || !auth?.userEmail) { setUploadError('Missing required session or user information'); return false; }
-        uploadInFlightRef.current = true; setIsUploading(true); setUploadProgress(0); setUploadStatus('Reading telemetry data...'); setUploadError(null);
+        if (!hasRecordedData) { setUploadError('No telemetry data available for upload'); setShowRetryButton(false); return false; }
+        if (!analysisContext.sessionSelected?.session_name || !analysisContext.mapSelected || !auth?.userEmail) { setUploadError('Missing required session or user information'); setShowRetryButton(false); return false; }
+        uploadInFlightRef.current = true; setIsUploading(true); setUploadProgress(0); setUploadStatus('Reading telemetry data...'); setUploadError(null); setShowRetryButton(false);
         try {
             // Reserve progress ranges: 0-40% for reading, 40-90% for chunk upload, 90-100% finalize
             let estimatedTotal: number | null = null;
@@ -362,9 +378,10 @@ export default function LiveAnalysisSessionRecording() {
             setUploadProgress(100); setUploadStatus('Upload completed successfully!');
             if (analysisContext.recordedSessionDataFilePath) await cleanupTelemetryFile(analysisContext.recordedSessionDataFilePath);
             setTimeout(() => { setIsUploading(false); setTimeout(() => resetToChecking(), POST_SUCCESS_DIALOG_CLOSE_MS); }, POST_UPLOAD_RESET_DELAY_MS);
+            uploadInFlightRef.current = false;
             return true;
         } catch (e) { setUploadError(e instanceof Error ? e.message : 'Upload failed'); setIsUploading(false); setShowRetryButton(true); uploadInFlightRef.current = false; return false; }
-    }, [analysisContext, auth, cleanupTelemetryFile, resetToChecking]);
+    }, [analysisContext, auth, cleanupTelemetryFile, resetToChecking, hasRecordedData]);
 
     const handleCancelUpload = useCallback(async () => { if (analysisContext.recordedSessionDataFilePath) await cleanupTelemetryFile(analysisContext.recordedSessionDataFilePath); resetToChecking(); }, [analysisContext, cleanupTelemetryFile, resetToChecking]);
     const handleRetryUpload = useCallback(() => { setUploadError(null); setShowRetryButton(false); setUploadProgress(0); handleUpload(); }, [handleUpload]);
@@ -381,25 +398,29 @@ export default function LiveAnalysisSessionRecording() {
                 <Flex gap="4" align="center" p="3">
                     <IconButton radius="full" size="3" onClick={isRecording ? manualStop : (() => { void startRecording(); })} color={isRecording ? 'red' : 'blue'} disabled={state === RecordingState.CHECKING}>{icon}</IconButton>
                     <IconButton radius="full" size="3" onClick={() => {
-                        if (isUploading || isRecording || !analysisContext.recordedSessionDataFilePath) {
+                        if (isRecording || isUploading) {
                             return;
                         }
                         setUploadDialogOpen(true);
-                    }} disabled={isRecording || !analysisContext.recordedSessionDataFilePath}>
+                    }} disabled={isRecording || isUploading}>
                         <svg width="15" height="15" viewBox="0 0 15 15" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M7.81825 1.18188C7.64251 1.00615 7.35759 1.00615 7.18185 1.18188L4.18185 4.18188C4.00611 4.35762 4.00611 4.64254 4.18185 4.81828C4.35759 4.99401 4.64251 4.99401 4.81825 4.81828L7.05005 2.58648V9.49996C7.05005 9.74849 7.25152 9.94996 7.50005 9.94996C7.74858 9.94996 7.95005 9.74849 7.95005 9.49996V2.58648L10.1819 4.81828C10.3576 4.99401 10.6425 4.99401 10.8182 4.81828C10.994 4.64254 10.994 4.35762 10.8182 4.18188L7.81825 1.18188ZM2.5 9.99997C2.77614 9.99997 3 10.2238 3 10.5V12C3 12.5538 3.44565 13 3.99635 13H11.0012C11.5529 13 12 12.5528 12 12V10.5C12 10.2238 12.2239 9.99997 12.5 9.99997C12.7761 9.99997 13 10.2238 13 10.5V12C13 13.104 12.1062 14 11.0012 14H3.99635C2.89019 14 2 13.103 2 12V10.5C2 10.2238 2.22386 9.99997 2.5 9.99997Z" fill="currentColor" /></svg>
                     </IconButton>
                     <AlertDialog.Root open={uploadDialogOpen} onOpenChange={(open) => { if (isUploading) return; setUploadDialogOpen(open); }}>
                         <AlertDialog.Content maxWidth="450px" onEscapeKeyDown={(e) => { if (isUploading) e.preventDefault(); }}>
                             <AlertDialog.Title>Upload Racing Session</AlertDialog.Title>
                             <AlertDialog.Description size="2">Upload your recorded racing session data.</AlertDialog.Description>
-                            {isUploading && (
+                            {(isUploading || showRetryButton || uploadError) && (
                                 <Box my="4">
-                                    <Flex justify="between" mb="2"><Text size="2" weight="medium">{uploadStatus}</Text><Text size="2" color="gray">{uploadProgress}%</Text></Flex>
-                                    <Box width="100%" height="8px" style={{ backgroundColor: 'var(--gray-a5)', borderRadius: 'var(--radius-2)', overflow: 'hidden' }}>
-                                        <Box height="100%" style={{ width: `${uploadProgress}%`, backgroundColor: uploadError ? 'var(--red-9)' : 'var(--blue-9)', transition: 'width 0.3s ease' }} />
-                                    </Box>
+                                    {isUploading && (
+                                        <>
+                                            <Flex justify="between" mb="2"><Text size="2" weight="medium">{uploadStatus}</Text><Text size="2" color="gray">{uploadProgress}%</Text></Flex>
+                                            <Box width="100%" height="8px" style={{ backgroundColor: 'var(--gray-a5)', borderRadius: 'var(--radius-2)', overflow: 'hidden' }}>
+                                                <Box height="100%" style={{ width: `${uploadProgress}%`, backgroundColor: uploadError ? 'var(--red-9)' : 'var(--blue-9)', transition: 'width 0.3s ease' }} />
+                                            </Box>
+                                        </>
+                                    )}
                                     {uploadError && <Text size="2" color="red" mt="2">{uploadError}</Text>}
-                                    {showRetryButton && <Flex mt="2" gap="2"><Button size="1" variant="outline" onClick={handleRetryUpload}>Retry Upload</Button></Flex>}
+                                    {showRetryButton && !isUploading && <Flex mt="2" gap="2"><Button size="1" variant="outline" onClick={handleRetryUpload}>Retry Upload</Button></Flex>}
                                 </Box>
                             )}
                             <Card size="4">
@@ -415,12 +436,12 @@ export default function LiveAnalysisSessionRecording() {
                                         <Text as="div" size="3" weight="bold">{analysisContext.recordedSessioStaticsData?.car_model || 'Unknown Car'}</Text>
                                     </Box>
                                     <Flex direction="column" gap="1" gridColumn="1 / -1">
-                                        <Flex justify="between"><Text size="3" mb="1" weight="bold">Status</Text><Text size="2" color={isUploading ? 'blue' : 'green'}>{isUploading ? 'Uploading...' : 'Ready to upload'}</Text></Flex>
+                                        <Flex justify="between"><Text size="3" mb="1" weight="bold">Status</Text><Text size="2" color={uploadStatusColor}>{uploadStatusLabel}</Text></Flex>
                                     </Flex>
                                 </Grid>
                             </Card>
                             <Flex gap="3" mt="4" justify="end">
-                                {!isUploading && uploadProgress < 100 && (<><Button variant="outline" color="red" onClick={() => { handleCancelUpload(); setUploadDialogOpen(false); }}>Cancel</Button><Button onClick={() => handleUpload()} disabled={isUploading}>Upload Session</Button></>)}
+                                {!isUploading && uploadProgress < 100 && (<><Button variant="outline" color="red" onClick={() => { handleCancelUpload(); setUploadDialogOpen(false); }}>Cancel</Button><Button onClick={() => handleUpload()} disabled={isUploading || !hasRecordedData}>Upload Session</Button></>)}
                                 {isUploading && uploadProgress < 100 && (<Button variant="outline" disabled><Spinner size="1" />Uploading...</Button>)}
                                 {!isUploading && uploadProgress === 100 && (<Button onClick={() => setUploadDialogOpen(false)}>Close</Button>)}
                             </Flex>
