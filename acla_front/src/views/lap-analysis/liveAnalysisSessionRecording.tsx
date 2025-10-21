@@ -135,7 +135,6 @@ export default function LiveAnalysisSessionRecording() {
 
         switch (reason) {
             case 'pause': {
-                analysisContext.setLiveStatus(ACC_STATUS.ACC_PAUSE);
                 setState(RecordingState.HOLDING);
                 break;
             }
@@ -282,10 +281,6 @@ export default function LiveAnalysisSessionRecording() {
             return;
         }
 
-        if (reason === 'pause') {
-            analysisContext.setLiveStatus(ACC_STATUS.ACC_PAUSE);
-        }
-
         if (state !== RecordingState.RECORDING) {
             applyStopOutcome(reason);
             return;
@@ -317,7 +312,8 @@ export default function LiveAnalysisSessionRecording() {
 
     useEffect(() => {
         if (state === RecordingState.RECORDING && hasReceivedLiveSampleRef.current && liveStatus !== null && liveStatus !== ACC_STATUS.ACC_LIVE) {
-            void stopRecordingProcess('pause');
+            const stopReason: StopReason = liveStatus === ACC_STATUS.ACC_PAUSE ? 'pause' : 'complete';
+            void stopRecordingProcess(stopReason);
         }
     }, [liveStatus, state, stopRecordingProcess]);
 
@@ -430,7 +426,6 @@ export default function LiveAnalysisSessionRecording() {
         recordingFileInfoRef.current = null;
         uploadInFlightRef.current = false;
         setUploadProgress(0); setUploadStatus(''); setUploadError(null); setShowRetryButton(false); setUploadDialogOpen(false); setIsUploading(false);
-        analysisContext.setLiveStatus(ACC_STATUS.ACC_OFF);
         setState(RecordingState.CHECKING);
         hasReceivedLiveSampleRef.current = false;
         stopReasonRef.current = null;
