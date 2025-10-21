@@ -1,4 +1,4 @@
-import { PythonShellOptions, PythonEndDetails, PythonStartDetails } from './pythonService';
+import { PythonShellOptions } from './pythonService';
 
 type Listener<T> = (event: PythonStreamEvent<T>) => void;
 
@@ -45,8 +45,6 @@ export interface CreatePythonStreamOptions {
 export interface PythonStreamSession<T = unknown> {
     readonly shellId: number;
     readonly isReady: boolean;
-    readonly metadata?: PythonStartDetails;
-    readonly lastEndDetails?: PythonEndDetails;
     waitUntilReady(): Promise<void>;
     onMessage(listener: Listener<T>): Cleanup;
     send(action: string, payload?: unknown, requestId?: string): Promise<void>;
@@ -90,13 +88,11 @@ export const createPythonStreamSession = async <T = unknown>(
     let isClosed = false;
 
     let shellId: number | null = null;
-    let startMetadata: PythonStartDetails | undefined;
     const pendingMessages: Array<{ shellId: number; rawMessage: string }> = [];
-    const pendingEndEvents: Array<{ shellId: number; details?: PythonEndDetails }> = [];
+    const pendingEndEvents: number[] = [];
 
     const readyDeferred = createDeferred<void>();
     const closedDeferred = createDeferred<void>();
-    let lastShellEndDetails: PythonEndDetails | undefined;
 
     const readyTimeoutMs = options.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS;
     let readyTimeoutId: number | null = null;
@@ -195,10 +191,10 @@ export const createPythonStreamSession = async <T = unknown>(
         }
     };
 
-    const handleEnd = (_shellId: number, details?: PythonEndDetails, fromQueue = false) => {
+    const handleEnd = (_shellId: number, fromQueue = false) => {
         if (shellId === null) {
             if (!fromQueue) {
-                pendingEndEvents.push({ shellId: _shellId, details: details ? { ...details } : undefined });
+                pendingEndEvents.push(_shellId);
             }
             return;
         }
@@ -207,15 +203,8 @@ export const createPythonStreamSession = async <T = unknown>(
             return;
         }
 
-        lastShellEndDetails = details ? { ...details } : undefined;
-
         if (!isReady) {
-            if (details?.reason === 'error') {
-                const message = details.error || 'Python stream terminated with error before becoming ready';
-                finalizeReady(new Error(message));
-            } else {
-                finalizeReady(new Error('Python stream terminated before becoming ready'));
-            }
+            finalizeReady(new Error('Python stream terminated before becoming ready'));
         }
         finalizeClosed();
     };
@@ -223,8 +212,8 @@ export const createPythonStreamSession = async <T = unknown>(
     removeMessageListener = window.electronAPI.onPythonMessage((incomingShellId, rawMessage) => {
         handleMessage(incomingShellId, rawMessage);
     });
-    removeEndListener = window.electronAPI.onPythonEnd((incomingShellId, endDetails) => {
-        handleEnd(incomingShellId, endDetails);
+    removeEndListener = window.electronAPI.onPythonEnd((incomingShellId) => {
+        handleEnd(incomingShellId);
     });
 
     try {
@@ -233,7 +222,6 @@ export const createPythonStreamSession = async <T = unknown>(
             pythonOptions
         );
         shellId = runResult.shellId;
-        startMetadata = runResult.metadata ? { ...runResult.metadata } : undefined;
 
         if (shellId === null || typeof shellId !== 'number') {
             throw new Error('Failed to obtain Python shell id');
@@ -246,15 +234,11 @@ export const createPythonStreamSession = async <T = unknown>(
         }
 
         if (pendingEndEvents.length) {
-            for (const queued of pendingEndEvents.splice(0, pendingEndEvents.length)) {
-                handleEnd(queued.shellId, queued.details, true);
+            for (const queuedShellId of pendingEndEvents.splice(0, pendingEndEvents.length)) {
+                handleEnd(queuedShellId, true);
             }
         }
     } catch (error) {
-        console.error('createPythonStreamSession failed to start', {
-            scriptName: options.scriptName,
-            error,
-        });
         if (removeMessageListener) {
             removeMessageListener();
             removeMessageListener = null;
@@ -279,7 +263,6 @@ export const createPythonStreamSession = async <T = unknown>(
     }
 
     const shellIdNumber = shellId;
-    const streamMetadata = startMetadata ? { ...startMetadata } : undefined;
 
     const send = async (action: string, payload?: unknown, requestId?: string) => {
         if (isClosed) {
@@ -323,7 +306,7 @@ export const createPythonStreamSession = async <T = unknown>(
 
         if (force) {
             if (typeof window.electronAPI.stopPythonScript === 'function') {
-                await window.electronAPI.stopPythonScript(shellIdNumber, 'pythonStreaming.dispose(force)');
+                await window.electronAPI.stopPythonScript(shellIdNumber);
             }
             finalizeClosed();
             return;
@@ -351,12 +334,8 @@ export const createPythonStreamSession = async <T = unknown>(
 
     return {
         shellId: shellIdNumber,
-        metadata: streamMetadata,
         get isReady() {
             return isReady;
-        },
-        get lastEndDetails() {
-            return lastShellEndDetails ? { ...lastShellEndDetails } : undefined;
         },
         waitUntilReady,
         onMessage,

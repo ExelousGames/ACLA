@@ -5,7 +5,7 @@ import { UploadReacingSessionInitDto, UploadRacingSessionInitReturnDto, RacingSe
 import { ACC_STATUS } from 'data/live-analysis/live-map-data';
 import { useAuth } from 'hooks/AuthProvider';
 import apiService from 'services/api.service';
-import { PythonShellOptions, PythonEndDetails } from 'services/pythonService';
+import { PythonShellOptions } from 'services/pythonService';
 import { createPythonStreamSession, PythonStreamEvent, PythonStreamSession } from 'services/pythonStreaming';
 
 enum RecordingState {
@@ -274,8 +274,7 @@ export default function LiveAnalysisSessionRecording() {
         }
 
         try {
-            const stopInitiator = `liveAnalysisSessionRecording.stopRecordingProcess:${reason}`;
-            const result = await window.electronAPI.stopPythonScript(shellId, stopInitiator);
+            const result = await window.electronAPI.stopPythonScript(shellId);
             if (!result?.success) {
                 applyStopOutcome('error');
             }
@@ -355,8 +354,8 @@ export default function LiveAnalysisSessionRecording() {
             });
             pythonMessageCleanupRef.current = messageCleanup;
 
-            const removeEndListener = window.electronAPI.onPythonEnd((incomingShellId: number, details?: PythonEndDetails) => {
-                if (incomingShellId !== shellId) {
+            const removeEndListener = window.electronAPI.onPythonEnd((incomingId: number) => {
+                if (incomingId !== shellId) {
                     return;
                 }
 
@@ -368,11 +367,7 @@ export default function LiveAnalysisSessionRecording() {
                 removeEndListener();
                 pythonEndCleanupRef.current = null;
 
-                if (details) {
-                    console.info('Live recording python shell ended', details);
-                }
-
-                const reason = stopReasonRef.current ?? (details?.reason === 'error' ? 'error' : 'complete');
+                const reason = stopReasonRef.current ?? 'complete';
                 applyStopOutcome(reason);
             });
             pythonEndCleanupRef.current = removeEndListener;

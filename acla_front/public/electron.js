@@ -203,7 +203,7 @@ ipcMain.handle('run-python-script', (event, script, options = {}) => {
       shellId,
       pyshell,
       script,
-  args: shellArgs,
+      args: shellArgs,
       keepAlive,
       pythonPath,
       startedAt: Date.now(),
@@ -257,7 +257,7 @@ ipcMain.handle('run-python-script', (event, script, options = {}) => {
       shellId,
       metadata: {
         script,
-    args: shellArgs,
+        args: shellArgs,
         keepAlive,
         pythonPath,
         startedAt: entry.startedAt,
