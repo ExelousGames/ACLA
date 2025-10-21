@@ -13,29 +13,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
     //run script in main process using async
     runPythonScript: (scriptPath, options) => ipcRenderer.invoke('run-python-script', scriptPath, options),
-    stopPythonScript: (shellId, initiator) => ipcRenderer.invoke('stop-python-script', shellId, initiator),
+    stopPythonScript: (shellId) => ipcRenderer.invoke('stop-python-script', shellId),
 
     writeTempFile: (options) => ipcRenderer.invoke('write-temp-file', options),
     deleteTempFile: (filePath) => ipcRenderer.invoke('delete-temp-file', filePath),
 
     //
-    onPythonStart: (callback) => {
-        const subscription = (event, ...args) => {
-            console.debug('preload onPythonStart triggered', args[0], args[1]);
-            callback(...args);
-        };
-        ipcRenderer.on('python-start', subscription);
-        return () => {
-            ipcRenderer.off('python-start', subscription);
-        };
-    },
-
     onPythonEnd: (callback) => {
-        const subscription = (event, ...args) => {
-
-            callback(...args);
-        };
-        console.debug('preload onPythonEnd triggered', args[0], args[1]);
+        console.log("preload onPythonEnd called");
+        const subscription = (event, ...args) => callback(...args);
         ipcRenderer.on('python-end', subscription);
         return () => {
             ipcRenderer.off('python-end', subscription);
