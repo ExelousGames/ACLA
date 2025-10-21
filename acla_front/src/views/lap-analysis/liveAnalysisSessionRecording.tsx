@@ -156,10 +156,7 @@ export default function LiveAnalysisSessionRecording() {
 
     const processSessionStreamUpdate = useCallback((event: PythonStreamEvent<Record<string, unknown>>) => {
         const ctx = analysisContextRef.current;
-        if (!ctx) {
-            return;
-        }
-        if (!event) {
+        if (!ctx || !event) {
             return;
         }
 
@@ -169,26 +166,29 @@ export default function LiveAnalysisSessionRecording() {
             const status = toAccStatus(graphics.status);
 
             if (status !== null) {
-                ctx.setLiveStatus(status);
-
                 if (status === ACC_STATUS.ACC_LIVE) {
                     if ((data as any).Static) {
                         ctx.setRecordedSessionStaticsData((data as any).Static);
                     }
                     setState((prev) => (prev === RecordingState.CHECKING ? RecordingState.READY : prev));
+                } else if (status === ACC_STATUS.ACC_PAUSE) {
+                    setState((prev) => {
+                        if (prev === RecordingState.RECORDING) {
+                            return prev;
+                        }
+                        return prev === RecordingState.HOLDING ? prev : RecordingState.HOLDING;
+                    });
                 } else if (status === ACC_STATUS.ACC_OFF) {
                     setState((prev) => (prev === RecordingState.READY || prev === RecordingState.HOLDING ? RecordingState.CHECKING : prev));
                 }
             } else if (data.checking === true) {
-                ctx.setLiveStatus(ACC_STATUS.ACC_OFF);
                 setState(() => RecordingState.CHECKING);
             } else if (data.available === false) {
-                ctx.setLiveStatus(ACC_STATUS.ACC_OFF);
                 setState((prev) => (prev === RecordingState.READY || prev === RecordingState.HOLDING ? RecordingState.CHECKING : prev));
             }
         } else if (event.status === 'ready') {
             if (ctx.liveStatus == null) {
-                ctx.setLiveStatus(ACC_STATUS.ACC_OFF);
+                setState(() => RecordingState.CHECKING);
             }
         } else if (event.status === 'error') {
             console.error('ACC session checker error:', event.message ?? 'Unknown error', event.traceback ?? '');
@@ -366,10 +366,6 @@ export default function LiveAnalysisSessionRecording() {
                 }
                 try {
                     const obj = JSON.parse(message);
-                    const status = toAccStatus((obj as any)?.Graphics_status ?? (obj as any)?.Graphics?.status);
-                    if (status !== null) {
-                        analysisContext.setLiveStatus(status);
-                    }
                     analysisContext.setLiveSessionData(obj);
                     void analysisContext.writeRecordedLiveSessionData(obj);
                     hasReceivedLiveSampleRef.current = true;
