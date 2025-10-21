@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import sys
-import time
 from typing import Any, Optional
 
 try:
@@ -18,7 +17,6 @@ from util.streaming import StreamingEvent, StreamingServer
 
 
 POLL_INTERVAL_SECONDS = 1.0
-IDLE_EMIT_INTERVAL_SECONDS = 5.0
 
 
 class ACCSessionChecker(StreamingServer):
@@ -34,13 +32,11 @@ class ACCSessionChecker(StreamingServer):
         )
         self.asm = None
         self._last_payload_json = None
-        self._last_emit_time = -IDLE_EMIT_INTERVAL_SECONDS
-        self._connected = False
-        self._last_connect_error_time = -IDLE_EMIT_INTERVAL_SECONDS
+        self._initializing_error_reported = False
 
     def on_start(self) -> None:
-        # Emit an initial checking status so the UI reflects the polling state immediately.
-        self._emit_checking(time.monotonic())
+        self._initialize_shared_memory()
+        self._emit_checking()
 
     def on_stop(self) -> None:
         try:
@@ -55,112 +51,72 @@ class ACCSessionChecker(StreamingServer):
     # Command handling
     # ------------------------------------------------------------------
     def handle_event(self, event: StreamingEvent) -> None:
-        if event.action == "set_interval":
-            self._handle_set_interval(event)
-            return
-
         if event.action == "request_update":
-            self._emit_snapshot(force=True, request_id=event.request_id)
+            self._emit_current_state(request_id=event.request_id)
             return
 
         self.emit_log(f"Unknown action '{event.action}'", stage="command")
-
-    def _handle_set_interval(self, event: StreamingEvent) -> None:
-        seconds = event.payload.get("seconds")
-        try:
-            value = float(seconds)
-        except (TypeError, ValueError):
-            self.emit_error(
-                "set_interval",
-                f"Invalid seconds value: {seconds!r}",
-                exc_info=None,
-                request_id=event.request_id,
-            )
-            return
-
-        if value <= 0:
-            self.emit_error(
-                "set_interval",
-                f"Interval must be positive: {seconds!r}",
-                exc_info=None,
-                request_id=event.request_id,
-            )
-            return
-
-        self.poll_interval = max(value, 0.1)
-        self.emit_log(
-            f"Poll interval updated to {self.poll_interval:.2f}s",
-            stage="config",
-        )
 
     # ------------------------------------------------------------------
     # Polling loop
     # ------------------------------------------------------------------
     def poll(self) -> None:
-        now = time.monotonic()
-
-        try:
-            snapshot = self._read_shared_memory()
-        except Exception:
-            # Defensive catch-all: never allow poll to raise and terminate the loop.
-            self.emit_error(
-                "poll",
-                "Unexpected failure while checking ACC shared memory",
-                sys.exc_info(),
-            )
-            self._connected = False
-            self._emit_checking(now)
+        if self.asm is None and not self._initialize_shared_memory():
+            self._emit_checking()
             return
 
-        if snapshot is None:
-            if now - self._last_emit_time >= IDLE_EMIT_INTERVAL_SECONDS:
-                self._connected = False
-                self._emit_checking(now)
+        snapshot = self._read_snapshot()
+        if not snapshot:
+            self._emit_checking()
             return
 
-        self._connected = True
-
-        try:
-            payload_json = self._serialize_snapshot(snapshot)
-        except Exception:
-            self.emit_error(
-                "serialization",
-                "Failed to serialize ACC shared memory snapshot",
-                sys.exc_info(),
-            )
-            self._connected = False
-            self._emit_checking(now)
+        payload_json = self._serialize_snapshot(snapshot)
+        if payload_json is None:
+            self._emit_checking()
             return
 
-        should_emit = False
-        if payload_json != self._last_payload_json:
-            should_emit = True
-        elif now - self._last_emit_time >= IDLE_EMIT_INTERVAL_SECONDS:
-            should_emit = True
+        if payload_json == self._last_payload_json:
+            return
 
-        if should_emit:
-            self._last_payload_json = payload_json
-            self._last_emit_time = now
-            try:
-                payload = json.loads(payload_json)
-            except json.JSONDecodeError:
-                self.emit_error(
-                    "serialization",
-                    "Received non-JSON payload from serializer",
-                    exc_info=None,
-                )
-                self._connected = False
-                self._emit_checking(now)
-                return
+        payload = json.loads(payload_json)
+        if not payload:
+            self._emit_checking()
+            return
 
-            payload.setdefault("available", True)
-            self.emit_update(payload)
+        self._last_payload_json = payload_json
+        payload.setdefault("available", True)
+        self.emit_update(payload)
 
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
-    def _read_shared_memory(self) -> Optional[Any]:
-        if not self._ensure_shared_memory():
+    def _initialize_shared_memory(self) -> bool:
+        if self.asm is not None:
+            return True
+
+        if self._shared_memory_class is None:
+            if self._import_error_message and not self._initializing_error_reported:
+                self.emit_error(
+                    "shared_memory",
+                    self._import_error_message,
+                    exc_info=None,
+                )
+                self._initializing_error_reported = True
+            return False
+
+        try:
+            self.asm = self._shared_memory_class()
+            self._initializing_error_reported = False
+            return True
+        except Exception:
+            self.asm = None
+            if not self._initializing_error_reported:
+                self.emit_log("ACC shared memory not available yet", stage="connection")
+                self._initializing_error_reported = True
+            return False
+
+    def _read_snapshot(self) -> Optional[Any]:
+        if self.asm is None:
             return None
 
         try:
@@ -171,76 +127,45 @@ class ACCSessionChecker(StreamingServer):
                 "Failed to read ACC shared memory",
                 sys.exc_info(),
             )
-            self._reset_shared_memory()
+            self.asm = None
             return None
 
-    def _ensure_shared_memory(self) -> bool:
-        if self.asm is not None:
-            return True
-
-        now = time.monotonic()
-
-        if self._shared_memory_class is None:
-            if self._import_error_message and now - self._last_connect_error_time >= IDLE_EMIT_INTERVAL_SECONDS:
-                self._last_connect_error_time = now
-                self.emit_error(
-                    "shared_memory",
-                    self._import_error_message,
-                    exc_info=None,
-                )
-            return False
-
+    def _serialize_snapshot(self, snapshot: Any) -> Optional[str]:
         try:
-            self.asm = self._shared_memory_class()
-            self._connected = True
-            self._last_connect_error_time = now
-            return True
-        except Exception:
-            self.asm = None
-            if now - self._last_connect_error_time >= IDLE_EMIT_INTERVAL_SECONDS:
-                self._last_connect_error_time = now
-                self.emit_log("ACC shared memory not available yet", stage="connection")
-            return False
-
-    def _reset_shared_memory(self) -> None:
-        if self._shared_memory_class is None:
-            return
-
-        try:
-            if self.asm is not None:
-                self.asm.close()
-        except Exception:
-            pass
-
-        try:
-            self.asm = self._shared_memory_class()
+            return DataclassJSONUtility.to_json(snapshot, compact=True)
         except Exception:
             self.emit_error(
-                "shared_memory",
-                "Failed to reinitialize ACC shared memory",
+                "serialization",
+                "Failed to serialize ACC shared memory snapshot",
                 sys.exc_info(),
             )
-            self.asm = None
+            return None
 
-    def _serialize_snapshot(self, snapshot: Any) -> str:
-        return DataclassJSONUtility.to_json(snapshot, compact=True)
+    def _emit_current_state(self, *, request_id: Optional[str]) -> None:
+        if self.asm is None and not self._initialize_shared_memory():
+            self._emit_checking(request_id=request_id)
+            return
 
-    def _emit_snapshot(self, *, force: bool, request_id: Optional[str]) -> None:
-        snapshot = self._read_shared_memory()
-        if snapshot is None:
+        snapshot = self._read_snapshot()
+        if not snapshot:
+            self._emit_checking(request_id=request_id)
             return
 
         payload_json = self._serialize_snapshot(snapshot)
-        if not force and payload_json == self._last_payload_json:
+        if payload_json is None:
+            self._emit_checking(request_id=request_id)
             return
 
-        self._last_payload_json = payload_json
-        self._last_emit_time = time.monotonic()
         payload = json.loads(payload_json)
+        if not payload:
+            self._emit_checking(request_id=request_id)
+            return
+
         payload.setdefault("available", True)
+        self._last_payload_json = payload_json
         self.emit_update(payload, request_id=request_id)
 
-    def _emit_checking(self, now: float) -> None:
+    def _emit_checking(self, *, request_id: Optional[str] = None) -> None:
         payload = {
             "available": False,
             "checking": True,
@@ -249,8 +174,7 @@ class ACCSessionChecker(StreamingServer):
         payload_json = json.dumps(payload, separators=(",", ":"))
         if payload_json != self._last_payload_json:
             self._last_payload_json = payload_json
-        self.emit_update(payload)
-        self._last_emit_time = now
+            self.emit_update(payload, request_id=request_id)
 
 
 def main() -> None:
