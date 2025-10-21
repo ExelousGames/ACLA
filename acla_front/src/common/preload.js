@@ -32,9 +32,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
     onPythonEnd: (callback) => {
         const subscription = (event, ...args) => {
-            console.debug('preload onPythonEnd triggered', args[0], args[1]);
+
             callback(...args);
         };
+        console.debug('preload onPythonEnd triggered', args[0], args[1]);
         ipcRenderer.on('python-end', subscription);
         return () => {
             ipcRenderer.off('python-end', subscription);

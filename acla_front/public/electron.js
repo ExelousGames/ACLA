@@ -182,86 +182,95 @@ function resolveScriptDirectory(customPath) {
 }
 
 ipcMain.handle('run-python-script', (event, script, options = {}) => {
-  const shellId = nextShellId++;
+  try {
+    const shellId = nextShellId++;
 
-  const pythonPath = options.pythonPath || getPythonExecutable();
-  const scriptDirectory = resolveScriptDirectory(options.scriptPath);
-  const shellOptions = {
-    ...options,
-    pythonPath,
-    scriptPath: scriptDirectory,
-  };
+    const pythonPath = options.pythonPath || getPythonExecutable();
+    const scriptDirectory = resolveScriptDirectory(options.scriptPath);
+    const shellOptions = {
+      ...options,
+      pythonPath,
+      scriptPath: scriptDirectory,
+    };
 
-  const args = Array.isArray(options.args) ? [...options.args] : [];
-  shellOptions.args = args;
-  const keepAlive = args.includes('--stream');
+    const shellArgs = Array.isArray(options.args) ? [...options.args] : [];
+    shellOptions.args = shellArgs;
+    const keepAlive = shellArgs.includes('--stream');
 
-  const pyshell = new PythonShell(script, shellOptions);
+    const pyshell = new PythonShell(script, shellOptions);
 
-  const entry = {
-    shellId,
-    pyshell,
-    script,
-    args,
-    keepAlive,
-    pythonPath,
-    startedAt: Date.now(),
-    lastMessageAt: null,
-    messageCount: 0,
-    stopRequestedBy: null,
-    finalized: false,
-  };
-
-  activeShells.set(shellId, entry);
-  emitPythonStart(shellId, entry);
-
-  pyshell.on('message', (message) => {
-    const shellEntry = getShellEntry(shellId);
-    if (shellEntry) {
-      shellEntry.lastMessageAt = Date.now();
-      shellEntry.messageCount += 1;
-    }
-    if (mainWindow) {
-      mainWindow.webContents.send('python-message', shellId, message);
-    }
-  });
-
-  if (!keepAlive) {
-    pyshell.end((err) => {
-      if (err) {
-        console.error(`Python shell ${shellId} ended with error:`, err);
-      }
-    });
-  }
-
-  pyshell.on('close', (code, signal) => {
-    const shellEntry = getShellEntry(shellId);
-    const reason = shellEntry && shellEntry.stopRequestedBy ? 'terminated' : 'close';
-    finalizeShell(shellId, {
-      reason,
-      exitCode: code ?? null,
-      signal: signal ?? null,
-    });
-  });
-
-  pyshell.on('error', (error) => {
-    console.error(`Python shell ${shellId} error:`, error);
-    finalizeShell(shellId, {
-      reason: 'error',
-      error: error && error.message ? error.message : String(error),
-    });
-  });
-
-  return {
-    shellId,
-    metadata: {
+    const entry = {
+      shellId,
+      pyshell,
       script,
-      args,
+  args: shellArgs,
       keepAlive,
       pythonPath,
-      startedAt: entry.startedAt,
-    },
-  };
+      startedAt: Date.now(),
+      lastMessageAt: null,
+      messageCount: 0,
+      stopRequestedBy: null,
+      finalized: false,
+    };
+
+    activeShells.set(shellId, entry);
+    emitPythonStart(shellId, entry);
+
+    pyshell.on('message', (message) => {
+      const shellEntry = getShellEntry(shellId);
+      if (shellEntry) {
+        shellEntry.lastMessageAt = Date.now();
+        shellEntry.messageCount += 1;
+      }
+      if (mainWindow) {
+        mainWindow.webContents.send('python-message', shellId, message);
+      }
+    });
+
+    if (!keepAlive) {
+      pyshell.end((err) => {
+        if (err) {
+          console.error(`Python shell ${shellId} ended with error:`, err);
+        }
+      });
+    }
+
+    pyshell.on('close', (code, signal) => {
+      const shellEntry = getShellEntry(shellId);
+      const reason = shellEntry && shellEntry.stopRequestedBy ? 'terminated' : 'close';
+      finalizeShell(shellId, {
+        reason,
+        exitCode: code ?? null,
+        signal: signal ?? null,
+      });
+    });
+
+    pyshell.on('error', (error) => {
+      console.error(`Python shell ${shellId} error:`, error);
+      finalizeShell(shellId, {
+        reason: 'error',
+        error: error && error.message ? error.message : String(error),
+      });
+    });
+
+    return {
+      shellId,
+      metadata: {
+        script,
+    args: shellArgs,
+        keepAlive,
+        pythonPath,
+        startedAt: entry.startedAt,
+      },
+    };
+  } catch (error) {
+    console.error('Failed to start python script', {
+      script,
+      options,
+      error,
+    });
+    throw error;
+  }
 });
 
 ipcMain.handle('write-temp-file', async (event, options = {}) => {

@@ -207,7 +207,7 @@ export const createPythonStreamSession = async <T = unknown>(
             return;
         }
 
-    lastShellEndDetails = details ? { ...details } : undefined;
+        lastShellEndDetails = details ? { ...details } : undefined;
 
         if (!isReady) {
             if (details?.reason === 'error') {
@@ -251,6 +251,10 @@ export const createPythonStreamSession = async <T = unknown>(
             }
         }
     } catch (error) {
+        console.error('createPythonStreamSession failed to start', {
+            scriptName: options.scriptName,
+            error,
+        });
         if (removeMessageListener) {
             removeMessageListener();
             removeMessageListener = null;
