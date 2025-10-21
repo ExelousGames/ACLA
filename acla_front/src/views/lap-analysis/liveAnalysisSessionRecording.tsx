@@ -138,6 +138,9 @@ export default function LiveAnalysisSessionRecording() {
                 } else if (status === ACC_STATUS.ACC_OFF) {
                     setState((prev) => (prev === RecordingState.READY ? RecordingState.CHECKING : prev));
                 }
+            } else if (data.checking === true) {
+                analysisContext.setLiveStatus(ACC_STATUS.ACC_OFF);
+                setState(() => RecordingState.CHECKING);
             } else if (data.available === false) {
                 analysisContext.setLiveStatus(ACC_STATUS.ACC_OFF);
                 setState((prev) => (prev === RecordingState.READY ? RecordingState.CHECKING : prev));
@@ -194,7 +197,6 @@ export default function LiveAnalysisSessionRecording() {
             sessionStreamCleanupRef.current = stream.onMessage(processSessionStreamUpdate);
 
             await stream.waitUntilReady();
-            await stream.send('request_update');
             return stream;
         } catch (error) {
             console.error('Failed to start ACC session checker stream', error);
@@ -395,8 +397,8 @@ export default function LiveAnalysisSessionRecording() {
         recordingFileInfoRef.current = null;
         uploadInFlightRef.current = false;
         setUploadProgress(0); setUploadStatus(''); setUploadError(null); setShowRetryButton(false); setUploadDialogOpen(false); setIsUploading(false);
-    analysisContext.setLiveStatus(ACC_STATUS.ACC_OFF);
-    setState(RecordingState.CHECKING);
+        analysisContext.setLiveStatus(ACC_STATUS.ACC_OFF);
+        setState(RecordingState.CHECKING);
         resumeAfterPauseRef.current = false;
         stopReasonRef.current = null;
     }, [analysisContext]);

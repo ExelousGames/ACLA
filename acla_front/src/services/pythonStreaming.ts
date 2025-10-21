@@ -81,16 +81,15 @@ export const createPythonStreamSession = async <T = unknown>(
         scriptPath: options.scriptPath ?? baseOptions.scriptPath ?? DEFAULT_SCRIPT_PATH
     };
 
-    const { shellId } = await window.electronAPI.runPythonScript(
-        options.scriptName,
-        pythonOptions
-    );
-
     const listeners = new Set<Listener<T>>();
     let removeMessageListener: Cleanup | null = null;
     let removeEndListener: Cleanup | null = null;
     let isReady = false;
     let isClosed = false;
+
+    let shellId: number | null = null;
+    const pendingMessages: Array<{ shellId: number; rawMessage: string }> = [];
+    const pendingEndEvents: number[] = [];
 
     const readyDeferred = createDeferred<void>();
     const closedDeferred = createDeferred<void>();
@@ -149,7 +148,14 @@ export const createPythonStreamSession = async <T = unknown>(
         closedDeferred.resolve();
     };
 
-    const handleMessage = (_shellId: number, rawMessage: string) => {
+    const handleMessage = (_shellId: number, rawMessage: string, fromQueue = false) => {
+        if (shellId === null) {
+            if (!fromQueue) {
+                pendingMessages.push({ shellId: _shellId, rawMessage });
+            }
+            return;
+        }
+
         if (_shellId !== shellId || isClosed) {
             return;
         }
@@ -179,7 +185,14 @@ export const createPythonStreamSession = async <T = unknown>(
         }
     };
 
-    const handleEnd = (_shellId: number) => {
+    const handleEnd = (_shellId: number, fromQueue = false) => {
+        if (shellId === null) {
+            if (!fromQueue) {
+                pendingEndEvents.push(_shellId);
+            }
+            return;
+        }
+
         if (_shellId !== shellId) {
             return;
         }
@@ -190,8 +203,48 @@ export const createPythonStreamSession = async <T = unknown>(
         finalizeClosed();
     };
 
-    removeMessageListener = window.electronAPI.onPythonMessage(handleMessage);
-    removeEndListener = window.electronAPI.onPythonEnd(handleEnd);
+    removeMessageListener = window.electronAPI.onPythonMessage((incomingShellId, rawMessage) => {
+        handleMessage(incomingShellId, rawMessage);
+    });
+    removeEndListener = window.electronAPI.onPythonEnd((incomingShellId) => {
+        handleEnd(incomingShellId);
+    });
+
+    try {
+        const runResult = await window.electronAPI.runPythonScript(
+            options.scriptName,
+            pythonOptions
+        );
+        shellId = runResult.shellId;
+
+        if (shellId === null || typeof shellId !== 'number') {
+            throw new Error('Failed to obtain Python shell id');
+        }
+
+        if (pendingMessages.length) {
+            for (const queued of pendingMessages.splice(0, pendingMessages.length)) {
+                handleMessage(queued.shellId, queued.rawMessage, true);
+            }
+        }
+
+        if (pendingEndEvents.length) {
+            for (const queuedShellId of pendingEndEvents.splice(0, pendingEndEvents.length)) {
+                handleEnd(queuedShellId, true);
+            }
+        }
+    } catch (error) {
+        removeMessageListener?.();
+        removeEndListener?.();
+        throw error;
+    }
+
+    if (shellId === null) {
+        removeMessageListener?.();
+        removeEndListener?.();
+        throw new Error('Python stream shell id not available after initialization');
+    }
+
+    const shellIdNumber = shellId;
 
     const send = async (action: string, payload?: unknown, requestId?: string) => {
         if (isClosed) {
@@ -209,7 +262,7 @@ export const createPythonStreamSession = async <T = unknown>(
             envelope.request_id = requestId;
         }
 
-        const response = await window.electronAPI.sendMessageToPython(shellId, JSON.stringify(envelope));
+        const response = await window.electronAPI.sendMessageToPython(shellIdNumber, JSON.stringify(envelope));
         if (!response?.success) {
             throw new Error(response?.error || 'Failed to send message to Python stream');
         }
@@ -235,7 +288,7 @@ export const createPythonStreamSession = async <T = unknown>(
 
         if (force) {
             if (typeof window.electronAPI.stopPythonScript === 'function') {
-                await window.electronAPI.stopPythonScript(shellId);
+                await window.electronAPI.stopPythonScript(shellIdNumber);
             }
             finalizeClosed();
             return;
@@ -262,7 +315,7 @@ export const createPythonStreamSession = async <T = unknown>(
     };
 
     return {
-        shellId,
+        shellId: shellIdNumber,
         get isReady() {
             return isReady;
         },
