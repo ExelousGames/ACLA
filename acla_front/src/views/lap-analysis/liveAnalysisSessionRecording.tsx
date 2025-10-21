@@ -12,6 +12,7 @@ enum RecordingState {
     CHECKING = 'CHECKING', // checking for live session
     READY = 'READY', // find live session, ready to record
     RECORDING = 'RECORDING', // actively recording
+    HOLDING = 'HOLDING', // paused because game paused, awaiting resume
     UPLOAD_READY = 'UPLOAD_READY' // recording stopped, ready to upload
 }
 
@@ -41,16 +42,16 @@ export default function LiveAnalysisSessionRecording() {
 
     const [state, setState] = useState<RecordingState>(RecordingState.CHECKING);
     const isRecording = state === RecordingState.RECORDING;
-    const canRecord = state === RecordingState.READY;
+    const isHolding = state === RecordingState.HOLDING;
     const liveStatus = analysisContext.liveStatus;
+    const canRecord = state === RecordingState.READY || (state === RecordingState.HOLDING && liveStatus === ACC_STATUS.ACC_LIVE);
 
     const recordingShellIdRef = useRef<number | null>(null);
     const pythonMessageCleanupRef = useRef<(() => void) | null>(null);
     const pythonEndCleanupRef = useRef<(() => void) | null>(null);
     const stopReasonRef = useRef<StopReason | null>(null);
-    const resumeAfterPauseRef = useRef(false);
     const startInFlightRef = useRef(false);
-    const waitingForLiveStatusRef = useRef(false);
+    const hasReceivedLiveSampleRef = useRef(false);
     const recordingFileInfoRef = useRef<{ folder: string; filename: string } | null>(null);
 
     const sessionCheckingStreamRef = useRef<PythonStreamSession<Record<string, unknown>> | null>(null);
@@ -66,8 +67,20 @@ export default function LiveAnalysisSessionRecording() {
     const uploadInFlightRef = useRef(false);
     const hasRecordedData = analysisContext.recordedTelemetryDataCount > 0 && Boolean(analysisContext.recordedSessionDataFilePath);
 
-    const uploadStatusLabel = isUploading ? 'Uploading...' : hasRecordedData ? 'Ready to upload' : 'No data recorded';
-    const uploadStatusColor = isUploading ? 'blue' : hasRecordedData ? 'green' : 'gray';
+    const uploadStatusLabel = isUploading
+        ? 'Uploading...'
+        : state === RecordingState.HOLDING && hasRecordedData
+            ? 'Upload available (recording paused)'
+            : hasRecordedData
+                ? 'Ready to upload'
+                : 'No data recorded';
+    const uploadStatusColor = isUploading
+        ? 'blue'
+        : state === RecordingState.HOLDING && hasRecordedData
+            ? 'amber'
+            : hasRecordedData
+                ? 'green'
+                : 'gray';
 
     const icon = useMemo((): JSX.Element => {
         switch (state) {
@@ -80,9 +93,28 @@ export default function LiveAnalysisSessionRecording() {
                 );
             case RecordingState.RECORDING:
                 return <svg width="15" height="15" viewBox="0 0 15 15" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M2 2C1.44772 2 1 2.44772 1 3V12C1 12.5523 1.44772 13 2 13H13C13.5523 13 14 12.5523 14 12V3C14 2.44772 13.5523 2 13 2H2ZM3 3H12V12H3V3Z" fill="currentColor" /></svg>;
+            case RecordingState.HOLDING:
+                return <svg width="15" height="15" viewBox="0 0 15 15" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M4 3C3.44772 3 3 3.44772 3 4V11C3 11.5523 3.44772 12 4 12H5C5.55228 12 6 11.5523 6 11V4C6 3.44772 5.55228 3 5 3H4ZM10 3C9.44772 3 9 3.44772 9 4V11C9 11.5523 9.44772 12 10 12H11C11.5523 12 12 11.5523 12 11V4C12 3.44772 11.5523 3 11 3H10Z" fill="currentColor" /></svg>;
             case RecordingState.UPLOAD_READY:
                 return <svg width="15" height="15" viewBox="0 0 15 15" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M7.81825 1.18188C7.64251 1.00615 7.35759 1.00615 7.18185 1.18188L4.18185 4.18188C4.00611 4.35762 4.00611 4.64254 4.18185 4.81828C4.35759 4.99401 4.64251 4.99401 4.81825 4.81828L7.05005 2.58648V9.49996C7.05005 9.74849 7.25152 9.94996 7.50005 9.94996C7.74858 9.94996 7.95005 9.74849 7.95005 9.49996V2.58648L10.1819 4.81828C10.3576 4.99401 10.6425 4.99401 10.8182 4.81828C10.994 4.64254 10.994 4.35762 10.8182 4.18188L7.81825 1.18188ZM2.5 9.99997C2.77614 9.99997 3 10.2238 3 10.5V12C3 12.5538 3.44565 13 3.99635 13H11.0012C11.5529 13 12 12.5528 12 12V10.5C12 10.2238 12.2239 9.99997 12.5 9.99997C12.7761 9.99997 13 10.2238 13 10.5V12C13 13.104 12.1062 14 11.0012 14H3.99635C2.89019 14 2 13.103 2 12V10.5C2 10.2238 2.22386 9.99997 2.5 9.99997Z" fill="currentColor" /></svg>;
             default: return <Spinner size="3" />;
+        }
+    }, [state]);
+
+    const recordingStatusDisplay = useMemo(() => {
+        switch (state) {
+            case RecordingState.CHECKING:
+                return { label: 'Checking for live session…', color: 'gray' as const };
+            case RecordingState.READY:
+                return { label: 'Ready to record', color: 'blue' as const };
+            case RecordingState.RECORDING:
+                return { label: 'Recording in progress', color: 'red' as const };
+            case RecordingState.HOLDING:
+                return { label: 'Holding – waiting for resume', color: 'amber' as const };
+            case RecordingState.UPLOAD_READY:
+                return { label: 'Ready to upload', color: 'green' as const };
+            default:
+                return { label: 'Status unavailable', color: 'gray' as const };
         }
     }, [state]);
 
@@ -99,29 +131,25 @@ export default function LiveAnalysisSessionRecording() {
         recordingShellIdRef.current = null;
         stopReasonRef.current = null;
         startInFlightRef.current = false;
-        waitingForLiveStatusRef.current = false;
+        hasReceivedLiveSampleRef.current = false;
 
         switch (reason) {
             case 'pause': {
-                resumeAfterPauseRef.current = true;
                 analysisContext.setLiveStatus(ACC_STATUS.ACC_PAUSE);
-                setState(RecordingState.CHECKING);
+                setState(RecordingState.HOLDING);
                 break;
             }
             case 'error': {
-                resumeAfterPauseRef.current = false;
                 recordingFileInfoRef.current = null;
                 analysisContext.clearRecordingSession();
                 setState(RecordingState.READY);
                 break;
             }
             case 'manual': {
-                resumeAfterPauseRef.current = false;
                 setState(RecordingState.UPLOAD_READY);
                 break;
             }
             default: {
-                resumeAfterPauseRef.current = false;
                 setState(RecordingState.UPLOAD_READY);
             }
         }
@@ -150,14 +178,14 @@ export default function LiveAnalysisSessionRecording() {
                     }
                     setState((prev) => (prev === RecordingState.CHECKING ? RecordingState.READY : prev));
                 } else if (status === ACC_STATUS.ACC_OFF) {
-                    setState((prev) => (prev === RecordingState.READY ? RecordingState.CHECKING : prev));
+                    setState((prev) => (prev === RecordingState.READY || prev === RecordingState.HOLDING ? RecordingState.CHECKING : prev));
                 }
             } else if (data.checking === true) {
                 ctx.setLiveStatus(ACC_STATUS.ACC_OFF);
                 setState(() => RecordingState.CHECKING);
             } else if (data.available === false) {
                 ctx.setLiveStatus(ACC_STATUS.ACC_OFF);
-                setState((prev) => (prev === RecordingState.READY ? RecordingState.CHECKING : prev));
+                setState((prev) => (prev === RecordingState.READY || prev === RecordingState.HOLDING ? RecordingState.CHECKING : prev));
             }
         } else if (event.status === 'ready') {
             if (ctx.liveStatus == null) {
@@ -221,7 +249,7 @@ export default function LiveAnalysisSessionRecording() {
         }
     }, [processSessionStreamUpdate, stopSessionCheckingStream]);
 
-    const shouldMaintainSessionCheckingStream = state === RecordingState.CHECKING;
+    const shouldMaintainSessionCheckingStream = state === RecordingState.CHECKING || state === RecordingState.HOLDING;
 
     useEffect(() => {
         let cancelled = false;
@@ -265,12 +293,6 @@ export default function LiveAnalysisSessionRecording() {
 
         stopReasonRef.current = reason;
 
-        if (reason === 'pause') {
-            resumeAfterPauseRef.current = true;
-        } else {
-            resumeAfterPauseRef.current = false;
-        }
-
         if (pythonMessageCleanupRef.current) {
             pythonMessageCleanupRef.current();
             pythonMessageCleanupRef.current = null;
@@ -294,25 +316,24 @@ export default function LiveAnalysisSessionRecording() {
     }, [analysisContext, applyStopOutcome, state]);
 
     useEffect(() => {
-        if (state === RecordingState.RECORDING && !waitingForLiveStatusRef.current && liveStatus !== null && liveStatus !== ACC_STATUS.ACC_LIVE) {
+        if (state === RecordingState.RECORDING && hasReceivedLiveSampleRef.current && liveStatus !== null && liveStatus !== ACC_STATUS.ACC_LIVE) {
             void stopRecordingProcess('pause');
         }
     }, [liveStatus, state, stopRecordingProcess]);
 
 
-    const startRecording = useCallback(async ({ resumeFromPause = false }: { resumeFromPause?: boolean } = {}) => {
+    const startRecording = useCallback(async ({ resumeExisting = false }: { resumeExisting?: boolean } = {}) => {
         if (!canRecord || startInFlightRef.current) {
             return;
         }
 
-        resumeAfterPauseRef.current = false;
         startInFlightRef.current = true;
 
         analysisContext.setMap((analysisContext.recordedSessioStaticsData as any)?.track || analysisContext.mapSelected || 'Unknown Track');
         let folder = '../session_recording';
         let filename: string;
 
-        if (resumeFromPause && recordingFileInfoRef.current) {
+        if (resumeExisting && recordingFileInfoRef.current) {
             ({ folder, filename } = recordingFileInfoRef.current);
         } else {
             const now = new Date();
@@ -323,7 +344,7 @@ export default function LiveAnalysisSessionRecording() {
         const options: PythonShellOptions = { mode: 'text', pythonOptions: ['-u'], scriptPath: 'src/py-scripts', args: [folder, filename] };
         const script = 'ACCMemoryExtractor.py';
 
-        if (!resumeFromPause) {
+        if (!resumeExisting) {
             const newSessionName = `Racing Session ${new Date().toLocaleString()}`;
             analysisContext.setSession({
                 session_name: newSessionName,
@@ -336,13 +357,12 @@ export default function LiveAnalysisSessionRecording() {
             } as RacingSessionDetailedInfoDto as any);
         }
 
-        waitingForLiveStatusRef.current = true;
+        hasReceivedLiveSampleRef.current = false;
         setState(RecordingState.RECORDING);
         try {
             const { shellId } = await window.electronAPI.runPythonScript(script, options);
             recordingShellIdRef.current = shellId;
             stopReasonRef.current = null;
-            resumeAfterPauseRef.current = false;
 
             const messageCleanup = window.electronAPI.onPythonMessage((incomingId: number, message: string) => {
                 if (incomingId !== shellId) {
@@ -356,9 +376,7 @@ export default function LiveAnalysisSessionRecording() {
                     }
                     analysisContext.setLiveSessionData(obj);
                     void analysisContext.writeRecordedLiveSessionData(obj);
-                    if (waitingForLiveStatusRef.current) {
-                        waitingForLiveStatusRef.current = false;
-                    }
+                    hasReceivedLiveSampleRef.current = true;
                 } catch { }
             });
             pythonMessageCleanupRef.current = messageCleanup;
@@ -389,8 +407,8 @@ export default function LiveAnalysisSessionRecording() {
     }, [analysisContext, applyStopOutcome, canRecord]);
 
     useEffect(() => {
-        if (state === RecordingState.READY && resumeAfterPauseRef.current && liveStatus === ACC_STATUS.ACC_LIVE) {
-            void startRecording({ resumeFromPause: true });
+        if (state === RecordingState.HOLDING && liveStatus === ACC_STATUS.ACC_LIVE) {
+            void startRecording({ resumeExisting: true });
         }
     }, [liveStatus, state, startRecording]);
 
@@ -414,7 +432,7 @@ export default function LiveAnalysisSessionRecording() {
         setUploadProgress(0); setUploadStatus(''); setUploadError(null); setShowRetryButton(false); setUploadDialogOpen(false); setIsUploading(false);
         analysisContext.setLiveStatus(ACC_STATUS.ACC_OFF);
         setState(RecordingState.CHECKING);
-        resumeAfterPauseRef.current = false;
+        hasReceivedLiveSampleRef.current = false;
         stopReasonRef.current = null;
     }, [analysisContext]);
 
@@ -463,12 +481,13 @@ export default function LiveAnalysisSessionRecording() {
     const handleRetryUpload = useCallback(() => { setUploadError(null); setShowRetryButton(false); setUploadProgress(0); handleUpload(); }, [handleUpload]);
 
     useEffect(() => {
-        if (state === RecordingState.UPLOAD_READY && hasRecordedData) {
+        const shouldOpen = (state === RecordingState.UPLOAD_READY || state === RecordingState.HOLDING) && hasRecordedData;
+        if (shouldOpen) {
             setUploadDialogOpen(true);
             return;
         }
 
-        if (state !== RecordingState.UPLOAD_READY && uploadDialogOpen) {
+        if (!shouldOpen && uploadDialogOpen) {
             setUploadDialogOpen(false);
         }
     }, [state, hasRecordedData, uploadDialogOpen]);
@@ -477,7 +496,24 @@ export default function LiveAnalysisSessionRecording() {
         <Box position="absolute" left="0" right="0" bottom="0" mb="5" height="64px" style={{ borderRadius: '100px', boxShadow: 'var(--shadow-6)', marginLeft: 200, marginRight: 200 }}>
             <Flex height="100%" justify="between" position="relative">
                 <Flex gap="4" align="center" p="3">
-                    <IconButton radius="full" size="3" onClick={isRecording ? manualStop : (() => { void startRecording(); })} color={isRecording ? 'red' : 'blue'} disabled={state === RecordingState.CHECKING}>{icon}</IconButton>
+                    <IconButton
+                        radius="full"
+                        size="3"
+                        onClick={isRecording
+                            ? manualStop
+                            : (() => {
+                                if (isHolding) {
+                                    void startRecording({ resumeExisting: true });
+                                } else {
+                                    void startRecording();
+                                }
+                            })}
+                        color={isRecording ? 'red' : isHolding ? 'amber' : 'blue'}
+                        disabled={!isRecording && !canRecord}
+                    >
+                        {icon}
+                    </IconButton>
+                    <Text size="2" color={recordingStatusDisplay.color} weight="medium">{recordingStatusDisplay.label}</Text>
                     <AlertDialog.Root open={uploadDialogOpen} onOpenChange={(open) => { if (isUploading) return; setUploadDialogOpen(open); }}>
                         <AlertDialog.Content maxWidth="450px" onEscapeKeyDown={(e) => { if (isUploading) e.preventDefault(); }}>
                             <AlertDialog.Title>Upload Racing Session</AlertDialog.Title>
