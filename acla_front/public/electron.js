@@ -43,6 +43,78 @@ let mainWindow;
 const activeShells = new Map();
 let nextShellId = 0;
 
+function getShellEntry(shellId) {
+  return activeShells.get(shellId) || null;
+}
+
+function emitPythonStart(shellId, entry) {
+  if (!mainWindow) {
+    console.info(`Python shell ${shellId} (${entry.script}) started`, {
+      script: entry.script,
+      args: entry.args,
+      keepAlive: entry.keepAlive,
+      pythonPath: entry.pythonPath,
+      startedAt: entry.startedAt,
+    });
+    return;
+  }
+
+  const payload = {
+    script: entry.script,
+    args: entry.args,
+    keepAlive: entry.keepAlive,
+    pythonPath: entry.pythonPath,
+    startedAt: entry.startedAt,
+  };
+
+  console.info(`Python shell ${shellId} (${entry.script}) started`, payload);
+  mainWindow.webContents.send('python-start', shellId, payload);
+}
+
+function finalizeShell(shellId, extra = {}) {
+  const entry = activeShells.get(shellId);
+  if (!entry || entry.finalized) {
+    return;
+  }
+
+  entry.finalized = true;
+  activeShells.delete(shellId);
+
+  if (entry.pyshell && typeof entry.pyshell.removeAllListeners === 'function') {
+    entry.pyshell.removeAllListeners();
+  }
+  entry.pyshell = null;
+
+  const finishedAt = Date.now();
+  const payload = {
+    script: entry.script,
+    args: entry.args,
+    keepAlive: entry.keepAlive,
+    pythonPath: entry.pythonPath,
+    startedAt: entry.startedAt,
+    finishedAt,
+    durationMs: finishedAt - entry.startedAt,
+    lastMessageAt: entry.lastMessageAt,
+    messageCount: entry.messageCount,
+    stopRequestedBy: entry.stopRequestedBy || null,
+    reason: extra.reason || 'unknown',
+    exitCode: extra.exitCode ?? null,
+    signal: extra.signal ?? null,
+    error: extra.error,
+  };
+
+  const logMessage = `Python shell ${shellId} (${entry.script}) ended [reason=${payload.reason}]`;
+  if (payload.error) {
+    console.error(logMessage, payload);
+  } else {
+    console.info(logMessage, payload);
+  }
+
+  if (mainWindow) {
+    mainWindow.webContents.send('python-end', shellId, payload);
+  }
+}
+
 // Speech recognition variables
 let speechRecognitionProcess = null;
 let speechRecognitionTempFile = null;
@@ -120,13 +192,35 @@ ipcMain.handle('run-python-script', (event, script, options = {}) => {
     scriptPath: scriptDirectory,
   };
 
-  const pyshell = new PythonShell(script, shellOptions);
-  activeShells.set(shellId, pyshell);
-
-  const args = Array.isArray(options.args) ? options.args : [];
+  const args = Array.isArray(options.args) ? [...options.args] : [];
+  shellOptions.args = args;
   const keepAlive = args.includes('--stream');
 
+  const pyshell = new PythonShell(script, shellOptions);
+
+  const entry = {
+    shellId,
+    pyshell,
+    script,
+    args,
+    keepAlive,
+    pythonPath,
+    startedAt: Date.now(),
+    lastMessageAt: null,
+    messageCount: 0,
+    stopRequestedBy: null,
+    finalized: false,
+  };
+
+  activeShells.set(shellId, entry);
+  emitPythonStart(shellId, entry);
+
   pyshell.on('message', (message) => {
+    const shellEntry = getShellEntry(shellId);
+    if (shellEntry) {
+      shellEntry.lastMessageAt = Date.now();
+      shellEntry.messageCount += 1;
+    }
     if (mainWindow) {
       mainWindow.webContents.send('python-message', shellId, message);
     }
@@ -140,23 +234,33 @@ ipcMain.handle('run-python-script', (event, script, options = {}) => {
     });
   }
 
-  pyshell.on('close', () => {
-    activeShells.delete(shellId);
-    if (mainWindow) {
-      mainWindow.webContents.send('python-end', shellId);
-    }
+  pyshell.on('close', (code, signal) => {
+    const shellEntry = getShellEntry(shellId);
+    const reason = shellEntry && shellEntry.stopRequestedBy ? 'terminated' : 'close';
+    finalizeShell(shellId, {
+      reason,
+      exitCode: code ?? null,
+      signal: signal ?? null,
+    });
   });
 
   pyshell.on('error', (error) => {
-    activeShells.delete(shellId);
-    if (mainWindow) {
-      mainWindow.webContents.send('python-end', shellId);
-    }
-    console.error('Python shell error:', error);
+    console.error(`Python shell ${shellId} error:`, error);
+    finalizeShell(shellId, {
+      reason: 'error',
+      error: error && error.message ? error.message : String(error),
+    });
   });
 
   return {
-    shellId
+    shellId,
+    metadata: {
+      script,
+      args,
+      keepAlive,
+      pythonPath,
+      startedAt: entry.startedAt,
+    },
   };
 });
 
@@ -208,22 +312,35 @@ ipcMain.handle('delete-temp-file', async (event, filePath) => {
 
 //renderer process send message to a python shell
 ipcMain.handle('send-message-to-python', async (event, shellId, message) => {
-  const pyshell = activeShells.get(shellId);
+  const shellEntry = getShellEntry(shellId);
+  const pyshell = shellEntry && shellEntry.pyshell;
   if (!pyshell) {
     console.warn(`Attempted to send message to missing python shell ${shellId}`);
     return { success: false, error: `Python shell ${shellId} not found` };
   }
-  pyshell.send(message);
-  return { success: true };
+  try {
+    pyshell.send(message);
+    return { success: true };
+  } catch (error) {
+    console.error(`Failed to send message to python shell ${shellId}:`, error);
+    return { success: false, error: error?.message || 'Unknown error sending message' };
+  }
 });
 
-ipcMain.handle('stop-python-script', async (event, shellId) => {
-  const pyshell = activeShells.get(shellId);
+ipcMain.handle('stop-python-script', async (event, shellId, initiator = 'renderer') => {
+  const shellEntry = getShellEntry(shellId);
+  const pyshell = shellEntry && shellEntry.pyshell;
   if (!pyshell) {
     return { success: false, error: `Python shell ${shellId} not found` };
   }
 
   try {
+    if (shellEntry) {
+      const resolvedInitiator = initiator || (event?.senderFrame?.url ?? 'renderer');
+      shellEntry.stopRequestedBy = resolvedInitiator;
+      console.info(`Stop requested for python shell ${shellId}`, { initiator: resolvedInitiator });
+    }
+
     if (typeof pyshell.terminate === 'function') {
       pyshell.terminate();
     } else if (pyshell.childProcess && typeof pyshell.childProcess.kill === 'function') {
@@ -235,7 +352,7 @@ ipcMain.handle('stop-python-script', async (event, shellId) => {
     return { success: true };
   } catch (error) {
     console.error(`Failed to stop python shell ${shellId}:`, error);
-    return { success: false, error: error.message };
+    return { success: false, error: error?.message || 'Unknown error stopping python shell' };
   }
 });
 
