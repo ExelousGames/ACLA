@@ -113,12 +113,21 @@ const SessionAnalysis = () => {
             return new Promise((resolve) => {
                 let completeReceived = false;
                 const allData: any[] = [];
+                let removeMessageListener: (() => void) | null = null;
+                let removeEndListener: (() => void) | null = null;
 
                 const cleanup = () => {
-                    // placeholder if need to detach listeners; depends on electronAPI API
+                    if (removeMessageListener) {
+                        removeMessageListener();
+                        removeMessageListener = null;
+                    }
+                    if (removeEndListener) {
+                        removeEndListener();
+                        removeEndListener = null;
+                    }
                 };
 
-                window.electronAPI.onPythonMessage((returnedShellId: number, message: string) => {
+                removeMessageListener = window.electronAPI.onPythonMessage((returnedShellId: number, message: string) => {
                     if (returnedShellId !== shellId) return;
                     try {
                         const obj = JSON.parse(message);
@@ -142,7 +151,7 @@ const SessionAnalysis = () => {
                     }
                 });
 
-                window.electronAPI.onPythonEnd((returnedShellId: number) => {
+                removeEndListener = window.electronAPI.onPythonEnd((returnedShellId: number) => {
                     if (returnedShellId !== shellId) return;
                     if (!completeReceived) {
                         console.warn('Python process ended before complete event; returning collected data');

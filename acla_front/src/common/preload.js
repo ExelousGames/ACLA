@@ -18,12 +18,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
     writeTempFile: (options) => ipcRenderer.invoke('write-temp-file', options),
     deleteTempFile: (filePath) => ipcRenderer.invoke('delete-temp-file', filePath),
 
-    //
+    /**
+     * 
+     * @param {*} callback function
+     * @returns function contains unsubscribe
+     */
     onPythonEnd: (callback) => {
-        const subscription = (event, ...args) => {
-            callback(...args);
-            ipcRenderer.off('python-end', subscription);
-        };
+        const subscription = (event, ...args) => callback(...args);
         ipcRenderer.on('python-end', subscription);
         return () => {
             ipcRenderer.off('python-end', subscription);

@@ -40,7 +40,7 @@ declare global {
             /**
              * called when a script running in main process is terminated
              * @param callback function used for handling termination of a script 
-             * @returns 
+             * @returns function to remove listener
              */
             onPythonEnd: (callback: (shellId: number) => void) => () => void;
 
