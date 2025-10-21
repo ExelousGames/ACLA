@@ -143,8 +143,14 @@ export const createPythonStreamSession = async <T = unknown>(
             return;
         }
         isClosed = true;
-        removeMessageListener?.();
-        removeEndListener?.();
+        if (removeMessageListener) {
+            removeMessageListener();
+            removeMessageListener = null;
+        }
+        if (removeEndListener) {
+            removeEndListener();
+            removeEndListener = null;
+        }
         closedDeferred.resolve();
     };
 
@@ -233,14 +239,26 @@ export const createPythonStreamSession = async <T = unknown>(
             }
         }
     } catch (error) {
-        removeMessageListener?.();
-        removeEndListener?.();
+        if (removeMessageListener) {
+            removeMessageListener();
+            removeMessageListener = null;
+        }
+        if (removeEndListener) {
+            removeEndListener();
+            removeEndListener = null;
+        }
         throw error;
     }
 
     if (shellId === null) {
-        removeMessageListener?.();
-        removeEndListener?.();
+        if (removeMessageListener) {
+            removeMessageListener();
+            removeMessageListener = null;
+        }
+        if (removeEndListener) {
+            removeEndListener();
+            removeEndListener = null;
+        }
         throw new Error('Python stream shell id not available after initialization');
     }
 
