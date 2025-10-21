@@ -354,7 +354,7 @@ export default function LiveAnalysisSessionRecording() {
             });
             pythonMessageCleanupRef.current = messageCleanup;
 
-            const removeEndListener = window.electronAPI.onPythonEnd((incomingId: number) => {
+            const removeEndListener = window.electronAPI.onPythonEnd('live-analysis-session-recording', (incomingId: number) => {
                 if (incomingId !== shellId) {
                     return;
                 }

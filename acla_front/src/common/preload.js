@@ -19,9 +19,23 @@ contextBridge.exposeInMainWorld('electronAPI', {
     deleteTempFile: (filePath) => ipcRenderer.invoke('delete-temp-file', filePath),
 
     //
-    onPythonEnd: (callback) => {
-        console.log("preload onPythonEnd called");
-        const subscription = (event, ...args) => callback(...args);
+    onPythonEnd: (listenerIdOrCallback, maybeCallback) => {
+        const listenerId = typeof listenerIdOrCallback === 'string' ? listenerIdOrCallback : undefined;
+        const callback = typeof listenerIdOrCallback === 'function' ? listenerIdOrCallback : maybeCallback;
+
+        if (typeof callback !== 'function') {
+            throw new Error('onPythonEnd requires a callback function');
+        }
+
+        if (listenerId) {
+            console.log("preload onPythonEnd called by", listenerId);
+        } else {
+            console.log("preload onPythonEnd called");
+        }
+
+        const subscription = (event, ...args) => {
+            callback(...args, listenerId);
+        };
         ipcRenderer.on('python-end', subscription);
         return () => {
             ipcRenderer.off('python-end', subscription);

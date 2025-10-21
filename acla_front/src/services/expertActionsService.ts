@@ -486,7 +486,7 @@ export const createExpertActionsRunner = async (
     };
 
     removeMessageListener = window.electronAPI.onPythonMessage(handlePythonMessage);
-    removeEndListener = window.electronAPI.onPythonEnd((returnedShellId: number) => {
+    removeEndListener = window.electronAPI.onPythonEnd('expert-actions-service', (returnedShellId: number) => {
         if (returnedShellId !== shellId) {
             return;
         }

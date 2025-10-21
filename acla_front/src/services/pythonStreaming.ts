@@ -212,7 +212,7 @@ export const createPythonStreamSession = async <T = unknown>(
     removeMessageListener = window.electronAPI.onPythonMessage((incomingShellId, rawMessage) => {
         handleMessage(incomingShellId, rawMessage);
     });
-    removeEndListener = window.electronAPI.onPythonEnd((incomingShellId) => {
+    removeEndListener = window.electronAPI.onPythonEnd('python-streaming-service', (incomingShellId) => {
         handleEnd(incomingShellId);
     });
 

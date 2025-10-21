@@ -151,7 +151,7 @@ const SessionAnalysis = () => {
                     }
                 });
 
-                removeEndListener = window.electronAPI.onPythonEnd((returnedShellId: number) => {
+                removeEndListener = window.electronAPI.onPythonEnd('session-analysis', (returnedShellId: number) => {
                     if (returnedShellId !== shellId) return;
                     if (!completeReceived) {
                         console.warn('Python process ended before complete event; returning collected data');
