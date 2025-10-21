@@ -107,7 +107,6 @@ const SessionAnalysis = () => {
                 args: [currentFilePath]
             } as PythonShellOptions;
 
-            console.log('Running read_telemetry_data.py with options:', options);
             const { shellId } = await window.electronAPI.runPythonScript('read_telemetry_data.py', options);
 
             return new Promise((resolve) => {
@@ -189,6 +188,7 @@ const SessionAnalysis = () => {
         }
 
         const nextStatus = normalizeAccStatus((liveData as any)?.Graphics_status ?? (liveData as any)?.Graphics?.status);
+        console.log('Next live status:', nextStatus);
         if (nextStatus !== null && nextStatus !== liveStatus) {
             setLiveStatus(nextStatus);
         }
