@@ -8,7 +8,12 @@ import apiService from 'services/api.service';
 import { PythonShellOptions } from 'services/pythonService';
 import { createPythonStreamSession, PythonStreamEvent, PythonStreamSession } from 'services/pythonStreaming';
 
-enum RecordingState { CHECKING = 'CHECKING', READY = 'READY', RECORDING = 'RECORDING', UPLOAD_READY = 'UPLOAD_READY' }
+enum RecordingState {
+    CHECKING = 'CHECKING', // checking for live session
+    READY = 'READY', // find live session, ready to record
+    RECORDING = 'RECORDING', // actively recording
+    UPLOAD_READY = 'UPLOAD_READY' // recording stopped, ready to upload
+}
 
 type StopReason = 'manual' | 'pause' | 'error' | 'complete';
 
@@ -43,9 +48,9 @@ export default function LiveAnalysisSessionRecording() {
     const waitingForLiveStatusRef = useRef(false);
     const recordingFileInfoRef = useRef<{ folder: string; filename: string } | null>(null);
 
-    const sessionStreamRef = useRef<PythonStreamSession<Record<string, unknown>> | null>(null);
-    const sessionStreamCleanupRef = useRef<(() => void) | null>(null);
-    const sessionStreamStartingRef = useRef(false);
+    const sessionCheckingStreamRef = useRef<PythonStreamSession<Record<string, unknown>> | null>(null);
+    const sessionCheckingStreamCleanupRef = useRef<(() => void) | null>(null);
+    const sessionCheckingStreamStartingRef = useRef(false);
 
     const [isUploading, setIsUploading] = useState(false);
     const [uploadProgress, setUploadProgress] = useState(0);
@@ -152,22 +157,22 @@ export default function LiveAnalysisSessionRecording() {
         } else if (event.status === 'error') {
             console.error('ACC session checker error:', event.message ?? 'Unknown error', event.traceback ?? '');
         } else if (event.status === 'shutdown') {
-            sessionStreamCleanupRef.current?.();
-            sessionStreamCleanupRef.current = null;
-            sessionStreamRef.current = null;
-            sessionStreamStartingRef.current = false;
+            sessionCheckingStreamCleanupRef.current?.();
+            sessionCheckingStreamCleanupRef.current = null;
+            sessionCheckingStreamRef.current = null;
+            sessionCheckingStreamStartingRef.current = false;
         }
     }, [analysisContext]);
 
-    const stopSessionStream = useCallback(async ({ force = false } = {}) => {
-        sessionStreamStartingRef.current = false;
+    const stopSessionCheckingStream = useCallback(async ({ force = false } = {}) => {
+        sessionCheckingStreamStartingRef.current = false;
 
-        const cleanup = sessionStreamCleanupRef.current;
-        sessionStreamCleanupRef.current = null;
+        const cleanup = sessionCheckingStreamCleanupRef.current;
+        sessionCheckingStreamCleanupRef.current = null;
         cleanup?.();
 
-        const stream = sessionStreamRef.current;
-        sessionStreamRef.current = null;
+        const stream = sessionCheckingStreamRef.current;
+        sessionCheckingStreamRef.current = null;
 
         if (!stream) {
             return;
@@ -180,12 +185,12 @@ export default function LiveAnalysisSessionRecording() {
         }
     }, []);
 
-    const startSessionStream = useCallback(async () => {
-        if (sessionStreamStartingRef.current || sessionStreamRef.current) {
-            return sessionStreamRef.current;
+    const startSessionCheckingStream = useCallback(async () => {
+        if (sessionCheckingStreamStartingRef.current || sessionCheckingStreamRef.current) {
+            return sessionCheckingStreamRef.current;
         }
 
-        sessionStreamStartingRef.current = true;
+        sessionCheckingStreamStartingRef.current = true;
         try {
             const stream = await createPythonStreamSession<Record<string, unknown>>({
                 scriptName: 'ACCCheckAvailableSession.py',
@@ -193,36 +198,36 @@ export default function LiveAnalysisSessionRecording() {
                 readyTimeoutMs: 8000
             });
 
-            sessionStreamRef.current = stream;
-            sessionStreamCleanupRef.current = stream.onMessage(processSessionStreamUpdate);
+            sessionCheckingStreamRef.current = stream;
+            sessionCheckingStreamCleanupRef.current = stream.onMessage(processSessionStreamUpdate);
 
             await stream.waitUntilReady();
             return stream;
         } catch (error) {
             console.error('Failed to start ACC session checker stream', error);
-            await stopSessionStream({ force: true });
+            await stopSessionCheckingStream({ force: true });
             throw error;
         } finally {
-            sessionStreamStartingRef.current = false;
+            sessionCheckingStreamStartingRef.current = false;
         }
-    }, [processSessionStreamUpdate, stopSessionStream]);
+    }, [processSessionStreamUpdate, stopSessionCheckingStream]);
 
-    const shouldMaintainSessionStream = state === RecordingState.CHECKING || state === RecordingState.READY;
+    const shouldMaintainSessionCheckingStream = state === RecordingState.CHECKING;
 
     useEffect(() => {
         let cancelled = false;
 
         const ensureStream = async () => {
-            if (shouldMaintainSessionStream) {
+            if (shouldMaintainSessionCheckingStream) {
                 try {
-                    await startSessionStream();
+                    await startSessionCheckingStream();
                 } catch (error) {
                     if (!cancelled) {
                         console.error('Unable to ensure ACC session checker stream', error);
                     }
                 }
             } else {
-                await stopSessionStream();
+                await stopSessionCheckingStream();
             }
         };
 
@@ -230,9 +235,9 @@ export default function LiveAnalysisSessionRecording() {
 
         return () => {
             cancelled = true;
-            void stopSessionStream({ force: true });
+            void stopSessionCheckingStream({ force: true });
         };
-    }, [shouldMaintainSessionStream, startSessionStream, stopSessionStream]);
+    }, [shouldMaintainSessionCheckingStream, startSessionCheckingStream, stopSessionCheckingStream]);
 
     const stopRecordingProcess = useCallback(async (reason: StopReason) => {
         if (stopReasonRef.current && stopReasonRef.current !== 'complete') {
