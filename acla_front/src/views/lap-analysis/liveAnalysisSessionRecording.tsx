@@ -22,6 +22,30 @@ const UPLOAD_CHUNK_SIZE = 5;
 const POST_UPLOAD_RESET_DELAY_MS = 1200;
 const POST_SUCCESS_DIALOG_CLOSE_MS = 800;
 
+const PlayIcon = ({ size = 18 }: { size?: number }) => (
+    <svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 30 30" width={size} height={size}>
+        <path d="M 6 3 A 1 1 0 0 0 5 4 A 1 1 0 0 0 5 4.0039062 L 5 15 L 5 25.996094 A 1 1 0 0 0 5 26 A 1 1 0 0 0 6 27 A 1 1 0 0 0 6.5800781 26.8125 L 6.5820312 26.814453 L 26.416016 15.908203 A 1 1 0 0 0 27 15 A 1 1 0 0 0 26.388672 14.078125 L 6.5820312 3.1855469 L 6.5800781 3.1855469 A 1 1 0 0 0 6 3 z" />
+    </svg>
+);
+
+const StopIcon = ({ size = 16 }: { size?: number }) => (
+    <svg width={size} height={size} viewBox="0 0 15 15" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <path d="M2 2C1.44772 2 1 2.44772 1 3V12C1 12.5523 1.44772 13 2 13H13C13.5523 13 14 12.5523 14 12V3C14 2.44772 13.5523 2 13 2H2ZM3 3H12V12H3V3Z" fill="currentColor" />
+    </svg>
+);
+
+const UploadIcon = ({ size = 16 }: { size?: number }) => (
+    <svg width={size} height={size} viewBox="0 0 15 15" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <path d="M7.81825 1.18188C7.64251 1.00615 7.35759 1.00615 7.18185 1.18188L4.18185 4.18188C4.00611 4.35762 4.00611 4.64254 4.18185 4.81828C4.35759 4.99401 4.64251 4.99401 4.81825 4.81828L7.05005 2.58648V9.49996C7.05005 9.74849 7.25152 9.94996 7.50005 9.94996C7.74858 9.94996 7.95005 9.74849 7.95005 9.49996V2.58648L10.1819 4.81828C10.3576 4.99401 10.6425 4.99401 10.8182 4.81828C10.994 4.64254 10.994 4.35762 10.8182 4.18188L7.81825 1.18188ZM2.5 9.99997C2.77614 9.99997 3 10.2238 3 10.5V12C3 12.5538 3.44565 13 3.99635 13H11.0012C11.5529 13 12 12.5528 12 12V10.5C12 10.2238 12.2239 9.99997 12.5 9.99997C12.7761 9.99997 13 10.2238 13 10.5V12C13 13.104 12.1062 14 11.0012 14H3.99635C2.89019 14 2 13.103 2 12V10.5C2 10.2238 2.22386 9.99997 2.5 9.99997Z" fill="currentColor" />
+    </svg>
+);
+
+const PauseBadgeIcon = ({ size = 16 }: { size?: number }) => (
+    <svg width={size} height={size} viewBox="0 0 15 15" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <path d="M5 3C4.44772 3 4 3.44772 4 4V11C4 11.5523 4.44772 12 5 12C5.55228 12 6 11.5523 6 11V4C6 3.44772 5.55228 3 5 3ZM10 3C9.44772 3 9 3.44772 9 4V11C9 11.5523 9.44772 12 10 12C10.5523 12 11 11.5523 11 11V4C11 3.44772 10.5523 3 10 3Z" fill="currentColor" />
+    </svg>
+);
+
 const toAccStatus = (value: unknown): ACC_STATUS | null => {
     const numeric = typeof value === 'string' ? Number(value) : value;
     if (typeof numeric !== 'number' || Number.isNaN(numeric)) {
@@ -34,17 +58,54 @@ const toAccStatus = (value: unknown): ACC_STATUS | null => {
 export default function LiveAnalysisSessionRecording() {
     const analysisContext = useContext(AnalysisContext);
     const auth = useAuth();
+    const [state, setState] = useState<RecordingState>(RecordingState.CHECKING);
     const analysisContextRef = useRef(analysisContext);
 
     useEffect(() => {
         analysisContextRef.current = analysisContext;
     }, [analysisContext]);
 
-    const [state, setState] = useState<RecordingState>(RecordingState.CHECKING);
-    const isRecording = state === RecordingState.RECORDING;
-    const isHolding = state === RecordingState.HOLDING;
     const liveStatus = analysisContext.liveStatus;
     const canRecord = state === RecordingState.READY || (state === RecordingState.HOLDING && liveStatus === ACC_STATUS.ACC_LIVE);
+
+    type RecordingEvent =
+        | { type: 'sessionAvailable' }
+        | { type: 'sessionUnavailable' }
+        | { type: 'recordingStarted' }
+        | { type: 'recordingStopped'; reason: StopReason }
+        | { type: 'reset' };
+
+    const transition = useCallback((event: RecordingEvent) => {
+        setState((prev) => {
+            switch (event.type) {
+                case 'sessionAvailable':
+                    return prev === RecordingState.CHECKING ? RecordingState.READY : prev;
+                case 'sessionUnavailable':
+                    if (prev === RecordingState.RECORDING || prev === RecordingState.HOLDING || prev === RecordingState.UPLOAD_READY) {
+                        return prev;
+                    }
+                    return RecordingState.CHECKING;
+                case 'recordingStarted':
+                    return RecordingState.RECORDING;
+                case 'recordingStopped':
+                    switch (event.reason) {
+                        case 'pause':
+                            return RecordingState.HOLDING;
+                        case 'error':
+                            return RecordingState.READY;
+                        case 'manual':
+                        case 'complete':
+                            return RecordingState.UPLOAD_READY;
+                        default:
+                            return prev;
+                    }
+                case 'reset':
+                    return RecordingState.CHECKING;
+                default:
+                    return prev;
+            }
+        });
+    }, []);
 
     const recordingShellIdRef = useRef<number | null>(null);
     const pythonMessageCleanupRef = useRef<(() => void) | null>(null);
@@ -82,21 +143,18 @@ export default function LiveAnalysisSessionRecording() {
                 ? 'green'
                 : 'gray';
 
-    const icon = useMemo((): JSX.Element => {
+    const statusIcon = useMemo((): JSX.Element => {
         switch (state) {
-            case RecordingState.CHECKING: return <Spinner size="3" />;
+            case RecordingState.CHECKING:
+                return <Spinner size="3" />;
             case RecordingState.READY:
-                return (
-                    <svg xmlns="http://www.w3.org/2000/svg" fill="currentcolor" viewBox="0 0 30 30" width="20" height="20" style={{ marginRight: -2 }}>
-                        <path d="M 6 3 A 1 1 0 0 0 5 4 A 1 1 0 0 0 5 4.0039062 L 5 15 L 5 25.996094 A 1 1 0 0 0 5 26 A 1 1 0 0 0 6 27 A 1 1 0 0 0 6.5800781 26.8125 L 6.5820312 26.814453 L 26.416016 15.908203 A 1 1 0 0 0 27 15 A 1 1 0 0 0 26.388672 14.078125 L 6.5820312 3.1855469 L 6.5800781 3.1855469 A 1 1 0 0 0 6 3 z" />
-                    </svg>
-                );
+                return <PlayIcon size={18} />;
             case RecordingState.RECORDING:
-                return <svg width="15" height="15" viewBox="0 0 15 15" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M2 2C1.44772 2 1 2.44772 1 3V12C1 12.5523 1.44772 13 2 13H13C13.5523 13 14 12.5523 14 12V3C14 2.44772 13.5523 2 13 2H2ZM3 3H12V12H3V3Z" fill="currentColor" /></svg>;
+                return <StopIcon size={15} />;
             case RecordingState.HOLDING:
-                return <svg width="15" height="15" viewBox="0 0 15 15" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M4 3C3.44772 3 3 3.44772 3 4V11C3 11.5523 3.44772 12 4 12H5C5.55228 12 6 11.5523 6 11V4C6 3.44772 5.55228 3 5 3H4ZM10 3C9.44772 3 9 3.44772 9 4V11C9 11.5523 9.44772 12 10 12H11C11.5523 12 12 11.5523 12 11V4C12 3.44772 11.5523 3 11 3H10Z" fill="currentColor" /></svg>;
+                return <PauseBadgeIcon size={15} />;
             case RecordingState.UPLOAD_READY:
-                return <svg width="15" height="15" viewBox="0 0 15 15" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M7.81825 1.18188C7.64251 1.00615 7.35759 1.00615 7.18185 1.18188L4.18185 4.18188C4.00611 4.35762 4.00611 4.64254 4.18185 4.81828C4.35759 4.99401 4.64251 4.99401 4.81825 4.81828L7.05005 2.58648V9.49996C7.05005 9.74849 7.25152 9.94996 7.50005 9.94996C7.74858 9.94996 7.95005 9.74849 7.95005 9.49996V2.58648L10.1819 4.81828C10.3576 4.99401 10.6425 4.99401 10.8182 4.81828C10.994 4.64254 10.994 4.35762 10.8182 4.18188L7.81825 1.18188ZM2.5 9.99997C2.77614 9.99997 3 10.2238 3 10.5V12C3 12.5538 3.44565 13 3.99635 13H11.0012C11.5529 13 12 12.5528 12 12V10.5C12 10.2238 12.2239 9.99997 12.5 9.99997C12.7761 9.99997 13 10.2238 13 10.5V12C13 13.104 12.1062 14 11.0012 14H3.99635C2.89019 14 2 13.103 2 12V10.5C2 10.2238 2.22386 9.99997 2.5 9.99997Z" fill="currentColor" /></svg>;
+                return <UploadIcon size={15} />;
             default: return <Spinner size="3" />;
         }
     }, [state]);
@@ -135,24 +193,24 @@ export default function LiveAnalysisSessionRecording() {
 
         switch (reason) {
             case 'pause': {
-                setState(RecordingState.HOLDING);
+                transition({ type: 'recordingStopped', reason: 'pause' });
                 break;
             }
             case 'error': {
                 recordingFileInfoRef.current = null;
                 analysisContext.clearRecordingSession();
-                setState(RecordingState.READY);
+                transition({ type: 'recordingStopped', reason: 'error' });
                 break;
             }
             case 'manual': {
-                setState(RecordingState.UPLOAD_READY);
+                transition({ type: 'recordingStopped', reason: 'manual' });
                 break;
             }
             default: {
-                setState(RecordingState.UPLOAD_READY);
+                transition({ type: 'recordingStopped', reason: 'complete' });
             }
         }
-    }, [analysisContext, setState]);
+    }, [analysisContext, transition]);
 
     const processSessionStreamUpdate = useCallback((event: PythonStreamEvent<Record<string, unknown>>) => {
         const ctx = analysisContextRef.current;
@@ -170,25 +228,20 @@ export default function LiveAnalysisSessionRecording() {
                     if ((data as any).Static) {
                         ctx.setRecordedSessionStaticsData((data as any).Static);
                     }
-                    setState((prev) => (prev === RecordingState.CHECKING ? RecordingState.READY : prev));
+                    transition({ type: 'sessionAvailable' });
                 } else if (status === ACC_STATUS.ACC_PAUSE) {
-                    setState((prev) => {
-                        if (prev === RecordingState.RECORDING) {
-                            return prev;
-                        }
-                        return prev === RecordingState.HOLDING ? prev : RecordingState.HOLDING;
-                    });
+                    // handled by live telemetry stop logic
                 } else if (status === ACC_STATUS.ACC_OFF) {
-                    setState((prev) => (prev === RecordingState.READY || prev === RecordingState.HOLDING ? RecordingState.CHECKING : prev));
+                    transition({ type: 'sessionUnavailable' });
                 }
             } else if (data.checking === true) {
-                setState(() => RecordingState.CHECKING);
+                transition({ type: 'sessionUnavailable' });
             } else if (data.available === false) {
-                setState((prev) => (prev === RecordingState.READY || prev === RecordingState.HOLDING ? RecordingState.CHECKING : prev));
+                transition({ type: 'sessionUnavailable' });
             }
         } else if (event.status === 'ready') {
             if (ctx.liveStatus == null) {
-                setState(() => RecordingState.CHECKING);
+                transition({ type: 'sessionUnavailable' });
             }
         } else if (event.status === 'error') {
             console.error('ACC session checker error:', event.message ?? 'Unknown error', event.traceback ?? '');
@@ -198,7 +251,7 @@ export default function LiveAnalysisSessionRecording() {
             sessionCheckingStreamRef.current = null;
             sessionCheckingStreamStartingRef.current = false;
         }
-    }, []);
+    }, [transition]);
 
     const stopSessionCheckingStream = useCallback(async ({ force = false } = {}) => {
         sessionCheckingStreamStartingRef.current = false;
@@ -308,7 +361,7 @@ export default function LiveAnalysisSessionRecording() {
             console.error('Failed to stop python script', error);
             applyStopOutcome('error');
         }
-    }, [analysisContext, applyStopOutcome, state]);
+    }, [applyStopOutcome, state]);
 
     useEffect(() => {
         if (state === RecordingState.RECORDING && hasReceivedLiveSampleRef.current && liveStatus !== null && liveStatus !== ACC_STATUS.ACC_LIVE) {
@@ -316,6 +369,12 @@ export default function LiveAnalysisSessionRecording() {
             void stopRecordingProcess(stopReason);
         }
     }, [liveStatus, state, stopRecordingProcess]);
+
+    useEffect(() => {
+        if (state === RecordingState.HOLDING && liveStatus !== null && liveStatus !== ACC_STATUS.ACC_LIVE && liveStatus !== ACC_STATUS.ACC_PAUSE) {
+            transition({ type: 'recordingStopped', reason: 'complete' });
+        }
+    }, [liveStatus, state, transition]);
 
 
     const startRecording = useCallback(async ({ resumeExisting = false }: { resumeExisting?: boolean } = {}) => {
@@ -353,8 +412,14 @@ export default function LiveAnalysisSessionRecording() {
             } as RacingSessionDetailedInfoDto as any);
         }
 
+        if (uploadDialogOpen) {
+            setUploadDialogOpen(false);
+            setUploadError(null);
+            setShowRetryButton(false);
+        }
+
         hasReceivedLiveSampleRef.current = false;
-        setState(RecordingState.RECORDING);
+        transition({ type: 'recordingStarted' });
         try {
             const { shellId } = await window.electronAPI.runPythonScript(script, options);
             recordingShellIdRef.current = shellId;
@@ -396,20 +461,13 @@ export default function LiveAnalysisSessionRecording() {
         } finally {
             startInFlightRef.current = false;
         }
-    }, [analysisContext, applyStopOutcome, canRecord]);
+    }, [analysisContext, applyStopOutcome, canRecord, transition, uploadDialogOpen]);
 
     useEffect(() => {
         if (state === RecordingState.HOLDING && liveStatus === ACC_STATUS.ACC_LIVE) {
             void startRecording({ resumeExisting: true });
         }
     }, [liveStatus, state, startRecording]);
-
-    const manualStop = useCallback(() => {
-        if (state !== RecordingState.RECORDING) {
-            return;
-        }
-        void stopRecordingProcess('manual');
-    }, [state, stopRecordingProcess]);
 
     const cleanupTelemetryFile = useCallback(async (filePath: string) => {
         try { const options: PythonShellOptions = { mode: 'text', pythonOptions: ['-u'], scriptPath: 'src/py-scripts', args: [filePath] }; await window.electronAPI.runPythonScript('delete_telemetry_file.py', options); } catch { }
@@ -422,10 +480,10 @@ export default function LiveAnalysisSessionRecording() {
         recordingFileInfoRef.current = null;
         uploadInFlightRef.current = false;
         setUploadProgress(0); setUploadStatus(''); setUploadError(null); setShowRetryButton(false); setUploadDialogOpen(false); setIsUploading(false);
-        setState(RecordingState.CHECKING);
+        transition({ type: 'reset' });
         hasReceivedLiveSampleRef.current = false;
         stopReasonRef.current = null;
-    }, [analysisContext]);
+    }, [analysisContext, transition]);
 
     const handleUpload = useCallback(async () => {
         if (uploadInFlightRef.current) return false;
@@ -471,41 +529,112 @@ export default function LiveAnalysisSessionRecording() {
     const handleCancelUpload = useCallback(async () => { if (analysisContext.recordedSessionDataFilePath) await cleanupTelemetryFile(analysisContext.recordedSessionDataFilePath); resetToChecking(); }, [analysisContext, cleanupTelemetryFile, resetToChecking]);
     const handleRetryUpload = useCallback(() => { setUploadError(null); setShowRetryButton(false); setUploadProgress(0); handleUpload(); }, [handleUpload]);
 
-    useEffect(() => {
-        const shouldOpen = (state === RecordingState.UPLOAD_READY || state === RecordingState.HOLDING) && hasRecordedData;
-        if (shouldOpen) {
-            setUploadDialogOpen(true);
+    const openUploadDialog = useCallback(() => {
+        if (isUploading) {
             return;
         }
+        setUploadDialogOpen(true);
+    }, [isUploading]);
 
-        if (!shouldOpen && uploadDialogOpen) {
-            setUploadDialogOpen(false);
+    const closeUploadDialog = useCallback(() => {
+        if (isUploading) {
+            return;
         }
-    }, [state, hasRecordedData, uploadDialogOpen]);
+        setUploadDialogOpen(false);
+    }, [isUploading]);
+
+    const handleDialogOpenChange = useCallback((open: boolean) => {
+        if (!open && isUploading) {
+            return;
+        }
+        setUploadDialogOpen(open);
+    }, [isUploading]);
+
+    const controlButtons = useMemo(() => {
+        switch (state) {
+            case RecordingState.CHECKING:
+                return (
+                    <Button radius="full" variant="outline" color="gray" disabled>
+                        <Flex align="center" gap="2">
+                            <Spinner size="1" />
+                            <span>Looking for live session…</span>
+                        </Flex>
+                    </Button>
+                );
+            case RecordingState.READY:
+                return (
+                    <Button radius="full" color="blue" onClick={() => { if (canRecord) { void startRecording(); } }}>
+                        <Flex align="center" gap="2">
+                            <PlayIcon size={14} />
+                            <span>Start Recording</span>
+                        </Flex>
+                    </Button>
+                );
+            case RecordingState.RECORDING:
+                return (
+                    <Button radius="full" color="red" onClick={() => { void stopRecordingProcess('manual'); }}>
+                        <Flex align="center" gap="2">
+                            <StopIcon size={14} />
+                            <span>Stop Recording</span>
+                        </Flex>
+                    </Button>
+                );
+            case RecordingState.HOLDING: {
+                const canResume = liveStatus === ACC_STATUS.ACC_LIVE;
+                return (
+                    <Flex align="center" gap="2">
+                        <Button radius="full" variant="soft" color="amber" disabled>
+                            <Flex align="center" gap="2">
+                                <PauseBadgeIcon size={14} />
+                                <span>Game Paused</span>
+                            </Flex>
+                        </Button>
+                        <Button radius="full" color="green" onClick={openUploadDialog} disabled={!hasRecordedData || isUploading}>
+                            <Flex align="center" gap="2">
+                                <UploadIcon size={14} />
+                                <span>Upload Session</span>
+                            </Flex>
+                        </Button>
+                        {canResume && (
+                            <Button radius="full" variant="outline" color="blue" disabled={!canRecord || isUploading} onClick={() => { void startRecording({ resumeExisting: true }); }}>
+                                <Flex align="center" gap="2">
+                                    <PlayIcon size={14} />
+                                    <span>Resume</span>
+                                </Flex>
+                            </Button>
+                        )}
+                    </Flex>
+                );
+            }
+            case RecordingState.UPLOAD_READY:
+                return (
+                    <Flex align="center" gap="2">
+                        <Button radius="full" color="green" onClick={openUploadDialog} disabled={!hasRecordedData || isUploading}>
+                            <Flex align="center" gap="2">
+                                <UploadIcon size={14} />
+                                <span>Upload Session</span>
+                            </Flex>
+                        </Button>
+                        <Button radius="full" variant="outline" color="gray" onClick={() => { void handleCancelUpload(); closeUploadDialog(); }} disabled={isUploading}>
+                            <span>Discard</span>
+                        </Button>
+                    </Flex>
+                );
+            default:
+                return null;
+        }
+    }, [state, canRecord, startRecording, stopRecordingProcess, liveStatus, hasRecordedData, isUploading, openUploadDialog, handleCancelUpload, closeUploadDialog]);
 
     return (
         <Box position="absolute" left="0" right="0" bottom="0" mb="5" height="64px" style={{ borderRadius: '100px', boxShadow: 'var(--shadow-6)', marginLeft: 200, marginRight: 200 }}>
             <Flex height="100%" justify="between" position="relative">
                 <Flex gap="4" align="center" p="3">
-                    <IconButton
-                        radius="full"
-                        size="3"
-                        onClick={isRecording
-                            ? manualStop
-                            : (() => {
-                                if (isHolding) {
-                                    void startRecording({ resumeExisting: true });
-                                } else {
-                                    void startRecording();
-                                }
-                            })}
-                        color={isRecording ? 'red' : isHolding ? 'amber' : 'blue'}
-                        disabled={!isRecording && !canRecord}
-                    >
-                        {icon}
-                    </IconButton>
-                    <Text size="2" color={recordingStatusDisplay.color} weight="medium">{recordingStatusDisplay.label}</Text>
-                    <AlertDialog.Root open={uploadDialogOpen} onOpenChange={(open) => { if (isUploading) return; setUploadDialogOpen(open); }}>
+                    <Flex align="center" gap="2">
+                        {statusIcon}
+                        <Text size="2" color={recordingStatusDisplay.color} weight="medium">{recordingStatusDisplay.label}</Text>
+                    </Flex>
+                    {controlButtons}
+                    <AlertDialog.Root open={uploadDialogOpen} onOpenChange={handleDialogOpenChange}>
                         <AlertDialog.Content maxWidth="450px" onEscapeKeyDown={(e) => { if (isUploading) e.preventDefault(); }}>
                             <AlertDialog.Title>Upload Racing Session</AlertDialog.Title>
                             <AlertDialog.Description size="2">Upload your recorded racing session data.</AlertDialog.Description>
@@ -541,9 +670,14 @@ export default function LiveAnalysisSessionRecording() {
                                 </Grid>
                             </Card>
                             <Flex gap="3" mt="4" justify="end">
-                                {!isUploading && uploadProgress < 100 && (<><Button variant="outline" color="red" onClick={() => { handleCancelUpload(); setUploadDialogOpen(false); }}>Cancel</Button><Button onClick={() => handleUpload()} disabled={isUploading || !hasRecordedData}>Upload Session</Button></>)}
+                                {!isUploading && uploadProgress < 100 && (
+                                    <>
+                                        <Button variant="outline" color="red" onClick={() => { void handleCancelUpload(); closeUploadDialog(); }}>Cancel</Button>
+                                        <Button onClick={() => { void handleUpload(); }} disabled={isUploading || !hasRecordedData}>Upload Session</Button>
+                                    </>
+                                )}
                                 {isUploading && uploadProgress < 100 && (<Button variant="outline" disabled><Spinner size="1" />Uploading...</Button>)}
-                                {!isUploading && uploadProgress === 100 && (<Button onClick={() => setUploadDialogOpen(false)}>Close</Button>)}
+                                {!isUploading && uploadProgress === 100 && (<Button onClick={closeUploadDialog}>Close</Button>)}
                             </Flex>
                         </AlertDialog.Content>
                     </AlertDialog.Root>
