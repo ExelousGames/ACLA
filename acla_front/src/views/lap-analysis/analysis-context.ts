@@ -7,7 +7,7 @@ export interface AnalysisContextType {
     mapSelected: string | null;
     sessionSelected: RacingSessionDetailedInfoDto | null;
     liveData: any;
-    liveStatus: ACC_STATUS | null;
+    TelemetryDataLiveStatus: ACC_STATUS | null;
     recordedSessionDataFilePath: string | null;
     recordedTelemetryDataCount: number;
     recordedSessioStaticsData: any;
@@ -23,14 +23,14 @@ export interface AnalysisContextType {
     clearRecordingSession: () => void;
     setActiveVisualizations: Dispatch<SetStateAction<VisualizationInstance[]>>;
     sendGuidanceToChat: (message: string) => void;
-    setLiveStatus: (status: ACC_STATUS | null) => void;
+    setTelemetryDataLiveStatus: (status: ACC_STATUS | null) => void;
 }
 
 export const AnalysisContext = createContext<AnalysisContextType>({
     mapSelected: '',
     sessionSelected: {} as RacingSessionDetailedInfoDto,
     liveData: {} as any,
-    liveStatus: null,
+    TelemetryDataLiveStatus: null,
     recordedSessionDataFilePath: null,
     recordedTelemetryDataCount: 0,
     recordedSessioStaticsData: {} as any,
@@ -67,7 +67,7 @@ export const AnalysisContext = createContext<AnalysisContextType>({
     sendGuidanceToChat: () => {
         console.warn('No provider for AnalysisContext');
     },
-    setLiveStatus: () => {
+    setTelemetryDataLiveStatus: () => {
         console.warn('No provider for AnalysisContext');
     }
 });

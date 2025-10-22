@@ -91,15 +91,15 @@ const ExpertActionsChart: React.FC<VisualizationProps> = ({ width = '100%', heig
     const carName = analysisContext.recordedSessioStaticsData?.car_model || 'Unknown Car';
     const sanitizedTrackName = trackName === 'Unknown Track' ? undefined : trackName;
     const sanitizedCarName = MODEL_CAR_NAME; // Always use the pooled AllCars imitation model variant.
-    const liveStatus = analysisContext.liveStatus;
+    const TelemetryDataLiveStatus = analysisContext.TelemetryDataLiveStatus;
     const hasLiveTelemetry = useMemo(() => {
         if (!analysisContext.liveData || Object.keys(analysisContext.liveData).length === 0) {
             return false;
         }
-        return liveStatus === ACC_STATUS.ACC_LIVE;
-    }, [analysisContext.liveData, liveStatus]);
+        return TelemetryDataLiveStatus === ACC_STATUS.ACC_LIVE;
+    }, [analysisContext.liveData, TelemetryDataLiveStatus]);
     const statusSummary = useMemo(() => {
-        switch (liveStatus) {
+        switch (TelemetryDataLiveStatus) {
             case ACC_STATUS.ACC_LIVE:
                 return { label: 'Live', color: 'green' as const };
             case ACC_STATUS.ACC_PAUSE:
@@ -111,10 +111,10 @@ const ExpertActionsChart: React.FC<VisualizationProps> = ({ width = '100%', heig
             default:
                 return { label: 'Unknown', color: 'gray' as const };
         }
-    }, [liveStatus]);
+    }, [TelemetryDataLiveStatus]);
 
     const statusMessage = useMemo(() => {
-        switch (liveStatus) {
+        switch (TelemetryDataLiveStatus) {
             case ACC_STATUS.ACC_PAUSE:
                 return 'Game paused. Waiting for live telemetry to resume.';
             case ACC_STATUS.ACC_REPLAY:
@@ -124,7 +124,7 @@ const ExpertActionsChart: React.FC<VisualizationProps> = ({ width = '100%', heig
             default:
                 return null;
         }
-    }, [liveStatus]);
+    }, [TelemetryDataLiveStatus]);
 
     const telemetryNotice = useMemo(() => {
         if (statusMessage) {
@@ -153,16 +153,16 @@ const ExpertActionsChart: React.FC<VisualizationProps> = ({ width = '100%', heig
     }, [environment, hasLiveTelemetry, initializing, loading, statusMessage]);
 
     useEffect(() => {
-        if (liveStatus !== ACC_STATUS.ACC_LIVE) {
+        if (TelemetryDataLiveStatus !== ACC_STATUS.ACC_LIVE) {
             setLoading(false);
             setPrediction(null);
             lastAutoPredictionSignatureRef.current = null;
         }
 
-        if (liveStatus !== ACC_STATUS.ACC_LIVE && error) {
+        if (TelemetryDataLiveStatus !== ACC_STATUS.ACC_LIVE && error) {
             setError(null);
         }
-    }, [liveStatus, error]);
+    }, [TelemetryDataLiveStatus, error]);
 
     const handleComputePrediction = useCallback(async () => {
         if (environment !== 'electron') {
@@ -177,7 +177,7 @@ const ExpertActionsChart: React.FC<VisualizationProps> = ({ width = '100%', heig
             return;
         }
 
-        if (liveStatus !== ACC_STATUS.ACC_LIVE) {
+        if (TelemetryDataLiveStatus !== ACC_STATUS.ACC_LIVE) {
             setLoading(false);
             return;
         }
@@ -215,7 +215,7 @@ const ExpertActionsChart: React.FC<VisualizationProps> = ({ width = '100%', heig
         } finally {
             setLoading(false);
         }
-    }, [analysisContext.liveData, environment, hasLiveTelemetry, initializing, liveStatus, sessionReady, teardownSession]);
+    }, [analysisContext.liveData, environment, hasLiveTelemetry, initializing, TelemetryDataLiveStatus, sessionReady, teardownSession]);
 
     const summaryMetrics = useMemo(() => extractKeySubset(prediction?.prediction), [prediction]);
 
@@ -323,7 +323,7 @@ const ExpertActionsChart: React.FC<VisualizationProps> = ({ width = '100%', heig
             return;
         }
 
-        if (liveStatus !== ACC_STATUS.ACC_LIVE) {
+        if (TelemetryDataLiveStatus !== ACC_STATUS.ACC_LIVE) {
             return;
         }
 
@@ -350,7 +350,7 @@ const ExpertActionsChart: React.FC<VisualizationProps> = ({ width = '100%', heig
 
         lastAutoPredictionSignatureRef.current = signature;
         void handleComputePrediction();
-    }, [analysisContext.liveData, environment, sessionReady, initializing, loading, liveStatus, handleComputePrediction]);
+    }, [analysisContext.liveData, environment, sessionReady, initializing, loading, TelemetryDataLiveStatus, handleComputePrediction]);
 
     return (
         <Card style={{ width, height, padding: '16px', display: 'flex', flexDirection: 'column' }}>

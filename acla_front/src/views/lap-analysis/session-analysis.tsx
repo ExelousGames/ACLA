@@ -33,7 +33,7 @@ const SessionAnalysis = () => {
     const [sessionSelected, setSession] = useState<RacingSessionDetailedInfoDto | null>(null);
     const [activeTab, setActiveTab] = useState('mapLists');
     const [liveData, setLiveData] = useState({});
-    const [liveStatus, setLiveStatus] = useState<ACC_STATUS | null>(null);
+    const [TelemetryDataLiveStatus, setTelemetryDataLiveStatus] = useState<ACC_STATUS | null>(null);
     const [recordedSessioStaticsData, setRecordedSessionStaticsData] = useState({});
     const [recordedSessionDataFilePath, setRecordedSessionDataFilePath] = useState<string | null>(null);
     const [recordedTelemetryDataCount, setRecordedTelemetryDataCount] = useState<number>(0);
@@ -178,8 +178,8 @@ const SessionAnalysis = () => {
         setLatestGuidanceMessage(message);
     };
 
-    const updateLiveStatus = useCallback((status: ACC_STATUS | null) => {
-        setLiveStatus(status);
+    const updateTelemetryDataLiveStatus = useCallback((status: ACC_STATUS | null) => {
+        setTelemetryDataLiveStatus(status);
     }, []);
 
     useEffect(() => {
@@ -189,10 +189,10 @@ const SessionAnalysis = () => {
 
         const nextStatus = normalizeAccStatus((liveData as any)?.Graphics_status ?? (liveData as any)?.Graphics?.status);
         console.log('Next live status:', nextStatus);
-        if (nextStatus !== null && nextStatus !== liveStatus) {
-            setLiveStatus(nextStatus);
+        if (nextStatus !== null && nextStatus !== TelemetryDataLiveStatus) {
+            setTelemetryDataLiveStatus(nextStatus);
         }
-    }, [liveData, liveStatus]);
+    }, [liveData, TelemetryDataLiveStatus]);
     //switch tab when a map or a session is selected
     useEffect(() => {
         if (mapSelected != null) {
@@ -243,8 +243,8 @@ const SessionAnalysis = () => {
             setActiveVisualizations,
             sendGuidanceToChat
             ,
-            liveStatus,
-            setLiveStatus: updateLiveStatus
+            TelemetryDataLiveStatus,
+            setTelemetryDataLiveStatus: updateTelemetryDataLiveStatus
         }}>
             <Tabs.Root className="LiveAnalysisTabsRoot" defaultValue="mapLists" value={activeTab} onValueChange={setActiveTab}>
                 <Tabs.List className="live-analysis-tablists" justify="start">

@@ -65,8 +65,8 @@ export default function LiveAnalysisSessionRecording() {
         analysisContextRef.current = analysisContext;
     }, [analysisContext]);
 
-    const liveStatus = analysisContext.liveStatus;
-    const canRecord = state === RecordingState.READY || (state === RecordingState.HOLDING && liveStatus === ACC_STATUS.ACC_LIVE);
+    const TelemetryDataLiveStatus = analysisContext.TelemetryDataLiveStatus;
+    const canRecord = state === RecordingState.READY || (state === RecordingState.HOLDING && TelemetryDataLiveStatus === ACC_STATUS.ACC_LIVE);
 
     type RecordingEvent =
         | { type: 'sessionAvailable' }
@@ -240,7 +240,7 @@ export default function LiveAnalysisSessionRecording() {
                 transition({ type: 'sessionUnavailable' });
             }
         } else if (event.status === 'ready') {
-            if (ctx.liveStatus == null) {
+            if (ctx.TelemetryDataLiveStatus == null) {
                 transition({ type: 'sessionUnavailable' });
             }
         } else if (event.status === 'error') {
@@ -364,17 +364,17 @@ export default function LiveAnalysisSessionRecording() {
     }, [applyStopOutcome, state]);
 
     useEffect(() => {
-        if (state === RecordingState.RECORDING && hasReceivedLiveSampleRef.current && liveStatus !== null && liveStatus !== ACC_STATUS.ACC_LIVE) {
-            const stopReason: StopReason = liveStatus === ACC_STATUS.ACC_PAUSE ? 'pause' : 'complete';
+        if (state === RecordingState.RECORDING && hasReceivedLiveSampleRef.current && TelemetryDataLiveStatus !== null && TelemetryDataLiveStatus !== ACC_STATUS.ACC_LIVE) {
+            const stopReason: StopReason = TelemetryDataLiveStatus === ACC_STATUS.ACC_PAUSE ? 'pause' : 'complete';
             void stopRecordingProcess(stopReason);
         }
-    }, [liveStatus, state, stopRecordingProcess]);
+    }, [TelemetryDataLiveStatus, state, stopRecordingProcess]);
 
     useEffect(() => {
-        if (state === RecordingState.HOLDING && liveStatus !== null && liveStatus !== ACC_STATUS.ACC_LIVE && liveStatus !== ACC_STATUS.ACC_PAUSE) {
+        if (state === RecordingState.HOLDING && TelemetryDataLiveStatus !== null && TelemetryDataLiveStatus !== ACC_STATUS.ACC_LIVE && TelemetryDataLiveStatus !== ACC_STATUS.ACC_PAUSE) {
             transition({ type: 'recordingStopped', reason: 'complete' });
         }
-    }, [liveStatus, state, transition]);
+    }, [TelemetryDataLiveStatus, state, transition]);
 
 
     const startRecording = useCallback(async ({ resumeExisting = false }: { resumeExisting?: boolean } = {}) => {
@@ -464,10 +464,10 @@ export default function LiveAnalysisSessionRecording() {
     }, [analysisContext, applyStopOutcome, canRecord, transition, uploadDialogOpen]);
 
     useEffect(() => {
-        if (state === RecordingState.HOLDING && liveStatus === ACC_STATUS.ACC_LIVE) {
+        if (state === RecordingState.HOLDING && TelemetryDataLiveStatus === ACC_STATUS.ACC_LIVE) {
             void startRecording({ resumeExisting: true });
         }
-    }, [liveStatus, state, startRecording]);
+    }, [TelemetryDataLiveStatus, state, startRecording]);
 
     const cleanupTelemetryFile = useCallback(async (filePath: string) => {
         try { const options: PythonShellOptions = { mode: 'text', pythonOptions: ['-u'], scriptPath: 'src/py-scripts', args: [filePath] }; await window.electronAPI.runPythonScript('delete_telemetry_file.py', options); } catch { }
@@ -580,7 +580,7 @@ export default function LiveAnalysisSessionRecording() {
                     </Button>
                 );
             case RecordingState.HOLDING: {
-                const canResume = liveStatus === ACC_STATUS.ACC_LIVE;
+                const canResume = TelemetryDataLiveStatus === ACC_STATUS.ACC_LIVE;
                 return (
                     <Flex align="center" gap="2">
                         <Button radius="full" variant="soft" color="amber" disabled>
@@ -623,7 +623,7 @@ export default function LiveAnalysisSessionRecording() {
             default:
                 return null;
         }
-    }, [state, canRecord, startRecording, stopRecordingProcess, liveStatus, hasRecordedData, isUploading, openUploadDialog, handleCancelUpload, closeUploadDialog]);
+    }, [state, canRecord, startRecording, stopRecordingProcess, TelemetryDataLiveStatus, hasRecordedData, isUploading, openUploadDialog, handleCancelUpload, closeUploadDialog]);
 
     return (
         <Box position="absolute" left="0" right="0" bottom="0" mb="5" height="64px" style={{ borderRadius: '100px', boxShadow: 'var(--shadow-6)', marginLeft: 200, marginRight: 200 }}>
