@@ -212,7 +212,12 @@ export default function LiveAnalysisSessionRecording() {
         }
     }, [analysisContext, transition]);
 
-    const processSessionStreamUpdate = useCallback((event: PythonStreamEvent<Record<string, unknown>>) => {
+    /**
+     * Process updates from the ACC session checking stream
+     * @param event PythonStreamEvent<Record<string, unknown>>
+     * @returns void
+     */
+    const processCheckingSessionStreamUpdate = useCallback((event: PythonStreamEvent<Record<string, unknown>>) => {
         const ctx = analysisContextRef.current;
         if (!ctx || !event) {
             return;
@@ -230,7 +235,7 @@ export default function LiveAnalysisSessionRecording() {
                     }
                     transition({ type: 'sessionAvailable' });
                 } else if (status === ACC_STATUS.ACC_PAUSE) {
-                    // handled by live telemetry stop logic
+                    // recorder will transition when the python process ends
                 } else if (status === ACC_STATUS.ACC_OFF) {
                     transition({ type: 'sessionUnavailable' });
                 }
@@ -288,7 +293,7 @@ export default function LiveAnalysisSessionRecording() {
             });
 
             sessionCheckingStreamRef.current = stream;
-            sessionCheckingStreamCleanupRef.current = stream.onMessage(processSessionStreamUpdate);
+            sessionCheckingStreamCleanupRef.current = stream.onMessage(processCheckingSessionStreamUpdate);
 
             await stream.waitUntilReady();
             return stream;
@@ -299,7 +304,7 @@ export default function LiveAnalysisSessionRecording() {
         } finally {
             sessionCheckingStreamStartingRef.current = false;
         }
-    }, [processSessionStreamUpdate, stopSessionCheckingStream]);
+    }, [processCheckingSessionStreamUpdate, stopSessionCheckingStream]);
 
     const shouldMaintainSessionCheckingStream = state === RecordingState.CHECKING || state === RecordingState.HOLDING;
 
@@ -309,6 +314,7 @@ export default function LiveAnalysisSessionRecording() {
         const ensureStream = async () => {
             if (shouldMaintainSessionCheckingStream) {
                 try {
+                    // Start the session checking stream
                     await startSessionCheckingStream();
                 } catch (error) {
                     if (!cancelled) {
@@ -329,21 +335,15 @@ export default function LiveAnalysisSessionRecording() {
     }, [shouldMaintainSessionCheckingStream, startSessionCheckingStream, stopSessionCheckingStream]);
 
     const stopRecordingProcess = useCallback(async (reason: StopReason) => {
-
         if (stopReasonRef.current && stopReasonRef.current !== 'complete') {
-            return;
-        }
-
-        if (state !== RecordingState.RECORDING) {
-            applyStopOutcome(reason);
             return;
         }
 
         stopReasonRef.current = reason;
 
-        if (pythonMessageCleanupRef.current) {
-            pythonMessageCleanupRef.current();
-            pythonMessageCleanupRef.current = null;
+        if (state !== RecordingState.RECORDING) {
+            applyStopOutcome(reason);
+            return;
         }
 
         const shellId = recordingShellIdRef.current;
@@ -363,18 +363,28 @@ export default function LiveAnalysisSessionRecording() {
         }
     }, [applyStopOutcome, state]);
 
-    useEffect(() => {
-        if (state === RecordingState.RECORDING && hasReceivedLiveSampleRef.current && TelemetryDataLiveStatus !== null && TelemetryDataLiveStatus !== ACC_STATUS.ACC_LIVE) {
-            const stopReason: StopReason = TelemetryDataLiveStatus === ACC_STATUS.ACC_PAUSE ? 'pause' : 'complete';
-            void stopRecordingProcess(stopReason);
+    const determineStopReason = useCallback((): StopReason => {
+        if (stopReasonRef.current) {
+            return stopReasonRef.current;
         }
-    }, [TelemetryDataLiveStatus, state, stopRecordingProcess]);
 
-    useEffect(() => {
-        if (state === RecordingState.HOLDING && TelemetryDataLiveStatus !== null && TelemetryDataLiveStatus !== ACC_STATUS.ACC_LIVE && TelemetryDataLiveStatus !== ACC_STATUS.ACC_PAUSE) {
-            transition({ type: 'recordingStopped', reason: 'complete' });
+        const ctx = analysisContextRef.current;
+        const liveStatus = ctx?.TelemetryDataLiveStatus ?? null;
+
+        if (liveStatus === ACC_STATUS.ACC_PAUSE) {
+            return 'pause';
         }
-    }, [TelemetryDataLiveStatus, state, transition]);
+
+        if (liveStatus !== ACC_STATUS.ACC_LIVE) {
+            return 'complete';
+        }
+
+        if (!hasReceivedLiveSampleRef.current) {
+            return 'error';
+        }
+
+        return 'complete';
+    }, []);
 
 
     const startRecording = useCallback(async ({ resumeExisting = false }: { resumeExisting?: boolean } = {}) => {
@@ -412,12 +422,6 @@ export default function LiveAnalysisSessionRecording() {
             } as RacingSessionDetailedInfoDto as any);
         }
 
-        if (uploadDialogOpen) {
-            setUploadDialogOpen(false);
-            setUploadError(null);
-            setShowRetryButton(false);
-        }
-
         hasReceivedLiveSampleRef.current = false;
         transition({ type: 'recordingStarted' });
         try {
@@ -451,7 +455,7 @@ export default function LiveAnalysisSessionRecording() {
                 removeEndListener();
                 pythonEndCleanupRef.current = null;
 
-                const reason = stopReasonRef.current ?? 'complete';
+                const reason = determineStopReason();
                 applyStopOutcome(reason);
             });
             pythonEndCleanupRef.current = removeEndListener;
@@ -461,13 +465,7 @@ export default function LiveAnalysisSessionRecording() {
         } finally {
             startInFlightRef.current = false;
         }
-    }, [analysisContext, applyStopOutcome, canRecord, transition, uploadDialogOpen]);
-
-    useEffect(() => {
-        if (state === RecordingState.HOLDING && TelemetryDataLiveStatus === ACC_STATUS.ACC_LIVE) {
-            void startRecording({ resumeExisting: true });
-        }
-    }, [TelemetryDataLiveStatus, state, startRecording]);
+    }, [analysisContext, applyStopOutcome, canRecord, transition, uploadDialogOpen, determineStopReason]);
 
     const cleanupTelemetryFile = useCallback(async (filePath: string) => {
         try { const options: PythonShellOptions = { mode: 'text', pythonOptions: ['-u'], scriptPath: 'src/py-scripts', args: [filePath] }; await window.electronAPI.runPythonScript('delete_telemetry_file.py', options); } catch { }
