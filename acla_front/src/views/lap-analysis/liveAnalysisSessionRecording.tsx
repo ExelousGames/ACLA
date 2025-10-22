@@ -72,6 +72,7 @@ export default function LiveAnalysisSessionRecording() {
         | { type: 'sessionAvailable' }
         | { type: 'sessionUnavailable' }
         | { type: 'recordingStarted' }
+        | { type: 'recordingResumed' }
         | { type: 'recordingStopped'; reason: StopReason }
         | { type: 'reset' };
 
@@ -87,6 +88,8 @@ export default function LiveAnalysisSessionRecording() {
                     return RecordingState.CHECKING;
                 case 'recordingStarted':
                     return RecordingState.RECORDING;
+                case 'recordingResumed':
+                    return prev === RecordingState.HOLDING ? RecordingState.RECORDING : prev;
                 case 'recordingStopped':
                     switch (event.reason) {
                         case 'pause':
@@ -155,7 +158,8 @@ export default function LiveAnalysisSessionRecording() {
                 return <PauseBadgeIcon size={15} />;
             case RecordingState.UPLOAD_READY:
                 return <UploadIcon size={15} />;
-            default: return <Spinner size="3" />;
+            default:
+                return <Spinner size="3" />;
         }
     }, [state]);
 
@@ -423,7 +427,7 @@ export default function LiveAnalysisSessionRecording() {
         }
 
         hasReceivedLiveSampleRef.current = false;
-        transition({ type: 'recordingStarted' });
+        transition({ type: resumeExisting ? 'recordingResumed' : 'recordingStarted' });
         try {
             const { shellId } = await window.electronAPI.runPythonScript(script, options);
             recordingShellIdRef.current = shellId;
@@ -466,6 +470,26 @@ export default function LiveAnalysisSessionRecording() {
             startInFlightRef.current = false;
         }
     }, [analysisContext, applyStopOutcome, canRecord, transition, uploadDialogOpen, determineStopReason]);
+
+    useEffect(() => {
+        if (state !== RecordingState.HOLDING) {
+            return;
+        }
+        if (TelemetryDataLiveStatus !== ACC_STATUS.ACC_LIVE) {
+            return;
+        }
+        if (isUploading || uploadDialogOpen || uploadInFlightRef.current) {
+            return;
+        }
+        if (startInFlightRef.current) {
+            return;
+        }
+        if (!recordingFileInfoRef.current) {
+            return;
+        }
+
+        void startRecording({ resumeExisting: true });
+    }, [TelemetryDataLiveStatus, isUploading, startRecording, state, uploadDialogOpen]);
 
     const cleanupTelemetryFile = useCallback(async (filePath: string) => {
         try { const options: PythonShellOptions = { mode: 'text', pythonOptions: ['-u'], scriptPath: 'src/py-scripts', args: [filePath] }; await window.electronAPI.runPythonScript('delete_telemetry_file.py', options); } catch { }
