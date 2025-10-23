@@ -44,9 +44,6 @@ const MapEditor = () => {
 
     //track turning points
     const [turningPoints, setTurningPoints] = useState<RacingTurningPoint[]>([]);
-    const [racingLinePoints, setRacingLinePoints] = useState<RacingLinePoint[]>([]);
-    const [racingLineBezierPoints, setRacingLineBezierPoints] = useState<BezierPoints[]>([]);
-    const [iterations, setIterations] = useState<number>(10);
     const [mapImage] = useImage(image);
     const [uploadedMapImage, setUploadedMapImage] = useState<HTMLImageElement | null>(null);
 
@@ -507,7 +504,7 @@ const MapEditor = () => {
             cancelAnimationFrame(dragAnimationFrameRef.current);
             dragAnimationFrameRef.current = null;
         }
-        pendingDragUpdateRef.current = null;
+        pendingDragUpdateRef.current = null; ';p'
 
         // Disable stage dragging when point drag starts
         setIsDraggingPoint(true);
