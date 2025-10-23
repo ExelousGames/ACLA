@@ -1,7 +1,7 @@
-import { useContext, useEffect, useRef, useState } from 'react';
+import { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { Stage, Layer, Circle, Line, Group, Image } from 'react-konva';
 import { AddControlPoints } from 'utils/curve-tobezier/curve-to-bezier';
-import { offsetBezierPoints, Point, getBezierTangent, getEndDirection, pointOnCubicBezierSpline, calculateSegmentLengths } from 'utils/curve-tobezier/points-on-curve';
+import { offsetBezierPoints, Point, getEndDirection } from 'utils/curve-tobezier/points-on-curve';
 import useImage from 'use-image';
 import image from 'assets/map2.png'
 import apiService from 'services/api.service';
@@ -44,15 +44,6 @@ const MapEditor = () => {
 
     //track turning points
     const [turningPoints, setTurningPoints] = useState<RacingTurningPoint[]>([]);
-
-    //points which construct the curve (turningPoints + auto created controlling points)
-    const [bezierPoints, setBezierPoints] = useState<BezierPoints[]>([]);
-    const [segmentLengths, setSegmentLengths] = useState<number[]>([]);
-
-    const [leftCurbTurningPoints, setLeftCurbTurningPoints] = useState<CurbTurningPoint[]>([]);
-    const [leftCurbBezierPoints, setLeftCrubBezierPoints] = useState<BezierPoints[]>([]);
-    const [rightCurbTurningPoints, setRightCurbTurningPoints] = useState<CurbTurningPoint[]>([]);
-    const [rightCurbBezierPoints, setRightCurbBezierPoints] = useState<BezierPoints[]>([]);
     const [racingLinePoints, setRacingLinePoints] = useState<RacingLinePoint[]>([]);
     const [racingLineBezierPoints, setRacingLineBezierPoints] = useState<BezierPoints[]>([]);
     const [iterations, setIterations] = useState<number>(10);
@@ -64,6 +55,133 @@ const MapEditor = () => {
     const [stageScale, setStageScale] = useState(1);
     const stageRef = useRef<any>(null);
     const [isDraggingPoint, setIsDraggingPoint] = useState(false);
+
+    const dragAnimationFrameRef = useRef<number | null>(null);
+    const pendingDragUpdateRef = useRef<{ index: number; position: Point } | null>(null);
+
+    useEffect(() => () => {
+        if (dragAnimationFrameRef.current !== null) {
+            cancelAnimationFrame(dragAnimationFrameRef.current);
+            dragAnimationFrameRef.current = null;
+        }
+    }, []);
+
+    const trackData = useMemo(() => {
+        if (turningPoints.length === 0) {
+            return {
+                bezierPoints: [] as BezierPoints[],
+                leftCurbTurningPoints: [] as CurbTurningPoint[],
+                leftCurbBezierPoints: [] as BezierPoints[],
+                rightCurbTurningPoints: [] as CurbTurningPoint[],
+                rightCurbBezierPoints: [] as BezierPoints[]
+            };
+        }
+
+        const bezierPositions = AddControlPoints(extractRacingTurningPointToPoint(turningPoints), 0.6);
+        const bezierPoints: BezierPoints[] = bezierPositions.map((position, idx) => ({
+            id: idx + 1,
+            position
+        }));
+
+        if (bezierPoints.length <= 3) {
+            return {
+                bezierPoints,
+                leftCurbTurningPoints: [] as CurbTurningPoint[],
+                leftCurbBezierPoints: [] as BezierPoints[],
+                rightCurbTurningPoints: [] as CurbTurningPoint[],
+                rightCurbBezierPoints: [] as BezierPoints[]
+            };
+        }
+
+        const buildCurbData = (direction: 'left' | 'right') => {
+            const offsetPoints = createRacingTurningPointOffset(bezierPoints, direction);
+            const turning: CurbTurningPoint[] = [];
+
+            for (let i = 0; i < offsetPoints.length - 3; i += 3) {
+                const P0 = offsetPoints[i];
+                const P3 = offsetPoints[i + 3];
+                if (!P0 || !P3) continue;
+
+                if (i === 0) {
+                    turning.push({ id: 0, position: P0 });
+                }
+                turning.push({ id: turning.length, position: P3 });
+            }
+
+            if (turning.length === 0) {
+                return { turning: [] as CurbTurningPoint[], bezier: [] as BezierPoints[] };
+            }
+
+            const curbBezierPositions = AddControlPoints(extractCurbTurningPointToPoint(turning), 0.4);
+            const curbBezier: BezierPoints[] = curbBezierPositions.map((position, idx) => ({
+                id: idx + 1,
+                position
+            }));
+
+            return { turning, bezier: curbBezier };
+        };
+
+        const left = buildCurbData('left');
+        const right = buildCurbData('right');
+
+        return {
+            bezierPoints,
+            leftCurbTurningPoints: left.turning,
+            leftCurbBezierPoints: left.bezier,
+            rightCurbTurningPoints: right.turning,
+            rightCurbBezierPoints: right.bezier
+        };
+    }, [turningPoints]);
+
+    const {
+        bezierPoints,
+        leftCurbTurningPoints,
+        leftCurbBezierPoints,
+        rightCurbTurningPoints,
+        rightCurbBezierPoints
+    } = trackData;
+
+    const clampToStage = useCallback((x: number, y: number): Point => {
+        const clampedX = Math.max(0, Math.min(stageSize.width, x));
+        const clampedY = Math.max(0, Math.min(stageSize.height, y));
+        return [clampedX, clampedY];
+    }, [stageSize.height, stageSize.width]);
+
+    const updateTurningPointPosition = useCallback((index: number, position: Point) => {
+        setTurningPoints(prev => {
+            let updated = false;
+            const next = prev.map(point => {
+                if (point.index !== index) return point;
+                if (point.position[0] === position[0] && point.position[1] === position[1]) {
+                    return point;
+                }
+                updated = true;
+                return { ...point, position };
+            });
+
+            return updated ? next : prev;
+        });
+    }, []);
+
+    const flushPendingDragUpdate = useCallback(() => {
+        if (!pendingDragUpdateRef.current) {
+            dragAnimationFrameRef.current = null;
+            return;
+        }
+
+        const { index, position } = pendingDragUpdateRef.current;
+        pendingDragUpdateRef.current = null;
+        updateTurningPointPosition(index, position);
+        dragAnimationFrameRef.current = null;
+    }, [updateTurningPointPosition]);
+
+    const scheduleDragUpdate = useCallback((index: number, position: Point) => {
+        pendingDragUpdateRef.current = { index, position };
+
+        if (dragAnimationFrameRef.current === null) {
+            dragAnimationFrameRef.current = requestAnimationFrame(flushPendingDragUpdate);
+        }
+    }, [flushPendingDragUpdate]);
 
     // trigger useffect when mouse move, used to detect mouse movement direction
     const [mouseMovement, setMouseMovement] = useState({ x: 0, y: 0 });
@@ -115,10 +233,6 @@ const MapEditor = () => {
     }, []);
 
     //recalculate controlling position for bezier curve since the turning position changed
-    useEffect(() => {
-        calculateAndDrawTrack();
-    }, [turningPoints]);
-
     // Check if mouse is moving toward menu
     useEffect(() => {
         if (activeMenu === null || !menuRef.current) return;
@@ -347,8 +461,16 @@ const MapEditor = () => {
         // Prevent event bubbling to stage during point dragging
         e.cancelBubble = true;
 
-        // Let Konva handle the visual dragging naturally
-        // We'll update the state only on drag end for better performance
+        const newX = e.target.x();
+        const newY = e.target.y();
+        const [clampedX, clampedY] = clampToStage(newX, newY);
+
+        if (clampedX !== newX || clampedY !== newY) {
+            e.target.position({ x: clampedX, y: clampedY });
+        }
+
+        const newPosition: Point = [clampedX, clampedY];
+        scheduleDragUpdate(id, newPosition);
     }
 
     const handleDragEnd = (e: any, id: any) => {
@@ -358,26 +480,20 @@ const MapEditor = () => {
         // Update the state with the final position after drag ends
         const newX = e.target.x();
         const newY = e.target.y();
+        const [clampedX, clampedY] = clampToStage(newX, newY);
 
-        setTurningPoints(turningPoints.map((turningPoint) => {
-            if (turningPoint.index !== id) return turningPoint;
+        if (clampedX !== newX || clampedY !== newY) {
+            e.target.position({ x: clampedX, y: clampedY });
+        }
 
-            // Apply boundary constraints
-            let constrainedX = newX;
-            let constrainedY = newY;
+        if (dragAnimationFrameRef.current !== null) {
+            cancelAnimationFrame(dragAnimationFrameRef.current);
+            dragAnimationFrameRef.current = null;
+        }
+        pendingDragUpdateRef.current = null;
 
-            if (constrainedX < 0) constrainedX = 0;
-            if (constrainedX > stageSize.width) constrainedX = stageSize.width;
-            if (constrainedY < 0) constrainedY = 0;
-            if (constrainedY > stageSize.height) constrainedY = stageSize.height;
-
-            // Update the target position if it was constrained
-            if (constrainedX !== newX || constrainedY !== newY) {
-                e.target.position({ x: constrainedX, y: constrainedY });
-            }
-
-            return { ...turningPoint, position: [constrainedX, constrainedY] };
-        }));
+        const finalPosition: Point = [clampedX, clampedY];
+        updateTurningPointPosition(id, finalPosition);
 
         // Re-enable stage dragging when point drag ends
         setIsDraggingPoint(false);
@@ -386,6 +502,12 @@ const MapEditor = () => {
     const handleDragStart = (e: any, id: any) => {
         // Prevent event bubbling to stage
         e.cancelBubble = true;
+
+        if (dragAnimationFrameRef.current !== null) {
+            cancelAnimationFrame(dragAnimationFrameRef.current);
+            dragAnimationFrameRef.current = null;
+        }
+        pendingDragUpdateRef.current = null;
 
         // Disable stage dragging when point drag starts
         setIsDraggingPoint(true);
@@ -442,84 +564,6 @@ const MapEditor = () => {
      * using the 'turningPoints' and calculate the left and right curbs
      * @returns 
      */
-    function calculateAndDrawTrack() {
-
-        if (turningPoints.length === 0) return;
-
-        //Add controlling points to turning points, also cached them together for later use
-        let points = AddControlPoints(extractRacingTurningPointToPoint(turningPoints), 0.6)
-        let index = 0;
-        let result: BezierPoints[] = [];
-        points.forEach((position) => {
-            index++;
-            result.push({ id: index, position: position });
-        })
-
-        setBezierPoints(result);
-        setSegmentLengths(calculateSegmentLengths(extractBezierPointToPoint(result)))
-        if (bezierPoints.length > 3) {
-
-            //create left curb
-            points = createRacingTurningPointOffset(bezierPoints, 'left')
-            index = 0;
-            result = [];
-            for (let i = 0; i < points.length - 3; i += 3) {
-                //we only want the turning points
-                const P0 = points[i];
-                const P3 = points[i + 3];
-
-                // Add null checks to prevent errors
-                if (!P0 || !P3) continue;
-
-                index++;
-                // Only push Q0 if it's the first segment to avoid duplicates
-                if (i === 0) result.push({ id: 0, position: P0 });
-                result.push({ id: index, position: P3 })
-            }
-            setLeftCurbTurningPoints(result);
-
-            //add controll points for left curb Bezier 
-            points = AddControlPoints(extractCurbTurningPointToPoint(result), 0.4);
-            index = 0;
-            result = [];
-            points.forEach((position) => {
-                index++;
-                result.push({ id: index, position: position });
-            })
-            setLeftCrubBezierPoints(result);
-
-            //create right curb
-            points = createRacingTurningPointOffset(bezierPoints, 'right');
-            index = 0;
-            result = [];
-            //we only need the turning position
-            for (let i = 0; i < points.length - 3; i += 3) {
-                //we only want the turning points
-                const P0 = points[i];
-                const P3 = points[i + 3];
-
-                // Add null checks to prevent errors
-                if (!P0 || !P3) continue;
-
-                index++;
-                // Only push Q0 if it's the first segment to avoid duplicates
-                if (i === 0) result.push({ id: 0, position: P0 });
-                result.push({ id: index, position: P3 })
-            }
-            setRightCurbTurningPoints(result);
-
-            //add controll points for right curb Bezier 
-            points = AddControlPoints(extractCurbTurningPointToPoint(result), 0.4);
-            index = 0;
-            result = [];
-            points.forEach((position) => {
-                index++;
-                result.push({ id: index, position: position });
-            })
-            setRightCurbBezierPoints(result);
-        }
-    }
-
     function deleteTurningPoint(index: number) {
         if (turningPoints.length <= 4) return;
         setTurningPoints(prevState => {
