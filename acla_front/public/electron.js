@@ -48,16 +48,6 @@ function getShellEntry(shellId) {
 }
 
 function emitPythonStart(shellId, entry) {
-  if (!mainWindow) {
-    console.info(`Python shell ${shellId} (${entry.script}) started`, {
-      script: entry.script,
-      args: entry.args,
-      keepAlive: entry.keepAlive,
-      pythonPath: entry.pythonPath,
-      startedAt: entry.startedAt,
-    });
-    return;
-  }
 
   const payload = {
     script: entry.script,
@@ -67,7 +57,6 @@ function emitPythonStart(shellId, entry) {
     startedAt: entry.startedAt,
   };
 
-  console.info(`Python shell ${shellId} (${entry.script}) started`, payload);
   mainWindow.webContents.send('python-start', shellId, payload);
 }
 
@@ -106,7 +95,7 @@ function finalizeShell(shellId, extra = {}) {
   const logMessage = `Python shell ${shellId} (${entry.script}) ended [reason=${payload.reason}]`;
   if (payload.error) {
     console.error(logMessage, payload);
-  } else {
+  } else if (devMode) {
     console.info(logMessage, payload);
   }
 
@@ -347,7 +336,6 @@ ipcMain.handle('stop-python-script', async (event, shellId, initiator = 'rendere
     if (shellEntry) {
       const resolvedInitiator = initiator || (event?.senderFrame?.url ?? 'renderer');
       shellEntry.stopRequestedBy = resolvedInitiator;
-      console.info(`Stop requested for python shell ${shellId}`, { initiator: resolvedInitiator });
     }
 
     if (typeof pyshell.terminate === 'function') {

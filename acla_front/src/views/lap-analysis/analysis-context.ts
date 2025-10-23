@@ -23,7 +23,6 @@ export interface AnalysisContextType {
     clearRecordingSession: () => void;
     setActiveVisualizations: Dispatch<SetStateAction<VisualizationInstance[]>>;
     sendGuidanceToChat: (message: string) => void;
-    setTelemetryDataLiveStatus: (status: ACC_STATUS | null) => void;
 }
 
 export const AnalysisContext = createContext<AnalysisContextType>({
@@ -65,9 +64,6 @@ export const AnalysisContext = createContext<AnalysisContextType>({
         console.warn('No provider for AnalysisContext');
     }) as Dispatch<SetStateAction<VisualizationInstance[]>>,
     sendGuidanceToChat: () => {
-        console.warn('No provider for AnalysisContext');
-    },
-    setTelemetryDataLiveStatus: () => {
         console.warn('No provider for AnalysisContext');
     }
 });

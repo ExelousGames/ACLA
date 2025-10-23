@@ -178,17 +178,12 @@ const SessionAnalysis = () => {
         setLatestGuidanceMessage(message);
     };
 
-    const updateTelemetryDataLiveStatus = useCallback((status: ACC_STATUS | null) => {
-        setTelemetryDataLiveStatus(status);
-    }, []);
-
     useEffect(() => {
         if (!liveData || typeof liveData !== 'object') {
             return;
         }
 
         const nextStatus = normalizeAccStatus((liveData as any)?.Graphics_status ?? (liveData as any)?.Graphics?.status);
-        console.log('Next live status:', nextStatus);
         if (nextStatus !== null && nextStatus !== TelemetryDataLiveStatus) {
             setTelemetryDataLiveStatus(nextStatus);
         }
@@ -243,8 +238,7 @@ const SessionAnalysis = () => {
             setActiveVisualizations,
             sendGuidanceToChat
             ,
-            TelemetryDataLiveStatus,
-            setTelemetryDataLiveStatus: updateTelemetryDataLiveStatus
+            TelemetryDataLiveStatus
         }}>
             <Tabs.Root className="LiveAnalysisTabsRoot" defaultValue="mapLists" value={activeTab} onValueChange={setActiveTab}>
                 <Tabs.List className="live-analysis-tablists" justify="start">

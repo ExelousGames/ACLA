@@ -13,6 +13,7 @@ enum RecordingState {
     READY = 'READY', // find live session, ready to record
     RECORDING = 'RECORDING', // actively recording
     HOLDING = 'HOLDING', // paused because game paused, awaiting resume
+    RESUME_READY = 'RESUME_READY', // live session detected again while paused
     UPLOAD_READY = 'UPLOAD_READY' // recording stopped, ready to upload
 }
 
@@ -66,7 +67,7 @@ export default function LiveAnalysisSessionRecording() {
     }, [analysisContext]);
 
     const TelemetryDataLiveStatus = analysisContext.TelemetryDataLiveStatus;
-    const canRecord = state === RecordingState.READY || (state === RecordingState.HOLDING && TelemetryDataLiveStatus === ACC_STATUS.ACC_LIVE);
+    const canRecord = state === RecordingState.READY || state === RecordingState.RESUME_READY;
 
     type RecordingEvent =
         | { type: 'sessionAvailable' }
@@ -77,11 +78,22 @@ export default function LiveAnalysisSessionRecording() {
         | { type: 'reset' };
 
     const transition = useCallback((event: RecordingEvent) => {
+
         setState((prev) => {
+            console.log('Transitioning state:', prev, '->', event);
             switch (event.type) {
                 case 'sessionAvailable':
-                    return prev === RecordingState.CHECKING ? RecordingState.READY : prev;
+                    if (prev === RecordingState.CHECKING) {
+                        return RecordingState.READY;
+                    }
+                    if (prev === RecordingState.HOLDING) {
+                        return RecordingState.RESUME_READY;
+                    }
+                    return prev;
                 case 'sessionUnavailable':
+                    if (prev === RecordingState.RESUME_READY) {
+                        return RecordingState.HOLDING;
+                    }
                     if (prev === RecordingState.RECORDING || prev === RecordingState.HOLDING || prev === RecordingState.UPLOAD_READY) {
                         return prev;
                     }
@@ -89,7 +101,7 @@ export default function LiveAnalysisSessionRecording() {
                 case 'recordingStarted':
                     return RecordingState.RECORDING;
                 case 'recordingResumed':
-                    return prev === RecordingState.HOLDING ? RecordingState.RECORDING : prev;
+                    return prev === RecordingState.HOLDING || prev === RecordingState.RESUME_READY ? RecordingState.RECORDING : prev;
                 case 'recordingStopped':
                     switch (event.reason) {
                         case 'pause':
@@ -133,52 +145,20 @@ export default function LiveAnalysisSessionRecording() {
 
     const uploadStatusLabel = isUploading
         ? 'Uploading...'
-        : state === RecordingState.HOLDING && hasRecordedData
+        : (state === RecordingState.HOLDING || state === RecordingState.RESUME_READY) && hasRecordedData
             ? 'Upload available (recording paused)'
             : hasRecordedData
                 ? 'Ready to upload'
                 : 'No data recorded';
     const uploadStatusColor = isUploading
         ? 'blue'
-        : state === RecordingState.HOLDING && hasRecordedData
+        : (state === RecordingState.HOLDING || state === RecordingState.RESUME_READY) && hasRecordedData
             ? 'amber'
             : hasRecordedData
                 ? 'green'
                 : 'gray';
 
-    const statusIcon = useMemo((): JSX.Element => {
-        switch (state) {
-            case RecordingState.CHECKING:
-                return <Spinner size="3" />;
-            case RecordingState.READY:
-                return <PlayIcon size={18} />;
-            case RecordingState.RECORDING:
-                return <StopIcon size={15} />;
-            case RecordingState.HOLDING:
-                return <PauseBadgeIcon size={15} />;
-            case RecordingState.UPLOAD_READY:
-                return <UploadIcon size={15} />;
-            default:
-                return <Spinner size="3" />;
-        }
-    }, [state]);
 
-    const recordingStatusDisplay = useMemo(() => {
-        switch (state) {
-            case RecordingState.CHECKING:
-                return { label: 'Checking for live session…', color: 'gray' as const };
-            case RecordingState.READY:
-                return { label: 'Ready to record', color: 'blue' as const };
-            case RecordingState.RECORDING:
-                return { label: 'Recording in progress', color: 'red' as const };
-            case RecordingState.HOLDING:
-                return { label: 'Holding – waiting for resume', color: 'amber' as const };
-            case RecordingState.UPLOAD_READY:
-                return { label: 'Ready to upload', color: 'green' as const };
-            default:
-                return { label: 'Status unavailable', color: 'gray' as const };
-        }
-    }, [state]);
 
     const applyStopOutcome = useCallback((reason: StopReason) => {
         if (pythonMessageCleanupRef.current) {
@@ -310,7 +290,8 @@ export default function LiveAnalysisSessionRecording() {
         }
     }, [processCheckingSessionStreamUpdate, stopSessionCheckingStream]);
 
-    const shouldMaintainSessionCheckingStream = state === RecordingState.CHECKING || state === RecordingState.HOLDING;
+    const shouldMaintainSessionCheckingStream =
+        state === RecordingState.CHECKING || state === RecordingState.HOLDING || state === RecordingState.RESUME_READY;
 
     useEffect(() => {
         let cancelled = false;
@@ -374,7 +355,7 @@ export default function LiveAnalysisSessionRecording() {
 
         const ctx = analysisContextRef.current;
         const liveStatus = ctx?.TelemetryDataLiveStatus ?? null;
-
+        console.log('Determining stop reason, live status:', liveStatus);
         if (liveStatus === ACC_STATUS.ACC_PAUSE) {
             return 'pause';
         }
@@ -601,14 +582,14 @@ export default function LiveAnalysisSessionRecording() {
                         </Flex>
                     </Button>
                 );
-            case RecordingState.HOLDING: {
-                const canResume = TelemetryDataLiveStatus === ACC_STATUS.ACC_LIVE;
+            case RecordingState.HOLDING:
+            case RecordingState.RESUME_READY: {
                 return (
                     <Flex align="center" gap="2">
-                        <Button radius="full" variant="soft" color="amber" disabled>
+                        <Button radius="full" variant="outline" color="blue" disabled={!canRecord || isUploading} onClick={() => { void startRecording({ resumeExisting: true }); }}>
                             <Flex align="center" gap="2">
-                                <PauseBadgeIcon size={14} />
-                                <span>Game Paused</span>
+                                <PlayIcon size={14} />
+                                <span>Resume</span>
                             </Flex>
                         </Button>
                         <Button radius="full" color="green" onClick={openUploadDialog} disabled={!hasRecordedData || isUploading}>
@@ -617,14 +598,6 @@ export default function LiveAnalysisSessionRecording() {
                                 <span>Upload Session</span>
                             </Flex>
                         </Button>
-                        {canResume && (
-                            <Button radius="full" variant="outline" color="blue" disabled={!canRecord || isUploading} onClick={() => { void startRecording({ resumeExisting: true }); }}>
-                                <Flex align="center" gap="2">
-                                    <PlayIcon size={14} />
-                                    <span>Resume</span>
-                                </Flex>
-                            </Button>
-                        )}
                     </Flex>
                 );
             }
@@ -651,10 +624,7 @@ export default function LiveAnalysisSessionRecording() {
         <Box position="absolute" left="0" right="0" bottom="0" mb="5" height="64px" style={{ borderRadius: '100px', boxShadow: 'var(--shadow-6)', marginLeft: 200, marginRight: 200 }}>
             <Flex height="100%" justify="between" position="relative">
                 <Flex gap="4" align="center" p="3">
-                    <Flex align="center" gap="2">
-                        {statusIcon}
-                        <Text size="2" color={recordingStatusDisplay.color} weight="medium">{recordingStatusDisplay.label}</Text>
-                    </Flex>
+
                     {controlButtons}
                     <AlertDialog.Root open={uploadDialogOpen} onOpenChange={handleDialogOpenChange}>
                         <AlertDialog.Content maxWidth="450px" onEscapeKeyDown={(e) => { if (isUploading) e.preventDefault(); }}>
@@ -703,11 +673,7 @@ export default function LiveAnalysisSessionRecording() {
                             </Flex>
                         </AlertDialog.Content>
                     </AlertDialog.Root>
-                    <Flex align="center" gap="4">
-                        <IconButton color="gray" variant="ghost" radius="full" size="2">
-                            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 30 30" fill="currentcolor" fillOpacity={0.7} width="20" height="20"><path d="M 20 4 L 20 7 L 8 7 C 4.6983746 7 2 9.6983746 2 13 A 1.0001 1.0001 0 1 0 4 13 C 4 10.779625 5.7796254 9 8 9 L 20 9 L 20 12 L 27 8 L 20 4 z M 26.984375 15.986328 A 1.0001 1.0001 0 0 0 26 17 C 26 19.220375 24.220375 21 22 21 L 10 21 L 10 18 L 3 22 L 10 26 L 10 23 L 22 23 C 25.301625 23 28 20.301625 28 17 A 1.0001 1.0001 0 0 0 26.984375 15.986328 z" /></svg>
-                        </IconButton>
-                    </Flex>
+
                 </Flex>
                 <Flex align="center" gap="3">
                     <Flex align="center" gap="3">
