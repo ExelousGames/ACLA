@@ -1,7 +1,7 @@
 .SessionList {
     display: flex;
     flex-direction: column;
-    height: 100%
+    height: 100%;
 }
 
 .SessionListScrollAreaRoot {
@@ -69,23 +69,36 @@
     background: var(--black-a5);
 }
 
-.Button {
-    border-radius: 4px;
-    padding: 0 15px;
-    font-size: 15px;
-    line-height: 1;
-    font-weight: 500;
-    height: 35px;
-    user-select: none;
+.SessionListCardButton {
+    all: unset;
+    display: block;
+    width: 100%;
+    cursor: pointer;
 }
 
-.Button:focus:not(:focus-visible) {
+.SessionListCardButton:focus:not(:focus-visible) {
     outline: 0;
 }
 
-.Button:focus-visible {
+.SessionListCardButton:focus-visible {
     outline: 2px solid var(--violet-6);
-    outline-offset: 1px;
+    outline-offset: 4px;
+    border-radius: 8px;
+}
+
+.SessionListCard {
+    width: 100%;
+    transition: transform 120ms ease, box-shadow 120ms ease;
+}
+
+.SessionListCardButton:hover .SessionListCard {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+}
+
+.SessionListCardButton[data-active="true"] .SessionListCard {
+    border: 1px solid var(--violet-6);
+    box-shadow: 0 0 0 1px var(--violet-6);
 }
 
 .SessionListOptions {
