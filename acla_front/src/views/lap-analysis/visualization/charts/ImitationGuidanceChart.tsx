@@ -124,7 +124,7 @@ const parseTimeAhead = (timeStr?: string): number => {
     return val;
 };
 
-const keyframeFromPrediction = (prediction: SequencePrediction): Keyframe => {
+const keyframeFromPrediction = (prediction: SequencePrediction, timeOverride?: number): Keyframe => {
     const targets = (prediction.all_targets ?? {}) as Record<string, unknown>;
     const throttle = clamp01(getNumericFromTargets(targets, ['Physics_gas', 'gas', 'throttle']) ?? 0);
     const brake = clamp01(getNumericFromTargets(targets, ['Physics_brake', 'brake']) ?? 0);
@@ -138,8 +138,12 @@ const keyframeFromPrediction = (prediction: SequencePrediction): Keyframe => {
         ? predictedAction
         : deriveAction(throttle, brake, steering);
 
+    const timelineTime = typeof timeOverride === 'number' && Number.isFinite(timeOverride)
+        ? timeOverride
+        : parseTimeAhead(prediction.time_ahead);
+
     return {
-        t: parseTimeAhead(prediction.time_ahead),
+        t: timelineTime,
         throttle,
         brake,
         steering,
@@ -181,26 +185,21 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
     const carName = analysisContext.recordedSessioStaticsData?.car_model || 'Unknown Car';
     const liveData = analysisContext.liveData as TelemetryData;
 
+    const liveDataRef = useRef<TelemetryData | null>(liveData ?? null);
+    const trackNameRef = useRef(trackName);
+    const carNameRef = useRef(carName);
+    const requestInFlightRef = useRef(false);
+
     const keyframes: Keyframe[] = useMemo(() => {
         const predictions = guidanceData?.guidance_result?.sequence_predictions ?? [];
         const frames = predictions
-            .map(keyframeFromPrediction)
+            .map((prediction, index) => keyframeFromPrediction(prediction, index * 0.1))
             .filter(frame => Number.isFinite(frame.t))
             .sort((a, b) => a.t - b.t);
 
         if (frames.length === 0) {
             const currentFrame = keyframeFromTelemetry(liveData);
             return currentFrame ? [{ ...currentFrame, t: 0, action: 'Current' }] : [];
-        }
-
-        if (frames[0].t > 0) {
-            const currentFrame = keyframeFromTelemetry(liveData);
-            if (currentFrame) {
-                frames.unshift({ ...currentFrame, t: 0, action: 'Current' });
-            } else {
-                const first = frames[0];
-                frames.unshift({ ...first, t: 0, action: first.action ?? 'Forecast' });
-            }
         }
 
         return frames;
@@ -247,20 +246,41 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
     }
 
     // Function to call the imitation learning guidance API
+    useEffect(() => {
+        liveDataRef.current = liveData ?? null;
+    }, [liveData]);
+
+    useEffect(() => {
+        trackNameRef.current = trackName;
+    }, [trackName]);
+
+    useEffect(() => {
+        carNameRef.current = carName;
+    }, [carName]);
+
     const fetchGuidance = useCallback(async () => {
-        if (!liveData || Object.keys(liveData).length === 0) {
+        const currentLiveData = liveDataRef.current;
+        const currentTrackName = trackNameRef.current;
+        const currentCarName = carNameRef.current;
+
+        if (!currentLiveData || Object.keys(currentLiveData).length === 0) {
             setError('No live telemetry data available');
             return;
         }
 
+        if (requestInFlightRef.current) {
+            return;
+        }
+
+        requestInFlightRef.current = true;
         setLoading(true);
         setError(null);
 
         try {
             const response = await apiService.post('/racing-session/imitation-learning-guidance', {
-                current_telemetry: liveData,
-                track_name: trackName,
-                car_name: carName
+                current_telemetry: currentLiveData,
+                track_name: currentTrackName,
+                car_name: currentCarName
             });
             if (!response.data) {
                 setError('No response data received');
@@ -301,8 +321,9 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
             setError('API call failed: ' + (err.response?.data?.message || err.message));
         } finally {
             setLoading(false);
+            requestInFlightRef.current = false;
         }
-    }, [liveData, trackName, carName, analysisContext]);
+    }, [analysisContext]);
 
     // Format guidance data for AI chat
     const formatGuidanceForChat = (guidanceResult: GuidanceResponse): string => {
@@ -311,7 +332,7 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
         const { current_situation, sequence_predictions, contextual_info } = guidanceResult;
         const predictionsCount = sequence_predictions.length;
         const firstPrediction = sequence_predictions[0];
-        const firstAction = firstPrediction ? keyframeFromPrediction(firstPrediction).action : undefined;
+    const firstAction = firstPrediction ? keyframeFromPrediction(firstPrediction, 0).action : undefined;
 
         let base = `AI Guidance: ${predictionsCount} predictions`;
         if (current_situation?.racing_line) {
@@ -328,22 +349,8 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
 
     // Toggle auto-update mode
     const toggleAutoUpdate = useCallback(() => {
-        setAutoUpdate(prev => {
-            const newValue = !prev;
-            if (newValue) {
-                // Start polling every 2 seconds
-                intervalRef.current = setInterval(fetchGuidance, 2000);
-                fetchGuidance(); // Fetch immediately
-            } else {
-                // Stop polling
-                if (intervalRef.current) {
-                    clearInterval(intervalRef.current);
-                    intervalRef.current = null;
-                }
-            }
-            return newValue;
-        });
-    }, [fetchGuidance]);
+        setAutoUpdate(prev => !prev);
+    }, []);
 
     // Cleanup interval on unmount
     useEffect(() => {
@@ -358,12 +365,34 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
         };
     }, []);
 
-    // Auto-update when live data changes (if auto-update is enabled)
     useEffect(() => {
-        if (autoUpdate && liveData && Object.keys(liveData).length > 0) {
-            fetchGuidance();
+        if (!autoUpdate) {
+            if (intervalRef.current) {
+                clearInterval(intervalRef.current);
+                intervalRef.current = null;
+            }
+            return;
         }
-    }, [liveData, autoUpdate, fetchGuidance]);
+
+        if (intervalRef.current) {
+            clearInterval(intervalRef.current);
+        }
+
+        intervalRef.current = setInterval(fetchGuidance, 1000);
+
+        return () => {
+            if (intervalRef.current) {
+                clearInterval(intervalRef.current);
+                intervalRef.current = null;
+            }
+        };
+    }, [autoUpdate, fetchGuidance]);
+
+    // Auto-fetch when auto-update is enabled or session context changes
+    useEffect(() => {
+        if (!autoUpdate) return;
+        fetchGuidance();
+    }, [autoUpdate, trackName, carName, fetchGuidance]);
 
     // Animation loop
     useEffect(() => {
