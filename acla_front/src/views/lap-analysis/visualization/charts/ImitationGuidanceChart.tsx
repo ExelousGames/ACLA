@@ -332,7 +332,7 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
         const { current_situation, sequence_predictions, contextual_info } = guidanceResult;
         const predictionsCount = sequence_predictions.length;
         const firstPrediction = sequence_predictions[0];
-    const firstAction = firstPrediction ? keyframeFromPrediction(firstPrediction, 0).action : undefined;
+        const firstAction = firstPrediction ? keyframeFromPrediction(firstPrediction, 0).action : undefined;
 
         let base = `AI Guidance: ${predictionsCount} predictions`;
         if (current_situation?.racing_line) {

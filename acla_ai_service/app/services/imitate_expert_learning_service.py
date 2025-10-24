@@ -852,9 +852,13 @@ class ExpertImitateLearningService:
                             velocity_alignment = 0.0
 
                         # Persist raw telemetry context for downstream visualization
-                        row_features['current_player_pos_x'] = float(current_row.get('Graphics_player_pos_x', 0.0))
-                        row_features['current_player_pos_y'] = float(current_row.get('Graphics_player_pos_y', 0.0))
-                        row_features['current_player_pos_z'] = float(current_row.get('Graphics_player_pos_z', 0.0))
+                        current_pos_x = float(current_row.get('Graphics_player_pos_x', 0.0))
+                        current_pos_y = float(current_row.get('Graphics_player_pos_y', 0.0))
+                        current_pos_z = float(current_row.get('Graphics_player_pos_z', 0.0))
+
+                        row_features['current_player_pos_x'] = current_pos_x
+                        row_features['current_player_pos_y'] = current_pos_y
+                        row_features['current_player_pos_z'] = current_pos_z
 
                         row_features['current_velocity_x'] = curr_velocity_x
                         row_features['current_velocity_y'] = curr_velocity_y
@@ -863,10 +867,14 @@ class ExpertImitateLearningService:
                         current_speed = float(current_row.get('Physics_speed_kmh', curr_velocity_magnitude))
                         row_features['current_speed'] = current_speed
 
-                        # Store expert optimal predictions for visualization
-                        row_features[EO.EXPERT_OPTIMAL_PLAYER_POS_X.value] = float(row_predictions.get(EO.EXPERT_OPTIMAL_PLAYER_POS_X.value, expert_pos_x))
-                        row_features[EO.EXPERT_OPTIMAL_PLAYER_POS_Y.value] = float(row_predictions.get(EO.EXPERT_OPTIMAL_PLAYER_POS_Y.value, expert_pos_y))
-                        row_features[EO.EXPERT_OPTIMAL_PLAYER_POS_Z.value] = float(row_predictions.get(EO.EXPERT_OPTIMAL_PLAYER_POS_Z.value, expert_pos_z))
+                        # Store expert optimal predictions for visualization with safe fallbacks
+                        expert_pos_x = float(row_predictions.get(EO.EXPERT_OPTIMAL_PLAYER_POS_X.value, current_pos_x))
+                        expert_pos_y = float(row_predictions.get(EO.EXPERT_OPTIMAL_PLAYER_POS_Y.value, current_pos_y))
+                        expert_pos_z = float(row_predictions.get(EO.EXPERT_OPTIMAL_PLAYER_POS_Z.value, current_pos_z))
+
+                        row_features[EO.EXPERT_OPTIMAL_PLAYER_POS_X.value] = expert_pos_x
+                        row_features[EO.EXPERT_OPTIMAL_PLAYER_POS_Y.value] = expert_pos_y
+                        row_features[EO.EXPERT_OPTIMAL_PLAYER_POS_Z.value] = expert_pos_z
 
                         row_features[EO.EXPERT_OPTIMAL_VELOCITY_X.value] = exp_velocity_x
                         row_features[EO.EXPERT_OPTIMAL_VELOCITY_Y.value] = exp_velocity_y
@@ -883,13 +891,6 @@ class ExpertImitateLearningService:
                         row_features[ContextFeature.SPEED_DIFFERENCE.value] = float(speed_difference)
 
                         # Calculate distance to expert line (negative if off to left, positive if off to right)
-                        expert_pos_x = row_features[EO.EXPERT_OPTIMAL_PLAYER_POS_X.value]
-                        expert_pos_y = row_features[EO.EXPERT_OPTIMAL_PLAYER_POS_Y.value]
-                        expert_pos_z = row_features[EO.EXPERT_OPTIMAL_PLAYER_POS_Z.value]
-                        current_pos_x = row_features['current_player_pos_x']
-                        current_pos_y = row_features['current_player_pos_y']
-                        current_pos_z = row_features['current_player_pos_z']
-
                         distance_to_expert_line = np.sqrt(
                             (expert_pos_x - current_pos_x) ** 2 +
                             (expert_pos_y - current_pos_y) ** 2 +
@@ -1174,6 +1175,16 @@ class ExpertImitateLearningService:
         context = ExpertFeatureCatalog.ContextFeature
 
         output_path: Optional[Path] = None
+        if output_dir is None:
+            # Default to the shared debug folder so Docker runs persist artefacts
+            output_dir = (
+                Path(__file__).resolve().parent.parent
+                / 'scripts'
+                / 'debug_output'
+                / 'transformer_eval'
+                / 'figures'
+            )
+
         if output_dir is not None:
             output_path = Path(output_dir)
             output_path.mkdir(parents=True, exist_ok=True)
@@ -1198,9 +1209,13 @@ class ExpertImitateLearningService:
             current_y = segment_df.get('current_player_pos_y')
             if current_y is None:
                 current_y = segment_df.get('Graphics_player_pos_y')
+            current_z = segment_df.get('current_player_pos_z')
+            if current_z is None:
+                current_z = segment_df.get('Graphics_player_pos_z')
 
             expert_x = segment_df.get(eo.EXPERT_OPTIMAL_PLAYER_POS_X.value)
             expert_y = segment_df.get(eo.EXPERT_OPTIMAL_PLAYER_POS_Y.value)
+            expert_z = segment_df.get(eo.EXPERT_OPTIMAL_PLAYER_POS_Z.value)
 
             current_vx = segment_df.get('current_velocity_x')
             if current_vx is None:
@@ -1208,15 +1223,22 @@ class ExpertImitateLearningService:
             current_vy = segment_df.get('current_velocity_y')
             if current_vy is None:
                 current_vy = segment_df.get('Physics_velocity_y')
+            current_vz = segment_df.get('current_velocity_z')
+            if current_vz is None:
+                current_vz = segment_df.get('Physics_velocity_z')
 
             expert_vx = segment_df.get(eo.EXPERT_OPTIMAL_VELOCITY_X.value)
             expert_vy = segment_df.get(eo.EXPERT_OPTIMAL_VELOCITY_Y.value)
+            expert_vz = segment_df.get('expert_optimal_velocity_z')
 
             current_speed_series = segment_df.get('current_speed')
             if current_speed_series is None:
                 if current_vx is not None and current_vy is not None:
+                    current_vx_np = current_vx.to_numpy()
+                    current_vy_np = current_vy.to_numpy()
+                    current_vz_np = current_vz.to_numpy() if current_vz is not None else np.zeros(len(segment_df))
                     current_speed_series = pd.Series(
-                        np.sqrt(current_vx.to_numpy() ** 2 + current_vy.to_numpy() ** 2),
+                        np.sqrt(current_vx_np ** 2 + current_vy_np ** 2 + current_vz_np ** 2),
                         index=segment_df.index
                     )
                 else:
@@ -1224,8 +1246,11 @@ class ExpertImitateLearningService:
 
             expert_speed_series = segment_df.get(eo.EXPERT_OPTIMAL_SPEED.value)
             if expert_speed_series is None and expert_vx is not None and expert_vy is not None:
+                expert_vx_np = expert_vx.to_numpy()
+                expert_vy_np = expert_vy.to_numpy()
+                expert_vz_np = expert_vz.to_numpy() if expert_vz is not None else np.zeros(len(segment_df))
                 expert_speed_series = pd.Series(
-                    np.sqrt(expert_vx.to_numpy() ** 2 + expert_vy.to_numpy() ** 2),
+                    np.sqrt(expert_vx_np ** 2 + expert_vy_np ** 2 + expert_vz_np ** 2),
                     index=segment_df.index
                 )
 
@@ -1234,72 +1259,82 @@ class ExpertImitateLearningService:
                 continue
 
             # Prepare figure
-            fig, (ax_track, ax_speed) = plt.subplots(1, 2, figsize=(14, 6))
+            fig = plt.figure(figsize=(18, 6))
+            gs = fig.add_gridspec(1, 2, width_ratios=[1.5, 1.0])
+            ax_track = fig.add_subplot(gs[0, 0], projection='3d')
+            ax_speed = fig.add_subplot(gs[0, 1])
 
             current_x_np = current_x.to_numpy()
             current_y_np = current_y.to_numpy()
-            ax_track.plot(current_x_np, current_y_np, color='#1f77b4', linewidth=2, label='Driver trajectory')
-            ax_track.scatter(current_x_np[0], current_y_np[0], color='green', label='Segment start', zorder=5)
-            ax_track.scatter(current_x_np[-1], current_y_np[-1], color='red', label='Segment end', zorder=5)
+            current_z_np = current_z.to_numpy() if current_z is not None else np.zeros_like(current_x_np)
+            ax_track.plot(current_x_np, current_y_np, current_z_np, color='#1f77b4', linewidth=2, label='Driver trajectory')
+            ax_track.scatter(current_x_np[0], current_y_np[0], current_z_np[0], color='green', label='Segment start', s=50, depthshade=False)
+            ax_track.scatter(current_x_np[-1], current_y_np[-1], current_z_np[-1], color='red', label='Segment end', s=50, depthshade=False)
 
             if current_vx is not None and current_vy is not None:
                 current_vx_np = current_vx.to_numpy()
                 current_vy_np = current_vy.to_numpy()
-                current_speed_np = current_speed_series.to_numpy() if current_speed_series is not None else np.linalg.norm(
-                    np.stack([current_vx_np, current_vy_np], axis=1), axis=1
-                )
-                driver_quiver = ax_track.quiver(
+                current_vz_np = current_vz.to_numpy() if current_vz is not None else np.zeros_like(current_vx_np)
+                velocity_stack = np.stack([current_vx_np, current_vy_np, current_vz_np], axis=1)
+                driver_speed_np = np.linalg.norm(velocity_stack, axis=1)
+                speed_colors = driver_speed_np if current_speed_series is None else current_speed_series.to_numpy()
+                driver_scatter = ax_track.scatter(
                     current_x_np,
                     current_y_np,
-                    current_vx_np,
-                    current_vy_np,
-                    current_speed_np,
+                    current_z_np,
+                    c=speed_colors,
                     cmap='Blues',
-                    alpha=0.75,
-                    angles='xy',
-                    scale_units='xy',
-                    scale=None,
-                    label='Driver direction / speed'
+                    alpha=0.7,
+                    s=20,
+                    label='Driver speed'
                 )
-                cbar = fig.colorbar(driver_quiver, ax=ax_track, pad=0.01)
+                cbar = fig.colorbar(driver_scatter, ax=ax_track, pad=0.05, shrink=0.6)
                 cbar.set_label('Driver speed (km/h)')
 
             if expert_x is not None and expert_y is not None:
                 expert_x_np = expert_x.to_numpy()
                 expert_y_np = expert_y.to_numpy()
-                ax_track.plot(expert_x_np, expert_y_np, color='#ff7f0e', linewidth=2, linestyle='--', label='Expert trajectory')
+                expert_z_np = expert_z.to_numpy() if expert_z is not None else np.zeros_like(expert_x_np)
+                ax_track.plot(expert_x_np, expert_y_np, expert_z_np, color='#ff7f0e', linewidth=2, linestyle='--', label='Expert trajectory')
 
                 if expert_vx is not None and expert_vy is not None:
                     expert_vx_np = expert_vx.to_numpy()
                     expert_vy_np = expert_vy.to_numpy()
-                    if expert_speed_series is not None:
-                        expert_speed_np = expert_speed_series.to_numpy()
-                    else:
-                        expert_speed_np = np.linalg.norm(
-                            np.stack([expert_vx_np, expert_vy_np], axis=1), axis=1
-                        )
-                    expert_quiver = ax_track.quiver(
+                    expert_vz_np = expert_vz.to_numpy() if expert_vz is not None else np.zeros_like(expert_vx_np)
+                    velocity_stack = np.stack([expert_vx_np, expert_vy_np, expert_vz_np], axis=1)
+                    expert_speed_np = np.linalg.norm(velocity_stack, axis=1) if expert_speed_series is None else expert_speed_series.to_numpy()
+                    expert_scatter = ax_track.scatter(
                         expert_x_np,
                         expert_y_np,
-                        expert_vx_np,
-                        expert_vy_np,
-                        expert_speed_np,
+                        expert_z_np,
+                        c=expert_speed_np,
                         cmap='Oranges',
-                        alpha=0.6,
-                        angles='xy',
-                        scale_units='xy',
-                        scale=None,
-                        label='Expert direction / speed'
+                        alpha=0.5,
+                        s=15,
+                        label='Expert speed'
                     )
-                    cbar_exp = fig.colorbar(expert_quiver, ax=ax_track, pad=0.06)
+                    cbar_exp = fig.colorbar(expert_scatter, ax=ax_track, pad=0.10, shrink=0.5)
                     cbar_exp.set_label('Expert speed (km/h)')
 
-            ax_track.set_title(f"Segment {segment_idx + 1} trajectory")
+            ax_track.set_title(f"Segment {segment_idx + 1} trajectory (3D)")
             ax_track.set_xlabel('Track X position')
             ax_track.set_ylabel('Track Y position')
-            ax_track.axis('equal')
-            ax_track.grid(True, linestyle='--', alpha=0.3)
-            ax_track.legend(loc='best')
+            ax_track.set_zlabel('Track Z position')
+            ax_track.grid(True, linestyle='--', alpha=0.2)
+
+            try:
+                ranges = np.array([
+                    np.ptp(current_x_np),
+                    np.ptp(current_y_np),
+                    np.ptp(current_z_np)
+                ])
+                ranges[ranges == 0] = 1.0
+                ax_track.set_box_aspect(ranges)
+            except Exception:
+                pass
+
+            ax_track.view_init(elev=20, azim=-60)
+            ax_track.legend(loc='upper left')
 
             segment_indices = np.arange(len(segment_df))
             legend_handles: List[Any] = []
