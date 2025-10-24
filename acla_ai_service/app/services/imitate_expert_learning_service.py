@@ -13,6 +13,10 @@ import warnings
 import io
 import base64
 import copy
+import matplotlib
+
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
 from enum import Enum
 from typing import Dict, List, Any, Optional, Tuple, Union
 from datetime import datetime
@@ -762,7 +766,8 @@ class ExpertImitateLearningService:
             telemetry_data: List of cleaned telemetry records to predict on
 
         Returns:
-            List of dictionaries, one per record, containing expert targets and delta-to-expert context only.
+            List of dictionaries, one per record, containing expert targets, delta-to-expert
+            context metrics, and enriched driver/expert positional data for visualization.
         """
         
         ContextFeature = ExpertFeatureCatalog.ContextFeature
@@ -846,20 +851,44 @@ class ExpertImitateLearningService:
                         else:
                             velocity_alignment = 0.0
 
+                        # Persist raw telemetry context for downstream visualization
+                        row_features['current_player_pos_x'] = float(current_row.get('Graphics_player_pos_x', 0.0))
+                        row_features['current_player_pos_y'] = float(current_row.get('Graphics_player_pos_y', 0.0))
+                        row_features['current_player_pos_z'] = float(current_row.get('Graphics_player_pos_z', 0.0))
+
+                        row_features['current_velocity_x'] = curr_velocity_x
+                        row_features['current_velocity_y'] = curr_velocity_y
+                        row_features['current_velocity_z'] = curr_velocity_z
+
+                        current_speed = float(current_row.get('Physics_speed_kmh', curr_velocity_magnitude))
+                        row_features['current_speed'] = current_speed
+
+                        # Store expert optimal predictions for visualization
+                        row_features[EO.EXPERT_OPTIMAL_PLAYER_POS_X.value] = float(row_predictions.get(EO.EXPERT_OPTIMAL_PLAYER_POS_X.value, expert_pos_x))
+                        row_features[EO.EXPERT_OPTIMAL_PLAYER_POS_Y.value] = float(row_predictions.get(EO.EXPERT_OPTIMAL_PLAYER_POS_Y.value, expert_pos_y))
+                        row_features[EO.EXPERT_OPTIMAL_PLAYER_POS_Z.value] = float(row_predictions.get(EO.EXPERT_OPTIMAL_PLAYER_POS_Z.value, expert_pos_z))
+
+                        row_features[EO.EXPERT_OPTIMAL_VELOCITY_X.value] = exp_velocity_x
+                        row_features[EO.EXPERT_OPTIMAL_VELOCITY_Y.value] = exp_velocity_y
+                        row_features['expert_optimal_velocity_z'] = exp_velocity_z
+
+                        expert_speed = float(row_predictions.get(EO.EXPERT_OPTIMAL_SPEED.value, exp_velocity_magnitude))
+                        row_features[EO.EXPERT_OPTIMAL_SPEED.value] = expert_speed
+
                         # Store only velocity alignment feature
                         row_features[ContextFeature.EXPERT_VELOCITY_ALIGNMENT.value] = float(velocity_alignment)
 
                         # Calculate speed difference
-                        speed_difference = exp_velocity_magnitude - curr_velocity_magnitude
+                        speed_difference = expert_speed - current_speed
                         row_features[ContextFeature.SPEED_DIFFERENCE.value] = float(speed_difference)
 
                         # Calculate distance to expert line (negative if off to left, positive if off to right)
-                        expert_pos_x = row_predictions.get(EO.EXPERT_OPTIMAL_PLAYER_POS_X.value, 0.0)
-                        expert_pos_y = row_predictions.get(EO.EXPERT_OPTIMAL_PLAYER_POS_Y.value, 0.0)
-                        expert_pos_z = row_predictions.get(EO.EXPERT_OPTIMAL_PLAYER_POS_Z.value, 0.0)
-                        current_pos_x = current_row.get('Graphics_player_pos_x', 0.0)
-                        current_pos_y = current_row.get('Graphics_player_pos_y', 0.0)
-                        current_pos_z = current_row.get('Graphics_player_pos_z', 0.0)
+                        expert_pos_x = row_features[EO.EXPERT_OPTIMAL_PLAYER_POS_X.value]
+                        expert_pos_y = row_features[EO.EXPERT_OPTIMAL_PLAYER_POS_Y.value]
+                        expert_pos_z = row_features[EO.EXPERT_OPTIMAL_PLAYER_POS_Z.value]
+                        current_pos_x = row_features['current_player_pos_x']
+                        current_pos_y = row_features['current_player_pos_y']
+                        current_pos_z = row_features['current_player_pos_z']
 
                         distance_to_expert_line = np.sqrt(
                             (expert_pos_x - current_pos_x) ** 2 +
@@ -905,6 +934,10 @@ class ExpertImitateLearningService:
             
         Returns:
             List[List[Dict[str, Any]]]: List of segments meeting streamlined criteria
+
+        Notes:
+            Use :meth:`visualize_optimal_segments` to generate trajectory plots and speed
+            overlays for the returned optimal segments.
         """
         
         print(f"[INFO] Filtering optimal telemetry segments from {len(telemetry_data)} records...")
@@ -1107,6 +1140,252 @@ class ExpertImitateLearningService:
         
         return improvement_metrics
     
+    def visualize_optimal_segments(
+        self,
+        optimal_segments: List[List[Dict[str, Any]]],
+        *,
+        max_segments: int = 3,
+        show: bool = False,
+        output_dir: Optional[Union[str, Path]] = None,
+        return_base64: bool = True
+    ) -> List[Dict[str, Any]]:
+        """Create trajectory and speed visualizations for optimal telemetry segments.
+
+        Args:
+            optimal_segments: Segments returned from ``filter_optimal_telemetry_segments``.
+            max_segments: Maximum number of segments to visualize to avoid generating
+                excessive figures on large datasets.
+            show: Whether to display figures interactively. Defaults to ``False`` to
+                remain friendly with headless environments.
+            output_dir: Optional directory to persist plot images as ``.png`` files.
+            return_base64: When ``True`` (default) returns the rendered image as a
+                Base64-encoded PNG string suitable for APIs.
+
+        Returns:
+            List of dictionaries containing metadata for each rendered figure. Each
+            entry includes the segment index, record count, optional saved file path,
+            optional Base64 payload, and summary statistics used for grading.
+        """
+
+        if not optimal_segments:
+            return []
+
+        eo = ExpertFeatureCatalog.ExpertOptimalFeature
+        context = ExpertFeatureCatalog.ContextFeature
+
+        output_path: Optional[Path] = None
+        if output_dir is not None:
+            output_path = Path(output_dir)
+            output_path.mkdir(parents=True, exist_ok=True)
+
+        visualization_payloads: List[Dict[str, Any]] = []
+        required_context_features = [
+            context.EXPERT_VELOCITY_ALIGNMENT.value,
+            context.SPEED_DIFFERENCE.value,
+            context.DISTANCE_TO_EXPERT_LINE.value
+        ]
+
+        for segment_idx, segment_records in enumerate(optimal_segments[:max_segments]):
+            if not segment_records:
+                continue
+
+            segment_df = pd.DataFrame(segment_records).reset_index(drop=True)
+
+            # Resolve column names with fallbacks for raw telemetry
+            current_x = segment_df.get('current_player_pos_x')
+            if current_x is None:
+                current_x = segment_df.get('Graphics_player_pos_x')
+            current_y = segment_df.get('current_player_pos_y')
+            if current_y is None:
+                current_y = segment_df.get('Graphics_player_pos_y')
+
+            expert_x = segment_df.get(eo.EXPERT_OPTIMAL_PLAYER_POS_X.value)
+            expert_y = segment_df.get(eo.EXPERT_OPTIMAL_PLAYER_POS_Y.value)
+
+            current_vx = segment_df.get('current_velocity_x')
+            if current_vx is None:
+                current_vx = segment_df.get('Physics_velocity_x')
+            current_vy = segment_df.get('current_velocity_y')
+            if current_vy is None:
+                current_vy = segment_df.get('Physics_velocity_y')
+
+            expert_vx = segment_df.get(eo.EXPERT_OPTIMAL_VELOCITY_X.value)
+            expert_vy = segment_df.get(eo.EXPERT_OPTIMAL_VELOCITY_Y.value)
+
+            current_speed_series = segment_df.get('current_speed')
+            if current_speed_series is None:
+                if current_vx is not None and current_vy is not None:
+                    current_speed_series = pd.Series(
+                        np.sqrt(current_vx.to_numpy() ** 2 + current_vy.to_numpy() ** 2),
+                        index=segment_df.index
+                    )
+                else:
+                    current_speed_series = pd.Series(np.zeros(len(segment_df)), index=segment_df.index)
+
+            expert_speed_series = segment_df.get(eo.EXPERT_OPTIMAL_SPEED.value)
+            if expert_speed_series is None and expert_vx is not None and expert_vy is not None:
+                expert_speed_series = pd.Series(
+                    np.sqrt(expert_vx.to_numpy() ** 2 + expert_vy.to_numpy() ** 2),
+                    index=segment_df.index
+                )
+
+            # Skip visualization if we cannot locate essential positional data
+            if current_x is None or current_y is None:
+                continue
+
+            # Prepare figure
+            fig, (ax_track, ax_speed) = plt.subplots(1, 2, figsize=(14, 6))
+
+            current_x_np = current_x.to_numpy()
+            current_y_np = current_y.to_numpy()
+            ax_track.plot(current_x_np, current_y_np, color='#1f77b4', linewidth=2, label='Driver trajectory')
+            ax_track.scatter(current_x_np[0], current_y_np[0], color='green', label='Segment start', zorder=5)
+            ax_track.scatter(current_x_np[-1], current_y_np[-1], color='red', label='Segment end', zorder=5)
+
+            if current_vx is not None and current_vy is not None:
+                current_vx_np = current_vx.to_numpy()
+                current_vy_np = current_vy.to_numpy()
+                current_speed_np = current_speed_series.to_numpy() if current_speed_series is not None else np.linalg.norm(
+                    np.stack([current_vx_np, current_vy_np], axis=1), axis=1
+                )
+                driver_quiver = ax_track.quiver(
+                    current_x_np,
+                    current_y_np,
+                    current_vx_np,
+                    current_vy_np,
+                    current_speed_np,
+                    cmap='Blues',
+                    alpha=0.75,
+                    angles='xy',
+                    scale_units='xy',
+                    scale=None,
+                    label='Driver direction / speed'
+                )
+                cbar = fig.colorbar(driver_quiver, ax=ax_track, pad=0.01)
+                cbar.set_label('Driver speed (km/h)')
+
+            if expert_x is not None and expert_y is not None:
+                expert_x_np = expert_x.to_numpy()
+                expert_y_np = expert_y.to_numpy()
+                ax_track.plot(expert_x_np, expert_y_np, color='#ff7f0e', linewidth=2, linestyle='--', label='Expert trajectory')
+
+                if expert_vx is not None and expert_vy is not None:
+                    expert_vx_np = expert_vx.to_numpy()
+                    expert_vy_np = expert_vy.to_numpy()
+                    if expert_speed_series is not None:
+                        expert_speed_np = expert_speed_series.to_numpy()
+                    else:
+                        expert_speed_np = np.linalg.norm(
+                            np.stack([expert_vx_np, expert_vy_np], axis=1), axis=1
+                        )
+                    expert_quiver = ax_track.quiver(
+                        expert_x_np,
+                        expert_y_np,
+                        expert_vx_np,
+                        expert_vy_np,
+                        expert_speed_np,
+                        cmap='Oranges',
+                        alpha=0.6,
+                        angles='xy',
+                        scale_units='xy',
+                        scale=None,
+                        label='Expert direction / speed'
+                    )
+                    cbar_exp = fig.colorbar(expert_quiver, ax=ax_track, pad=0.06)
+                    cbar_exp.set_label('Expert speed (km/h)')
+
+            ax_track.set_title(f"Segment {segment_idx + 1} trajectory")
+            ax_track.set_xlabel('Track X position')
+            ax_track.set_ylabel('Track Y position')
+            ax_track.axis('equal')
+            ax_track.grid(True, linestyle='--', alpha=0.3)
+            ax_track.legend(loc='best')
+
+            segment_indices = np.arange(len(segment_df))
+            legend_handles: List[Any] = []
+            legend_labels: List[str] = []
+
+            driver_speed_line, = ax_speed.plot(
+                segment_indices,
+                current_speed_series.to_numpy(),
+                label='Driver speed (km/h)',
+                color='#1f77b4',
+                linewidth=2
+            )
+            legend_handles.append(driver_speed_line)
+            legend_labels.append('Driver speed (km/h)')
+
+            if expert_speed_series is not None:
+                expert_speed_line, = ax_speed.plot(
+                    segment_indices,
+                    expert_speed_series.to_numpy(),
+                    label='Expert speed (km/h)',
+                    color='#ff7f0e',
+                    linestyle='--',
+                    linewidth=2
+                )
+                legend_handles.append(expert_speed_line)
+                legend_labels.append('Expert speed (km/h)')
+            ax_speed.set_title('Speed profile across segment')
+            ax_speed.set_xlabel('Sample index within segment')
+            ax_speed.set_ylabel('Speed (km/h)')
+            ax_speed.grid(True, linestyle='--', alpha=0.3)
+
+            ax_speed2 = ax_speed.twinx()
+            if context.EXPERT_VELOCITY_ALIGNMENT.value in segment_df:
+                alignment_line, = ax_speed2.plot(
+                    segment_indices,
+                    segment_df[context.EXPERT_VELOCITY_ALIGNMENT.value],
+                    color='purple',
+                    alpha=0.5,
+                    label='Velocity alignment'
+                )
+                ax_speed2.set_ylabel('Alignment (cosine)')
+                legend_handles.append(alignment_line)
+                legend_labels.append('Velocity alignment')
+            ax_speed2.set_ylim(-1.05, 1.05)
+
+            # Merge legends from twin axes if applicable
+            if legend_handles:
+                ax_speed.legend(legend_handles, legend_labels, loc='lower left')
+
+            fig.tight_layout()
+
+            buffer = io.BytesIO()
+            fig.savefig(buffer, format='png', dpi=150, bbox_inches='tight')
+            buffer.seek(0)
+            image_bytes = buffer.getvalue()
+
+            saved_path: Optional[Path] = None
+            if output_path is not None:
+                saved_path = output_path / f"optimal_segment_{segment_idx + 1}.png"
+                saved_path.write_bytes(image_bytes)
+
+            if show:
+                plt.show()
+
+            plt.close(fig)
+
+            segment_summary = self._analyze_segment_improvement(segment_df, required_context_features)
+
+            payload: Dict[str, Any] = {
+                'segment_index': segment_idx,
+                'record_count': int(len(segment_df)),
+                'summary': segment_summary,
+            }
+
+            if return_base64:
+                payload['image_base64'] = base64.b64encode(image_bytes).decode('utf-8')
+
+            if saved_path is not None:
+                payload['saved_path'] = str(saved_path)
+
+            visualization_payloads.append(payload)
+
+            buffer.close()
+
+        return visualization_payloads
+
     def serialize_learning_model(self) -> Dict[str, Any]:
         """
         Memory-efficient serialization of trained models stored in the position learner
