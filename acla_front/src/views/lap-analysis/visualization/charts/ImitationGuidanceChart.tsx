@@ -1,5 +1,5 @@
 import React, { useContext, useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { Card, Text, Box, Grid, Badge, Separator, Progress, Flex, Button } from '@radix-ui/themes';
+import { Card, Text, Box, Grid, Badge, Separator, Flex, Button } from '@radix-ui/themes';
 import { AnalysisContext } from '../../analysis-context';
 import { VisualizationProps } from '../VisualizationRegistry';
 import apiService from 'services/api.service';
@@ -8,43 +8,41 @@ import styles from './ImitationGuidanceChart.module.css';
 // New backend response structure
 interface SequencePrediction {
     step: number;
-    time_ahead: string; // e.g., "0.1s"
-    action: string; // e.g., "Begin braking"
-    throttle: number; // 0..1
-    brake: number; // 0..1
-    steering: number; // -1..1
-    // New optional fields from backend
-    gear?: number;
-    target_speed?: number;
+    time_ahead: string;
+    all_targets: Record<string, unknown>;
+    [key: string]: unknown;
 }
 
 interface CurrentSituation {
-    speed: string; // e.g., "120 km/h"
-    track_position: string; // e.g., "mid-corner"
-    // Relax types to accept arbitrary strings from backend (e.g., "good grip")
-    racing_line: string;
-    tire_grip: string;
+    speed?: string;
+    track_position?: string;
+    racing_line?: string;
+    tire_grip?: string;
+    [key: string]: unknown;
 }
 
 interface ContextualInfo {
-    track_sector: string; // e.g., "Sector 2, Turn 5"
-    weather_impact: string; // e.g., "Dry conditions, full grip"
-    optimal_speed_estimate: string; // e.g., "95 km/h for current section"
+    track_sector?: string;
+    weather_impact?: string;
+    optimal_speed_estimate?: string;
+    [key: string]: unknown;
 }
 
 interface GuidanceResponse {
     status: "success" | "error";
-    timestamp: string; // ISO timestamp
-    current_situation: CurrentSituation;
+    timestamp: string;
+    current_situation?: CurrentSituation;
     sequence_predictions: SequencePrediction[];
-    contextual_info: ContextualInfo;
+    contextual_info?: ContextualInfo;
+    [key: string]: unknown;
 }
 
 interface GuidanceData {
     message?: string;
-    guidance_result?: GuidanceResponse; // keeping old property name for compatibility
+    guidance_result: GuidanceResponse;
     timestamp?: string;
-    success?: boolean; // envelope compatibility
+    success?: boolean;
+    [key: string]: unknown;
 }
 
 interface TelemetryData {
@@ -57,6 +55,111 @@ interface TelemetryData {
     rpm?: number;
     [key: string]: any;
 }
+
+type Keyframe = {
+    t: number;
+    throttle: number;
+    brake: number;
+    steering: number;
+    gear?: number;
+    target_speed?: number;
+    action?: string;
+};
+
+const clamp01 = (n: number) => Math.max(0, Math.min(1, n));
+const clampMinus1To1 = (n: number) => Math.max(-1, Math.min(1, n));
+
+const toFiniteNumber = (value: unknown): number | undefined => {
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    if (typeof value === 'string') {
+        const parsed = parseFloat(value);
+        if (!Number.isNaN(parsed) && Number.isFinite(parsed)) return parsed;
+    }
+    return undefined;
+};
+
+const normalizeSteering = (raw?: number): number => {
+    if (raw == null || Number.isNaN(raw)) return 0;
+    let normalized = raw;
+    if (Math.abs(normalized) > 1.5) {
+        normalized = normalized / 90; // assume degrees, map roughly into [-1,1]
+    }
+    return clampMinus1To1(normalized);
+};
+
+const deriveAction = (throttle: number, brake: number, steering: number): string => {
+    if (brake > 0.75) return 'Brake hard';
+    if (brake > 0.35) return 'Start braking';
+    if (throttle > 0.8 && brake < 0.1) return 'Full throttle';
+    if (throttle > 0.45 && brake < 0.2) return 'Accelerate';
+    if (Math.abs(steering) > 0.6) return steering > 0 ? 'Steer right' : 'Steer left';
+    if (Math.abs(steering) > 0.3) return steering > 0 ? 'Turn right' : 'Turn left';
+    return 'Hold steady';
+};
+
+const toGear = (value?: number): number | undefined => {
+    if (value == null || Number.isNaN(value)) return undefined;
+    const rounded = Math.round(value);
+    if (Math.abs(value - rounded) < 0.3) return rounded;
+    return rounded;
+};
+
+const getNumericFromTargets = (targets: Record<string, unknown>, keys: string[]): number | undefined => {
+    for (const key of keys) {
+        if (key in targets) {
+            const candidate = toFiniteNumber(targets[key]);
+            if (candidate != null) return candidate;
+        }
+    }
+    return undefined;
+};
+
+const parseTimeAhead = (timeStr?: string): number => {
+    if (!timeStr) return 0;
+    const trimmed = String(timeStr).trim();
+    const match = trimmed.match(/([0-9]*\.?[0-9]+)/);
+    if (!match) return 0;
+    const val = parseFloat(match[1]);
+    if (/ms/i.test(trimmed)) return val / 1000;
+    return val;
+};
+
+const keyframeFromPrediction = (prediction: SequencePrediction): Keyframe => {
+    const targets = (prediction.all_targets ?? {}) as Record<string, unknown>;
+    const throttle = clamp01(getNumericFromTargets(targets, ['Physics_gas', 'gas', 'throttle']) ?? 0);
+    const brake = clamp01(getNumericFromTargets(targets, ['Physics_brake', 'brake']) ?? 0);
+    const rawSteering = getNumericFromTargets(targets, ['Physics_steer_angle', 'steering']) ?? 0;
+    const steering = normalizeSteering(rawSteering);
+    const gear = toGear(getNumericFromTargets(targets, ['Physics_gear', 'gear']));
+    const targetSpeed = getNumericFromTargets(targets, ['Physics_speed_kmh', 'speed_kmh', 'speed']);
+    const predictedActionCandidate = (prediction as { action?: unknown }).action;
+    const predictedAction = typeof predictedActionCandidate === 'string' ? predictedActionCandidate : undefined;
+    const action = predictedAction && predictedAction.trim().length > 0
+        ? predictedAction
+        : deriveAction(throttle, brake, steering);
+
+    return {
+        t: parseTimeAhead(prediction.time_ahead),
+        throttle,
+        brake,
+        steering,
+        gear,
+        target_speed: targetSpeed,
+        action,
+    };
+};
+
+const keyframeFromTelemetry = (telemetry?: TelemetryData | null): Keyframe | null => {
+    if (!telemetry) return null;
+    const throttle = clamp01(toFiniteNumber(telemetry.throttle ?? telemetry.gas) ?? 0);
+    const brake = clamp01(toFiniteNumber(telemetry.braking ?? telemetry.brake) ?? 0);
+    const steering = normalizeSteering(toFiniteNumber(telemetry.steering ?? telemetry.steer_angle ?? telemetry.steering_angle) ?? 0);
+    const gear = toGear(toFiniteNumber(telemetry.gear));
+    const targetSpeed = toFiniteNumber(telemetry.speed ?? telemetry.speed_kmh ?? telemetry.speed_mph);
+    const action = deriveAction(throttle, brake, steering);
+
+    return { t: 0, throttle, brake, steering, gear, target_speed: targetSpeed, action };
+};
 
 const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
     const analysisContext = useContext(AnalysisContext);
@@ -78,62 +181,32 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
     const carName = analysisContext.recordedSessioStaticsData?.car_model || 'Unknown Car';
     const liveData = analysisContext.liveData as TelemetryData;
 
-    // Build keyframes from predictions
-    type Keyframe = {
-        t: number; // seconds from now
-        throttle: number;
-        brake: number;
-        steering: number;
-        gear?: number;
-        target_speed?: number;
-        action?: string;
-    };
-
-    const parseTimeAhead = (timeStr?: string): number => {
-        if (!timeStr) return 0;
-        const trimmed = String(timeStr).trim();
-        const m = trimmed.match(/([0-9]*\.?[0-9]+)/);
-        if (!m) return 0;
-        const val = parseFloat(m[1]);
-        // assume seconds by default
-        if (/ms/i.test(trimmed)) return val / 1000;
-        return val;
-    };
-
     const keyframes: Keyframe[] = useMemo(() => {
-        const preds = guidanceData?.guidance_result?.sequence_predictions ?? [];
-        const frames = preds.map(p => ({
-            t: parseTimeAhead(p.time_ahead),
-            throttle: clamp01(p.throttle ?? 0),
-            brake: clamp01(p.brake ?? 0),
-            steering: clampMinus1To1(p.steering ?? 0),
-            gear: p.gear,
-            target_speed: p.target_speed,
-            action: p.action,
-        }))
+        const predictions = guidanceData?.guidance_result?.sequence_predictions ?? [];
+        const frames = predictions
+            .map(keyframeFromPrediction)
+            .filter(frame => Number.isFinite(frame.t))
             .sort((a, b) => a.t - b.t);
 
-        // Ensure we have an initial frame at t=0 by inferring from liveData if needed
-        if (frames.length > 0 && frames[0].t > 0) {
-            frames.unshift({
-                t: 0,
-                throttle: clamp01(Number(liveData?.throttle ?? 0)),
-                brake: clamp01(Number(liveData?.braking ?? 0)),
-                steering: clampMinus1To1(Number(liveData?.steering ?? 0)),
-                gear: typeof liveData?.gear === 'number' ? liveData.gear : undefined,
-                target_speed: undefined,
-                action: 'Current',
-            });
+        if (frames.length === 0) {
+            const currentFrame = keyframeFromTelemetry(liveData);
+            return currentFrame ? [{ ...currentFrame, t: 0, action: 'Current' }] : [];
+        }
+
+        if (frames[0].t > 0) {
+            const currentFrame = keyframeFromTelemetry(liveData);
+            if (currentFrame) {
+                frames.unshift({ ...currentFrame, t: 0, action: 'Current' });
+            } else {
+                const first = frames[0];
+                frames.unshift({ ...first, t: 0, action: first.action ?? 'Forecast' });
+            }
         }
 
         return frames;
     }, [guidanceData, liveData]);
 
     const totalDuration = useMemo(() => (keyframes.length ? keyframes[keyframes.length - 1].t : 0), [keyframes]);
-
-    // Helpers
-    function clamp01(n: number) { return Math.max(0, Math.min(1, n)); }
-    function clampMinus1To1(n: number) { return Math.max(-1, Math.min(1, n)); }
 
     function lerp(a: number, b: number, t: number) { return a + (b - a) * t; }
 
@@ -167,9 +240,9 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
             throttle: clamp01(lerp(a.throttle, b.throttle, lt)),
             brake: clamp01(lerp(a.brake, b.brake, lt)),
             steering: clampMinus1To1(lerp(a.steering, b.steering, lt)),
-            gear: lt < 0.5 ? a.gear : b.gear,
-            target_speed: lt < 0.5 ? a.target_speed : b.target_speed,
-            action: lt < 0.5 ? a.action : b.action,
+            gear: lt < 0.5 ? (a.gear ?? b.gear) : (b.gear ?? a.gear),
+            target_speed: lt < 0.5 ? (a.target_speed ?? b.target_speed) : (b.target_speed ?? a.target_speed),
+            action: lt < 0.5 ? (a.action ?? b.action) : (b.action ?? a.action),
         };
     }
 
@@ -189,38 +262,39 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
                 track_name: trackName,
                 car_name: carName
             });
-            if (response.data) {
-                // Support both legacy (GuidanceResponse at root) and new envelope
-                const raw = response.data as any;
-                const maybeEnvelope = (raw && (raw.guidance_result || raw.success !== undefined)) ? raw : null;
-                const result: GuidanceResponse | null = maybeEnvelope ? raw.guidance_result : raw;
-
-                if (result && result.status === 'success') {
-                    setGuidanceData({
-                        guidance_result: result,
-                        timestamp: result.timestamp,
-                        success: maybeEnvelope ? raw.success : undefined,
-                        message: maybeEnvelope ? raw.message : undefined,
-                    });
-
-                    // Reset animation with new data
-                    setProgress(0);
-                    setIsPlaying(true);
-                    playStartRef.current = null;
-                    progressAtPlayStartRef.current = 0;
-
-                    // Send guidance message to AI chat if available
-                    if (result.sequence_predictions && result.sequence_predictions.length > 0) {
-                        const guidanceText = formatGuidanceForChat(result);
-                        analysisContext.sendGuidanceToChat(guidanceText);
-                    }
-                } else if (result) {
-                    setError('Failed to get guidance: API returned error status');
-                } else {
-                    setError('Malformed response: missing guidance_result');
-                }
-            } else {
+            if (!response.data) {
                 setError('No response data received');
+                return;
+            }
+
+            const raw = response.data as GuidanceData;
+            const result = raw?.guidance_result;
+
+            if (!result) {
+                setError('Malformed response: missing guidance_result');
+                return;
+            }
+
+            if (result.status !== 'success') {
+                setError('Failed to get guidance: API returned error status');
+                return;
+            }
+
+            setGuidanceData({
+                message: raw.message,
+                success: raw.success,
+                timestamp: raw.timestamp ?? result.timestamp,
+                guidance_result: result,
+            });
+
+            setProgress(0);
+            setIsPlaying(true);
+            playStartRef.current = null;
+            progressAtPlayStartRef.current = 0;
+
+            if (result.sequence_predictions && result.sequence_predictions.length > 0) {
+                const guidanceText = formatGuidanceForChat(result);
+                analysisContext.sendGuidanceToChat(guidanceText);
             }
         } catch (err: any) {
             console.error('Imitation learning guidance error:', err);
@@ -236,7 +310,8 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
 
         const { current_situation, sequence_predictions, contextual_info } = guidanceResult;
         const predictionsCount = sequence_predictions.length;
-        const firstAction = sequence_predictions.length > 0 ? sequence_predictions[0].action : undefined;
+        const firstPrediction = sequence_predictions[0];
+        const firstAction = firstPrediction ? keyframeFromPrediction(firstPrediction).action : undefined;
 
         let base = `AI Guidance: ${predictionsCount} predictions`;
         if (current_situation?.racing_line) {
@@ -383,6 +458,16 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
         }
 
         const { current_situation } = guidanceData.guidance_result;
+        const speed = current_situation.speed ?? 'Unknown';
+        const trackPosition = current_situation.track_position ?? 'Unknown';
+        const racingLine = current_situation.racing_line ?? 'Unknown';
+        const tireGrip = current_situation.tire_grip ?? 'Unknown';
+        const racingLineColor = current_situation.racing_line
+            ? (/optimal/i.test(current_situation.racing_line) ? 'green' : 'orange')
+            : 'gray';
+        const tireGripColor = current_situation.tire_grip
+            ? (/good/i.test(current_situation.tire_grip) ? 'green' : 'red')
+            : 'gray';
 
         return (
             <Box p="3">
@@ -390,28 +475,28 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
                 <Grid columns="2" gap="3">
                     <Box>
                         <Text size="1" color="gray">Speed</Text>
-                        <Text size="2" weight="medium">{current_situation.speed}</Text>
+                        <Text size="2" weight="medium">{speed}</Text>
                     </Box>
                     <Box>
                         <Text size="1" color="gray">Track Position</Text>
-                        <Text size="2" weight="medium">{current_situation.track_position}</Text>
+                        <Text size="2" weight="medium">{trackPosition}</Text>
                     </Box>
                     <Box>
                         <Text size="1" color="gray">Racing Line</Text>
                         <Badge
-                            color={/optimal/i.test(current_situation.racing_line) ? 'green' : 'orange'}
+                            color={racingLineColor}
                             size="1"
                         >
-                            {current_situation.racing_line}
+                            {racingLine}
                         </Badge>
                     </Box>
                     <Box>
                         <Text size="1" color="gray">Tire Grip</Text>
                         <Badge
-                            color={/good/i.test(current_situation.tire_grip) ? 'green' : 'red'}
+                            color={tireGripColor}
                             size="1"
                         >
-                            {current_situation.tire_grip}
+                            {tireGrip}
                         </Badge>
                     </Box>
                 </Grid>
@@ -423,6 +508,9 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
     const renderAnimatedTimeline = () => {
         const hasData = keyframes.length > 0 && totalDuration > 0;
         const cur = getInterpolatedValues(progress);
+        const targetSpeedDisplay = typeof cur.target_speed === 'number' ? `${cur.target_speed.toFixed(1)} km/h` : '-';
+        const gearDisplay = typeof cur.gear === 'number' ? cur.gear : '-';
+        const actionDisplay = cur.action ?? '-';
 
         return (
             <Box p="3">
@@ -461,15 +549,15 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
                 <Grid columns="3" gap="3" mt="2">
                     <Box style={{ textAlign: 'center' }}>
                         <Text size="1" color="gray">Gear</Text>
-                        <Text size="2" weight="bold">{cur.gear ?? '-'}</Text>
+                        <Text size="2" weight="bold">{gearDisplay}</Text>
                     </Box>
                     <Box style={{ textAlign: 'center' }}>
                         <Text size="1" color="gray">Target Speed</Text>
-                        <Text size="2" weight="bold">{cur.target_speed ?? '-'}</Text>
+                        <Text size="2" weight="bold">{targetSpeedDisplay}</Text>
                     </Box>
                     <Box style={{ textAlign: 'center' }}>
                         <Text size="1" color="gray">Action</Text>
-                        <Text size="2" weight="bold">{cur.action ?? '-'}</Text>
+                        <Text size="2" weight="bold">{actionDisplay}</Text>
                     </Box>
                 </Grid>
 
@@ -513,6 +601,9 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
         }
 
         const { contextual_info } = guidanceData.guidance_result;
+        const trackSector = contextual_info.track_sector ?? 'Unknown sector';
+        const weatherImpact = contextual_info.weather_impact ?? 'Unknown conditions';
+        const optimalSpeed = contextual_info.optimal_speed_estimate ?? 'Not provided';
 
         return (
             <Box p="3">
@@ -525,7 +616,7 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
                     }}>
                         <Text size="1" color="gray">Location</Text>
                         <Text size="2" weight="medium" style={{ display: 'block' }}>
-                            {contextual_info.track_sector}
+                            {trackSector}
                         </Text>
                     </Box>
 
@@ -536,7 +627,7 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
                     }}>
                         <Text size="1" color="gray">Weather Conditions</Text>
                         <Text size="2" weight="medium" style={{ display: 'block' }}>
-                            {contextual_info.weather_impact}
+                            {weatherImpact}
                         </Text>
                     </Box>
 
@@ -547,7 +638,7 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
                     }}>
                         <Text size="1" color="gray">Optimal Speed Estimate</Text>
                         <Text size="2" weight="medium" style={{ display: 'block' }}>
-                            {contextual_info.optimal_speed_estimate}
+                            {optimalSpeed}
                         </Text>
                     </Box>
                 </Grid>
