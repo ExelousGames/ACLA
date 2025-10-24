@@ -53,6 +53,7 @@ class ExpertFeatureCatalog:
         EXPERT_OPTIMAL_TRACK_POSITION = 'expert_optimal_track_position'
         EXPERT_OPTIMAL_VELOCITY_X = 'expert_optimal_velocity_x'
         EXPERT_OPTIMAL_VELOCITY_Y = 'expert_optimal_velocity_y'
+        EXPERT_OPTIMAL_VELOCITY_Z = 'expert_optimal_velocity_z'
 
     class ContextFeature(str, Enum):
         # Velocity direction alignment with expert
@@ -155,7 +156,7 @@ class ExpertPositionLearner:
         if 'Physics_velocity_y' in df.columns:
             target_features[EO.EXPERT_OPTIMAL_VELOCITY_Y.value] = df['Physics_velocity_y']
         if 'Physics_velocity_z' in df.columns:
-            target_features['expert_optimal_velocity_z'] = df['Physics_velocity_z']
+            target_features[EO.EXPERT_OPTIMAL_VELOCITY_Z.value] = df['Physics_velocity_z']
             
         # Speed (derived)
         if 'Physics_speed_kmh' in df.columns:
@@ -311,7 +312,7 @@ class ExpertPositionLearner:
         velocity_targets = [
             EO.EXPERT_OPTIMAL_VELOCITY_X.value,
             EO.EXPERT_OPTIMAL_VELOCITY_Y.value,
-            'expert_optimal_velocity_z'  # This one wasn't in the enum
+            EO.EXPERT_OPTIMAL_VELOCITY_Z.value
         ]
         
         for target_name in velocity_targets:
@@ -834,7 +835,7 @@ class ExpertImitateLearningService:
                         EO = ExpertFeatureCatalog.ExpertOptimalFeature
                         exp_velocity_x = float(row_predictions.get(EO.EXPERT_OPTIMAL_VELOCITY_X.value, curr_velocity_x))
                         exp_velocity_y = float(row_predictions.get(EO.EXPERT_OPTIMAL_VELOCITY_Y.value, curr_velocity_y))
-                        exp_velocity_z = float(row_predictions.get('expert_optimal_velocity_z', curr_velocity_z))
+                        exp_velocity_z = float(row_predictions.get(EO.EXPERT_OPTIMAL_VELOCITY_Z.value, curr_velocity_z))
 
                         # Calculate velocity alignment (dot product normalized)
                         # If moving in same direction as expert, alignment = 1.0
@@ -856,13 +857,9 @@ class ExpertImitateLearningService:
                         current_pos_y = float(current_row.get('Graphics_player_pos_y', 0.0))
                         current_pos_z = float(current_row.get('Graphics_player_pos_z', 0.0))
 
-                        row_features['current_player_pos_x'] = current_pos_x
-                        row_features['current_player_pos_y'] = current_pos_y
-                        row_features['current_player_pos_z'] = current_pos_z
-
-                        row_features['current_velocity_x'] = curr_velocity_x
-                        row_features['current_velocity_y'] = curr_velocity_y
-                        row_features['current_velocity_z'] = curr_velocity_z
+                        row_features['Physics_velocity_x'] = curr_velocity_x
+                        row_features['Physics_velocity_y'] = curr_velocity_y
+                        row_features['Physics_velocity_z'] = curr_velocity_z
 
                         current_speed = float(current_row.get('Physics_speed_kmh', curr_velocity_magnitude))
                         row_features['current_speed'] = current_speed
@@ -878,7 +875,7 @@ class ExpertImitateLearningService:
 
                         row_features[EO.EXPERT_OPTIMAL_VELOCITY_X.value] = exp_velocity_x
                         row_features[EO.EXPERT_OPTIMAL_VELOCITY_Y.value] = exp_velocity_y
-                        row_features['expert_optimal_velocity_z'] = exp_velocity_z
+                        row_features[EO.EXPERT_OPTIMAL_VELOCITY_Z.value] = exp_velocity_z
 
                         expert_speed = float(row_predictions.get(EO.EXPERT_OPTIMAL_SPEED.value, exp_velocity_magnitude))
                         row_features[EO.EXPERT_OPTIMAL_SPEED.value] = expert_speed
@@ -1202,34 +1199,22 @@ class ExpertImitateLearningService:
 
             segment_df = pd.DataFrame(segment_records).reset_index(drop=True)
 
-            # Resolve column names with fallbacks for raw telemetry
-            current_x = segment_df.get('current_player_pos_x')
-            if current_x is None:
-                current_x = segment_df.get('Graphics_player_pos_x')
-            current_y = segment_df.get('current_player_pos_y')
-            if current_y is None:
-                current_y = segment_df.get('Graphics_player_pos_y')
-            current_z = segment_df.get('current_player_pos_z')
-            if current_z is None:
-                current_z = segment_df.get('Graphics_player_pos_z')
+            # Resolve column names using telemetry-provided graphics positions
+            current_x = segment_df.get('Graphics_player_pos_x')
+            current_y = segment_df.get('Graphics_player_pos_y')
+            current_z = segment_df.get('Graphics_player_pos_z')
 
             expert_x = segment_df.get(eo.EXPERT_OPTIMAL_PLAYER_POS_X.value)
             expert_y = segment_df.get(eo.EXPERT_OPTIMAL_PLAYER_POS_Y.value)
             expert_z = segment_df.get(eo.EXPERT_OPTIMAL_PLAYER_POS_Z.value)
 
-            current_vx = segment_df.get('current_velocity_x')
-            if current_vx is None:
-                current_vx = segment_df.get('Physics_velocity_x')
-            current_vy = segment_df.get('current_velocity_y')
-            if current_vy is None:
-                current_vy = segment_df.get('Physics_velocity_y')
-            current_vz = segment_df.get('current_velocity_z')
-            if current_vz is None:
-                current_vz = segment_df.get('Physics_velocity_z')
+            current_vx = segment_df.get('Physics_velocity_x')
+            current_vy = segment_df.get('Physics_velocity_y')
+            current_vz = segment_df.get('Physics_velocity_z')
 
             expert_vx = segment_df.get(eo.EXPERT_OPTIMAL_VELOCITY_X.value)
             expert_vy = segment_df.get(eo.EXPERT_OPTIMAL_VELOCITY_Y.value)
-            expert_vz = segment_df.get('expert_optimal_velocity_z')
+            expert_vz = segment_df.get(eo.EXPERT_OPTIMAL_VELOCITY_Z.value)
 
             current_speed_series = segment_df.get('current_speed')
             if current_speed_series is None:
