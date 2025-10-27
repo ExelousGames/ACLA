@@ -766,7 +766,7 @@ class Full_dataset_TelemetryMLService:
         print(f"[INFO] Completed streaming processing of {processed_sessions} sessions")
 
     async def process_large_dataset_efficiently(self, data_cache_key: str, trackName: str,
-                                        max_memory_records: int = 10000, telemetry_time_gap_ms: int = 1000) -> Tuple[List[Dict[str, Any]], str]:
+                                        max_memory_records: int = 10000, telemetry_time_gap_ms: int = 100) -> Tuple[List[Dict[str, Any]], str]:
         """
         Streamlined processing of large cached datasets with a bounded memory footprint for bottom laps.
 
@@ -893,14 +893,13 @@ class Full_dataset_TelemetryMLService:
 
                 processor = FeatureProcessor(telemetry_df)
                 processor.general_cleaning_for_analysis()
-                processor.strip_dataframe_by_time_gap(telemetry_time_gap_ms)
-                processor.flip_y_z_features()
-                processed_df = processor.add_time_delta()
+                processed_df = processor.flip_y_z_features()
                 
                 if processed_df.empty:
                     continue
 
                 lap_times_ms, lap_df_list = processor._filter_top_performance_laps(processed_df, 1)
+                lap_df_list = processor.strip_dataframe_by_time_gap(lap_df_list, telemetry_time_gap_ms)
                 if not lap_df_list:
                     print(f"[DEBUG] No performance laps found, skipping chunk")
                     continue
@@ -908,6 +907,10 @@ class Full_dataset_TelemetryMLService:
                 laps_processed_in_chunk = 0
 
                 for lap_idx, lap_df in enumerate(lap_df_list):
+                    if lap_df.empty:
+                        print(f"[DEBUG] Lap {lap_idx} empty after down-sampling, skipping")
+                        continue
+
                     filtered_lap_df = processor.filter_features_by_list(lap_df, features)
                     if filtered_lap_df.empty:
                         print(f"[DEBUG] Lap {lap_idx} filtered out - no features remaining")

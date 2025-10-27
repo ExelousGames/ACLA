@@ -888,62 +888,6 @@ class FeatureProcessor:
 
         return processed_df
     
-    def strip_dataframe_by_time_gap(self, gap_between: float) -> pd.DataFrame:
-        """Down-sample rows based on Graphics_current_time and update self.df in-place.
-
-        Args:
-            gap_between: Minimum spacing between retained records in milliseconds.
-
-        Returns:
-            The filtered DataFrame stored on the processor.
-        """
-
-        if gap_between <= 0:
-            raise ValueError("gap_between must be a positive value in milliseconds")
-
-        if self.df is None:
-            self.df = pd.DataFrame()
-            return self.df
-
-        if self.df.empty:
-            return self.df
-
-        if 'Graphics_current_time' not in self.df.columns:
-            raise KeyError("Graphics_current_time column is required for gap stripping")
-
-        time_ms = pd.to_numeric(self.df['Graphics_current_time'], errors='coerce')
-        valid_mask = time_ms.notna()
-
-        if not valid_mask.any():
-            self.df = self.df.iloc[0:0].copy()
-            return self.df
-
-        working_df = self.df.loc[valid_mask].copy()
-        working_df['_time_ms'] = time_ms.loc[valid_mask]
-        working_df.sort_values('_time_ms', inplace=True)
-
-        time_values = working_df['_time_ms'].to_numpy(dtype=float)
-        if time_values.size == 0:
-            self.df = self.df.iloc[0:0].copy()
-            return self.df
-
-        diffs = np.diff(time_values)
-        if diffs.size and np.nanmax(diffs) > gap_between:
-            self.df = self.df.iloc[0:0].copy()
-            return self.df
-
-        keep_mask = np.zeros(len(working_df), dtype=bool)
-        last_selected = None
-
-        for idx, time_value in enumerate(time_values):
-            if last_selected is None or (time_value - last_selected) >= gap_between:
-                keep_mask[idx] = True
-                last_selected = time_value
-
-        stripped_df = working_df.loc[keep_mask].drop(columns=['_time_ms']).reset_index(drop=True)
-        self.df = stripped_df
-        return self.df
-
     def _handle_complex_fields(self, df: pd.DataFrame) -> None:
         """Handle complex nested fields from AC Competizione telemetry
         player car coordinates is extracted from array of car coordinates, and named as Graphics_player_pos_x, Graphics_player_pos_y, Graphics_player_pos_z"""
@@ -1208,44 +1152,124 @@ class FeatureProcessor:
         individual = [l[2].copy() for l in selected]
         return lap_times_ms, individual
 
+    def strip_dataframe_by_time_gap(
+        self,
+        lap_dataframes: List[pd.DataFrame],
+        gap_between: float
+    ) -> List[pd.DataFrame]:
+        """Down-sample lap telemetry frames using a fixed time gap in milliseconds.
+
+        This helper is intentionally placed after ``_filter_top_performance_laps`` so it can
+        operate on the lap-specific DataFrames that method returns. Each lap is processed
+        independently and rows are retained in their original order.
+
+        Args:
+            lap_dataframes: Lap DataFrames emitted by ``_filter_top_performance_laps``.
+            gap_between: Minimum spacing between retained samples (ms).
+
+        Returns:
+            List of lap DataFrames with rows removed so consecutive samples are at least
+            ``gap_between`` milliseconds apart.
+        """
+
+        if gap_between <= 0:
+            raise ValueError("gap_between must be a positive value in milliseconds")
+
+        if not lap_dataframes:
+            return []
+
+        stripped_laps: List[pd.DataFrame] = []
+
+        for lap_df in lap_dataframes:
+            if lap_df is None:
+                stripped_laps.append(pd.DataFrame())
+                continue
+
+            if lap_df.empty or 'Graphics_current_time' not in lap_df.columns:
+                stripped_laps.append(lap_df.reset_index(drop=True))
+                continue
+
+            working = lap_df.copy()
+            time_values = pd.to_numeric(
+                working['Graphics_current_time'], errors='coerce'
+            ).to_numpy(dtype=float)
+
+            valid_mask = ~np.isnan(time_values)
+            working = working.iloc[valid_mask].copy()
+            time_values = time_values[valid_mask]
+
+            if time_values.size == 0:
+                stripped_laps.append(lap_df.iloc[0:0].copy())
+                continue
+
+            keep_mask = np.zeros(len(working), dtype=bool)
+            last_selected = None
+
+            for idx, current_time in enumerate(time_values):
+                if last_selected is None or current_time < last_selected:
+                    keep_mask[idx] = True
+                    last_selected = current_time
+                    continue
+
+                if (current_time - last_selected) >= gap_between:
+                    keep_mask[idx] = True
+                    last_selected = current_time
+
+            if not keep_mask.any():
+                stripped_laps.append(working.iloc[0:0].copy())
+                continue
+
+            stripped = working.iloc[keep_mask].copy()
+            stripped = self.add_time_delta(stripped, new_column="time_delta_seconds", default_delta=0.0)
+            stripped_laps.append(stripped.reset_index(drop=True))
+
+        return stripped_laps
+
     def add_time_delta(
         self,
-        new_column: str = "time_delta_seconds", default_delta: float = 0.0
+        df: Optional[pd.DataFrame] = None,
+        new_column: str = "time_delta_seconds",
+        default_delta: float = 0.0
     ) -> pd.DataFrame:
-        """Compute in-place time deltas (seconds) from Graphics_current_time and return self.df."""
+        """Add per-row time deltas to the provided DataFrame (or self.df by default)."""
 
-        if self.df is None:
-            self.df = pd.DataFrame()
+        target_df = self.df if df is None else df
 
-        if self.df.empty:
-            self.df[new_column] = default_delta
-            return self.df
+        if target_df is None:
+            target_df = pd.DataFrame()
+            if df is None:
+                self.df = target_df
 
-        time_column_name = "Graphics_current_time"
-        if time_column_name not in self.df.columns:
-            print(f"[INFO] Time column '{time_column_name}' missing; defaulting {new_column} to {default_delta}")
-            self.df[new_column] = default_delta
-            return self.df
+        if target_df.empty:
+            target_df[new_column] = default_delta
+            if df is None:
+                self.df = target_df
+            return target_df
 
-        time_series = self.df[time_column_name]
-        numeric_series = pd.to_numeric(time_series, errors="coerce")
+        time_col = "Graphics_current_time"
+        if time_col not in target_df.columns:
+            target_df[new_column] = default_delta
+            if df is None:
+                self.df = target_df
+            return target_df
 
-        if numeric_series.isna().any():
-            fill_mask = numeric_series.isna()
-            if time_series.dtype == object:
-                numeric_series.loc[fill_mask] = time_series[fill_mask].apply(self._parse_time_string)
-            numeric_series = numeric_series.ffill().fillna(0)
+        numeric_series = pd.to_numeric(target_df[time_col], errors="coerce")
+        if numeric_series.isna().all():
+            target_df[new_column] = default_delta
+            if df is None:
+                self.df = target_df
+            return target_df
 
-        # Graphics_current_time is stored in milliseconds; convert explicitly to seconds.
-        time_seconds = numeric_series / 1000.0
+        numeric_series = numeric_series.fillna(method="ffill").fillna(0.0)
+        deltas = numeric_series.diff().fillna(default_delta)
+        deltas[deltas < 0] = default_delta
 
-        deltas = time_seconds.diff().fillna(0.0)
-        if (deltas < 0).any():
-            deltas = deltas.clip(lower=0.0)
+        target_df[new_column] = deltas.values
 
-        self.df[new_column] = deltas.values
+        if df is None:
+            self.df = target_df
 
-        return self.df
+        return target_df
 
     def flip_y_z_features(self) -> pd.DataFrame:
         """Swap values across *_y and *_z telemetry columns to align axis conventions."""
