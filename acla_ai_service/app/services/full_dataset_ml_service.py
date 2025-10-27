@@ -11,6 +11,7 @@ import pandas as pd
 from .corner_identification_unsupervised_service import CornerIdentificationUnsupervisedService
 from .tire_grip_analysis_service import TireGripAnalysisService
 from .imitate_expert_learning_service import ExpertImitateLearningService
+from .telemetry_segment_visualizer import visualize_optimal_segments
 import numpy as np
 import joblib
 import warnings
@@ -118,9 +119,6 @@ class Full_dataset_TelemetryMLService:
         self.data_cache = training_cache
         print(f"[INFO] Using training-optimized data cache for large dataset processing")
         print(f"[INFO] Parquet-only storage optimized for ML training pipelines")
-
-        # Default telemetry time-gap (ms) used when stripping densely-sampled data
-        self.telemetry_time_gap_ms = 100
         
         # Add a simple lock mechanism to prevent concurrent fetches of the same model
         self._model_fetch_locks = {}
@@ -540,6 +538,7 @@ class Full_dataset_TelemetryMLService:
             processor = FeatureProcessor(telemetry_df)
             processed_df = processor.general_cleaning_for_analysis()
             processor.add_time_delta()
+            processor.flip_y_z_features()
             features = self._imitate_expert_feature_names or TelemetryFeatures().get_features_for_imitate_expert()
 
             filtered_telemetry_df = processor.filter_features_by_list(processed_df, features)
@@ -675,7 +674,7 @@ class Full_dataset_TelemetryMLService:
             data_cache_key=dataset_cache_key,
             trackName=trackName,
             max_memory_records=10000,
-            telemetry_time_gap_ms=self.telemetry_time_gap_ms
+            telemetry_time_gap_ms=100
         )
 
         segment_length = 20  # Default segment length for transformer training
@@ -895,6 +894,7 @@ class Full_dataset_TelemetryMLService:
                 processor = FeatureProcessor(telemetry_df)
                 processor.general_cleaning_for_analysis()
                 processor.strip_dataframe_by_time_gap(telemetry_time_gap_ms)
+                processor.flip_y_z_features()
                 processed_df = processor.add_time_delta()
                 
                 if processed_df.empty:
@@ -1345,10 +1345,27 @@ class Full_dataset_TelemetryMLService:
             
             # Step 4: Filter enriched chunk into segments
             chunk_segments = imitation_learning.filter_optimal_telemetry_segments(
-                enriched_chunk_data, segment_length=segment_length
+                enriched_chunk_data,
+                segment_length=segment_length,
+                batch_number=cache_batch_number
             )
             
             print(f"[INFO] Chunk {processed_chunks}: Generated {len(chunk_segments)} segments")
+
+            # Visualize this chunk immediately so artifacts reflect chunk-specific context
+            if chunk_segments:
+                try:
+                    visualization_payloads = visualize_optimal_segments(
+                        chunk_segments,
+                        max_segments=1,
+                        analyze_segment_fn=imitation_learning._analyze_segment_improvement,
+                        file_name_prefix=f"{segments_cache_key}_chunk_{processed_chunks}",
+                        return_base64=False
+                    )
+                    if visualization_payloads:
+                        print(f"[INFO] Generated {len(visualization_payloads)} visualizations for chunk {processed_chunks}")
+                except Exception as viz_error:
+                    print(f"[WARN] Failed to visualize chunk {processed_chunks}: {viz_error}")
             
             # Add segments to current batch
             current_segment_batch.extend(chunk_segments)
@@ -1384,6 +1401,7 @@ class Full_dataset_TelemetryMLService:
                 cache_batch_number
             )
             total_segments_cached += len(current_segment_batch)
+            current_segment_batch = []
             cache_batch_number += 1
         
         print(f"[SUCCESS] Enrichment completed:")

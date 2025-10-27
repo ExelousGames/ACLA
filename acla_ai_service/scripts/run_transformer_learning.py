@@ -31,6 +31,8 @@ from pathlib import Path
 import sys
 import time
 from datetime import datetime
+import io
+from contextlib import redirect_stdout, redirect_stderr
 
 # Add the parent directory to the Python path to import modules
 current_dir = Path(__file__).parent
@@ -58,56 +60,99 @@ async def main():
     5. Saves the trained model for future use
     """
     start_time = time.time()
-    print("🚀 Starting Expert Imitation Transformer Learning Pipeline...")
-    print("=" * 80)
-    print(f"📅 Started at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print("=" * 80)
     
-    try:
-        # Initialize ML service
-        print("🔧 Initializing ML Service...")
-        ml_service = Full_dataset_TelemetryMLService()
+    # Create output directory if it doesn't exist
+    output_dir = current_dir / 'output'
+    output_dir.mkdir(exist_ok=True)
+    
+    # Generate timestamped log filename
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    track_name = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_TRACK
+    log_filename = output_dir / f'transformer_learning_{track_name}_{timestamp}.log'
+    
+    # Create a custom stdout/stderr that writes to both file and console
+    class TeeOutput:
+        def __init__(self, file_handle, original_stream):
+            self.file = file_handle
+            self.original = original_stream
         
-        # Get track name from command line args or use default
-        track_name = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_TRACK
-        print(f"🏁 Target Track: {track_name}")
+        def write(self, data):
+            self.file.write(data)
+            self.file.flush()  # Ensure immediate write
+            self.original.write(data)
+            self.original.flush()
         
-        # Validate track name (optional warning, doesn't block execution)
-        if track_name not in SUPPORTED_TRACKS:
-            print(f"⚠️  Warning: '{track_name}' is not in the list of commonly supported tracks.")
-            print(f"    Supported tracks: {', '.join(SUPPORTED_TRACKS)}")
-            print("    Continuing anyway - track name will be passed to backend as-is.")
+        def flush(self):
+            self.file.flush()
+            self.original.flush()
+    
+    # Open log file and redirect output
+    with open(log_filename, 'w', encoding='utf-8') as log_file:
+        # Create tee outputs
+        tee_stdout = TeeOutput(log_file, sys.stdout)
+        tee_stderr = TeeOutput(log_file, sys.stderr)
         
-        print("-" * 40)
+        # Redirect stdout and stderr
+        old_stdout = sys.stdout
+        old_stderr = sys.stderr
+        sys.stdout = tee_stdout
+        sys.stderr = tee_stderr
         
-        # Execute the pipeline with progress tracking
-        print("⏳ Executing transformer learning pipeline...")
-        print("   Phase 1: Fetching telemetry data from backend...")
-        print("   Phase 2: Processing and filtering expert demonstrations...")
-        print("   Phase 3: Enriching contextual features...")
-        print("   Phase 4: Training transformer model...")
-        print("   Phase 5: Evaluating and saving model...")
-        print("-" * 40)
-        
-        results = await ml_service.StartImitateExpertPipeline(track_name)
-        
-        # Calculate execution time
-        execution_time = time.time() - start_time
-        
-        # Display comprehensive results
-        display_results(results, execution_time)
-        
-    except KeyboardInterrupt:
-        print("\n⚠️  Pipeline interrupted by user")
-        return
-    except Exception as e:
-        execution_time = time.time() - start_time
-        print(f"\n❌ Critical Error occurred after {execution_time:.1f}s: {e}")
-        print("-" * 80)
-        import traceback
-        traceback.print_exc()
-        print("-" * 80)
-        return
+        try:
+            print("🚀 Starting Expert Imitation Transformer Learning Pipeline...")
+            print("=" * 80)
+            print(f"📅 Started at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            print(f"📝 Log file: {log_filename}")
+            print("=" * 80)
+            
+            # Initialize ML service
+            print("🔧 Initializing ML Service...")
+            ml_service = Full_dataset_TelemetryMLService()
+            
+            print(f"🏁 Target Track: {track_name}")
+            
+            # Validate track name (optional warning, doesn't block execution)
+            if track_name not in SUPPORTED_TRACKS:
+                print(f"⚠️  Warning: '{track_name}' is not in the list of commonly supported tracks.")
+                print(f"    Supported tracks: {', '.join(SUPPORTED_TRACKS)}")
+                print("    Continuing anyway - track name will be passed to backend as-is.")
+            
+            print("-" * 40)
+            
+            # Execute the pipeline with progress tracking
+            print("⏳ Executing transformer learning pipeline...")
+            print("   Phase 1: Fetching telemetry data from backend...")
+            print("   Phase 2: Processing and filtering expert demonstrations...")
+            print("   Phase 3: Enriching contextual features...")
+            print("   Phase 4: Training transformer model...")
+            print("   Phase 5: Evaluating and saving model...")
+            print("-" * 40)
+            
+            results = await ml_service.StartImitateExpertPipeline(track_name)
+            
+            # Calculate execution time
+            execution_time = time.time() - start_time
+            
+            # Display comprehensive results
+            display_results(results, execution_time)
+            
+            print(f"\n✅ All output has been saved to: {log_filename}")
+            
+        except KeyboardInterrupt:
+            print("\n⚠️  Pipeline interrupted by user")
+            return
+        except Exception as e:
+            execution_time = time.time() - start_time
+            print(f"\n❌ Critical Error occurred after {execution_time:.1f}s: {e}")
+            print("-" * 80)
+            import traceback
+            traceback.print_exc()
+            print("-" * 80)
+            return
+        finally:
+            # Restore original stdout/stderr
+            sys.stdout = old_stdout
+            sys.stderr = old_stderr
 
 def display_results(results, execution_time: float):
     """

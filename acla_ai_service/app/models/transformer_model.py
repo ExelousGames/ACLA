@@ -21,7 +21,6 @@ from sklearn.metrics import mean_squared_error, mean_absolute_error
 from ..services.tire_grip_analysis_service import TireGripFeatureCatalog
 from ..services.imitate_expert_learning_service import (
     ExpertFeatureCatalog,
-    ExpertImitateLearningService,
 )
 from .telemetry_models import TelemetryFeatures
 
@@ -1920,7 +1919,7 @@ class ExpertActionTrainer:
         dataset._ensure_features_fitted()
 
         evaluation_segments: List[Tuple[Dict[str, Any], Tuple[np.ndarray, np.ndarray], Dict[str, int]]] = []
-        max_segments_to_collect = 10
+        max_segments_to_collect = 50
 
         for chunk_idx in range(len(dataset)):
             chunk_records = dataset._load_chunk(chunk_idx)
@@ -2167,47 +2166,6 @@ class ExpertActionTrainer:
             'target_sequence_unscaled_named': target_unscaled_named,
             'segments_sampled': [meta for _, _, meta in evaluation_segments]
         }
-
-        def _segment_to_timesteps(segment_record: Dict[str, Any]) -> List[Dict[str, Any]]:
-            timesteps: List[Dict[str, Any]] = []
-            for timestep in range(dataset.fixed_segment_length):
-                timestep_data = segment_record.get(timestep)
-                if isinstance(timestep_data, dict):
-                    timesteps.append(timestep_data)
-            return timesteps
-
-        visualization_segments_rendered = 0
-        visualization_metadata: List[Dict[str, int]] = []
-
-        segments_to_visualize: List[List[Dict[str, Any]]] = []
-        for raw_segment, _, meta in evaluation_segments[:max_segments_to_collect]:
-            timesteps = _segment_to_timesteps(raw_segment)
-            if len(timesteps) < 2:
-                continue
-            segments_to_visualize.append(timesteps)
-            visualization_metadata.append(meta)
-
-        if segments_to_visualize:
-            try:
-                viz_service = ExpertImitateLearningService()
-                viz_service.visualize_optimal_segments(
-                    segments_to_visualize,
-                    max_segments=len(segments_to_visualize),
-                    show=False,
-                    output_dir=None,
-                    return_base64=False,
-                )
-                visualization_segments_rendered = len(segments_to_visualize)
-                for meta in visualization_metadata:
-                    print(
-                        f"[INFO] Rendered evaluation visualization for chunk {meta['chunk_index']} "
-                        f"segment {meta['segment_index']}"
-                    )
-            except Exception as service_error:
-                print(f"[WARN] Evaluation visualization failed: {service_error}")
-
-        evaluation_payload['visualizations_rendered'] = visualization_segments_rendered
-        evaluation_payload['visualization_metadata'] = visualization_metadata
 
         evaluation_payload_safe = make_json_safe(evaluation_payload)
 

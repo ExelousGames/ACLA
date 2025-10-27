@@ -1,0 +1,269 @@
+"""Utilities to render telemetry segment visualizations without coupling to learning services."""
+
+from __future__ import annotations
+
+import base64
+import io
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional, Sequence, Union
+
+import matplotlib
+
+matplotlib.use("Agg")
+
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+
+from .imitate_expert_learning_service import ExpertFeatureCatalog
+
+
+def visualize_optimal_segments(
+    optimal_segments: List[List[Dict[str, Any]]],
+    *,
+    analyze_segment_fn: Optional[Callable[[pd.DataFrame, Sequence[str]], Dict[str, Any]]] = None,
+    max_segments: int = 3,
+    random_seed: Optional[int] = None,
+    show: bool = False,
+    output_dir: Optional[Union[str, Path]] = None,
+    return_base64: bool = True,
+    file_name_prefix: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Create trajectory and speed visualizations for optimal telemetry segments.
+
+    Args:
+        optimal_segments: Segments returned from filter_optimal_telemetry_segments.
+        analyze_segment_fn: Optional callable to calculate summary metrics per segment.
+    max_segments: Maximum number of segments to visualize.
+    random_seed: Optional seed for reproducible random sampling of segments.
+        show: Display figures interactively when True.
+        output_dir: Directory to persist plot images as .png files.
+        return_base64: Include base64 PNG payloads in the response when True.
+        file_name_prefix: Prefix for saved figure filenames.
+
+    Returns:
+        List of dictionaries containing metadata for each rendered figure.
+    """
+
+    if not optimal_segments:
+        return []
+
+    eo = ExpertFeatureCatalog.ExpertOptimalFeature
+    context = ExpertFeatureCatalog.ContextFeature
+
+    if output_dir is None:
+        output_dir = (
+            Path(__file__).resolve().parent.parent
+            / "scripts"
+            / "debug_output"
+            / "transformer_eval"
+            / "figures"
+        )
+
+    output_path: Optional[Path] = None
+    if output_dir is not None:
+        output_path = Path(output_dir)
+        output_path.mkdir(parents=True, exist_ok=True)
+
+    visualization_payloads: List[Dict[str, Any]] = []
+    required_context_features = [
+        context.EXPERT_VELOCITY_ALIGNMENT.value,
+        context.SPEED_DIFFERENCE.value,
+        context.DISTANCE_TO_EXPERT_LINE.value,
+    ]
+
+    required_columns = [
+        "Graphics_player_pos_x",
+        "Graphics_player_pos_y",
+        "Graphics_player_pos_z",
+        "Graphics_current_time",
+        "Physics_velocity_x",
+        "Physics_velocity_y",
+        "Physics_velocity_z",
+        "Physics_speed_kmh",
+        "time_delta_seconds",
+        eo.EXPERT_OPTIMAL_PLAYER_POS_X.value,
+        eo.EXPERT_OPTIMAL_PLAYER_POS_Y.value,
+        eo.EXPERT_OPTIMAL_PLAYER_POS_Z.value,
+        eo.EXPERT_OPTIMAL_VELOCITY_X.value,
+        eo.EXPERT_OPTIMAL_VELOCITY_Y.value,
+        eo.EXPERT_OPTIMAL_VELOCITY_Z.value,
+        eo.EXPERT_OPTIMAL_SPEED.value,
+        *required_context_features,
+    ]
+
+    segment_count = min(max_segments, len(optimal_segments))
+    if segment_count <= 0:
+        return []
+
+    rng = np.random.default_rng(random_seed)
+    selected_indices = sorted(
+        rng.choice(len(optimal_segments), size=segment_count, replace=False).tolist()
+    )
+
+    for segment_idx in selected_indices:
+        idx = int(segment_idx)
+        segment_records = optimal_segments[idx]
+        if not segment_records:
+            continue
+
+        segment_df = pd.DataFrame(segment_records).reset_index(drop=True)
+
+        missing_columns = [col for col in required_columns if col not in segment_df.columns]
+        if missing_columns:
+            raise ValueError(
+                f"Segment {idx + 1} missing required telemetry features: {', '.join(missing_columns)}"
+            )
+
+        current_x = segment_df["Graphics_player_pos_x"]
+        current_y = segment_df["Graphics_player_pos_y"]
+        current_z = segment_df["Graphics_player_pos_z"]
+
+        expert_x = segment_df[eo.EXPERT_OPTIMAL_PLAYER_POS_X.value]
+        expert_y = segment_df[eo.EXPERT_OPTIMAL_PLAYER_POS_Y.value]
+        expert_z = segment_df[eo.EXPERT_OPTIMAL_PLAYER_POS_Z.value]
+
+        current_speed_series = segment_df["Physics_speed_kmh"]
+        expert_speed_series = segment_df[eo.EXPERT_OPTIMAL_SPEED.value]
+
+        fig = plt.figure(figsize=(18, 8))
+        gs = fig.add_gridspec(2, 2, height_ratios=[2.0, 1.0], width_ratios=[1.5, 1.0])
+        ax_track = fig.add_subplot(gs[:, 0], projection="3d")
+        ax_speed = fig.add_subplot(gs[0, 1])
+        ax_time_delta = fig.add_subplot(gs[1, 1], sharex=ax_speed)
+
+        current_x_np = current_x.to_numpy()
+        current_y_np = current_y.to_numpy()
+        current_z_np = current_z.to_numpy()
+        ax_track.plot(current_x_np, current_y_np, current_z_np, color="#1f77b4", linewidth=2, label="Driver trajectory")
+        ax_track.scatter(current_x_np[0], current_y_np[0], current_z_np[0], color="green", label="Segment start", s=50, depthshade=False)
+        ax_track.scatter(current_x_np[-1], current_y_np[-1], current_z_np[-1], color="red", label="Segment end", s=50, depthshade=False)
+
+        expert_x_np = expert_x.to_numpy()
+        expert_y_np = expert_y.to_numpy()
+        expert_z_np = expert_z.to_numpy()
+        ax_track.plot(expert_x_np, expert_y_np, expert_z_np, color="#ff7f0e", linewidth=2, linestyle="--", label="Expert trajectory")
+
+        ax_track.set_title(f"Segment {idx + 1} trajectory (3D)")
+        ax_track.set_xlabel("Track X position")
+        ax_track.set_ylabel("Track Y position")
+        ax_track.set_zlabel("Track Z position")
+        ax_track.grid(True, linestyle="--", alpha=0.2)
+
+        try:
+            ranges = np.array([
+                np.ptp(current_x_np),
+                np.ptp(current_y_np),
+                np.ptp(current_z_np),
+            ])
+            ranges[ranges == 0] = 1.0
+            ax_track.set_box_aspect(ranges)
+        except Exception:
+            pass
+
+        ax_track.view_init(elev=20, azim=-60)
+        ax_track.legend(loc="upper left")
+
+        # Use telemetry timestamp (ms) converted to seconds for the x-axis
+        segment_times_seconds = segment_df["Graphics_current_time"].astype(float).to_numpy() / 1000.0
+        legend_handles: List[Any] = []
+        legend_labels: List[str] = []
+
+        driver_speed_line, = ax_speed.plot(
+            segment_times_seconds,
+            current_speed_series.to_numpy(),
+            label="Driver speed (km/h)",
+            color="#1f77b4",
+            linewidth=2,
+        )
+        legend_handles.append(driver_speed_line)
+        legend_labels.append("Driver speed (km/h)")
+
+        expert_speed_line, = ax_speed.plot(
+            segment_times_seconds,
+            expert_speed_series.to_numpy(),
+            label="Expert speed (km/h)",
+            color="#ff7f0e",
+            linestyle="--",
+            linewidth=2,
+        )
+        legend_handles.append(expert_speed_line)
+        legend_labels.append("Expert speed (km/h)")
+        ax_speed.set_title("Speed profile across segment")
+        ax_speed.set_xlabel("Segment time (s)")
+        ax_speed.set_ylabel("Speed (km/h)")
+        ax_speed.grid(True, linestyle="--", alpha=0.3)
+
+        ax_speed2 = ax_speed.twinx()
+        if context.EXPERT_VELOCITY_ALIGNMENT.value in segment_df:
+            alignment_line, = ax_speed2.plot(
+                segment_times_seconds,
+                segment_df[context.EXPERT_VELOCITY_ALIGNMENT.value],
+                color="purple",
+                alpha=0.5,
+                label="Velocity alignment",
+            )
+            ax_speed2.set_ylabel("Alignment (cosine)")
+            legend_handles.append(alignment_line)
+            legend_labels.append("Velocity alignment")
+        ax_speed2.set_ylim(-1.05, 1.05)
+
+        if legend_handles:
+            ax_speed.legend(legend_handles, legend_labels, loc="lower left")
+
+        time_delta_series = segment_df["time_delta_seconds"].to_numpy()
+        ax_time_delta.plot(
+            segment_times_seconds,
+            time_delta_series,
+            color="#2ca02c",
+            linewidth=2,
+        )
+        ax_time_delta.set_title("Time delta between samples")
+        ax_time_delta.set_xlabel("")
+        ax_time_delta.set_ylabel("Delta t (seconds)")
+        ax_time_delta.grid(True, linestyle="--", alpha=0.3)
+        ax_speed.tick_params(labelbottom=True)
+        ax_time_delta.tick_params(labelbottom=False)
+
+        fig.tight_layout()
+
+        buffer = io.BytesIO()
+        fig.savefig(buffer, format="png", dpi=150, bbox_inches="tight")
+        buffer.seek(0)
+        image_bytes = buffer.getvalue()
+
+        saved_path: Optional[Path] = None
+        prefix = file_name_prefix or "optimal_segment"
+        if output_path is not None:
+            saved_path = output_path / f"{prefix}_{idx + 1}.png"
+            saved_path.write_bytes(image_bytes)
+
+        if show:
+            plt.show()
+
+        plt.close(fig)
+
+        summary: Dict[str, Any] = {}
+        if analyze_segment_fn is not None:
+            try:
+                summary = analyze_segment_fn(segment_df, required_context_features)
+            except Exception as analyze_error:
+                summary = {"error": str(analyze_error)}
+
+        payload: Dict[str, Any] = {
+            "segment_index": idx,
+            "record_count": int(len(segment_df)),
+            "summary": summary,
+        }
+
+        if return_base64:
+            payload["image_base64"] = base64.b64encode(image_bytes).decode("utf-8")
+
+        if saved_path is not None:
+            payload["saved_path"] = str(saved_path)
+
+        visualization_payloads.append(payload)
+
+        buffer.close()
+
+    return visualization_payloads

@@ -25,6 +25,121 @@ const METRIC_LABELS: Record<string, string> = {
     expert_optimal_velocity_z: 'Velocity Z'
 };
 
+interface ComparisonField {
+    label: string;
+    expertKey: string;
+    liveKey?: string;
+    liveAccessor?: (liveSample: Record<string, unknown>) => unknown;
+    digits?: number;
+}
+
+const COMPARISON_FIELDS: ComparisonField[] = [
+    {
+        label: 'Speed (km/h)',
+        expertKey: 'expert_optimal_speed',
+        liveKey: 'Physics_speed_kmh',
+        digits: 1
+    },
+    {
+        label: 'Throttle',
+        expertKey: 'expert_optimal_throttle',
+        liveKey: 'Physics_gas',
+        digits: 3
+    },
+    {
+        label: 'Brake',
+        expertKey: 'expert_optimal_brake',
+        liveKey: 'Physics_brake',
+        digits: 3
+    },
+    {
+        label: 'Steering Angle',
+        expertKey: 'expert_optimal_steering',
+        liveKey: 'Physics_steer_angle',
+        digits: 3
+    },
+    {
+        label: 'Gear',
+        expertKey: 'expert_optimal_gear',
+        liveKey: 'Physics_gear',
+        digits: 0
+    },
+    {
+        label: 'Track Position',
+        expertKey: 'expert_optimal_track_position',
+        liveKey: 'Graphics_normalized_car_position',
+        digits: 3
+    },
+    {
+        label: 'Velocity X',
+        expertKey: 'expert_optimal_velocity_x',
+        liveKey: 'Physics_velocity_x',
+        digits: 3
+    },
+    {
+        label: 'Velocity Y',
+        expertKey: 'expert_optimal_velocity_y',
+        liveKey: 'Physics_velocity_y',
+        digits: 3
+    },
+    {
+        label: 'Velocity Z',
+        expertKey: 'expert_optimal_velocity_z',
+        liveKey: 'Physics_velocity_z',
+        digits: 3
+    },
+    {
+        label: 'Player Position X',
+        expertKey: 'expert_optimal_player_pos_x',
+        digits: 3,
+        liveAccessor: (liveSample) => {
+            const coordinates = liveSample['Graphics_car_coordinates'];
+            if (!Array.isArray(coordinates) || coordinates.length === 0) {
+                return undefined;
+            }
+            const first = coordinates[0] as Record<string, unknown>;
+            const value = first ? first['x'] : undefined;
+            return typeof value === 'number' ? value : undefined;
+        }
+    },
+    {
+        label: 'Player Position Y',
+        expertKey: 'expert_optimal_player_pos_y',
+        digits: 3,
+        liveAccessor: (liveSample) => {
+            const coordinates = liveSample['Graphics_car_coordinates'];
+            if (!Array.isArray(coordinates) || coordinates.length === 0) {
+                return undefined;
+            }
+            const first = coordinates[0] as Record<string, unknown>;
+            const value = first ? first['y'] : undefined;
+            return typeof value === 'number' ? value : undefined;
+        }
+    },
+    {
+        label: 'Player Position Z',
+        expertKey: 'expert_optimal_player_pos_z',
+        digits: 3,
+        liveAccessor: (liveSample) => {
+            const coordinates = liveSample['Graphics_car_coordinates'];
+            if (!Array.isArray(coordinates) || coordinates.length === 0) {
+                return undefined;
+            }
+            const first = coordinates[0] as Record<string, unknown>;
+            const value = first ? first['z'] : undefined;
+            return typeof value === 'number' ? value : undefined;
+        }
+    }
+];
+
+interface ComparisonRow {
+    label: string;
+    liveValue?: number;
+    expertValue?: number;
+    delta: number | null;
+    digits?: number;
+}
+
 const formatNumber = (value: unknown, digits = 2): string => {
     const num = typeof value === 'number' ? value : Number(value);
     if (Number.isNaN(num)) {
@@ -226,6 +341,50 @@ const ExpertActionsChart: React.FC<VisualizationProps> = ({ width = '100%', heig
         return series.filter((_, index) => index % step === 0 || index === series.length - 1);
     }, [prediction]);
 
+    const comparisonRows = useMemo<ComparisonRow[]>(() => {
+        if (!prediction?.prediction) {
+            return [];
+        }
+
+        const liveTelemetry = analysisContext.liveData;
+        if (!liveTelemetry || typeof liveTelemetry !== 'object') {
+            return [];
+        }
+
+        const liveSample = liveTelemetry as Record<string, unknown>;
+        const expertValues = prediction.prediction as Record<string, number>;
+
+        const rows: ComparisonRow[] = [];
+
+        COMPARISON_FIELDS.forEach((field) => {
+            const liveRaw = field.liveAccessor
+                ? field.liveAccessor(liveSample)
+                : field.liveKey
+                    ? liveSample[field.liveKey]
+                    : undefined;
+            const liveValue = typeof liveRaw === 'number' ? liveRaw : undefined;
+
+            const expertRaw = expertValues[field.expertKey];
+            const expertValue = typeof expertRaw === 'number' ? expertRaw : undefined;
+
+            if (liveValue === undefined && expertValue === undefined) {
+                return;
+            }
+
+            const delta = liveValue !== undefined && expertValue !== undefined ? liveValue - expertValue : null;
+
+            rows.push({
+                label: field.label,
+                liveValue,
+                expertValue,
+                delta,
+                digits: field.digits
+            });
+        });
+
+        return rows;
+    }, [analysisContext.liveData, prediction]);
+
     useEffect(() => {
         let cancelled = false;
 
@@ -353,7 +512,17 @@ const ExpertActionsChart: React.FC<VisualizationProps> = ({ width = '100%', heig
     }, [analysisContext.liveData, environment, sessionReady, initializing, loading, TelemetryDataLiveStatus, handleComputePrediction]);
 
     return (
-        <Card style={{ width, height, padding: '16px', display: 'flex', flexDirection: 'column' }}>
+        <Card
+            style={{
+                width,
+                height,
+                padding: '16px',
+                display: 'flex',
+                flexDirection: 'column',
+                overflowY: 'auto',
+                overflowX: 'hidden'
+            }}
+        >
             <Flex justify="between" align="center" mb="3">
                 <Box>
                     <Text size="3" weight="bold">Expert Action Insights</Text>
@@ -396,14 +565,24 @@ const ExpertActionsChart: React.FC<VisualizationProps> = ({ width = '100%', heig
 
             {prediction?.status === 'success' ? (
                 <Box style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                    <Box>
-                        <Text size="2" weight="medium">Aggregated Expert Actions</Text>
-                        <GridMetrics metrics={summaryMetrics} />
-                    </Box>
+                    <Flex
+                        wrap="wrap"
+                        gap="3"
+                        style={{ width: '100%', alignItems: 'stretch' }}
+                    >
+                        <SectionContainer title="Aggregated Expert Actions" style={{ flex: '1 1 280px' }}>
+                            <GridMetrics metrics={summaryMetrics} />
+                        </SectionContainer>
 
-                    <Box>
-                        <Text size="2" weight="medium" mb="2">Latest Expert Sample</Text>
-                        <ScrollArea type="hover" style={{ maxHeight: 180 }}>
+                        {comparisonRows.length > 0 && (
+                            <SectionContainer title="Live vs Expert Comparison" style={{ flex: '1 1 320px' }}>
+                                <LiveVsExpertTable rows={comparisonRows} />
+                            </SectionContainer>
+                        )}
+                    </Flex>
+
+                    <SectionContainer title="Latest Expert Sample">
+                        <ScrollArea type="hover" style={{ maxHeight: 240 }}>
                             <Table.Root>
                                 <Table.Header>
                                     <Table.Row>
@@ -427,13 +606,10 @@ const ExpertActionsChart: React.FC<VisualizationProps> = ({ width = '100%', heig
                                 </Table.Body>
                             </Table.Root>
                         </ScrollArea>
-                    </Box>
-
-                    <Box>
                         <Text size="1" color="gray">
                             Samples used: {prediction.metadata?.telemetry_samples_used ?? 'N/A'} • Normalized position available: {prediction.metadata?.has_normalized_positions ? 'Yes' : 'No'}
                         </Text>
-                    </Box>
+                    </SectionContainer>
                 </Box>
             ) : (
                 <Box style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
@@ -460,23 +636,108 @@ const GridMetrics: React.FC<MetricProps> = ({ metrics }) => {
     }
 
     return (
-        <Flex wrap="wrap" gap="3" mt="3">
+        <Box
+            mt="3"
+            style={{
+                display: 'grid',
+                gap: '12px',
+                gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))'
+            }}
+        >
             {metrics.map((metric) => (
                 <Box
                     key={metric.key}
                     style={{
-                        minWidth: 140,
                         padding: '12px',
                         borderRadius: '8px',
-                        background: 'var(--gray-2)'
+                        background: 'var(--gray-3)'
                     }}
                 >
                     <Text size="1" color="gray">{metric.label}</Text>
                     <Text size="3" weight="medium">{metric.value}</Text>
                 </Box>
             ))}
-        </Flex>
+        </Box>
     );
 };
+
+interface ComparisonTableProps {
+    rows: ComparisonRow[];
+}
+
+const LiveVsExpertTable: React.FC<ComparisonTableProps> = ({ rows }) => {
+    if (!rows || rows.length === 0) {
+        return (
+            <Box mt="2">
+                <Text size="1" color="gray">No live telemetry available for comparison.</Text>
+            </Box>
+        );
+    }
+
+    const renderValue = (value: number | undefined, digits?: number) => {
+        return typeof value === 'number' ? formatNumber(value, digits) : '-';
+    };
+
+    const renderDelta = (delta: number | null, digits?: number) => {
+        return typeof delta === 'number' ? formatNumber(delta, digits ?? 3) : '-';
+    };
+
+    return (
+        <ScrollArea type="hover" style={{ width: '100%' }}>
+            <Box mt="2" style={{ minWidth: 520 }}>
+                <Table.Root>
+                    <Table.Header>
+                        <Table.Row>
+                            <Table.ColumnHeaderCell>Metric</Table.ColumnHeaderCell>
+                            <Table.ColumnHeaderCell>Live Telemetry</Table.ColumnHeaderCell>
+                            <Table.ColumnHeaderCell>Expert Prediction</Table.ColumnHeaderCell>
+                            <Table.ColumnHeaderCell>Δ (Live - Expert)</Table.ColumnHeaderCell>
+                        </Table.Row>
+                    </Table.Header>
+                    <Table.Body>
+                        {rows.map((row) => (
+                            <Table.Row key={row.label}>
+                                <Table.Cell>{row.label}</Table.Cell>
+                                <Table.Cell>{renderValue(row.liveValue, row.digits)}</Table.Cell>
+                                <Table.Cell>{renderValue(row.expertValue, row.digits)}</Table.Cell>
+                                <Table.Cell>{renderDelta(row.delta, row.digits)}</Table.Cell>
+                            </Table.Row>
+                        ))}
+                    </Table.Body>
+                </Table.Root>
+            </Box>
+        </ScrollArea>
+    );
+};
+
+interface SectionContainerProps {
+    title: string;
+    description?: string;
+    children: React.ReactNode;
+    style?: React.CSSProperties;
+}
+
+const SectionContainer: React.FC<SectionContainerProps> = ({ title, description, children, style }) => (
+    <Box
+        style={{
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '12px',
+            padding: '16px',
+            borderRadius: '12px',
+            background: 'var(--gray-2)',
+            boxShadow: 'inset 0 0 0 1px var(--gray-4)',
+            ...style
+        }}
+    >
+        <Box>
+            <Text size="2" weight="medium">{title}</Text>
+            {description && (
+                <Text size="1" color="gray">{description}</Text>
+            )}
+        </Box>
+        {children}
+    </Box>
+);
 
 export default ExpertActionsChart;

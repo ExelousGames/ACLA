@@ -930,9 +930,7 @@ class ExpertImitateLearningService:
         missing_features = [f for f in required_features if f not in first_record]
         if missing_features:
             raise ValueError(f"[ERROR] Missing required context features: {missing_features}, available: {list(first_record.keys())}")
-        
-        print(f"[INFO] Found all required context features: {required_features}")
-        
+
         # Convert to DataFrame for easier analysis
         try:
             df = pd.DataFrame(telemetry_data)
