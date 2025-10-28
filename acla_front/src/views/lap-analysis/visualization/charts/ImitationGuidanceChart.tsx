@@ -254,6 +254,7 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
     const [error, setError] = useState<string | null>(null);
     const [autoUpdate, setAutoUpdate] = useState<boolean>(false);
     const [progress, setProgress] = useState<number>(0); // seconds along timeline
+    const [isPlaying, setIsPlaying] = useState<boolean>(false);
     const animationFrameRef = useRef<number | null>(null);
     const playbackStartRef = useRef<number | null>(null);
     const fetchDurationMsRef = useRef<number>(DEFAULT_FETCH_DURATION_MS);
@@ -398,6 +399,7 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
             const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
             playbackStartRef.current = now - initialProgress * 1000;
             prefetchTriggeredRef.current = false;
+            setIsPlaying(true);
 
             if (result.sequence_predictions && result.sequence_predictions.length > 0) {
                 const guidanceText = formatGuidanceForChat(result);
@@ -441,7 +443,15 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
 
     // Toggle auto-update mode
     const toggleAutoUpdate = useCallback(() => {
-        setAutoUpdate(prev => !prev);
+        setAutoUpdate(prev => {
+            const next = !prev;
+            if (next) {
+                setIsPlaying(true);
+                const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+                playbackStartRef.current = now - (progressRef.current ?? 0) * 1000;
+            }
+            return next;
+        });
     }, []);
 
     useEffect(() => {
@@ -459,11 +469,25 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
     }, [totalDuration]);
 
     useEffect(() => {
-        if (!autoUpdate) {
+        if (isPlaying) {
+            const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+            playbackStartRef.current = now - (progressRef.current ?? 0) * 1000;
+            prefetchTriggeredRef.current = false;
+        }
+    }, [isPlaying]);
+
+    useEffect(() => {
+        if (!(autoUpdate || isPlaying)) {
             if (animationFrameRef.current != null) {
                 cancelAnimationFrame(animationFrameRef.current);
                 animationFrameRef.current = null;
             }
+            return;
+        }
+
+        const currentDuration = playbackDurationRef.current;
+        if (!autoUpdate && isPlaying && (!Number.isFinite(currentDuration) || currentDuration <= PROGRESS_EPSILON)) {
+            setIsPlaying(false);
             return;
         }
 
@@ -481,7 +505,7 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
                     progressRef.current = clamped;
                 }
 
-                if (!prefetchTriggeredRef.current) {
+                if (autoUpdate && !prefetchTriggeredRef.current) {
                     const remainingMs = Math.max(0, (duration - clamped) * 1000);
                     const leadTimeMs = fetchDurationMsRef.current + PREFETCH_BUFFER_MS;
 
@@ -489,6 +513,12 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
                         prefetchTriggeredRef.current = true;
                         fetchGuidance();
                     }
+                }
+
+                if (!autoUpdate && duration > 0 && clamped >= duration - PROGRESS_EPSILON) {
+                    setIsPlaying(false);
+                    animationFrameRef.current = null;
+                    return;
                 }
             }
 
@@ -503,7 +533,7 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
                 animationFrameRef.current = null;
             }
         };
-    }, [autoUpdate, fetchGuidance]);
+    }, [autoUpdate, fetchGuidance, isPlaying]);
 
     useEffect(() => {
         return () => {
@@ -521,6 +551,7 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
         const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
         playbackStartRef.current = now - clamped * 1000;
         prefetchTriggeredRef.current = false;
+        setIsPlaying(false);
     }, [totalDuration]);
 
     // Render telemetry data section
