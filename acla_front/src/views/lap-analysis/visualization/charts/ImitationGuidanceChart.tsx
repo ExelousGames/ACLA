@@ -64,7 +64,20 @@ type Keyframe = {
     steering: number;
     gear?: number;
     target_speed?: number;
+    normalized_position?: number;
     action?: string;
+};
+
+const NORMALIZED_POSITION_KEYS = [
+    'Graphics_normalized_car_position',
+    'graphics_normalized_car_position',
+    'normalized_car_position',
+    'car_position'
+] as const;
+
+const getNormalizedPositionFromRecord = (record?: Record<string, unknown> | null): number | undefined => {
+    if (!record) return undefined;
+    return getNumericFromTargets(record, Array.from(NORMALIZED_POSITION_KEYS));
 };
 
 const clamp01 = (n: number) => Math.max(0, Math.min(1, n));
@@ -133,6 +146,7 @@ const keyframeFromPrediction = (prediction: SequencePrediction, timeOverride?: n
     const steering = normalizeSteering(rawSteering);
     const gear = toGear(getNumericFromTargets(targets, ['Physics_gear', 'gear']));
     const targetSpeed = getNumericFromTargets(targets, ['Physics_speed_kmh', 'speed_kmh', 'speed']);
+    const normalizedPosition = getNormalizedPositionFromRecord(targets);
     const predictedActionCandidate = (prediction as { action?: unknown }).action;
     const predictedAction = typeof predictedActionCandidate === 'string' ? predictedActionCandidate : undefined;
     const action = predictedAction && predictedAction.trim().length > 0
@@ -150,6 +164,7 @@ const keyframeFromPrediction = (prediction: SequencePrediction, timeOverride?: n
         steering,
         gear,
         target_speed: targetSpeed,
+        normalized_position: normalizedPosition,
         action,
     };
 };
@@ -161,9 +176,63 @@ const keyframeFromTelemetry = (telemetry?: TelemetryData | null): Keyframe | nul
     const steering = normalizeSteering(toFiniteNumber(telemetry.steering ?? telemetry.steer_angle ?? telemetry.steering_angle) ?? 0);
     const gear = toGear(toFiniteNumber(telemetry.gear));
     const targetSpeed = toFiniteNumber(telemetry.speed ?? telemetry.speed_kmh ?? telemetry.speed_mph);
+    const normalizedPosition = getNormalizedPositionFromRecord(telemetry as unknown as Record<string, unknown>);
     const action = deriveAction(throttle, brake, steering);
 
-    return { t: 0, throttle, brake, steering, gear, target_speed: targetSpeed, action };
+    return { t: 0, throttle, brake, steering, gear, target_speed: targetSpeed, normalized_position: normalizedPosition, action };
+};
+
+const buildKeyframesFromPredictions = (predictions: SequencePrediction[]): Keyframe[] => {
+    const frames: Keyframe[] = [];
+    let cumulativeTime = 0;
+
+    for (const prediction of predictions) {
+        const deltaSecondsRaw = (prediction as { time_delta_seconds?: unknown }).time_delta_seconds;
+        const deltaSeconds = toFiniteNumber(deltaSecondsRaw);
+        let timeOverride: number | undefined;
+
+        if (deltaSeconds != null && Number.isFinite(deltaSeconds)) {
+            cumulativeTime += Math.max(0, deltaSeconds);
+            timeOverride = cumulativeTime;
+        }
+
+        const frame = keyframeFromPrediction(prediction, timeOverride);
+        if (Number.isFinite(frame.t)) {
+            frames.push(frame);
+        }
+    }
+
+    frames.sort((a, b) => a.t - b.t);
+    return frames;
+};
+
+const findKeyframeTimeByNormalizedPosition = (
+    frames: Keyframe[],
+    normalizedPosition?: number | null,
+    tolerance = 0.02
+): number | null => {
+    if (normalizedPosition == null || Number.isNaN(normalizedPosition)) {
+        return null;
+    }
+
+    let bestFrame: Keyframe | null = null;
+    let bestDiff = Number.POSITIVE_INFINITY;
+
+    for (const frame of frames) {
+        if (frame.normalized_position == null || Number.isNaN(frame.normalized_position)) {
+            continue;
+        }
+        const diff = Math.abs(frame.normalized_position - normalizedPosition);
+        if (diff < bestDiff) {
+            bestDiff = diff;
+            bestFrame = frame;
+        }
+        if (diff <= tolerance) {
+            break;
+        }
+    }
+
+    return bestFrame ? bestFrame.t : null;
 };
 
 const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
@@ -172,12 +241,13 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
     const [loading, setLoading] = useState<boolean>(false);
     const [error, setError] = useState<string | null>(null);
     const [autoUpdate, setAutoUpdate] = useState<boolean>(false);
-    const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+    const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const rafRef = useRef<number | null>(null);
 
     // Animation state
     const [isPlaying, setIsPlaying] = useState<boolean>(false);
     const [progress, setProgress] = useState<number>(0); // seconds along timeline
+    const [hasCompletedPlayback, setHasCompletedPlayback] = useState<boolean>(false);
     const playStartRef = useRef<number | null>(null); // performance.now baseline
     const progressAtPlayStartRef = useRef<number>(0); // progress when play started
 
@@ -193,26 +263,7 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
 
     const keyframes: Keyframe[] = useMemo(() => {
         const predictions = guidanceData?.guidance_result?.sequence_predictions ?? [];
-        const frames: Keyframe[] = [];
-        let cumulativeTime = 0;
-
-        for (const prediction of predictions) {
-            const deltaSecondsRaw = (prediction as { time_delta_seconds?: unknown }).time_delta_seconds;
-            const deltaSeconds = toFiniteNumber(deltaSecondsRaw);
-            let timeOverride: number | undefined;
-
-            if (deltaSeconds != null && Number.isFinite(deltaSeconds)) {
-                cumulativeTime += Math.max(0, deltaSeconds);
-                timeOverride = cumulativeTime;
-            }
-
-            const frame = keyframeFromPrediction(prediction, timeOverride);
-            if (Number.isFinite(frame.t)) {
-                frames.push(frame);
-            }
-        }
-
-        frames.sort((a, b) => a.t - b.t);
+        const frames = buildKeyframesFromPredictions(predictions);
 
         if (frames.length === 0) {
             const currentFrame = keyframeFromTelemetry(liveData);
@@ -317,6 +368,13 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
                 return;
             }
 
+            const frames = buildKeyframesFromPredictions(result.sequence_predictions ?? []);
+            const timelineEnd = frames.length ? frames[frames.length - 1].t : 0;
+            const liveNormalizedPosition = getNormalizedPositionFromRecord(currentLiveData as unknown as Record<string, unknown>);
+            const matchedTime = findKeyframeTimeByNormalizedPosition(frames, liveNormalizedPosition);
+            const initialProgress = matchedTime ?? 0;
+            const shouldPlay = frames.length > 0 && timelineEnd >= initialProgress;
+
             setGuidanceData({
                 message: raw.message,
                 success: raw.success,
@@ -324,10 +382,11 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
                 guidance_result: result,
             });
 
-            setProgress(0);
-            setIsPlaying(true);
+            setHasCompletedPlayback(false);
+            setProgress(initialProgress);
+            progressAtPlayStartRef.current = initialProgress;
             playStartRef.current = null;
-            progressAtPlayStartRef.current = 0;
+            setIsPlaying(shouldPlay);
 
             if (result.sequence_predictions && result.sequence_predictions.length > 0) {
                 const guidanceText = formatGuidanceForChat(result);
@@ -372,8 +431,9 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
     // Cleanup interval on unmount
     useEffect(() => {
         return () => {
-            if (intervalRef.current) {
-                clearInterval(intervalRef.current);
+            if (timeoutRef.current) {
+                clearTimeout(timeoutRef.current);
+                timeoutRef.current = null;
             }
             if (rafRef.current) {
                 cancelAnimationFrame(rafRef.current);
@@ -383,33 +443,37 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
     }, []);
 
     useEffect(() => {
-        if (!autoUpdate) {
-            if (intervalRef.current) {
-                clearInterval(intervalRef.current);
-                intervalRef.current = null;
+        let cancelled = false;
+
+        const loop = async () => {
+            if (cancelled || !autoUpdate) {
+                return;
             }
-            return;
-        }
 
-        if (intervalRef.current) {
-            clearInterval(intervalRef.current);
-        }
+            await fetchGuidance();
 
-        intervalRef.current = setInterval(fetchGuidance, 1000);
+            if (cancelled || !autoUpdate) {
+                return;
+            }
+
+            if (timeoutRef.current) {
+                clearTimeout(timeoutRef.current);
+            }
+            timeoutRef.current = setTimeout(loop, 1000);
+        };
+
+        if (autoUpdate) {
+            loop();
+        }
 
         return () => {
-            if (intervalRef.current) {
-                clearInterval(intervalRef.current);
-                intervalRef.current = null;
+            cancelled = true;
+            if (timeoutRef.current) {
+                clearTimeout(timeoutRef.current);
+                timeoutRef.current = null;
             }
         };
-    }, [autoUpdate, fetchGuidance]);
-
-    // Auto-fetch when auto-update is enabled or session context changes
-    useEffect(() => {
-        if (!autoUpdate) return;
-        fetchGuidance();
-    }, [autoUpdate, trackName, carName, fetchGuidance]);
+    }, [autoUpdate, fetchGuidance, trackName, carName]);
 
     // Animation loop
     useEffect(() => {
@@ -427,6 +491,7 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
                 setIsPlaying(false); // stop at end
                 playStartRef.current = null;
                 progressAtPlayStartRef.current = totalDuration;
+                setHasCompletedPlayback(true);
                 return;
             }
             rafRef.current = requestAnimationFrame(step);
@@ -441,6 +506,7 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
 
     const onPlayPause = useCallback(() => {
         if (totalDuration <= 0) return;
+        if (!isPlaying && hasCompletedPlayback) return;
         if (isPlaying) {
             // pause
             setIsPlaying(false);
@@ -451,21 +517,15 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
             setIsPlaying(true);
             playStartRef.current = null; // will be set on next RAF
         }
-    }, [isPlaying, progress, totalDuration]);
-
-    const onRestart = useCallback(() => {
-        setProgress(0);
-        progressAtPlayStartRef.current = 0;
-        playStartRef.current = null;
-        if (totalDuration > 0) setIsPlaying(true);
-    }, [totalDuration]);
+    }, [hasCompletedPlayback, isPlaying, progress, totalDuration]);
 
     const onScrub = useCallback((v: number) => {
+        if (hasCompletedPlayback) return;
         const clamped = Math.max(0, Math.min(totalDuration || 0, v));
         setProgress(clamped);
         progressAtPlayStartRef.current = clamped;
         playStartRef.current = null;
-    }, [totalDuration]);
+    }, [hasCompletedPlayback, totalDuration]);
 
     // Render telemetry data section
     const renderTelemetryData = () => {
@@ -553,6 +613,9 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
     // Render animated timeline section
     const renderAnimatedTimeline = () => {
         const hasData = keyframes.length > 0 && totalDuration > 0;
+        const playbackFinished = hasCompletedPlayback && hasData;
+        const playButtonLabel = playbackFinished ? 'Finished' : (isPlaying ? 'Pause' : 'Play');
+        const playDisabled = !hasData || playbackFinished;
         const cur = getInterpolatedValues(progress);
         const targetSpeedDisplay = typeof cur.target_speed === 'number' ? `${cur.target_speed.toFixed(1)} km/h` : '-';
         const gearDisplay = typeof cur.gear === 'number' ? cur.gear : '-';
@@ -610,10 +673,9 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
                 {/* Timeline controls */}
                 <div className={styles.timelineControls}>
                     <div className={styles.controlsLeft}>
-                        <Button size="1" onClick={onPlayPause} disabled={!hasData} variant="soft">
-                            {isPlaying ? 'Pause' : 'Play'}
+                        <Button size="1" onClick={onPlayPause} disabled={playDisabled} variant="soft">
+                            {playButtonLabel}
                         </Button>
-                        <Button size="1" onClick={onRestart} disabled={!hasData} variant="soft">Restart</Button>
                     </div>
                     <div className={styles.controlsRight}>
                         <Text size="1" color="gray">{progress.toFixed(2)}s / {totalDuration.toFixed(2)}s</Text>
@@ -627,7 +689,7 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
                         step={0.01}
                         value={Number.isFinite(progress) ? progress : 0}
                         onChange={(e) => onScrub(parseFloat(e.target.value))}
-                        disabled={!hasData}
+                        disabled={!hasData || hasCompletedPlayback}
                     />
                     {/* Keyframe markers */}
                     <div className={styles.keyframeTrack}>
