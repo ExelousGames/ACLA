@@ -184,31 +184,21 @@ const buildKeyframesFromPredictions = (predictions: SequencePrediction[]): Keyfr
         return [];
     }
 
-    const frames: Keyframe[] = [];
     const sorted = [...predictions].sort((a, b) => a.step - b.step);
-    let cumulativeTime = 0;
+    const parsedDeltas = sorted
+        .map(prediction => parseTimeDeltaSeconds((prediction as { time_delta_seconds?: unknown }).time_delta_seconds))
+        .filter((value): value is number => value != null && Number.isFinite(value) && value > 0);
 
-    for (const prediction of sorted) {
-        const delta = parseTimeDeltaSeconds((prediction as { time_delta_seconds?: unknown }).time_delta_seconds);
+    const averageDelta = parsedDeltas.length > 0
+        ? parsedDeltas.reduce((sum, value) => sum + value, 0) / parsedDeltas.length
+        : 0;
 
-        if (delta != null) {
-            cumulativeTime += delta;
-        } else if (frames.length === 0) {
-            cumulativeTime = 0;
-        } else {
-            const lastFrame = frames[frames.length - 1];
-            const prevFrame = frames.length > 1 ? frames[frames.length - 2] : undefined;
-            const inferredDelta = prevFrame ? Math.max(0.1, lastFrame.t - prevFrame.t) : 0.5;
-            cumulativeTime += inferredDelta;
-        }
-
-        const frame = keyframeFromPrediction(prediction, cumulativeTime);
-        if (Number.isFinite(frame.t)) {
-            frames.push(frame);
-        }
-    }
-
-    return frames;
+    return sorted
+        .map((prediction, index) => {
+            const timelineTime = averageDelta > 0 ? averageDelta * (index + 1) : 0;
+            return keyframeFromPrediction(prediction, timelineTime);
+        })
+        .filter(frame => Number.isFinite(frame.t));
 };
 
 const findKeyframeTimeByNormalizedPosition = (
