@@ -674,7 +674,7 @@ class Full_dataset_TelemetryMLService:
             data_cache_key=dataset_cache_key,
             trackName=trackName,
             max_memory_records=10000,
-            telemetry_time_gap_ms=100
+            telemetry_time_gap_ms=300
         )
 
         segment_length = 20  # Default segment length for transformer training

@@ -9,6 +9,7 @@ import styles from './ImitationGuidanceChart.module.css';
 interface SequencePrediction {
     step: number;
     time_ahead: string;
+    time_delta_seconds?: number | string;
     all_targets: Record<string, unknown>;
     [key: string]: unknown;
 }
@@ -192,10 +193,26 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
 
     const keyframes: Keyframe[] = useMemo(() => {
         const predictions = guidanceData?.guidance_result?.sequence_predictions ?? [];
-        const frames = predictions
-            .map((prediction, index) => keyframeFromPrediction(prediction, index * 0.1))
-            .filter(frame => Number.isFinite(frame.t))
-            .sort((a, b) => a.t - b.t);
+        const frames: Keyframe[] = [];
+        let cumulativeTime = 0;
+
+        for (const prediction of predictions) {
+            const deltaSecondsRaw = (prediction as { time_delta_seconds?: unknown }).time_delta_seconds;
+            const deltaSeconds = toFiniteNumber(deltaSecondsRaw);
+            let timeOverride: number | undefined;
+
+            if (deltaSeconds != null && Number.isFinite(deltaSeconds)) {
+                cumulativeTime += Math.max(0, deltaSeconds);
+                timeOverride = cumulativeTime;
+            }
+
+            const frame = keyframeFromPrediction(prediction, timeOverride);
+            if (Number.isFinite(frame.t)) {
+                frames.push(frame);
+            }
+        }
+
+        frames.sort((a, b) => a.t - b.t);
 
         if (frames.length === 0) {
             const currentFrame = keyframeFromTelemetry(liveData);
