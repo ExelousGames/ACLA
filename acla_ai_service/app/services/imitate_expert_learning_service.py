@@ -1349,10 +1349,9 @@ class ExpertImitateLearningService:
             # Calculate BOTH improvement and consistency rates for ALL metrics regardless of their mode
             
             # For improvement rate - check core metrics for positive trend movement
-            velocity_improvement = velocity_trend > 0 if len(velocity_alignment) > 1 else False
             distance_improvement = distance_trend < 0 if len(distance_to_line) > 1 else False  # Getting closer is improvement
             
-            improvement_criteria = [velocity_improvement, distance_improvement]
+            improvement_criteria = [distance_improvement]
             if improvement_metrics['limit_metrics_available']:
                 limit_checks: List[bool] = []
                 if improvement_metrics.get('acceleration_limit_rate', 0.0) > 0.0:
