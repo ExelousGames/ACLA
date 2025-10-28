@@ -79,6 +79,9 @@ const PLAY_AHEAD_STEPS = 1;
 const PREFETCH_BUFFER_MS = 400;
 const DEFAULT_FETCH_DURATION_MS = 600;
 const PROGRESS_EPSILON = 0.01;
+const DEFAULT_STEP_SECONDS = 0.3;
+const MIN_STEP_SECONDS = 0.05;
+const MIN_TIMELINE_INCREMENT = 0.01;
 
 const getNormalizedPositionFromRecord = (record?: Record<string, unknown> | null): number | undefined => {
     if (!record) return undefined;
@@ -144,6 +147,23 @@ const parseTimeDeltaSeconds = (value: unknown): number | null => {
     return Math.max(0, numeric);
 };
 
+const determineRescaleFactor = (values: Array<number | null | undefined>): number => {
+    const positives = values.filter((v): v is number => typeof v === 'number' && v > 0);
+    if (positives.length === 0) {
+        return 1;
+    }
+
+    const largeCount = positives.filter(v => v >= 100).length;
+    return largeCount / positives.length >= 0.6 ? 1000 : 1;
+};
+
+const normalizeDurationValue = (value: number | null, scale: number): number | null => {
+    if (value == null) {
+        return null;
+    }
+    return value / Math.max(scale, 1);
+};
+
 const keyframeFromPrediction = (prediction: SequencePrediction, timelineTime = 0): Keyframe => {
     const targets = (prediction.all_targets ?? {}) as Record<string, unknown>;
     const throttle = clamp01(getNumericFromTargets(targets, ['Physics_gas', 'gas', 'throttle']) ?? 0);
@@ -190,17 +210,47 @@ const buildKeyframesFromPredictions = (predictions: SequencePrediction[]): Keyfr
     }
 
     const sorted = [...predictions].sort((a, b) => a.step - b.step);
-    const parsedDeltas = sorted
-        .map(prediction => parseTimeDeltaSeconds((prediction as { time_delta_seconds?: unknown }).time_delta_seconds))
-        .filter((value): value is number => value != null && Number.isFinite(value) && value > 0);
+    const rawAhead = sorted.map(prediction => parseTimeDeltaSeconds((prediction as { time_ahead?: unknown }).time_ahead));
+    const rawDeltas = sorted.map(prediction => parseTimeDeltaSeconds((prediction as { time_delta_seconds?: unknown }).time_delta_seconds));
 
-    const averageDelta = parsedDeltas.length > 0
-        ? parsedDeltas.reduce((sum, value) => sum + value, 0) / parsedDeltas.length
-        : 0;
+    const aheadScale = determineRescaleFactor(rawAhead);
+    const deltaScale = determineRescaleFactor(rawDeltas);
+
+    const normalizedAhead = rawAhead.map(value => normalizeDurationValue(value, aheadScale));
+    const normalizedDeltas = rawDeltas.map(value => normalizeDurationValue(value, deltaScale));
+
+    const positiveDeltas = normalizedDeltas.filter((value): value is number => value != null && Number.isFinite(value) && value > 0);
+    const fallbackDelta = positiveDeltas.length > 0
+        ? Math.max(positiveDeltas.reduce((sum, value) => sum + value, 0) / positiveDeltas.length, MIN_STEP_SECONDS)
+        : DEFAULT_STEP_SECONDS;
+
+    let lastTime = 0;
 
     return sorted
         .map((prediction, index) => {
-            const timelineTime = averageDelta > 0 ? averageDelta * (index + 1) : 0;
+            const aheadSeconds = normalizedAhead[index];
+            let timelineTime: number;
+
+            if (aheadSeconds != null && Number.isFinite(aheadSeconds) && aheadSeconds > 0) {
+                timelineTime = aheadSeconds;
+                if (timelineTime <= lastTime) {
+                    timelineTime = lastTime + Math.max(fallbackDelta, MIN_TIMELINE_INCREMENT);
+                }
+                lastTime = timelineTime;
+            } else {
+                const deltaSeconds = normalizedDeltas[index];
+                const effectiveDelta = deltaSeconds != null && Number.isFinite(deltaSeconds) && deltaSeconds > 0
+                    ? deltaSeconds
+                    : fallbackDelta;
+
+                if (index === 0 && lastTime === 0) {
+                    lastTime = Math.max(effectiveDelta, MIN_STEP_SECONDS);
+                } else {
+                    lastTime += Math.max(effectiveDelta, MIN_TIMELINE_INCREMENT);
+                }
+                timelineTime = lastTime;
+            }
+
             return keyframeFromPrediction(prediction, timelineTime);
         })
         .filter(frame => Number.isFinite(frame.t));
@@ -254,6 +304,7 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
     const [error, setError] = useState<string | null>(null);
     const [autoUpdate, setAutoUpdate] = useState<boolean>(false);
     const [progress, setProgress] = useState<number>(0); // seconds along timeline
+    const [isPlaying, setIsPlaying] = useState<boolean>(false);
     const animationFrameRef = useRef<number | null>(null);
     const playbackStartRef = useRef<number | null>(null);
     const fetchDurationMsRef = useRef<number>(DEFAULT_FETCH_DURATION_MS);
@@ -398,6 +449,7 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
             const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
             playbackStartRef.current = now - initialProgress * 1000;
             prefetchTriggeredRef.current = false;
+            setIsPlaying(true);
 
             if (result.sequence_predictions && result.sequence_predictions.length > 0) {
                 const guidanceText = formatGuidanceForChat(result);
@@ -441,7 +493,15 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
 
     // Toggle auto-update mode
     const toggleAutoUpdate = useCallback(() => {
-        setAutoUpdate(prev => !prev);
+        setAutoUpdate(prev => {
+            const next = !prev;
+            if (next) {
+                setIsPlaying(true);
+                const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+                playbackStartRef.current = now - (progressRef.current ?? 0) * 1000;
+            }
+            return next;
+        });
     }, []);
 
     useEffect(() => {
@@ -459,11 +519,25 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
     }, [totalDuration]);
 
     useEffect(() => {
-        if (!autoUpdate) {
+        if (isPlaying) {
+            const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+            playbackStartRef.current = now - (progressRef.current ?? 0) * 1000;
+            prefetchTriggeredRef.current = false;
+        }
+    }, [isPlaying]);
+
+    useEffect(() => {
+        if (!(autoUpdate || isPlaying)) {
             if (animationFrameRef.current != null) {
                 cancelAnimationFrame(animationFrameRef.current);
                 animationFrameRef.current = null;
             }
+            return;
+        }
+
+        const currentDuration = playbackDurationRef.current;
+        if (!autoUpdate && isPlaying && (!Number.isFinite(currentDuration) || currentDuration <= PROGRESS_EPSILON)) {
+            setIsPlaying(false);
             return;
         }
 
@@ -481,7 +555,7 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
                     progressRef.current = clamped;
                 }
 
-                if (!prefetchTriggeredRef.current) {
+                if (autoUpdate && !prefetchTriggeredRef.current) {
                     const remainingMs = Math.max(0, (duration - clamped) * 1000);
                     const leadTimeMs = fetchDurationMsRef.current + PREFETCH_BUFFER_MS;
 
@@ -489,6 +563,12 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
                         prefetchTriggeredRef.current = true;
                         fetchGuidance();
                     }
+                }
+
+                if (!autoUpdate && duration > 0 && clamped >= duration - PROGRESS_EPSILON) {
+                    setIsPlaying(false);
+                    animationFrameRef.current = null;
+                    return;
                 }
             }
 
@@ -503,7 +583,7 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
                 animationFrameRef.current = null;
             }
         };
-    }, [autoUpdate, fetchGuidance]);
+    }, [autoUpdate, fetchGuidance, isPlaying]);
 
     useEffect(() => {
         return () => {
@@ -521,6 +601,7 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
         const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
         playbackStartRef.current = now - clamped * 1000;
         prefetchTriggeredRef.current = false;
+        setIsPlaying(false);
     }, [totalDuration]);
 
     // Render telemetry data section
