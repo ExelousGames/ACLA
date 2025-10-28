@@ -75,6 +75,11 @@ const NORMALIZED_POSITION_KEYS = [
     'car_position'
 ] as const;
 
+const PLAY_AHEAD_STEPS = 1;
+const PREFETCH_BUFFER_MS = 400;
+const DEFAULT_FETCH_DURATION_MS = 600;
+const PROGRESS_EPSILON = 0.01;
+
 const getNormalizedPositionFromRecord = (record?: Record<string, unknown> | null): number | undefined => {
     if (!record) return undefined;
     return getNumericFromTargets(record, Array.from(NORMALIZED_POSITION_KEYS));
@@ -204,16 +209,19 @@ const buildKeyframesFromPredictions = (predictions: SequencePrediction[]): Keyfr
 const findKeyframeTimeByNormalizedPosition = (
     frames: Keyframe[],
     normalizedPosition?: number | null,
-    tolerance = 0.02
+    tolerance = 0.02,
+    stepsAhead = 0
 ): number | null => {
     if (normalizedPosition == null || Number.isNaN(normalizedPosition)) {
         return null;
     }
 
     let bestFrame: Keyframe | null = null;
+    let bestIndex = -1;
     let bestDiff = Number.POSITIVE_INFINITY;
 
-    for (const frame of frames) {
+    for (let index = 0; index < frames.length; index++) {
+        const frame = frames[index];
         if (frame.normalized_position == null || Number.isNaN(frame.normalized_position)) {
             continue;
         }
@@ -221,13 +229,22 @@ const findKeyframeTimeByNormalizedPosition = (
         if (diff < bestDiff) {
             bestDiff = diff;
             bestFrame = frame;
+            bestIndex = index;
         }
         if (diff <= tolerance) {
             break;
         }
     }
 
-    return bestFrame ? bestFrame.t : null;
+    if (!bestFrame || bestIndex < 0) {
+        return null;
+    }
+
+    const ahead = Math.max(0, Math.floor(stepsAhead));
+    const targetIndex = Math.min(frames.length - 1, bestIndex + ahead);
+    const targetFrame = frames[targetIndex] ?? bestFrame;
+
+    return Number.isFinite(targetFrame.t) ? targetFrame.t : bestFrame.t;
 };
 
 const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
@@ -236,15 +253,13 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
     const [loading, setLoading] = useState<boolean>(false);
     const [error, setError] = useState<string | null>(null);
     const [autoUpdate, setAutoUpdate] = useState<boolean>(false);
-    const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-    const rafRef = useRef<number | null>(null);
-
-    // Animation state
-    const [isPlaying, setIsPlaying] = useState<boolean>(false);
     const [progress, setProgress] = useState<number>(0); // seconds along timeline
-    const [hasCompletedPlayback, setHasCompletedPlayback] = useState<boolean>(false);
-    const playStartRef = useRef<number | null>(null); // performance.now baseline
-    const progressAtPlayStartRef = useRef<number>(0); // progress when play started
+    const animationFrameRef = useRef<number | null>(null);
+    const playbackStartRef = useRef<number | null>(null);
+    const fetchDurationMsRef = useRef<number>(DEFAULT_FETCH_DURATION_MS);
+    const prefetchTriggeredRef = useRef<boolean>(false);
+    const progressRef = useRef<number>(0);
+    const playbackDurationRef = useRef<number>(0);
 
     // Extract track and car information from session data
     const trackName = analysisContext.recordedSessioStaticsData?.track || 'Unknown Track';
@@ -338,6 +353,7 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
         requestInFlightRef.current = true;
         setLoading(true);
         setError(null);
+        const fetchStart = typeof performance !== 'undefined' ? performance.now() : Date.now();
 
         try {
             const response = await apiService.post('/racing-session/imitation-learning-guidance', {
@@ -364,11 +380,10 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
             }
 
             const frames = buildKeyframesFromPredictions(result.sequence_predictions ?? []);
-            const timelineEnd = frames.length ? frames[frames.length - 1].t : 0;
             const liveNormalizedPosition = getNormalizedPositionFromRecord(currentLiveData as unknown as Record<string, unknown>);
-            const matchedTime = findKeyframeTimeByNormalizedPosition(frames, liveNormalizedPosition);
+            const matchedTime = findKeyframeTimeByNormalizedPosition(frames, liveNormalizedPosition, 0.02, PLAY_AHEAD_STEPS);
             const initialProgress = matchedTime ?? 0;
-            const shouldPlay = frames.length > 0 && timelineEnd >= initialProgress;
+            const finalFrameTime = frames.length > 0 ? frames[frames.length - 1].t : 0;
 
             setGuidanceData({
                 message: raw.message,
@@ -377,11 +392,12 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
                 guidance_result: result,
             });
 
-            setHasCompletedPlayback(false);
             setProgress(initialProgress);
-            progressAtPlayStartRef.current = initialProgress;
-            playStartRef.current = null;
-            setIsPlaying(shouldPlay);
+            progressRef.current = initialProgress;
+            playbackDurationRef.current = finalFrameTime;
+            const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+            playbackStartRef.current = now - initialProgress * 1000;
+            prefetchTriggeredRef.current = false;
 
             if (result.sequence_predictions && result.sequence_predictions.length > 0) {
                 const guidanceText = formatGuidanceForChat(result);
@@ -393,6 +409,11 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
         } finally {
             setLoading(false);
             requestInFlightRef.current = false;
+            const fetchEnd = typeof performance !== 'undefined' ? performance.now() : Date.now();
+            const measured = fetchEnd - fetchStart;
+            if (Number.isFinite(measured) && measured > 0) {
+                fetchDurationMsRef.current = measured;
+            }
         }
     }, [analysisContext]);
 
@@ -423,104 +444,84 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
         setAutoUpdate(prev => !prev);
     }, []);
 
-    // Cleanup interval on unmount
+    useEffect(() => {
+        if (autoUpdate && !guidanceData && !requestInFlightRef.current) {
+            fetchGuidance();
+        }
+    }, [autoUpdate, guidanceData, fetchGuidance]);
+
+    useEffect(() => {
+        progressRef.current = progress;
+    }, [progress]);
+
+    useEffect(() => {
+        playbackDurationRef.current = totalDuration;
+    }, [totalDuration]);
+
+    useEffect(() => {
+        if (!autoUpdate) {
+            if (animationFrameRef.current != null) {
+                cancelAnimationFrame(animationFrameRef.current);
+                animationFrameRef.current = null;
+            }
+            return;
+        }
+
+        const step = () => {
+            const duration = playbackDurationRef.current;
+            const start = playbackStartRef.current;
+
+            if (duration > 0 && start != null) {
+                const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+                const elapsedSeconds = Math.max(0, (now - start) / 1000);
+                const clamped = Math.min(duration, elapsedSeconds);
+
+                if (Math.abs(clamped - progressRef.current) > PROGRESS_EPSILON) {
+                    setProgress(clamped);
+                    progressRef.current = clamped;
+                }
+
+                if (!prefetchTriggeredRef.current) {
+                    const remainingMs = Math.max(0, (duration - clamped) * 1000);
+                    const leadTimeMs = fetchDurationMsRef.current + PREFETCH_BUFFER_MS;
+
+                    if (remainingMs <= leadTimeMs && !requestInFlightRef.current) {
+                        prefetchTriggeredRef.current = true;
+                        fetchGuidance();
+                    }
+                }
+            }
+
+            animationFrameRef.current = requestAnimationFrame(step);
+        };
+
+        animationFrameRef.current = requestAnimationFrame(step);
+
+        return () => {
+            if (animationFrameRef.current != null) {
+                cancelAnimationFrame(animationFrameRef.current);
+                animationFrameRef.current = null;
+            }
+        };
+    }, [autoUpdate, fetchGuidance]);
+
     useEffect(() => {
         return () => {
-            if (timeoutRef.current) {
-                clearTimeout(timeoutRef.current);
-                timeoutRef.current = null;
-            }
-            if (rafRef.current) {
-                cancelAnimationFrame(rafRef.current);
-                rafRef.current = null;
+            if (animationFrameRef.current != null) {
+                cancelAnimationFrame(animationFrameRef.current);
+                animationFrameRef.current = null;
             }
         };
     }, []);
 
-    useEffect(() => {
-        let cancelled = false;
-
-        const loop = async () => {
-            if (cancelled || !autoUpdate) {
-                return;
-            }
-
-            await fetchGuidance();
-
-            if (cancelled || !autoUpdate) {
-                return;
-            }
-
-            if (timeoutRef.current) {
-                clearTimeout(timeoutRef.current);
-            }
-            timeoutRef.current = setTimeout(loop, 1000);
-        };
-
-        if (autoUpdate) {
-            loop();
-        }
-
-        return () => {
-            cancelled = true;
-            if (timeoutRef.current) {
-                clearTimeout(timeoutRef.current);
-                timeoutRef.current = null;
-            }
-        };
-    }, [autoUpdate, fetchGuidance, trackName, carName]);
-
-    // Animation loop
-    useEffect(() => {
-        if (!isPlaying || totalDuration <= 0) return;
-
-        const step = (now: number) => {
-            if (playStartRef.current == null) {
-                playStartRef.current = now;
-            }
-            const elapsed = (now - playStartRef.current) / 1000; // seconds
-            const newProgress = Math.min(progressAtPlayStartRef.current + elapsed, totalDuration);
-            setProgress(newProgress);
-
-            if (newProgress >= totalDuration) {
-                setIsPlaying(false); // stop at end
-                playStartRef.current = null;
-                progressAtPlayStartRef.current = totalDuration;
-                setHasCompletedPlayback(true);
-                return;
-            }
-            rafRef.current = requestAnimationFrame(step);
-        };
-
-        rafRef.current = requestAnimationFrame(step);
-        return () => {
-            if (rafRef.current) cancelAnimationFrame(rafRef.current);
-            rafRef.current = null;
-        };
-    }, [isPlaying, totalDuration]);
-
-    const onPlayPause = useCallback(() => {
-        if (totalDuration <= 0) return;
-        if (!isPlaying && hasCompletedPlayback) return;
-        if (isPlaying) {
-            // pause
-            setIsPlaying(false);
-            playStartRef.current = null;
-            progressAtPlayStartRef.current = progress;
-        } else {
-            // resume
-            setIsPlaying(true);
-            playStartRef.current = null; // will be set on next RAF
-        }
-    }, [hasCompletedPlayback, isPlaying, progress, totalDuration]);
-
     const onScrub = useCallback((v: number) => {
-        if (hasCompletedPlayback) return;
         const clamped = Math.max(0, Math.min(totalDuration || 0, v));
         setProgress(clamped);
-        progressAtPlayStartRef.current = clamped;
-        playStartRef.current = null;
-    }, [hasCompletedPlayback, totalDuration]);
+        progressRef.current = clamped;
+        const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+        playbackStartRef.current = now - clamped * 1000;
+        prefetchTriggeredRef.current = false;
+    }, [totalDuration]);
 
     // Render telemetry data section
     const renderTelemetryData = () => {
@@ -608,9 +609,6 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
     // Render animated timeline section
     const renderAnimatedTimeline = () => {
         const hasData = keyframes.length > 0 && totalDuration > 0;
-        const playbackFinished = hasCompletedPlayback && hasData;
-        const playButtonLabel = playbackFinished ? 'Finished' : (isPlaying ? 'Pause' : 'Play');
-        const playDisabled = !hasData || playbackFinished;
         const cur = getInterpolatedValues(progress);
         const targetSpeedDisplay = typeof cur.target_speed === 'number' ? `${cur.target_speed.toFixed(1)} km/h` : '-';
         const gearDisplay = typeof cur.gear === 'number' ? cur.gear : '-';
@@ -618,7 +616,7 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
 
         return (
             <Box p="3">
-                <Text size="2" weight="bold" mb="2">Action Animator</Text>
+                <Text size="2" weight="bold" mb="2">Action Timeline</Text>
 
                 {/* Current values */}
                 <div className={styles.animatorSection}>
@@ -668,9 +666,7 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
                 {/* Timeline controls */}
                 <div className={styles.timelineControls}>
                     <div className={styles.controlsLeft}>
-                        <Button size="1" onClick={onPlayPause} disabled={playDisabled} variant="soft">
-                            {playButtonLabel}
-                        </Button>
+                        <Text size="1" color="gray">Drag the slider to inspect keyframes</Text>
                     </div>
                     <div className={styles.controlsRight}>
                         <Text size="1" color="gray">{progress.toFixed(2)}s / {totalDuration.toFixed(2)}s</Text>
@@ -684,7 +680,7 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
                         step={0.01}
                         value={Number.isFinite(progress) ? progress : 0}
                         onChange={(e) => onScrub(parseFloat(e.target.value))}
-                        disabled={!hasData || hasCompletedPlayback}
+                        disabled={!hasData}
                     />
                     {/* Keyframe markers */}
                     <div className={styles.keyframeTrack}>
