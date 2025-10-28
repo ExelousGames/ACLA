@@ -42,34 +42,42 @@ const SessionAnalysis = () => {
 
     // Use ref to persist file path during recording to prevent state reset issues
     const recordingFilePathRef = useRef<string | null>(null);
+    const writeQueueRef = useRef<Promise<void>>(Promise.resolve());
 
     const environment = useEnvironment();
 
     // File-based telemetry data functions
     const writeRecordedLiveSessionData = async (data: any): Promise<void> => {
+        const enqueueWrite = async () => {
+            // Use the ref value if available, otherwise fall back to state
+            let currentFilePath = recordingFilePathRef.current || recordedSessionDataFilePath;
 
-        // Use the ref value if available, otherwise fall back to state
-        const currentFilePath = recordingFilePathRef.current || recordedSessionDataFilePath;
+            if (!currentFilePath) {
+                // Generate a temporary file path for telemetry data
+                const timestamp = new Date().getTime();
+                const sessionId = sessionSelected?.SessionId || 'unknown';
+                currentFilePath = `../session_recording/temp/telemetry_${sessionId}_${timestamp}.jsonl`;
 
-        if (!currentFilePath) {
-            // Generate a temporary file path for telemetry data
-            const timestamp = new Date().getTime();
-            const sessionId = sessionSelected?.SessionId || 'unknown';
-            const filePath = `../session_recording/temp/telemetry_${sessionId}_${timestamp}.jsonl`;
+                // Store in both state and ref
+                setRecordedSessionDataFilePath(currentFilePath);
+                recordingFilePathRef.current = currentFilePath;
 
-            // Store in both state and ref
-            setRecordedSessionDataFilePath(filePath);
-            recordingFilePathRef.current = filePath;
+                // Reset the data counter for new session
+                setRecordedTelemetryDataCount(0);
+            }
 
-            // Reset the data counter for new session
-            setRecordedTelemetryDataCount(0);
+            await writeToFile(currentFilePath, data);
+        };
 
-            // Use the new path immediately for this write operation
-            await writeToFile(filePath, data);
-            return;
-        }
+        const nextWrite = writeQueueRef.current.then(enqueueWrite);
 
-        await writeToFile(currentFilePath, data);
+        writeQueueRef.current = nextWrite
+            .catch((error) => {
+                console.error('Telemetry write failed', error);
+            })
+            .then(() => undefined);
+
+        return nextWrite;
     };
 
     const writeToFile = async (filePath: string, data: any): Promise<void> => {
@@ -171,6 +179,7 @@ const SessionAnalysis = () => {
         setRecordedSessionDataFilePath(null);
         recordingFilePathRef.current = null;
         setRecordedTelemetryDataCount(0);
+        writeQueueRef.current = Promise.resolve();
     };
 
     // Function to send guidance messages to chat

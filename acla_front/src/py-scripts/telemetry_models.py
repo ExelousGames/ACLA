@@ -1247,7 +1247,7 @@ class FeatureProcessor:
                 self.df = target_df
             return target_df
 
-        numeric_series = numeric_series.fillna(method="ffill").fillna(0.0)
+        numeric_series = numeric_series.ffill().fillna(0.0)
         deltas = numeric_series.diff().fillna(default_delta)
         deltas[deltas < 0] = default_delta
 
