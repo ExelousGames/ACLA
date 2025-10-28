@@ -134,23 +134,14 @@ const getNumericFromTargets = (targets: Record<string, unknown>, keys: string[])
 };
 
 const parseTimeDeltaSeconds = (value: unknown): number | null => {
-    if (value == null) return null;
-    
     const numeric = toFiniteNumber(value);
     if (numeric == null) return null;
 
-    // If the value is a string containing 'ms', treat as milliseconds
     if (typeof value === 'string' && /ms/i.test(value)) {
         return Math.max(0, numeric / 1000);
     }
 
-    // Otherwise treat as seconds
-    // Clamp to reasonable values (0.001s to 10s per step)
-    const seconds = Math.max(0, numeric);
-    if (seconds < 0.001) return null; // Too small, likely invalid
-    if (seconds > 10) return null; // Too large, likely invalid
-    
-    return seconds;
+    return Math.max(0, numeric);
 };
 
 const keyframeFromPrediction = (prediction: SequencePrediction, timelineTime = 0): Keyframe => {
@@ -199,30 +190,20 @@ const buildKeyframesFromPredictions = (predictions: SequencePrediction[]): Keyfr
     }
 
     const sorted = [...predictions].sort((a, b) => a.step - b.step);
-    
-    // Parse time deltas from each prediction - NO FALLBACK
     const parsedDeltas = sorted
-        .map(prediction => parseTimeDeltaSeconds(prediction.time_delta_seconds))
+        .map(prediction => parseTimeDeltaSeconds((prediction as { time_delta_seconds?: unknown }).time_delta_seconds))
         .filter((value): value is number => value != null && Number.isFinite(value) && value > 0);
 
-    // If we don't have valid time deltas, we can't build a timeline - return empty
-    if (parsedDeltas.length === 0) {
-        console.warn('[ImitationGuidance] No valid time deltas found in predictions - cannot build timeline');
-        return [];
-    }
+    const averageDelta = parsedDeltas.length > 0
+        ? parsedDeltas.reduce((sum, value) => sum + value, 0) / parsedDeltas.length
+        : 0;
 
-    // Calculate average delta time
-    const averageDelta = parsedDeltas.reduce((sum, value) => sum + value, 0) / parsedDeltas.length;
-
-    // Build keyframes by multiplying step index by average delta
-    const keyframes: Keyframe[] = sorted
+    return sorted
         .map((prediction, index) => {
-            const timelineTime = averageDelta * (index + 1);
+            const timelineTime = averageDelta > 0 ? averageDelta * (index + 1) : 0;
             return keyframeFromPrediction(prediction, timelineTime);
         })
-        .filter(frame => Number.isFinite(frame.t) && frame.t >= 0);
-    
-    return keyframes;
+        .filter(frame => Number.isFinite(frame.t));
 };
 
 const findKeyframeTimeByNormalizedPosition = (
@@ -294,13 +275,6 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
         const predictions = guidanceData?.guidance_result?.sequence_predictions ?? [];
         const frames = buildKeyframesFromPredictions(predictions);
 
-        console.log('[ImitationGuidance] Built keyframes:', {
-            predictionsCount: predictions.length,
-            framesCount: frames.length,
-            frames: frames.map(f => ({ t: f.t, action: f.action, throttle: f.throttle, brake: f.brake })),
-            totalDuration: frames.length > 0 ? frames[frames.length - 1].t : 0
-        });
-
         if (frames.length === 0) {
             const currentFrame = keyframeFromTelemetry(liveData);
             return currentFrame ? [{ ...currentFrame, t: 0, action: 'Current' }] : [];
@@ -322,28 +296,23 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
                 action: undefined as string | undefined,
             };
         }
-        
-        // Clamp time to valid range
-        const clampedTime = Math.max(0, Math.min(totalDuration, timeS));
-        
-        if (clampedTime <= keyframes[0].t || keyframes.length === 1) {
+        if (timeS <= keyframes[0].t) {
             const k = keyframes[0];
             return { throttle: k.throttle, brake: k.brake, steering: k.steering, gear: k.gear, target_speed: k.target_speed, action: k.action };
         }
-        if (clampedTime >= keyframes[keyframes.length - 1].t) {
+        if (timeS >= keyframes[keyframes.length - 1].t) {
             const k = keyframes[keyframes.length - 1];
             return { throttle: k.throttle, brake: k.brake, steering: k.steering, gear: k.gear, target_speed: k.target_speed, action: k.action };
         }
-        
         // find segment
         let i = 0;
         for (; i < keyframes.length - 1; i++) {
-            if (clampedTime >= keyframes[i].t && clampedTime <= keyframes[i + 1].t) break;
+            if (timeS >= keyframes[i].t && timeS <= keyframes[i + 1].t) break;
         }
         const a = keyframes[i];
         const b = keyframes[i + 1];
         const segDur = b.t - a.t || 1e-6;
-        const lt = (clampedTime - a.t) / segDur;
+        const lt = (timeS - a.t) / segDur;
         return {
             throttle: clamp01(lerp(a.throttle, b.throttle, lt)),
             brake: clamp01(lerp(a.brake, b.brake, lt)),
@@ -415,16 +384,6 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
             const matchedTime = findKeyframeTimeByNormalizedPosition(frames, liveNormalizedPosition, 0.02, PLAY_AHEAD_STEPS);
             const initialProgress = matchedTime ?? 0;
             const finalFrameTime = frames.length > 0 ? frames[frames.length - 1].t : 0;
-
-            console.log('[ImitationGuidance] Guidance received:', {
-                framesCount: frames.length,
-                finalFrameTime,
-                liveNormalizedPosition,
-                matchedTime,
-                initialProgress,
-                firstFrame: frames[0],
-                lastFrame: frames[frames.length - 1]
-            });
 
             setGuidanceData({
                 message: raw.message,
@@ -650,29 +609,10 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
     // Render animated timeline section
     const renderAnimatedTimeline = () => {
         const hasData = keyframes.length > 0 && totalDuration > 0;
-        const hasPredictions = (guidanceData?.guidance_result?.sequence_predictions?.length ?? 0) > 0;
         const cur = getInterpolatedValues(progress);
         const targetSpeedDisplay = typeof cur.target_speed === 'number' ? `${cur.target_speed.toFixed(1)} km/h` : '-';
         const gearDisplay = typeof cur.gear === 'number' ? cur.gear : '-';
         const actionDisplay = cur.action ?? '-';
-
-        // If we have predictions but no valid timeline, show error
-        if (hasPredictions && !hasData) {
-            return (
-                <Box p="3">
-                    <Text size="2" weight="bold" mb="2">Action Timeline</Text>
-                    <Box p="3" style={{ 
-                        backgroundColor: 'var(--red-2)', 
-                        border: '1px solid var(--red-6)',
-                        borderRadius: '4px'
-                    }}>
-                        <Text size="2" color="red">
-                            Timeline unavailable: API did not provide valid time_delta_seconds data
-                        </Text>
-                    </Box>
-                </Box>
-            );
-        }
 
         return (
             <Box p="3">
@@ -729,39 +669,24 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
                         <Text size="1" color="gray">Drag the slider to inspect keyframes</Text>
                     </div>
                     <div className={styles.controlsRight}>
-                        <Text size="1" color="gray">
-                            {Number.isFinite(progress) ? progress.toFixed(2) : '0.00'}s / {Number.isFinite(totalDuration) ? totalDuration.toFixed(2) : '0.00'}s
-                        </Text>
+                        <Text size="1" color="gray">{progress.toFixed(2)}s / {totalDuration.toFixed(2)}s</Text>
                     </div>
                 </div>
                 <div className={styles.timelineSlider}>
                     <input
                         type="range"
                         min={0}
-                        max={Math.max(0.01, totalDuration || 0.01)}
+                        max={Math.max(0.01, totalDuration)}
                         step={0.01}
-                        value={Number.isFinite(progress) && progress >= 0 ? progress : 0}
-                        onChange={(e) => {
-                            const val = parseFloat(e.target.value);
-                            if (Number.isFinite(val)) {
-                                onScrub(val);
-                            }
-                        }}
+                        value={Number.isFinite(progress) ? progress : 0}
+                        onChange={(e) => onScrub(parseFloat(e.target.value))}
                         disabled={!hasData}
                     />
                     {/* Keyframe markers */}
                     <div className={styles.keyframeTrack}>
-                        {keyframes.map((k, idx) => {
-                            const percentage = totalDuration > 0 ? (k.t / totalDuration) * 100 : 0;
-                            return (
-                                <span 
-                                    key={idx} 
-                                    className={styles.keyframeDot} 
-                                    style={{ left: `${percentage}%` }} 
-                                    title={`${k.t.toFixed(2)}s: ${k.action}`}
-                                />
-                            );
-                        })}
+                        {keyframes.map((k, idx) => (
+                            <span key={idx} className={styles.keyframeDot} style={{ left: `${(k.t / (totalDuration || 1)) * 100}%` }} />
+                        ))}
                     </div>
                 </div>
             </Box>
