@@ -8,7 +8,7 @@ import styles from './ImitationGuidanceChart.module.css';
 // New backend response structure
 interface SequencePrediction {
     step: number;
-    time_ahead: string;
+    time_ahead?: string;
     time_delta_seconds?: number | string;
     all_targets: Record<string, unknown>;
     [key: string]: unknown;
@@ -128,17 +128,18 @@ const getNumericFromTargets = (targets: Record<string, unknown>, keys: string[])
     return undefined;
 };
 
-const parseTimeAhead = (timeStr?: string): number => {
-    if (!timeStr) return 0;
-    const trimmed = String(timeStr).trim();
-    const match = trimmed.match(/([0-9]*\.?[0-9]+)/);
-    if (!match) return 0;
-    const val = parseFloat(match[1]);
-    if (/ms/i.test(trimmed)) return val / 1000;
-    return val;
+const parseTimeDeltaSeconds = (value: unknown): number | null => {
+    const numeric = toFiniteNumber(value);
+    if (numeric == null) return null;
+
+    if (typeof value === 'string' && /ms/i.test(value)) {
+        return Math.max(0, numeric / 1000);
+    }
+
+    return Math.max(0, numeric);
 };
 
-const keyframeFromPrediction = (prediction: SequencePrediction, timeOverride?: number): Keyframe => {
+const keyframeFromPrediction = (prediction: SequencePrediction, timelineTime = 0): Keyframe => {
     const targets = (prediction.all_targets ?? {}) as Record<string, unknown>;
     const throttle = clamp01(getNumericFromTargets(targets, ['Physics_gas', 'gas', 'throttle']) ?? 0);
     const brake = clamp01(getNumericFromTargets(targets, ['Physics_brake', 'brake']) ?? 0);
@@ -153,12 +154,8 @@ const keyframeFromPrediction = (prediction: SequencePrediction, timeOverride?: n
         ? predictedAction
         : deriveAction(throttle, brake, steering);
 
-    const timelineTime = typeof timeOverride === 'number' && Number.isFinite(timeOverride)
-        ? timeOverride
-        : parseTimeAhead(prediction.time_ahead);
-
     return {
-        t: timelineTime,
+        t: Number.isFinite(timelineTime) && timelineTime >= 0 ? timelineTime : 0,
         throttle,
         brake,
         steering,
@@ -183,39 +180,34 @@ const keyframeFromTelemetry = (telemetry?: TelemetryData | null): Keyframe | nul
 };
 
 const buildKeyframesFromPredictions = (predictions: SequencePrediction[]): Keyframe[] => {
-    const frames: Keyframe[] = [];
-
-    const deltaValues: number[] = [];
-    for (const prediction of predictions) {
-        const raw = (prediction as { time_delta_seconds?: unknown }).time_delta_seconds;
-        const parsed = toFiniteNumber(raw);
-        if (parsed != null && Number.isFinite(parsed)) {
-            deltaValues.push(Math.max(0, parsed / 1000));
-        }
+    if (!predictions || predictions.length === 0) {
+        return [];
     }
 
-    const averageDelta = deltaValues.length
-        ? deltaValues.reduce((sum, value) => sum + value, 0) / deltaValues.length
-        : null;
-
-    const useAverageDelta = averageDelta != null && averageDelta > 0;
+    const frames: Keyframe[] = [];
+    const sorted = [...predictions].sort((a, b) => a.step - b.step);
     let cumulativeTime = 0;
 
-    for (const prediction of predictions) {
-        let timeOverride: number | undefined;
+    for (const prediction of sorted) {
+        const delta = parseTimeDeltaSeconds((prediction as { time_delta_seconds?: unknown }).time_delta_seconds);
 
-        if (useAverageDelta) {
-            cumulativeTime += averageDelta!;
-            timeOverride = cumulativeTime;
+        if (delta != null) {
+            cumulativeTime += delta;
+        } else if (frames.length === 0) {
+            cumulativeTime = 0;
+        } else {
+            const lastFrame = frames[frames.length - 1];
+            const prevFrame = frames.length > 1 ? frames[frames.length - 2] : undefined;
+            const inferredDelta = prevFrame ? Math.max(0.1, lastFrame.t - prevFrame.t) : 0.5;
+            cumulativeTime += inferredDelta;
         }
 
-        const frame = keyframeFromPrediction(prediction, timeOverride);
+        const frame = keyframeFromPrediction(prediction, cumulativeTime);
         if (Number.isFinite(frame.t)) {
             frames.push(frame);
         }
     }
 
-    frames.sort((a, b) => a.t - b.t);
     return frames;
 };
 
