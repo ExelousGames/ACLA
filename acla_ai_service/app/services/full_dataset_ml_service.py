@@ -822,6 +822,7 @@ class Full_dataset_TelemetryMLService:
             lap_records = lap_entry.get("records", [])
             record_count = len(lap_records)
             if record_count == 0:
+                print(f"[DEBUG] Skipping bottom staging for lap {lap_entry.get('id')} with no records")
                 return
 
             if bottom_buffer_records and bottom_buffer_records + record_count > max_memory_records:
@@ -848,12 +849,17 @@ class Full_dataset_TelemetryMLService:
             })
             bottom_buffer_records += record_count
 
-        def make_lap_entry(lap_id: str, lap_time_ms: float, lap_num: Any, lap_records: List[Dict[str, Any]]) -> Dict[str, Any]:
+        def make_lap_entry(
+            lap_identifier: str,
+            lap_time_ms: Optional[float],
+            lap_num: Any,
+            lap_records: List[Dict[str, Any]]
+        ) -> Dict[str, Any]:
             return {
-                "id": lap_id,
-                "lap_time_ms": lap_time_ms,
+                "id": lap_identifier,
+                "lap_time_ms": lap_time_ms if lap_time_ms is not None else float("inf"),
                 "lap_num": lap_num,
-                "records": lap_records
+                "records": lap_records,
             }
 
         def update_top_laps(candidate: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -894,56 +900,66 @@ class Full_dataset_TelemetryMLService:
                 processor = FeatureProcessor(telemetry_df)
                 processor.general_cleaning_for_analysis()
                 processed_df = processor.flip_y_z_features()
-                
+
                 if processed_df.empty:
+                    print(f"[DEBUG] Processed DataFrame empty for chunk {session_chunks_processed}, skipping")
                     continue
 
-                lap_times_ms, lap_df_list = processor._filter_top_performance_laps(processed_df, 1)
-                lap_df_list = processor.strip_dataframe_by_time_gap(lap_df_list, telemetry_time_gap_ms)
-                if not lap_df_list:
-                    print(f"[DEBUG] No performance laps found, skipping chunk")
+                lap_structs = processor.split_into_laps(processed_df)
+                if not lap_structs:
+                    print(f"[DEBUG] No laps identified in chunk {session_chunks_processed}, skipping")
                     continue
+
+                lap_frames: List[pd.DataFrame] = [lap_struct["dataframe"] for lap_struct in lap_structs]
+                stripped_lap_frames = processor.strip_dataframe_by_time_gap(lap_frames, telemetry_time_gap_ms)
 
                 laps_processed_in_chunk = 0
 
-                for lap_idx, lap_df in enumerate(lap_df_list):
-                    if lap_df.empty:
-                        print(f"[DEBUG] Lap {lap_idx} empty after down-sampling, skipping")
-                        continue
+                for lap_index, (lap_struct, stripped_df) in enumerate(zip(lap_structs, stripped_lap_frames)):
+                    lap_metrics = lap_struct["metrics"]
+                    lap_metrics["record_count_after_gap"] = len(stripped_df)
 
-                    filtered_lap_df = processor.filter_features_by_list(lap_df, features)
-                    if filtered_lap_df.empty:
-                        print(f"[DEBUG] Lap {lap_idx} filtered out - no features remaining")
-                        continue
+                    filtered_df = processor.filter_features_by_list(stripped_df, features) if not stripped_df.empty else pd.DataFrame()
+                    filtered_count = len(filtered_df)
 
-                    if lap_idx >= len(lap_times_ms):
-                        print(f"[DEBUG] Lap {lap_idx} missing lap time, skipping")
-                        continue
+                    if stripped_df.empty:
+                        print(
+                            f"[DEBUG] Chunk {chunk_idx} lap {lap_index} empty after down-sampling; staging as bottom if data existed"
+                        )
+                    elif filtered_df.empty:
+                        print(
+                            f"[DEBUG] Chunk {chunk_idx} lap {lap_index} has no features after filtering; staging to bottom"
+                        )
 
-                    lap_time = lap_times_ms[lap_idx]
-                    if lap_time <= 0 or lap_time == float('inf'):
-                        print(f"[DEBUG] Lap {lap_idx} has invalid lap time {lap_time}, skipping")
-                        continue
+                    lap_records = filtered_df.to_dict("records") if not filtered_df.empty else []
 
-                    lap_records = filtered_lap_df.to_dict('records')
-                    if not lap_records:
-                        continue
-
-                    lap_num = lap_records[0].get('lap_id', lap_idx)
-                    unique_lap_id = f"{chunk_idx}_{lap_num}_{len(lap_records)}_{lap_time}"
-
-                    laps_processed_in_chunk += 1
-                    print(
-                        f"[DEBUG] Chunk {chunk_idx}: Lap {lap_num} ({len(lap_records)} records) time {lap_time}ms [ID: {unique_lap_id}]"
+                    lap_identifier = (
+                        f"{chunk_idx}_{lap_struct['lap_sequence']}_{lap_metrics.get('lap_time_ms', 'na')}"
                     )
 
-                    candidate = make_lap_entry(unique_lap_id, lap_time, lap_num, lap_records)
-                    bottom_candidate = update_top_laps(candidate)
-                    if bottom_candidate:
-                        await stage_bottom_lap(bottom_candidate, chunk_idx)
+                    candidate_entry = make_lap_entry(
+                        lap_identifier=lap_identifier,
+                        lap_time_ms=lap_metrics["lap_time_ms"],
+                        lap_num=lap_struct["lap_num"],
+                        lap_records=lap_records,
+                    )
+
+                    if lap_metrics["is_full_valid"] and lap_metrics["lap_time_ms"] is not None and lap_records:
+                        laps_processed_in_chunk += 1
+                        print(
+                            f"[DEBUG] Chunk {chunk_idx}: valid lap {lap_struct['lap_num']} ({filtered_count} records) time {lap_metrics['lap_time_ms']}ms"
+                        )
+                        bottom_candidate = update_top_laps(candidate_entry)
+                        if bottom_candidate:
+                            await stage_bottom_lap(bottom_candidate, chunk_idx)
+                    else:
+                        print(
+                            f"[DEBUG] Chunk {chunk_idx}: staging non-top lap {lap_struct['lap_num']} (full={lap_metrics['is_full']}, valid={lap_metrics['is_valid']})"
+                        )
+                        await stage_bottom_lap(candidate_entry, chunk_idx)
 
                 print(
-                    f"[DEBUG] Chunk {chunk_idx}: Processed {laps_processed_in_chunk} laps. Top laps: {len(top_laps)} Bottom buffer records: {bottom_buffer_records}"
+                    f"[DEBUG] Chunk {chunk_idx}: Processed {laps_processed_in_chunk} full valid laps. Top laps: {len(top_laps)} Bottom buffer records: {bottom_buffer_records}"
                 )
 
                 total_processed += len(telemetry_df)
@@ -982,6 +998,8 @@ class Full_dataset_TelemetryMLService:
             raise ValueError(
                 f"Insufficient top laps found: {len(top_laps)}/5 required. Processed {chunk_idx} valid chunks with {total_processed} records."
             )
+
+        top_laps.sort(key=lambda entry: entry["lap_time_ms"])
 
         top_laps_telemetry_list: List[Dict[str, Any]] = []
         for lap_info in top_laps:

@@ -935,7 +935,10 @@ class ExpertImitateLearningService:
         print(f"[INFO] Using segment_length={segment_length}, improvement_threshold={improvement_threshold}")
 
         if len(telemetry_data) < segment_length * 2:
-            raise ValueError(f"[WARNING] Insufficient data for segment analysis. Need at least {segment_length * 2} records, got {len(telemetry_data)}")
+            print(
+                f"[WARNING] Insufficient data for segment analysis. Need at least {segment_length * 2} records, got {len(telemetry_data)}. Discarding this batch."
+            )
+            return []
         
         # Get context feature names from enum
         ContextFeature = ExpertFeatureCatalog.ContextFeature
@@ -1057,6 +1060,8 @@ class ExpertImitateLearningService:
         BRAKE_FALLBACK_HIGH = 0.55
         BRAKE_FALLBACK_LOW = 0.10
         STEER_FALLBACK_HIGH = 0.10
+        LIMIT_INTENT_ACTIVITY_MIN = 0.05     # Minimum share of limit usage to consider the segment committed
+        LIMIT_INTENT_INTENSITY_MIN = 0.40    # Minimum friction-circle intensity for committed driving
 
         # Short smoothing window to tame sensor spikes while retaining responsiveness
         smoothing_window = max(2, min(5, len(segment)))
@@ -1360,6 +1365,19 @@ class ExpertImitateLearningService:
                 if limit_checks:
                     improvement_criteria.extend(limit_checks)
             improvement_metrics['overall_improvement_rate'] = sum(improvement_criteria) / len(improvement_criteria)
+
+            # Penalize weak intent: if TireGrip indicates the driver never pushed, zero out improvement
+            intent_good = True
+            if improvement_metrics['limit_metrics_available']:
+                limit_activity = improvement_metrics.get('limit_activity_rate', 0.0)
+                friction_intensity = improvement_metrics.get('friction_circle_intensity_mean', 0.0)
+                intent_good = (
+                    limit_activity >= LIMIT_INTENT_ACTIVITY_MIN or
+                    friction_intensity >= LIMIT_INTENT_INTENSITY_MIN
+                )
+            improvement_metrics['limit_intent_good'] = intent_good
+            if not intent_good:
+                improvement_metrics['overall_improvement_rate'] = 0.0
             
             # For consistency rate - use already calculated individual consistency rates directly
             consistency_rates = [
@@ -1367,15 +1385,6 @@ class ExpertImitateLearningService:
                 improvement_metrics['speed_consistency_rate'], 
                 improvement_metrics['distance_consistency_rate']
             ]
-            if improvement_metrics['limit_metrics_available']:
-                if improvement_metrics['acceleration_limit_rate'] > 0:
-                    consistency_rates.append(improvement_metrics['acceleration_limit_rate'])
-                if improvement_metrics['braking_limit_rate'] > 0:
-                    consistency_rates.append(improvement_metrics['braking_limit_rate'])
-                if improvement_metrics['turning_limit_rate'] > 0:
-                    consistency_rates.append(improvement_metrics['turning_limit_rate'])
-                if improvement_metrics['limit_activity_rate'] > 0:
-                    consistency_rates.append(improvement_metrics['limit_activity_rate'])
             improvement_metrics['overall_consistency_rate'] = sum(consistency_rates) / len(consistency_rates)
             
         except Exception as e:

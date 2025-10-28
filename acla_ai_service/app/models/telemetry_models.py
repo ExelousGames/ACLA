@@ -888,6 +888,117 @@ class FeatureProcessor:
 
         return processed_df
     
+    def split_into_laps(self, df: Optional[pd.DataFrame] = None) -> List[Dict[str, Any]]:
+        """Segment telemetry into laps with validity and completeness metrics."""
+
+        target_df = df if df is not None else self.df
+
+        required_columns = {
+            "Graphics_completed_lap",
+            "Graphics_current_time",
+            "Graphics_is_valid_lap",
+            "Graphics_normalized_car_position",
+        }
+
+        missing_columns = [col for col in required_columns if col not in target_df.columns]
+        if missing_columns:
+            raise ValueError(
+                "Missing required telemetry columns for lap segmentation: " + ", ".join(missing_columns)
+            )
+
+        working = target_df.copy()
+
+        working["Graphics_completed_lap"] = pd.to_numeric(
+            working["Graphics_completed_lap"], errors="coerce"
+        ).ffill().bfill()
+        if working["Graphics_completed_lap"].isna().all():
+            raise ValueError("Unable to derive completed lap counters from telemetry data")
+
+        working["Graphics_completed_lap"] = working["Graphics_completed_lap"].astype(int)
+        working["__current_time_ms__"] = pd.to_numeric(
+            working["Graphics_current_time"], errors="coerce"
+        ).fillna(0.0)
+
+        valid_series = working["Graphics_is_valid_lap"]
+        if valid_series.dtype != bool and not np.issubdtype(valid_series.dtype, np.number):
+            valid_series = valid_series.apply(
+                lambda v: 1 if str(v).strip().lower() in {"1", "true", "t", "yes"} else 0
+            )
+        valid_series = pd.to_numeric(valid_series, errors="coerce").fillna(0.0).clip(0, 1)
+        working["Graphics_is_valid_lap"] = valid_series.astype(int)
+
+        working["__normalized_pos__"] = pd.to_numeric(
+            working["Graphics_normalized_car_position"], errors="coerce"
+        )
+
+        base_completed = int(working["Graphics_completed_lap"].min())
+        working["__lap_sequence__"] = (working["Graphics_completed_lap"] - base_completed).astype(int)
+
+        lap_structs: List[Dict[str, Any]] = []
+
+        for lap_sequence, lap_df in working.groupby("__lap_sequence__", sort=True):
+            lap_metrics = {
+                "records": len(lap_df),
+                "lap_time_ms": None,
+                "valid_ratio": 0.0,
+                "coverage": {"min": None, "max": None},
+                "is_full": False,
+                "is_valid": False,
+                "is_full_valid": False,
+            }
+
+            time_values = lap_df["__current_time_ms__"].to_numpy(dtype=float)
+            if time_values.size and not np.isnan(time_values).all():
+                lap_time_ms = float(np.nanmax(time_values))
+                if np.isfinite(lap_time_ms) and lap_time_ms > 0:
+                    lap_metrics["lap_time_ms"] = lap_time_ms
+
+            valid_values = lap_df["Graphics_is_valid_lap"].to_numpy(dtype=float)
+            if valid_values.size:
+                lap_metrics["valid_ratio"] = float(np.nanmean(valid_values))
+
+            position_values = lap_df["__normalized_pos__"].to_numpy(dtype=float)
+            finite_positions = position_values[np.isfinite(position_values)]
+            if finite_positions.size:
+                lap_metrics["coverage"]["min"] = float(np.nanmin(finite_positions))
+                lap_metrics["coverage"]["max"] = float(np.nanmax(finite_positions))
+
+            enough_samples = lap_metrics["records"] >= 10
+            has_lap_time = lap_metrics["lap_time_ms"] is not None
+            coverage_ok = False
+            if finite_positions.size:
+                min_pos = lap_metrics["coverage"]["min"]
+                max_pos = lap_metrics["coverage"]["max"]
+                coverage_ok = (
+                    min_pos is not None
+                    and max_pos is not None
+                    and min_pos <= 0.15
+                    and max_pos >= 0.85
+                    and (max_pos - min_pos) >= 0.7
+                )
+
+            lap_metrics["is_valid"] = lap_metrics["valid_ratio"] >= 0.95
+            lap_metrics["is_full"] = enough_samples and has_lap_time and coverage_ok
+            lap_metrics["is_full_valid"] = lap_metrics["is_full"] and lap_metrics["is_valid"]
+
+            original_lap_number = int(lap_df["Graphics_completed_lap"].iloc[-1])
+
+            lap_output_df = lap_df.drop(
+                columns=["__current_time_ms__", "__normalized_pos__", "__lap_sequence__"], errors="ignore"
+            ).reset_index(drop=True)
+            lap_output_df["lap_id"] = lap_sequence
+
+            lap_structs.append(
+                {
+                    "lap_sequence": int(lap_sequence),
+                    "lap_num": original_lap_number,
+                    "dataframe": lap_output_df,
+                    "metrics": lap_metrics,
+                }
+            )
+
+        return lap_structs
+
     def _handle_complex_fields(self, df: pd.DataFrame) -> None:
         """Handle complex nested fields from AC Competizione telemetry
         player car coordinates is extracted from array of car coordinates, and named as Graphics_player_pos_x, Graphics_player_pos_y, Graphics_player_pos_z"""

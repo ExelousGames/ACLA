@@ -861,7 +861,6 @@ class ExpertActionTransformer(nn.Module):
                 "sequence_predictions": [
                     {
                         "step": 1,
-                        "time_ahead": "0.1s",
                         "all_targets": {
                             "Physics_gas": 0.2,
                             "Physics_brake": 0.6,
@@ -962,7 +961,6 @@ class ExpertActionTransformer(nn.Module):
             # Create prediction step with ALL target features
             step_data = {
                 "step": i + 1,
-                "time_ahead": f"{(i + 1) * self.time_step_seconds:.1f}s",
                 "all_targets": {}
             }
             
