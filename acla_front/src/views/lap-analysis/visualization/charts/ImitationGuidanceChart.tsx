@@ -184,15 +184,28 @@ const keyframeFromTelemetry = (telemetry?: TelemetryData | null): Keyframe | nul
 
 const buildKeyframesFromPredictions = (predictions: SequencePrediction[]): Keyframe[] => {
     const frames: Keyframe[] = [];
+
+    const deltaValues: number[] = [];
+    for (const prediction of predictions) {
+        const raw = (prediction as { time_delta_seconds?: unknown }).time_delta_seconds;
+        const parsed = toFiniteNumber(raw);
+        if (parsed != null && Number.isFinite(parsed)) {
+            deltaValues.push(Math.max(0, parsed / 1000));
+        }
+    }
+
+    const averageDelta = deltaValues.length
+        ? deltaValues.reduce((sum, value) => sum + value, 0) / deltaValues.length
+        : null;
+
+    const useAverageDelta = averageDelta != null && averageDelta > 0;
     let cumulativeTime = 0;
 
     for (const prediction of predictions) {
-        const deltaSecondsRaw = (prediction as { time_delta_seconds?: unknown }).time_delta_seconds;
-        const deltaSeconds = toFiniteNumber(deltaSecondsRaw);
         let timeOverride: number | undefined;
 
-        if (deltaSeconds != null && Number.isFinite(deltaSeconds)) {
-            cumulativeTime += Math.max(0, deltaSeconds);
+        if (useAverageDelta) {
+            cumulativeTime += averageDelta!;
             timeOverride = cumulativeTime;
         }
 
