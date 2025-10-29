@@ -924,9 +924,7 @@ class ExpertImitateLearningService:
     def filter_optimal_telemetry_segments(self, telemetry_data: List[Dict[str, Any]], 
                                          segment_length: int = 20, 
                                          improvement_threshold: float = 0.55,
-                                         min_segments: int = 0,
-                                         visualize: bool = False,
-                                         visualization_kwargs: Optional[Dict[str, Any]] = None) -> List[List[Dict[str, Any]]]:
+                                         min_segments: int = 0) -> List[List[Dict[str, Any]]]:
         """      
         Streamlined Logic:
         - Calculate both overall improvement rate AND overall consistency rate for each segment
@@ -1039,11 +1037,6 @@ class ExpertImitateLearningService:
         # Ensure we have minimum required segments
         if len(optimal_segments) < min_segments:
             raise ValueError(f"[WARNING] Only found {len(optimal_segments)} optimal segments, which is less than the minimum required {min_segments}. Adjust parameters or provide more data.")
-
-        if visualize:
-            print("[INFO] Visualization moved to telemetry_segment_visualizer.visualize_optimal_segments; invoke it after caching segments.")
-            if visualization_kwargs:
-                print("[DEBUG] visualization_kwargs ignored in filter_optimal_telemetry_segments")
 
         return optimal_segments
     
