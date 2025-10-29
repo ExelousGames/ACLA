@@ -1106,13 +1106,13 @@ class ExpertImitateLearningService:
         
         try:
             # Analyze velocity alignment
-            velocity_smoothed = _smooth_series(segment[ContextFeature.EXPERT_VELOCITY_ALIGNMENT.value])
+            velocity_data_smoothed = _smooth_series(segment[ContextFeature.EXPERT_VELOCITY_ALIGNMENT.value])
             velocity_trend = 0.0
-            if len(velocity_smoothed) > 1:
-                velocity_mean = np.mean(velocity_smoothed)
-                velocity_trend = np.polyfit(range(len(velocity_smoothed)), velocity_smoothed, 1)[0]
-                expert_performance_points = np.sum(velocity_smoothed >= EXPERT_VELOCITY_ALIGNMENT)
-                velocity_consistency_rate = expert_performance_points / len(velocity_smoothed)
+            if len(velocity_data_smoothed) > 1:
+                velocity_mean = np.mean(velocity_data_smoothed)
+                velocity_trend = np.polyfit(range(len(velocity_data_smoothed)), velocity_data_smoothed, 1)[0]
+                expert_performance_points = np.sum(velocity_data_smoothed >= EXPERT_VELOCITY_ALIGNMENT)
+                velocity_consistency_rate = expert_performance_points / len(velocity_data_smoothed)
                 
                 improvement_metrics['velocity_alignment_mean'] = float(velocity_mean)
                 improvement_metrics['velocity_alignment_trend'] = float(velocity_trend)
@@ -1423,7 +1423,7 @@ class ExpertImitateLearningService:
             # Calculate BOTH improvement and consistency rates for ALL metrics regardless of their mode
             
             # For improvement rate - check core metrics for positive trend movement
-            velocity_improvement = velocity_trend > 0 if len(velocity_smoothed) > 1 else False
+            velocity_improvement = velocity_trend > 0 if len(velocity_data_smoothed) > 1 else False
             speed_improvement = speed_trend < 0 if len(speed_diff) > 1 else False
             distance_improvement = distance_trend < 0 if len(distance_to_line) > 1 else False  # Getting closer is improvement
 
