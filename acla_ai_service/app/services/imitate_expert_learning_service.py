@@ -968,6 +968,8 @@ class ExpertImitateLearningService:
         optimal_segments = []
         num_improvement_sample = 0
         num_consistency_sample = 0
+        num_braking_alignment = 0
+        num_trail_brake_alignment = 0
 
         # Calculate total segments ensuring each has exactly segment_length
         total_segments = (len(df) - segment_length) // (segment_length // 2) + 1  # Overlapping segments
@@ -987,6 +989,9 @@ class ExpertImitateLearningService:
             
             # Streamlined no-fallback approach: use improvement rate if above threshold, otherwise use consistency rate
             segment_passes = False
+            alignment_forced_pass = False
+            braking_alignment = improvement_scores.get('braking_alignment_progress', False)
+            trail_brake_alignment = improvement_scores.get('brake_turn_alignment_progress', False)
             if improvement_scores['overall_improvement_rate'] >= improvement_threshold:
                 segment_passes = True
                 # Use improvement rate criteria
@@ -995,15 +1000,32 @@ class ExpertImitateLearningService:
                 segment_passes = True
                 # Use consistency rate criteria
                 num_consistency_sample += 1
+            elif braking_alignment or trail_brake_alignment:
+                segment_passes = True
+                alignment_forced_pass = True
 
             if segment_passes:
                 segment_dict = segment.to_dict('records')
+                if alignment_forced_pass:
+                    focus_tags: List[str] = []
+                    if braking_alignment:
+                        num_braking_alignment += 1
+                        focus_tags.append('braking_alignment')
+                    if trail_brake_alignment:
+                        num_trail_brake_alignment += 1
+                        focus_tags.append('trail_brake_alignment')
+
+                    if focus_tags:
+                        focus_label = ','.join(focus_tags)
+                        for row in segment_dict:
+                            row['_segment_focus'] = focus_label
                 optimal_segments.append(segment_dict)
         
         print(f"[INFO] Dual-rate filtering analysis complete:")
         print(f"[INFO] - Original records: {len(telemetry_data)}")
         print(f"[INFO] - Segments analyzed: {total_segments}")
         print(f"[INFO] - Improvement-based passes: {num_improvement_sample}, Consistency-based passes: {num_consistency_sample}")
+        print(f"[INFO] - Braking-alignment passes: {num_braking_alignment}, Trail-brake passes: {num_trail_brake_alignment}")
         print(f"[INFO] - Overall pass rate: {len(optimal_segments)/total_segments*100:.1f}%")
 
         # Ensure we have minimum required segments
@@ -1062,6 +1084,12 @@ class ExpertImitateLearningService:
         STEER_FALLBACK_HIGH = 0.10
         LIMIT_INTENT_ACTIVITY_MIN = 0.05     # Minimum share of limit usage to consider the segment committed
         LIMIT_INTENT_INTENSITY_MIN = 0.40    # Minimum friction-circle intensity for committed driving
+        BRAKE_COMMIT_THRESHOLD = 0.18        # Share of braking-limit samples that signals a committed stop
+        BRAKE_TURN_COMMIT_THRESHOLD = 0.12   # Share of combined brake+turn limit samples signalling trail braking
+        SPEED_PROGRESS_DELTA = 1.5           # km/h reduction required to consider speed gap closing
+        SPEED_CONVERGENCE_TARGET = 4.5       # Final absolute speed difference threshold to treat as matched
+        DISTANCE_PROGRESS_DELTA = 0.30       # Meters reduction required to consider position gap closing
+        DISTANCE_CONVERGENCE_TARGET = 1.0    # Final distance to expert line threshold to treat as aligned
 
         # Short smoothing window to tame sensor spikes while retaining responsiveness
         smoothing_window = max(2, min(5, len(segment)))
@@ -1078,12 +1106,13 @@ class ExpertImitateLearningService:
         
         try:
             # Analyze velocity alignment
-            velocity_alignment = _smooth_series(segment[ContextFeature.EXPERT_VELOCITY_ALIGNMENT.value])
-            if len(velocity_alignment) > 1:
-                velocity_mean = np.mean(velocity_alignment)
-                velocity_trend = np.polyfit(range(len(velocity_alignment)), velocity_alignment, 1)[0]
-                expert_performance_points = np.sum(velocity_alignment >= EXPERT_VELOCITY_ALIGNMENT)
-                velocity_consistency_rate = expert_performance_points / len(velocity_alignment)
+            velocity_smoothed = _smooth_series(segment[ContextFeature.EXPERT_VELOCITY_ALIGNMENT.value])
+            velocity_trend = 0.0
+            if len(velocity_smoothed) > 1:
+                velocity_mean = np.mean(velocity_smoothed)
+                velocity_trend = np.polyfit(range(len(velocity_smoothed)), velocity_smoothed, 1)[0]
+                expert_performance_points = np.sum(velocity_smoothed >= EXPERT_VELOCITY_ALIGNMENT)
+                velocity_consistency_rate = expert_performance_points / len(velocity_smoothed)
                 
                 improvement_metrics['velocity_alignment_mean'] = float(velocity_mean)
                 improvement_metrics['velocity_alignment_trend'] = float(velocity_trend)
@@ -1098,40 +1127,68 @@ class ExpertImitateLearningService:
             # Analyze speed difference
             speed_diff_raw = segment[ContextFeature.SPEED_DIFFERENCE.value]
             speed_diff = _smooth_series(speed_diff_raw)
-            if len(speed_diff) > 1:
+            speed_trend = 0.0
+            speed_gap_valid = len(speed_diff) > 1
+            if speed_gap_valid:
                 abs_speed_diff = np.abs(speed_diff)
                 speed_diff_mean = np.mean(abs_speed_diff)
                 speed_trend = np.polyfit(range(len(abs_speed_diff)), abs_speed_diff, 1)[0]
                 expert_performance_points = np.sum(abs_speed_diff <= EXPERT_SPEED_DIFF_MAX)
                 speed_consistency_rate = expert_performance_points / len(abs_speed_diff)
+
+                speed_gap_start = float(abs_speed_diff[0])
+                speed_gap_end = float(abs_speed_diff[-1])
+                speed_gap_delta = speed_gap_start - speed_gap_end
                 
                 improvement_metrics['speed_difference_mean'] = float(speed_diff_mean)
                 improvement_metrics['speed_difference_trend'] = float(speed_trend)
                 improvement_metrics['speed_consistency_rate'] = float(speed_consistency_rate)
                 improvement_metrics['speed_expert_points'] = int(expert_performance_points)
+                improvement_metrics['speed_gap_start'] = speed_gap_start
+                improvement_metrics['speed_gap_end'] = speed_gap_end
+                improvement_metrics['speed_gap_delta'] = float(speed_gap_delta)
             else:
                 improvement_metrics['speed_difference_mean'] = 0.0
                 improvement_metrics['speed_difference_trend'] = 0.0
                 improvement_metrics['speed_consistency_rate'] = 0.0
                 improvement_metrics['speed_expert_points'] = 0
+                improvement_metrics['speed_gap_start'] = 0.0
+                improvement_metrics['speed_gap_end'] = 0.0
+                improvement_metrics['speed_gap_delta'] = 0.0
+                speed_gap_valid = False
+            improvement_metrics['speed_gap_has_samples'] = speed_gap_valid
             
             # Analyze distance to expert line
             distance_to_line = _smooth_series(segment[ContextFeature.DISTANCE_TO_EXPERT_LINE.value])
-            if len(distance_to_line) > 1:
+            distance_trend = 0.0
+            distance_gap_valid = len(distance_to_line) > 1
+            if distance_gap_valid:
                 distance_mean = np.mean(distance_to_line)
                 distance_trend = np.polyfit(range(len(distance_to_line)), distance_to_line, 1)[0]
                 expert_performance_points = np.sum(distance_to_line <= EXPERT_DISTANCE_MAX)
                 distance_consistency_rate = expert_performance_points / len(distance_to_line)
+
+                distance_gap_start = float(distance_to_line[0])
+                distance_gap_end = float(distance_to_line[-1])
+                distance_gap_delta = distance_gap_start - distance_gap_end
                 
                 improvement_metrics['distance_to_line_mean'] = float(distance_mean)
                 improvement_metrics['distance_to_line_trend'] = float(distance_trend)
                 improvement_metrics['distance_consistency_rate'] = float(distance_consistency_rate)
                 improvement_metrics['distance_expert_points'] = int(expert_performance_points)
+                improvement_metrics['distance_gap_start'] = distance_gap_start
+                improvement_metrics['distance_gap_end'] = distance_gap_end
+                improvement_metrics['distance_gap_delta'] = float(distance_gap_delta)
             else:
                 improvement_metrics['distance_to_line_mean'] = 0.0
                 improvement_metrics['distance_to_line_trend'] = 0.0
                 improvement_metrics['distance_consistency_rate'] = 0.0
                 improvement_metrics['distance_expert_points'] = 0
+                improvement_metrics['distance_gap_start'] = 0.0
+                improvement_metrics['distance_gap_end'] = 0.0
+                improvement_metrics['distance_gap_delta'] = 0.0
+                distance_gap_valid = False
+            improvement_metrics['distance_gap_has_samples'] = distance_gap_valid
 
             # Analyze tire grip limit behavior if available
             tire_features = TireGripFeatureCatalog.ContextFeature
@@ -1305,6 +1362,7 @@ class ExpertImitateLearningService:
                     )
                 )
 
+                brake_turn_mask = brake_mask & turn_mask
                 limit_mask = accel_mask | brake_mask | turn_mask
 
                 improvement_metrics['acceleration_limit_rate'] = _mask_rate(accel_mask)
@@ -1324,6 +1382,9 @@ class ExpertImitateLearningService:
                     improvement_metrics['braking_limit_rate'] >= LIMIT_RATE_TARGET and
                     improvement_metrics['braking_limit_trend'] > 0.0
                 )
+
+                improvement_metrics['brake_turn_combo_rate'] = _mask_rate(brake_turn_mask)
+                improvement_metrics['brake_turn_combo_trend'] = _mask_trend(brake_turn_mask)
 
                 improvement_metrics['turning_limit_rate'] = _mask_rate(turn_mask)
                 improvement_metrics['turning_limit_trend'] = _mask_trend(turn_mask)
@@ -1345,27 +1406,10 @@ class ExpertImitateLearningService:
                 improvement_metrics['friction_circle_intensity_mean'] = float(np.mean(friction_intensity)) if friction_intensity.size else 0.0
             else:
                 improvement_metrics['missing_limit_features'] = missing_tire
+                improvement_metrics['brake_turn_combo_rate'] = 0.0
+                improvement_metrics['brake_turn_combo_trend'] = 0.0
             
-            # Calculate BOTH improvement and consistency rates for ALL metrics regardless of their mode
-            
-            # For improvement rate - check core metrics for positive trend movement
-            distance_improvement = distance_trend < 0 if len(distance_to_line) > 1 else False  # Getting closer is improvement
-            
-            improvement_criteria = [distance_improvement]
-            if improvement_metrics['limit_metrics_available']:
-                limit_checks: List[bool] = []
-                if improvement_metrics.get('acceleration_limit_rate', 0.0) > 0.0:
-                    limit_checks.append(improvement_metrics.get('acceleration_limit_improving', False))
-                if improvement_metrics.get('braking_limit_rate', 0.0) > 0.0:
-                    limit_checks.append(improvement_metrics.get('braking_limit_improving', False))
-                if improvement_metrics.get('turning_limit_rate', 0.0) > 0.0:
-                    limit_checks.append(improvement_metrics.get('turning_limit_improving', False))
-
-                if limit_checks:
-                    improvement_criteria.extend(limit_checks)
-            improvement_metrics['overall_improvement_rate'] = sum(improvement_criteria) / len(improvement_criteria)
-
-            # Penalize weak intent: if TireGrip indicates the driver never pushed, zero out improvement
+            # Determine whether the driver is pushing enough to be evaluated via grip metrics
             intent_good = True
             if improvement_metrics['limit_metrics_available']:
                 limit_activity = improvement_metrics.get('limit_activity_rate', 0.0)
@@ -1375,6 +1419,75 @@ class ExpertImitateLearningService:
                     friction_intensity >= LIMIT_INTENT_INTENSITY_MIN
                 )
             improvement_metrics['limit_intent_good'] = intent_good
+
+            # Calculate BOTH improvement and consistency rates for ALL metrics regardless of their mode
+            
+            # For improvement rate - check core metrics for positive trend movement
+            velocity_improvement = velocity_trend > 0 if len(velocity_smoothed) > 1 else False
+            speed_improvement = speed_trend < 0 if len(speed_diff) > 1 else False
+            distance_improvement = distance_trend < 0 if len(distance_to_line) > 1 else False  # Getting closer is improvement
+
+            # Evaluate whether the driver is closing on expert state while committed to braking/turning
+            speed_gap_valid = improvement_metrics.get('speed_gap_has_samples', False)
+            distance_gap_valid = improvement_metrics.get('distance_gap_has_samples', False)
+            speed_gap_start = improvement_metrics.get('speed_gap_start', 0.0)
+            speed_gap_end = improvement_metrics.get('speed_gap_end', speed_gap_start)
+            distance_gap_start = improvement_metrics.get('distance_gap_start', 0.0)
+            distance_gap_end = improvement_metrics.get('distance_gap_end', distance_gap_start)
+
+            speed_gap_closing = speed_gap_valid and (
+                (speed_gap_start - speed_gap_end) >= SPEED_PROGRESS_DELTA or
+                speed_gap_end <= SPEED_CONVERGENCE_TARGET
+            )
+            distance_gap_closing = distance_gap_valid and (
+                (distance_gap_start - distance_gap_end) >= DISTANCE_PROGRESS_DELTA or
+                distance_gap_end <= DISTANCE_CONVERGENCE_TARGET
+            )
+
+            improvement_metrics['speed_gap_closing'] = speed_gap_closing
+            improvement_metrics['distance_gap_closing'] = distance_gap_closing
+
+            braking_commit = improvement_metrics.get('braking_limit_rate', 0.0) >= BRAKE_COMMIT_THRESHOLD
+            brake_turn_commit = improvement_metrics.get('brake_turn_combo_rate', 0.0) >= BRAKE_TURN_COMMIT_THRESHOLD
+
+            braking_alignment_progress = (
+                braking_commit and
+                speed_gap_closing and
+                distance_gap_closing and
+                intent_good
+            )
+            brake_turn_alignment_progress = (
+                brake_turn_commit and
+                speed_gap_closing and
+                distance_gap_closing and
+                intent_good
+            )
+
+            improvement_metrics['braking_alignment_progress'] = braking_alignment_progress
+            improvement_metrics['brake_turn_alignment_progress'] = brake_turn_alignment_progress
+
+            improvement_criteria = [velocity_improvement, speed_improvement, distance_improvement]
+            if improvement_metrics['limit_metrics_available']:
+                limit_checks: List[bool] = []
+                if improvement_metrics.get('acceleration_limit_rate', 0.0) > 0.0:
+                    limit_checks.append(improvement_metrics.get('acceleration_limit_improving', False))
+                if improvement_metrics.get('braking_limit_rate', 0.0) > 0.0:
+                    limit_checks.append(improvement_metrics.get('braking_limit_improving', False))
+                if improvement_metrics.get('turning_limit_rate', 0.0) > 0.0:
+                    limit_checks.append(improvement_metrics.get('turning_limit_improving', False))
+
+                dynamic_checks: List[bool] = []
+                if braking_commit:
+                    dynamic_checks.append(braking_alignment_progress)
+                if brake_turn_commit:
+                    dynamic_checks.append(brake_turn_alignment_progress)
+
+                if limit_checks:
+                    improvement_criteria.extend(limit_checks)
+                if dynamic_checks:
+                    improvement_criteria.extend(dynamic_checks)
+            improvement_metrics['overall_improvement_rate'] = sum(improvement_criteria) / len(improvement_criteria)
+
             if not intent_good:
                 improvement_metrics['overall_improvement_rate'] = 0.0
             
