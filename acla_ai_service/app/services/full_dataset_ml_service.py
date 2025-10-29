@@ -1315,10 +1315,19 @@ class Full_dataset_TelemetryMLService:
         )
         print("[INFO] ✓ Corner identification model trained and saved")
         
-        # Train tire grip analysis model
+        # Train tire grip analysis model using bottom laps (streaming)
         from .tire_grip_analysis_service import TireGripAnalysisService
         tire_service = TireGripAnalysisService()
-        tire_grip_model = await tire_service.train_tire_grip_model(top_laps_telemetry_list)
+
+        print("[INFO] Streaming bottom-lap telemetry to train tire grip model")
+        bottom_laps_training_iterator = self.data_cache.get_cached_data_chunks(
+            cache_key=bottom_laps_cache_key
+        )
+        tire_grip_training = await tire_service.train_tire_grip_model_streaming(
+            chunk_iterator=bottom_laps_training_iterator,
+            max_samples=250_000,
+            random_state=42
+        )
         tire_service_serialized = tire_service.serialize_tire_grip_model()
         
         await self.backend_service.save_ai_model(
@@ -1327,12 +1336,13 @@ class Full_dataset_TelemetryMLService:
             car_name="all_cars",
             model_data=tire_service_serialized,
             metadata={
-                "model_info": tire_service_serialized.get("model_info", {}),
-                "serialization_timestamp": tire_service_serialized.get("serialized_timestamp")
+                "training_summary": tire_grip_training,
+                "serialization_timestamp": tire_service_serialized.get("serialized_timestamp"),
+                "feature_catalog": tire_service.feature_catalog.CONTEXT_FEATURES
             },
             is_active=True
         )
-        print("[INFO] ✓ Tire grip analysis model trained and saved")
+        print("[INFO] ✓ Tire grip analysis model trained on bottom laps and saved")
         
         # Step 2: Process bottom laps via chunk iterator with enrichment
         self._print_section_divider("PROCESSING BOTTOM get_cached_data_chunksLAPS VIA CHUNK ITERATOR")

@@ -1,78 +1,63 @@
+
 """
-Tire Grip and Friction Circle Analysis Service for Assetto Corsa Competizione
+Driver Push-to-Limit Analysis Service for Assetto Corsa Competizione
 
-This service provides comprehensive tire grip analysis and friction circle utilization
-estimation using machine learning models. It extracts features related to:
+This refactored service focuses on answering a single question:
 
-- Tire grip estimation based on physics telemetry
-- Friction circle utilization (how close the car is to the limit)  
-- Weight transfer analysis
-- Predictive load calculations
-- Tire performance degradation
-- Optimal grip windows
+    "Given the driver's current control inputs, how close is the car operating to
+    its physics-derived limits?"
 
-The extracted features are designed to be inserted back into telemetry data for enhanced AI analysis.
+The service learns a lightweight, data-derived model that maps the driver's control
+inputs (throttle, brake, steering) to expected chassis load and slip behaviour. It
+then blends that prediction with the actual dynamic response (g-forces and slip) to
+produce a **0-1 push index** per telemetry sample:
+
+    0.0  -> the car is being driven very conservatively
+    1.0  -> the car is right at (or slightly exceeding) its learned limit
+
+Outputs are suitable for enriching telemetry that downstream AI models consume.
 """
 
 import pandas as pd
 import numpy as np
 import warnings
-import math
-import asyncio  # retained if future async hooks needed
-from typing import Dict, List, Any, Optional, Tuple
-from datetime import datetime
-from pathlib import Path
+from typing import Dict, List, Any, Iterable, Iterator, AsyncIterator, Optional, Union
 from enum import Enum
+from collections.abc import AsyncIterator as AsyncIteratorABC, Iterable as IterableABC
+from datetime import datetime
 # (Removed direct SciPy dependencies to keep environment minimal.)
 
-# Import backend service and models
-from .backend_service import backend_service
-from ..models.telemetry_models import TelemetryFeatures, FeatureProcessor, _safe_float
+# Import backend models
+from ..models.telemetry_models import FeatureProcessor
 
 # Suppress warnings
 warnings.filterwarnings('ignore', category=UserWarning)
 
 class TireGripFeatureCatalog:
-    """Canonical tire-grip feature names for downstream models.
+    """Authoritative feature names emitted by TireGripAnalysisService."""
 
-    Keep this list in sync with TireGripAnalysisService outputs.
-    """
     class ContextFeature(str, Enum):
-        """Authoritative context feature keys for tire grip analysis."""
-        LONGITUDINAL_WEIGHT_TRANSFER = 'longitudinal_weight_transfer'
-        LATERAL_WEIGHT_TRANSFER = 'lateral_weight_transfer'
-        DYNAMIC_WEIGHT_DISTRIBUTION = 'dynamic_weight_distribution'
-        OPTIMAL_GRIP_WINDOW = 'optimal_grip_window'
-        TURNING_GRIP_UTILIZATION = 'turning_grip_utilization' # Turning grip utilization: higher values indicate more grip being used
+        DRIVER_PUSH_TO_LIMIT = 'driver_push_to_limit'
 
-
-    # Derived compatibility lists – keep for consumers expecting plain strings
     CONTEXT_FEATURES: List[str] = [f.value for f in ContextFeature]
 
     
 class TireGripAnalysisService:
-    """Tire Grip & Friction Circle Analysis Service (Driver-Behavior Agnostic)
+    """Driver push-to-limit estimator.
 
-    PURPOSE
-    -------
-    Provide purely physics-derived, driver-behavior neutral enrichment of telemetry data with
-    tire grip utilization, friction circle occupancy, weight transfer, slip efficiency, and
-    related indicators. transformer models use the output features to reflect positive or negative effects that may arise from certain physics constraints.
-    Examples include high slip angles, excessive braking, or understeer/oversteer conditions.
-    These enriched features are intended to process training telemetry data and used during predicting of transformer models,
-    feed downstream generalized models (e.g., transformers for imitation / reasoning) without leaking individual driver
-    control habits (throttle modulation, braking aggressiveness, steering style).
+    The new implementation intentionally focuses on a single contextual feature that captures
+    how aggressively the driver is using the car at each moment. Training is fully data-driven:
 
-    DESIGN PRINCIPLES
-    -----------------
-    1. Only vehicle dynamics & tire state signals are used; control inputs (brake, gas, steer, gear)
-       are excluded to avoid encoding behavior profiles.
-    2. Safe defaults and bounded scaling (tanh, clipping) to stabilize downstream learning.
-    3. Modular design to allow easy updates as new physics insights or models become available.
-    4. Clear separation of context features (for encoder input) vs. reasoning/target
-    5. Output features must help transformer model to understand car physics and tire dynamics.
+    * Robust percentiles normalise throttle, brake and steering inputs.
+    * A shallow, interpretable linear mapping is fitted (least squares) to predict the dynamic
+      response (g-force & slip) from those inputs.
+    * Runtime inference blends the predicted demand with the actual instantaneous response to
+      produce a stable 0-1 index.
+
+    The result is behaviour-aware but physics-grounded, highlighting moments when the driver is
+    asking for — and receiving — the maximum performance from the chassis.
     """
-    
+
     def __init__(self):
         # Store robust, data-derived scaling statistics computed during "training"
         self.stats_: Dict[str, Any] = {}
@@ -80,11 +65,12 @@ class TireGripAnalysisService:
         self.feature_catalog = TireGripFeatureCatalog
 
     async def train_tire_grip_model(self, training_data: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """"Train" tire grip analysis by computing robust, data-derived scalers.
+        """Compute data-derived scaling and control-response mapping.
 
-        Note: No hard-coded physics constants are used. All thresholds and scales
-        are derived from the provided dataset (percentiles, IQR, MAD). This keeps
-        calculations deterministic but lets downstream ML learn any implicit values.
+        Training fits the lightweight regression model that converts driver control
+        inputs into an expected dynamic response. All parameters are pulled from the
+        telemetry itself (robust percentiles and least-squares fit) so no hard-coded
+        physics constants are required.
 
         Args:
             training_data: List of telemetry dicts
@@ -93,16 +79,118 @@ class TireGripAnalysisService:
             dict with success flag and computed stats metadata
         """
         df = self._prepare_dataframe(training_data)
+        return self._train_from_dataframe(df)
+
+    async def train_tire_grip_model_streaming(
+        self,
+        chunk_iterator: Union[
+            Iterator[List[Dict[str, Any]]],
+            Iterable[List[Dict[str, Any]]],
+            AsyncIterator[List[Dict[str, Any]]]
+        ],
+        max_samples: int = 200_000,
+        random_state: Optional[int] = 42
+    ) -> Dict[str, Any]:
+        """Stream-aware training routine for large telemetry corpora.
+
+        Processes telemetry chunks iteratively, maintaining a capped sample set to
+        approximate robust statistics without loading every record into memory.
+
+        Args:
+            chunk_iterator: Iterator yielding telemetry chunks as list[dict] or DataFrame rows.
+            max_samples: Upper bound for rows retained for percentile estimation.
+            random_state: Optional RNG seed when down-sampling the retained sample.
+
+        Returns:
+            dict with success flag and computed stats metadata, including sampling info.
+        """
+
+        async def _iter_chunks():
+            if isinstance(chunk_iterator, AsyncIteratorABC):
+                async for chunk in chunk_iterator:
+                    yield chunk
+            elif isinstance(chunk_iterator, IterableABC):
+                for chunk in chunk_iterator:
+                    yield chunk
+            else:
+                raise TypeError("chunk_iterator must be iterable or async iterable")
+
+        aggregated_df: Optional[pd.DataFrame] = None
+        total_rows = 0
+
+        async for chunk in _iter_chunks():
+            if chunk is None:
+                continue
+
+            if isinstance(chunk, pd.DataFrame):
+                chunk_records = chunk.to_dict(orient="records")
+            else:
+                chunk_records = chunk
+
+            if not chunk_records:
+                continue
+
+            chunk_df = self._prepare_dataframe(chunk_records)
+            if chunk_df.empty:
+                continue
+
+            total_rows += len(chunk_df)
+
+            if aggregated_df is None:
+                aggregated_df = chunk_df
+            else:
+                aggregated_df = pd.concat([aggregated_df, chunk_df], ignore_index=True)
+
+            if max_samples > 0 and len(aggregated_df) > max_samples:
+                aggregated_df = aggregated_df.sample(
+                    n=max_samples,
+                    random_state=random_state,
+                    replace=False
+                ).reset_index(drop=True)
+
+        if aggregated_df is None or aggregated_df.empty:
+            raise ValueError("No telemetry data received while streaming tire grip training")
+
+        training_result = self._train_from_dataframe(aggregated_df, total_rows)
+        training_result["retained_rows"] = len(aggregated_df)
+        training_result["total_streamed_rows"] = total_rows
+        training_result["sampling_capped"] = max_samples > 0 and total_rows > len(aggregated_df)
+
+        print(
+            f"[INFO] Tire grip streaming training complete: {total_rows} rows processed, "
+            f"{len(aggregated_df)} rows retained for robust statistics"
+        )
+
+        return training_result
+
+    def _train_from_dataframe(
+        self,
+        df: pd.DataFrame,
+        total_rows_seen: Optional[int] = None
+    ) -> Dict[str, Any]:
+        if df is None or df.empty:
+            raise ValueError("Cannot train tire grip model on empty dataframe")
+
         self.stats_ = self._compute_robust_stats(df)
+        self.stats_ = self._ensure_control_model(df, self.stats_)
+
+        if total_rows_seen is not None:
+            self.stats_["streaming_total_rows"] = int(total_rows_seen)
+
         self._trained = True
-        return {"success": True, "stats_keys": list(self.stats_.keys())}
+        return {
+            "success": True,
+            "stats_keys": list(self.stats_.keys()),
+            "training_rows": int(len(df)),
+            "total_rows_seen": int(total_rows_seen or len(df))
+        }
 
     async def extract_tire_grip_features(self, telemetry_data: List[Dict[str, Any]]) -> List[Dict[str, float]]:
-        """Compute tire grip and friction circle features from telemetry.
+        """Compute the driver push-to-limit index for each telemetry sample.
 
-        Uses data-derived statistics computed in training if available; otherwise,
-        derives them from the provided data on the fly. Returns per-record feature
-        dicts that can be merged as contextual inputs for other models.
+        The method uses training statistics when available, otherwise it derives
+        them on the fly from the current telemetry window. Returns one dictionary
+        per record containing the single contextual feature required downstream.
 
         Args:
             telemetry_data: List of telemetry dicts
@@ -126,7 +214,7 @@ class TireGripAnalysisService:
             processor = FeatureProcessor(df_raw)
             df = processor.general_cleaning_for_analysis()
         except Exception:
-            df = df_raw.fillna(0)
+            df = df_raw.fillna(0.0)
         # Ensure required numeric columns exist
         needed_cols = [
             'Physics_g_force_x', 'Physics_g_force_y',
@@ -134,9 +222,7 @@ class TireGripAnalysisService:
             'Physics_slip_angle_rear_left', 'Physics_slip_angle_rear_right',
             'Physics_slip_ratio_front_left', 'Physics_slip_ratio_front_right',
             'Physics_slip_ratio_rear_left', 'Physics_slip_ratio_rear_right',
-            'Physics_tyre_core_temp_front_left', 'Physics_tyre_core_temp_front_right',
-            'Physics_tyre_core_temp_rear_left', 'Physics_tyre_core_temp_rear_right',
-            'Physics_pitch', 'Physics_roll'
+            'Physics_gas', 'Physics_brake', 'Physics_steer_angle'
         ]
         for c in needed_cols:
             if c not in df.columns:
@@ -165,115 +251,135 @@ class TireGripAnalysisService:
             df['Physics_slip_ratio_rear_left'].abs(),
             df['Physics_slip_ratio_rear_right'].abs()
         ], axis=0)
-        temps = pd.concat([
-            df['Physics_tyre_core_temp_front_left'],
-            df['Physics_tyre_core_temp_front_right'],
-            df['Physics_tyre_core_temp_rear_left'],
-            df['Physics_tyre_core_temp_rear_right']
-        ], axis=0)
 
-        stats['gmag_p95'] = max(pct(gmag, 95), 1e-6)
-        stats['gx_p90'] = max(pct(gx, 90), 1e-6)
-        stats['gy_p90'] = max(pct(gy, 90), 1e-6)
+        gas = df['Physics_gas'].clip(lower=0.0)
+        brake = df['Physics_brake'].clip(lower=0.0)
+        steer_abs = df['Physics_steer_angle'].abs()
 
-        stats['slip_angle_med'] = pct(slip_angles, 50)
-        stats['slip_angle_iqr'] = max(pct(slip_angles, 75) - pct(slip_angles, 25), 1e-6)
-        stats['slip_ratio_med'] = pct(slip_ratios, 50)
-        stats['slip_ratio_iqr'] = max(pct(slip_ratios, 75) - pct(slip_ratios, 25), 1e-6)
+        slip_combo = pd.concat([slip_angles, slip_ratios], axis=0).clip(lower=0.0)
 
-        stats['temp_med'] = pct(temps, 50)
-        stats['temp_iqr'] = max(pct(temps, 75) - pct(temps, 25), 1e-6)
+        stats['gmag_p99'] = max(pct(gmag, 99), 1e-6)
+        stats['slip_combo_p95'] = max(pct(slip_combo, 95), 1e-6)
 
-        # Statistics for turning grip utilization
-        # Use lateral g-force and slip angles to estimate maximum grip capability
-        combined_slip = pd.concat([slip_angles, slip_ratios], axis=0)
-        stats['combined_slip_p85'] = max(pct(combined_slip, 85), 1e-6)
-        stats['lateral_g_max'] = max(pct(gy, 95), 1e-6)
+        stats['gas_p95'] = max(pct(gas, 95), 1e-6)
+        stats['brake_p95'] = max(pct(brake, 95), 1e-6)
+        stats['steer_abs_p95'] = max(pct(steer_abs, 95), 1e-6)
+
+        # Typical response baseline useful for smoothing
+        slip_angle_mean_row = df[[
+            'Physics_slip_angle_front_left',
+            'Physics_slip_angle_front_right',
+            'Physics_slip_angle_rear_left',
+            'Physics_slip_angle_rear_right'
+        ]].abs().mean(axis=1)
+        slip_ratio_mean_row = df[[
+            'Physics_slip_ratio_front_left',
+            'Physics_slip_ratio_front_right',
+            'Physics_slip_ratio_rear_left',
+            'Physics_slip_ratio_rear_right'
+        ]].abs().mean(axis=1)
+        slip_combo_row = 0.5 * (slip_angle_mean_row + slip_ratio_mean_row)
+        response_ratio = np.maximum(
+            (gmag / stats['gmag_p99']).clip(0.0, 2.5),
+            (slip_combo_row / stats['slip_combo_p95']).clip(0.0, 2.5)
+        )
+        stats['response_median'] = float(np.nanmedian(response_ratio))
+        stats['sample_size'] = int(len(df))
 
         return stats
 
     def _bounded(self, x: pd.Series | np.ndarray, lo: float = 0.0, hi: float = 1.0) -> pd.Series:
-        return pd.Series(np.clip(x, lo, hi))
+        return pd.Series(np.clip(np.asarray(x, dtype=float), lo, hi))
 
-    def _tanh_scale(self, x: pd.Series | np.ndarray) -> pd.Series:
-        return pd.Series(np.tanh(x))
+    def _default_control_coeffs(self) -> np.ndarray:
+        # [bias, gas, brake, steer, gas*brake, gas*steer, brake*steer]
+        return np.array([0.05, 0.45, 0.45, 0.45, 0.1, 0.1, 0.1], dtype=float)
 
-    def _gaussian_efficiency(self, x: pd.Series, center: float, scale: float) -> pd.Series:
-        # Data-derived center/scale; produce efficiency in [0,1]
-        z = (x - center) / (scale if scale > 0 else 1e-6)
-        return pd.Series(np.exp(-0.5 * np.square(z)))
+    def _control_feature_matrix(self, df: pd.DataFrame, stats: Dict[str, Any]) -> np.ndarray:
+        gas_norm = (df['Physics_gas'] / stats['gas_p95']).clip(0.0, 2.5)
+        brake_norm = (df['Physics_brake'] / stats['brake_p95']).clip(0.0, 2.5)
+        steer_norm = (df['Physics_steer_angle'].abs() / stats['steer_abs_p95']).clip(0.0, 2.5)
+
+        ones = np.ones(len(df))
+        cross_gb = gas_norm * brake_norm
+        cross_gs = gas_norm * steer_norm
+        cross_bs = brake_norm * steer_norm
+
+        features = np.column_stack([
+            ones,
+            gas_norm.to_numpy(dtype=float),
+            brake_norm.to_numpy(dtype=float),
+            steer_norm.to_numpy(dtype=float),
+            cross_gb.to_numpy(dtype=float),
+            cross_gs.to_numpy(dtype=float),
+            cross_bs.to_numpy(dtype=float),
+        ])
+        return features
+
+    def _response_target(self, df: pd.DataFrame, stats: Dict[str, Any]) -> np.ndarray:
+        gmag = np.sqrt(df['Physics_g_force_x']**2 + df['Physics_g_force_y']**2)
+        slip_angles = df[[
+            'Physics_slip_angle_front_left',
+            'Physics_slip_angle_front_right',
+            'Physics_slip_angle_rear_left',
+            'Physics_slip_angle_rear_right'
+        ]].abs().mean(axis=1)
+        slip_ratios = df[[
+            'Physics_slip_ratio_front_left',
+            'Physics_slip_ratio_front_right',
+            'Physics_slip_ratio_rear_left',
+            'Physics_slip_ratio_rear_right'
+        ]].abs().mean(axis=1)
+
+        slip_combo = 0.5 * (slip_angles + slip_ratios)
+
+        g_norm = (gmag / stats['gmag_p99']).clip(0.0, 2.5)
+        slip_norm = (slip_combo / stats['slip_combo_p95']).clip(0.0, 2.5)
+        target = np.maximum(g_norm, slip_norm)
+        return target.astype(float)
+
+    def _fit_control_model(self, df: pd.DataFrame, stats: Dict[str, Any]) -> np.ndarray:
+        X = self._control_feature_matrix(df, stats)
+        y = self._response_target(df, stats)
+
+        if len(df) < X.shape[1]:
+            return self._default_control_coeffs()
+
+        try:
+            coeffs, *_ = np.linalg.lstsq(X, y, rcond=None)
+        except np.linalg.LinAlgError:
+            coeffs = self._default_control_coeffs()
+
+        # Guard against pathological coefficients
+        coeffs = np.nan_to_num(coeffs, nan=0.0, posinf=0.0, neginf=0.0)
+        if not np.isfinite(coeffs).all():
+            coeffs = self._default_control_coeffs()
+        return coeffs
+
+    def _ensure_control_model(self, df: pd.DataFrame, stats: Dict[str, Any]) -> Dict[str, Any]:
+        if 'control_model_coeffs' not in stats:
+            coeffs = self._fit_control_model(df, stats)
+            stats['control_model_coeffs'] = coeffs.tolist()
+        return stats
 
     def _compute_features(self, df: pd.DataFrame, stats: Dict[str, Any]) -> pd.DataFrame:
-        gx = df['Physics_g_force_x']
-        gy = df['Physics_g_force_y']
-        gmag = np.sqrt(gx**2 + gy**2)
+        stats = self._ensure_control_model(df, stats)
+        coeffs = np.array(stats['control_model_coeffs'], dtype=float)
 
-        # Friction circle utilization: normalized by robust p95
-        fr_util = (gmag / stats['gmag_p95']).clip(0.0, 1.5)
-        fr_util = self._bounded(fr_util, 0.0, 1.0)
+        X = self._control_feature_matrix(df, stats)
+        predicted = self._bounded(X @ coeffs, 0.0, 2.0)
 
-        # Weight transfer proxies using scaled g-forces (behavior-agnostic)
-        long_wt = self._tanh_scale((gx.abs() / stats['gx_p90']).fillna(0.0))
-        lat_wt = self._tanh_scale((gy.abs() / stats['gy_p90']).fillna(0.0))
+        actual = self._bounded(self._response_target(df, stats), 0.0, 2.0)
 
-        # Dynamic weight distribution index: front<->rear shift via pitch and longitudinal g
-        # Data-derived scaling by gx_p90; bounded to [-1,1] then remap to [0,1]
-        pitch = df['Physics_pitch']
-        dw_raw = np.tanh((gx / stats['gx_p90']).fillna(0.0) + 0.5 * np.tanh(pitch))
-        dyn_wdist = (dw_raw + 1.0) * 0.5
-
-        # Slip efficiencies (1 near typical operating center, lower when far)
-        sa_fl = df['Physics_slip_angle_front_left'].abs()
-        sa_fr = df['Physics_slip_angle_front_right'].abs()
-        sa_rl = df['Physics_slip_angle_rear_left'].abs()
-        sa_rr = df['Physics_slip_angle_rear_right'].abs()
-        sa_all = (sa_fl + sa_fr + sa_rl + sa_rr) / 4.0
-        sa_eff = self._gaussian_efficiency(sa_all, stats['slip_angle_med'], stats['slip_angle_iqr'])
-
-        sr_fl = df['Physics_slip_ratio_front_left'].abs()
-        sr_fr = df['Physics_slip_ratio_front_right'].abs()
-        sr_rl = df['Physics_slip_ratio_rear_left'].abs()
-        sr_rr = df['Physics_slip_ratio_rear_right'].abs()
-        sr_all = (sr_fl + sr_fr + sr_rl + sr_rr) / 4.0
-        sr_eff = self._gaussian_efficiency(sr_all, stats['slip_ratio_med'], stats['slip_ratio_iqr'])
-
-        # Optimal grip window: temperatures near data median score higher
-        t_fl = df['Physics_tyre_core_temp_front_left']
-        t_fr = df['Physics_tyre_core_temp_front_right']
-        t_rl = df['Physics_tyre_core_temp_rear_left']
-        t_rr = df['Physics_tyre_core_temp_rear_right']
-        t_avg = (t_fl + t_fr + t_rl + t_rr) / 4.0
-        grip_window = self._gaussian_efficiency(t_avg, stats['temp_med'], stats['temp_iqr'])
-
-        # Turning grip utilization: estimate grip usage during cornering
-        # Combines lateral g-force demand with slip angle efficiency
-        # 0 = no utilization, 1 = max grip, >1 = slipping beyond max grip
-        lateral_demand = gy.abs() / stats['lateral_g_max']  # Normalized lateral demand
-        slip_factor = sa_all / stats['combined_slip_p85']   # Normalized slip usage
-        
-        # Turning grip utilization: higher values indicate more grip being used
-        # When slip increases faster than lateral g, it indicates exceeding optimal grip
-        turning_grip_util = lateral_demand + 0.5 * slip_factor
-        turning_grip_util = turning_grip_util.clip(0.0, 2.0)  # Allow values >1 to indicate over-utilization
-
-        # Overall tire grip: combine friction utilization and efficiencies
-        overall = self._bounded(0.5 * fr_util + 0.25 * sa_eff + 0.25 * sr_eff, 0.0, 1.0)
-
-        # Tire saturation: percentile rank of friction utilization (data-derived)
-        # Avoid hard thresholds by using ranks within the batch
-        ranks = fr_util.rank(method='average', pct=True)
-        saturation = self._bounded(ranks, 0.0, 1.0)
+        smooth_baseline = stats.get('response_median', 0.1)
+        blended = 0.6 * predicted + 0.35 * actual + 0.05 * smooth_baseline
+        push_index = self._bounded(blended, 0.0, 1.0)
 
         out = pd.DataFrame({
-            self.feature_catalog.ContextFeature.LONGITUDINAL_WEIGHT_TRANSFER.value: long_wt.values,
-            self.feature_catalog.ContextFeature.LATERAL_WEIGHT_TRANSFER.value: lat_wt.values,
-            self.feature_catalog.ContextFeature.DYNAMIC_WEIGHT_DISTRIBUTION.value: dyn_wdist.values,
-            self.feature_catalog.ContextFeature.OPTIMAL_GRIP_WINDOW.value: grip_window.values,
-            self.feature_catalog.ContextFeature.TURNING_GRIP_UTILIZATION.value: turning_grip_util.values,
+            self.feature_catalog.ContextFeature.DRIVER_PUSH_TO_LIMIT.value: push_index.astype(float).to_numpy()
         })
-        # Ensure float dtype and fill NaNs
-        for c in out.columns:
-            out[c] = pd.to_numeric(out[c], errors='coerce').fillna(0.0).astype(float)
+
+        out = out.fillna(0.0)
         return out
 
 
@@ -293,6 +399,8 @@ class TireGripAnalysisService:
                 serializable_stats[key] = float(value)
             elif isinstance(value, np.ndarray):
                 serializable_stats[key] = value.tolist()
+            elif isinstance(value, list) and value and isinstance(value[0], (np.integer, np.floating)):
+                serializable_stats[key] = [float(v) for v in value]
             else:
                 serializable_stats[key] = value
         
@@ -300,7 +408,8 @@ class TireGripAnalysisService:
             "stats": serializable_stats,
             "trained": self._trained,
             "version": "1.0",  # For future compatibility
-            "feature_count": len(self.feature_catalog.CONTEXT_FEATURES)
+            "feature_count": len(self.feature_catalog.CONTEXT_FEATURES),
+            "serialized_timestamp": datetime.utcnow().isoformat()
         }
         
     def deserialize_tire_grip_model(self, model_data: Dict[str, Any]) -> 'TireGripAnalysisService':
@@ -345,11 +454,9 @@ class TireGripAnalysisService:
             
             # Validate required statistics are present
             required_stats = [
-                'gmag_p95', 'gx_p90', 'gy_p90',
-                'slip_angle_med', 'slip_angle_iqr',
-                'slip_ratio_med', 'slip_ratio_iqr', 
-                'temp_med', 'temp_iqr',
-                'combined_slip_p85', 'lateral_g_max'
+                'gmag_p99', 'slip_combo_p95',
+                'gas_p95', 'brake_p95', 'steer_abs_p95',
+                'control_model_coeffs'
             ]
             
             missing_stats = [stat for stat in required_stats if stat not in self.stats_]
@@ -364,11 +471,11 @@ class TireGripAnalysisService:
             return self
             
         except Exception as e:
-            error_msg = f"{__class__.__name__} Failed to deserialize tire grip analysis model: {str(e)}"
+            error_msg = f"{self.__class__.__name__} failed to deserialize tire grip analysis model: {str(e)}"
             raise RuntimeError(error_msg) from e
 
 # Create singleton instance for import
 tire_grip_analysis_service = TireGripAnalysisService()
 
 if __name__ == "__main__":
-    print("TireGripAnalysisService initialized. Ready for tire grip and friction circle analysis!")
+    print("TireGripAnalysisService initialized. Ready to estimate driver push-to-limit index!")

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import dataclasses
 import io
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Union
@@ -246,7 +247,13 @@ def visualize_optimal_segments(
         summary: Dict[str, Any] = {}
         if analyze_segment_fn is not None:
             try:
-                summary = analyze_segment_fn(segment_df, required_context_features)
+                summary_result = analyze_segment_fn(segment_df, required_context_features)
+                if hasattr(summary_result, "to_dict"):
+                    summary = summary_result.to_dict()
+                elif dataclasses.is_dataclass(summary_result):
+                    summary = dataclasses.asdict(summary_result)
+                else:
+                    summary = summary_result
             except Exception as analyze_error:
                 summary = {"error": str(analyze_error)}
 
