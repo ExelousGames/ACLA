@@ -75,7 +75,7 @@ const NORMALIZED_POSITION_KEYS = [
     'car_position'
 ] as const;
 
-const PLAY_AHEAD_STEPS = 1;
+const PLAY_AHEAD_STEPS = 5;
 const PREFETCH_BUFFER_MS = 400;
 const DEFAULT_FETCH_DURATION_MS = 600;
 const PROGRESS_EPSILON = 0.01;

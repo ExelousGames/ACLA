@@ -63,8 +63,6 @@ class SlipEnvelopeConfig:
     front_longitudinal_slip_limit: float = 0.12  # Dimensionless slip ratio
     rear_longitudinal_slip_limit: float = 0.15
     longitudinal_safety_margin: float = 0.02
-    longitudinal_g_limit: float = 1.35  # Max |g_force_x| the drivetrain can sustain
-    longitudinal_g_safety_margin: float = 0.08
     limit_margin_multiplier: float = 1.5  # Alpha in limit = mu + alpha * sigma
     nll_weight: float = 1.0
     penalty_weight: float = 5.0
@@ -378,9 +376,6 @@ class TireGripAnalysisService:
             "Physics_speed_kmh",
             "Physics_gear",
             "Physics_rpm",
-            "Physics_g_force_x",
-            "Physics_g_force_y",
-            "Physics_g_force_z",
             "Physics_roll",
             "Physics_pitch",
             "Physics_local_velocity_x",
@@ -402,7 +397,6 @@ class TireGripAnalysisService:
             "Physics_tyre_core_temp_rear_left",
             "Physics_tyre_core_temp_rear_right",
             "abs_steer",
-            "combined_g",
             "gas_times_speed",
             "brake_times_speed",
             "steer_times_speed",
@@ -418,8 +412,6 @@ class TireGripAnalysisService:
             "gas_times_total_slip_ratio",
             "brake_times_total_slip_ratio",
             "combined_longitudinal_slip",
-            "longitudinal_g_abs",
-            "longitudinal_g_times_speed",
             "rpm_norm",
             "gear_times_gas",
             "gear_times_brake",
@@ -442,7 +434,6 @@ class TireGripAnalysisService:
         self._ensure_slip_angle_unit(df)
 
         required_columns = set(self._feature_names + self._slip_columns() + self._longitudinal_slip_columns())
-        required_columns.add("Physics_g_force_x")
         required_columns.add("Physics_speed_kmh")
         required_columns.add("Physics_rpm")
         required_columns.add("Physics_gear")
@@ -530,18 +521,15 @@ class TireGripAnalysisService:
         rear_slip = df[["Physics_slip_angle_rear_left", "Physics_slip_angle_rear_right"]].abs().max(axis=1)
         front_long_slip = df[["Physics_slip_ratio_front_left", "Physics_slip_ratio_front_right"]].abs().max(axis=1)
         rear_long_slip = df[["Physics_slip_ratio_rear_left", "Physics_slip_ratio_rear_right"]].abs().max(axis=1)
-        longitudinal_g_abs = df["Physics_g_force_x"].abs()
         front_limit = max(self.config.front_slip_limit - self.config.safety_margin, EPS)
         rear_limit = max(self.config.rear_slip_limit - self.config.safety_margin, EPS)
         front_long_limit = max(self.config.front_longitudinal_slip_limit - self.config.longitudinal_safety_margin, EPS)
         rear_long_limit = max(self.config.rear_longitudinal_slip_limit - self.config.longitudinal_safety_margin, EPS)
-        g_limit = max(self.config.longitudinal_g_limit - self.config.longitudinal_g_safety_margin, EPS)
         return (
             (front_slip <= front_limit)
             & (rear_slip <= rear_limit)
             & (front_long_slip <= front_long_limit)
             & (rear_long_slip <= rear_long_limit)
-            & (longitudinal_g_abs <= g_limit)
         )
 
     def _max_lateral_slip(self, df: pd.DataFrame) -> np.ndarray:
@@ -557,25 +545,20 @@ class TireGripAnalysisService:
     def _combined_utilization(self, df: pd.DataFrame) -> np.ndarray:
         lateral = self._max_lateral_slip(df)
         longitudinal = self._max_longitudinal_slip(df)
-        longitudinal_g = df["Physics_g_force_x"].abs().to_numpy(dtype=float)
-
         lateral_limit = max(self.config.front_slip_limit, self.config.rear_slip_limit, EPS)
         longitudinal_limit = max(
             self.config.front_longitudinal_slip_limit, self.config.rear_longitudinal_slip_limit, EPS
         )
-        g_limit = max(self.config.longitudinal_g_limit, EPS)
 
         lateral_ratio = np.clip(lateral / lateral_limit, 0.0, np.inf)
         longitudinal_slip_ratio = np.clip(longitudinal / longitudinal_limit, 0.0, np.inf)
-        longitudinal_g_ratio = np.clip(longitudinal_g / g_limit, 0.0, np.inf)
-        longitudinal_ratio = np.maximum(longitudinal_slip_ratio, longitudinal_g_ratio)
+        longitudinal_ratio = longitudinal_slip_ratio
         combined = np.sqrt(lateral_ratio ** 2 + longitudinal_ratio ** 2)
         return np.clip(combined, 0.0, 2.0)
 
     def _build_feature_matrix(self, df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
         work = df.copy()
         work["abs_steer"] = work["Physics_steer_angle"].abs()
-        work["combined_g"] = np.sqrt(work["Physics_g_force_x"] ** 2 + work["Physics_g_force_y"] ** 2)
         work["gas_times_speed"] = work["Physics_gas"] * work["Physics_speed_kmh"]
         work["brake_times_speed"] = work["Physics_brake"] * work["Physics_speed_kmh"]
         work["steer_times_speed"] = work["Physics_steer_angle"] * work["Physics_speed_kmh"]
@@ -608,8 +591,6 @@ class TireGripAnalysisService:
         )
         work["gas_times_total_slip_ratio"] = work["Physics_gas"] * work["total_slip_ratio_max"]
         work["brake_times_total_slip_ratio"] = work["Physics_brake"] * work["total_slip_ratio_max"]
-        work["longitudinal_g_abs"] = work["Physics_g_force_x"].abs()
-        work["longitudinal_g_times_speed"] = work["longitudinal_g_abs"] * work["Physics_speed_kmh"].abs()
         rpm = work["Physics_rpm"].clip(lower=0.0)
         max_rpm = max(float(np.nanmax(rpm.to_numpy(dtype=float))), EPS)
         work["rpm_norm"] = np.clip(rpm / max_rpm, 0.0, 1.5)
