@@ -69,7 +69,7 @@ class SegmentImprovementConfig:
     expert_speed_diff_max: float = 5.0
     expert_distance_max: float = 5.0
 
-    driver_push_high_threshold: float = 0.7
+    driver_push_high_threshold: float = 0.5
     driver_push_trend_min: float = 0.01
     driver_push_improvement_min_rate: float = 0.4
 
@@ -100,7 +100,6 @@ class SegmentImprovementSummary:
     driver_push_mean: float = 0.0
     driver_push_trend: float = 0.0
     driver_push_high_rate: float = 0.0
-    driver_push_improving: bool = False
 
     overall_improvement_rate: float = 0.0
     overall_consistency_rate: float = 0.0
@@ -1099,10 +1098,6 @@ class ExpertImitateLearningService:
                 summary.driver_push_trend = float(np.polyfit(sample_idx, push_smoothed, 1)[0])
                 push_above_threshold_rate = float(np.mean(push_smoothed >= config.driver_push_high_threshold))
                 summary.driver_push_high_rate = push_above_threshold_rate
-                summary.driver_push_improving = (
-                    summary.driver_push_trend > config.driver_push_trend_min
-                    and summary.driver_push_high_rate >= config.driver_push_improvement_min_rate
-                )
 
             # Improvement and consistency calculations
             distance_improvement = distance_has_samples and summary.distance_to_line_trend < 0.0
