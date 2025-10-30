@@ -14,6 +14,7 @@ import { useEnvironment } from 'contexts/EnvironmentContext';
 import LiveAnalysisSessionRecording from './liveAnalysisSessionRecording';
 import { VisualizationInstance } from './visualization/VisualizationRegistry';
 import { PythonShellOptions } from 'services/pythonService';
+import { createPythonStreamSession, PythonStreamEvent, PythonStreamSession } from 'services/pythonStreaming';
 import { ACC_STATUS } from 'data/live-analysis/live-map-data';
 import { AnalysisContext } from './analysis-context';
 
@@ -24,6 +25,22 @@ const normalizeAccStatus = (value: unknown): ACC_STATUS | null => {
     }
 
     return ACC_STATUS[numeric as ACC_STATUS] !== undefined ? numeric as ACC_STATUS : null;
+};
+
+const TELEMETRY_WRITE_TIMEOUT_MS = 6000;
+
+type TelemetryWriterEvent = {
+    status?: string;
+    request_id?: string;
+    message?: string;
+    written?: number;
+    [key: string]: unknown;
+};
+
+type PendingTelemetryWrite = {
+    resolve: () => void;
+    reject: (error: Error) => void;
+    timeoutId: number;
 };
 
 const SessionAnalysis = () => {
@@ -43,30 +60,178 @@ const SessionAnalysis = () => {
     // Use ref to persist file path during recording to prevent state reset issues
     const recordingFilePathRef = useRef<string | null>(null);
     const writeQueueRef = useRef<Promise<void>>(Promise.resolve());
+    const telemetryWriterSessionRef = useRef<PythonStreamSession<TelemetryWriterEvent> | null>(null);
+    const telemetryWriterCleanupRef = useRef<(() => void) | null>(null);
+    const telemetryWriterFilePathRef = useRef<string | null>(null);
+    const telemetryWriterPendingRef = useRef<Map<string, PendingTelemetryWrite>>(new Map());
+    const telemetryWriterSequenceRef = useRef(0);
 
     const environment = useEnvironment();
+
+    const disposeTelemetryWriter = useCallback(async ({ force = false }: { force?: boolean } = {}) => {
+        const cleanup = telemetryWriterCleanupRef.current;
+        if (cleanup) {
+            cleanup();
+            telemetryWriterCleanupRef.current = null;
+        }
+
+        const session = telemetryWriterSessionRef.current;
+        telemetryWriterSessionRef.current = null;
+        telemetryWriterFilePathRef.current = null;
+
+        for (const [requestId, pending] of Array.from(telemetryWriterPendingRef.current.entries())) {
+            telemetryWriterPendingRef.current.delete(requestId);
+            pending.reject(new Error('Telemetry writer disposed'));
+        }
+
+        if (session) {
+            try {
+                await session.dispose({ force });
+            } catch (error) {
+                console.warn('Failed to dispose telemetry writer session', error);
+            }
+        }
+    }, []);
+
+    const handleTelemetryWriterEvent = useCallback((event: PythonStreamEvent<TelemetryWriterEvent>) => {
+        if (!event) {
+            return;
+        }
+
+        const status = typeof event.status === 'string' ? event.status : '';
+        const requestId = typeof event.request_id === 'string' ? event.request_id : undefined;
+
+        if (status === 'ok' && requestId) {
+            const pending = telemetryWriterPendingRef.current.get(requestId);
+            if (pending) {
+                telemetryWriterPendingRef.current.delete(requestId);
+                pending.resolve();
+            }
+            return;
+        }
+
+        if (status === 'error') {
+            const error = new Error(typeof event.message === 'string' ? event.message : 'Telemetry writer error');
+            if (requestId) {
+                const pending = telemetryWriterPendingRef.current.get(requestId);
+                if (pending) {
+                    telemetryWriterPendingRef.current.delete(requestId);
+                    pending.reject(error);
+                }
+            } else {
+                console.error('Telemetry writer emitted error without request id', event);
+                for (const [pendingId, pending] of Array.from(telemetryWriterPendingRef.current.entries())) {
+                    telemetryWriterPendingRef.current.delete(pendingId);
+                    pending.reject(error);
+                }
+            }
+            return;
+        }
+
+        if (status === 'shutdown') {
+            if (requestId) {
+                const pending = telemetryWriterPendingRef.current.get(requestId);
+                if (pending) {
+                    telemetryWriterPendingRef.current.delete(requestId);
+                    pending.resolve();
+                }
+            }
+            void disposeTelemetryWriter({ force: true });
+            return;
+        }
+    }, [disposeTelemetryWriter]);
+
+    const ensureTelemetryWriter = useCallback(async (filePath: string) => {
+        if (telemetryWriterSessionRef.current && telemetryWriterFilePathRef.current === filePath) {
+            const existingSession = telemetryWriterSessionRef.current;
+            await existingSession.waitUntilReady();
+            return existingSession;
+        }
+
+        await disposeTelemetryWriter({ force: true });
+
+        try {
+            const session = await createPythonStreamSession<TelemetryWriterEvent>({
+                scriptName: 'append_telemetry_data.py',
+                pythonOptions: {
+                    mode: 'text',
+                    pythonOptions: ['-u'],
+                    scriptPath: 'src/py-scripts',
+                    args: [filePath]
+                },
+                readyTimeoutMs: 8000
+            });
+
+            telemetryWriterSessionRef.current = session;
+            telemetryWriterFilePathRef.current = filePath;
+            telemetryWriterCleanupRef.current = session.onMessage(handleTelemetryWriterEvent);
+
+            await session.waitUntilReady();
+            return session;
+        } catch (error) {
+            await disposeTelemetryWriter({ force: true });
+            throw error;
+        }
+    }, [disposeTelemetryWriter, handleTelemetryWriterEvent]);
 
     // File-based telemetry data functions
     const writeRecordedLiveSessionData = async (data: any): Promise<void> => {
         const enqueueWrite = async () => {
-            // Use the ref value if available, otherwise fall back to state
             let currentFilePath = recordingFilePathRef.current || recordedSessionDataFilePath;
 
             if (!currentFilePath) {
-                // Generate a temporary file path for telemetry data
                 const timestamp = new Date().getTime();
                 const sessionId = sessionSelected?.SessionId || 'unknown';
                 currentFilePath = `../session_recording/temp/telemetry_${sessionId}_${timestamp}.jsonl`;
-
-                // Store in both state and ref
                 setRecordedSessionDataFilePath(currentFilePath);
                 recordingFilePathRef.current = currentFilePath;
-
-                // Reset the data counter for new session
                 setRecordedTelemetryDataCount(0);
             }
 
-            await writeToFile(currentFilePath, data);
+            const session = await ensureTelemetryWriter(currentFilePath);
+            telemetryWriterSequenceRef.current += 1;
+            const requestId = `telemetry-append-${Date.now()}-${telemetryWriterSequenceRef.current}`;
+
+            let resolveAck!: () => void;
+            let rejectAck!: (error: Error) => void;
+            const ackPromise = new Promise<void>((resolve, reject) => {
+                resolveAck = resolve;
+                rejectAck = reject;
+            });
+
+            const timeoutId = window.setTimeout(() => {
+                const pending = telemetryWriterPendingRef.current.get(requestId);
+                if (pending) {
+                    telemetryWriterPendingRef.current.delete(requestId);
+                    pending.reject(new Error('Telemetry writer append timed out'));
+                }
+            }, TELEMETRY_WRITE_TIMEOUT_MS);
+
+            telemetryWriterPendingRef.current.set(requestId, {
+                resolve: () => {
+                    window.clearTimeout(timeoutId);
+                    resolveAck();
+                },
+                reject: (error: Error) => {
+                    window.clearTimeout(timeoutId);
+                    rejectAck(error);
+                },
+                timeoutId
+            });
+
+            try {
+                await session.send('append', { data }, requestId);
+            } catch (error) {
+                const pending = telemetryWriterPendingRef.current.get(requestId);
+                if (pending) {
+                    telemetryWriterPendingRef.current.delete(requestId);
+                    pending.reject(error instanceof Error ? error : new Error(String(error)));
+                }
+                throw error;
+            }
+
+            await ackPromise;
+            setRecordedTelemetryDataCount(prev => prev + 1);
         };
 
         const nextWrite = writeQueueRef.current.then(enqueueWrite);
@@ -78,25 +243,6 @@ const SessionAnalysis = () => {
             .then(() => undefined);
 
         return nextWrite;
-    };
-
-    const writeToFile = async (filePath: string, data: any): Promise<void> => {
-        try {
-            // Use Python script to append data to file (JSONL format for streaming)
-            const options = {
-                mode: 'text',
-                pythonOptions: ['-u'],
-                scriptPath: 'src/py-scripts',
-                args: [filePath, JSON.stringify(data)]
-            } as PythonShellOptions;
-            // Create a simple Python script call to append data
-            await window.electronAPI.runPythonScript('append_telemetry_data.py', options);
-
-            // Increment the telemetry data counter
-            setRecordedTelemetryDataCount(prev => prev + 1);
-        } catch (error) {
-            console.error('Error writing telemetry data to file:', error);
-        }
     };
 
     const readRecordedSessionData = async (onProgress?: (read: number, total: number | null) => void): Promise<any[]> => {
@@ -180,6 +326,7 @@ const SessionAnalysis = () => {
         recordingFilePathRef.current = null;
         setRecordedTelemetryDataCount(0);
         writeQueueRef.current = Promise.resolve();
+        void disposeTelemetryWriter({ force: true });
     };
 
     // Function to send guidance messages to chat
@@ -224,6 +371,12 @@ const SessionAnalysis = () => {
             setSession(null);
         }
     }, [activeTab]);
+
+    useEffect(() => {
+        return () => {
+            void disposeTelemetryWriter({ force: true });
+        };
+    }, [disposeTelemetryWriter]);
 
 
     return (
