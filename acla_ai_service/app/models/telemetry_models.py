@@ -664,6 +664,8 @@ class TelemetryFeatures:
             "Physics_steer_angle",
             "Physics_gear",
             "Physics_rpm",
+            "Physics_roll",
+            "Physics_pitch",
             "Physics_g_force_x",
             "Physics_g_force_y",
             "Physics_g_force_z",

@@ -17,6 +17,7 @@ import numpy as np
 import pandas as pd
 
 from .imitate_expert_learning_service import ExpertFeatureCatalog
+from .tire_grip_analysis_service import TireGripFeatureCatalog
 
 
 def visualize_optimal_segments(
@@ -51,6 +52,7 @@ def visualize_optimal_segments(
 
     eo = ExpertFeatureCatalog.ExpertOptimalFeature
     context = ExpertFeatureCatalog.ContextFeature
+    tire_context = TireGripFeatureCatalog.ContextFeature
 
     if output_dir is None:
         output_dir = (
@@ -67,10 +69,13 @@ def visualize_optimal_segments(
         output_path.mkdir(parents=True, exist_ok=True)
 
     visualization_payloads: List[Dict[str, Any]] = []
-    required_context_features = [
+    expert_context_features = [
         context.EXPERT_VELOCITY_ALIGNMENT.value,
         context.SPEED_DIFFERENCE.value,
         context.DISTANCE_TO_EXPERT_LINE.value,
+    ]
+    tire_context_features = [
+        tire_context.DRIVER_PUSH_TO_LIMIT.value,
     ]
 
     required_columns = [
@@ -83,6 +88,9 @@ def visualize_optimal_segments(
         "Physics_velocity_z",
         "Physics_speed_kmh",
         "time_delta_seconds",
+    "Physics_gas",
+    "Physics_brake",
+    "Physics_steer_angle",
         eo.EXPERT_OPTIMAL_PLAYER_POS_X.value,
         eo.EXPERT_OPTIMAL_PLAYER_POS_Y.value,
         eo.EXPERT_OPTIMAL_PLAYER_POS_Z.value,
@@ -90,7 +98,8 @@ def visualize_optimal_segments(
         eo.EXPERT_OPTIMAL_VELOCITY_Y.value,
         eo.EXPERT_OPTIMAL_VELOCITY_Z.value,
         eo.EXPERT_OPTIMAL_SPEED.value,
-        *required_context_features,
+        *expert_context_features,
+        *tire_context_features,
     ]
 
     segment_count = min(max_segments, len(optimal_segments))
@@ -127,11 +136,12 @@ def visualize_optimal_segments(
         current_speed_series = segment_df["Physics_speed_kmh"]
         expert_speed_series = segment_df[eo.EXPERT_OPTIMAL_SPEED.value]
 
-        fig = plt.figure(figsize=(18, 8))
-        gs = fig.add_gridspec(2, 2, height_ratios=[2.0, 1.0], width_ratios=[1.5, 1.0])
+        fig = plt.figure(figsize=(18, 10))
+        gs = fig.add_gridspec(3, 2, height_ratios=[2.0, 1.0, 1.0], width_ratios=[1.5, 1.0])
         ax_track = fig.add_subplot(gs[:, 0], projection="3d")
         ax_speed = fig.add_subplot(gs[0, 1])
         ax_time_delta = fig.add_subplot(gs[1, 1], sharex=ax_speed)
+        ax_push_index = fig.add_subplot(gs[2, 1], sharex=ax_speed)
 
         current_x_np = current_x.to_numpy()
         current_y_np = current_y.to_numpy()
@@ -213,6 +223,12 @@ def visualize_optimal_segments(
             ax_speed.legend(legend_handles, legend_labels, loc="lower left")
 
         time_delta_series = segment_df["time_delta_seconds"].to_numpy()
+        push_to_limit_series = segment_df[
+            tire_context.DRIVER_PUSH_TO_LIMIT.value
+        ].to_numpy(dtype=float)
+        gas_series = segment_df["Physics_gas"].to_numpy(dtype=float)
+        brake_series = segment_df["Physics_brake"].to_numpy(dtype=float)
+        steer_series = segment_df["Physics_steer_angle"].to_numpy(dtype=float)
         ax_time_delta.plot(
             segment_times_seconds,
             time_delta_series,
@@ -225,6 +241,50 @@ def visualize_optimal_segments(
         ax_time_delta.grid(True, linestyle="--", alpha=0.3)
         ax_speed.tick_params(labelbottom=True)
         ax_time_delta.tick_params(labelbottom=False)
+
+        ax_push_index.plot(
+            segment_times_seconds,
+            push_to_limit_series,
+            color="#d62728",
+            linewidth=2,
+            label="Push-to-limit",
+        )
+        ax_push_index.plot(
+            segment_times_seconds,
+            gas_series,
+            color="#9467bd",
+            linewidth=1.5,
+            linestyle="-.",
+            label="Throttle",
+        )
+        ax_push_index.plot(
+            segment_times_seconds,
+            brake_series,
+            color="#8c564b",
+            linewidth=1.5,
+            linestyle=":",
+            label="Brake",
+        )
+        ax_push_index.set_title("Driver push-to-limit index")
+        ax_push_index.set_xlabel("Segment time (s)")
+        ax_push_index.set_ylabel("Push index / Pedal (0-1)")
+        ax_push_index.set_ylim(0.0, 1.05)
+        ax_push_index.grid(True, linestyle="--", alpha=0.3)
+        ax_push_index.tick_params(labelbottom=True)
+
+        ax_push_steer = ax_push_index.twinx()
+        steer_line, = ax_push_steer.plot(
+            segment_times_seconds,
+            steer_series,
+            color="#17becf",
+            linewidth=1.5,
+            label="Steer angle",
+        )
+        ax_push_steer.set_ylabel("Steer angle")
+
+        push_legend_handles = ax_push_index.get_lines() + [steer_line]
+        push_legend_labels = [line.get_label() for line in push_legend_handles]
+        ax_push_index.legend(push_legend_handles, push_legend_labels, loc="upper right")
 
         fig.tight_layout()
 
@@ -247,7 +307,7 @@ def visualize_optimal_segments(
         summary: Dict[str, Any] = {}
         if analyze_segment_fn is not None:
             try:
-                summary_result = analyze_segment_fn(segment_df, required_context_features)
+                summary_result = analyze_segment_fn(segment_df, expert_context_features + tire_context_features)
                 if hasattr(summary_result, "to_dict"):
                     summary = summary_result.to_dict()
                 elif dataclasses.is_dataclass(summary_result):

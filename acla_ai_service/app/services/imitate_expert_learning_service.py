@@ -70,7 +70,6 @@ class SegmentImprovementConfig:
     expert_distance_max: float = 5.0
 
     driver_push_high_threshold: float = 0.7
-    driver_push_consistency_threshold: float = 0.6
     driver_push_trend_min: float = 0.01
     driver_push_improvement_min_rate: float = 0.4
 
@@ -101,7 +100,6 @@ class SegmentImprovementSummary:
     driver_push_mean: float = 0.0
     driver_push_trend: float = 0.0
     driver_push_high_rate: float = 0.0
-    driver_push_consistency_rate: float = 0.0
     driver_push_improving: bool = False
 
     overall_improvement_rate: float = 0.0
@@ -990,7 +988,6 @@ class ExpertImitateLearningService:
         optimal_segments = []
         num_improvement_sample = 0
         num_consistency_sample = 0
-        num_driver_push_sample = 0
 
         # Calculate total segments ensuring each has exactly segment_length
         total_segments = (len(df) - segment_length) // (segment_length // 2) + 1  # Overlapping segments
@@ -1010,7 +1007,6 @@ class ExpertImitateLearningService:
             
             # Streamlined no-fallback approach: use improvement rate if above threshold, otherwise use consistency rate
             segment_passes = False
-            driver_push_consistency = improvement_scores.get('driver_push_consistency_rate', 0.0)
             if improvement_scores['overall_improvement_rate'] >= improvement_threshold:
                 segment_passes = True
                 # Use improvement rate criteria
@@ -1019,9 +1015,6 @@ class ExpertImitateLearningService:
                 segment_passes = True
                 # Use consistency rate criteria
                 num_consistency_sample += 1
-            elif driver_push_consistency >= improvement_threshold:
-                segment_passes = True
-                num_driver_push_sample += 1
 
             if segment_passes:
                 segment_dict = segment.to_dict('records')
@@ -1031,7 +1024,6 @@ class ExpertImitateLearningService:
         print(f"[INFO] - Original records: {len(telemetry_data)}")
         print(f"[INFO] - Segments analyzed: {total_segments}")
         print(f"[INFO] - Improvement-based passes: {num_improvement_sample}, Consistency-based passes: {num_consistency_sample}")
-        print(f"[INFO] - Driver-push passes: {num_driver_push_sample}")
         print(f"[INFO] - Overall pass rate: {len(optimal_segments)/total_segments*100:.1f}%")
 
         # Ensure we have minimum required segments
@@ -1098,44 +1090,40 @@ class ExpertImitateLearningService:
 
             # Driver push-to-limit analysis (0-1 intensity provided by TireGripAnalysisService)
             tire_feature = TireGripFeatureCatalog.ContextFeature.DRIVER_PUSH_TO_LIMIT.value
-            if tire_feature in segment.columns:
-                push_series = pd.to_numeric(segment[tire_feature], errors='coerce').fillna(0.0)
-                push_smoothed = _smooth_series(push_series)
-                if len(push_smoothed) > 1:
-                    summary.driver_push_available = True
-                    summary.driver_push_mean = float(np.mean(push_smoothed))
-                    sample_idx = np.arange(len(push_smoothed))
-                    summary.driver_push_trend = float(np.polyfit(sample_idx, push_smoothed, 1)[0])
-                    summary.driver_push_high_rate = float(np.mean(push_smoothed >= config.driver_push_high_threshold))
-                    summary.driver_push_consistency_rate = float(
-                        np.mean(push_smoothed >= config.driver_push_consistency_threshold)
-                    )
-                    summary.driver_push_improving = (
-                        summary.driver_push_trend > config.driver_push_trend_min
-                        and summary.driver_push_high_rate >= config.driver_push_improvement_min_rate
-                    )
+            push_series = pd.to_numeric(segment[tire_feature], errors='coerce').fillna(0.0)
+            push_smoothed = _smooth_series(push_series)
+            if len(push_smoothed) > 1:
+                summary.driver_push_available = True
+                summary.driver_push_mean = float(np.mean(push_smoothed))
+                sample_idx = np.arange(len(push_smoothed))
+                summary.driver_push_trend = float(np.polyfit(sample_idx, push_smoothed, 1)[0])
+                push_above_threshold_rate = float(np.mean(push_smoothed >= config.driver_push_high_threshold))
+                summary.driver_push_high_rate = push_above_threshold_rate
+                summary.driver_push_improving = (
+                    summary.driver_push_trend > config.driver_push_trend_min
+                    and summary.driver_push_high_rate >= config.driver_push_improvement_min_rate
+                )
 
             # Improvement and consistency calculations
-            velocity_improvement = (
-                summary.velocity_alignment_trend > 0.0 if len(velocity_smoothed) > 1 else False
-            )
-            speed_improvement = speed_has_samples and summary.speed_difference_trend < 0.0
             distance_improvement = distance_has_samples and summary.distance_to_line_trend < 0.0
 
-            improvement_criteria: List[bool] = [velocity_improvement, speed_improvement, distance_improvement]
-            if summary.driver_push_available:
-                improvement_criteria.append(summary.driver_push_improving)
+            improvement_criteria: List[bool] = [distance_improvement]
 
+            base_improvement_rate = 0.0
             if improvement_criteria:
-                summary.overall_improvement_rate = sum(improvement_criteria) / len(improvement_criteria)
+                base_improvement_rate = sum(improvement_criteria) / len(improvement_criteria)
+
+            if summary.driver_push_available:
+                push_threshold_rate = float(np.clip(summary.driver_push_high_rate, 0.0, 1.0))
+                base_improvement_rate *= push_threshold_rate
+
+            summary.overall_improvement_rate = base_improvement_rate
 
             consistency_rates = [
                 summary.velocity_consistency_rate,
                 summary.speed_consistency_rate,
                 summary.distance_consistency_rate,
             ]
-            if summary.driver_push_available:
-                consistency_rates.append(summary.driver_push_consistency_rate)
 
             if consistency_rates:
                 summary.overall_consistency_rate = sum(consistency_rates) / len(consistency_rates)

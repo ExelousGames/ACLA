@@ -570,13 +570,14 @@ class Full_dataset_TelemetryMLService:
                     deserializer_func=tire_grip_service.deserialize_tire_grip_model
                 )
                 
-                # Extract tire grip features from telemetry (async; returns List[Dict])
-                tire_features_list = await tire_grip_service.extract_tire_grip_features([processed_telemetry_dict])
-                if tire_features_list and len(tire_features_list) > 0:
-                    # Since we passed a single telemetry record, extract the single result dictionary
-                    tire_features = tire_features_list[0]
-                    processed_telemetry_dict.update(tire_features)
-                    print(f"[INFO] Added {len(tire_features)} tire grip features to telemetry payload")
+                if getattr(tire_grip_service, "_trained", False):
+                    tire_features_list = await tire_grip_service.extract_tire_grip_features([processed_telemetry_dict])
+                    if tire_features_list and len(tire_features_list) > 0:
+                        tire_features = tire_features_list[0]
+                        processed_telemetry_dict.update(tire_features)
+                        print(f"[INFO] Added {len(tire_features)} tire grip features to telemetry payload")
+                else:
+                    raise Exception("Tire grip model is not trained")
                 
             except Exception as e:
                 print(f"[Error] Tire grip analysis failed: {e}")
@@ -674,7 +675,7 @@ class Full_dataset_TelemetryMLService:
             data_cache_key=dataset_cache_key,
             trackName=trackName,
             max_memory_records=10000,
-            telemetry_time_gap_ms=300
+            telemetry_time_gap_ms=200
         )
 
         segment_length = 20  # Default segment length for transformer training
@@ -1073,7 +1074,6 @@ class Full_dataset_TelemetryMLService:
                 fixed_segment_length=fixed_segment_length
             )
             
-            print(f"[INFO] ✓ Streaming dataset created with {len(dataset)} segments")
             # Configure PyTorch optimizations
             use_cuda = torch.cuda.is_available()
             
@@ -1084,8 +1084,6 @@ class Full_dataset_TelemetryMLService:
                     torch.backends.cudnn.allow_tf32 = True
                 except Exception:
                     pass
-            
-            print(f"[INFO] Using all {len(dataset)} segments for training")
             print(f"[INFO] Device: {'CUDA' if use_cuda else 'CPU'}")
             
             # Get feature dimensions from dataset
@@ -1185,6 +1183,8 @@ class Full_dataset_TelemetryMLService:
         
         chunk_grip_features = []
         try:
+            if not getattr(tire_service, "_trained", False):
+                raise RuntimeError("Tire grip service must be trained before extracting features")
             chunk_grip_features = await tire_service.extract_tire_grip_features(chunk_data)
         except Exception as e:
             raise RuntimeError(f"Failed to extract tire grip features: {str(e)}")
@@ -1324,10 +1324,12 @@ class Full_dataset_TelemetryMLService:
             cache_key=bottom_laps_cache_key
         )
         tire_grip_training = await tire_service.train_tire_grip_model_streaming(
-            chunk_iterator=bottom_laps_training_iterator,
-            max_samples=250_000,
-            random_state=42
+            chunk_iterator=bottom_laps_training_iterator
         )
+        if not tire_grip_training.get("success", False):
+            raise RuntimeError(
+                "Tire grip training yielded no safe samples; cannot proceed with contextual enrichment"
+            )
         tire_service_serialized = tire_service.serialize_tire_grip_model()
         
         await self.backend_service.save_ai_model(
@@ -1378,7 +1380,6 @@ class Full_dataset_TelemetryMLService:
             chunk_segments = imitation_learning.filter_optimal_telemetry_segments(
                 enriched_chunk_data,
                 segment_length=segment_length,
-                batch_number=cache_batch_number
             )
             
             print(f"[INFO] Chunk {processed_chunks}: Generated {len(chunk_segments)} segments")
