@@ -535,8 +535,8 @@ class ExpertActionTransformer(nn.Module):
         self._init_weights()
 
     # Optional per-feature loss weighting (configured post-scaler)
-    self._loss_weight_vector = None
-    self._loss_weight_names = []
+        self._loss_weight_vector = None
+        self._loss_weight_names = []
     
     def _init_weights(self):
         """Initialize model weights"""
