@@ -22,7 +22,7 @@ from ..services.tire_grip_analysis_service import TireGripFeatureCatalog
 from ..services.imitate_expert_learning_service import (
     ExpertFeatureCatalog,
 )
-from .telemetry_models import TelemetryFeatures
+from .telemetry_models import TelemetryFeatures, _safe_float
 
 # Force unbuffered output for real-time print statements
 import os
@@ -533,6 +533,10 @@ class ExpertActionTransformer(nn.Module):
         
         # Initialize weights
         self._init_weights()
+
+    # Optional per-feature loss weighting (configured post-scaler)
+    self._loss_weight_vector = None
+    self._loss_weight_names = []
     
     def _init_weights(self):
         """Initialize model weights"""
@@ -548,6 +552,60 @@ class ExpertActionTransformer(nn.Module):
             feature_scaler: PerFeatureScaler fitted on unified feature vectors
         """
         self.feature_scaler = feature_scaler
+        # Reset cached loss weights – they depend on feature ordering
+        if feature_scaler and feature_scaler.is_fitted():
+            self._loss_weight_names = feature_scaler.get_feature_names()
+            self._loss_weight_vector = torch.ones(len(self._loss_weight_names), dtype=torch.float32)
+        else:
+            self._loss_weight_names = []
+            self._loss_weight_vector = None
+
+    def configure_loss_weights(
+        self,
+        overrides: Optional[Dict[str, float]] = None,
+        default_weight: float = 1.0,
+        brake_weight: float = 2.5,
+        steering_weight: float = 2.0,
+        throttle_weight: float = 0.75,
+        minimum_weight: float = 0.1,
+        maximum_weight: float = 5.0,
+    ) -> None:
+        """Configure per-feature loss weights based on feature names.
+
+        Args:
+            overrides: Explicit feature -> weight mapping to apply last.
+            default_weight: Baseline weight for unspecified features.
+            brake_weight: Weight for features containing "brake".
+            steering_weight: Weight for features containing steering keywords.
+            throttle_weight: Weight for throttle/gas features.
+            minimum_weight: Lower clamp for any assigned weight.
+            maximum_weight: Upper clamp for any assigned weight.
+        """
+        if not self.feature_scaler or not self.feature_scaler.is_fitted():
+            raise RuntimeError("Loss weights require a fitted feature scaler")
+
+        feature_names = self.feature_scaler.get_feature_names()
+        weights = torch.full((len(feature_names),), float(default_weight), dtype=torch.float32)
+
+        for idx, name in enumerate(feature_names):
+            lname = name.lower()
+            weight = default_weight
+
+            if "brake" in lname or "decel" in lname:
+                weight = brake_weight
+            elif any(token in lname for token in ("steer", "yaw", "turn")):
+                weight = steering_weight
+            elif any(token in lname for token in ("gas", "throttle")):
+                weight = throttle_weight
+
+            if overrides and name in overrides:
+                weight = float(overrides[name])
+
+            weight = max(minimum_weight, min(maximum_weight, weight))
+            weights[idx] = weight
+
+        self._loss_weight_names = feature_names
+        self._loss_weight_vector = weights
 
     def validate_input_features(self, input_payload: Union[Dict[str, Any], Iterable[str]]) -> None:
         """Ensure that the provided payload contains every required unified feature.
@@ -697,9 +755,13 @@ class ExpertActionTransformer(nn.Module):
             result = torch.cat(predictions, dim=1) if len(predictions) > 1 else predictions[0]
             return result
 
-    def unified_loss(self, 
-                    predictions: torch.Tensor, 
-                    targets: torch.Tensor) -> torch.Tensor:
+    def unified_loss(
+        self,
+        predictions: torch.Tensor,
+        targets: torch.Tensor,
+        timestep_weights: Optional[torch.Tensor] = None,
+        feature_weights: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
         """
         MSE loss for unified expert improvement learning with NaN protection
         
@@ -742,8 +804,27 @@ class ExpertActionTransformer(nn.Module):
             if target_has_inf:
                 targets = torch.clamp(targets, min=-1e6, max=1e6)
         
-        # Compute MSE loss
-        loss = F.mse_loss(predictions, targets, reduction='mean')
+        # Element-wise squared error
+        squared_error = F.mse_loss(predictions, targets, reduction='none')
+
+        # Apply per-feature weighting if available
+        weight_vector = feature_weights
+        if weight_vector is None and self._loss_weight_vector is not None:
+            weight_vector = self._loss_weight_vector
+
+        if weight_vector is not None:
+            weight_vector = weight_vector.to(predictions.device)
+            squared_error = squared_error * weight_vector.view(1, 1, -1)
+
+        # Apply timestep weights (e.g., braking/turning emphasis)
+        if timestep_weights is not None:
+            timestep_weights = timestep_weights.to(predictions.device)
+            if timestep_weights.dim() == 2:
+                timestep_weights = timestep_weights.unsqueeze(-1)
+            squared_error = squared_error * timestep_weights
+
+        # Compute mean loss after weighting
+        loss = squared_error.mean()
         
         # Final NaN check on computed loss
         if torch.isnan(loss) or torch.isinf(loss):
@@ -1346,7 +1427,7 @@ class TelemetryActionDataset(Dataset):
         """Return number of chunks available"""
         return self.chunk_count
     
-    def _process_segment_record(self, segment_record: Dict[str, Any]) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+    def _process_segment_record(self, segment_record: Dict[str, Any]) -> Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]]:
         """Convert one cached segment record into input/target sequences (numpy arrays).
 
         Returns:
@@ -1356,6 +1437,7 @@ class TelemetryActionDataset(Dataset):
         try:
             # Reconstruct the time series from the flattened segment data
             sequence_data: List[List[float]] = []
+            phase_weights: List[float] = []
 
             for timestep in range(self.fixed_segment_length):
                 timestep_data = segment_record.get(timestep, None)
@@ -1371,6 +1453,29 @@ class TelemetryActionDataset(Dataset):
                         value = 0.0
                     feature_array.append(value)
                 sequence_data.append(feature_array)
+
+                # Build phase-aware weighting mask from raw telemetry values
+                driver_push = _safe_float(
+                    timestep_data.get(
+                        TireGripFeatureCatalog.ContextFeature.DRIVER_PUSH_TO_LIMIT.value,
+                        0.0,
+                    )
+                ) or 0.0
+
+                brake_signal = _safe_float(timestep_data.get("Physics_brake", 0.0)) or 0.0
+                throttle_signal = _safe_float(timestep_data.get("Physics_gas", 0.0)) or 0.0
+                steer_signal = _safe_float(timestep_data.get("Physics_steer_angle", 0.0)) or 0.0
+
+                # Emphasise high braking, steering, and push-to-limit phases; deemphasise heavy throttle
+                weight = 1.0
+                weight += 0.8 * max(0.0, min(1.0, driver_push))
+                weight += 0.7 * max(0.0, min(1.0, abs(brake_signal)))
+                weight += 0.6 * max(0.0, min(1.0, abs(steer_signal)))
+                weight -= 0.3 * max(0.0, min(1.0, throttle_signal))
+
+                # Keep weights within a reasonable range to avoid instability
+                weight = float(np.clip(weight, 0.5, 3.0))
+                phase_weights.append(weight)
 
             if len(sequence_data) != self.fixed_segment_length:
                 return None
@@ -1394,7 +1499,8 @@ class TelemetryActionDataset(Dataset):
             # Teacher-forcing style next-step target
             input_sequence = scaled_sequence[:-1]   # [seq_len-1, features]
             target_sequence = scaled_sequence[1:]   # [seq_len-1, features]
-            return input_sequence, target_sequence
+            timestep_weight_array = np.asarray(phase_weights[1:], dtype=np.float32)
+            return input_sequence, target_sequence, timestep_weight_array
         except Exception:
             return None
 
@@ -1421,31 +1527,36 @@ class TelemetryActionDataset(Dataset):
         
         batch_inputs = []
         batch_targets = []
+        batch_masks: List[np.ndarray] = []
         
         for segment_record in chunk_records:
             processed = self._process_segment_record(segment_record)
             if processed is None:
                 continue
-                
-            input_sequence, target_sequence = processed
+            
+            input_sequence, target_sequence, timestep_weights = processed
             batch_inputs.append(input_sequence)
             batch_targets.append(target_sequence)
+            batch_masks.append(timestep_weights)
             
             # Yield batch when we reach desired size
             if len(batch_inputs) >= self.batch_size:
                 batch_input_tensor = torch.FloatTensor(np.stack(batch_inputs))
                 batch_target_tensor = torch.FloatTensor(np.stack(batch_targets))
-                yield batch_input_tensor, batch_target_tensor
+                batch_mask_tensor = torch.FloatTensor(np.stack(batch_masks))
+                yield batch_input_tensor, batch_target_tensor, batch_mask_tensor
                 
                 # Reset for next batch
                 batch_inputs = []
                 batch_targets = []
+                batch_masks = []
         
         # Yield remaining segments as final batch
         if batch_inputs:
             batch_input_tensor = torch.FloatTensor(np.stack(batch_inputs))
             batch_target_tensor = torch.FloatTensor(np.stack(batch_targets))
-            yield batch_input_tensor, batch_target_tensor
+            batch_mask_tensor = torch.FloatTensor(np.stack(batch_masks))
+            yield batch_input_tensor, batch_target_tensor, batch_mask_tensor
 
     def __getitem__(self, chunk_idx: int):
         """Return chunk index for simple iteration - actual batching done by get_chunk_batches"""
@@ -1617,6 +1728,11 @@ class ExpertActionTrainer:
         
         # Set scaler on the model
         self.model.set_scalers(feature_scaler)
+        try:
+            self.model.configure_loss_weights()
+            print("[INFO] Applied default loss weighting (brake/steer emphasis)")
+        except RuntimeError as weight_error:
+            print(f"[WARNING] Unable to configure loss weights: {weight_error}")
         
         print(f"[INFO] Set unified feature scaler on model: {'✓' if feature_scaler else '✗'}")
     
@@ -1644,10 +1760,11 @@ class ExpertActionTrainer:
             
             try:
                 # Get GPU batches from this chunk
-                for batch_inputs, batch_targets in dataset.get_chunk_batches(chunk_idx):
+                for batch_inputs, batch_targets, batch_masks in dataset.get_chunk_batches(chunk_idx):
                     # Move to device
                     batch_inputs = batch_inputs.to(self.device, non_blocking=self._cuda)
                     batch_targets = batch_targets.to(self.device, non_blocking=self._cuda)
+                    batch_masks = batch_masks.to(self.device, non_blocking=self._cuda)
                     
                     # Forward pass
                     self.optimizer.zero_grad(set_to_none=True)
@@ -1670,7 +1787,11 @@ class ExpertActionTrainer:
                             batch_targets = batch_targets[:, :min_seq_len, :]
                             print(f"[INFO] Aligned to shape: {predictions.shape}")
                     
-                    loss = self.model.unified_loss(predictions=predictions, targets=batch_targets)
+                    loss = self.model.unified_loss(
+                        predictions=predictions,
+                        targets=batch_targets,
+                        timestep_weights=batch_masks,
+                    )
                     
                     # Skip batch if loss is NaN/Inf
                     if torch.isnan(loss) or torch.isinf(loss):
@@ -1693,7 +1814,7 @@ class ExpertActionTrainer:
                     num_batches += 1
                     
                     # Clean up
-                    del batch_inputs, batch_targets, predictions, loss
+                    del batch_inputs, batch_targets, batch_masks, predictions, loss
                     
                     if num_batches % 100 == 0:
                         print(f"[INFO] Processed {num_batches} batches, current avg loss: {total_loss/num_batches:.6f}")
@@ -1727,9 +1848,10 @@ class ExpertActionTrainer:
             for chunk_idx in range(len(dataset)):
                 try:
                     # Get GPU batches from this chunk
-                    for batch_inputs, batch_targets in dataset.get_chunk_batches(chunk_idx):
+                    for batch_inputs, batch_targets, batch_masks in dataset.get_chunk_batches(chunk_idx):
                         batch_inputs = batch_inputs.to(self.device, non_blocking=self._cuda)
                         batch_targets = batch_targets.to(self.device, non_blocking=self._cuda)
+                        batch_masks = batch_masks.to(self.device, non_blocking=self._cuda)
                         
                         target_seq_len = batch_targets.shape[1]
                         predictions = self.model(
@@ -1738,11 +1860,15 @@ class ExpertActionTrainer:
                             use_teacher_forcing=True,
                         )
                         
-                        loss = self.model.unified_loss(predictions=predictions, targets=batch_targets)
+                        loss = self.model.unified_loss(
+                            predictions=predictions,
+                            targets=batch_targets,
+                            timestep_weights=batch_masks,
+                        )
                         total_loss += loss.item()
                         num_batches += 1
                         
-                        del batch_inputs, batch_targets, predictions, loss
+                        del batch_inputs, batch_targets, batch_masks, predictions, loss
                         
                 except Exception as e:
                     print(f"[WARNING] Failed to process validation chunk {chunk_idx}: {str(e)}")
@@ -2085,6 +2211,22 @@ class ExpertActionTrainer:
         target_unscaled_named: List[Dict[str, float]] = []
         input_named: List[Dict[str, float]] = []
         input_unscaled_named: List[Dict[str, float]] = []
+
+        # Compute per-feature error summaries (unscaled)
+        def _per_feature_metrics(prediction: np.ndarray, reference: np.ndarray) -> Dict[str, Dict[str, float]]:
+            diff = prediction - reference
+            mse = np.mean(np.square(diff), axis=0)
+            mae = np.mean(np.abs(diff), axis=0)
+            return {
+                feature_names[idx]: {
+                    'mse': float(mse[idx]),
+                    'mae': float(mae[idx]),
+                }
+                for idx in range(len(feature_names))
+            }
+
+        teacher_metrics['per_feature'] = _per_feature_metrics(teacher_seq_unscaled, target_seq_unscaled)
+        autoreg_metrics['per_feature'] = _per_feature_metrics(autoreg_seq_unscaled, target_seq_unscaled)
 
         for step_idx in range(target_seq_len):
             teacher_named = _named(teacher_seq[step_idx])
