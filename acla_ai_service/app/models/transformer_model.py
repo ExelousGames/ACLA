@@ -2042,7 +2042,7 @@ class ExpertActionTrainer:
         # Ensure feature scaling is ready and gather one valid segment
         dataset._ensure_features_fitted()
 
-        evaluation_segments: List[Tuple[Dict[str, Any], Tuple[np.ndarray, np.ndarray], Dict[str, int]]] = []
+        evaluation_segments: List[Tuple[Dict[str, Any], Tuple[np.ndarray, np.ndarray, np.ndarray], Dict[str, int]]] = []
         max_segments_to_collect = 50
 
         for chunk_idx in range(len(dataset)):
@@ -2067,7 +2067,8 @@ class ExpertActionTrainer:
         if not evaluation_segments:
             raise ValueError("Unable to locate a valid segment for evaluation")
 
-        primary_segment_raw, (selected_input, selected_target), segment_metadata = evaluation_segments[0]
+        primary_segment_raw, processed_data, segment_metadata = evaluation_segments[0]
+        selected_input, selected_target, _selected_weights = processed_data
 
         print(
             f"[INFO] Using chunk {segment_metadata['chunk_index']} "
