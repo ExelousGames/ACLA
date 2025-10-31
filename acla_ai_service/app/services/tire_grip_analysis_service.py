@@ -60,9 +60,9 @@ class SlipEnvelopeConfig:
     front_slip_limit: float = 6.0  # Units must match telemetry (deg or rad)
     rear_slip_limit: float = 7.0
     safety_margin: float = 0.25  # Keep training samples well inside the limit
-    front_longitudinal_slip_limit: float = 0.12  # Dimensionless slip ratio
-    rear_longitudinal_slip_limit: float = 0.15
-    longitudinal_safety_margin: float = 0.02
+    front_longitudinal_slip_limit: float = 0.1  # Dimensionless slip ratio
+    rear_longitudinal_slip_limit: float = 0.1
+    longitudinal_safety_margin: float = 0.01
     limit_margin_multiplier: float = 1.5  # Alpha in limit = mu + alpha * sigma
     nll_weight: float = 1.0
     penalty_weight: float = 5.0

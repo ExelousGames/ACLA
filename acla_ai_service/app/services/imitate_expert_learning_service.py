@@ -69,9 +69,8 @@ class SegmentImprovementConfig:
     expert_speed_diff_max: float = 5.0
     expert_distance_max: float = 5.0
 
-    driver_push_high_threshold: float = 0.5
+    driver_push_high_threshold: float = 0.4
     driver_push_trend_min: float = 0.01
-    driver_push_improvement_min_rate: float = 0.4
 
     smoothing_window_min: int = 2
     smoothing_window_max: int = 5
@@ -1101,8 +1100,9 @@ class ExpertImitateLearningService:
 
             # Improvement and consistency calculations
             distance_improvement = distance_has_samples and summary.distance_to_line_trend < 0.0
-
-            improvement_criteria: List[bool] = [distance_improvement]
+            speed_improvement = speed_has_samples and summary.speed_difference_trend < 0.0
+            
+            improvement_criteria: List[bool] = [distance_improvement, speed_improvement]
 
             base_improvement_rate = 0.0
             if improvement_criteria:
