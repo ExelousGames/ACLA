@@ -87,7 +87,7 @@ def visualize_optimal_segments(
         "Physics_velocity_y",
         "Physics_velocity_z",
         "Physics_speed_kmh",
-        "time_delta_seconds",
+        "time_delta_ms",
     "Physics_gas",
     "Physics_brake",
     "Physics_steer_angle",
@@ -222,7 +222,7 @@ def visualize_optimal_segments(
         if legend_handles:
             ax_speed.legend(legend_handles, legend_labels, loc="lower left")
 
-        time_delta_series = segment_df["time_delta_seconds"].to_numpy()
+        time_delta_series = segment_df["time_delta_ms"].to_numpy()
         push_to_limit_series = segment_df[
             tire_context.DRIVER_PUSH_TO_LIMIT.value
         ].to_numpy(dtype=float)
@@ -334,3 +334,137 @@ def visualize_optimal_segments(
         buffer.close()
 
     return visualization_payloads
+
+
+def visualize_segment_position_coverage(
+    histogram_counts: Sequence[float],
+    bin_edges: Sequence[float],
+    *,
+    total_points: Optional[int] = None,
+    show: bool = False,
+    output_dir: Optional[Union[str, Path]] = None,
+    return_base64: bool = True,
+    file_name_prefix: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Render coverage histogram for Graphics_normalized_car_position across segments.
+
+    Args:
+        histogram_counts: Sequence of counts for each histogram bin (length N).
+        bin_edges: Sequence of bin edge values (length N + 1).
+        total_points: Optional total number of samples represented by the histogram.
+        show: Display figure interactively when True.
+        output_dir: Directory to persist plot image as .png file.
+        return_base64: Include base64 PNG payload in the response when True.
+        file_name_prefix: Prefix for saved figure filename.
+
+    Returns:
+        Dictionary containing metadata for the rendered coverage figure.
+    """
+
+    counts = np.asarray(histogram_counts, dtype=float)
+    edges = np.asarray(bin_edges, dtype=float)
+
+    if counts.ndim != 1 or edges.ndim != 1:
+        raise ValueError("Histogram inputs must be one-dimensional sequences")
+    if edges.size != counts.size + 1:
+        raise ValueError("bin_edges length must be histogram_counts length + 1")
+
+    effective_total = float(total_points) if total_points is not None else float(counts.sum())
+    if effective_total <= 0:
+        raise ValueError("Total number of samples must be positive to visualize coverage")
+
+    coverage = counts / effective_total
+    bin_widths = np.diff(edges)
+    bin_centers = edges[:-1] + (bin_widths / 2.0)
+    cumulative_coverage = np.cumsum(coverage)
+
+    if output_dir is None:
+        output_dir = (
+            Path(__file__).resolve().parent.parent
+            / "scripts"
+            / "debug_output"
+            / "transformer_eval"
+            / "figures"
+        )
+
+    output_path: Optional[Path] = None
+    if output_dir is not None:
+        output_path = Path(output_dir)
+        output_path.mkdir(parents=True, exist_ok=True)
+
+    fig, ax = plt.subplots(figsize=(12, 7))
+    ax.bar(
+        bin_centers,
+        coverage * 100.0,
+        width=bin_widths,
+        align="center",
+        color="#1f77b4",
+        edgecolor="#154a72",
+        alpha=0.75,
+        label="Bin coverage (%)",
+    )
+
+    ax.plot(
+        bin_centers,
+        cumulative_coverage * 100.0,
+        color="#ff7f0e",
+        linewidth=2.5,
+        label="Cumulative coverage (%)",
+    )
+
+    ax.set_title("Coverage of Graphics_normalized_car_position across segments")
+    ax.set_xlabel("Graphics_normalized_car_position")
+    ax.set_ylabel("Coverage (%)")
+    ax.set_xlim(0.0, 1.0)
+    ax.set_ylim(0.0, max(coverage.max() * 120.0, 5.0))
+    ax.grid(True, linestyle="--", alpha=0.3)
+    ax.legend(loc="upper left")
+
+    # Annotate top bins for quick inspection when coverage is sparse
+    significant_bins = np.argsort(counts)[-3:]
+    for idx in significant_bins:
+        if counts[idx] <= 0:
+            continue
+        ax.text(
+            bin_centers[idx],
+            coverage[idx] * 105.0,
+            f"{coverage[idx] * 100.0:.1f}%",
+            ha="center",
+            va="bottom",
+            fontsize=9,
+            rotation=45,
+        )
+
+    fig.tight_layout()
+
+    buffer = io.BytesIO()
+    fig.savefig(buffer, format="png", dpi=150, bbox_inches="tight")
+    buffer.seek(0)
+    image_bytes = buffer.getvalue()
+
+    saved_path: Optional[Path] = None
+    prefix = file_name_prefix or "segment_position_coverage"
+    if output_path is not None:
+        saved_path = output_path / f"{prefix}.png"
+        saved_path.write_bytes(image_bytes)
+
+    if show:
+        plt.show()
+
+    plt.close(fig)
+
+    payload: Dict[str, Any] = {
+        "total_points": int(effective_total),
+        "bin_edges": edges.tolist(),
+        "histogram_counts": counts.tolist(),
+    }
+
+    if return_base64:
+        payload["image_base64"] = base64.b64encode(image_bytes).decode("utf-8")
+
+    if saved_path is not None:
+        payload["saved_path"] = str(saved_path)
+
+    buffer.close()
+
+    return payload

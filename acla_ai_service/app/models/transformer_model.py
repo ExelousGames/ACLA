@@ -537,6 +537,9 @@ class ExpertActionTransformer(nn.Module):
     # Optional per-feature loss weighting (configured post-scaler)
         self._loss_weight_vector = None
         self._loss_weight_names = []
+
+    # Cache causal masks per device/length to avoid regenerating every batch
+        self._mask_cache = {}
     
     def _init_weights(self):
         """Initialize model weights"""
@@ -564,7 +567,7 @@ class ExpertActionTransformer(nn.Module):
         self,
         overrides: Optional[Dict[str, float]] = None,
         default_weight: float = 1.0,
-        brake_weight: float = 2.5,
+        brake_weight: float = 2.0,
         steering_weight: float = 2.0,
         throttle_weight: float = 0.75,
         minimum_weight: float = 0.1,
@@ -696,9 +699,13 @@ class ExpertActionTransformer(nn.Module):
             
             # Apply positional encoding
             encoded_input = self.pos_encoding(embedded_input)
+
+            # Prevent attention from peeking at future targets during teacher forcing
+            seq_len = encoded_input.size(1)
+            causal_mask = self._get_causal_mask(seq_len, encoded_input.device)
             
             # Process through transformer
-            transformer_output = self.transformer(encoded_input)
+            transformer_output = self.transformer(encoded_input, mask=causal_mask)
             
             # Project to unified feature space
             sequence_predictions = self.output_projection(transformer_output)
@@ -731,8 +738,12 @@ class ExpertActionTransformer(nn.Module):
                 # Apply positional encoding
                 encoded_input = self.pos_encoding(embedded_input)
                 
+                # Create or reuse causal mask for current rollout length
+                seq_len = encoded_input.size(1)
+                causal_mask = self._get_causal_mask(seq_len, encoded_input.device)
+
                 # Process through transformer
-                transformer_output = self.transformer(encoded_input)
+                transformer_output = self.transformer(encoded_input, mask=causal_mask)
                 
                 # Project to unified feature space
                 sequence_predictions = self.output_projection(transformer_output)
@@ -843,6 +854,19 @@ class ExpertActionTransformer(nn.Module):
         mask = (torch.triu(torch.ones(sz, sz)) == 1).transpose(0, 1)
         mask = mask.float().masked_fill(mask == 0, float('-inf')).masked_fill(mask == 1, float(0.0))
         return mask
+
+    def _get_causal_mask(self, seq_len: int, device: torch.device) -> torch.Tensor:
+        """Return a cached float32 causal mask tailored for the given device and sequence length."""
+        key = (device.type, device.index, seq_len)
+        cached = self._mask_cache.get(key)
+        if cached is None:
+            mask = self._generate_square_subsequent_mask(seq_len).to(device=device, dtype=torch.float32)
+            self._mask_cache[key] = mask
+            return mask
+        if cached.device != device:
+            cached = cached.to(device=device, dtype=torch.float32)
+            self._mask_cache[key] = cached
+        return cached
     
     def predict_segment_progression(self, 
                                   combined_input: torch.Tensor,
@@ -2068,7 +2092,7 @@ class ExpertActionTrainer:
             raise ValueError("Unable to locate a valid segment for evaluation")
 
         primary_segment_raw, processed_data, segment_metadata = evaluation_segments[0]
-        selected_input, selected_target, _selected_weights = processed_data
+        selected_input, selected_target, selected_weights = processed_data
 
         print(
             f"[INFO] Using chunk {segment_metadata['chunk_index']} "
@@ -2080,16 +2104,37 @@ class ExpertActionTrainer:
         # Prepare tensors
         input_tensor = torch.from_numpy(np.expand_dims(selected_input, axis=0)).to(self.device)
         target_tensor = torch.from_numpy(np.expand_dims(selected_target, axis=0)).to(self.device)
+        weight_tensor = torch.from_numpy(np.expand_dims(selected_weights, axis=0)).to(self.device)
 
         target_seq_len = target_tensor.shape[1]
         feature_count = target_tensor.shape[-1]
 
+        if weight_tensor.shape[1] != target_seq_len:
+            raise ValueError(
+                f"Timestep weight length {weight_tensor.shape[1]} does not match target length {target_seq_len}"
+            )
+        weight_tensor = weight_tensor.to(dtype=torch.float32)
+
         print(f"[INFO] Sequence length: {target_seq_len} | Features: {feature_count}")
 
-        def _compute_metrics(predictions: torch.Tensor, targets: torch.Tensor) -> Dict[str, float]:
+        def _compute_metrics(
+            predictions: torch.Tensor,
+            targets: torch.Tensor,
+            weights: Optional[torch.Tensor]
+        ) -> Dict[str, float]:
             diff = predictions - targets
-            mse = torch.mean(diff ** 2).item()
-            mae = torch.mean(torch.abs(diff)).item()
+            squared_error = diff ** 2
+            abs_error = torch.abs(diff)
+
+            if weights is not None:
+                weight_broadcast = weights.to(predictions.device)
+                if weight_broadcast.dim() == 2:
+                    weight_broadcast = weight_broadcast.unsqueeze(-1)
+                squared_error = squared_error * weight_broadcast
+                abs_error = abs_error * weight_broadcast
+
+            mse = torch.mean(squared_error).item()
+            mae = torch.mean(abs_error).item()
             rmse = float(np.sqrt(max(mse, 0.0)))
             max_abs = torch.max(torch.abs(diff)).item()
             final_step_mae = torch.mean(torch.abs(diff[:, -1, :])).item()
@@ -2148,8 +2193,22 @@ class ExpertActionTrainer:
         autoreg_tensor = autoreg_tensor.float()
         target_eval_tensor = target_tensor.float()
 
-        teacher_metrics = _compute_metrics(teacher_tensor, target_eval_tensor)
-        autoreg_metrics = _compute_metrics(autoreg_tensor, target_eval_tensor)
+        teacher_metrics = _compute_metrics(teacher_tensor, target_eval_tensor, weight_tensor)
+        autoreg_metrics = _compute_metrics(autoreg_tensor, target_eval_tensor, weight_tensor)
+        teacher_metrics['unified_loss'] = float(
+            self.model.unified_loss(
+                predictions=teacher_tensor,
+                targets=target_eval_tensor,
+                timestep_weights=weight_tensor
+            ).item()
+        )
+        autoreg_metrics['unified_loss'] = float(
+            self.model.unified_loss(
+                predictions=autoreg_tensor,
+                targets=target_eval_tensor,
+                timestep_weights=weight_tensor
+            ).item()
+        )
 
         # Collect comparison snapshots (detach to CPU for readability)
         teacher_np = teacher_tensor.detach().cpu().numpy()
@@ -2213,11 +2272,16 @@ class ExpertActionTrainer:
         input_named: List[Dict[str, float]] = []
         input_unscaled_named: List[Dict[str, float]] = []
 
-        # Compute per-feature error summaries (unscaled)
-        def _per_feature_metrics(prediction: np.ndarray, reference: np.ndarray) -> Dict[str, Dict[str, float]]:
+        # Compute per-feature error summaries (weighted by timestep mask)
+        def _per_feature_metrics(
+            prediction: np.ndarray,
+            reference: np.ndarray,
+            weights: np.ndarray
+        ) -> Dict[str, Dict[str, float]]:
             diff = prediction - reference
-            mse = np.mean(np.square(diff), axis=0)
-            mae = np.mean(np.abs(diff), axis=0)
+            weight_column = weights.reshape(-1, 1)
+            mse = np.mean(np.square(diff) * weight_column, axis=0)
+            mae = np.mean(np.abs(diff) * weight_column, axis=0)
             return {
                 feature_names[idx]: {
                     'mse': float(mse[idx]),
@@ -2226,8 +2290,16 @@ class ExpertActionTrainer:
                 for idx in range(len(feature_names))
             }
 
-        teacher_metrics['per_feature'] = _per_feature_metrics(teacher_seq_unscaled, target_seq_unscaled)
-        autoreg_metrics['per_feature'] = _per_feature_metrics(autoreg_seq_unscaled, target_seq_unscaled)
+        teacher_metrics['per_feature'] = _per_feature_metrics(
+            teacher_seq_unscaled,
+            target_seq_unscaled,
+            selected_weights
+        )
+        autoreg_metrics['per_feature'] = _per_feature_metrics(
+            autoreg_seq_unscaled,
+            target_seq_unscaled,
+            selected_weights
+        )
 
         for step_idx in range(target_seq_len):
             teacher_named = _named(teacher_seq[step_idx])
@@ -2241,6 +2313,7 @@ class ExpertActionTrainer:
 
             teacher_per_step.append({
                 'step': step_idx,
+                'timestep_weight': float(selected_weights[step_idx]),
                 'input_state': input_named_step,
                 'input_state_unscaled': input_unscaled_named_step,
                 'prediction': teacher_named,
@@ -2251,6 +2324,7 @@ class ExpertActionTrainer:
 
             autoreg_per_step.append({
                 'step': step_idx,
+                'timestep_weight': float(selected_weights[step_idx]),
                 'generated_state': autoreg_named,
                 'generated_state_unscaled': autoreg_unscaled_named,
                 'target_state': target_named_step,
@@ -2282,7 +2356,7 @@ class ExpertActionTrainer:
             'feature_count': int(feature_count),
             'feature_names': feature_names,
             'input_sequence': input_sequence_serialized,
-             'input_sequence_unscaled': input_np_unscaled[0].tolist(),
+            'input_sequence_unscaled': input_np_unscaled[0].tolist(),
             'input_sequence_named': input_named,
             'input_sequence_unscaled_named': input_unscaled_named,
             'teacher_forcing': {
@@ -2301,6 +2375,7 @@ class ExpertActionTrainer:
                 'predictions_unscaled_named': autoreg_predictions_unscaled_named,
                 'per_step': autoreg_per_step
             },
+            'timestep_weights': selected_weights.tolist(),
             'target_sequence': target_np.tolist(),
             'target_sequence_unscaled': target_np_unscaled.tolist(),
             'target_sequence_named': target_named,

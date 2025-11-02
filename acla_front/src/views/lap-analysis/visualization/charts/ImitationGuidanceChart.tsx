@@ -8,8 +8,8 @@ import styles from './ImitationGuidanceChart.module.css';
 // New backend response structure
 interface SequencePrediction {
     step: number;
-    time_ahead?: string;
-    time_delta_seconds?: number | string;
+    time_delta_ms?: number | string;
+    time_delta_milliseconds?: number | string;
     all_targets: Record<string, unknown>;
     [key: string]: unknown;
 }
@@ -48,12 +48,22 @@ interface GuidanceData {
 
 interface TelemetryData {
     speed?: number;
-    acceleration?: number;
+    speed_kmh?: number;
+    speed_mph?: number;
     braking?: number;
     steering?: number;
     throttle?: number;
+    gas?: number;
+    brake?: number;
+    steer_angle?: number;
+    steering_angle?: number;
     gear?: number;
     rpm?: number;
+    Physics_gas?: number;
+    Physics_brake?: number;
+    Physics_steer_angle?: number;
+    Physics_gear?: number;
+    Physics_speed_kmh?: number;
     [key: string]: any;
 }
 
@@ -75,13 +85,14 @@ const NORMALIZED_POSITION_KEYS = [
     'car_position'
 ] as const;
 
-const PLAY_AHEAD_STEPS = 5;
 const PREFETCH_BUFFER_MS = 400;
 const DEFAULT_FETCH_DURATION_MS = 600;
 const PROGRESS_EPSILON = 0.01;
-const DEFAULT_STEP_SECONDS = 0.3;
-const MIN_STEP_SECONDS = 0.05;
 const MIN_TIMELINE_INCREMENT = 0.01;
+const AUTO_START_HEADROOM_SECONDS = 0.5;
+
+// Lightweight logger so we can collect runtime details from the user.
+const debugLog = () => undefined;
 
 const getNormalizedPositionFromRecord = (record?: Record<string, unknown> | null): number | undefined => {
     if (!record) return undefined;
@@ -100,13 +111,17 @@ const toFiniteNumber = (value: unknown): number | undefined => {
     return undefined;
 };
 
-const normalizeSteering = (raw?: number): number => {
+const clampSteering = (raw?: number): number => {
     if (raw == null || Number.isNaN(raw)) return 0;
-    let normalized = raw;
-    if (Math.abs(normalized) > 1.5) {
-        normalized = normalized / 90; // assume degrees, map roughly into [-1,1]
+    return clampMinus1To1(raw);
+};
+
+const normalizePedalInput = (value?: number | null): number => {
+    if (value == null || Number.isNaN(value) || !Number.isFinite(value)) {
+        return 0;
     }
-    return clampMinus1To1(normalized);
+
+    return clamp01(value);
 };
 
 const deriveAction = (throttle: number, brake: number, steering: number): string => {
@@ -136,41 +151,42 @@ const getNumericFromTargets = (targets: Record<string, unknown>, keys: string[])
     return undefined;
 };
 
-const parseTimeDeltaSeconds = (value: unknown): number | null => {
-    const numeric = toFiniteNumber(value);
-    if (numeric == null) return null;
+const TIME_DELTA_KEYS = ['time_delta_milliseconds', 'time_delta_ms', 'time_delta_ms', 'time_delta'] as const;
 
-    if (typeof value === 'string' && /ms/i.test(value)) {
-        return Math.max(0, numeric / 1000);
+const extractDurationSeconds = (record: Record<string, unknown>, keys: readonly string[]): number | null => {
+    for (const key of keys) {
+        if (!(key in record)) {
+            continue;
+        }
+
+        const numeric = toFiniteNumber((record as Record<string, unknown>)[key]);
+        if (numeric == null) {
+            continue;
+        }
+
+        const lowerKey = key.toLowerCase();
+        const treatAsMillisecond =
+            lowerKey.includes('millisecond') ||
+            lowerKey.endsWith('_ms');
+
+        const seconds = treatAsMillisecond ? numeric / 1000 : numeric;
+        if (seconds > 0) {
+            return seconds;
+        }
     }
 
-    return Math.max(0, numeric);
-};
-
-const determineRescaleFactor = (values: Array<number | null | undefined>): number => {
-    const positives = values.filter((v): v is number => typeof v === 'number' && v > 0);
-    if (positives.length === 0) {
-        return 1;
-    }
-
-    const largeCount = positives.filter(v => v >= 100).length;
-    return largeCount / positives.length >= 0.6 ? 1000 : 1;
-};
-
-const normalizeDurationValue = (value: number | null, scale: number): number | null => {
-    if (value == null) {
-        return null;
-    }
-    return value / Math.max(scale, 1);
+    return null;
 };
 
 const keyframeFromPrediction = (prediction: SequencePrediction, timelineTime = 0): Keyframe => {
     const targets = (prediction.all_targets ?? {}) as Record<string, unknown>;
-    const throttle = clamp01(getNumericFromTargets(targets, ['Physics_gas', 'gas', 'throttle']) ?? 0);
-    const brake = clamp01(getNumericFromTargets(targets, ['Physics_brake', 'brake']) ?? 0);
-    const rawSteering = getNumericFromTargets(targets, ['Physics_steer_angle', 'steering']) ?? 0;
-    const steering = normalizeSteering(rawSteering);
-    const gear = toGear(getNumericFromTargets(targets, ['Physics_gear', 'gear']));
+    const rawThrottle = toFiniteNumber(targets['Physics_gas']);
+    const rawBrake = toFiniteNumber(targets['Physics_brake']);
+    const rawSteering = toFiniteNumber(targets['Physics_steer_angle']);
+    const throttle = normalizePedalInput(rawThrottle);
+    const brake = normalizePedalInput(rawBrake);
+    const steering = clampSteering(rawSteering);
+    const gear = toGear(toFiniteNumber(targets['Physics_gear']));
     const targetSpeed = getNumericFromTargets(targets, ['Physics_speed_kmh', 'speed_kmh', 'speed']);
     const normalizedPosition = getNormalizedPositionFromRecord(targets);
     const predictedActionCandidate = (prediction as { action?: unknown }).action;
@@ -193,11 +209,18 @@ const keyframeFromPrediction = (prediction: SequencePrediction, timelineTime = 0
 
 const keyframeFromTelemetry = (telemetry?: TelemetryData | null): Keyframe | null => {
     if (!telemetry) return null;
-    const throttle = clamp01(toFiniteNumber(telemetry.throttle ?? telemetry.gas) ?? 0);
-    const brake = clamp01(toFiniteNumber(telemetry.braking ?? telemetry.brake) ?? 0);
-    const steering = normalizeSteering(toFiniteNumber(telemetry.steering ?? telemetry.steer_angle ?? telemetry.steering_angle) ?? 0);
-    const gear = toGear(toFiniteNumber(telemetry.gear));
-    const targetSpeed = toFiniteNumber(telemetry.speed ?? telemetry.speed_kmh ?? telemetry.speed_mph);
+    const rawThrottle = toFiniteNumber(telemetry.Physics_gas ?? telemetry.throttle ?? telemetry.gas);
+    const rawBrake = toFiniteNumber(telemetry.Physics_brake ?? telemetry.braking ?? telemetry.brake);
+    const rawSteering = toFiniteNumber(
+        telemetry.Physics_steer_angle ?? telemetry.steering ?? telemetry.steer_angle ?? telemetry.steering_angle
+    );
+    const throttle = normalizePedalInput(rawThrottle);
+    const brake = normalizePedalInput(rawBrake);
+    const steering = clampSteering(rawSteering);
+    const gear = toGear(toFiniteNumber(telemetry.Physics_gear ?? telemetry.gear));
+    const targetSpeed = toFiniteNumber(
+        telemetry.Physics_speed_kmh ?? telemetry.speed ?? telemetry.speed_kmh ?? telemetry.speed_mph
+    );
     const normalizedPosition = getNormalizedPositionFromRecord(telemetry as unknown as Record<string, unknown>);
     const action = deriveAction(throttle, brake, steering);
 
@@ -210,91 +233,32 @@ const buildKeyframesFromPredictions = (predictions: SequencePrediction[]): Keyfr
     }
 
     const sorted = [...predictions].sort((a, b) => a.step - b.step);
-    const rawAhead = sorted.map(prediction => parseTimeDeltaSeconds((prediction as { time_ahead?: unknown }).time_ahead));
-    const rawDeltas = sorted.map(prediction => parseTimeDeltaSeconds((prediction as { time_delta_seconds?: unknown }).time_delta_seconds));
+    let cumulativeTime = 0;
+    let loggedMissingDelta = false;
 
-    const aheadScale = determineRescaleFactor(rawAhead);
-    const deltaScale = determineRescaleFactor(rawDeltas);
-
-    const normalizedAhead = rawAhead.map(value => normalizeDurationValue(value, aheadScale));
-    const normalizedDeltas = rawDeltas.map(value => normalizeDurationValue(value, deltaScale));
-
-    const positiveDeltas = normalizedDeltas.filter((value): value is number => value != null && Number.isFinite(value) && value > 0);
-    const fallbackDelta = positiveDeltas.length > 0
-        ? Math.max(positiveDeltas.reduce((sum, value) => sum + value, 0) / positiveDeltas.length, MIN_STEP_SECONDS)
-        : DEFAULT_STEP_SECONDS;
-
-    let lastTime = 0;
-
-    return sorted
+    const frames = sorted
         .map((prediction, index) => {
-            const aheadSeconds = normalizedAhead[index];
-            let timelineTime: number;
+            const record = prediction as Record<string, unknown>;
+            const targetsRecord = (prediction.all_targets ?? {}) as Record<string, unknown>;
+            const deltaSecondsFromPrediction = extractDurationSeconds(record, TIME_DELTA_KEYS);
+            const deltaSecondsFromTargets = extractDurationSeconds(targetsRecord, TIME_DELTA_KEYS);
 
-            if (aheadSeconds != null && Number.isFinite(aheadSeconds) && aheadSeconds > 0) {
-                timelineTime = aheadSeconds;
-                if (timelineTime <= lastTime) {
-                    timelineTime = lastTime + Math.max(fallbackDelta, MIN_TIMELINE_INCREMENT);
-                }
-                lastTime = timelineTime;
-            } else {
-                const deltaSeconds = normalizedDeltas[index];
-                const effectiveDelta = deltaSeconds != null && Number.isFinite(deltaSeconds) && deltaSeconds > 0
-                    ? deltaSeconds
-                    : fallbackDelta;
+            let deltaSeconds = deltaSecondsFromPrediction ?? deltaSecondsFromTargets;
 
-                if (index === 0 && lastTime === 0) {
-                    lastTime = Math.max(effectiveDelta, MIN_STEP_SECONDS);
-                } else {
-                    lastTime += Math.max(effectiveDelta, MIN_TIMELINE_INCREMENT);
+            if (deltaSeconds == null || deltaSeconds <= 0) {
+                if (!loggedMissingDelta) {
+                    loggedMissingDelta = true;
                 }
-                timelineTime = lastTime;
+                return null;
             }
 
-            return keyframeFromPrediction(prediction, timelineTime);
+            cumulativeTime = index === 0 ? deltaSeconds : cumulativeTime + deltaSeconds;
+
+            return keyframeFromPrediction(prediction, cumulativeTime);
         })
-        .filter(frame => Number.isFinite(frame.t));
-};
+        .filter((frame): frame is Keyframe => frame != null && Number.isFinite(frame.t));
 
-const findKeyframeTimeByNormalizedPosition = (
-    frames: Keyframe[],
-    normalizedPosition?: number | null,
-    tolerance = 0.02,
-    stepsAhead = 0
-): number | null => {
-    if (normalizedPosition == null || Number.isNaN(normalizedPosition)) {
-        return null;
-    }
-
-    let bestFrame: Keyframe | null = null;
-    let bestIndex = -1;
-    let bestDiff = Number.POSITIVE_INFINITY;
-
-    for (let index = 0; index < frames.length; index++) {
-        const frame = frames[index];
-        if (frame.normalized_position == null || Number.isNaN(frame.normalized_position)) {
-            continue;
-        }
-        const diff = Math.abs(frame.normalized_position - normalizedPosition);
-        if (diff < bestDiff) {
-            bestDiff = diff;
-            bestFrame = frame;
-            bestIndex = index;
-        }
-        if (diff <= tolerance) {
-            break;
-        }
-    }
-
-    if (!bestFrame || bestIndex < 0) {
-        return null;
-    }
-
-    const ahead = Math.max(0, Math.floor(stepsAhead));
-    const targetIndex = Math.min(frames.length - 1, bestIndex + ahead);
-    const targetFrame = frames[targetIndex] ?? bestFrame;
-
-    return Number.isFinite(targetFrame.t) ? targetFrame.t : bestFrame.t;
+    return frames;
 };
 
 const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
@@ -311,6 +275,8 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
     const prefetchTriggeredRef = useRef<boolean>(false);
     const progressRef = useRef<number>(0);
     const playbackDurationRef = useRef<number>(0);
+    const lastFetchStartedAtRef = useRef<number | null>(null);
+    const autoUpdateRef = useRef<boolean>(autoUpdate);
 
     // Extract track and car information from session data
     const trackName = analysisContext.recordedSessioStaticsData?.track || 'Unknown Track';
@@ -336,41 +302,44 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
 
     const totalDuration = useMemo(() => (keyframes.length ? keyframes[keyframes.length - 1].t : 0), [keyframes]);
 
-    function lerp(a: number, b: number, t: number) { return a + (b - a) * t; }
+    useEffect(() => {
+        autoUpdateRef.current = autoUpdate;
+    }, [autoUpdate]);
 
     function getInterpolatedValues(timeS: number) {
         if (keyframes.length === 0) {
             return {
-                throttle: 0, brake: 0, steering: 0,
+                throttle: 0,
+                brake: 0,
+                steering: 0,
                 gear: undefined as number | undefined,
                 target_speed: undefined as number | undefined,
                 action: undefined as string | undefined,
             };
         }
-        if (timeS <= keyframes[0].t) {
-            const k = keyframes[0];
-            return { throttle: k.throttle, brake: k.brake, steering: k.steering, gear: k.gear, target_speed: k.target_speed, action: k.action };
+
+        let closest = keyframes[0];
+        let smallestDiff = Math.abs(timeS - closest.t);
+
+        for (let i = 1; i < keyframes.length; i++) {
+            const frame = keyframes[i];
+            const diff = Math.abs(timeS - frame.t);
+            if (diff < smallestDiff) {
+                closest = frame;
+                smallestDiff = diff;
+                if (smallestDiff <= MIN_TIMELINE_INCREMENT) {
+                    break;
+                }
+            }
         }
-        if (timeS >= keyframes[keyframes.length - 1].t) {
-            const k = keyframes[keyframes.length - 1];
-            return { throttle: k.throttle, brake: k.brake, steering: k.steering, gear: k.gear, target_speed: k.target_speed, action: k.action };
-        }
-        // find segment
-        let i = 0;
-        for (; i < keyframes.length - 1; i++) {
-            if (timeS >= keyframes[i].t && timeS <= keyframes[i + 1].t) break;
-        }
-        const a = keyframes[i];
-        const b = keyframes[i + 1];
-        const segDur = b.t - a.t || 1e-6;
-        const lt = (timeS - a.t) / segDur;
+
         return {
-            throttle: clamp01(lerp(a.throttle, b.throttle, lt)),
-            brake: clamp01(lerp(a.brake, b.brake, lt)),
-            steering: clampMinus1To1(lerp(a.steering, b.steering, lt)),
-            gear: lt < 0.5 ? (a.gear ?? b.gear) : (b.gear ?? a.gear),
-            target_speed: lt < 0.5 ? (a.target_speed ?? b.target_speed) : (b.target_speed ?? a.target_speed),
-            action: lt < 0.5 ? (a.action ?? b.action) : (b.action ?? a.action),
+            throttle: clamp01(closest.throttle),
+            brake: clamp01(closest.brake),
+            steering: clampMinus1To1(closest.steering),
+            gear: closest.gear,
+            target_speed: closest.target_speed,
+            action: closest.action,
         };
     }
 
@@ -405,6 +374,7 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
         setLoading(true);
         setError(null);
         const fetchStart = typeof performance !== 'undefined' ? performance.now() : Date.now();
+        lastFetchStartedAtRef.current = fetchStart;
 
         try {
             const response = await apiService.post('/racing-session/imitation-learning-guidance', {
@@ -419,7 +389,7 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
 
             const raw = response.data as GuidanceData;
             const result = raw?.guidance_result;
-
+            console.log('Imitation learning guidance response:', raw);
             if (!result) {
                 setError('Malformed response: missing guidance_result');
                 return;
@@ -431,10 +401,17 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
             }
 
             const frames = buildKeyframesFromPredictions(result.sequence_predictions ?? []);
-            const liveNormalizedPosition = getNormalizedPositionFromRecord(currentLiveData as unknown as Record<string, unknown>);
-            const matchedTime = findKeyframeTimeByNormalizedPosition(frames, liveNormalizedPosition, 0.02, PLAY_AHEAD_STEPS);
-            const initialProgress = matchedTime ?? 0;
             const finalFrameTime = frames.length > 0 ? frames[frames.length - 1].t : 0;
+            const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+            const fetchStartedAt = lastFetchStartedAtRef.current;
+            const elapsedMs = fetchStartedAt != null ? now - fetchStartedAt : fetchDurationMsRef.current;
+            const latencySeconds = Math.max(0, elapsedMs / 1000);
+            const autoMode = autoUpdateRef.current;
+            // When auto-updating, advance the playback to account for time spent waiting on the response.
+            // Add a small headroom so the driver can see the action slightly ahead of real time.
+            const latencyAdjustedStart = latencySeconds + AUTO_START_HEADROOM_SECONDS;
+            const initialProgress = autoMode ? Math.min(finalFrameTime, latencyAdjustedStart) : 0;
+            const safeProgress = Number.isFinite(initialProgress) && initialProgress >= 0 ? initialProgress : 0;
 
             setGuidanceData({
                 message: raw.message,
@@ -442,14 +419,13 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
                 timestamp: raw.timestamp ?? result.timestamp,
                 guidance_result: result,
             });
-
-            setProgress(initialProgress);
-            progressRef.current = initialProgress;
+            setProgress(safeProgress);
+            progressRef.current = safeProgress;
             playbackDurationRef.current = finalFrameTime;
-            const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
-            playbackStartRef.current = now - initialProgress * 1000;
+            playbackStartRef.current = now - safeProgress * 1000;
             prefetchTriggeredRef.current = false;
-            setIsPlaying(true);
+            const shouldPlay = autoMode || (!autoMode && frames.length > 0);
+            setIsPlaying(shouldPlay);
 
             if (result.sequence_predictions && result.sequence_predictions.length > 0) {
                 const guidanceText = formatGuidanceForChat(result);
@@ -458,6 +434,7 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
         } catch (err: any) {
             console.error('Imitation learning guidance error:', err);
             setError('API call failed: ' + (err.response?.data?.message || err.message));
+            prefetchTriggeredRef.current = false;
         } finally {
             setLoading(false);
             requestInFlightRef.current = false;
@@ -614,21 +591,41 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
             );
         }
 
-        const displayKeys = ['speed', 'throttle', 'braking', 'steering', 'gear', 'rpm'];
-        const availableData = displayKeys.filter(key => liveData[key] !== undefined);
+        const rawThrottle = toFiniteNumber(liveData.Physics_gas ?? liveData.throttle ?? liveData.gas);
+        const rawBrake = toFiniteNumber(liveData.Physics_brake ?? liveData.braking ?? liveData.brake);
+        const rawSteering = toFiniteNumber(
+            liveData.Physics_steer_angle ?? liveData.steering ?? liveData.steer_angle ?? liveData.steering_angle
+        );
+        const throttlePercent = rawThrottle != null ? `${Math.round(normalizePedalInput(rawThrottle) * 100)}%` : undefined;
+        const brakePercent = rawBrake != null ? `${Math.round(normalizePedalInput(rawBrake) * 100)}%` : undefined;
+        const steeringPercent = rawSteering != null ? `${Math.round(clampSteering(rawSteering) * 100)}%` : undefined;
+        const gearValue = toGear(toFiniteNumber(liveData.Physics_gear ?? liveData.gear));
+        const speedValue = toFiniteNumber(
+            liveData.Physics_speed_kmh ?? liveData.speed ?? liveData.speed_kmh ?? liveData.speed_mph
+        );
+        const rpmValue = toFiniteNumber(liveData.rpm);
+
+        const telemetryItems = {
+            Throttle: throttlePercent,
+            Brake: brakePercent,
+            Steering: steeringPercent,
+            Speed: speedValue != null ? `${speedValue.toFixed(1)} km/h` : undefined,
+            Gear: gearValue != null ? gearValue : undefined,
+            RPM: rpmValue != null ? Math.round(rpmValue) : undefined,
+        } as Record<string, string | number | undefined>;
 
         return (
             <Box p="3">
                 <Text size="2" weight="bold" mb="2">Current Telemetry</Text>
                 <Grid columns="2" gap="2">
-                    {availableData.map(key => (
-                        <Box key={key}>
-                            <Text size="1" color="gray">{key.toUpperCase()}</Text>
-                            <Text size="2" weight="medium">
-                                {typeof liveData[key] === 'number' ? liveData[key].toFixed(2) : liveData[key]}
-                            </Text>
-                        </Box>
-                    ))}
+                    {Object.entries(telemetryItems)
+                        .filter(([, value]) => value !== undefined)
+                        .map(([label, value]) => (
+                            <Box key={label}>
+                                <Text size="1" color="gray">{label}</Text>
+                                <Text size="2" weight="medium">{value}</Text>
+                            </Box>
+                        ))}
                 </Grid>
             </Box>
         );

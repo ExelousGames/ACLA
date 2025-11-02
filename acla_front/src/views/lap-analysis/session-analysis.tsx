@@ -242,7 +242,12 @@ const SessionAnalysis = () => {
             })
             .then(() => undefined);
 
-        return nextWrite;
+        return nextWrite.catch((error) => {
+            if (error instanceof Error && error.message === 'Telemetry writer disposed') {
+                return;
+            }
+            throw error;
+        });
     };
 
     const readRecordedSessionData = async (onProgress?: (read: number, total: number | null) => void): Promise<any[]> => {

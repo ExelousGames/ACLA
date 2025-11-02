@@ -705,7 +705,7 @@ class TelemetryFeatures:
             "Graphics_track_grip_status",
             "Graphics_current_tyre_set",
             "Graphics_is_valid_lap",
-            "time_delta_seconds"
+            "time_delta_ms"
         ]
         
         
@@ -1333,7 +1333,7 @@ class FeatureProcessor:
                 continue
 
             stripped = working.iloc[keep_mask].copy()
-            stripped = self.add_time_delta(stripped, new_column="time_delta_seconds", default_delta=0.0)
+            stripped = self.add_time_delta(stripped, new_column="time_delta_ms", default_delta=0.0)
             stripped_laps.append(stripped.reset_index(drop=True))
 
         return stripped_laps
@@ -1341,7 +1341,7 @@ class FeatureProcessor:
     def add_time_delta(
         self,
         df: Optional[pd.DataFrame] = None,
-        new_column: str = "time_delta_seconds",
+        new_column: str = "time_delta_ms",
         default_delta: float = 0.0
     ) -> pd.DataFrame:
         """Add per-row time deltas to the provided DataFrame (or self.df by default)."""

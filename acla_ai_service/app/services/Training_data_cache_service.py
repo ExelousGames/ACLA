@@ -74,90 +74,113 @@ class TrainingOptimizedCache:
     async def cache_chunks_streaming(self, cache_key: str, chunks_iterator: Iterator[Dict[str, Any]]) -> bool:
         """Cache chunk data to Parquet format (training optimized) - Cache each chunk as a separate Parquet file"""
         try:
-            chunk_count = 0
+            manifest_file = self.parquet_dir / f"{cache_key}_manifest.txt"
+
+            # Read existing manifest (if any) so we do not overwrite previously cached chunks
+            existing_chunks: List[str] = []
+            if manifest_file.exists():
+                with open(manifest_file, 'r') as f:
+                    raw_entries = [line.strip() for line in f.readlines() if line.strip()]
+                    # De-duplicate while preserving order to keep chunk indices stable
+                    seen = set()
+                    for entry in raw_entries:
+                        if entry not in seen:
+                            seen.add(entry)
+                            existing_chunks.append(entry)
+
+            existing_chunk_set = set(existing_chunks)
+            next_chunk_index = len(existing_chunks)
+
             total_records = 0
-            chunk_files = []  # Keep track of chunk files
-            
+            new_chunk_names: List[str] = []
+
             print(f"[INFO] Starting chunk-based parquet caching for {cache_key}")
-            
+
+            def _estimate_records(chunk_payload: Dict[str, Any]) -> int:
+                """Best-effort estimate of logical records contained in chunk payload."""
+                if isinstance(chunk_payload, dict):
+                    for key in ("total_records", "segment_count", "record_count"):
+                        value = chunk_payload.get(key)
+                        if isinstance(value, int) and value >= 0:
+                            return value
+                    data_payload = chunk_payload.get("data")
+                    if isinstance(data_payload, (list, tuple)):
+                        return len(data_payload)
+                return 1
+
             # Process each chunk - completely agnostic to contents
             async for chunk_data in chunks_iterator:
                 if not chunk_data:
-                    print(f"[WARNING] Skipping empty chunk {chunk_count}")
-                    continue
-                
-                # Create chunk file - no assumptions about content
-                chunk_file = self.parquet_dir / f"{cache_key}_chunk_{chunk_count}.parquet"
-                
-                # Store chunk data directly as DataFrame - agnostic approach
-                try:
-                    chunk_df = pd.DataFrame([chunk_data])  # Treat entire chunk as single record
-                    chunk_df.to_parquet(chunk_file, compression=self.compression, index=False)
-                    chunk_files.append(chunk_file)
-                    
-                    chunk_count += 1
-                    total_records += 1  # Each chunk is one record
-                except Exception as e:
-                    print(f"[WARNING] Failed to save chunk {chunk_count}: {e}")
+                    print(f"[WARNING] Skipping empty chunk {next_chunk_index}")
                     continue
 
-            if not chunk_files:
+                # Find a unique filename for this chunk (avoid overwriting prior chunks)
+                chunk_filename = f"{cache_key}_chunk_{next_chunk_index}.parquet"
+                chunk_path = self.parquet_dir / chunk_filename
+                while chunk_filename in existing_chunk_set or chunk_path.exists():
+                    next_chunk_index += 1
+                    chunk_filename = f"{cache_key}_chunk_{next_chunk_index}.parquet"
+                    chunk_path = self.parquet_dir / chunk_filename
+
+                try:
+                    chunk_df = pd.DataFrame([chunk_data])  # Treat entire chunk as single record
+                    chunk_df.to_parquet(chunk_path, compression=self.compression, index=False)
+
+                    new_chunk_names.append(chunk_filename)
+                    existing_chunk_set.add(chunk_filename)
+                    next_chunk_index += 1
+
+                    total_records += _estimate_records(chunk_data)
+                except Exception as e:
+                    print(f"[WARNING] Failed to save chunk {chunk_filename}: {e}")
+                    continue
+
+            if not new_chunk_names:
                 print(f"[WARNING] No chunks to cache for {cache_key}")
                 return False
-            
-            # Create or append to manifest file to track all chunk files
-            manifest_file = self.parquet_dir / f"{cache_key}_manifest.txt"
-            
-            # Check if manifest already exists (for accumulating multiple cache operations)
-            existing_chunks = []
-            if manifest_file.exists():
-                with open(manifest_file, 'r') as f:
-                    existing_chunks = [line.strip() for line in f.readlines() if line.strip()]
-            
-            # Append new chunks to existing ones
-            all_chunks = existing_chunks + [chunk_file.name for chunk_file in chunk_files]
-            
-            # Write complete manifest
+
+            # Append new chunk filenames to manifest
+            all_chunks = existing_chunks + new_chunk_names
             with open(manifest_file, 'w') as f:
                 for chunk_name in all_chunks:
                     f.write(f"{chunk_name}\n")
-            
-            # Calculate total size for all chunks (existing + new)
+
+            # Calculate aggregate metadata
             all_chunk_paths = [self.parquet_dir / chunk_name for chunk_name in all_chunks]
-            total_size_mb = sum(f.stat().st_size for f in all_chunk_paths if f.exists()) / (1024 * 1024)
-            
-            # Calculate total counts for all chunks
+            total_size_mb = sum(path.stat().st_size for path in all_chunk_paths if path.exists()) / (1024 * 1024)
             total_chunk_count = len(all_chunks)
-            
-            # Calculate total records for new chunks only (existing records already counted)
+
             existing_records = 0
             if existing_chunks:
-                # Get existing record count from database
                 existing_info = self._get_cache_metadata(cache_key, max_age_hours=24)
                 if existing_info:
                     existing_records = existing_info.get('record_count', 0)
-            
+
             total_all_records = existing_records + total_records
-            
-            print(f"[INFO] Chunk-based storage: {total_size_mb:.1f}MB across {total_chunk_count} total chunk files ({len(chunk_files)} new)")
-            
-            # Update metadata - use the manifest file as the primary file path
+
+            print(f"[INFO] Chunk-based storage: {total_size_mb:.1f}MB across {total_chunk_count} total chunk files ({len(new_chunk_names)} new)")
+
             self._update_cache_metadata(
-                cache_key, str(manifest_file), total_size_mb, total_chunk_count, total_all_records
+                cache_key,
+                str(manifest_file),
+                total_size_mb,
+                total_chunk_count,
+                total_all_records
             )
-            
-            print(f"[INFO] Cached {chunk_count} new chunks, {total_records} new records. Total: {total_chunk_count} chunks, {total_all_records} records ({total_size_mb:.1f}MB)")
+
+            print(
+                f"[INFO] Cached {len(new_chunk_names)} new chunks, {total_records} new records. "
+                f"Total: {total_chunk_count} chunks, {total_all_records} records ({total_size_mb:.1f}MB)"
+            )
             return True
-            
+
         except Exception as e:
             print(f"[ERROR] Failed to cache chunks for {cache_key}: {e}")
-            # Clean up failed files
             try:
                 manifest_file = self.parquet_dir / f"{cache_key}_manifest.txt"
                 if manifest_file.exists():
                     manifest_file.unlink()
-                
-                # Clean up any chunk files that were created
+
                 chunk_pattern = f"{cache_key}_chunk_*.parquet"
                 for file_path in self.parquet_dir.glob(chunk_pattern):
                     file_path.unlink()

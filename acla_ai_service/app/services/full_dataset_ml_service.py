@@ -11,7 +11,10 @@ import pandas as pd
 from .corner_identification_unsupervised_service import CornerIdentificationUnsupervisedService
 from .tire_grip_analysis_service import TireGripAnalysisService
 from .imitate_expert_learning_service import ExpertImitateLearningService
-from .telemetry_segment_visualizer import visualize_optimal_segments
+from .telemetry_segment_visualizer import (
+    visualize_optimal_segments,
+    visualize_segment_position_coverage,
+)
 import numpy as np
 import joblib
 import warnings
@@ -509,7 +512,7 @@ class Full_dataset_TelemetryMLService:
                                    telemetry_dict: Dict[str, Any],
                                    trackName: str, 
                                    carName: Optional[str] = 'AllCars',
-                                   sequence_length: int = 20) -> Dict[str, Any]:
+                                   sequence_length: int = 40) -> Dict[str, Any]:
         """
         Fetch transformer model and predict expert actions from telemetry data
         
@@ -678,7 +681,7 @@ class Full_dataset_TelemetryMLService:
             telemetry_time_gap_ms=200
         )
 
-        segment_length = 20  # Default segment length for transformer training
+        segment_length = 40  # Default segment length for transformer training
         segments_cache_key = None
         transformer_results = {"success": False, "error": "Training not started"}  # Initialize with failure
         
@@ -1361,6 +1364,10 @@ class Full_dataset_TelemetryMLService:
         
         current_segment_batch = []
         cache_batch_number = 0
+
+        coverage_histogram_bins = np.linspace(0.0, 1.0, num=101)
+        coverage_histogram_counts = np.zeros(len(coverage_histogram_bins) - 1, dtype=np.float64)
+        coverage_sample_count = 0
         
         for lap_chunk_df in lao_chunks_iterator:
             if lap_chunk_df is None or lap_chunk_df.empty:
@@ -1383,6 +1390,32 @@ class Full_dataset_TelemetryMLService:
             )
             
             print(f"[INFO] Chunk {processed_chunks}: Generated {len(chunk_segments)} segments")
+
+            if chunk_segments:
+                chunk_positions: List[float] = []
+                for segment in chunk_segments:
+                    for record in segment:
+                        position_value = record.get("Graphics_normalized_car_position")
+                        if position_value is None:
+                            continue
+                        try:
+                            normalized_position = float(position_value)
+                        except (TypeError, ValueError):
+                            continue
+                        if np.isnan(normalized_position):
+                            continue
+                        clamped_position = min(1.0, max(0.0, normalized_position))
+                        chunk_positions.append(clamped_position)
+
+                if chunk_positions:
+                    chunk_positions_np = np.asarray(chunk_positions, dtype=float)
+                    chunk_counts, _ = np.histogram(
+                        chunk_positions_np,
+                        bins=coverage_histogram_bins,
+                        range=(0.0, 1.0),
+                    )
+                    coverage_histogram_counts += chunk_counts
+                    coverage_sample_count += int(chunk_positions_np.size)
 
             # Visualize this chunk immediately so artifacts reflect chunk-specific context
             if chunk_segments:
@@ -1441,6 +1474,25 @@ class Full_dataset_TelemetryMLService:
         print(f"  - Generated and cached {total_segments_cached} enriched segments")
         print(f"  - Segments grouped into {cache_batch_number} cache chunks ({segments_per_cache} segments per chunk)")
         print(f"  - Cache key for all chunks: {segments_cache_key}")
+
+        try:
+            if coverage_sample_count > 0:
+                coverage_payload = visualize_segment_position_coverage(
+                    histogram_counts=coverage_histogram_counts,
+                    bin_edges=coverage_histogram_bins,
+                    total_points=coverage_sample_count,
+                    file_name_prefix=f"{segments_cache_key}_coverage",
+                    return_base64=False,
+                )
+                saved_path = coverage_payload.get("saved_path")
+                if saved_path:
+                    print(f"[INFO] Saved normalized position coverage visualization to {saved_path}")
+                else:
+                    print("[INFO] Generated normalized position coverage visualization")
+            else:
+                print("[WARN] No normalized car position samples found; skipping coverage visualization")
+        except Exception as coverage_error:
+            print(f"[WARN] Failed to generate normalized position coverage visualization: {coverage_error}")
         
         return segments_cache_key
     

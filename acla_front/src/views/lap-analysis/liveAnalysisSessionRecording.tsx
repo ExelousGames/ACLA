@@ -80,7 +80,6 @@ export default function LiveAnalysisSessionRecording() {
     const transition = useCallback((event: RecordingEvent) => {
 
         setState((prev) => {
-            console.log('Transitioning state:', prev, '->', event);
             switch (event.type) {
                 case 'sessionAvailable':
                     if (prev === RecordingState.CHECKING) {
@@ -421,7 +420,7 @@ export default function LiveAnalysisSessionRecording() {
                 try {
                     const obj = JSON.parse(message);
                     analysisContext.setLiveSessionData(obj);
-                    void analysisContext.writeRecordedLiveSessionData(obj);
+                    void analysisContext.writeRecordedLiveSessionData(obj).catch(() => undefined);
                     hasReceivedLiveSampleRef.current = true;
                 } catch { }
             });
