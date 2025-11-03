@@ -922,8 +922,8 @@ class ExpertImitateLearningService:
         telemetry_data: List[Dict[str, Any]],
         max_segment_length: int = 60,
         improvement_threshold: float = 0.55,
-        consistency_threshold: float = 0.90,
-        min_segment_length: int = 6,
+        consistency_threshold: float = 1.0,
+        min_segment_length: int = 20,
         min_segments: int = 0,
     ) -> List[List[Dict[str, Any]]]:
         """
