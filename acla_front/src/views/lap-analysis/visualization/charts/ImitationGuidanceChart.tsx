@@ -85,11 +85,21 @@ const NORMALIZED_POSITION_KEYS = [
     'car_position'
 ] as const;
 
+const parseGuidanceTimestamp = (value?: string): number | null => {
+    if (!value) {
+        return null;
+    }
+
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) ? parsed : null;
+};
+
 const PREFETCH_BUFFER_MS = 400;
 const DEFAULT_FETCH_DURATION_MS = 600;
 const PROGRESS_EPSILON = 0.01;
 const MIN_TIMELINE_INCREMENT = 0.01;
-const AUTO_START_HEADROOM_SECONDS = 0.5;
+const AUTO_START_HEADROOM_SECONDS = 1;
+const MAX_LATENCY_SAMPLES = 10;
 
 // Lightweight logger so we can collect runtime details from the user.
 const debugLog = () => undefined;
@@ -277,6 +287,7 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
     const playbackDurationRef = useRef<number>(0);
     const lastFetchStartedAtRef = useRef<number | null>(null);
     const autoUpdateRef = useRef<boolean>(autoUpdate);
+    const latencySamplesRef = useRef<number[]>([]);
 
     // Extract track and car information from session data
     const trackName = analysisContext.recordedSessioStaticsData?.track || 'Unknown Track';
@@ -360,6 +371,8 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
         const currentLiveData = liveDataRef.current;
         const currentTrackName = trackNameRef.current;
         const currentCarName = carNameRef.current;
+        let latestServerLatencyMs = 0;
+        let latestAverageLatencySeconds = fetchDurationMsRef.current / 1000;
 
         if (!currentLiveData || Object.keys(currentLiveData).length === 0) {
             setError('No live telemetry data available');
@@ -402,14 +415,28 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
 
             const frames = buildKeyframesFromPredictions(result.sequence_predictions ?? []);
             const finalFrameTime = frames.length > 0 ? frames[frames.length - 1].t : 0;
-            const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+            const nowPerf = typeof performance !== 'undefined' ? performance.now() : Date.now();
             const fetchStartedAt = lastFetchStartedAtRef.current;
-            const elapsedMs = fetchStartedAt != null ? now - fetchStartedAt : fetchDurationMsRef.current;
-            const latencySeconds = Math.max(0, elapsedMs / 1000);
+            const elapsedMs = fetchStartedAt != null ? nowPerf - fetchStartedAt : fetchDurationMsRef.current;
+            const measuredLatencySeconds = Math.max(0, elapsedMs / 1000);
+
+            const guidanceTimestampMs = parseGuidanceTimestamp(result.timestamp ?? raw.timestamp);
+            const nowWallMs = Date.now();
+            latestServerLatencyMs = guidanceTimestampMs != null ? Math.max(0, nowWallMs - guidanceTimestampMs) : 0;
+            const latencySampleSeconds = Math.max(measuredLatencySeconds, latestServerLatencyMs / 1000);
+            latencySamplesRef.current.push(latencySampleSeconds);
+            if (latencySamplesRef.current.length > MAX_LATENCY_SAMPLES) {
+                latencySamplesRef.current.shift();
+            }
+            const totalLatency = latencySamplesRef.current.reduce((acc, value) => acc + value, 0);
+            latestAverageLatencySeconds = latencySamplesRef.current.length > 0
+                ? totalLatency / latencySamplesRef.current.length
+                : latencySampleSeconds;
+            const effectiveLatencySeconds = latestAverageLatencySeconds;
             const autoMode = autoUpdateRef.current;
             // When auto-updating, advance the playback to account for time spent waiting on the response.
             // Add a small headroom so the driver can see the action slightly ahead of real time.
-            const latencyAdjustedStart = latencySeconds + AUTO_START_HEADROOM_SECONDS;
+            const latencyAdjustedStart = effectiveLatencySeconds + AUTO_START_HEADROOM_SECONDS;
             const initialProgress = autoMode ? Math.min(finalFrameTime, latencyAdjustedStart) : 0;
             const safeProgress = Number.isFinite(initialProgress) && initialProgress >= 0 ? initialProgress : 0;
 
@@ -422,7 +449,7 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
             setProgress(safeProgress);
             progressRef.current = safeProgress;
             playbackDurationRef.current = finalFrameTime;
-            playbackStartRef.current = now - safeProgress * 1000;
+            playbackStartRef.current = nowPerf - safeProgress * 1000;
             prefetchTriggeredRef.current = false;
             const shouldPlay = autoMode || (!autoMode && frames.length > 0);
             setIsPlaying(shouldPlay);
@@ -438,10 +465,11 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
         } finally {
             setLoading(false);
             requestInFlightRef.current = false;
-            const fetchEnd = typeof performance !== 'undefined' ? performance.now() : Date.now();
-            const measured = fetchEnd - fetchStart;
+            const fetchEndPerf = typeof performance !== 'undefined' ? performance.now() : Date.now();
+            const measured = fetchEndPerf - fetchStart;
             if (Number.isFinite(measured) && measured > 0) {
-                fetchDurationMsRef.current = measured;
+                const averageLatencyMs = latestAverageLatencySeconds * 1000;
+                fetchDurationMsRef.current = Math.max(measured, latestServerLatencyMs, averageLatencyMs);
             }
         }
     }, [analysisContext]);
