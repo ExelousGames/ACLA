@@ -4,6 +4,7 @@ import sys
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import Dataset, DataLoader
 import numpy as np
 import pandas as pd
@@ -648,7 +649,8 @@ class ExpertActionTransformer(nn.Module):
     def forward(self, 
                 unified_input: torch.Tensor,
                 prediction_steps: int = None,
-                use_teacher_forcing: bool = None) -> torch.Tensor:
+                use_teacher_forcing: bool = None,
+                padding_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
         Forward pass - Teacher Forcing (Training) or Autoregressive (Inference)
         
@@ -675,6 +677,12 @@ class ExpertActionTransformer(nn.Module):
             prediction_steps: Number of future steps to predict (if None, predicts 1 step)
             use_teacher_forcing: If True, use teacher forcing. If None, auto-detect based on training mode
             
+        Args:
+            unified_input: Batched input sequences.
+            prediction_steps: Number of steps to predict (defaults to 1 for inference).
+            use_teacher_forcing: Force teacher forcing path when True.
+            padding_mask: Optional boolean mask identifying padded timesteps (True -> pad).
+
         Returns:
             Generated predictions [batch_size, prediction_steps, total_features]
         """
@@ -703,9 +711,16 @@ class ExpertActionTransformer(nn.Module):
             # Prevent attention from peeking at future targets during teacher forcing
             seq_len = encoded_input.size(1)
             causal_mask = self._get_causal_mask(seq_len, encoded_input.device)
+            key_padding_mask = None
+            if padding_mask is not None:
+                key_padding_mask = padding_mask.bool()
             
             # Process through transformer
-            transformer_output = self.transformer(encoded_input, mask=causal_mask)
+            transformer_output = self.transformer(
+                encoded_input,
+                mask=causal_mask,
+                src_key_padding_mask=key_padding_mask
+            )
             
             # Project to unified feature space
             sequence_predictions = self.output_projection(transformer_output)
@@ -1294,21 +1309,24 @@ class TelemetryActionDataset(Dataset):
     def __init__(self,
                  data_cache,
                  segments_cache_key: str,
-                 fixed_segment_length: int,
-                 batch_size: int = 32):
+                 segment_length_hint: Optional[int] = None,
+                 batch_size: int = 32,
+                 min_sequence_length: int = 3):
         """
         Initialize simplified dataset for large chunks
         
         Args:
             data_cache: Training cache instance to load chunks from
             segments_cache_key: Cache key where chunks are stored
-            fixed_segment_length: Required length for all segments
+            segment_length_hint: Optional expected length for segments (used for logging only)
             batch_size: GPU batch size for processing segments within chunks
+            min_sequence_length: Minimum number of timesteps required to keep a segment
         """
         self.data_cache = data_cache
         self.segments_cache_key = segments_cache_key
-        self.fixed_segment_length = fixed_segment_length
+        self.segment_length_hint = segment_length_hint
         self.batch_size = batch_size
+        self.min_sequence_length = max(2, min_sequence_length)
         
         # Get basic chunk information
         self.chunk_count = self._count_chunks()
@@ -1317,10 +1335,13 @@ class TelemetryActionDataset(Dataset):
         # Initialize feature preprocessing
         self.feature_scaler = PerFeatureScaler(self.unified_features)
         self._features_fitted = False
+        self._length_stats: Optional[Dict[str, Any]] = None
 
         print(f"[INFO] ✓ Simplified dataset initialized: {self.chunk_count} large chunks")
         print(f"[INFO] ✓ GPU batch size: {batch_size}")
         print(f"[INFO] ✓ Features: {len(self.unified_features)}")
+        if self.segment_length_hint:
+            print(f"[INFO] ✓ Segment length hint: ~{self.segment_length_hint} timesteps")
         print(f"[INFO] ✓ Assuming 10k+ segments per chunk")
     
     def _count_chunks(self) -> int:
@@ -1368,6 +1389,68 @@ class TelemetryActionDataset(Dataset):
         
         raise IndexError(f"Chunk {chunk_idx} not found")
     
+
+    @staticmethod
+    def _coerce_step_index(key: Any) -> Optional[int]:
+        """Attempt to coerce a dataframe column key into an integer timestep index."""
+        if isinstance(key, int):
+            return key
+        if isinstance(key, str):
+            stripped = key.strip()
+            if stripped.isdigit():
+                return int(stripped)
+        return None
+
+    def _extract_timesteps(self, segment_record: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Return ordered timestep dictionaries for a segment."""
+        timestep_items: List[Tuple[int, Dict[str, Any]]] = []
+
+        for key, value in segment_record.items():
+            if not isinstance(value, dict):
+                continue
+            step_index = self._coerce_step_index(key)
+            if step_index is None:
+                continue
+            timestep_items.append((step_index, value))
+
+        timestep_items.sort(key=lambda item: item[0])
+        return [data for _, data in timestep_items]
+
+    def _ensure_length_stats(self, max_chunks: int = 3) -> None:
+        """Compute basic segment length statistics if not already available."""
+        if self._length_stats is not None:
+            return
+
+        sampled_lengths: List[int] = []
+
+        try:
+            chunks_iterator = self.data_cache.get_cached_data_chunks(self.segments_cache_key)
+            for chunk_idx, chunk_df in enumerate(chunks_iterator):
+                if max_chunks is not None and chunk_idx >= max_chunks:
+                    break
+
+                for record in chunk_df.to_dict('records'):
+                    timesteps = self._extract_timesteps(record)
+                    if len(timesteps) >= self.min_sequence_length:
+                        sampled_lengths.append(len(timesteps))
+
+                if sampled_lengths and max_chunks is None:
+                    break
+
+            if sampled_lengths:
+                lengths_array = np.asarray(sampled_lengths, dtype=np.int32)
+                self._length_stats = {
+                    'min': int(lengths_array.min()),
+                    'max': int(lengths_array.max()),
+                    'mean': float(lengths_array.mean()),
+                    'median': float(np.median(lengths_array)),
+                    'count': int(lengths_array.size),
+                    'source': 'sampled',
+                    'sampled_chunks': min(self.chunk_count, max_chunks if max_chunks is not None else self.chunk_count)
+                }
+        except Exception as exc:
+            print(f"[WARNING] Unable to compute segment length statistics: {exc}")
+
     
     def _ensure_features_fitted(self):
         """Ensure feature scaling is fitted using sample from first chunk"""
@@ -1378,6 +1461,7 @@ class TelemetryActionDataset(Dataset):
 
         stats = _RunningFeatureStats(len(self.unified_features))
         total_rows = 0
+        all_lengths: List[int] = []
 
         chunk_iterator = self.data_cache.get_cached_data_chunks(self.segments_cache_key)
 
@@ -1386,8 +1470,13 @@ class TelemetryActionDataset(Dataset):
             chunk_rows: List[List[float]] = []
 
             for record in chunk_records:
-                for timestep in range(self.fixed_segment_length):
-                    timestep_data = record.get(timestep)
+                timesteps = self._extract_timesteps(record)
+                if len(timesteps) < self.min_sequence_length:
+                    continue
+
+                all_lengths.append(len(timesteps))
+
+                for timestep_data in timesteps:
                     if not isinstance(timestep_data, dict):
                         continue
 
@@ -1413,6 +1502,19 @@ class TelemetryActionDataset(Dataset):
 
         if total_rows == 0:
             raise ValueError("No data available across chunks to fit feature scaler")
+
+        if all_lengths:
+            lengths_array = np.asarray(all_lengths, dtype=np.int32)
+            self._length_stats = {
+                'min': int(lengths_array.min()),
+                'max': int(lengths_array.max()),
+                'mean': float(lengths_array.mean()),
+                'median': float(np.median(lengths_array)),
+                'count': int(lengths_array.size),
+                'source': 'full_dataset'
+            }
+        else:
+            self._length_stats = None
 
         counts, means, variances = stats.finalize()
         self.feature_scaler = PerFeatureScaler.from_feature_statistics(
@@ -1460,15 +1562,14 @@ class TelemetryActionDataset(Dataset):
         """
         try:
             # Reconstruct the time series from the flattened segment data
+            timesteps = self._extract_timesteps(segment_record)
+            if len(timesteps) < self.min_sequence_length:
+                return None
+
             sequence_data: List[List[float]] = []
             phase_weights: List[float] = []
 
-            for timestep in range(self.fixed_segment_length):
-                timestep_data = segment_record.get(timestep, None)
-                if not isinstance(timestep_data, dict):
-                    # Skip malformed timesteps
-                    return None
-
+            for timestep_data in timesteps:
                 feature_array: List[float] = []
                 for feature_name in self.unified_features:
                     try:
@@ -1500,9 +1601,6 @@ class TelemetryActionDataset(Dataset):
                 # Keep weights within a reasonable range to avoid instability
                 weight = float(np.clip(weight, 0.5, 3.0))
                 phase_weights.append(weight)
-
-            if len(sequence_data) != self.fixed_segment_length:
-                return None
 
             # [timesteps, features]
             sequence_matrix = np.array(sequence_data, dtype=np.float32)
@@ -1538,7 +1636,7 @@ class TelemetryActionDataset(Dataset):
             chunk_idx: Index of the chunk to process
             
         Yields:
-            Tuples of (batch_inputs, batch_targets) for GPU training
+            Tuples of (batch_inputs, batch_targets, batch_timestep_weights, batch_padding_mask)
         """
         if chunk_idx >= self.chunk_count:
             raise IndexError(f"Chunk index {chunk_idx} out of range")
@@ -1549,9 +1647,29 @@ class TelemetryActionDataset(Dataset):
         # Load the chunk
         chunk_records = self._load_chunk(chunk_idx)
         
-        batch_inputs = []
-        batch_targets = []
+        batch_inputs: List[np.ndarray] = []
+        batch_targets: List[np.ndarray] = []
         batch_masks: List[np.ndarray] = []
+
+        def _collate_and_yield():
+            if not batch_inputs:
+                return
+
+            input_tensors = [torch.from_numpy(arr).float() for arr in batch_inputs]
+            target_tensors = [torch.from_numpy(arr).float() for arr in batch_targets]
+            mask_tensors = [torch.from_numpy(arr).float() for arr in batch_masks]
+
+            padded_inputs = pad_sequence(input_tensors, batch_first=True, padding_value=0.0)
+            padded_targets = pad_sequence(target_tensors, batch_first=True, padding_value=0.0)
+            padded_masks = pad_sequence(mask_tensors, batch_first=True, padding_value=0.0)
+
+            lengths = torch.tensor([tensor.shape[0] for tensor in input_tensors], dtype=torch.long)
+            max_len = int(padded_inputs.shape[1])
+            padding_mask = torch.ones((len(input_tensors), max_len), dtype=torch.bool)
+            for row_idx, seq_len in enumerate(lengths):
+                padding_mask[row_idx, :seq_len] = False
+
+            yield padded_inputs, padded_targets, padded_masks, padding_mask
         
         for segment_record in chunk_records:
             processed = self._process_segment_record(segment_record)
@@ -1565,11 +1683,8 @@ class TelemetryActionDataset(Dataset):
             
             # Yield batch when we reach desired size
             if len(batch_inputs) >= self.batch_size:
-                batch_input_tensor = torch.FloatTensor(np.stack(batch_inputs))
-                batch_target_tensor = torch.FloatTensor(np.stack(batch_targets))
-                batch_mask_tensor = torch.FloatTensor(np.stack(batch_masks))
-                yield batch_input_tensor, batch_target_tensor, batch_mask_tensor
-                
+                yield from _collate_and_yield()
+
                 # Reset for next batch
                 batch_inputs = []
                 batch_targets = []
@@ -1577,10 +1692,7 @@ class TelemetryActionDataset(Dataset):
         
         # Yield remaining segments as final batch
         if batch_inputs:
-            batch_input_tensor = torch.FloatTensor(np.stack(batch_inputs))
-            batch_target_tensor = torch.FloatTensor(np.stack(batch_targets))
-            batch_mask_tensor = torch.FloatTensor(np.stack(batch_masks))
-            yield batch_input_tensor, batch_target_tensor, batch_mask_tensor
+            yield from _collate_and_yield()
 
     def __getitem__(self, chunk_idx: int):
         """Return chunk index for simple iteration - actual batching done by get_chunk_batches"""
@@ -1602,15 +1714,24 @@ class TelemetryActionDataset(Dataset):
         return self.feature_scaler
     
     def get_segment_info(self) -> Dict[str, Any]:
+        self._ensure_length_stats()
+
         return {
             "num_chunks": self.chunk_count,
-            "segment_length": self.fixed_segment_length,
-            "sequence_length": self.fixed_segment_length - 1,  # Input/target sequences are segment_length - 1
+            "segment_length_hint": self.segment_length_hint,
+            "length_statistics": self._length_stats,
+            "minimum_sequence_length": self.min_sequence_length,
             "total_features": len(self.unified_features),
             "feature_names": self.unified_features,
             "tensor_shapes": {
-                "input": [self.fixed_segment_length - 1, len(self.unified_features)],
-                "target": [self.fixed_segment_length - 1, len(self.unified_features)]
+                "input": {
+                    "sequence": "variable",
+                    "features": len(self.unified_features),
+                },
+                "target": {
+                    "sequence": "variable",
+                    "features": len(self.unified_features),
+                }
             }
         }
     
@@ -1632,39 +1753,42 @@ class TelemetryActionDataset(Dataset):
         return list(self.unified_features)
     
     @staticmethod
-    def validate_segments(unified_segments: List[List[Dict[str, Any]]], expected_length: int) -> Dict[str, Any]:
+    def validate_segments(unified_segments: List[List[Dict[str, Any]]], min_length: int = 2) -> Dict[str, Any]:
         """
-        Validate that all segments have the expected fixed length
-        
+        Validate that all segments satisfy a minimum length requirement and report statistics.
+
         Args:
             unified_segments: List of segments to validate
-            expected_length: Expected length for each segment
-            
+            min_length: Minimum allowed length per segment
+
         Returns:
-            Dict with validation results
+            Dict with validation results and descriptive statistics
         """
-        errors = []
-        valid_segments = 0
-        invalid_segments = 0
-        
-        for i, segment in enumerate(unified_segments):
-            if len(segment) == expected_length:
-                valid_segments += 1
-            else:
-                invalid_segments += 1
-                errors.append(f"Segment {i}: length {len(segment)} != expected {expected_length}")
-        
-        is_valid = len(errors) == 0
-        
-        return {
-            'is_valid': is_valid,
-            'errors': errors,
+        errors: List[str] = []
+        lengths: List[int] = []
+
+        for idx, segment in enumerate(unified_segments):
+            seg_length = len(segment)
+            lengths.append(seg_length)
+            if seg_length < min_length:
+                errors.append(f"Segment {idx}: length {seg_length} < minimum {min_length}")
+
+        lengths_array = np.asarray(lengths, dtype=np.int32) if lengths else None
+
+        statistics = {
+            'min': int(lengths_array.min()) if lengths_array is not None else None,
+            'max': int(lengths_array.max()) if lengths_array is not None else None,
+            'mean': float(lengths_array.mean()) if lengths_array is not None else None,
+            'median': float(np.median(lengths_array)) if lengths_array is not None else None,
             'num_segments': len(unified_segments),
-            'statistics': {
-                'valid_segments': valid_segments,
-                'invalid_segments': invalid_segments,
-                'expected_length': expected_length
-            }
+            'num_too_short': len(errors),
+            'minimum_required': min_length,
+        }
+
+        return {
+            'is_valid': len(errors) == 0,
+            'errors': errors,
+            'statistics': statistics
         }
     
 
@@ -1784,11 +1908,12 @@ class ExpertActionTrainer:
             
             try:
                 # Get GPU batches from this chunk
-                for batch_inputs, batch_targets, batch_masks in dataset.get_chunk_batches(chunk_idx):
+                for batch_inputs, batch_targets, batch_masks, batch_padding_mask in dataset.get_chunk_batches(chunk_idx):
                     # Move to device
                     batch_inputs = batch_inputs.to(self.device, non_blocking=self._cuda)
                     batch_targets = batch_targets.to(self.device, non_blocking=self._cuda)
                     batch_masks = batch_masks.to(self.device, non_blocking=self._cuda)
+                    batch_padding_mask = batch_padding_mask.to(self.device, non_blocking=self._cuda)
                     
                     # Forward pass
                     self.optimizer.zero_grad(set_to_none=True)
@@ -1799,6 +1924,7 @@ class ExpertActionTrainer:
                             unified_input=batch_inputs,
                             prediction_steps=target_seq_len,
                             use_teacher_forcing=True,
+                            padding_mask=batch_padding_mask,
                         )
                     
                     # Verify shapes match before computing loss
@@ -1838,7 +1964,7 @@ class ExpertActionTrainer:
                     num_batches += 1
                     
                     # Clean up
-                    del batch_inputs, batch_targets, batch_masks, predictions, loss
+                    del batch_inputs, batch_targets, batch_masks, batch_padding_mask, predictions, loss
                     
                     if num_batches % 100 == 0:
                         print(f"[INFO] Processed {num_batches} batches, current avg loss: {total_loss/num_batches:.6f}")
@@ -1872,16 +1998,18 @@ class ExpertActionTrainer:
             for chunk_idx in range(len(dataset)):
                 try:
                     # Get GPU batches from this chunk
-                    for batch_inputs, batch_targets, batch_masks in dataset.get_chunk_batches(chunk_idx):
+                    for batch_inputs, batch_targets, batch_masks, batch_padding_mask in dataset.get_chunk_batches(chunk_idx):
                         batch_inputs = batch_inputs.to(self.device, non_blocking=self._cuda)
                         batch_targets = batch_targets.to(self.device, non_blocking=self._cuda)
                         batch_masks = batch_masks.to(self.device, non_blocking=self._cuda)
+                        batch_padding_mask = batch_padding_mask.to(self.device, non_blocking=self._cuda)
                         
                         target_seq_len = batch_targets.shape[1]
                         predictions = self.model(
                             unified_input=batch_inputs,
                             prediction_steps=target_seq_len,
                             use_teacher_forcing=True,
+                            padding_mask=batch_padding_mask,
                         )
                         
                         loss = self.model.unified_loss(
@@ -1892,7 +2020,7 @@ class ExpertActionTrainer:
                         total_loss += loss.item()
                         num_batches += 1
                         
-                        del batch_inputs, batch_targets, batch_masks, predictions, loss
+                        del batch_inputs, batch_targets, batch_masks, batch_padding_mask, predictions, loss
                         
                 except Exception as e:
                     print(f"[WARNING] Failed to process validation chunk {chunk_idx}: {str(e)}")
@@ -1976,8 +2104,17 @@ class ExpertActionTrainer:
         
         # Display dataset and contextual feature information
         segment_info = train_dataset.get_segment_info()
-        print(f"[INFO] Training dataset: {segment_info['num_chunks']} chunks, "
-              f"each segment with length {segment_info['segment_length']}")
+        length_stats = segment_info.get('length_statistics') or {}
+        if length_stats:
+            length_summary = (
+                f"min={length_stats.get('min')} | "
+                f"median={length_stats.get('median', 0):.1f} | "
+                f"max={length_stats.get('max')}"
+            )
+        else:
+            length_summary = "unknown"
+
+        print(f"[INFO] Training dataset: {segment_info['num_chunks']} chunks with variable segment lengths ({length_summary} timesteps)")
         
         context_feature_names = train_dataset.get_context_feature_names()
         if context_feature_names:

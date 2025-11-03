@@ -698,7 +698,7 @@ class Full_dataset_TelemetryMLService:
             transformer_results = await self._train_expert_action_transformer(
                 segments_cache_key=segments_cache_key,  # Pass cache key instead of segments in memory
                 trackName=trackName,
-                fixed_segment_length=segment_length  # Use default segment length
+                segment_length_hint=segment_length  # Provide baseline hint for model sizing
             )
             
         finally:
@@ -1047,14 +1047,14 @@ class Full_dataset_TelemetryMLService:
     async def _train_expert_action_transformer(self, 
                                              segments_cache_key: str,
                                              trackName: str,
-                                             fixed_segment_length: int = 50) -> Dict[str, Any]:
+                                             segment_length_hint: Optional[int] = 50) -> Dict[str, Any]:
         """
-        Train the transformer model to learn non-expert driver progression toward expert performance using fixed-size segments
+        Train the transformer model to learn non-expert driver progression toward expert performance using variable-length segments.
         
         Args:
             segments_cache_key: Cache key to access enriched segments from data cache (complete key, not track name)
             trackName: Track name for model identification
-            fixed_segment_length: Length that all segments must have (default: 50)
+            segment_length_hint: Optional hint for typical segment length (used for sizing positional encoding)
             
         Returns:
             Training results and model performance metrics
@@ -1074,7 +1074,9 @@ class Full_dataset_TelemetryMLService:
             dataset = TelemetryActionDataset(
                 data_cache=self.data_cache,
                 segments_cache_key=segments_cache_key,
-                fixed_segment_length=fixed_segment_length
+                segment_length_hint=segment_length_hint,
+                batch_size=32,
+                min_sequence_length=3
             )
             
             # Configure PyTorch optimizations
@@ -1093,16 +1095,29 @@ class Full_dataset_TelemetryMLService:
             input_feature_names, action_feature_names = dataset.get_feature_names()
             input_features_count = len(input_feature_names)
             
+            segment_info = dataset.get_segment_info()
+            length_stats = segment_info.get('length_statistics') or {}
             print(f"[INFO] Dataset info: {input_features_count} combined input features, "
                   f"{len(action_feature_names)} action features")
+            if length_stats:
+                median_length = length_stats.get('median')
+                median_display = f"{median_length:.1f}" if median_length is not None else "n/a"
+                print(f"[INFO] Segment length distribution (timesteps): min={length_stats.get('min')} | "
+                      f"median={median_display} | max={length_stats.get('max')}")
             
             # Create model with unified input features
+            max_candidates = [10]
+            if length_stats.get('max') is not None:
+                max_candidates.append(int(length_stats['max']))
+            if segment_length_hint:
+                max_candidates.append(int(segment_length_hint))
+            max_sequence_length = max(max_candidates)
             model = ExpertActionTransformer(
                 total_features_count=input_features_count,
                 d_model=256, # Embedding dimension
                 nhead=16,  # Number of attention heads
                 num_layers=20,  # Smaller model for faster training
-                sequence_length=fixed_segment_length  # Use fixed segment length
+                sequence_length=max_sequence_length
             )
             
             # Create trainer
@@ -1386,7 +1401,7 @@ class Full_dataset_TelemetryMLService:
             # Step 4: Filter enriched chunk into segments
             chunk_segments = imitation_learning.filter_optimal_telemetry_segments(
                 enriched_chunk_data,
-                segment_length=segment_length,
+                max_segment_length=segment_length,
             )
             
             print(f"[INFO] Chunk {processed_chunks}: Generated {len(chunk_segments)} segments")

@@ -917,116 +917,151 @@ class ExpertImitateLearningService:
         print(f"[INFO] Completed expert state extraction. Extracted features for {len(expert_feature_rows)} records")
         return expert_feature_rows
     
-    def filter_optimal_telemetry_segments(self, telemetry_data: List[Dict[str, Any]], 
-                                         segment_length: int = 20, 
-                                         improvement_threshold: float = 0.55,
-                                         min_segments: int = 0) -> List[List[Dict[str, Any]]]:
-        """      
-        Streamlined Logic:
-        - Calculate both overall improvement rate AND overall consistency rate for each segment
-        - Accept segment if EITHER improvement rate OR consistency rate meets the threshold
-        - No fallback mechanisms - clean pass/fail based on the higher of the two rates
-        
-        Expert-level thresholds (determine which metrics use improvement vs consistency):
-        - Velocity alignment: ≥90% alignment = expert-level → use consistency 
-        - Speed difference: ≤5km/h from expert = expert-level → use consistency 
-        - Distance to expert: ≤1m from racing line = expert-level → use consistency 
-        - Sub-expert performance uses improvement trends instead
+    def filter_optimal_telemetry_segments(
+        self,
+        telemetry_data: List[Dict[str, Any]],
+        max_segment_length: int = 60,
+        improvement_threshold: float = 0.55,
+        consistency_threshold: float = 0.90,
+        min_segment_length: int = 6,
+        min_segments: int = 0,
+    ) -> List[List[Dict[str, Any]]]:
+        """
+        Identify contiguous telemetry slices that demonstrate measurable improvement or
+        sustained expert-level consistency.
+
+        Segments are grown dynamically from each starting point until either the
+        improvement or consistency criteria stops being satisfied, or the
+        ``max_segment_length`` cap is reached. Only the portion of the telemetry
+        that meets the selected criteria is returned, eliminating the fixed-length
+        constraints used previously.
 
         Args:
-            telemetry_data: List of telemetry records containing ContextFeature values
-            segment_length: Length of each segment to analyze
-            improvement_threshold: Minimum rate (0.0-1.0) for either improvement OR consistency to pass
-            min_segments: Minimum number of segments required to return results
-            visualize: Deprecated flag retained for backward compatibility.
-            visualization_kwargs: Deprecated placeholder for legacy visualization hooks.
-            
+            telemetry_data: Telemetry records enriched with context features.
+            max_segment_length: Upper bound on the number of records a single
+                segment may contain.
+            improvement_threshold: Minimum overall improvement rate required for
+                a segment to be accepted.
+            consistency_threshold: Minimum overall consistency rate required for
+                a segment to be accepted when improvement is below the threshold.
+            min_segment_length: Smallest segment length to analyse before
+                considering acceptance.
+            min_segments: Minimum number of segments required; raises if the
+                condition is not met.
+
         Returns:
-            List[List[Dict[str, Any]]]: List of segments meeting streamlined criteria
-
-        Notes:
-            Use telemetry_segment_visualizer.visualize_optimal_segments to generate
-            trajectory plots and speed overlays for the returned optimal segments.
+            A list of telemetry segments, where each segment is a list of
+            dictionaries corresponding to contiguous telemetry samples.
         """
-        
-        print(f"[INFO] Filtering optimal telemetry segments from {len(telemetry_data)} records...")
-        print(f"[INFO] Using segment_length={segment_length}, improvement_threshold={improvement_threshold}")
 
-        if len(telemetry_data) < segment_length * 2:
+        print(f"[INFO] Filtering optimal telemetry segments from {len(telemetry_data)} records...")
+        print(
+            "[INFO] Using max_segment_length=%s, min_segment_length=%s, improvement_threshold=%.2f, consistency_threshold=%.2f"
+            % (max_segment_length, min_segment_length, improvement_threshold, consistency_threshold)
+        )
+
+        if max_segment_length < min_segment_length:
+            raise ValueError("max_segment_length must be greater than or equal to min_segment_length")
+
+        if len(telemetry_data) < min_segment_length:
             print(
-                f"[WARNING] Insufficient data for segment analysis. Need at least {segment_length * 2} records, got {len(telemetry_data)}. Discarding this batch."
+                f"[WARNING] Insufficient data for segment analysis. Need at least {min_segment_length} records, got {len(telemetry_data)}. Discarding this batch."
             )
             return []
-        
+
         # Get context feature names from enum
         ContextFeature = ExpertFeatureCatalog.ContextFeature
         required_features = [
             ContextFeature.EXPERT_VELOCITY_ALIGNMENT.value,
             ContextFeature.SPEED_DIFFERENCE.value,
-            ContextFeature.DISTANCE_TO_EXPERT_LINE.value
+            ContextFeature.DISTANCE_TO_EXPERT_LINE.value,
         ]
-        
+
         # Validate that required features exist in data
         if not telemetry_data:
             print("[WARNING] Empty telemetry data provided")
             return []
-            
+
         first_record = telemetry_data[0]
         missing_features = [f for f in required_features if f not in first_record]
         if missing_features:
-            raise ValueError(f"[ERROR] Missing required context features: {missing_features}, available: {list(first_record.keys())}")
-        
+            raise ValueError(
+                f"[ERROR] Missing required context features: {missing_features}, available: {list(first_record.keys())}"
+            )
+
         # Convert to DataFrame for easier analysis
         try:
             df = pd.DataFrame(telemetry_data)
         except Exception as e:
             raise Exception(f"Failed to convert telemetry data to DataFrame: {e}")
 
-        # Create segments and analyze improvement trends
-        optimal_segments = []
-        num_improvement_sample = 0
-        num_consistency_sample = 0
+        optimal_segments: List[List[Dict[str, Any]]] = []
+        num_improvement_segments = 0
+        num_consistency_segments = 0
+        window_evaluations = 0
 
-        # Calculate total segments ensuring each has exactly segment_length
-        total_segments = (len(df) - segment_length) // (segment_length // 2) + 1  # Overlapping segments
-        
-        print(f"[INFO] Analyzing {total_segments} potential segments with adaptive criteria...")
-        
-        for start_idx in range(0, len(df) - segment_length + 1, segment_length // 2):  # 50% overlap
-            end_idx = start_idx + segment_length  # Fixed length, no min() to ensure exact segment_length
-            segment = df.iloc[start_idx:end_idx].copy()
-            
-            # Ensure segment has exactly the required length
-            if len(segment) != segment_length:
-                continue
-                
-            # Analyze improvement trends for each context feature
-            improvement_scores = self._analyze_segment_improvement(segment)
-            
-            # Streamlined no-fallback approach: use improvement rate if above threshold, otherwise use consistency rate
-            segment_passes = False
-            if improvement_scores['overall_improvement_rate'] >= improvement_threshold:
-                segment_passes = True
-                # Use improvement rate criteria
-                num_improvement_sample += 1
-            elif improvement_scores['overall_consistency_rate'] >= 0.90:
-                segment_passes = True
-                # Use consistency rate criteria
-                num_consistency_sample += 1
+        idx = 0
+        total_records = len(df)
+        while idx < total_records:
+            remaining = total_records - idx
+            if remaining < min_segment_length:
+                break
 
-            if segment_passes:
-                segment_dict = segment.to_dict('records')
-                optimal_segments.append(segment_dict)
-        
-        print(f"[INFO] Dual-rate filtering analysis complete:")
+            last_valid_end: Optional[int] = None
+            last_pass_type: Optional[str] = None
+            max_end_index = min(total_records, idx + max_segment_length)
+            evaluation_started = False
+
+            for end_idx in range(idx + min_segment_length - 1, max_end_index):
+                segment = df.iloc[idx : end_idx + 1]
+                window_evaluations += 1
+                evaluation_started = True
+
+                summary = self._analyze_segment_improvement(segment)
+                passes_improvement = summary.overall_improvement_rate >= improvement_threshold
+                passes_consistency = summary.overall_consistency_rate >= consistency_threshold
+
+                if passes_improvement or passes_consistency:
+                    last_valid_end = end_idx
+                    last_pass_type = "improvement" if passes_improvement else "consistency"
+                else:
+                    if last_valid_end is not None:
+                        break
+                    idx += 1
+                    break
+            else:
+                if not evaluation_started:
+                    idx += 1
+                    continue
+
+            if last_valid_end is not None:
+                segment_df = df.iloc[idx : last_valid_end + 1]
+                optimal_segments.append(segment_df.to_dict("records"))
+
+                if last_pass_type == "improvement":
+                    num_improvement_segments += 1
+                else:
+                    num_consistency_segments += 1
+
+                idx = last_valid_end + 1
+            else:
+                if evaluation_started:
+                    continue
+                idx += 1
+
+        print("[INFO] Dynamic segment filtering analysis complete:")
         print(f"[INFO] - Original records: {len(telemetry_data)}")
-        print(f"[INFO] - Segments analyzed: {total_segments}")
-        print(f"[INFO] - Improvement-based passes: {num_improvement_sample}, Consistency-based passes: {num_consistency_sample}")
-        print(f"[INFO] - Overall pass rate: {len(optimal_segments)/total_segments*100:.1f}%")
+        print(f"[INFO] - Windows evaluated: {window_evaluations}")
+        print(f"[INFO] - Accepted segments: {len(optimal_segments)}")
+        print(
+            f"[INFO] - Improvement-based passes: {num_improvement_segments}, Consistency-based passes: {num_consistency_segments}"
+        )
 
         # Ensure we have minimum required segments
         if len(optimal_segments) < min_segments:
-            raise ValueError(f"[WARNING] Only found {len(optimal_segments)} optimal segments, which is less than the minimum required {min_segments}. Adjust parameters or provide more data.")
+            raise ValueError(
+                f"[WARNING] Only found {len(optimal_segments)} optimal segments, which is less than the minimum required {min_segments}. Adjust parameters or provide more data."
+            )
 
         return optimal_segments
     
