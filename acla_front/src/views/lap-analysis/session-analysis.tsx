@@ -174,6 +174,18 @@ const SessionAnalysis = () => {
         }
     }, [disposeTelemetryWriter, handleTelemetryWriterEvent]);
 
+    const finalizeRecordingWrites = useCallback(async () => {
+        try {
+            await writeQueueRef.current;
+        } catch (error) {
+            console.warn('Telemetry write queue rejected during finalization', error);
+        } finally {
+            writeQueueRef.current = Promise.resolve();
+        }
+
+        await disposeTelemetryWriter({ force: false });
+    }, [disposeTelemetryWriter]);
+
     // File-based telemetry data functions
     const writeRecordedLiveSessionData = async (data: any): Promise<void> => {
         const enqueueWrite = async () => {
@@ -401,6 +413,7 @@ const SessionAnalysis = () => {
             setRecordedSessionDataFilePath,
             writeRecordedLiveSessionData,
             readRecordedSessionData,
+            finalizeRecordingWrites,
             clearRecordingSession,
             setActiveVisualizations,
             sendGuidanceToChat

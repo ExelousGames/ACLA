@@ -20,6 +20,7 @@ export interface AnalysisContextType {
     setRecordedSessionDataFilePath: (filePath: string | null) => void;
     writeRecordedLiveSessionData: (data: any) => Promise<void>;
     readRecordedSessionData: (onProgress?: (read: number, total: number | null) => void) => Promise<any[]>;
+    finalizeRecordingWrites: () => Promise<void>;
     clearRecordingSession: () => void;
     setActiveVisualizations: Dispatch<SetStateAction<VisualizationInstance[]>>;
     sendGuidanceToChat: (message: string) => void;
@@ -56,6 +57,9 @@ export const AnalysisContext = createContext<AnalysisContextType>({
     readRecordedSessionData: async () => {
         console.warn('No provider for AnalysisContext');
         return [];
+    },
+    finalizeRecordingWrites: async () => {
+        console.warn('No provider for AnalysisContext');
     },
     clearRecordingSession: () => {
         console.warn('No provider for AnalysisContext');

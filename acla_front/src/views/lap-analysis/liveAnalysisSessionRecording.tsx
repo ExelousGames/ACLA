@@ -174,6 +174,12 @@ export default function LiveAnalysisSessionRecording() {
         startInFlightRef.current = false;
         hasReceivedLiveSampleRef.current = false;
 
+        if (reason === 'manual' || reason === 'complete') {
+            void analysisContext.finalizeRecordingWrites().catch((error) => {
+                console.warn('Failed to finalize telemetry writer', error);
+            });
+        }
+
         switch (reason) {
             case 'pause': {
                 transition({ type: 'recordingStopped', reason: 'pause' });
@@ -491,8 +497,10 @@ export default function LiveAnalysisSessionRecording() {
         if (uploadInFlightRef.current) return false;
         if (!hasRecordedData) { setUploadError('No telemetry data available for upload'); setShowRetryButton(false); return false; }
         if (!analysisContext.sessionSelected?.session_name || !analysisContext.mapSelected || !auth?.userEmail) { setUploadError('Missing required session or user information'); setShowRetryButton(false); return false; }
-        uploadInFlightRef.current = true; setIsUploading(true); setUploadProgress(0); setUploadStatus('Reading telemetry data...'); setUploadError(null); setShowRetryButton(false);
+        uploadInFlightRef.current = true; setIsUploading(true); setUploadProgress(0); setUploadStatus('Preparing telemetry data...'); setUploadError(null); setShowRetryButton(false);
         try {
+            await analysisContext.finalizeRecordingWrites();
+            setUploadStatus('Reading telemetry data...');
             // Reserve progress ranges: 0-40% for reading, 40-90% for chunk upload, 90-100% finalize
             let estimatedTotal: number | null = null;
             let lastRead = 0;

@@ -67,7 +67,7 @@ class SegmentImprovementConfig:
 
     expert_velocity_alignment: float = 0.9
     expert_speed_diff_max: float = 5.0
-    expert_distance_max: float = 5.0
+    expert_distance_max: float = 3.0
 
     driver_push_high_threshold: float = 0.4
     driver_push_trend_min: float = 0.01
@@ -925,6 +925,8 @@ class ExpertImitateLearningService:
         consistency_threshold: float = 1.0,
         min_segment_length: int = 20,
         min_segments: int = 0,
+        score_relaxation: float = 0.01,  # Keep a running best score and stop extending a window once the improvement/consistency score falls by more than
+        tail_window_fraction: float = 0.25, # Fraction of the current candidate window to validate independently to avoid long, weak tails
     ) -> List[List[Dict[str, Any]]]:
         """
         Identify contiguous telemetry slices that demonstrate measurable improvement or
@@ -948,6 +950,12 @@ class ExpertImitateLearningService:
                 considering acceptance.
             min_segments: Minimum number of segments required; raises if the
                 condition is not met.
+            score_relaxation: Allowed drop in the passing score (0-1) after the
+                best scoring point before the segment is closed. Tightening this
+                value keeps segments focused around their strongest portion.
+            tail_window_fraction: Fraction of the current candidate window to
+                validate independently to avoid long, weak tails from being
+                appended to an otherwise strong segment.
 
         Returns:
             A list of telemetry segments, where each segment is a list of
@@ -1000,6 +1008,9 @@ class ExpertImitateLearningService:
         num_consistency_segments = 0
         window_evaluations = 0
 
+        score_relaxation = max(0.0, min(0.5, score_relaxation))
+        tail_window_fraction = float(np.clip(tail_window_fraction, 0.05, 0.5))
+
         idx = 0
         total_records = len(df)
         while idx < total_records:
@@ -1009,6 +1020,8 @@ class ExpertImitateLearningService:
 
             last_valid_end: Optional[int] = None
             last_pass_type: Optional[str] = None
+            best_score: Optional[float] = None
+            best_pass_type: Optional[str] = None
             max_end_index = min(total_records, idx + max_segment_length)
             evaluation_started = False
 
@@ -1022,8 +1035,38 @@ class ExpertImitateLearningService:
                 passes_consistency = summary.overall_consistency_rate >= consistency_threshold
 
                 if passes_improvement or passes_consistency:
-                    last_valid_end = end_idx
-                    last_pass_type = "improvement" if passes_improvement else "consistency"
+                    current_score = max(
+                        summary.overall_improvement_rate if passes_improvement else 0.0,
+                        summary.overall_consistency_rate if passes_consistency else 0.0,
+                    )
+                    current_pass_type = (
+                        "improvement"
+                        if passes_improvement and summary.overall_improvement_rate >= summary.overall_consistency_rate
+                        else "consistency"
+                    )
+
+                    if not self._segment_tail_meets_criteria(
+                        segment,
+                        improvement_threshold,
+                        consistency_threshold,
+                        min_segment_length,
+                        tail_window_fraction,
+                    ):
+                        if last_valid_end is not None:
+                            break
+                        idx += 1
+                        break
+
+                    if best_score is None or current_score > best_score:
+                        best_score = current_score
+                        best_pass_type = current_pass_type
+                        last_valid_end = end_idx
+                        last_pass_type = current_pass_type
+                    elif current_score >= (best_score or 0.0) - score_relaxation:
+                        last_valid_end = end_idx
+                        last_pass_type = current_pass_type
+                    else:
+                        break
                 else:
                     if last_valid_end is not None:
                         break
@@ -1038,7 +1081,7 @@ class ExpertImitateLearningService:
                 segment_df = df.iloc[idx : last_valid_end + 1]
                 optimal_segments.append(segment_df.to_dict("records"))
 
-                if last_pass_type == "improvement":
+                if (last_pass_type or best_pass_type) == "improvement":
                     num_improvement_segments += 1
                 else:
                     num_consistency_segments += 1
@@ -1162,6 +1205,40 @@ class ExpertImitateLearningService:
             raise Exception(f"Error analyzing segment improvement: {e}")
 
         return summary
+
+    def _segment_tail_meets_criteria(
+        self,
+        segment: pd.DataFrame,
+        improvement_threshold: float,
+        consistency_threshold: float,
+        min_segment_length: int,
+        tail_window_fraction: float,
+    ) -> bool:
+        """Ensure the trailing portion of a candidate window independently satisfies acceptance heuristics."""
+
+        segment_length = len(segment)
+        if segment_length < max(3, min_segment_length):
+            return True
+
+        tail_window = max(
+            3,
+            int(segment_length * tail_window_fraction),
+            min_segment_length // 2,
+        )
+
+        if tail_window >= segment_length:
+            tail_window = max(3, segment_length // 2)
+
+        if tail_window <= 2:
+            return True
+
+        tail_segment = segment.iloc[-tail_window:]
+        tail_summary = self._analyze_segment_improvement(tail_segment)
+
+        tail_improvement = tail_summary.overall_improvement_rate >= improvement_threshold
+        tail_consistency = tail_summary.overall_consistency_rate >= consistency_threshold
+
+        return tail_improvement or tail_consistency
     
     # Visualization utilities moved to telemetry_segment_visualizer.visualize_optimal_segments
 
