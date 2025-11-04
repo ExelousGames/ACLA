@@ -5,8 +5,12 @@ This service provides comprehensive AI model training and prediction capabilitie
 using your TelemetryFeatures and FeatureProcessor classes.
 """
 
-import os
+import json
+import base64
+import zipfile
+import shutil
 import pandas as pd
+from dataclasses import asdict
 
 from .corner_identification_unsupervised_service import CornerIdentificationUnsupervisedService
 from .tire_grip_analysis_service import TireGripAnalysisService
@@ -18,7 +22,6 @@ from .telemetry_segment_visualizer import (
 import numpy as np
 import joblib
 import warnings
-import base64
 import pickle
 import io
 import asyncio
@@ -28,7 +31,6 @@ from typing import Dict, List, Any, Optional, Tuple, Union, Iterator, AsyncItera
 from datetime import datetime
 from pathlib import Path
 from app.models import AiModelDto, ActiveModelData
-import os
 
 # Scikit-learn imports
 from sklearn.model_selection import train_test_split, cross_val_score, GridSearchCV, StratifiedKFold
@@ -61,17 +63,9 @@ from .model_cache_service import model_cache_service
 # Import hybrid data cache service
 from .Training_data_cache_service import training_cache
 
-# PyTorch imports (for transformer model)
-try:
-    import torch
-    import torch.nn as nn
-    from torch.utils.data import DataLoader
-    import torch.utils.data
-    from ..models.transformer_model import ExpertActionTransformer, ExpertActionTrainer, TelemetryActionDataset
-    TORCH_AVAILABLE = True
-except ImportError:
-    TORCH_AVAILABLE = False
-    print("[WARNING] PyTorch not available - transformer functionality will be disabled")
+# Prompt dataset builder and local LLM integration
+from .telemetry_prompt_dataset_builder import TelemetryPromptDatasetBuilder, PromptBuilderConfig
+from .local_llm_service import LocalTelemetryLLM, LocalLLMConfig, GenerationRequest
 
 # Suppress sklearn warnings
 warnings.filterwarnings('ignore', category=UserWarning)
@@ -123,6 +117,16 @@ class Full_dataset_TelemetryMLService:
         print(f"[INFO] Using training-optimized data cache for large dataset processing")
         print(f"[INFO] Parquet-only storage optimized for ML training pipelines")
         
+        # Prompt dataset builder and LLM configuration
+        self.prompt_builder = TelemetryPromptDatasetBuilder()
+        self.prompt_builder_config = self.prompt_builder.config
+        self.llm_config = LocalLLMConfig()
+
+        self.llm_adapter_directory = self.models_directory / "llm_adapters"
+        self.llm_adapter_directory.mkdir(parents=True, exist_ok=True)
+        self.llm_dataset_directory = self.models_directory / "llm_datasets"
+        self.llm_dataset_directory.mkdir(parents=True, exist_ok=True)
+
         # Add a simple lock mechanism to prevent concurrent fetches of the same model
         self._model_fetch_locks = {}
         self._lock_creation_lock = asyncio.Lock()
@@ -148,8 +152,140 @@ class Full_dataset_TelemetryMLService:
         print("Caching Strategy: Model instances cached directly")
         print("="*60 + "\n")
 
+    async def _generate_llm_prompt_dataset(self, segments_cache_key: str, track_name: str) -> Tuple[Path, Dict[str, Any]]:
+        """Build the LLM prompt dataset asynchronously from cached segments."""
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        dataset_filename = f"{track_name}_segments_{timestamp}.jsonl"
+        dataset_path = self.llm_dataset_directory / dataset_filename
+
+        def _build_dataset() -> Tuple[Path, Dict[str, Any]]:
+            stats = self.prompt_builder.build_from_cached_segments(
+                segments_cache_key=segments_cache_key,
+                output_path=dataset_path,
+            )
+            return dataset_path, stats.to_dict()
+
+        dataset_path_result, stats_dict = await asyncio.to_thread(_build_dataset)
+        return dataset_path_result, stats_dict
+
+    def _train_local_llm_sync(self, dataset_path: Path, track_name: str) -> Dict[str, Any]:
+        """Synchronous helper that fine-tunes the local LLM and returns metrics."""
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        adapter_dir = self.llm_adapter_directory / f"{track_name}_{timestamp}"
+        adapter_dir.mkdir(parents=True, exist_ok=True)
+
+        llm = LocalTelemetryLLM(config=self.llm_config)
+        metrics = llm.train(
+            dataset_path=dataset_path,
+            output_dir=adapter_dir,
+            eval_dataset_path=None,
+        )
+
+        serialized_adapter = self._serialize_adapter_directory(adapter_dir)
+        serialized_adapter["adapter_directory_name"] = adapter_dir.name
+
+        return {
+            "metrics": metrics,
+            "adapter_dir": adapter_dir,
+            "serialized_adapter": serialized_adapter,
+            "config": asdict(self.llm_config),
+        }
+
+    async def _train_local_llm(self, dataset_path: Path, track_name: str) -> Dict[str, Any]:
+        """Async wrapper for LLM fine-tuning."""
+
+        return await asyncio.to_thread(self._train_local_llm_sync, dataset_path, track_name)
+
+    def _serialize_adapter_directory(self, adapter_dir: Path) -> Dict[str, Any]:
+        """Zip the adapter directory and produce a backend-friendly payload."""
+
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as zip_file:
+            for file_path in adapter_dir.rglob("*"):
+                if file_path.is_file():
+                    arcname = file_path.relative_to(adapter_dir)
+                    zip_file.write(file_path, arcname=str(arcname))
+        buffer.seek(0)
+        encoded = base64.b64encode(buffer.read()).decode("utf-8")
+
+        return {
+            "adapter_zip_base64": encoded,
+            "created_at": datetime.now().isoformat(),
+        }
+
+    def _deserialize_llm_model(self, payload: Dict[str, Any]) -> LocalTelemetryLLM:
+        """Restore a fine-tuned LLM instance from backend payload data."""
+
+        encoded = payload.get("adapter_zip_base64")
+        adapter_name = payload.get("adapter_directory_name") or f"adapter_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+
+        if not encoded:
+            raise ValueError("Adapter payload missing 'adapter_zip_base64'")
+
+        target_dir = self.llm_adapter_directory / adapter_name
+        if target_dir.exists():
+            shutil.rmtree(target_dir)
+        target_dir.mkdir(parents=True, exist_ok=True)
+
+        raw_bytes = base64.b64decode(encoded)
+        buffer = io.BytesIO(raw_bytes)
+        with zipfile.ZipFile(buffer, mode="r") as zip_file:
+            zip_file.extractall(path=target_dir)
+
+        llm = LocalTelemetryLLM(config=self.llm_config)
+        llm.load_for_inference(adapter_path=target_dir)
+        return llm
+
+    def _format_context_window(self, telemetry_record: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Construct a context window for inference from a single telemetry record."""
+
+        context_steps = self.prompt_builder_config.context_steps
+        return [dict(telemetry_record) for _ in range(max(1, context_steps))]
+
+    def _build_llm_user_prompt(
+        self,
+        context_timesteps: List[Dict[str, Any]],
+        partial_note: str = "",
+        track_name: Optional[str] = None,
+    ) -> str:
+        """Create the user prompt mirroring the dataset builder format."""
+        context_payload = self.prompt_builder.format_timesteps(context_timesteps)
+        partial_note = partial_note or "Coach observation: (pending user input)"
+
+        return (
+            "Task: Forecast telemetry and continue the coaching note.\n"
+            f"Human note (partial): {partial_note}\n\n"
+            f"Recent telemetry window (last {len(context_timesteps)} steps):\n"
+            f"{json.dumps(context_payload, indent=2, ensure_ascii=False)}\n\n"
+            f"Provide the next {self.prompt_builder_config.prediction_steps} telemetry steps in JSON "
+            "alongside a clear explanation extending the human note."
+        )
+
+    def _parse_llm_output(self, generated_text: str) -> Dict[str, Any]:
+        """Attempt to parse the LLM output into structured telemetry and explanation."""
+
+        text = generated_text.strip()
+        candidate = text
+
+        if not text:
+            return {"raw_output": text}
+
+        # If the model wrapped the JSON inside extra commentary, attempt to isolate
+        if text[0] != "{":
+            first_brace = text.find("{")
+            if first_brace != -1:
+                candidate = text[first_brace:]
+
+        try:
+            parsed = json.loads(candidate)
+            return parsed if isinstance(parsed, dict) else {"raw_output": text}
+        except json.JSONDecodeError:
+            return {"raw_output": text}
+
     def clear_all_cache(self):
-        """Clear cached transformer / imitation models (corner & tire services now on-demand)."""
+        """Clear cached LLM, imitation, corner, and tire model instances."""
         self.model_cache.clear()
         print("[INFO] All cached model_cache entries cleared (corner & tire services are on-demand so no persistent cache to clear)")
     
@@ -508,133 +644,120 @@ class Full_dataset_TelemetryMLService:
                 "timestamp": datetime.now().isoformat()
             }
 
-    async def predict_expert_actions(self, 
-                                   telemetry_dict: Dict[str, Any],
-                                   trackName: str, 
-                                   carName: Optional[str] = 'AllCars',
-                                   sequence_length: int = 40) -> Dict[str, Any]:
-        """
-        Fetch transformer model and predict expert actions from telemetry data
-        
-        Args:
-            telemetry_dict: Single telemetry data record as dictionary
-            trackName: Track name for model selection
-            carName: Optional car name for model selection
-            sequence_length: Length of action sequence to predict (default: 10)
-            
-        Returns:
-            Dictionary with human-readable predictions directly from transformer model
-        """
-        if not TORCH_AVAILABLE:
-            return {
-                "status": "error",
-                "error_message": "PyTorch is not available - transformer functionality is disabled",
-                "error_type": "ImportError"
-            }
-        
+    async def predict_expert_actions(
+        self,
+        telemetry_dict: Dict[str, Any],
+        trackName: str,
+        carName: Optional[str] = "AllCars",
+        sequence_length: int = 40,
+    ) -> Dict[str, Any]:
+        """Predict future telemetry and explanations using the fine-tuned local LLM."""
+
         try:
-            # Convert telemetry_dict to DataFrame for processing
             import pandas as pd
+
             telemetry_df = pd.DataFrame([telemetry_dict])
-            
-            # Process and filter data
+
             processor = FeatureProcessor(telemetry_df)
             processed_df = processor.general_cleaning_for_analysis()
             processor.add_time_delta()
             processor.flip_y_z_features()
-            features = self._imitate_expert_feature_names or TelemetryFeatures().get_features_for_imitate_expert()
+            features = self._imitate_expert_feature_names or self.telemetry_features.get_features_for_imitate_expert()
 
-            filtered_telemetry_df = processor.filter_features_by_list(processed_df, features)
-            
-            # Convert back to dict for further processing
-            if not filtered_telemetry_df.empty:
-                processed_telemetry_dict = filtered_telemetry_df.iloc[0].to_dict()
-            else:
-                processed_telemetry_dict = telemetry_dict
-                    
-            # Fetch and load the trained model using the class method deserializer
-            transformer_model, model_metadata = await self._get_cached_model_or_fetch(
-                model_type="transformer_expert_action",
-                track_name=trackName,
-                car_name=carName,
-                model_subtype="transformer_model_data",
-                deserializer_func=ExpertActionTransformer.deserialize_transformer_model
+            filtered_df = processor.filter_features_by_list(processed_df, features)
+            processed_telemetry_dict = (
+                filtered_df.iloc[0].to_dict() if not filtered_df.empty else telemetry_dict
             )
-            
-            # Enrich processed telemetry with additional model-derived features
-            # Get tire grip features
+
             try:
                 tire_grip_service = TireGripAnalysisService()
-                tire_grip_service, tire_metadata = await self._get_cached_model_or_fetch(
+                tire_grip_service, _ = await self._get_cached_model_or_fetch(
                     model_type="tire_grip_analysis",
-                    track_name='generic',
-                    car_name='all_cars',
+                    track_name="generic",
+                    car_name="all_cars",
                     model_subtype="tire_grip_model_data",
-                    deserializer_func=tire_grip_service.deserialize_tire_grip_model
+                    deserializer_func=tire_grip_service.deserialize_tire_grip_model,
                 )
-                
+
                 if getattr(tire_grip_service, "_trained", False):
-                    tire_features_list = await tire_grip_service.extract_tire_grip_features([processed_telemetry_dict])
-                    if tire_features_list and len(tire_features_list) > 0:
-                        tire_features = tire_features_list[0]
-                        processed_telemetry_dict.update(tire_features)
-                        print(f"[INFO] Added {len(tire_features)} tire grip features to telemetry payload")
-                else:
-                    raise Exception("Tire grip model is not trained")
-                
+                    tire_features_list = await tire_grip_service.extract_tire_grip_features(
+                        [processed_telemetry_dict]
+                    )
+                    if tire_features_list:
+                        processed_telemetry_dict.update(tire_features_list[0])
             except Exception as e:
-                print(f"[Error] Tire grip analysis failed: {e}")
-            
+                print(f"[WARNING] Tire grip enrichment failed: {e}")
+
             try:
                 expert_service = ExpertImitateLearningService()
-                expert_service, imitation_metadata = await self._get_cached_model_or_fetch(
+                expert_service, _ = await self._get_cached_model_or_fetch(
                     model_type="imitation_learning",
                     track_name=trackName,
                     car_name=carName,
                     model_subtype="imitation_model_data",
-                    deserializer_func=expert_service.deserialize_imitation_model
+                    deserializer_func=expert_service.deserialize_imitation_model,
                 )
-                expert_state_list = expert_service.extract_expert_state_for_telemetry([processed_telemetry_dict])
-                if expert_state_list and len(expert_state_list) > 0:
-                    # Since we passed a single telemetry record, extract the single result dictionary
+                expert_state_list = expert_service.extract_expert_state_for_telemetry(
+                    [processed_telemetry_dict]
+                )
+                if expert_state_list:
                     processed_telemetry_dict.update(expert_state_list[0])
             except Exception as e:
-                print(f"[Error] Expert service failed: {e}")   
-                
-            # Use transformer model's predict_human_readable method
-            print(f"[INFO] Generating predictions with sequence length: {sequence_length}")
-            print(f"[INFO] Telemetry payload keys: {list(processed_telemetry_dict.keys())}")
-            print(f"telemetry data: {processed_telemetry_dict}")
-            
-            predictions = transformer_model.predict_human_readable(
-                current_telemetry=processed_telemetry_dict,
-                sequence_length=sequence_length
+                print(f"[WARNING] Imitation learning enrichment failed: {e}")
+
+            llm_model, model_metadata = await self._get_cached_model_or_fetch(
+                model_type="llm_guidance",
+                track_name=trackName,
+                car_name=carName,
+                model_subtype="llm_adapter_data",
+                deserializer_func=self._deserialize_llm_model,
             )
-            
-            return predictions
-            
+
+            context_window = self._format_context_window(processed_telemetry_dict)
+            user_prompt = self._build_llm_user_prompt(context_window)
+            system_prompt = self.prompt_builder_config.system_prompt
+
+            generation_request = GenerationRequest(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                max_new_tokens=self.llm_config.generation_max_new_tokens,
+                temperature=self.llm_config.generation_temperature,
+                top_p=self.llm_config.generation_top_p,
+                do_sample=self.llm_config.generation_do_sample,
+            )
+
+            output_text = llm_model.generate(generation_request)
+            parsed_output = self._parse_llm_output(output_text)
+
+            return {
+                "status": "success",
+                "track_name": trackName,
+                "car_name": carName,
+                "timestamp": datetime.now().isoformat(),
+                "raw_output": output_text,
+                "prediction": parsed_output,
+                "model_metadata": model_metadata,
+                "prompt": {
+                    "system": system_prompt,
+                    "user": user_prompt,
+                },
+            }
+
         except Exception as e:
-            error_msg = f"Failed to predict expert actions: {str(e)}"
+            error_msg = f"Failed to generate expert guidance: {str(e)}"
             print(f"[ERROR] {error_msg}")
             return {
                 "status": "error",
                 "error_message": error_msg,
-                "error_type": type(e).__name__
+                "error_type": type(e).__name__,
             }
 
     async def StartImitateExpertPipeline(self, trackName: str):
         
         """
-        returns: success, transformer_training, expert_imitation_trained    , contextual_data_enriched, comparison_results, track_name
+    returns: success, llm_training, expert_imitation_trained    , contextual_data_enriched, comparison_results, track_name
         """
         
-        # Validate dependencies before starting pipeline
-        self._print_section_divider("VALIDATING PIPELINE DEPENDENCIES")
-        
-        # Check PyTorch availability for transformer training
-        if not TORCH_AVAILABLE:
-            raise ImportError("PyTorch is not available - transformer functionality is disabled. Please install PyTorch to use this pipeline.")
-
         self._print_section_divider("STREAMING TELEMETRY DATA FROM BACKEND DIRECTLY TO CACHE")
         
         # Always fetch from backend (no cache check)
@@ -681,10 +804,10 @@ class Full_dataset_TelemetryMLService:
             telemetry_time_gap_ms=200
         )
 
-        segment_length = 500  # Default max segment length for transformer training
+        segment_length = 500  # Nominal segment length used for context window sizing
         segments_cache_key = None
-        transformer_results = {"success": False, "error": "Training not started"}  # Initialize with failure
-        
+        training_results = {"success": False, "error": "Training not started"}  # Initialize with failure
+
         try:
             # enrich data - now using cache-based approach to avoid memory overflow
             self._print_section_divider("ENRICHING CONTEXTUAL DATA")
@@ -693,12 +816,11 @@ class Full_dataset_TelemetryMLService:
             # remove any unused variable to this point to free memory
             del top_laps_telemetry_list
             
-            # train transformer model
-            self._print_section_divider("TRAINING TRANSFORMER MODEL")
-            transformer_results = await self._train_expert_action_transformer(
-                segments_cache_key=segments_cache_key,  # Pass cache key instead of segments in memory
-                trackName=trackName,
-                segment_length_hint=segment_length  # Provide baseline hint for model sizing
+            # train LLM guidance model
+            self._print_section_divider("TRAINING LOCAL LLM GUIDANCE MODEL")
+            training_results = await self._train_llm_guidance_model(
+                segments_cache_key=segments_cache_key,
+                track_name=trackName,
             )
             
         finally:
@@ -717,14 +839,14 @@ class Full_dataset_TelemetryMLService:
                 except Exception as e:
                     print(f"[WARNING] Failed to clean up cached segments: {str(e)}")
         
-        # Ensure transformer training completed successfully before returning
-        if not transformer_results or not transformer_results.get("success"):
-            raise Exception("Transformer training failed - no valid results produced")
+        # Ensure LLM training completed successfully before returning
+        if not training_results or not training_results.get("success"):
+            raise Exception("LLM training failed - no valid results produced")
         
-        self._print_section_divider("TRANSFORMER LEARNING COMPLETED")
+        self._print_section_divider("LLM TRAINING COMPLETED")
         return {
             "success": True,
-            "transformer_training": transformer_results,
+            "llm_training": training_results,
             "track_name": trackName
         }
 
@@ -1033,134 +1155,68 @@ class Full_dataset_TelemetryMLService:
         print("  • Zero-copy operations for ML training pipelines")
         print("="*60 + "\n")
 
-    async def _train_expert_action_transformer(self, 
-                                             segments_cache_key: str,
-                                             trackName: str,
-                                             segment_length_hint: Optional[int] = 50) -> Dict[str, Any]:
-        """
-        Train the transformer model to learn non-expert driver progression toward expert performance using variable-length segments.
-        
-        Args:
-            segments_cache_key: Cache key to access enriched segments from data cache (complete key, not track name)
-            trackName: Track name for model identification
-            segment_length_hint: Optional hint for typical segment length (used for sizing positional encoding)
-            
-        Returns:
-            Training results and model performance metrics
-        """
+    async def _train_llm_guidance_model(
+        self,
+        segments_cache_key: str,
+        track_name: str,
+    ) -> Dict[str, Any]:
+        """Fine-tune the local telemetry LLM using cached segments and persist the adapter."""
+
         try:
-            # Check if PyTorch is available
-            if not TORCH_AVAILABLE:
-                return {
-                    "error": "PyTorch is not available - transformer training is disabled",
-                    "success": False   
-                }
-            
-            # Create streaming dataset that loads segments on-demand from cache
-            print(f"[INFO] Creating streaming dataset from segments cache key: {segments_cache_key}")
-            
-            # Use streaming dataset that doesn't load all segments into memory
-            dataset = TelemetryActionDataset(
-                data_cache=self.data_cache,
+            dataset_path, dataset_stats = await self._generate_llm_prompt_dataset(
                 segments_cache_key=segments_cache_key,
-                segment_length_hint=segment_length_hint,
-                batch_size=32,
-                min_sequence_length=3
+                track_name=track_name,
             )
-            
-            # Configure PyTorch optimizations
-            use_cuda = torch.cuda.is_available()
-            
-            if use_cuda:
-                # Enable TF32 on Ampere+ for faster matmuls while keeping accuracy
-                try:
-                    torch.backends.cuda.matmul.allow_tf32 = True
-                    torch.backends.cudnn.allow_tf32 = True
-                except Exception:
-                    pass
-            print(f"[INFO] Device: {'CUDA' if use_cuda else 'CPU'}")
-            
-            # Get feature dimensions from dataset
-            input_feature_names, action_feature_names = dataset.get_feature_names()
-            input_features_count = len(input_feature_names)
-            
-            segment_info = dataset.get_segment_info()
-            length_stats = segment_info.get('length_statistics') or {}
-            print(f"[INFO] Dataset info: {input_features_count} combined input features, "
-                  f"{len(action_feature_names)} action features")
-            if length_stats:
-                median_length = length_stats.get('median')
-                median_display = f"{median_length:.1f}" if median_length is not None else "n/a"
-                print(f"[INFO] Segment length distribution (timesteps): min={length_stats.get('min')} | "
-                      f"median={median_display} | max={length_stats.get('max')}")
-            
-            # Create model with unified input features
-            max_candidates = [10]
-            if length_stats.get('max') is not None:
-                max_candidates.append(int(length_stats['max']))
-            if segment_length_hint:
-                max_candidates.append(int(segment_length_hint))
-            max_sequence_length = max(max_candidates)
-            model = ExpertActionTransformer(
-                total_features_count=input_features_count,
-                d_model=256, # Embedding dimension
-                nhead=16,  # Number of attention heads
-                num_layers=20,  # Smaller model for faster training
-                sequence_length=max_sequence_length
+            print(
+                f"[INFO] Generated LLM prompt dataset at {dataset_path} with stats: {json.dumps(dataset_stats, indent=2)}"
             )
-            
-            # Create trainer
-            device = 'cuda' if use_cuda else 'cpu'
-            print(f"[DEBUG] Creating trainer on device: {device}")
-            trainer = ExpertActionTrainer(model, device=device, learning_rate=1e-4)
-        
-            # Train model using the new fixed-size segment approach
-            print(f"[DEBUG] Starting training loop...")
-            training_history = trainer.train(
-                train_dataset=dataset,
-                val_dataset=None,  # No validation split for now
-                epochs=30,
-                patience=10
+
+            training_artifacts = await self._train_local_llm(
+                dataset_path=dataset_path,
+                track_name=track_name,
             )
-            print(f"[DEBUG] Training loop completed successfully")
-            
-            # Evaluate model on training data
-            test_metrics = trainer.evaluate(dataset)
-            
-            # Serialize model
-            serialized_model = model.serialize_model()
-            
-            # Save to backend
+
+            serialized_adapter = training_artifacts["serialized_adapter"]
+            adapter_dir: Path = training_artifacts["adapter_dir"]
+            metrics = training_artifacts["metrics"]
+
+            print(
+                f"[INFO] LLM fine-tuning complete. Saving adapter '{adapter_dir.name}' to backend for track {track_name}"
+            )
+
             await backend_service.save_ai_model(
-                model_type="transformer_expert_action",
-                track_name=trackName,
-                car_name='AllCars',
-                model_data=serialized_model,
+                model_type="llm_guidance",
+                track_name=track_name,
+                car_name="AllCars",
+                model_data=serialized_adapter,
                 metadata={
-                    "training_history": training_history,
-                    "test_metrics": test_metrics,
-                    "feature_names": {
-                        "input_features": input_feature_names,
-                        "action_features": action_feature_names
-                    },
-                    "training_timestamp": datetime.now().isoformat()
+                    "training_metrics": metrics,
+                    "dataset_stats": dataset_stats,
+                    "adapter_directory": adapter_dir.name,
+                    "llm_config": training_artifacts["config"],
+                    "generated_dataset": str(dataset_path),
+                    "training_timestamp": datetime.now().isoformat(),
                 },
-                is_active=True
+                is_active=True,
             )
-            
+
+            try:
+                dataset_path.unlink(missing_ok=True)
+            except Exception as cleanup_error:
+                print(f"[WARNING] Failed to delete temporary dataset file {dataset_path}: {cleanup_error}")
+
             return {
                 "success": True,
-                "training_history": training_history,
-                "test_metrics": test_metrics,
-                "model_info": trainer.get_model_info(),
-                "serialized_model": serialized_model
+                "training_metrics": metrics,
+                "dataset_stats": dataset_stats,
+                "adapter_directory": adapter_dir.name,
             }
-            
-        except Exception as e:
-            print(f"[ERROR] Transformer training failed: {str(e)}")
+
+        except Exception as error:
+            print(f"[ERROR] LLM guidance training failed: {error}")
             return {
                 "success": False,
-                "error": str(e)
+                "error": str(error),
             }
 
 

@@ -163,7 +163,7 @@ def display_results(results, execution_time: float):
         execution_time: Total execution time in seconds
     """
     print("\n" + "=" * 80)
-    print("🎯 TRANSFORMER LEARNING PIPELINE RESULTS")
+    print("🎯 TELEMETRY LLM TRAINING PIPELINE RESULTS")
     print("=" * 80)
     print(f"⏱️  Total Execution Time: {execution_time:.1f}s ({execution_time/60:.1f}m)")
     print(f"📅 Completed at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
@@ -176,95 +176,36 @@ def display_results(results, execution_time: float):
     print("\n✅ Pipeline completed successfully!")
     print(f"🏁 Track: {results.get('track_name', 'Unknown')}")
     
-    # Transformer Training Results (Updated structure based on actual implementation)
-    transformer_results = results.get('transformer_training', {})
-    if transformer_results and transformer_results.get('success'):
-        print("\n🤖 TRANSFORMER MODEL TRAINING:")
+    # LLM training results summary
+    llm_results = results.get('llm_training', {})
+    if llm_results and llm_results.get('success'):
+        print("\n🤖 LOCAL LLM FINE-TUNING:")
         print("-" * 40)
-        
-        # Model Information
-        model_info = transformer_results.get('model_info', {})
-        if model_info:
-            print(f"  • Model parameters: {model_info.get('parameters', 0):,}")
-            print(f"  • Model size: {model_info.get('model_size_mb', 0.0):.2f} MB")
-            print(f"  • Input features: {model_info.get('input_features', 'N/A')}")
-            print(f"  • Sequence length: {model_info.get('sequence_length', 'N/A')}")
-        
-        # Training History Analysis
-        training_history = transformer_results.get('training_history', {})
-        if training_history:
-            training_results = training_history.get('training_results', {})
-            if training_results:
-                print(f"  • Training completed: {'✅ Yes' if training_results.get('training_completed') else '❌ No'}")
-                print(f"  • Total epochs trained: {training_results.get('total_epochs', 0)}")
-                
-                best_val_loss = training_results.get('best_val_loss')
-                if best_val_loss is not None:
-                    print(f"  • Best validation loss: {best_val_loss:.6f}")
-                
-                # Training History Details
-                history_list = training_results.get('training_history', [])
-                if history_list:
-                    print(f"  • Training epochs recorded: {len(history_list)}")
-                    
-                    # Show first and last epoch metrics
-                    first_epoch = history_list[0] if history_list else {}
-                    last_epoch = history_list[-1] if history_list else {}
-                    
-                    if first_epoch and last_epoch:
-                        first_train_loss = first_epoch.get('train_metrics', {}).get('total_loss', 0)
-                        last_train_loss = last_epoch.get('train_metrics', {}).get('total_loss', 0)
-                        
-                        if first_train_loss > 0 and last_train_loss > 0:
-                            print(f"  • Initial training loss: {first_train_loss:.6f}")
-                            print(f"  • Final training loss: {last_train_loss:.6f}")
-                            
-                            improvement = ((first_train_loss - last_train_loss) / first_train_loss) * 100
-                            print(f"  • Training loss improvement: {improvement:.2f}%")
-                        
-                        # Validation metrics if available
-                        first_val = first_epoch.get('val_metrics')
-                        last_val = last_epoch.get('val_metrics')
-                        if first_val and last_val:
-                            first_val_loss = first_val.get('total_loss', 0)
-                            last_val_loss = last_val.get('total_loss', 0)
-                            if first_val_loss > 0 and last_val_loss > 0:
-                                print(f"  • Initial validation loss: {first_val_loss:.6f}")
-                                print(f"  • Final validation loss: {last_val_loss:.6f}")
-                                
-                                val_improvement = ((first_val_loss - last_val_loss) / first_val_loss) * 100
-                                print(f"  • Validation loss improvement: {val_improvement:.2f}%")
-        
-        # Test Metrics
-        test_metrics = transformer_results.get('test_metrics', {})
-        if test_metrics:
-            print("\n📊 MODEL EVALUATION METRICS:")
-            print("-" * 40)
-            
-            # Individual action metrics
-            action_metrics = test_metrics.get('individual_action_metrics', {})
-            for action, metrics in action_metrics.items():
-                if isinstance(metrics, dict):
-                    mse = metrics.get('mse', 0)
-                    mae = metrics.get('mae', 0)
-                    print(f"  • {action.capitalize()}: MSE={mse:.6f}, MAE={mae:.6f}")
-            
-            # Overall metrics
-            overall_mse = test_metrics.get('overall_mse', 0)
-            overall_mae = test_metrics.get('overall_mae', 0)
-            if overall_mse > 0 or overall_mae > 0:
-                print(f"  • Overall: MSE={overall_mse:.6f}, MAE={overall_mae:.6f}")
-        
-        # Model saved confirmation
-        if transformer_results.get('serialized_model'):
-            print("\n💾 MODEL PERSISTENCE:")
-            print("-" * 40)
-            print("  • ✅ Model successfully saved to backend")
-            print("  • ✅ Model ready for inference and prediction")
-            
+
+        training_metrics = llm_results.get('training_metrics', {})
+        if training_metrics:
+            print("  • Training metrics:")
+            for key, value in training_metrics.items():
+                print(f"    - {key}: {value}")
+
+        dataset_stats = llm_results.get('dataset_stats', {})
+        if dataset_stats:
+            print("  • Dataset stats:")
+            for key, value in dataset_stats.items():
+                print(f"    - {key}: {value}")
+
+        adapter_dir = llm_results.get('adapter_directory')
+        if adapter_dir:
+            print(f"  • Adapter directory saved: {adapter_dir}")
+
+        print("\n💾 ADAPTER PERSISTENCE:")
+        print("-" * 40)
+        print("  • ✅ LoRA adapter successfully saved to backend")
+        print("  • ✅ Model ready for telemetry guidance inference")
+
     else:
-        transformer_error = transformer_results.get('error', 'Unknown error') if transformer_results else 'No transformer results available'
-        print(f"\n❌ TRANSFORMER TRAINING FAILED: {transformer_error}")
+        llm_error = llm_results.get('error', 'Unknown error') if llm_results else 'No LLM results available'
+        print(f"\n❌ LLM TRAINING FAILED: {llm_error}")
         print("-" * 80)
     
     print("\n" + "=" * 80)
@@ -277,7 +218,7 @@ def display_results(results, execution_time: float):
 
 def print_usage():
     """Print usage information for the script"""
-    print("Expert Imitation Transformer Learning Pipeline")
+    print("Telemetry LLM Training Pipeline")
     print("==============================================")
     print("")
     print("Usage: python run_transformer_learning.py [track_name]")

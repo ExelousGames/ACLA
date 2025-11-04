@@ -7,6 +7,8 @@ from .telemetry_service import TelemetryService
 from .backend_service import BackendService
 from .corner_identification_unsupervised_service import CornerIdentificationUnsupervisedService, corner_identification_service
 from .tire_grip_analysis_service import TireGripAnalysisService, tire_grip_analysis_service
+from .telemetry_prompt_dataset_builder import TelemetryPromptDatasetBuilder, PromptBuilderConfig
+from .local_llm_service import LocalLLMConfig, LocalTelemetryLLM, GenerationRequest
 
 __all__ = [
     "AIService",
@@ -16,5 +18,10 @@ __all__ = [
     "CornerIdentificationUnsupervisedService",
     "corner_identification_service",
     "TireGripAnalysisService", 
-    "tire_grip_analysis_service"
+    "tire_grip_analysis_service",
+    "TelemetryPromptDatasetBuilder",
+    "PromptBuilderConfig",
+    "LocalLLMConfig",
+    "LocalTelemetryLLM",
+    "GenerationRequest",
 ]

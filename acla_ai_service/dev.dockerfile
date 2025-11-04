@@ -46,6 +46,13 @@ RUN pip install --no-cache-dir \
     # PyTorch with CUDA support (separate for memory efficiency)
     torch==2.0.1 --index-url https://download.pytorch.org/whl/cu118 \
     && pip install --no-cache-dir \
+    # Local LLM fine-tuning stack
+    transformers==4.35.2 \
+    peft==0.6.3 \
+    accelerate==0.24.1 \
+    sentencepiece==0.1.99 \
+    safetensors==0.4.2 \
+    && pip install --no-cache-dir \
     # Visualization and data processing
     plotly==5.17.0 \
     matplotlib==3.8.2 \
