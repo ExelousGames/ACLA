@@ -674,7 +674,7 @@ class Full_dataset_TelemetryMLService:
         
         # Always use efficient processing for large datasets - no fallback
         # sessions_summary data is already cached, process directly from cache
-        top_laps_telemetry_list, bottom_laps_cache_key = await self.process_large_dataset_efficiently(
+        top_laps_telemetry_list, sessions_cache_key = await self.process_large_dataset_efficiently(
             data_cache_key=dataset_cache_key,
             trackName=trackName,
             max_memory_records=10000,
@@ -688,7 +688,7 @@ class Full_dataset_TelemetryMLService:
         try:
             # enrich data - now using cache-based approach to avoid memory overflow
             self._print_section_divider("ENRICHING CONTEXTUAL DATA")
-            segments_cache_key = await self.enriched_contextual_data(top_laps_telemetry_list, bottom_laps_cache_key, trackName, segment_length=segment_length)
+            segments_cache_key = await self.enriched_contextual_data(top_laps_telemetry_list, sessions_cache_key, trackName, segment_length=segment_length)
             
             # remove any unused variable to this point to free memory
             del top_laps_telemetry_list
@@ -703,12 +703,12 @@ class Full_dataset_TelemetryMLService:
             
         finally:
             # Clean up cached data even if processing fails
-            if bottom_laps_cache_key:
+            if sessions_cache_key:
                 try:
-                    self.data_cache.clear_cache(bottom_laps_cache_key)
-                    print(f"[INFO] Cleaned up cached bottom laps data: {bottom_laps_cache_key}")
+                    self.data_cache.clear_cache(sessions_cache_key)
+                    print(f"[INFO] Cleaned up cached session data: {sessions_cache_key}")
                 except Exception as e:
-                    print(f"[WARNING] Failed to clean up cached bottom laps data: {str(e)}")
+                    print(f"[WARNING] Failed to clean up session cache: {str(e)}")
             
             if segments_cache_key:
                 try:
@@ -772,86 +772,55 @@ class Full_dataset_TelemetryMLService:
     async def process_large_dataset_efficiently(self, data_cache_key: str, trackName: str,
                                         max_memory_records: int = 10000, telemetry_time_gap_ms: int = 100) -> Tuple[List[Dict[str, Any]], str]:
         """
-        Streamlined processing of large cached datasets with a bounded memory footprint for bottom laps.
+        Streamlined processing of large cached datasets with a bounded memory footprint while caching
+        full session telemetry for downstream training.
 
         Args:
+            data_cache_key: Cache key that stores streamed sessions from the backend
             trackName: Track name for data retrieval
-            max_memory_records: Maximum number of bottom-lap telemetry records kept in memory before flushing to cache
+            max_memory_records: Maximum number of session telemetry records kept in memory before flushing to cache
 
         Returns:
-            Tuple of (top_laps_telemetry_list, bottom_laps_cache_key)
+            Tuple of (top_laps_telemetry_list, sessions_cache_key)
         """
-        print(f"[INFO] Processing {trackName} dataset with {max_memory_records} in-memory bottom records")
+        print(f"[INFO] Processing {trackName} dataset with {max_memory_records} in-memory session records")
 
         top_laps: List[Dict[str, Any]] = []
-        bottom_laps_cache_key = f"bottom_laps_{trackName}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        bottom_buffer: List[Dict[str, Any]] = []
-        bottom_buffer_records = 0
-        total_bottom_laps_cached = 0
+        sessions_cache_key = f"sessions_{trackName}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        session_buffer: List[Dict[str, Any]] = []
+        session_buffer_records = 0
+        total_sessions_cached = 0
         total_processed = 0
         chunk_idx = 0
 
         features = self._imitate_expert_feature_names or self.telemetry_features.get_features_for_imitate_expert()
 
-        async def flush_bottom_buffer(reason: str) -> None:
-            nonlocal bottom_buffer, bottom_buffer_records, total_bottom_laps_cached
-            if not bottom_buffer:
+        async def flush_session_buffer(reason: str) -> None:
+            nonlocal session_buffer, session_buffer_records, total_sessions_cached
+            if not session_buffer:
                 return
 
             async def buffer_iterator() -> AsyncIterator[Dict[str, Any]]:
-                for entry in bottom_buffer:
+                for entry in session_buffer:
                     yield entry
 
             try:
                 cache_success = await self.data_cache.cache_chunks_streaming(
-                    cache_key=bottom_laps_cache_key,
+                    cache_key=sessions_cache_key,
                     chunks_iterator=buffer_iterator()
                 )
             except Exception as cache_error:
-                print(f"[WARNING] Exception while flushing bottom laps during {reason}: {cache_error}")
+                print(f"[WARNING] Exception while flushing sessions during {reason}: {cache_error}")
                 return
 
             if cache_success:
-                cached_count = len(bottom_buffer)
-                print(f"[INFO] Cached {cached_count} bottom laps ({bottom_buffer_records} records) [{reason}] -> {bottom_laps_cache_key}")
-                total_bottom_laps_cached += cached_count
-                bottom_buffer = []
-                bottom_buffer_records = 0
+                cached_count = len(session_buffer)
+                print(f"[INFO] Cached {cached_count} session chunks ({session_buffer_records} records) [{reason}] -> {sessions_cache_key}")
+                total_sessions_cached += cached_count
+                session_buffer = []
+                session_buffer_records = 0
             else:
-                print(f"[WARNING] Cache service reported failure while flushing bottom laps during {reason}")
-
-        async def stage_bottom_lap(lap_entry: Dict[str, Any], current_chunk_idx: int) -> None:
-            nonlocal bottom_buffer_records
-
-            lap_records = lap_entry.get("records", [])
-            record_count = len(lap_records)
-            if record_count == 0:
-                print(f"[DEBUG] Skipping bottom staging for lap {lap_entry.get('id')} with no records")
-                return
-
-            if bottom_buffer_records and bottom_buffer_records + record_count > max_memory_records:
-                await flush_bottom_buffer("memory limit reached")
-
-            if bottom_buffer_records and bottom_buffer_records + record_count > max_memory_records:
-                print(f"[WARNING] Unable to clear bottom lap buffer; proceeding with {record_count} additional records")
-
-            if record_count > max_memory_records:
-                print(
-                    f"[WARNING] Single lap {lap_entry['id']} ({record_count} records) exceeds memory limit {max_memory_records}; caching immediately"
-                )
-                bottom_buffer.append({
-                    "chunkId": f"bottom_lap_{lap_entry['id']}_{current_chunk_idx}",
-                    "data": lap_records
-                })
-                bottom_buffer_records = record_count
-                await flush_bottom_buffer("single lap overflow")
-                return
-
-            bottom_buffer.append({
-                "chunkId": f"bottom_lap_{lap_entry['id']}_{current_chunk_idx}",
-                "data": lap_records
-            })
-            bottom_buffer_records += record_count
+                print(f"[WARNING] Cache service reported failure while flushing sessions during {reason}")
 
         def make_lap_entry(
             lap_identifier: str,
@@ -866,14 +835,14 @@ class Full_dataset_TelemetryMLService:
                 "records": lap_records,
             }
 
-        def update_top_laps(candidate: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-            """Maintain the five fastest laps; return lap treated as bottom if applicable."""
+        def update_top_laps(candidate: Dict[str, Any]) -> None:
+            """Maintain the five fastest laps for expert reference."""
             if len(top_laps) < 5:
                 top_laps.append(candidate)
                 print(
                     f"[DEBUG] Added lap {candidate['id']} to top laps ({len(top_laps)}/5, time: {candidate['lap_time_ms']}ms)"
                 )
-                return None
+                return
 
             slowest_idx = max(range(len(top_laps)), key=lambda idx: top_laps[idx]["lap_time_ms"])
             slowest = top_laps[slowest_idx]
@@ -882,9 +851,6 @@ class Full_dataset_TelemetryMLService:
                 print(
                     f"[DEBUG] Replaced slowest lap {slowest['id']} with {candidate['id']} (time: {candidate['lap_time_ms']}ms)"
                 )
-                return slowest
-
-            return candidate
 
         session_chunks_iterator = self.data_cache.get_cached_data_chunks(cache_key=data_cache_key)
         print(f"[DEBUG] Created chunk iterator for cache key: {data_cache_key}")
@@ -899,7 +865,7 @@ class Full_dataset_TelemetryMLService:
 
             try:
                 telemetry_df = session_chunk_df
-                print(f"[DEBUG] Processing {len(telemetry_df)} number of telemetry records from the session {session_chunks_processed}")
+                print(f"[DEBUG] Processing {len(telemetry_df)} telemetry records from chunk {session_chunks_processed}")
 
                 processor = FeatureProcessor(telemetry_df)
                 processor.general_cleaning_for_analysis()
@@ -918,6 +884,7 @@ class Full_dataset_TelemetryMLService:
                 stripped_lap_frames = processor.strip_dataframe_by_time_gap(lap_frames, telemetry_time_gap_ms)
 
                 laps_processed_in_chunk = 0
+                session_records: List[Dict[str, Any]] = []
 
                 for lap_index, (lap_struct, stripped_df) in enumerate(zip(lap_structs, stripped_lap_frames)):
                     lap_metrics = lap_struct["metrics"]
@@ -928,11 +895,11 @@ class Full_dataset_TelemetryMLService:
 
                     if stripped_df.empty:
                         print(
-                            f"[DEBUG] Chunk {chunk_idx} lap {lap_index} empty after down-sampling; staging as bottom if data existed"
+                            f"[DEBUG] Chunk {chunk_idx} lap {lap_index} empty after down-sampling"
                         )
                     elif filtered_df.empty:
                         print(
-                            f"[DEBUG] Chunk {chunk_idx} lap {lap_index} has no features after filtering; staging to bottom"
+                            f"[DEBUG] Chunk {chunk_idx} lap {lap_index} has no features after filtering"
                         )
 
                     lap_records = filtered_df.to_dict("records") if not filtered_df.empty else []
@@ -953,18 +920,34 @@ class Full_dataset_TelemetryMLService:
                         print(
                             f"[DEBUG] Chunk {chunk_idx}: valid lap {lap_struct['lap_num']} ({filtered_count} records) time {lap_metrics['lap_time_ms']}ms"
                         )
-                        bottom_candidate = update_top_laps(candidate_entry)
-                        if bottom_candidate:
-                            await stage_bottom_lap(bottom_candidate, chunk_idx)
+                        update_top_laps(candidate_entry)
                     else:
                         print(
-                            f"[DEBUG] Chunk {chunk_idx}: staging non-top lap {lap_struct['lap_num']} (full={lap_metrics['is_full']}, valid={lap_metrics['is_valid']})"
+                            f"[DEBUG] Chunk {chunk_idx}: including non-top lap {lap_struct['lap_num']} (full={lap_metrics['is_full']}, valid={lap_metrics['is_valid']})"
                         )
-                        await stage_bottom_lap(candidate_entry, chunk_idx)
+
+                    if lap_records:
+                        session_records.extend(lap_records)
 
                 print(
-                    f"[DEBUG] Chunk {chunk_idx}: Processed {laps_processed_in_chunk} full valid laps. Top laps: {len(top_laps)} Bottom buffer records: {bottom_buffer_records}"
+                    f"[DEBUG] Chunk {chunk_idx}: Processed {laps_processed_in_chunk} full valid laps. Top laps: {len(top_laps)} Session buffer records: {session_buffer_records + len(session_records)}"
                 )
+
+                if session_records:
+                    session_entry = {
+                        "chunkId": f"session_{chunk_idx}_{session_chunks_processed}",
+                        "data": session_records,
+                        "metadata": {
+                            "chunk_index": chunk_idx,
+                            "session_index": session_chunks_processed,
+                            "record_count": len(session_records),
+                        },
+                    }
+                    session_buffer.append(session_entry)
+                    session_buffer_records += len(session_records)
+
+                    if session_buffer_records >= max_memory_records:
+                        await flush_session_buffer("memory limit reached")
 
                 total_processed += len(telemetry_df)
                 chunk_idx += 1
@@ -975,14 +958,14 @@ class Full_dataset_TelemetryMLService:
                 print(f"[WARNING] Chunk processing failed: {error}")
                 continue
 
-        await flush_bottom_buffer("final flush")
+        await flush_session_buffer("final flush")
 
         print(f"[DEBUG] Finished processing all chunks:")
-        print(f"[DEBUG] - Total sessions processed: {session_chunks_processed}")
-        print(f"[DEBUG] - Valid sessions processed: {chunk_idx}")
+        print(f"[DEBUG] - Total chunks processed: {session_chunks_processed}")
+        print(f"[DEBUG] - Valid chunks processed: {chunk_idx}")
         print(f"[DEBUG] - Total records processed: {total_processed}")
         print(f"[DEBUG] - Top laps found: {len(top_laps)}")
-        print(f"[DEBUG] - Bottom laps cached: {total_bottom_laps_cached}")
+        print(f"[DEBUG] - Session chunks cached: {total_sessions_cached}")
 
         if top_laps:
             lap_times = [lap_info["lap_time_ms"] for lap_info in top_laps]
@@ -1003,17 +986,23 @@ class Full_dataset_TelemetryMLService:
                 f"Insufficient top laps found: {len(top_laps)}/5 required. Processed {chunk_idx} valid chunks with {total_processed} records."
             )
 
+        if total_sessions_cached == 0 and session_buffer_records == 0:
+            raise ValueError("No session data cached for transformer training")
+
         top_laps.sort(key=lambda entry: entry["lap_time_ms"])
 
         top_laps_telemetry_list: List[Dict[str, Any]] = []
         for lap_info in top_laps:
             top_laps_telemetry_list.extend(lap_info["records"])
 
+        if session_buffer_records > 0:
+            print(f"[WARN] Session buffer retains {session_buffer_records} records that were not flushed to cache")
+
         print(f"[SUCCESS] Processed {chunk_idx} chunks, {total_processed} records")
         print(f"[SUCCESS] Selected top 5 laps: {len(top_laps_telemetry_list)} records")
-        print(f"[SUCCESS] Cached {total_bottom_laps_cached} bottom laps across {chunk_idx} chunks")
+        print(f"[SUCCESS] Cached {total_sessions_cached} session batches across {chunk_idx} chunks")
 
-        return top_laps_telemetry_list, bottom_laps_cache_key
+        return top_laps_telemetry_list, sessions_cache_key
 
     def get_data_cache_info(self) -> Dict[str, Any]:
         """Get information about the training-optimized data cache"""
@@ -1275,18 +1264,18 @@ class Full_dataset_TelemetryMLService:
             print(f"[ERROR] Exception caching segment batch {batch_number}: {str(e)}")
             return False
 
-    async def enriched_contextual_data(self, top_laps_telemetry_list: List[Dict[str, Any]], bottom_laps_cache_key: str, track_name: str, segment_length: int) -> str:
+    async def enriched_contextual_data(self, top_laps_telemetry_list: List[Dict[str, Any]], sessions_cache_key: str, track_name: str, segment_length: int) -> str:
         """
         Streamlined contextual data enrichment using chunk iterator approach.
         
         1. Train all enrichment models using expert data
-        2. Use chunk_iterator to process all bottom laps data  
+        2. Use chunk_iterator to process cached session data  
         3. Enrich each chunk with contextual features
         4. Filter into segments and cache them in reasonable chunks
         
         Args:
             top_laps_telemetry_list: List of expert telemetry records for training models
-            bottom_laps_cache_key: Cache key for accessing cached bottom laps data via iterator
+            sessions_cache_key: Cache key for accessing cached session data via iterator
             track_name: Track name for model identification
             segment_length: Length of segments for transformer training
             
@@ -1333,16 +1322,16 @@ class Full_dataset_TelemetryMLService:
         )
         print("[INFO] ✓ Corner identification model trained and saved")
         
-        # Train tire grip analysis model using bottom laps (streaming)
+        # Train tire grip analysis model using full sessions (streaming)
         from .tire_grip_analysis_service import TireGripAnalysisService
         tire_service = TireGripAnalysisService()
 
-        print("[INFO] Streaming bottom-lap telemetry to train tire grip model")
-        bottom_laps_training_iterator = self.data_cache.get_cached_data_chunks(
-            cache_key=bottom_laps_cache_key
+        print("[INFO] Streaming cached session telemetry to train tire grip model")
+        session_training_iterator = self.data_cache.get_cached_data_chunks(
+            cache_key=sessions_cache_key
         )
         tire_grip_training = await tire_service.train_tire_grip_model_streaming(
-            chunk_iterator=bottom_laps_training_iterator
+            chunk_iterator=session_training_iterator
         )
         if not tire_grip_training.get("success", False):
             raise RuntimeError(
@@ -1362,15 +1351,15 @@ class Full_dataset_TelemetryMLService:
             },
             is_active=True
         )
-        print("[INFO] ✓ Tire grip analysis model trained on bottom laps and saved")
+        print("[INFO] ✓ Tire grip analysis model trained on sessions and saved")
         
-        # Step 2: Process bottom laps via chunk iterator with enrichment
-        self._print_section_divider("PROCESSING BOTTOM get_cached_data_chunksLAPS VIA CHUNK ITERATOR")
+        # Step 2: Process cached sessions via chunk iterator with enrichment
+        self._print_section_divider("PROCESSING SESSION DATA VIA CHUNK ITERATOR")
         
         segments_cache_key = f"enriched_segments_{track_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         
-        lao_chunks_iterator = self.data_cache.get_cached_data_chunks(
-            cache_key=bottom_laps_cache_key  # Use the cache key where bottom laps are stored
+        session_chunks_iterator = self.data_cache.get_cached_data_chunks(
+            cache_key=sessions_cache_key  # Use the cache key where session data is stored
         )
         
         processed_chunks = 0
@@ -1384,12 +1373,12 @@ class Full_dataset_TelemetryMLService:
         coverage_histogram_counts = np.zeros(len(coverage_histogram_bins) - 1, dtype=np.float64)
         coverage_sample_count = 0
         
-        for lap_chunk_df in lao_chunks_iterator:
-            if lap_chunk_df is None or lap_chunk_df.empty:
+        for session_chunk_df in session_chunks_iterator:
+            if session_chunk_df is None or session_chunk_df.empty:
                 continue
             
             processed_chunks += 1
-            chunk_data = lap_chunk_df.to_dict('records')
+            chunk_data = session_chunk_df.to_dict('records')
             
             print(f"[INFO] Processing chunk {processed_chunks}: {len(chunk_data)} records")
             
