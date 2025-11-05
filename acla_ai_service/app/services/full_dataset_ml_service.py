@@ -155,7 +155,6 @@ class Full_dataset_TelemetryMLService:
     async def _generate_llm_prompt_dataset(
         self,
         segments_cache_key: str,
-        track_name: str,
         *,
         annotations: Optional[Dict[str, Dict[str, Any]]] = None,
         output_path: Optional[Path] = None,
@@ -164,7 +163,7 @@ class Full_dataset_TelemetryMLService:
         """Build the LLM prompt dataset asynchronously from cached segments."""
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        dataset_filename = f"{track_name}_segments_{timestamp}.jsonl"
+        dataset_filename = f"telemetry_segments_{timestamp}.jsonl"
         dataset_path = Path(output_path) if output_path else self.llm_dataset_directory / dataset_filename
 
         def _build_dataset() -> Tuple[Path, Dict[str, Any]]:
@@ -228,11 +227,12 @@ class Full_dataset_TelemetryMLService:
         summary["annotation_ratio"] = (annotated_examples / total_examples) if total_examples else 0.0
         return summary
 
-    def _train_local_llm_sync(self, dataset_path: Path, track_name: str) -> Dict[str, Any]:
+    def _train_local_llm_sync(self, dataset_path: Path) -> Dict[str, Any]:
         """Synchronous helper that fine-tunes the local LLM and returns metrics."""
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        adapter_dir = self.llm_adapter_directory / f"{track_name}_{timestamp}"
+        dataset_identifier = (dataset_path.stem or "telemetry").replace(" ", "_")
+        adapter_dir = self.llm_adapter_directory / f"{dataset_identifier}_{timestamp}"
         adapter_dir.mkdir(parents=True, exist_ok=True)
 
         llm = LocalTelemetryLLM(config=self.llm_config)
@@ -252,15 +252,14 @@ class Full_dataset_TelemetryMLService:
             "config": asdict(self.llm_config),
         }
 
-    async def _train_local_llm(self, dataset_path: Path, track_name: str) -> Dict[str, Any]:
+    async def _train_local_llm(self, dataset_path: Path) -> Dict[str, Any]:
         """Async wrapper for LLM fine-tuning."""
 
-        return await asyncio.to_thread(self._train_local_llm_sync, dataset_path, track_name)
+        return await asyncio.to_thread(self._train_local_llm_sync, dataset_path)
 
     async def _train_llm_and_persist(
         self,
         dataset_path: Path,
-        track_name: str,
         dataset_stats: Optional[Dict[str, Any]] = None,
         cleanup_dataset_file: bool = True,
     ) -> Dict[str, Any]:
@@ -271,7 +270,6 @@ class Full_dataset_TelemetryMLService:
 
         training_artifacts = await self._train_local_llm(
             dataset_path=dataset_path,
-            track_name=track_name,
         )
 
         serialized_adapter = training_artifacts["serialized_adapter"]
@@ -288,13 +286,11 @@ class Full_dataset_TelemetryMLService:
         }
 
         print(
-            f"[INFO] LLM fine-tuning complete. Saving adapter '{adapter_dir.name}' to backend for track {track_name}"
+            f"[INFO] LLM fine-tuning complete. Saving adapter '{adapter_dir.name}' to backend"
         )
 
         await backend_service.save_ai_model(
             model_type="llm_guidance",
-            track_name=track_name,
-            car_name="AllCars",
             model_data=serialized_adapter,
             metadata=metadata_payload,
             is_active=True,
@@ -430,12 +426,10 @@ class Full_dataset_TelemetryMLService:
         
         # getCompleteActiveModelData now always returns ActiveModelData or raises exception
         model_response: ActiveModelData = await self.backend_service.getCompleteActiveModelData(
-            track_name, car_name, model_type
+            model_type
         )
         # Prepare cache metadata with all available structured data
         cache_metadata = {
-            "track_name": model_response.trackName,
-            "car_name": model_response.carName,
             "model_type": model_response.modelType,
             "is_active": model_response.isActive,
             "fetched_at": datetime.now().isoformat(),
@@ -456,8 +450,8 @@ class Full_dataset_TelemetryMLService:
         print(f"[DEBUG] Caching model instance: {model_type}")
         self.model_cache.put(
             model_type=model_type,
-            track_name=track_name,
-            car_name=car_name,
+            track_name=resolved_track_name,
+            car_name=resolved_car_name,
             data=model_instance,  # Store model instance directly
             metadata=cache_metadata,
             model_subtype=model_subtype
@@ -763,12 +757,12 @@ class Full_dataset_TelemetryMLService:
     async def predict_expert_actions(
         self,
         telemetry_dict: Dict[str, Any],
-        trackName: str,
-        carName: Optional[str] = "AllCars",
         sequence_length: int = 40,
     ) -> Dict[str, Any]:
         """Predict future telemetry and explanations using the fine-tuned local LLM."""
-
+    
+        trackName = "generic"
+        carName = "all_cars"
         try:
             import pandas as pd
 
@@ -789,8 +783,8 @@ class Full_dataset_TelemetryMLService:
                 tire_grip_service = TireGripAnalysisService()
                 tire_grip_service, _ = await self._get_cached_model_or_fetch(
                     model_type="tire_grip_analysis",
-                    track_name="generic",
-                    car_name="all_cars",
+                    track_name=trackName,
+                    car_name=carName,
                     model_subtype="tire_grip_model_data",
                     deserializer_func=tire_grip_service.deserialize_tire_grip_model,
                 )
@@ -891,7 +885,6 @@ class Full_dataset_TelemetryMLService:
             dataset_stats = self._summarize_dataset(dataset_path)
             training_results = await self._train_llm_and_persist(
                 dataset_path=dataset_path,
-                track_name=trackName,
                 dataset_stats=dataset_stats,
                 cleanup_dataset_file=cleanup_dataset_file if cleanup_dataset_file is not None else False,
             )
@@ -950,9 +943,8 @@ class Full_dataset_TelemetryMLService:
         
         # Always use efficient processing for large datasets - no fallback
         # sessions_summary data is already cached, process directly from cache
-        top_laps_telemetry_list, sessions_cache_key = await self.process_large_dataset_efficiently(
-            data_cache_key=dataset_cache_key,
-            trackName=trackName,
+        top_laps_telemetry_list, sessions_cache_key = await self.process_lap_sessions_efficiently(
+            processed_session_data_cache_key=dataset_cache_key,
             max_memory_records=10000,
             telemetry_time_gap_ms=200
         )
@@ -964,7 +956,7 @@ class Full_dataset_TelemetryMLService:
         try:
             # enrich data - now using cache-based approach to avoid memory overflow
             self._print_section_divider("ENRICHING CONTEXTUAL DATA")
-            segments_cache_key = await self.enriched_contextual_data(top_laps_telemetry_list, sessions_cache_key, trackName, segment_length=segment_length)
+            segments_cache_key = await self.enriched_contextual_data(top_laps_telemetry_list, sessions_cache_key, segment_length=segment_length)
             
             # remove any unused variable to this point to free memory
             del top_laps_telemetry_list
@@ -972,7 +964,6 @@ class Full_dataset_TelemetryMLService:
             # generate dataset for LLM guidance
             dataset_path_result, dataset_stats = await self._generate_llm_prompt_dataset(
                 segments_cache_key=segments_cache_key,
-                track_name=trackName,
                 annotations=annotation_map,
                 shuffle=shuffle_dataset,
             )
@@ -984,7 +975,6 @@ class Full_dataset_TelemetryMLService:
                 self._print_section_divider("TRAINING LOCAL LLM GUIDANCE MODEL")
                 training_results = await self._train_llm_and_persist(
                     dataset_path=dataset_path_result,
-                    track_name=trackName,
                     dataset_stats=dataset_stats,
                     cleanup_dataset_file=cleanup_after_training,
                 )
@@ -1072,24 +1062,30 @@ class Full_dataset_TelemetryMLService:
         
         print(f"[INFO] Completed streaming processing of {processed_sessions} sessions")
 
-    async def process_large_dataset_efficiently(self, data_cache_key: str, trackName: str,
-                                        max_memory_records: int = 10000, telemetry_time_gap_ms: int = 100) -> Tuple[List[Dict[str, Any]], str]:
+    async def process_lap_sessions_efficiently(
+        self,
+        processed_session_data_cache_key: str,
+        max_memory_records: int = 10000,
+        telemetry_time_gap_ms: int = 100,
+    ) -> Tuple[List[Dict[str, Any]], str]:
         """
         Streamlined processing of large cached datasets with a bounded memory footprint while caching
         full session telemetry for downstream training.
 
         Args:
             data_cache_key: Cache key that stores streamed sessions from the backend
-            trackName: Track name for data retrieval
             max_memory_records: Maximum number of session telemetry records kept in memory before flushing to cache
+            telemetry_time_gap_ms: Maximum allowed gap (in milliseconds) between telemetry points when stripping laps
 
         Returns:
             Tuple of (top_laps_telemetry_list, sessions_cache_key)
         """
-        print(f"[INFO] Processing {trackName} dataset with {max_memory_records} in-memory session records")
+        print(
+            f"[INFO] Processing cached dataset '{processed_session_data_cache_key}' with {max_memory_records} in-memory session records"
+        )
 
         top_laps: List[Dict[str, Any]] = []
-        sessions_cache_key = f"sessions_{trackName}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        sessions_cache_key = f"{processed_session_data_cache_key}_processed_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         session_buffer: List[Dict[str, Any]] = []
         session_buffer_records = 0
         total_sessions_cached = 0
@@ -1155,8 +1151,8 @@ class Full_dataset_TelemetryMLService:
                     f"[DEBUG] Replaced slowest lap {slowest['id']} with {candidate['id']} (time: {candidate['lap_time_ms']}ms)"
                 )
 
-        session_chunks_iterator = self.data_cache.get_cached_data_chunks(cache_key=data_cache_key)
-        print(f"[DEBUG] Created chunk iterator for cache key: {data_cache_key}")
+        session_chunks_iterator = self.data_cache.get_cached_data_chunks(cache_key=processed_session_data_cache_key)
+        print(f"[DEBUG] Created chunk iterator for cache key: {processed_session_data_cache_key}")
 
         session_chunks_processed = 0
         for session_chunk_df in session_chunks_iterator:
@@ -1276,12 +1272,12 @@ class Full_dataset_TelemetryMLService:
 
         if not session_chunks_processed:
             raise ValueError(
-                f"No chunks were returned by iterator for track {trackName}. Check if data exists in cache."
+                f"No chunks were returned by iterator for cache key {processed_session_data_cache_key}. Check if data exists in cache."
             )
 
         if not chunk_idx:
             raise ValueError(
-                f"All {session_chunks_processed} chunks failed processing for track {trackName}. Check data quality."
+                f"All {session_chunks_processed} chunks failed processing for cache key {processed_session_data_cache_key}. Check data quality."
             )
 
         if len(top_laps) < 5:
@@ -1339,14 +1335,12 @@ class Full_dataset_TelemetryMLService:
     async def _train_llm_guidance_model(
         self,
         segments_cache_key: str,
-        track_name: str,
     ) -> Dict[str, Any]:
         """Fine-tune the local telemetry LLM using cached segments and persist the adapter."""
 
         try:
             dataset_path, dataset_stats = await self._generate_llm_prompt_dataset(
                 segments_cache_key=segments_cache_key,
-                track_name=track_name,
             )
             print(
                 f"[INFO] Generated LLM prompt dataset at {dataset_path} with stats: {json.dumps(dataset_stats, indent=2)}"
@@ -1354,7 +1348,6 @@ class Full_dataset_TelemetryMLService:
 
             training_results = await self._train_llm_and_persist(
                 dataset_path=dataset_path,
-                track_name=track_name,
                 dataset_stats=dataset_stats,
                 cleanup_dataset_file=True,
             )
@@ -1469,7 +1462,7 @@ class Full_dataset_TelemetryMLService:
             print(f"[ERROR] Exception caching segment batch {batch_number}: {str(e)}")
             return False
 
-    async def enriched_contextual_data(self, top_laps_telemetry_list: List[Dict[str, Any]], sessions_cache_key: str, track_name: str, segment_length: int) -> str:
+    async def enriched_contextual_data(self, top_laps_telemetry_list: List[Dict[str, Any]], sessions_cache_key: str, segment_length: int) -> str:
         """
         Streamlined contextual data enrichment using chunk iterator approach.
         
@@ -1481,12 +1474,12 @@ class Full_dataset_TelemetryMLService:
         Args:
             top_laps_telemetry_list: List of expert telemetry records for training models
             sessions_cache_key: Cache key for accessing cached session data via iterator
-            track_name: Track name for model identification
             segment_length: Length of segments for transformer training
             
         Returns:
             str - Cache key for accessing the enriched segments
         """
+
         # Step 1: Train all enrichment models using expert data
         self._print_section_divider("TRAINING ENRICHMENT MODELS WITH EXPERT DATA")
         
@@ -1499,8 +1492,6 @@ class Full_dataset_TelemetryMLService:
         
         await backend_service.save_ai_model(
             model_type="imitation_learning",
-            track_name=track_name,
-            car_name='AllCars',
             model_data=serialized_data,
             metadata=imitation_result.get("learning_summary", {}),
             is_active=True
@@ -1511,12 +1502,10 @@ class Full_dataset_TelemetryMLService:
         from .corner_identification_unsupervised_service import CornerIdentificationUnsupervisedService
         corner_service = CornerIdentificationUnsupervisedService()
         corner_model = await corner_service.learn_track_corner_patterns(top_laps_telemetry_list)
-        corner_serialized = corner_service.serialize_corner_identification_model(track_name=track_name, car_name="all_cars")
+        corner_serialized = corner_service.serialize_corner_identification_model()
         
         await self.backend_service.save_ai_model(
             model_type="corner_identification",
-            track_name=corner_serialized.get("track_name"),
-            car_name='all_cars',
             model_data=corner_serialized,
             metadata={
                 "total_corners": corner_serialized.get("total_corners"),
@@ -1546,8 +1535,6 @@ class Full_dataset_TelemetryMLService:
         
         await self.backend_service.save_ai_model(
             model_type="tire_grip_analysis",
-            track_name="generic",
-            car_name="all_cars",
             model_data=tire_service_serialized,
             metadata={
                 "training_summary": tire_grip_training,
@@ -1561,7 +1548,7 @@ class Full_dataset_TelemetryMLService:
         # Step 2: Process cached sessions via chunk iterator with enrichment
         self._print_section_divider("PROCESSING SESSION DATA VIA CHUNK ITERATOR")
         
-        segments_cache_key = f"enriched_segments_{track_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        segments_cache_key = f"enriched_segments_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         
         session_chunks_iterator = self.data_cache.get_cached_data_chunks(
             cache_key=sessions_cache_key  # Use the cache key where session data is stored

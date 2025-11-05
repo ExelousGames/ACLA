@@ -8,6 +8,7 @@ import { CreateAiModelDto, UpdateAiModelDto } from './dto/ai-model.dto';
 import { GridFSService, GRIDFS_BUCKETS } from '../gridfs/gridfs.service';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as os from 'os';
 import { Readable } from 'stream';
 
 @Injectable()
@@ -22,14 +23,12 @@ export class AiModelService {
 
         // If modelData is provided, upload it to GridFS
         if (createAiModelDto.modelData) {
-            const filename = `model_${createAiModelDto.trackName}_${createAiModelDto.carName}_${createAiModelDto.modelType}_${Date.now()}.json`;
+            const filename = this.buildModelFilename(createAiModelDto.modelType);
 
             modelDataFileId = await this.gridfsService.uploadJSON(
                 createAiModelDto.modelData,
                 filename,
                 {
-                    trackName: createAiModelDto.trackName,
-                    carName: createAiModelDto.carName,
                     modelType: createAiModelDto.modelType,
                     uploadedAt: new Date()
                 },
@@ -48,15 +47,11 @@ export class AiModelService {
     }
 
     async findAll(filters: {
-        trackName?: string;
-        carName?: string;
         modelType?: string;
         isActive?: boolean;
     } = {}): Promise<AIModel[]> {
         const query: any = {};
 
-        if (filters.trackName) query.trackName = filters.trackName;
-        if (filters.carName) query.carName = filters.carName;
         if (filters.modelType) query.modelType = filters.modelType;
         if (filters.isActive !== undefined) query.isActive = filters.isActive;
 
@@ -80,8 +75,6 @@ export class AiModelService {
         const model = await this.findOne(id);
         const modelWithData: any = {
             _id: (model as any)._id,
-            trackName: model.trackName,
-            carName: model.carName,
             modelType: model.modelType,
             modelDataFileId: model.modelDataFileId,
             metadata: model.metadata,
@@ -136,6 +129,11 @@ export class AiModelService {
         return Math.round(bytes / Math.pow(1024, i) * 100) / 100 + ' ' + sizes[i];
     }
 
+    private buildModelFilename(modelType?: string): string {
+        const safeModelType = modelType || 'generic';
+        return `model_${safeModelType}_${Date.now()}.json`;
+    }
+
     /**
      * Get a specific chunk from a prepared session
      */
@@ -161,15 +159,14 @@ export class AiModelService {
             }
 
             // Upload new model data
-            const filename = `model_${updateAiModelDto.trackName || existingModel.trackName}_${updateAiModelDto.carName || existingModel.carName}_${updateAiModelDto.modelType || existingModel.modelType}_${Date.now()}.json`;
+            const nextModelType = updateAiModelDto.modelType || existingModel.modelType;
+            const filename = this.buildModelFilename(nextModelType);
 
             modelDataFileId = await this.gridfsService.uploadJSON(
                 updateAiModelDto.modelData,
                 filename,
                 {
-                    trackName: updateAiModelDto.trackName || existingModel.trackName,
-                    carName: updateAiModelDto.carName || existingModel.carName,
-                    modelType: updateAiModelDto.modelType || existingModel.modelType,
+                    modelType: nextModelType,
                     uploadedAt: new Date()
                 },
                 GRIDFS_BUCKETS.AI_MODELS
@@ -210,12 +207,10 @@ export class AiModelService {
         }
     }
 
-    // Helper to get the currently active model for a given track, car, and type
-    async getActiveModel(trackName?: string, carName?: string, modelType?: string): Promise<AIModel> {
+    // Helper to get the currently active model for a given type
+    async getActiveModel(modelType?: string): Promise<AIModel> {
         const query: any = { isActive: true };
 
-        if (trackName) query.trackName = trackName;
-        if (carName) query.carName = carName;
         if (modelType) query.modelType = modelType;
 
         const model = await this.aiModelModel
@@ -223,12 +218,7 @@ export class AiModelService {
             .exec();
 
         if (!model) {
-            const filterParts: string[] = [];
-            if (trackName) filterParts.push(`track: ${trackName}`);
-            if (carName) filterParts.push(`car: ${carName}`);
-            if (modelType) filterParts.push(`type: ${modelType}`);
-
-            const filterDescription = filterParts.length > 0 ? ` for ${filterParts.join(', ')}` : '';
+            const filterDescription = modelType ? ` for type: ${modelType}` : '';
             throw new NotFoundException(`Active AI Model not found${filterDescription}`);
         }
         return model;
@@ -236,14 +226,12 @@ export class AiModelService {
 
 
     /**
-     * Get the currently active model for a given track, car, and type, including its model data.
-     * @param trackName 
-     * @param carName 
+     * Get the currently active model for a given type, including its model data.
      * @param modelType 
      * @returns 
      */
-    async getActiveModelWithData(trackName?: string, carName?: string, modelType?: string): Promise<any> {
-        const model = await this.getActiveModel(trackName, carName, modelType);
+    async getActiveModelWithData(modelType?: string): Promise<any> {
+        const model = await this.getActiveModel(modelType);
         const modelId = (model as any)._id.toString();
         return this.findOneWithModelData(modelId);
     }
@@ -251,12 +239,9 @@ export class AiModelService {
     async activateModel(id: string): Promise<AIModel> {
         const model = await this.findOne(id);
 
-        // Deactivate all other models with same track, car, and type
         await this.aiModelModel
             .updateMany(
                 {
-                    trackName: model.trackName,
-                    carName: model.carName,
                     modelType: model.modelType,
                     _id: { $ne: id }
                 },
@@ -264,18 +249,20 @@ export class AiModelService {
             )
             .exec();
 
-        // Activate the target model
         const activatedModel = await this.aiModelModel
             .findByIdAndUpdate(id, { isActive: true }, { new: true })
             .exec();
 
-        return activatedModel!;
-    }
+        if (!activatedModel) {
+            throw new NotFoundException(`AI Model with ID ${id} not found`);
+        }
 
+        return activatedModel;
+    }
 
     async save_ai_model(updateAiModelDto: UpdateAiModelDto): Promise<any> {
         try {
-            const existingEntry = await this.findActiveModel(updateAiModelDto);
+            const existingEntry = await this.findActiveModel(updateAiModelDto.modelType);
 
             if (existingEntry) {
                 return await this.updateExistingModel(existingEntry, updateAiModelDto);
@@ -288,20 +275,9 @@ export class AiModelService {
         }
     }
 
-    /**
-     * Save AI model when model data has been assembled into a file on disk.
-     * This avoids loading huge JSON into memory.
-     * Expected file content: JSON with fields trackName, carName, modelType, modelData, metadata.
-     * If the file is too large to parse safely, we stream-upload the raw file to GridFS as JSON.
-     */
     async save_ai_model_from_file(filePath: string): Promise<any> {
-        // Basic sanity check
         const stat = await fs.promises.stat(filePath);
         const isHuge = stat.size > 100 * 1024 * 1024; // >100MB
-
-        // Strategy:
-        // - If reasonably small (<100MB), read and JSON.parse to preserve current DTO flow and validation
-        // - If huge, stream upload the file as-is to GridFS and create/update model using minimal metadata extracted lazily
 
         if (!isHuge) {
             const fileContent = await fs.promises.readFile(filePath, 'utf8');
@@ -309,19 +285,12 @@ export class AiModelService {
             return this.save_ai_model(dto);
         }
 
-        // Huge file path: We need to extract only the modelData portion and upload that to GridFS
-        // Use streaming approach to avoid "Invalid string length" errors
-        let trackName = 'unknown';
-        let carName = 'unknown';
         let modelType = 'unknown';
         let metadata: any = undefined;
 
         try {
-            // For huge files, use streaming JSON parsing to extract modelData without loading entire file
             const extractedData = await this.extractModelDataFromHugeFile(filePath);
 
-            trackName = extractedData.trackName || trackName;
-            carName = extractedData.carName || carName;
             modelType = extractedData.modelType || modelType;
             metadata = extractedData.metadata;
 
@@ -329,40 +298,37 @@ export class AiModelService {
                 throw new Error('Failed to extract modelData from huge file');
             }
 
-            // Upload the extracted modelData file directly to GridFS
-            const filename = `model_${trackName}_${carName}_${modelType}_${Date.now()}.json`;
+            const filename = this.buildModelFilename(modelType);
             const modelDataStream = fs.createReadStream(extractedData.modelDataFilePath);
             const fileId = await this.gridfsService.uploadStream(
                 modelDataStream as unknown as Readable,
                 filename,
-                { trackName, carName, modelType, uploadedAt: new Date() },
+                { modelType, uploadedAt: new Date() },
                 GRIDFS_BUCKETS.AI_MODELS
             );
 
-            // Clean up temporary modelData file
             try {
                 await fs.promises.unlink(extractedData.modelDataFilePath);
             } catch (cleanupError) {
                 console.warn(`Failed to cleanup temp file ${extractedData.modelDataFilePath}: ${cleanupError.message}`);
             }
 
-            // Store the file ID
-            const fileIdToUse = fileId;
-
-            // Upsert active model for the triple (trackName, carName, modelType)
-            const existing = await this.findActiveModel({ trackName, carName, modelType } as any);
+            const existing = await this.findActiveModel(modelType);
             if (existing) {
                 await this.aiModelModel.updateOne(
                     { _id: (existing as any)._id },
-                    { $set: { modelDataFileId: fileIdToUse, metadata } }
+                    { $set: { modelDataFileId: fileId, metadata } }
                 );
-                return { updated: true, fileId: fileIdToUse };
+                return { updated: true, fileId };
             }
+
             const created = new this.aiModelModel({
-                trackName, carName, modelType, modelDataFileId: fileIdToUse, metadata, isActive: true
+                modelType,
+                modelDataFileId: fileId,
+                metadata,
+                isActive: true
             });
-            const saved = await created.save();
-            return saved;
+            return await created.save();
 
         } catch (error) {
             console.error(`Error extracting modelData from huge file: ${error.message}`);
@@ -370,11 +336,9 @@ export class AiModelService {
         }
     }
 
-    private async findActiveModel(dto: UpdateAiModelDto): Promise<AIModel | null> {
+    private async findActiveModel(modelType?: string): Promise<AIModel | null> {
         const query: any = { isActive: true };
-        if (dto.modelType) query.modelType = dto.modelType;
-        if (dto.trackName) query.trackName = dto.trackName;
-        if (dto.carName) query.carName = dto.carName;
+        if (modelType) query.modelType = modelType;
 
         return await this.aiModelModel.findOne(query);
     }
@@ -408,12 +372,14 @@ export class AiModelService {
             throw new InternalServerErrorException("Incomplete imitation learning results");
         }
 
+        if (!updateDto.modelType) {
+            throw new InternalServerErrorException("Model type is required to create a new AI model");
+        }
+
         try {
             const modelDataFileId = await this.uploadModelData(updateDto.modelData, updateDto);
 
             const createdEntry = new this.aiModelModel({
-                trackName: updateDto.trackName,
-                carName: updateDto.carName,
                 modelType: updateDto.modelType,
                 modelDataFileId,
                 metadata: updateDto.metadata,
@@ -445,14 +411,12 @@ export class AiModelService {
     }
 
     private async uploadModelData(modelData: any, dto: UpdateAiModelDto): Promise<ObjectId> {
-        const filename = `model_${dto.trackName || 'unknown'}_${dto.carName || 'unknown'}_${dto.modelType}_${Date.now()}.json`;
+        const filename = this.buildModelFilename(dto.modelType);
 
         return await this.gridfsService.uploadJSON(
             modelData,
             filename,
             {
-                trackName: dto.trackName,
-                carName: dto.carName,
                 modelType: dto.modelType,
                 uploadedAt: new Date()
             },
@@ -485,23 +449,16 @@ export class AiModelService {
      * This method streams through the file to find and extract only the modelData portion.
      */
     private async extractModelDataFromHugeFile(filePath: string): Promise<{
-        trackName?: string,
-        carName?: string,
         modelType?: string,
         metadata?: any,
         modelDataFilePath?: string
     }> {
         return new Promise((resolve, reject) => {
-            const fs = require('fs');
-            const path = require('path');
-            const os = require('os');
 
             let buffer = '';
             let foundModelDataStart = false;
             let braceCount = 0;
             let insideModelData = false;
-            let trackName = 'unknown';
-            let carName = 'unknown';
             let modelType = 'unknown';
             let metadata: any = undefined;
 
@@ -516,15 +473,6 @@ export class AiModelService {
             readStream.on('data', (chunk: string) => {
                 buffer += chunk;
 
-                // Extract metadata fields if not found yet
-                if (trackName === 'unknown') {
-                    const tnMatch = buffer.match(/"trackName"\s*:\s*"([^"]+)"/);
-                    if (tnMatch) trackName = tnMatch[1];
-                }
-                if (carName === 'unknown') {
-                    const cnMatch = buffer.match(/"carName"\s*:\s*"([^"]+)"/);
-                    if (cnMatch) carName = cnMatch[1];
-                }
                 if (modelType === 'unknown') {
                     const mtMatch = buffer.match(/"modelType"\s*:\s*"([^"]+)"/);
                     if (mtMatch) modelType = mtMatch[1];
@@ -630,8 +578,6 @@ export class AiModelService {
 
             writeStream.on('finish', () => {
                 resolve({
-                    trackName,
-                    carName,
                     modelType,
                     metadata,
                     modelDataFilePath: tempFilePath

@@ -27,14 +27,10 @@ interface ChunkResponse {
 }
 
 export interface DownloadModelOptions {
-    trackName?: string;
-    carName?: string;
     modelType?: string;
 }
 
 interface NormalizedModelOptions {
-    trackName?: string;
-    carName?: string;
     modelType: string;
 }
 
@@ -45,16 +41,10 @@ interface ModelCacheEntry {
 }
 
 const normalizeOptions = (options: DownloadModelOptions = {}): NormalizedModelOptions => ({
-    trackName: options.trackName ?? undefined,
-    carName: options.carName ?? undefined,
     modelType: options.modelType ?? DEFAULT_MODEL_TYPE
 });
 
-const buildCacheKey = (options: NormalizedModelOptions): string => {
-    const trackPart = options.trackName ?? '*';
-    const carPart = options.carName ?? '*';
-    return `${options.modelType}::${trackPart}::${carPart}`;
-};
+const buildCacheKey = (options: NormalizedModelOptions): string => options.modelType;
 
 const imitationModelCache = new Map<string, ModelCacheEntry>();
 
@@ -103,17 +93,12 @@ const mergeBuffers = (arrays: Uint8Array[]): Uint8Array => {
 };
 
 export const downloadActiveImitationModel = async (
-    options: DownloadModelOptions = {}
+    options: NormalizedModelOptions
 ): Promise<any> => {
-    const { trackName, carName, modelType = DEFAULT_MODEL_TYPE } = options;
-
-    const params: Record<string, string> = {};
-    if (trackName) params.trackName = trackName;
-    if (carName) params.carName = carName;
+    const { modelType } = options;
 
     const initResponse = await apiService.get<ChunkedModelInitResponse>(
-        `/ai-model/active/${modelType}/prepare-chunked`,
-        params
+        `/ai-model/active/${modelType}/prepare-chunked`
     );
 
     const initPayload = initResponse.data as unknown as ChunkedModelInitResponse;

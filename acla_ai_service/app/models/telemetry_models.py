@@ -705,7 +705,9 @@ class TelemetryFeatures:
             "Graphics_track_grip_status",
             "Graphics_current_tyre_set",
             "Graphics_is_valid_lap",
-            "time_delta_ms"
+            "time_delta_ms",
+            "Static_car_model",
+            "Static_track",
         ]
         
         

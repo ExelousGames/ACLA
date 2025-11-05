@@ -7,7 +7,6 @@ import { ChunkClientService } from '../../shared/chunk-service/chunk.service';
 import { ChunkData } from '../../shared/chunk-service/interfaces/chunk.interface';
 import { GridFSService, GRIDFS_BUCKETS } from '../gridfs/gridfs.service';
 import { ObjectId } from 'mongodb';
-import { promises } from 'dns';
 
 @Controller('ai-model')
 export class AiModelController {
@@ -24,12 +23,10 @@ export class AiModelController {
 
     @Get()
     async findAll(
-        @Query('trackName') trackName?: string,
-        @Query('carName') carName?: string,
         @Query('modelType') modelType?: string,
         @Query('isActive') isActive?: boolean
     ) {
-        return this.aiModelService.findAll({ trackName, carName, modelType, isActive });
+        return this.aiModelService.findAll({ modelType, isActive });
     }
 
     @Get(':id')
@@ -49,7 +46,7 @@ export class AiModelController {
                     _guidance: {
                         message: 'This model contains large data that cannot be returned in a single response.',
                         recommendedEndpoints: {
-                            prepareChunked: `/api/ai-model/active/${result.modelType}/prepare-chunked?trackName=${result.trackName}&carName=${result.carName}`,
+                            prepareChunked: `/api/ai-model/active/${result.modelType}/prepare-chunked`,
                             getChunk: '/api/ai-model/active/chunked-data/{sessionId}/{chunkIndex}'
                         },
                         steps: [
@@ -91,22 +88,18 @@ export class AiModelController {
     /**
      * Initialize chunked retrieval of active model data.
      * Returns the final structure with metadata and chunking information.
-     * @param modelType Required - The type of model to retrieve
-     * @param trackName Optional - The track name to filter by (query parameter)
-     * @param carName Optional - The car name to filter by (query parameter)
+    * @param modelType Required - The type of model to retrieve
      * @returns Final structure with metadata and chunking session info
      */
     @Get('active/:modelType/prepare-chunked')
     async initGetActiveModelData(
-        @Param('modelType') modelType: string,
-        @Query('trackName') trackName?: string,
-        @Query('carName') carName?: string
+        @Param('modelType') modelType: string
     ) {
-        console.log(`Initializing chunked model data - Track: ${trackName}, Car: ${carName}, Type: ${modelType}`);
+        console.log(`Initializing chunked model data - Type: ${modelType}`);
 
         try {
             // Get model metadata
-            const modelDoc = await this.aiModelService.getActiveModel(trackName, carName, modelType);
+            const modelDoc = await this.aiModelService.getActiveModel(modelType);
 
             if (!modelDoc) {
                 return {
@@ -137,7 +130,7 @@ export class AiModelController {
                 totalChunks: totalChunks,
                 chunkSize: chunkSize,
                 fileSize: fileSize,
-                filename: `${modelType}_${trackName}_${carName}`,
+                filename: `${modelType}`,
                 createdAt: Date.now()
             });
 
@@ -149,8 +142,6 @@ export class AiModelController {
                 data: {
                     // Model metadata (available immediately)
                     modelType: modelDoc.modelType,
-                    trackName: modelDoc.trackName,
-                    carName: modelDoc.carName,
                     isActive: modelDoc.isActive,
                     metadata: modelDoc.metadata || {},
 

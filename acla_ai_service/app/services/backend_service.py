@@ -620,33 +620,32 @@ class BackendService:
             except Exception:
                 pass
 
-    async def save_ai_model(self, 
-                           model_type: str,
-                           track_name: str,
-                           car_name: str,
-                           model_data: Dict[str, Any],
-                           metadata: Optional[Dict[str, Any]] = None,
-                           is_active: bool = True) -> Dict[str, Any]:
-        """Save AI model results to backend using chunked transfer
-        
+    async def save_ai_model(
+        self,
+        model_type: str,
+        model_data: Dict[str, Any],
+        metadata: Optional[Dict[str, Any]] = None,
+        is_active: bool = True
+    ) -> Dict[str, Any]:
+        """Save AI model results to backend using chunked transfer.
+
         Args:
             model_type: Type of the AI model (e.g., "tire_grip_analysis", "imitation_learning")
-            track_name: Name of the track the model is for
-            car_name: Name of the car the model is for
-            model_data: The serialized model data
+            model_data: The serialized model data payload
             metadata: Optional metadata containing model info and timestamps
             is_active: Whether this model should be set as active
         """
-        print(f"[INFO] Saving AI model results to backend: {model_type} for {track_name}/{car_name}")
-        logger.info(f"Saving AI model results to backend: {model_type} for {track_name}/{car_name}")
+
+        metadata = metadata or {}
+
+        print(f"[INFO] Saving AI model results to backend: {model_type}")
+        logger.info(f"Saving AI model results to backend: {model_type}")
 
         # Structure the data according to the specified format
         structured_data = {
             "modelType": model_type,
-            "trackName": track_name,
-            "carName": car_name,
             "modelData": model_data,
-            "metadata": metadata or {},
+            "metadata": metadata,
             "isActive": is_active
         }
 
@@ -666,7 +665,7 @@ class BackendService:
             raise
         return {"success": True}
 
-    async def initGetActiveModelData(self, trackName: Optional[str], carName: Optional[str], modelType: str) -> Dict[str, Any]:
+    async def initGetActiveModelData(self, modelType: str) -> Dict[str, Any]:
         """Initialize chunked retrieval of active model data from backend.
         
         New backend returns the complete structure with metadata immediately,
@@ -675,16 +674,6 @@ class BackendService:
         try:
             # Call the prepare-chunked endpoint to get the complete structure
             endpoint = f"ai-model/active/{modelType}/prepare-chunked"
-            
-            # Build query parameters
-            query_params = []
-            if trackName:
-                query_params.append(f"trackName={trackName}")
-            if carName:
-                query_params.append(f"carName={carName}")
-            
-            if query_params:
-                endpoint += "?" + "&".join(query_params)
             
             logger.info(f"🔗 Calling new backend endpoint: {endpoint}")
             response = await self.call_backend_function(endpoint, "GET")
@@ -738,7 +727,7 @@ class BackendService:
         
         return {"error": f"Failed to retrieve chunk after {max_retries} attempts: {last_error}"}
 
-    async def getCompleteActiveModelData(self, trackName: Optional[str], carName: Optional[str], modelType: str) -> ActiveModelData:
+    async def getCompleteActiveModelData(self, modelType: str) -> ActiveModelData:
         """Get complete active model data - simple and clean approach.
         
         1. Get structure with metadata immediately 
@@ -758,7 +747,7 @@ class BackendService:
         
         try:
             # Get the complete structure with metadata from backend
-            init_response = await self.initGetActiveModelData(trackName, carName, modelType)
+            init_response = await self.initGetActiveModelData(modelType)
             
             if not init_response.get("success", False):
                 error_msg = init_response.get("message", "Failed to initialize")
@@ -787,8 +776,6 @@ class BackendService:
             
             return ActiveModelData(
                 modelType=final_structure.get("modelType", modelType),
-                trackName=final_structure.get("trackName", trackName or ""),
-                carName=final_structure.get("carName", carName or ""),
                 isActive=final_structure.get("isActive", True),
                 metadata=final_structure.get("metadata", {}),
                 modelData=model_data["data"]

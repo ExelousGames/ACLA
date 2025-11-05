@@ -182,6 +182,7 @@ class TireGripAnalysisService:
         self._feature_names: List[str] = self._default_feature_names()
         self._slip_angle_unit: Optional[str] = None
         self._config_slip_converted: bool = False
+        self._car_model_vocab: Dict[str, float] = {"__unknown__": 0.0}
 
     # ------------------------------------------------------------------
     # Public API
@@ -294,6 +295,7 @@ class TireGripAnalysisService:
             "input_dim": self._input_dim,
             "feature_names": self._feature_names,
             "cache_size": int(self._feature_cache.shape[0]) if self._feature_cache is not None else 0,
+            "car_model_vocab": self._car_model_vocab,
             "serialized_timestamp": datetime.utcnow().isoformat(timespec="seconds")
         }
 
@@ -339,6 +341,13 @@ class TireGripAnalysisService:
             self._trained = bool(model_data.get("trained", True))
             self._feature_cache = None
             self._target_cache = None
+            vocab_payload = model_data.get("car_model_vocab")
+            if isinstance(vocab_payload, dict):
+                self._car_model_vocab = {str(key): float(value) for key, value in vocab_payload.items()}
+            else:
+                self._car_model_vocab = {"__unknown__": 0.0}
+            if "__unknown__" not in self._car_model_vocab:
+                self._car_model_vocab["__unknown__"] = 0.0
             unit = (getattr(self.config, "slip_angle_unit", "auto") or "auto").strip().lower()
             if unit in {"deg", "degree", "degrees"}:
                 self._slip_angle_unit = "deg"
@@ -396,6 +405,7 @@ class TireGripAnalysisService:
             "Physics_tyre_core_temp_front_right",
             "Physics_tyre_core_temp_rear_left",
             "Physics_tyre_core_temp_rear_right",
+            "Static_car_model",
             "abs_steer",
             "gas_times_speed",
             "brake_times_speed",
@@ -432,6 +442,7 @@ class TireGripAnalysisService:
             df = df_raw.fillna(0.0)
 
         self._ensure_slip_angle_unit(df)
+        self._encode_car_model(df)
 
         required_columns = set(self._feature_names + self._slip_columns() + self._longitudinal_slip_columns())
         required_columns.add("Physics_speed_kmh")
@@ -555,6 +566,28 @@ class TireGripAnalysisService:
         longitudinal_ratio = longitudinal_slip_ratio
         combined = np.sqrt(lateral_ratio ** 2 + longitudinal_ratio ** 2)
         return np.clip(combined, 0.0, 2.0)
+
+    def _encode_car_model(self, df: pd.DataFrame) -> None:
+        column = "Static_car_model"
+        unknown_value = self._car_model_vocab.get("__unknown__", 0.0)
+
+        if column not in df.columns:
+            df[column] = unknown_value
+            return
+
+        series = df[column]
+        if pd.api.types.is_numeric_dtype(series):
+            df[column] = pd.to_numeric(series, errors="coerce").fillna(unknown_value)
+            return
+
+        normalized = series.fillna("").astype(str).str.strip()
+        normalized = normalized.replace({"": "__unknown__"})
+
+        for value in normalized.unique():
+            if value not in self._car_model_vocab:
+                self._car_model_vocab[value] = float(len(self._car_model_vocab))
+
+        df[column] = normalized.map(self._car_model_vocab).astype(float)
 
     def _build_feature_matrix(self, df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
         work = df.copy()

@@ -389,16 +389,15 @@ class AIService:
     async def track_detail_for_guide(self, trackName: str = None) -> Dict[str, Any]:
         
         try:
-            # Call the async method with await
-            response = await self.backend_service.getCompleteActiveModelData(trackName, None, modelType='track_corner_analysis')
+            # Retrieve the active track corner analysis model
+            response = await self.backend_service.getCompleteActiveModelData(modelType='track_corner_analysis')
 
-            # Extract the actual model data from the response
-            track_corner_data = response.get("data")
-            if track_corner_data is None:
+            track_corner_payload = response.modelData
+            if not track_corner_payload:
                 raise Exception("No model data found in the response")
 
-            # Now you can access the data properly
-            prediction_result = await self.telemetryMLService.predict_optimal_cornering(trackName, track_corner_data.get("modelData"))
+            # Run prediction using the assembled model payload
+            prediction_result = await self.telemetryMLService.predict_optimal_cornering(trackName, track_corner_payload)
 
             guidance_instructions = {
                 "task": "follow the json_structure to generate racing guidance sentences for car operation techniques in JSON format",
@@ -468,6 +467,6 @@ class AIService:
             
             # Side products (prefixed with _) for external use
             '_guidance_enabled': True,
-            '_prediction_result': prediction_result.get("predictions", {}),
+            '_prediction_result': prediction_result.get("predictions", {}) if isinstance(prediction_result, dict) else {},
             '_skip_openai_processing': True,  # Special flag to skip second OpenAI query if needed
         }

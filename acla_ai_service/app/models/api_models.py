@@ -48,19 +48,16 @@ class HealthResponse(BaseModel):
  
     
 class AiModelDto(BaseModel):
-    trackName: str
-    carName: str
+    """Payload used when persisting AI models to the backend."""
     modelType: str
     modelData: Dict[str, Any]
-    metadata: Dict[str, Any]
+    metadata: Optional[Dict[str, Any]] = None
     isActive: bool
 
 
 class ActiveModelData(BaseModel):
     """Complete active model data structure returned by getCompleteActiveModelData"""
     modelType: str
-    trackName: str
-    carName: str
     isActive: bool
     metadata: Dict[str, Any]
     modelData: Dict[str, Any]
