@@ -152,22 +152,81 @@ class Full_dataset_TelemetryMLService:
         print("Caching Strategy: Model instances cached directly")
         print("="*60 + "\n")
 
-    async def _generate_llm_prompt_dataset(self, segments_cache_key: str, track_name: str) -> Tuple[Path, Dict[str, Any]]:
+    async def _generate_llm_prompt_dataset(
+        self,
+        segments_cache_key: str,
+        track_name: str,
+        *,
+        annotations: Optional[Dict[str, Dict[str, Any]]] = None,
+        output_path: Optional[Path] = None,
+        shuffle: bool = True,
+    ) -> Tuple[Path, Dict[str, Any]]:
         """Build the LLM prompt dataset asynchronously from cached segments."""
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         dataset_filename = f"{track_name}_segments_{timestamp}.jsonl"
-        dataset_path = self.llm_dataset_directory / dataset_filename
+        dataset_path = Path(output_path) if output_path else self.llm_dataset_directory / dataset_filename
 
         def _build_dataset() -> Tuple[Path, Dict[str, Any]]:
             stats = self.prompt_builder.build_from_cached_segments(
                 segments_cache_key=segments_cache_key,
                 output_path=dataset_path,
+                annotations=annotations,
+                shuffle=shuffle,
             )
-            return dataset_path, stats.to_dict()
+            dataset_summary = self._summarize_dataset(dataset_path)
+            stats_dict = stats.to_dict()
+            stats_dict.update(
+                {
+                    "output_path": str(dataset_path),
+                    "total_examples": dataset_summary.get("total_examples", stats_dict.get("windows_kept", 0)),
+                    "annotated_examples": dataset_summary.get("annotated_examples", 0),
+                    "annotation_ratio": dataset_summary.get("annotation_ratio", 0.0),
+                }
+            )
+            return dataset_path, stats_dict
 
         dataset_path_result, stats_dict = await asyncio.to_thread(_build_dataset)
         return dataset_path_result, stats_dict
+
+    def _summarize_dataset(self, dataset_path: Path) -> Dict[str, Any]:
+        """Collect lightweight statistics for an existing dataset file."""
+
+        dataset_path = Path(dataset_path)
+        summary = {
+            "dataset_path": str(dataset_path),
+            "total_examples": 0,
+            "annotated_examples": 0,
+            "annotation_ratio": 0.0,
+        }
+
+        if not dataset_path.exists():
+            return summary
+
+        total_examples = 0
+        annotated_examples = 0
+        try:
+            with dataset_path.open("r", encoding="utf-8") as jsonl_file:
+                for line in jsonl_file:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    total_examples += 1
+                    try:
+                        record = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    metadata = record.get("metadata", {})
+                    if metadata.get("annotation_complete"):
+                        annotated_examples += 1
+        except Exception as error:
+            print(f"[WARNING] Failed to summarize dataset {dataset_path}: {error}")
+            return summary
+
+        summary["total_examples"] = total_examples
+        summary["annotated_examples"] = annotated_examples
+        summary["annotation_ratio"] = (annotated_examples / total_examples) if total_examples else 0.0
+        return summary
 
     def _train_local_llm_sync(self, dataset_path: Path, track_name: str) -> Dict[str, Any]:
         """Synchronous helper that fine-tunes the local LLM and returns metrics."""
@@ -197,6 +256,63 @@ class Full_dataset_TelemetryMLService:
         """Async wrapper for LLM fine-tuning."""
 
         return await asyncio.to_thread(self._train_local_llm_sync, dataset_path, track_name)
+
+    async def _train_llm_and_persist(
+        self,
+        dataset_path: Path,
+        track_name: str,
+        dataset_stats: Optional[Dict[str, Any]] = None,
+        cleanup_dataset_file: bool = True,
+    ) -> Dict[str, Any]:
+        """Fine-tune the LLM from an existing dataset and persist results."""
+
+        dataset_path = Path(dataset_path)
+        dataset_stats = dataset_stats or self._summarize_dataset(dataset_path)
+
+        training_artifacts = await self._train_local_llm(
+            dataset_path=dataset_path,
+            track_name=track_name,
+        )
+
+        serialized_adapter = training_artifacts["serialized_adapter"]
+        adapter_dir: Path = training_artifacts["adapter_dir"]
+        metrics = training_artifacts["metrics"]
+
+        metadata_payload = {
+            "training_metrics": metrics,
+            "dataset_stats": dataset_stats,
+            "adapter_directory": adapter_dir.name,
+            "llm_config": training_artifacts["config"],
+            "generated_dataset": str(dataset_path),
+            "training_timestamp": datetime.now().isoformat(),
+        }
+
+        print(
+            f"[INFO] LLM fine-tuning complete. Saving adapter '{adapter_dir.name}' to backend for track {track_name}"
+        )
+
+        await backend_service.save_ai_model(
+            model_type="llm_guidance",
+            track_name=track_name,
+            car_name="AllCars",
+            model_data=serialized_adapter,
+            metadata=metadata_payload,
+            is_active=True,
+        )
+
+        if cleanup_dataset_file:
+            try:
+                dataset_path.unlink(missing_ok=True)
+            except Exception as cleanup_error:
+                print(f"[WARNING] Failed to delete dataset file {dataset_path}: {cleanup_error}")
+
+        return {
+            "success": True,
+            "training_metrics": metrics,
+            "dataset_stats": dataset_stats,
+            "adapter_directory": adapter_dir.name,
+            "dataset_path": str(dataset_path),
+        }
 
     def _serialize_adapter_directory(self, adapter_dir: Path) -> Dict[str, Any]:
         """Zip the adapter directory and produce a backend-friendly payload."""
@@ -752,11 +868,48 @@ class Full_dataset_TelemetryMLService:
                 "error_type": type(e).__name__,
             }
 
-    async def StartImitateExpertPipeline(self, trackName: str):
-        
-        """
-    returns: success, llm_training, expert_imitation_trained    , contextual_data_enriched, comparison_results, track_name
-        """
+    async def StartImitateExpertPipeline(
+        self,
+        trackName: str,
+        *,
+        pipeline_mode: str = "full",
+        dataset_path: Optional[Path] = None,
+        annotation_map: Optional[Dict[str, Dict[str, Any]]] = None,
+        cleanup_dataset_file: Optional[bool] = None,
+        shuffle_dataset: bool = True,
+    ):
+
+        """Execute the telemetry pipeline with configurable annotation/training phases."""
+
+        mode = (pipeline_mode or "full").lower()
+
+        if mode == "train-only":
+            if dataset_path is None:
+                raise ValueError("dataset_path is required when pipeline_mode='train-only'")
+
+            dataset_path = Path(dataset_path)
+            dataset_stats = self._summarize_dataset(dataset_path)
+            training_results = await self._train_llm_and_persist(
+                dataset_path=dataset_path,
+                track_name=trackName,
+                dataset_stats=dataset_stats,
+                cleanup_dataset_file=cleanup_dataset_file if cleanup_dataset_file is not None else False,
+            )
+
+            return {
+                "success": training_results.get("success", False),
+                "llm_training": training_results,
+                "track_name": trackName,
+                "mode": mode,
+                "dataset_path": str(dataset_path),
+                "dataset_stats": dataset_stats,
+            }
+
+        training_required = mode == "full"
+        cleanup_after_training = cleanup_dataset_file if cleanup_dataset_file is not None else training_required
+        dataset_path_result: Optional[Path] = None
+        dataset_stats: Optional[Dict[str, Any]] = None
+        annotation_map = annotation_map or {}
         
         self._print_section_divider("STREAMING TELEMETRY DATA FROM BACKEND DIRECTLY TO CACHE")
         
@@ -806,7 +959,7 @@ class Full_dataset_TelemetryMLService:
 
         segment_length = 500  # Nominal segment length used for context window sizing
         segments_cache_key = None
-        training_results = {"success": False, "error": "Training not started"}  # Initialize with failure
+        training_results: Optional[Dict[str, Any]] = None
 
         try:
             # enrich data - now using cache-based approach to avoid memory overflow
@@ -816,12 +969,25 @@ class Full_dataset_TelemetryMLService:
             # remove any unused variable to this point to free memory
             del top_laps_telemetry_list
             
-            # train LLM guidance model
-            self._print_section_divider("TRAINING LOCAL LLM GUIDANCE MODEL")
-            training_results = await self._train_llm_guidance_model(
+            # generate dataset for LLM guidance
+            dataset_path_result, dataset_stats = await self._generate_llm_prompt_dataset(
                 segments_cache_key=segments_cache_key,
                 track_name=trackName,
+                annotations=annotation_map,
+                shuffle=shuffle_dataset,
             )
+            print(
+                f"[INFO] LLM dataset ready at {dataset_path_result} (mode={mode})."
+            )
+
+            if training_required:
+                self._print_section_divider("TRAINING LOCAL LLM GUIDANCE MODEL")
+                training_results = await self._train_llm_and_persist(
+                    dataset_path=dataset_path_result,
+                    track_name=trackName,
+                    dataset_stats=dataset_stats,
+                    cleanup_dataset_file=cleanup_after_training,
+                )
             
         finally:
             # Clean up cached data even if processing fails
@@ -838,17 +1004,32 @@ class Full_dataset_TelemetryMLService:
                     print(f"[INFO] Cleaned up cached segments data: {segments_cache_key}")
                 except Exception as e:
                     print(f"[WARNING] Failed to clean up cached segments: {str(e)}")
-        
-        # Ensure LLM training completed successfully before returning
-        if not training_results or not training_results.get("success"):
-            raise Exception("LLM training failed - no valid results produced")
-        
-        self._print_section_divider("LLM TRAINING COMPLETED")
-        return {
-            "success": True,
-            "llm_training": training_results,
-            "track_name": trackName
-        }
+
+        if mode == "annotate":
+            self._print_section_divider("DATASET READY FOR ANNOTATION")
+            return {
+                "success": True,
+                "mode": mode,
+                "track_name": trackName,
+                "dataset_path": str(dataset_path_result) if dataset_path_result else None,
+                "dataset_stats": dataset_stats,
+            }
+
+        if training_required:
+            if not training_results or not training_results.get("success"):
+                raise Exception("LLM training failed - no valid results produced")
+
+            self._print_section_divider("LLM TRAINING COMPLETED")
+            return {
+                "success": True,
+                "llm_training": training_results,
+                "track_name": trackName,
+                "mode": mode,
+                "dataset_path": str(dataset_path_result) if dataset_path_result else None,
+                "dataset_stats": dataset_stats,
+            }
+
+        raise ValueError(f"Unsupported pipeline mode: {pipeline_mode}")
 
     def process_sessions_streaming(self, sessions_data: List[Dict[str, Any]], 
                                  chunk_size: int = 5000) -> Iterator[List[Dict[str, Any]]]:
@@ -1171,46 +1352,14 @@ class Full_dataset_TelemetryMLService:
                 f"[INFO] Generated LLM prompt dataset at {dataset_path} with stats: {json.dumps(dataset_stats, indent=2)}"
             )
 
-            training_artifacts = await self._train_local_llm(
+            training_results = await self._train_llm_and_persist(
                 dataset_path=dataset_path,
                 track_name=track_name,
+                dataset_stats=dataset_stats,
+                cleanup_dataset_file=True,
             )
 
-            serialized_adapter = training_artifacts["serialized_adapter"]
-            adapter_dir: Path = training_artifacts["adapter_dir"]
-            metrics = training_artifacts["metrics"]
-
-            print(
-                f"[INFO] LLM fine-tuning complete. Saving adapter '{adapter_dir.name}' to backend for track {track_name}"
-            )
-
-            await backend_service.save_ai_model(
-                model_type="llm_guidance",
-                track_name=track_name,
-                car_name="AllCars",
-                model_data=serialized_adapter,
-                metadata={
-                    "training_metrics": metrics,
-                    "dataset_stats": dataset_stats,
-                    "adapter_directory": adapter_dir.name,
-                    "llm_config": training_artifacts["config"],
-                    "generated_dataset": str(dataset_path),
-                    "training_timestamp": datetime.now().isoformat(),
-                },
-                is_active=True,
-            )
-
-            try:
-                dataset_path.unlink(missing_ok=True)
-            except Exception as cleanup_error:
-                print(f"[WARNING] Failed to delete temporary dataset file {dataset_path}: {cleanup_error}")
-
-            return {
-                "success": True,
-                "training_metrics": metrics,
-                "dataset_stats": dataset_stats,
-                "adapter_directory": adapter_dir.name,
-            }
+            return training_results
 
         except Exception as error:
             print(f"[ERROR] LLM guidance training failed: {error}")

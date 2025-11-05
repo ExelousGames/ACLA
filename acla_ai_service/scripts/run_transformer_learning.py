@@ -26,13 +26,17 @@ Example:
     python run_transformer_learning.py brands_hatch
 """
 
+import argparse
 import asyncio
+import os
 from pathlib import Path
+import subprocess
 import sys
 import time
 from datetime import datetime
 import io
 from contextlib import redirect_stdout, redirect_stderr
+from typing import List, Optional
 
 # Add the parent directory to the Python path to import modules
 current_dir = Path(__file__).parent
@@ -48,26 +52,109 @@ SUPPORTED_TRACKS = [
     'imola', 'hungaroring', 'paul_ricard', 'barcelona', 'zandvoort'
 ]
 
-async def main():
-    """
-    Main entry point for the Expert Imitation Transformer Learning Pipeline.
-    
-    This pipeline:
-    1. Fetches telemetry data from the backend
-    2. Processes and filters top performance laps as expert demonstrations
-    3. Enriches data with contextual features (corners, tire grip, expert gaps)
-    4. Trains a transformer model to learn non-expert driver progression
-    5. Saves the trained model for future use
-    """
+
+def parse_arguments(argv: Optional[List[str]] = None) -> argparse.Namespace:
+    """Parse CLI arguments for the transformer learning pipeline."""
+
+    default_app = Path(__file__).parent.parent / 'ui' / 'telemetry_prompt_annotation_app.py'
+
+    parser = argparse.ArgumentParser(
+        description="Expert imitation transformer pipeline with optional annotation UI"
+    )
+    parser.add_argument('track_name', nargs='?', default=DEFAULT_TRACK, help='Track name to process')
+    parser.add_argument(
+        '--mode',
+        choices=['both', 'annotate', 'train'],
+        default='both',
+        help='Pipeline mode: annotate only, train using existing annotations, or both sequentially.',
+    )
+    parser.add_argument(
+        '--dataset-path',
+        type=Path,
+        help='Existing prompt dataset JSONL file to reuse for training mode.',
+    )
+    parser.add_argument(
+        '--skip-ui',
+        action='store_true',
+        help='Skip launching the Streamlit annotation UI even in annotation modes.',
+    )
+    parser.add_argument(
+        '--ui-port',
+        type=int,
+        default=None,
+        help='Optional port override for the Streamlit UI.',
+    )
+    parser.add_argument(
+        '--ui-address',
+        type=str,
+        default=None,
+        help='Optional address override for the Streamlit UI (default uses Streamlit configuration).',
+    )
+    parser.add_argument(
+        '--streamlit-app',
+        type=Path,
+        default=default_app,
+        help='Path to the Streamlit annotation application.',
+    )
+    parser.add_argument(
+        '--keep-dataset',
+        action='store_true',
+        help='Do not delete the dataset file after training completes.',
+    )
+    parser.add_argument(
+        '--no-shuffle',
+        action='store_true',
+        help='Disable shuffling of windows when generating the dataset.',
+    )
+    return parser.parse_args(argv)
+
+
+async def launch_annotation_ui(
+    app_path: Path,
+    dataset_path: Path,
+    dataset_dir: Path,
+    *,
+    address: Optional[str] = None,
+    port: Optional[int] = None,
+) -> None:
+    """Launch the Streamlit annotation UI and wait for it to exit."""
+
+    cmd = [
+        'streamlit',
+        'run',
+        str(app_path),
+        '--',
+        '--dataset',
+        str(dataset_path),
+        '--dataset-dir',
+        str(dataset_dir),
+    ]
+
+    env = os.environ.copy()
+    if address:
+        env['STREAMLIT_SERVER_ADDRESS'] = address
+    if port:
+        env['STREAMLIT_SERVER_PORT'] = str(port)
+
+    def _run_streamlit() -> None:
+        completed = subprocess.run(cmd, env=env)
+        if completed.returncode not in (0, 130):  # 130 == interrupted (Ctrl+C)
+            raise RuntimeError(f"Streamlit exited with code {completed.returncode}")
+
+    await asyncio.to_thread(_run_streamlit)
+
+async def main(args: argparse.Namespace):
+    """Main entry point for the transformer learning pipeline with flexible modes."""
+
     start_time = time.time()
-    
+
     # Create output directory if it doesn't exist
     output_dir = current_dir / 'output'
     output_dir.mkdir(exist_ok=True)
-    
+
     # Generate timestamped log filename
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    track_name = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_TRACK
+    track_name = args.track_name.lower()
     log_filename = output_dir / f'transformer_learning_{track_name}_{timestamp}.log'
     
     # Create a custom stdout/stderr that writes to both file and console
@@ -118,23 +205,98 @@ async def main():
                 print("    Continuing anyway - track name will be passed to backend as-is.")
             
             print("-" * 40)
-            
-            # Execute the pipeline with progress tracking
-            print("⏳ Executing transformer learning pipeline...")
-            print("   Phase 1: Fetching telemetry data from backend...")
-            print("   Phase 2: Processing and filtering expert demonstrations...")
-            print("   Phase 3: Enriching contextual features...")
-            print("   Phase 4: Training transformer model...")
-            print("   Phase 5: Evaluating and saving model...")
+
+            print("⏳ Executing pipeline with mode:", args.mode)
+            if args.mode in ("annotate", "both"):
+                print("   • Preparing dataset for annotation")
+            if args.mode in ("both", "train"):
+                print("   • Training transformer model")
             print("-" * 40)
-            
-            results = await ml_service.StartImitateExpertPipeline(track_name)
-            
-            # Calculate execution time
+
+            annotation_result = None
+            training_result = None
+            dataset_path: Optional[Path] = args.dataset_path
+
+            if args.mode in ("annotate", "both"):
+                annotation_result = await ml_service.StartImitateExpertPipeline(
+                    trackName=track_name,
+                    pipeline_mode="annotate",
+                    shuffle_dataset=not args.no_shuffle,
+                )
+
+                dataset_path_value = annotation_result.get("dataset_path")
+                if dataset_path_value:
+                    dataset_path = Path(dataset_path_value)
+                    print(f"[INFO] Dataset created at {dataset_path}")
+                else:
+                    raise RuntimeError("Dataset path missing from annotation stage results")
+
+                if dataset_path and not args.skip_ui:
+                    app_path = args.streamlit_app
+                    if not app_path.exists():
+                        raise FileNotFoundError(f"Streamlit app not found at {app_path}")
+
+                    print("[INFO] Launching Streamlit annotation UI. Close the UI when finished annotating.")
+                    await launch_annotation_ui(
+                        app_path=app_path,
+                        dataset_path=dataset_path,
+                        dataset_dir=dataset_path.parent,
+                        address=args.ui_address,
+                        port=args.ui_port,
+                    )
+                    refreshed_stats = ml_service._summarize_dataset(dataset_path)
+                    annotation_result["dataset_stats"] = refreshed_stats
+                else:
+                    print("[INFO] Skipping annotation UI launch (per configuration).")
+
+                if args.mode == "annotate":
+                    execution_time = time.time() - start_time
+                    final_results = {
+                        "success": True,
+                        "track_name": track_name,
+                        "mode": "annotate",
+                        "annotation": annotation_result,
+                    }
+                    display_results(final_results, execution_time)
+                    print(f"\n✅ All output has been saved to: {log_filename}")
+                    return
+
+            if args.mode in ("both", "train"):
+                if dataset_path is None:
+                    raise ValueError(
+                        "Dataset path required for training. Provide --dataset-path or run annotate mode first."
+                    )
+
+                if args.mode == "train" and annotation_result is None:
+                    annotation_result = {
+                        "dataset_path": str(dataset_path),
+                        "dataset_stats": ml_service._summarize_dataset(dataset_path),
+                        "mode": "train",
+                        "success": True,
+                    }
+
+                training_result = await ml_service.StartImitateExpertPipeline(
+                    trackName=track_name,
+                    pipeline_mode="train-only",
+                    dataset_path=dataset_path,
+                    cleanup_dataset_file=not args.keep_dataset,
+                )
+
             execution_time = time.time() - start_time
-            
-            # Display comprehensive results
-            display_results(results, execution_time)
+
+            pipeline_success = True
+            if training_result is not None:
+                pipeline_success = bool(training_result.get("success", False))
+
+            final_results = {
+                "success": pipeline_success,
+                "track_name": track_name,
+                "mode": args.mode,
+                "annotation": annotation_result,
+                "training": training_result,
+            }
+
+            display_results(final_results, execution_time)
             
             print(f"\n✅ All output has been saved to: {log_filename}")
             
@@ -175,9 +337,25 @@ def display_results(results, execution_time: float):
     
     print("\n✅ Pipeline completed successfully!")
     print(f"🏁 Track: {results.get('track_name', 'Unknown')}")
-    
-    # LLM training results summary
-    llm_results = results.get('llm_training', {})
+
+    annotation_info = results.get('annotation') or {}
+    training_wrapper = results.get('training') or {}
+
+    dataset_path = annotation_info.get('dataset_path') or training_wrapper.get('dataset_path')
+    dataset_stats = annotation_info.get('dataset_stats') or training_wrapper.get('dataset_stats') or {}
+
+    if dataset_path or dataset_stats:
+        print("\n📦 DATASET SUMMARY:")
+        print("-" * 40)
+        if dataset_path:
+            print(f"  • Dataset file: {dataset_path}")
+        if dataset_stats:
+            for key, value in dataset_stats.items():
+                if key == 'dataset_path':
+                    continue
+                print(f"  • {key.replace('_', ' ').title()}: {value}")
+
+    llm_results = training_wrapper.get('llm_training') if training_wrapper else None
     if llm_results and llm_results.get('success'):
         print("\n🤖 LOCAL LLM FINE-TUNING:")
         print("-" * 40)
@@ -186,12 +364,6 @@ def display_results(results, execution_time: float):
         if training_metrics:
             print("  • Training metrics:")
             for key, value in training_metrics.items():
-                print(f"    - {key}: {value}")
-
-        dataset_stats = llm_results.get('dataset_stats', {})
-        if dataset_stats:
-            print("  • Dataset stats:")
-            for key, value in dataset_stats.items():
                 print(f"    - {key}: {value}")
 
         adapter_dir = llm_results.get('adapter_directory')
@@ -203,18 +375,21 @@ def display_results(results, execution_time: float):
         print("  • ✅ LoRA adapter successfully saved to backend")
         print("  • ✅ Model ready for telemetry guidance inference")
 
-    else:
-        llm_error = llm_results.get('error', 'Unknown error') if llm_results else 'No LLM results available'
-        print(f"\n❌ LLM TRAINING FAILED: {llm_error}")
+    elif training_wrapper:
+        error_message = training_wrapper.get('error') or 'No training metrics available'
+        print(f"\n❌ LLM TRAINING FAILED: {error_message}")
         print("-" * 80)
     
     print("\n" + "=" * 80)
     print("🏆 PIPELINE EXECUTION COMPLETED")
     print("=" * 80)
     print("📝 Next Steps:")
-    print("  • Model is ready for real-time driving assistance")
-    print("  • Use the saved model for non-expert driver progression predictions")
-    print("  • Monitor model performance in live racing scenarios")
+    if llm_results and llm_results.get('success'):
+        print("  • Model is ready for real-time driving assistance")
+        print("  • Use the saved model for non-expert driver progression predictions")
+        print("  • Monitor model performance in live racing scenarios")
+    else:
+        print("  • Review dataset annotations and re-run training when ready")
 
 def print_usage():
     """Print usage information for the script"""
@@ -268,18 +443,13 @@ def validate_requirements():
     return True
 
 if __name__ == "__main__":
-    # Check for help flag
-    if len(sys.argv) > 1 and sys.argv[1] in ['-h', '--help', 'help']:
-        print_usage()
-        sys.exit(0)
-    
-    # Validate requirements
+    cli_args = parse_arguments(sys.argv[1:])
+
     if not validate_requirements():
         sys.exit(1)
-    
-    # Run the main pipeline
+
     try:
-        asyncio.run(main())
+        asyncio.run(main(cli_args))
     except KeyboardInterrupt:
         print("\n⚠️  Script interrupted by user")
         sys.exit(0)

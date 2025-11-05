@@ -82,6 +82,7 @@ class TelemetryPromptDatasetBuilder:
         self.data_cache = data_cache or training_cache
         self.config = config or PromptBuilderConfig()
         self._rng = random.Random(self.config.random_seed)
+        self._window_counter = 0
 
     # ------------------------------------------------------------------
     # Public API
@@ -91,6 +92,7 @@ class TelemetryPromptDatasetBuilder:
         segments_cache_key: str,
         output_path: Path,
         *,
+        annotations: Optional[Dict[str, Dict[str, Any]]] = None,
         shuffle: bool = True,
     ) -> DatasetBuildStats:
         """Generate an instruction-tuning dataset from cached segments.
@@ -98,6 +100,7 @@ class TelemetryPromptDatasetBuilder:
         Args:
             segments_cache_key: Cache key that stores enriched transformer segments.
             output_path: Destination JSONL file path; parent directory is created.
+            annotations: Optional mapping of window_id -> annotation payload.
             shuffle: If True, windows are shuffled before writing to disk.
 
         Returns:
@@ -106,6 +109,7 @@ class TelemetryPromptDatasetBuilder:
 
         stats = DatasetBuildStats()
         windows: List[Dict[str, Any]] = []
+        self._window_counter = 0
 
         chunk_iterator = self.data_cache.get_cached_data_chunks(segments_cache_key)
         for chunk_index, chunk_df in enumerate(chunk_iterator):
@@ -113,12 +117,12 @@ class TelemetryPromptDatasetBuilder:
                 continue
 
             chunk_records = chunk_df.to_dict("records")
-            for record in chunk_records:
+            for record_index, record in enumerate(chunk_records):
                 segments = record.get("data")
                 if not isinstance(segments, list):
                     continue
 
-                for segment in segments:
+                for segment_index, segment in enumerate(segments):
                     stats.segments_processed += 1
                     timesteps = self._extract_timesteps(segment)
 
@@ -139,7 +143,27 @@ class TelemetryPromptDatasetBuilder:
                             stats.skipped_low_variance += 1
                             continue
 
-                        entry = self._build_dataset_entry(context_slice, future_slice)
+                        window_id = self._next_window_id(
+                            chunk_index=chunk_index,
+                            record_index=record_index,
+                            segment_index=segment_index,
+                            start_index=start_index,
+                        )
+                        window_info = {
+                            "window_id": window_id,
+                            "chunk_index": chunk_index,
+                            "record_index": record_index,
+                            "segment_index": segment_index,
+                            "start_index": start_index,
+                        }
+                        annotation_payload = annotations.get(window_id) if annotations else None
+
+                        entry = self._build_dataset_entry(
+                            context_slice,
+                            future_slice,
+                            window_info,
+                            annotation_payload,
+                        )
                         if entry:
                             windows.append(entry)
                             stats.windows_kept += 1
@@ -181,6 +205,8 @@ class TelemetryPromptDatasetBuilder:
         self,
         context_timesteps: Sequence[Dict[str, Any]],
         future_timesteps: Sequence[Dict[str, Any]],
+        window_info: Dict[str, Any],
+        annotation: Optional[Dict[str, Any]] = None,
     ) -> Optional[Dict[str, Any]]:
         context_payload = self._format_timesteps(context_timesteps)
         future_payload = self._format_timesteps(future_timesteps)
@@ -188,12 +214,17 @@ class TelemetryPromptDatasetBuilder:
         if not context_payload or not future_payload:
             return None
 
-        partial_note = self._generate_partial_human_note(context_timesteps)
-        explanation = self._generate_future_explanation(context_timesteps, future_timesteps)
+        annotation = annotation or {}
+        human_note = annotation.get("human_note") or annotation.get("partial_note") or ""
+        explanation = (
+            annotation.get("assistant_explanation")
+            or annotation.get("explanation")
+            or ""
+        )
 
         user_content = (
             "Task: Forecast telemetry and continue the coaching note.\n"
-            f"Human note (partial): {partial_note}\n\n"
+            f"Human note (partial): {human_note}\n\n"
             f"Recent telemetry window (last {self.config.context_steps} steps):\n"
             f"{json.dumps(context_payload, indent=2, ensure_ascii=False)}\n\n"
             f"Provide the next {self.config.prediction_steps} telemetry steps in JSON "
@@ -205,14 +236,57 @@ class TelemetryPromptDatasetBuilder:
             "explanation": explanation,
         }
 
+        metadata = {
+            "window_id": window_info.get("window_id"),
+            "annotation": {
+                "human_note": human_note,
+                "assistant_explanation": explanation,
+                "updated_at": annotation.get("updated_at") if annotation else None,
+            },
+            "source_indices": {
+                "chunk_index": window_info.get("chunk_index"),
+                "record_index": window_info.get("record_index"),
+                "segment_index": window_info.get("segment_index"),
+                "start_index": window_info.get("start_index"),
+            },
+            "config": {
+                "context_steps": self.config.context_steps,
+                "prediction_steps": self.config.prediction_steps,
+                "telemetry_features": list(self.config.telemetry_features),
+            },
+            "annotation_complete": bool(human_note or explanation),
+        }
+
         entry = {
             "messages": [
                 {"role": "system", "content": self.config.system_prompt},
                 {"role": "user", "content": user_content},
                 {"role": "assistant", "content": json.dumps(assistant_payload, ensure_ascii=False)},
-            ]
+            ],
+            "metadata": metadata,
+            "window": {
+                "context": context_payload,
+                "future": future_payload,
+            },
         }
         return entry
+
+    def _next_window_id(
+        self,
+        *,
+        chunk_index: int,
+        record_index: int,
+        segment_index: int,
+        start_index: int,
+    ) -> str:
+        """Generate a reproducible identifier for each sliding window."""
+
+        window_id = (
+            f"chunk{chunk_index:04d}-record{record_index:05d}-segment{segment_index:04d}-start{start_index:05d}-"
+            f"window{self._window_counter:07d}"
+        )
+        self._window_counter += 1
+        return window_id
 
     def _format_timesteps(self, timesteps: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
         formatted: List[Dict[str, Any]] = []
@@ -239,68 +313,6 @@ class TelemetryPromptDatasetBuilder:
         """Public helper for formatting timesteps consistent with the dataset builder."""
 
         return self._format_timesteps(timesteps)
-
-    def _generate_partial_human_note(self, context_timesteps: Sequence[Dict[str, Any]]) -> str:
-        last_step = context_timesteps[-1]
-        speed = self._coerce_float(last_step.get("Physics_speed_kmh"))
-        brake = self._coerce_float(last_step.get("Physics_brake"))
-        gas = self._coerce_float(last_step.get("Physics_gas"))
-        steer = self._coerce_float(last_step.get("Physics_steer_angle"))
-        delta = self._coerce_float(last_step.get("Graphics_delta_lap_time"))
-
-        phrases: List[str] = []
-        if brake > 0.7:
-            phrases.append("heavy brake entry")
-        elif gas > 0.7:
-            phrases.append("strong throttle push")
-        else:
-            phrases.append("balanced pedal input")
-
-        if abs(steer) > 0.45:
-            direction = "left" if steer > 0 else "right"
-            phrases.append(f"aggressive turn to the {direction}")
-        else:
-            phrases.append("mid-corner stability focus")
-
-        if delta > 0.05:
-            phrases.append("losing time to target lap ...")
-        elif delta < -0.05:
-            phrases.append("gaining time relative to delta ...")
-        else:
-            phrases.append("matching reference pace ...")
-
-        if speed > 200:
-            phrases.append("approaching high-speed zone ...")
-        elif speed < 80:
-            phrases.append("car slowed for apex ...")
-
-        return "Coach observation (partial): " + ", ".join(phrases)
-
-    def _generate_future_explanation(
-        self,
-        context_timesteps: Sequence[Dict[str, Any]],
-        future_timesteps: Sequence[Dict[str, Any]],
-    ) -> str:
-        last_context = context_timesteps[-1]
-        first_future = future_timesteps[0]
-        final_future = future_timesteps[-1]
-
-        speed_change = self._describe_delta(
-            last_context.get("Physics_speed_kmh"), final_future.get("Physics_speed_kmh"), "speed"
-        )
-        brake_change = self._describe_delta(
-            last_context.get("Physics_brake"), first_future.get("Physics_brake"), "brake input"
-        )
-        steer_change = self._describe_delta(
-            last_context.get("Physics_steer_angle"), first_future.get("Physics_steer_angle"), "steering"
-        )
-
-        notes = [speed_change, brake_change, steer_change]
-        notes = [note for note in notes if note]
-        if not notes:
-            notes.append("maintain current attitude while smoothing throttle application")
-
-        return "; ".join(notes)
 
     # ------------------------------------------------------------------
     # Utility helpers
@@ -353,21 +365,3 @@ class TelemetryPromptDatasetBuilder:
 
         variances = matrix.var(axis=0)
         return bool(np.any(variances > self.config.min_required_std))
-
-    def _describe_delta(self, start_value: Any, end_value: Any, label: str) -> Optional[str]:
-        start = self._coerce_float(start_value)
-        end = self._coerce_float(end_value)
-        delta = end - start
-
-        if abs(delta) < 0.01:
-            return None
-
-        direction = "increase" if delta > 0 else "decrease"
-        magnitude = abs(delta)
-        if label == "speed":
-            return f"expect {direction} in speed by {magnitude:.1f} km/h"
-        if label == "brake input":
-            return f"anticipate {direction} in brake pedal to {end:.2f}"
-        if label == "steering":
-            return f"steering will {direction} towards {end:.2f}"
-        return f"{label} change of {delta:.2f}"

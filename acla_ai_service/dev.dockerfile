@@ -48,7 +48,7 @@ RUN pip install --no-cache-dir \
     && pip install --no-cache-dir \
     # Local LLM fine-tuning stack
     transformers==4.35.2 \
-    peft==0.6.3 \
+    peft==0.7.0 \
     accelerate==0.24.1 \
     sentencepiece==0.1.99 \
     safetensors==0.4.2 \
