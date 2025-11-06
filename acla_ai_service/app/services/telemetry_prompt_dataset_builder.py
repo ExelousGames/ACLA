@@ -19,6 +19,14 @@ import numpy as np
 
 from .Training_data_cache_service import TrainingOptimizedCache, training_cache
 
+PLAN_SUMMARY_FEATURES = (
+    "Physics_gas",
+    "Physics_brake",
+    "Physics_steer_angle",
+    "Physics_speed_kmh",
+    "Physics_gear",
+)
+
 
 @dataclass
 class PromptBuilderConfig:
@@ -26,8 +34,8 @@ class PromptBuilderConfig:
 
     system_prompt: str = (
         "You are an elite Assetto Corsa Competizione race engineer. "
-        "Given partial notes and recent telemetry, forecast the next telemetry "
-        "steps and continue the coaching explanation."
+        "Given recent telemetry and a predicted numeric driving plan, "
+        "translate the plan into concise coaching commentary."
     )
     context_steps: int = 20
     prediction_steps: int = 6
@@ -215,32 +223,36 @@ class TelemetryPromptDatasetBuilder:
             return None
 
         annotation = annotation or {}
-        human_note = annotation.get("human_note") or annotation.get("partial_note") or ""
-        explanation = (
-            annotation.get("assistant_explanation")
-            or annotation.get("explanation")
-            or ""
-        )
+        driver_note = annotation.get("driver_note")
+        explanation = annotation.get("coaching_explanation")
+        if not driver_note or not explanation:
+            return None
+        plan_summary = self._summarize_future_plan(future_payload)
 
         user_content = (
-            "Task: Forecast telemetry and continue the coaching note.\n"
-            f"Human note (partial): {human_note}\n\n"
+            "Task: Convert the numeric improvement plan into natural coaching commentary.\n"
+            f"Driver request: {driver_note}\n\n"
             f"Recent telemetry window (last {self.config.context_steps} steps):\n"
             f"{json.dumps(context_payload, indent=2, ensure_ascii=False)}\n\n"
-            f"Provide the next {self.config.prediction_steps} telemetry steps in JSON "
-            "alongside a clear explanation extending the human note."
+            f"Predicted improvement plan (next {self.config.prediction_steps} steps):\n"
+            f"{json.dumps(plan_summary, indent=2, ensure_ascii=False)}\n\n"
+            "Respond with a JSON object containing:\n"
+            "- `coaching_summary`: concise natural-language advice (2-3 sentences).\n"
+            "- Optional `key_focus`: list of bullet strings summarising critical adjustments."
         )
 
         assistant_payload = {
-            "future_telemetry": future_payload,
-            "explanation": explanation,
+            "coaching_summary": explanation,
         }
+        key_focus = annotation.get("key_focus")
+        if key_focus:
+            assistant_payload["key_focus"] = key_focus
 
         metadata = {
             "window_id": window_info.get("window_id"),
             "annotation": {
-                "human_note": human_note,
-                "assistant_explanation": explanation,
+                "driver_note": driver_note,
+                "coaching_explanation": explanation,
                 "updated_at": annotation.get("updated_at") if annotation else None,
             },
             "source_indices": {
@@ -254,7 +266,8 @@ class TelemetryPromptDatasetBuilder:
                 "prediction_steps": self.config.prediction_steps,
                 "telemetry_features": list(self.config.telemetry_features),
             },
-            "annotation_complete": bool(human_note or explanation),
+            "plan_summary": plan_summary,
+            "annotation_complete": bool(explanation),
         }
 
         entry = {
@@ -313,6 +326,24 @@ class TelemetryPromptDatasetBuilder:
         """Public helper for formatting timesteps consistent with the dataset builder."""
 
         return self._format_timesteps(timesteps)
+
+    def _summarize_future_plan(self, future_payload: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        summary: List[Dict[str, Any]] = []
+        for index, step in enumerate(future_payload):
+            if not isinstance(step, dict):
+                continue
+
+            actions: Dict[str, Any] = {}
+            for feature in PLAN_SUMMARY_FEATURES:
+                value = step.get(feature)
+                if value is None:
+                    continue
+                actions[feature] = value
+
+            if actions:
+                summary.append({"step": index + 1, "actions": actions})
+
+        return summary
 
     # ------------------------------------------------------------------
     # Utility helpers

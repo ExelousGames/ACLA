@@ -40,6 +40,7 @@ RUN pip install --no-cache-dir \
     pandas==2.1.4 \
     numpy==1.24.4 \
     scikit-learn==1.3.2 \
+    hmmlearn==0.3.2 \
     joblib==1.3.2 \
     river==0.21.0 \
     && pip install --no-cache-dir \
@@ -63,10 +64,12 @@ RUN pip install --no-cache-dir \
     # Development and AI tools
     pytest==7.4.0 \
     pytest-asyncio==0.21.1 \
-    openai==1.3.7
+    openai==1.3.7 \
+    streamlit==1.28.0 # provides the telemetry annotation UI
 
 # Copy application code and setup in single layer
 COPY . .
+ENV STREAMLIT_CONFIG_FILE=/app/.streamlit/config.toml
 RUN chmod +x /app/start-dev.sh
 
 # Expose port

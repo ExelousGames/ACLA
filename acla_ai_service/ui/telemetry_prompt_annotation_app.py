@@ -1,14 +1,15 @@
 """Streamlit UI for annotating telemetry prompt datasets.
 
-This tool lets race engineers review telemetry windows, add human coaching notes,
-visualise telemetry samples, and record assistant explanations before
-fine-tuning the local LLM.
+This tool lets race engineers review telemetry windows, capture driver notes
+alongside the raw telemetry, visualise samples, and attach coaching
+explanations before fine-tuning the local LLM.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -33,8 +34,39 @@ def _parse_cli_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--dataset", type=str, default="")
     parser.add_argument("--dataset-dir", type=str, default="")
+    parser.add_argument("--server-address", type=str, default="")
+    parser.add_argument("--server-port", type=int, default=0)
+    parser.add_argument("--browser-address", type=str, default="")
+    parser.add_argument("--browser-port", type=int, default=0)
     args, _ = parser.parse_known_args()
     return args
+
+
+def _resolve_network_config(args: argparse.Namespace) -> Tuple[str, int, Optional[str], Optional[int], str]:
+    """Resolve the host/port pairing used for Streamlit when running in Docker."""
+
+    env = os.getenv
+
+    server_address = args.server_address or env("ANNOTATION_UI_SERVER_ADDRESS") or "0.0.0.0"
+    server_port = args.server_port or int(env("ANNOTATION_UI_SERVER_PORT", "8501"))
+
+    browser_address = args.browser_address or env("ANNOTATION_UI_BROWSER_ADDRESS") or ""
+    browser_port_raw: Optional[str] = ""
+    if args.browser_port:
+        browser_port_raw = str(args.browser_port)
+    elif env("ANNOTATION_UI_BROWSER_PORT"):
+        browser_port_raw = env("ANNOTATION_UI_BROWSER_PORT")
+
+    browser_port = int(browser_port_raw) if browser_port_raw else None
+
+    if not browser_address and Path("/.dockerenv").exists():
+        browser_address = env("ANNOTATION_UI_HOST", "localhost")
+
+    effective_host = browser_address or server_address
+    effective_port = browser_port or server_port
+    access_url = f"http://{effective_host}:{effective_port}"
+
+    return server_address, server_port, browser_address or None, browser_port, access_url
 
 
 # ---------------------------------------------------------------------------
@@ -65,12 +97,15 @@ def load_dataset(path_str: str) -> List[Dict[str, Any]]:
             metadata = record.get("metadata", {})
             annotation = metadata.get("annotation", {})
             window = record.get("window", {})
+            driver_note = annotation.get("driver_note", "")
+            coaching_explanation = annotation.get("coaching_explanation", "")
+
             entries.append(
                 {
                     "window_id": metadata.get("window_id"),
                     "annotation_complete": bool(metadata.get("annotation_complete")),
-                    "human_note": annotation.get("human_note", ""),
-                    "assistant_explanation": annotation.get("assistant_explanation", ""),
+                    "driver_note": driver_note,
+                    "coaching_explanation": coaching_explanation,
                     "window": window,
                     "config": metadata.get("config", {}),
                     "messages": record.get("messages", []),
@@ -107,20 +142,20 @@ def load_annotation_store(path_str: str) -> Dict[str, Dict[str, Any]]:
     return store
 
 
-def _build_user_prompt(window: Dict[str, Any], config: Dict[str, Any], human_note: str) -> str:
-    """Recreate the user prompt string with the supplied human note."""
+def _build_user_prompt(window: Dict[str, Any], config: Dict[str, Any], driver_note: str) -> str:
+    """Recreate the user prompt string with the supplied driver note."""
 
     context_steps = config.get("context_steps", len(window.get("context", [])))
     prediction_steps = config.get("prediction_steps", len(window.get("future", [])))
     context_payload = window.get("context", [])
 
     return (
-        "Task: Forecast telemetry and continue the coaching note.\n"
-        f"Human note (partial): {human_note}\n\n"
+        "Task: Forecast telemetry and continue the coaching explanation.\n"
+        f"Driver note (partial): {driver_note}\n\n"
         f"Recent telemetry window (last {context_steps} steps):\n"
         f"{json.dumps(context_payload, indent=2, ensure_ascii=False)}\n\n"
         f"Provide the next {prediction_steps} telemetry steps in JSON "
-        "alongside a clear explanation extending the human note."
+        "alongside a clear coaching explanation extending the driver note."
     )
 
 
@@ -128,8 +163,8 @@ def _save_annotation(
     dataset_path: Path,
     annotation_path: Path,
     window_id: str,
-    human_note: str,
-    assistant_explanation: str,
+    driver_note: str,
+    coaching_explanation: str,
 ) -> Tuple[int, int]:
     """Persist the updated annotation to both dataset and annotation log."""
 
@@ -154,15 +189,15 @@ def _save_annotation(
 
             if window_meta == window_id:
                 annotation_block = metadata.setdefault("annotation", {})
-                annotation_block["human_note"] = human_note
-                annotation_block["assistant_explanation"] = assistant_explanation
+                annotation_block["driver_note"] = driver_note
+                annotation_block["coaching_explanation"] = coaching_explanation
                 annotation_block["updated_at"] = datetime.utcnow().isoformat()
-                metadata["annotation_complete"] = bool(human_note and assistant_explanation)
+                metadata["annotation_complete"] = bool(driver_note and coaching_explanation)
 
-                user_prompt = _build_user_prompt(window, config, human_note)
+                user_prompt = _build_user_prompt(window, config, driver_note)
                 assistant_payload = {
                     "future_telemetry": window.get("future", []),
-                    "explanation": assistant_explanation,
+                    "coaching_explanation": coaching_explanation,
                 }
 
                 messages = record.setdefault("messages", [])
@@ -184,8 +219,8 @@ def _save_annotation(
     store = load_annotation_store(annotation_path.as_posix())
     store[window_id] = {
         "window_id": window_id,
-        "human_note": human_note,
-        "assistant_explanation": assistant_explanation,
+        "driver_note": driver_note,
+        "coaching_explanation": coaching_explanation,
         "updated_at": datetime.utcnow().isoformat(),
     }
     with annotation_path.open("w", encoding="utf-8") as jsonl_file:
@@ -253,10 +288,25 @@ def _render_plot(data: pd.DataFrame) -> None:
 
 
 def main() -> None:
+    args = _parse_cli_args()
+    server_address, server_port, browser_address, browser_port, access_url = _resolve_network_config(args)
+
+    st.set_option("server.address", server_address)
+    st.set_option("server.port", server_port)
+    if browser_address:
+        st.set_option("browser.serverAddress", browser_address)
+    if browser_port is not None:
+        st.set_option("browser.serverPort", browser_port)
+
+    if os.environ.get("ANNOTATION_UI_URL_PRINTED") != access_url:
+        print(f"Telemetry annotation UI will be reachable at {access_url}", flush=True)
+        os.environ["ANNOTATION_UI_URL_PRINTED"] = access_url
+
     st.set_page_config(page_title="Telemetry Prompt Annotation", layout="wide")
     st.title("Telemetry Prompt Annotation")
+    st.sidebar.info(f"Open {access_url} from the host browser")
+    st.sidebar.caption("Override via --server-port/--server-address or ANNOTATION_UI_* environment variables.")
 
-    args = _parse_cli_args()
     dataset_dir = Path(args.dataset_dir or DEFAULT_DATASET_DIR)
     dataset_dir.mkdir(parents=True, exist_ok=True)
 
@@ -304,7 +354,7 @@ def main() -> None:
             {
                 "Window ID": entry["window_id"],
                 "Annotated": "Yes" if entry["annotation_complete"] else "No",
-                "Existing Note": (entry["human_note"][:50] + "…") if entry["human_note"] else "",
+                "Existing Driver Note": (entry["driver_note"][:50] + "…") if entry["driver_note"] else "",
             }
             for entry in entries_to_view
         ]
@@ -337,12 +387,12 @@ def main() -> None:
         st.info("Select at least one telemetry feature to visualise.")
 
     existing_annotation = store.get(selected_window_id, {})
-    human_note_default = existing_annotation.get("human_note") or selected_entry.get("human_note", "")
-    assistant_note_default = existing_annotation.get("assistant_explanation") or selected_entry.get("assistant_explanation", "")
+    driver_note_default = existing_annotation.get("driver_note") or selected_entry.get("driver_note", "")
+    coaching_note_default = existing_annotation.get("coaching_explanation") or selected_entry.get("coaching_explanation", "")
 
     st.subheader("Annotation")
-    human_note = st.text_area("Human coaching note", value=human_note_default, height=120)
-    assistant_explanation = st.text_area("Assistant explanation", value=assistant_note_default, height=160)
+    driver_note = st.text_area("Driver note", value=driver_note_default, height=120)
+    coaching_explanation = st.text_area("Coaching explanation", value=coaching_note_default, height=160)
 
     save_col, stats_col = st.columns([1, 1])
 
@@ -352,8 +402,8 @@ def main() -> None:
                 dataset_path=dataset_path,
                 annotation_path=annotation_path,
                 window_id=selected_window_id,
-                human_note=human_note.strip(),
-                assistant_explanation=assistant_explanation.strip(),
+                driver_note=driver_note.strip(),
+                coaching_explanation=coaching_explanation.strip(),
             )
             load_dataset.clear()
             load_annotation_store.clear()

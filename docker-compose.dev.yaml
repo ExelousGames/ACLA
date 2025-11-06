@@ -98,6 +98,7 @@ services:
       - ./acla_ai_service:/app
     ports:
       - '8000:8000'
+      - '8501:8501'
     networks:
       - ai-network
     deploy:

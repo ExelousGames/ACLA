@@ -53,6 +53,7 @@ from ..models.telemetry_models import (
     FeatureProcessor,
     _safe_float,
 )
+from ..models.transformer_model import ExpertActionTransformer
 
 # Import backend service
 from .backend_service import backend_service
@@ -69,6 +70,14 @@ from .local_llm_service import LocalTelemetryLLM, LocalLLMConfig, GenerationRequ
 
 # Suppress sklearn warnings
 warnings.filterwarnings('ignore', category=UserWarning)
+
+ACTION_SUMMARY_FEATURES = (
+    "Physics_gas",
+    "Physics_brake",
+    "Physics_steer_angle",
+    "Physics_speed_kmh",
+    "Physics_gear",
+)
 
 class Full_dataset_TelemetryMLService:
     """
@@ -351,50 +360,106 @@ class Full_dataset_TelemetryMLService:
         return llm
 
     def _format_context_window(self, telemetry_record: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Construct a context window for inference from a single telemetry record."""
+        """Construct and format a context window for inference from a single telemetry record."""
 
         context_steps = self.prompt_builder_config.context_steps
-        return [dict(telemetry_record) for _ in range(max(1, context_steps))]
+        repeated_window = [dict(telemetry_record) for _ in range(max(1, context_steps))]
+        return self.prompt_builder.format_timesteps(repeated_window)
+
+    def _summarize_transformer_sequence(
+        self,
+        sequence_predictions: List[Dict[str, Any]],
+        *,
+        max_steps: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """Summarize transformer outputs for LLM prompting."""
+
+        if not sequence_predictions:
+            return []
+
+        limit = max_steps if isinstance(max_steps, int) and max_steps > 0 else len(sequence_predictions)
+        summary: List[Dict[str, Any]] = []
+
+        for step_data in sequence_predictions[:limit]:
+            if not isinstance(step_data, dict):
+                continue
+
+            step_index = step_data.get("step")
+            targets = step_data.get("all_targets")
+            targets = targets if isinstance(targets, dict) else {}
+
+            actions: Dict[str, Any] = {}
+            for feature in ACTION_SUMMARY_FEATURES:
+                value = targets.get(feature)
+                if value is None:
+                    continue
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    actions[feature] = round(float(value), 4)
+                else:
+                    actions[feature] = value
+
+            if not actions:
+                continue
+
+            summary.append(
+                {
+                    "step": int(step_index) if isinstance(step_index, (int, float)) else len(summary) + 1,
+                    "actions": actions,
+                }
+            )
+
+        return summary
 
     def _build_llm_user_prompt(
         self,
+        *,
         context_timesteps: List[Dict[str, Any]],
-        partial_note: str = "",
-        track_name: Optional[str] = None,
+        plan_summary: List[Dict[str, Any]],
+        user_request: Optional[str] = None,
     ) -> str:
-        """Create the user prompt mirroring the dataset builder format."""
-        context_payload = self.prompt_builder.format_timesteps(context_timesteps)
-        partial_note = partial_note or "Coach observation: (pending user input)"
+        """Create a commentary-focused user prompt for the LLM."""
+
+        driver_request = (user_request or "Provide expert driving guidance for the upcoming sequence.").strip()
+        context_json = json.dumps(context_timesteps, indent=2, ensure_ascii=False)
+        plan_json = json.dumps(plan_summary or [], indent=2, ensure_ascii=False)
 
         return (
-            "Task: Forecast telemetry and continue the coaching note.\n"
-            f"Human note (partial): {partial_note}\n\n"
-            f"Recent telemetry window (last {len(context_timesteps)} steps):\n"
-            f"{json.dumps(context_payload, indent=2, ensure_ascii=False)}\n\n"
-            f"Provide the next {self.prompt_builder_config.prediction_steps} telemetry steps in JSON "
-            "alongside a clear explanation extending the human note."
+            "Task: Translate the numeric driving plan into clear coaching guidance.\n"
+            f"Driver request: {driver_request}\n\n"
+            "Recent telemetry snapshot (formatted):\n"
+            f"{context_json}\n\n"
+            "Predicted improvement plan from the ExpertActionTransformer (next steps):\n"
+            f"{plan_json}\n\n"
+            "Respond with a JSON object containing: \n"
+            "- `coaching_summary`: concise natural language guidance for the driver.\n"
+            "- Optional `key_focus`: list of bullet strings with the most important adjustments.\n"
+            "Do not repeat the raw numbers; convert them into actionable coaching commentary."
         )
 
     def _parse_llm_output(self, generated_text: str) -> Dict[str, Any]:
-        """Attempt to parse the LLM output into structured telemetry and explanation."""
+        """Parse LLM commentary output, falling back to plain text when needed."""
 
-        text = generated_text.strip()
+        text = (generated_text or "").strip()
+        if not text:
+            return {"coaching_summary": ""}
+
         candidate = text
 
-        if not text:
-            return {"raw_output": text}
-
-        # If the model wrapped the JSON inside extra commentary, attempt to isolate
-        if text[0] != "{":
-            first_brace = text.find("{")
-            if first_brace != -1:
-                candidate = text[first_brace:]
+        first_brace = candidate.find("{")
+        last_brace = candidate.rfind("}")
+        if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
+            candidate = candidate[first_brace : last_brace + 1]
 
         try:
             parsed = json.loads(candidate)
-            return parsed if isinstance(parsed, dict) else {"raw_output": text}
+            if isinstance(parsed, dict):
+                if "coaching_summary" not in parsed and "commentary" in parsed:
+                    parsed["coaching_summary"] = parsed.pop("commentary")
+                return parsed
         except json.JSONDecodeError:
-            return {"raw_output": text}
+            pass
+
+        return {"coaching_summary": text}
 
     def clear_all_cache(self):
         """Clear cached LLM, imitation, corner, and tire model instances."""
@@ -436,6 +501,15 @@ class Full_dataset_TelemetryMLService:
             "backend_metadata": model_response.metadata,
             "model_subtype": model_subtype
         }
+
+        resolved_track_name = track_name or model_response.metadata.get("track_name") or "generic"
+        resolved_car_name = car_name or model_response.metadata.get("car_name") or "all_cars"
+        cache_metadata.update(
+            {
+                "resolved_track_name": resolved_track_name,
+                "resolved_car_name": resolved_car_name,
+            }
+        )
         
         # Deserialize the model instance
         if deserializer_func:
@@ -757,14 +831,30 @@ class Full_dataset_TelemetryMLService:
     async def predict_expert_actions(
         self,
         telemetry_dict: Dict[str, Any],
+        *,
         sequence_length: int = 40,
+        track_name: Optional[str] = None,
+        car_name: Optional[str] = None,
+        user_request: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Predict future telemetry and explanations using the fine-tuned local LLM."""
-    
-        trackName = "generic"
-        carName = "all_cars"
+        """Generate numeric action plans via transformer and LLM commentary."""
+
         try:
             import pandas as pd
+
+            resolved_track = (
+                track_name
+                or telemetry_dict.get("trackName")
+                or telemetry_dict.get("track_name")
+                or "generic"
+            )
+            resolved_car = (
+                car_name
+                or telemetry_dict.get("carName")
+                or telemetry_dict.get("car_name")
+                or "all_cars"
+            )
+            driver_request = (user_request or "").strip()
 
             telemetry_df = pd.DataFrame([telemetry_dict])
 
@@ -783,8 +873,8 @@ class Full_dataset_TelemetryMLService:
                 tire_grip_service = TireGripAnalysisService()
                 tire_grip_service, _ = await self._get_cached_model_or_fetch(
                     model_type="tire_grip_analysis",
-                    track_name=trackName,
-                    car_name=carName,
+                    track_name=resolved_track,
+                    car_name=resolved_car,
                     model_subtype="tire_grip_model_data",
                     deserializer_func=tire_grip_service.deserialize_tire_grip_model,
                 )
@@ -795,15 +885,15 @@ class Full_dataset_TelemetryMLService:
                     )
                     if tire_features_list:
                         processed_telemetry_dict.update(tire_features_list[0])
-            except Exception as e:
-                print(f"[WARNING] Tire grip enrichment failed: {e}")
+            except Exception as enrichment_error:
+                print(f"[WARNING] Tire grip enrichment failed: {enrichment_error}")
 
             try:
                 expert_service = ExpertImitateLearningService()
                 expert_service, _ = await self._get_cached_model_or_fetch(
                     model_type="imitation_learning",
-                    track_name=trackName,
-                    car_name=carName,
+                    track_name=resolved_track,
+                    car_name=resolved_car,
                     model_subtype="imitation_model_data",
                     deserializer_func=expert_service.deserialize_imitation_model,
                 )
@@ -812,19 +902,45 @@ class Full_dataset_TelemetryMLService:
                 )
                 if expert_state_list:
                     processed_telemetry_dict.update(expert_state_list[0])
-            except Exception as e:
-                print(f"[WARNING] Imitation learning enrichment failed: {e}")
+            except Exception as enrichment_error:
+                print(f"[WARNING] Imitation learning enrichment failed: {enrichment_error}")
 
-            llm_model, model_metadata = await self._get_cached_model_or_fetch(
+            transformer_model, transformer_metadata = await self._get_cached_model_or_fetch(
+                model_type="transformer_expert_action",
+                track_name=resolved_track,
+                car_name=resolved_car,
+                model_subtype="transformer_model_data",
+                deserializer_func=ExpertActionTransformer.deserialize_transformer_model,
+            )
+
+            try:
+                transformer_result = transformer_model.predict_human_readable(
+                    current_telemetry=processed_telemetry_dict,
+                    sequence_length=sequence_length,
+                )
+            except Exception as transformer_error:
+                raise RuntimeError(f"Transformer prediction failed: {transformer_error}") from transformer_error
+
+            plan_summary = self._summarize_transformer_sequence(
+                transformer_result.get("sequence_predictions", []),
+                max_steps=sequence_length,
+            )
+
+            context_payload = self._format_context_window(processed_telemetry_dict)
+
+            llm_model, llm_metadata = await self._get_cached_model_or_fetch(
                 model_type="llm_guidance",
-                track_name=trackName,
-                car_name=carName,
+                track_name=resolved_track,
+                car_name=resolved_car,
                 model_subtype="llm_adapter_data",
                 deserializer_func=self._deserialize_llm_model,
             )
 
-            context_window = self._format_context_window(processed_telemetry_dict)
-            user_prompt = self._build_llm_user_prompt(context_window)
+            user_prompt = self._build_llm_user_prompt(
+                context_timesteps=context_payload,
+                plan_summary=plan_summary,
+                user_request=driver_request,
+            )
             system_prompt = self.prompt_builder_config.system_prompt
 
             generation_request = GenerationRequest(
@@ -837,29 +953,43 @@ class Full_dataset_TelemetryMLService:
             )
 
             output_text = llm_model.generate(generation_request)
-            parsed_output = self._parse_llm_output(output_text)
+            commentary_payload = self._parse_llm_output(output_text)
+
+            sequence_predictions = transformer_result.get("sequence_predictions", [])
 
             return {
                 "status": "success",
-                "track_name": trackName,
-                "car_name": carName,
                 "timestamp": datetime.now().isoformat(),
-                "raw_output": output_text,
-                "prediction": parsed_output,
-                "model_metadata": model_metadata,
+                "track_name": resolved_track,
+                "car_name": resolved_car,
+                "user_request": driver_request,
+                "sequence_predictions": sequence_predictions,
+                "preprocessed_telemetry": processed_telemetry_dict,
+                "context_window": context_payload,
+                "plan_summary": plan_summary,
+                "commentary": commentary_payload,
+                "transformer": {
+                    "metadata": transformer_metadata,
+                    "prediction": transformer_result,
+                },
+                "llm": {
+                    "metadata": llm_metadata,
+                    "raw_output": output_text,
+                    "commentary": commentary_payload,
+                },
                 "prompt": {
                     "system": system_prompt,
                     "user": user_prompt,
                 },
             }
 
-        except Exception as e:
-            error_msg = f"Failed to generate expert guidance: {str(e)}"
+        except Exception as error:
+            error_msg = f"Failed to generate expert guidance: {error}"
             print(f"[ERROR] {error_msg}")
             return {
                 "status": "error",
                 "error_message": error_msg,
-                "error_type": type(e).__name__,
+                "error_type": type(error).__name__,
             }
 
     async def StartImitateExpertPipeline(

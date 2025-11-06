@@ -81,14 +81,23 @@ def parse_arguments(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         '--ui-port',
         type=int,
-        default=None,
-        help='Optional port override for the Streamlit UI.',
+        default=8501,
+        help='Port for the Streamlit UI (default: 8501).',
     )
     parser.add_argument(
         '--ui-address',
         type=str,
+        default='0.0.0.0',
+        help="Address for the Streamlit UI to bind to (default: '0.0.0.0').",
+    )
+    parser.add_argument(
+        '--ui-public-host',
+        type=str,
         default=None,
-        help='Optional address override for the Streamlit UI (default uses Streamlit configuration).',
+        help=(
+            "Host/IP to advertise for the Streamlit UI (default resolves to the bind address, "
+            "or 'localhost' when binding to 0.0.0.0)."
+        ),
     )
     parser.add_argument(
         '--streamlit-app',
@@ -116,10 +125,14 @@ async def launch_annotation_ui(
     *,
     address: Optional[str] = None,
     port: Optional[int] = None,
+    public_host: Optional[str] = None,
 ) -> None:
     """Launch the Streamlit annotation UI and wait for it to exit."""
 
+    # Invoke Streamlit through the active interpreter to avoid PATH issues inside containers.
     cmd = [
+        sys.executable,
+        '-m',
         'streamlit',
         'run',
         str(app_path),
@@ -135,6 +148,27 @@ async def launch_annotation_ui(
         env['STREAMLIT_SERVER_ADDRESS'] = address
     if port:
         env['STREAMLIT_SERVER_PORT'] = str(port)
+
+    # Keep the browser target predictable when running inside containers.
+    browser_host = public_host
+    if not browser_host:
+        if address and address != '0.0.0.0':
+            browser_host = address
+        else:
+            browser_host = 'localhost'
+
+    env.setdefault('STREAMLIT_BROWSER_SERVER_ADDRESS', browser_host)
+    if port:
+        env.setdefault('STREAMLIT_BROWSER_SERVER_PORT', str(port))
+
+    # Silence usage telemetry prompts in container logs unless explicitly overridden.
+    env.setdefault('STREAMLIT_BROWSER_GATHERUSAGESTATS', 'false')
+
+    advertised_port = port or env.get('STREAMLIT_BROWSER_SERVER_PORT', '8501')
+    print(
+        "[INFO] Streamlit annotation UI will be reachable at "
+        f"http://{env['STREAMLIT_BROWSER_SERVER_ADDRESS']}:{advertised_port}"
+    )
 
     def _run_streamlit() -> None:
         completed = subprocess.run(cmd, env=env)
@@ -243,6 +277,7 @@ async def main(args: argparse.Namespace):
                         dataset_dir=dataset_path.parent,
                         address=args.ui_address,
                         port=args.ui_port,
+                        public_host=args.ui_public_host,
                     )
                     refreshed_stats = ml_service._summarize_dataset(dataset_path)
                     annotation_result["dataset_stats"] = refreshed_stats
