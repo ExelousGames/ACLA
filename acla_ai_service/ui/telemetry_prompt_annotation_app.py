@@ -8,6 +8,7 @@ explanations before fine-tuning the local LLM.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import os
 from datetime import datetime
@@ -18,6 +19,9 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
+from app.services.full_dataset_ml_service import Full_dataset_TelemetryMLService
+from app.services.local_llm_service import GenerationRequest
+
 # Default directory where datasets are written by the ML service
 DEFAULT_DATASET_DIR = Path(__file__).resolve().parents[1] / "models" / "llm_datasets"
 ANNOTATION_SUFFIX = ".annotations.jsonl"
@@ -26,6 +30,56 @@ ANNOTATION_SUFFIX = ".annotations.jsonl"
 # ---------------------------------------------------------------------------
 # CLI helpers
 # ---------------------------------------------------------------------------
+
+
+def _run_async(func, *args, **kwargs):
+    """Execute an async function from a synchronous context."""
+
+    try:
+        return asyncio.run(func(*args, **kwargs))
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        try:
+            asyncio.set_event_loop(loop)
+            return loop.run_until_complete(func(*args, **kwargs))
+        finally:
+            asyncio.set_event_loop(None)
+            loop.close()
+
+
+@st.cache_resource(show_spinner=False)
+def get_ml_service() -> Full_dataset_TelemetryMLService:
+    """Return a cached instance of the telemetry ML service."""
+
+    return Full_dataset_TelemetryMLService()
+
+
+@st.cache_resource(show_spinner=False)
+def load_guidance_model() -> Tuple[Optional[Any], Optional[Dict[str, Any]], Optional[str]]:
+    """Load the active LLM guidance model, if available."""
+
+    service = get_ml_service()
+    try:
+        model, metadata = _run_async(service.get_llm_guidance_model)
+        if model is None:
+            error_msg = metadata.get("error") if isinstance(metadata, dict) else "No active model found"
+            return None, metadata, error_msg
+        return model, metadata, None
+    except Exception as error:  # pragma: no cover - guarded for runtime issues
+        return None, None, str(error)
+
+
+def _extract_system_prompt(entry: Dict[str, Any]) -> str:
+    """Return the system prompt stored with a dataset entry."""
+
+    raw_record = entry.get("raw", {})
+    messages = raw_record.get("messages", []) if isinstance(raw_record, dict) else []
+    for message in messages:
+        if message.get("role") == "system":
+            content = message.get("content")
+            if isinstance(content, str):
+                return content
+    return ""
 
 
 def _parse_cli_args() -> argparse.Namespace:
@@ -300,6 +354,21 @@ def main() -> None:
     st.sidebar.info(f"Open {access_url} from the host browser")
     st.sidebar.caption("Override via --server-port/--server-address or ANNOTATION_UI_* environment variables.")
 
+    ml_service = get_ml_service()
+    llm_model, llm_metadata, llm_error = load_guidance_model()
+    llm_available = llm_model is not None
+
+    if llm_available:
+        st.sidebar.success("LLM guidance model loaded")
+        if llm_metadata and isinstance(llm_metadata, dict):
+            adapter_name = llm_metadata.get("backend_metadata", {}).get("adapter_directory")
+            if adapter_name:
+                st.sidebar.caption(f"Adapter: {adapter_name}")
+    else:
+        st.sidebar.info("LLM auto-coaching disabled. Train or import a guidance model to enable suggestions.")
+        if llm_error:
+            st.sidebar.caption(f"LLM load issue: {llm_error}")
+
     dataset_dir = Path(args.dataset_dir or DEFAULT_DATASET_DIR)
     dataset_dir.mkdir(parents=True, exist_ok=True)
 
@@ -384,13 +453,77 @@ def main() -> None:
     coaching_note_default = existing_annotation.get("coaching_explanation") or selected_entry.get("coaching_explanation", "")
 
     st.subheader("Annotation")
-    driver_note = st.text_area("Driver note", value=driver_note_default, height=120)
-    coaching_explanation = st.text_area("Coaching explanation", value=coaching_note_default, height=160)
 
-    save_col, stats_col = st.columns([1, 1])
+    active_window_key = "_active_annotation_window"
+    driver_key = f"driver_note_{selected_window_id}"
+    coaching_key = f"coaching_note_{selected_window_id}"
+    key_focus_key = f"{coaching_key}_key_focus"
+    raw_output_key = f"{coaching_key}_raw_output"
 
-    with save_col:
-        if st.button("Save annotation", type="primary"):
+    if st.session_state.get(active_window_key) != selected_window_id:
+        st.session_state[active_window_key] = selected_window_id
+        st.session_state[driver_key] = driver_note_default
+        st.session_state[coaching_key] = coaching_note_default
+        st.session_state.pop(key_focus_key, None)
+        st.session_state.pop(raw_output_key, None)
+    else:
+        st.session_state.setdefault(driver_key, driver_note_default)
+        st.session_state.setdefault(coaching_key, coaching_note_default)
+
+    driver_note = st.text_area("Driver note", key=driver_key, height=120)
+    coaching_explanation = st.text_area("Coaching explanation", key=coaching_key, height=160)
+
+    actions_col1, actions_col2, stats_col = st.columns([1, 1, 1])
+
+    with actions_col1:
+        generate_disabled = not llm_available
+        generate_help = None if llm_available else "Train or import a guidance model to enable auto-suggestions."
+        if st.button(
+            "Generate explanation",
+            type="secondary",
+            disabled=generate_disabled,
+            help=generate_help,
+            use_container_width=True,
+        ):
+            if not llm_available:
+                st.warning("No guidance model available for inference.")
+            elif not driver_note.strip():
+                st.warning("Please enter a driver note before requesting an explanation.")
+            else:
+                with st.spinner("Generating coaching suggestion..."):
+                    system_prompt = _extract_system_prompt(selected_entry)
+                    user_prompt = _build_user_prompt(
+                        selected_entry.get("window", {}),
+                        config,
+                        driver_note.strip(),
+                    )
+                    request = GenerationRequest(
+                        system_prompt=system_prompt,
+                        user_prompt=user_prompt,
+                        max_new_tokens=ml_service.llm_config.generation_max_new_tokens,
+                        temperature=ml_service.llm_config.generation_temperature,
+                        top_p=ml_service.llm_config.generation_top_p,
+                        do_sample=ml_service.llm_config.generation_do_sample,
+                    )
+
+                    try:
+                        raw_output = llm_model.generate(request) if llm_available else ""
+                        commentary = ml_service._parse_llm_output(raw_output)
+                    except Exception as inference_error:  # pragma: no cover - inference safeguards
+                        st.error(f"LLM generation failed: {inference_error}")
+                    else:
+                        summary_text = commentary.get("coaching_summary") or commentary.get("summary") or raw_output
+                        st.session_state[coaching_key] = summary_text.strip()
+                        key_focus = commentary.get("key_focus")
+                        if isinstance(key_focus, list) and key_focus:
+                            st.session_state[key_focus_key] = key_focus
+                        else:
+                            st.session_state.pop(key_focus_key, None)
+                        st.session_state[raw_output_key] = raw_output
+                        st.success("Coaching explanation generated. Review and edit before saving.")
+
+    with actions_col2:
+        if st.button("Save annotation", type="primary", use_container_width=True):
             total, annotated = _save_annotation(
                 dataset_path=dataset_path,
                 annotation_path=annotation_path,
@@ -409,6 +542,17 @@ def main() -> None:
             f"{annotated_examples}/{total_examples}",
             "{:.0%}".format(annotated_examples / total_examples) if total_examples else "0%",
         )
+
+    suggested_focus = st.session_state.get(key_focus_key)
+    if suggested_focus:
+        st.markdown("**Suggested focus areas**")
+        for item in suggested_focus:
+            st.markdown(f"- {item}")
+
+    raw_output = st.session_state.get(raw_output_key)
+    if raw_output:
+        with st.expander("Raw LLM output", expanded=False):
+            st.code(raw_output, language="json")
 
     st.caption(
         "Annotations are written back to the dataset file and a companion annotations log."

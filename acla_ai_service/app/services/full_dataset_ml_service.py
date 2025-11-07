@@ -299,7 +299,7 @@ class Full_dataset_TelemetryMLService:
         )
 
         await backend_service.save_ai_model(
-            model_type="llm_guidance",
+            model_type="llm_guidance_v1",
             model_data=serialized_adapter,
             metadata=metadata_payload,
             is_active=True,
@@ -466,6 +466,34 @@ class Full_dataset_TelemetryMLService:
         self.model_cache.clear()
         print("[INFO] All cached model_cache entries cleared (corner & tire services are on-demand so no persistent cache to clear)")
     
+    async def get_llm_guidance_model(
+        self,
+        *,
+        force_refresh: bool = False,
+        model_subtype: str = "llm_adapter_data",
+    ) -> Tuple[Optional[LocalTelemetryLLM], Optional[Dict[str, Any]]]:
+        """Retrieve the active LLM guidance model if one has been saved."""
+
+        if force_refresh:
+            try:
+                self.model_cache.invalidate(
+                    model_type="llm_guidance_v1",
+                    model_subtype=model_subtype,
+                )
+            except Exception as invalidate_error:
+                print(f"[WARNING] Failed to invalidate LLM cache entry: {invalidate_error}")
+
+        try:
+            model_instance, metadata = await self._get_cached_model_or_fetch(
+                model_type="llm_guidance_v1",
+                model_subtype=model_subtype,
+                deserializer_func=self._deserialize_llm_model,
+            )
+            return model_instance, metadata
+        except Exception as fetch_error:
+            print(f"[WARNING] No active LLM guidance model available: {fetch_error}")
+            return None, {"error": str(fetch_error)}
+
 
     
     async def _fetch_and_cache_model(
@@ -894,7 +922,7 @@ class Full_dataset_TelemetryMLService:
             context_payload = self._format_context_window(processed_telemetry_dict)
 
             llm_model, llm_metadata = await self._get_cached_model_or_fetch(
-                model_type="llm_guidance",
+                model_type="llm_guidance_v1",
                 model_subtype="llm_adapter_data",
                 deserializer_func=self._deserialize_llm_model,
             )
