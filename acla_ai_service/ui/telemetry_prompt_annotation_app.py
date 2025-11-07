@@ -8,7 +8,6 @@ explanations before fine-tuning the local LLM.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 from datetime import datetime
@@ -75,29 +74,6 @@ def _resolve_network_config(args: argparse.Namespace) -> Tuple[str, int, Optiona
 # ---------------------------------------------------------------------------
 
 
-def _compute_window_signature(window: Dict[str, Any], config: Dict[str, Any]) -> Optional[str]:
-    """Generate a deterministic signature for a window/config pair."""
-
-    try:
-        context = window.get("context") or []
-        future = window.get("future") or []
-        if not context and not future:
-            return None
-
-        features = config.get("telemetry_features") or []
-        payload = {
-            "context": context,
-            "future": future,
-            "features": list(features),
-            "context_steps": config.get("context_steps"),
-            "prediction_steps": config.get("prediction_steps"),
-        }
-        normalized = json.dumps(payload, sort_keys=True, ensure_ascii=False)
-        return hashlib.sha1(normalized.encode("utf-8")).hexdigest()
-    except Exception:
-        return None
-
-
 @st.cache_data(show_spinner=False)
 def load_dataset(path_str: str) -> List[Dict[str, Any]]:
     """Load dataset records from disk into memory for quick annotation."""
@@ -124,12 +100,6 @@ def load_dataset(path_str: str) -> List[Dict[str, Any]]:
             driver_note = annotation.get("driver_note", "")
             coaching_explanation = annotation.get("coaching_explanation", "")
 
-            config = metadata.get("config", {})
-            signature = (
-                metadata.get("annotation", {}).get("window_signature")
-                or _compute_window_signature(window, config)
-            )
-
             entries.append(
                 {
                     "window_id": metadata.get("window_id"),
@@ -137,9 +107,8 @@ def load_dataset(path_str: str) -> List[Dict[str, Any]]:
                     "driver_note": driver_note,
                     "coaching_explanation": coaching_explanation,
                     "window": window,
-                    "config": config,
+                    "config": metadata.get("config", {}),
                     "messages": record.get("messages", []),
-                    "signature": signature,
                     "raw": record,
                 }
             )
@@ -148,15 +117,14 @@ def load_dataset(path_str: str) -> List[Dict[str, Any]]:
 
 
 @st.cache_data(show_spinner=False)
-def load_annotation_store(path_str: str) -> Tuple[Dict[str, Dict[str, Any]], Dict[str, Dict[str, Any]]]:
+def load_annotation_store(path_str: str) -> Dict[str, Dict[str, Any]]:
     """Load existing annotations stored alongside the dataset."""
 
     annotation_path = Path(path_str)
-    store_by_window: Dict[str, Dict[str, Any]] = {}
-    store_by_signature: Dict[str, Dict[str, Any]] = {}
+    store: Dict[str, Dict[str, Any]] = {}
 
     if not annotation_path.exists():
-        return store_by_window, store_by_signature
+        return store
 
     with annotation_path.open("r", encoding="utf-8") as jsonl_file:
         for line in jsonl_file:
@@ -168,14 +136,10 @@ def load_annotation_store(path_str: str) -> Tuple[Dict[str, Dict[str, Any]], Dic
             except json.JSONDecodeError:
                 continue
             window_id = payload.get("window_id")
-            window_signature = payload.get("window_signature")
-
             if window_id:
-                store_by_window[window_id] = payload
-            if window_signature:
-                store_by_signature[window_signature] = payload
+                store[window_id] = payload
 
-    return store_by_window, store_by_signature
+    return store
 
 
 def _build_user_prompt(window: Dict[str, Any], config: Dict[str, Any], driver_note: str) -> str:
@@ -205,9 +169,8 @@ def _save_annotation(
     """Persist the updated annotation to both dataset and annotation log."""
 
     dataset_records: List[Dict[str, Any]] = []
-    records_info: List[Dict[str, Any]] = []
-    target_signature: Optional[str] = None
-    timestamp_iso = datetime.utcnow().isoformat()
+    total_examples = 0
+    annotated_examples = 0
 
     with dataset_path.open("r", encoding="utf-8") as jsonl_file:
         for line in jsonl_file:
@@ -223,15 +186,12 @@ def _save_annotation(
             window_meta = metadata.get("window_id")
             window = record.get("window", {})
             config = metadata.get("config", {})
-            signature = _compute_window_signature(window, config)
 
             if window_meta == window_id:
                 annotation_block = metadata.setdefault("annotation", {})
                 annotation_block["driver_note"] = driver_note
                 annotation_block["coaching_explanation"] = coaching_explanation
-                annotation_block["updated_at"] = timestamp_iso
-                if signature:
-                    annotation_block["window_signature"] = signature
+                annotation_block["updated_at"] = datetime.utcnow().isoformat()
                 metadata["annotation_complete"] = bool(driver_note and coaching_explanation)
 
                 user_prompt = _build_user_prompt(window, config, driver_note)
@@ -246,101 +206,26 @@ def _save_annotation(
                 if len(messages) >= 3:
                     messages[2]["content"] = json.dumps(assistant_payload, ensure_ascii=False)
 
-                target_signature = signature
-            else:
-                annotation_block = metadata.setdefault("annotation", {})
-                if signature and "window_signature" not in annotation_block:
-                    annotation_block["window_signature"] = signature
-
+            if metadata.get("annotation_complete"):
+                annotated_examples += 1
+            total_examples += 1
             dataset_records.append(record)
-            records_info.append(
-                {
-                    "record": record,
-                    "metadata": metadata,
-                    "window_id": window_meta,
-                    "signature": signature,
-                    "window": window,
-                    "config": config,
-                }
-            )
-
-    if target_signature:
-        for info in records_info:
-            if info["window_id"] == window_id:
-                continue
-            if not info["signature"] or info["signature"] != target_signature:
-                continue
-
-            metadata = info["metadata"]
-            annotation_block = metadata.setdefault("annotation", {})
-
-            note_missing = not annotation_block.get("driver_note") and driver_note
-            explanation_missing = not annotation_block.get("coaching_explanation") and coaching_explanation
-
-            if not (note_missing or explanation_missing):
-                continue
-
-            if note_missing:
-                annotation_block["driver_note"] = driver_note
-            if explanation_missing:
-                annotation_block["coaching_explanation"] = coaching_explanation
-            annotation_block["updated_at"] = timestamp_iso
-            if info["signature"]:
-                annotation_block["window_signature"] = info["signature"]
-
-            metadata["annotation_complete"] = bool(driver_note and coaching_explanation)
-
-            user_prompt = _build_user_prompt(info["window"], info["config"], driver_note)
-            assistant_payload = {
-                "future_telemetry": info["window"].get("future", []),
-                "coaching_explanation": coaching_explanation,
-            }
-
-            messages = info["record"].setdefault("messages", [])
-            if len(messages) >= 2:
-                messages[1]["content"] = user_prompt
-            if len(messages) >= 3:
-                messages[2]["content"] = json.dumps(assistant_payload, ensure_ascii=False)
 
     with dataset_path.open("w", encoding="utf-8") as jsonl_file:
         for record in dataset_records:
             jsonl_file.write(json.dumps(record, ensure_ascii=False) + "\n")
 
     # Update annotation store
-    store_by_window, _ = load_annotation_store(annotation_path.as_posix())
-    store_by_window[window_id] = {
+    store = load_annotation_store(annotation_path.as_posix())
+    store[window_id] = {
         "window_id": window_id,
         "driver_note": driver_note,
         "coaching_explanation": coaching_explanation,
-        "updated_at": timestamp_iso,
-        "window_signature": target_signature,
+        "updated_at": datetime.utcnow().isoformat(),
     }
-
-    if target_signature:
-        for info in records_info:
-            if info["window_id"] == window_id:
-                continue
-            if info["signature"] != target_signature:
-                continue
-            metadata = info["metadata"]
-            annotation_block = metadata.get("annotation", {})
-            if not annotation_block.get("driver_note") or not annotation_block.get("coaching_explanation"):
-                continue
-
-            store_by_window[info["window_id"]] = {
-                "window_id": info["window_id"],
-                "driver_note": annotation_block.get("driver_note", ""),
-                "coaching_explanation": annotation_block.get("coaching_explanation", ""),
-                "updated_at": annotation_block.get("updated_at", timestamp_iso),
-                "window_signature": target_signature,
-            }
-
     with annotation_path.open("w", encoding="utf-8") as jsonl_file:
-        for payload in store_by_window.values():
+        for payload in store.values():
             jsonl_file.write(json.dumps(payload, ensure_ascii=False) + "\n")
-
-    total_examples = len(records_info)
-    annotated_examples = sum(1 for info in records_info if info["metadata"].get("annotation_complete"))
 
     return total_examples, annotated_examples
 
@@ -441,7 +326,7 @@ def main() -> None:
         st.warning("Dataset is empty or could not be parsed.")
         return
 
-    store_by_window, store_by_signature = load_annotation_store(annotation_path.as_posix())
+    store = load_annotation_store(annotation_path.as_posix())
 
     total_examples = len(entries)
     annotated_examples = sum(1 for entry in entries if entry["annotation_complete"])
@@ -494,10 +379,7 @@ def main() -> None:
     else:
         st.info("Select at least one telemetry feature to visualise.")
 
-    signature = selected_entry.get("signature")
-    existing_annotation = store_by_window.get(selected_window_id, {})
-    if not existing_annotation and signature:
-        existing_annotation = store_by_signature.get(signature, {})
+    existing_annotation = store.get(selected_window_id, {})
     driver_note_default = existing_annotation.get("driver_note") or selected_entry.get("driver_note", "")
     coaching_note_default = existing_annotation.get("coaching_explanation") or selected_entry.get("coaching_explanation", "")
 
