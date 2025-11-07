@@ -18,149 +18,18 @@ from typing import Dict, List, Any, Optional, Tuple, Union
 from datetime import datetime
 from pathlib import Path
 
-import torch
-from torch import nn
-from torch.utils.data import DataLoader, Dataset
-
 # Scikit-learn imports for trajectory learning
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
-from sklearn.metrics import mean_squared_error, mean_absolute_error, accuracy_score, f1_score, r2_score
+from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier
+from sklearn.metrics import mean_squared_error, mean_absolute_error, accuracy_score, f1_score
+from sklearn.decomposition import PCA
 
 # Import your telemetry models
 from ..models.telemetry_models import TelemetryFeatures, FeatureProcessor
 from .tire_grip_analysis_service import TireGripFeatureCatalog
 
 warnings.filterwarnings('ignore', category=UserWarning)
-
-
-class ExpertPositionDataset(Dataset):
-    """Torch dataset for expert position learning."""
-
-    def __init__(
-        self,
-        inputs: np.ndarray,
-        track_indices: np.ndarray,
-        regression_targets: Optional[np.ndarray] = None,
-        classification_targets: Optional[np.ndarray] = None,
-    ):
-        if inputs.ndim == 1:
-            inputs = inputs.reshape(-1, 1)
-
-        self.inputs = inputs.astype(np.float32)
-        self.track_indices = track_indices.astype(np.int64)
-
-        if regression_targets is not None and regression_targets.size > 0:
-            self.regression_targets = regression_targets.astype(np.float32)
-            self.has_regression = True
-        else:
-            self.regression_targets = None
-            self.has_regression = False
-
-        if classification_targets is not None and classification_targets.size > 0:
-            self.classification_targets = classification_targets.astype(np.int64)
-            self.has_classification = True
-        else:
-            self.classification_targets = None
-            self.has_classification = False
-
-        if len(self.inputs) == 0:
-            raise ValueError("ExpertPositionDataset cannot be empty")
-
-    def __len__(self) -> int:
-        return len(self.inputs)
-
-    def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
-        sample: Dict[str, torch.Tensor] = {
-            'inputs': torch.from_numpy(self.inputs[idx])
-        }
-
-        sample['track_idx'] = torch.tensor(self.track_indices[idx], dtype=torch.long)
-
-        if self.has_regression:
-            sample['regression_targets'] = torch.from_numpy(self.regression_targets[idx])
-
-        if self.has_classification:
-            sample['classification_targets'] = torch.tensor(
-                self.classification_targets[idx], dtype=torch.long
-            )
-
-        return sample
-
-
-class NeuralExpertModel(nn.Module):
-    """Multi-head neural network for expert trajectory imitation."""
-
-    def __init__(
-        self,
-        input_dim: int,
-        track_vocab_size: int,
-        regression_dim: int,
-        classification_dim: int,
-        hidden_layers: Optional[List[int]] = None,
-        dropout: float = 0.1,
-    ):
-        super().__init__()
-
-        if hidden_layers is None or not hidden_layers:
-            hidden_layers = [128, 128, 64]
-
-        self.track_vocab_size = track_vocab_size
-        self.regression_dim = regression_dim
-        self.classification_dim = classification_dim
-
-        embed_dim = 0
-        if track_vocab_size > 1:
-            embed_dim = max(4, min(32, track_vocab_size // 2 + 1))
-            self.track_embedding = nn.Embedding(track_vocab_size, embed_dim)
-        else:
-            self.track_embedding = None
-
-        layers: List[nn.Module] = []
-        current_dim = input_dim + embed_dim
-
-        for hidden_dim in hidden_layers:
-            layers.append(nn.Linear(current_dim, hidden_dim))
-            layers.append(nn.ReLU())
-            if dropout > 0:
-                layers.append(nn.Dropout(dropout))
-            current_dim = hidden_dim
-
-        self.backbone = nn.Sequential(*layers) if layers else nn.Identity()
-
-        if regression_dim > 0:
-            self.regression_head = nn.Linear(current_dim, regression_dim)
-        else:
-            self.regression_head = None
-
-        if classification_dim > 0:
-            self.classification_head = nn.Linear(current_dim, classification_dim)
-        else:
-            self.classification_head = None
-
-    def forward(
-        self,
-        inputs: torch.Tensor,
-        track_idx: Optional[torch.Tensor] = None,
-    ) -> Dict[str, torch.Tensor]:
-        if inputs.dim() == 1:
-            inputs = inputs.unsqueeze(1)
-
-        if self.track_embedding is not None and track_idx is not None:
-            embedded = self.track_embedding(track_idx)
-            features = torch.cat([inputs, embedded], dim=1)
-        else:
-            features = inputs
-
-        backbone_out = self.backbone(features)
-
-        outputs: Dict[str, torch.Tensor] = {}
-        if self.regression_head is not None:
-            outputs['regression'] = self.regression_head(backbone_out)
-        if self.classification_head is not None:
-            outputs['classification'] = self.classification_head(backbone_out)
-
-        return outputs
 
 class ExpertFeatureCatalog:
     """Canonical expert feature names for downstream models.
@@ -198,7 +67,7 @@ class SegmentImprovementConfig:
 
     expert_velocity_alignment: float = 0.9
     expert_speed_diff_max: float = 5.0
-    expert_distance_max: float = 3.0
+    expert_distance_max: float = 5.0
 
     driver_push_high_threshold: float = 0.4
     driver_push_trend_min: float = 0.01
@@ -245,54 +114,42 @@ class SegmentImprovementSummary:
 
 
 class ExpertPositionLearner:
-    """Learn expert actions based on normalized track position across all tracks with neural networks."""
-
-    TRACK_COLUMN_CANDIDATES = [
-        'Static_track',
-        'track_name',
-        'TrackName',
-        'metadata_track_name',
-        'Metadata_track_name',
-    ]
-
+    """Learn expert actions based on normalized track position from multiple expert laps"""
+    
     def __init__(self):
-        self.position_model: Optional[Dict[str, Any]] = None
-        self.position_scaler = StandardScaler()
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self._neural_model: Optional[NeuralExpertModel] = None
-
-    @staticmethod
-    def _extract_track_series(df: pd.DataFrame) -> pd.Series:
-        if df.empty:
-            return pd.Series(dtype=str)
-
-        for column in ExpertPositionLearner.TRACK_COLUMN_CANDIDATES:
-            if column in df.columns:
-                series = df[column].fillna('GLOBAL').astype(str)
-                if series.str.strip().eq('').all():
-                    continue
-                series = series.replace('', 'GLOBAL')
-                return series.reset_index(drop=True)
-
-        # Fall back to a synthetic GLOBAL track label
-        return pd.Series(['GLOBAL'] * len(df))
-
-    def extract_position_features(self, df: pd.DataFrame) -> Dict[str, Any]:
-        """Extract normalized position input, targets, and track labels."""
-        if df.empty:
-            raise ValueError("Telemetry DataFrame is empty")
-
+        self.position_model = None
+        self.scaler = StandardScaler()
+        self.position_scaler = StandardScaler()  # Separate scaler for position input
+        
+        # Models for different output types
+        self.action_models = {}  # For steering, gas, brake
+        self.gear_model = None   # Classification model for gear
+        self.position_models = {} # For position x,y,z predictions
+        self.velocity_models = {} # For velocity x,y,z predictions
+    
+    def extract_position_features(self, df: pd.DataFrame) -> Dict[str, pd.DataFrame]:
+        """
+        Extract position-based features for expert learning
+        
+        Args:
+            df: Telemetry DataFrame
+            
+        Returns:
+            Dictionary with input features (normalized position) and target features (expert actions/states)
+        """
         input_features = pd.DataFrame()
         target_features = pd.DataFrame()
-
+        
+        # Input feature: normalized track position (primary input)
         if 'Graphics_normalized_car_position' in df.columns:
             input_features['normalized_position'] = df['Graphics_normalized_car_position']
         else:
             raise ValueError("Graphics_normalized_car_position not found - this is required for position-based learning")
-
+        
+        # Target features: Expert actions and states
         EO = ExpertFeatureCatalog.ExpertOptimalFeature
-
-        # Expert action targets
+        
+        # Actions
         if 'Physics_steer_angle' in df.columns:
             target_features[EO.EXPERT_OPTIMAL_STEERING.value] = df['Physics_steer_angle']
         if 'Physics_gas' in df.columns:
@@ -301,7 +158,7 @@ class ExpertPositionLearner:
             target_features[EO.EXPERT_OPTIMAL_BRAKE.value] = df['Physics_brake']
         if 'Physics_gear' in df.columns:
             target_features[EO.EXPERT_OPTIMAL_GEAR.value] = df['Physics_gear']
-
+        
         # Positions
         if 'Graphics_player_pos_x' in df.columns:
             target_features[EO.EXPERT_OPTIMAL_PLAYER_POS_X.value] = df['Graphics_player_pos_x']
@@ -309,7 +166,7 @@ class ExpertPositionLearner:
             target_features[EO.EXPERT_OPTIMAL_PLAYER_POS_Y.value] = df['Graphics_player_pos_y']
         if 'Graphics_player_pos_z' in df.columns:
             target_features[EO.EXPERT_OPTIMAL_PLAYER_POS_Z.value] = df['Graphics_player_pos_z']
-
+            
         # Velocities
         if 'Physics_velocity_x' in df.columns:
             target_features[EO.EXPERT_OPTIMAL_VELOCITY_X.value] = df['Physics_velocity_x']
@@ -317,591 +174,466 @@ class ExpertPositionLearner:
             target_features[EO.EXPERT_OPTIMAL_VELOCITY_Y.value] = df['Physics_velocity_y']
         if 'Physics_velocity_z' in df.columns:
             target_features[EO.EXPERT_OPTIMAL_VELOCITY_Z.value] = df['Physics_velocity_z']
-
+            
+        # Speed (derived)
         if 'Physics_speed_kmh' in df.columns:
             target_features[EO.EXPERT_OPTIMAL_SPEED.value] = df['Physics_speed_kmh']
-
+            
+        # Track position (for consistency)
         if 'Graphics_normalized_car_position' in df.columns:
             target_features[EO.EXPERT_OPTIMAL_TRACK_POSITION.value] = df['Graphics_normalized_car_position']
-
-        input_features = input_features.fillna(0).reset_index(drop=True)
-        target_features = target_features.fillna(0).reset_index(drop=True)
-        track_series = self._extract_track_series(df)
-
+        
+        # Clean data
+        input_features = input_features.fillna(0)
+        target_features = target_features.fillna(0)
+        
         return {
             'input_features': input_features,
-            'target_features': target_features,
-            'track_labels': track_series,
+            'target_features': target_features
         }
-
-    def _prepare_targets(self, target_features: pd.DataFrame) -> Tuple[
-        Optional[np.ndarray],
-        List[str],
-        Dict[str, StandardScaler],
-        Optional[np.ndarray],
-        Optional[str],
-        Dict[int, int],
-    ]:
+    
+    def learn_expert_position_mapping(self, expert_df: pd.DataFrame) -> Dict[str, Any]:
+        """
+        Learn expert actions from normalized track position using multiple expert laps
+        
+        Args:
+            expert_df: Expert driver telemetry data from multiple laps
+            
+        Returns:
+            Dictionary with learned position-based model and insights
+        """
+        print(f"[INFO] Learning expert position mapping from {len(expert_df)} expert data points")
+        
+        # Extract position-based features
+        feature_data = self.extract_position_features(expert_df)
+        input_features = feature_data['input_features']
+        target_features = feature_data['target_features']
+        
+        if len(input_features) == 0:
+            raise ValueError("No input features extracted")
+        if len(target_features.columns) == 0:
+            raise ValueError("No target features extracted")
+            
+        print(f"[INFO] Input features shape: {input_features.shape}")
+        print(f"[INFO] Target features shape: {target_features.shape}")
+        print(f"[INFO] Available targets: {list(target_features.columns)}")
+        
+        # Prepare input (normalized position)
+        X = input_features[['normalized_position']].values
+        X_scaled = self.position_scaler.fit_transform(X)
+        
+        # Train models for each target
+        models = {}
+        performance_metrics = {}
+        
         EO = ExpertFeatureCatalog.ExpertOptimalFeature
-
-        regression_target_order: List[str] = []
+        
+        # Action models (regression)
         action_targets = [
             EO.EXPERT_OPTIMAL_STEERING.value,
             EO.EXPERT_OPTIMAL_THROTTLE.value,
             EO.EXPERT_OPTIMAL_BRAKE.value,
-            EO.EXPERT_OPTIMAL_SPEED.value,
+            EO.EXPERT_OPTIMAL_SPEED.value
         ]
+        
+        for target_name in action_targets:
+            if target_name in target_features.columns:
+                print(f"[INFO] Training action model for: {target_name}")
+                y = target_features[target_name].values
+                
+                # Split data
+                X_train, X_test, y_train, y_test = train_test_split(
+                    X_scaled, y, test_size=0.2, random_state=42
+                )
+                
+                # Train model
+                model = RandomForestRegressor(n_estimators=100, random_state=42, n_jobs=-1)
+                model.fit(X_train, y_train)
+                
+                # Evaluate
+                y_pred = model.predict(X_test)
+                r2 = model.score(X_test, y_test)
+                mse = mean_squared_error(y_test, y_pred)
+                mae = mean_absolute_error(y_test, y_pred)
+                
+                models[target_name] = model
+                performance_metrics[target_name] = {
+                    'r2': float(r2),
+                    'mse': float(mse),
+                    'mae': float(mae),
+                    'type': 'regression'
+                }
+                
+                print(f"[INFO] {target_name} - R²: {r2:.4f}, MSE: {mse:.4f}, MAE: {mae:.4f}")
+        
+        # Gear model (classification)
+        if EO.EXPERT_OPTIMAL_GEAR.value in target_features.columns:
+            print(f"[INFO] Training gear classification model")
+            y = target_features[EO.EXPERT_OPTIMAL_GEAR.value].values
+            
+            X_train, X_test, y_train, y_test = train_test_split(
+                X_scaled, y, test_size=0.2, random_state=42, stratify=y
+            )
+            
+            model = RandomForestClassifier(n_estimators=100, random_state=42, n_jobs=-1)
+            model.fit(X_train, y_train)
+            
+            y_pred = model.predict(X_test)
+            accuracy = accuracy_score(y_test, y_pred)
+            f1 = f1_score(y_test, y_pred, average='weighted')
+            
+            models[EO.EXPERT_OPTIMAL_GEAR.value] = model
+            performance_metrics[EO.EXPERT_OPTIMAL_GEAR.value] = {
+                'accuracy': float(accuracy),
+                'f1': float(f1),
+                'type': 'classification'
+            }
+            
+            print(f"[INFO] Gear - Accuracy: {accuracy:.4f}, F1: {f1:.4f}")
+        
+        # Position models (regression)
         position_targets = [
             EO.EXPERT_OPTIMAL_PLAYER_POS_X.value,
             EO.EXPERT_OPTIMAL_PLAYER_POS_Y.value,
-            EO.EXPERT_OPTIMAL_PLAYER_POS_Z.value,
+            EO.EXPERT_OPTIMAL_PLAYER_POS_Z.value
         ]
+        
+        for target_name in position_targets:
+            if target_name in target_features.columns:
+                print(f"[INFO] Training position model for: {target_name}")
+                y = target_features[target_name].values
+                
+                X_train, X_test, y_train, y_test = train_test_split(
+                    X_scaled, y, test_size=0.2, random_state=42
+                )
+                
+                model = RandomForestRegressor(n_estimators=100, random_state=42, n_jobs=-1)
+                model.fit(X_train, y_train)
+                
+                y_pred = model.predict(X_test)
+                r2 = model.score(X_test, y_test)
+                mse = mean_squared_error(y_test, y_pred)
+                mae = mean_absolute_error(y_test, y_pred)
+                
+                models[target_name] = model
+                performance_metrics[target_name] = {
+                    'r2': float(r2),
+                    'mse': float(mse),
+                    'mae': float(mae),
+                    'type': 'regression'
+                }
+                
+                print(f"[INFO] {target_name} - R²: {r2:.4f}, MSE: {mse:.4f}, MAE: {mae:.4f}")
+        
+        # Velocity models (regression)
         velocity_targets = [
             EO.EXPERT_OPTIMAL_VELOCITY_X.value,
             EO.EXPERT_OPTIMAL_VELOCITY_Y.value,
-            EO.EXPERT_OPTIMAL_VELOCITY_Z.value,
+            EO.EXPERT_OPTIMAL_VELOCITY_Z.value
         ]
-
-        ordered_candidates = action_targets + position_targets + velocity_targets + [
-            EO.EXPERT_OPTIMAL_TRACK_POSITION.value
-        ]
-
-        for target in ordered_candidates:
-            if target in target_features.columns and target != EO.EXPERT_OPTIMAL_GEAR.value:
-                regression_target_order.append(target)
-
-        regression_matrix: Optional[np.ndarray] = None
-        target_scalers: Dict[str, StandardScaler] = {}
-
-        if regression_target_order:
-            regression_matrix = np.zeros((len(target_features), len(regression_target_order)), dtype=np.float32)
-            for idx, target_name in enumerate(regression_target_order):
-                scaler = StandardScaler()
-                values = target_features[[target_name]].values
-                scaled = scaler.fit_transform(values)
-                regression_matrix[:, idx] = scaled.flatten()
-                target_scalers[target_name] = scaler
-
-        classification_indices: Optional[np.ndarray] = None
-        classification_target: Optional[str] = None
-        index_to_label: Dict[int, int] = {}
-
-        if EO.EXPERT_OPTIMAL_GEAR.value in target_features.columns:
-            gear_values = target_features[EO.EXPERT_OPTIMAL_GEAR.value].fillna(0).astype(int)
-            unique_gears = sorted({int(v) for v in gear_values.unique()}) or [0]
-            class_to_index = {gear: idx for idx, gear in enumerate(unique_gears)}
-            index_to_label = {idx: gear for gear, idx in class_to_index.items()}
-            classification_indices = gear_values.map(class_to_index).to_numpy(dtype=np.int64)
-            classification_target = EO.EXPERT_OPTIMAL_GEAR.value
-
-        return (
-            regression_matrix,
-            regression_target_order,
-            target_scalers,
-            classification_indices,
-            classification_target,
-            index_to_label,
-        )
-
-    @staticmethod
-    def _split_indices(
-        total_size: int,
-        classification_indices: Optional[np.ndarray],
-    ) -> Tuple[np.ndarray, np.ndarray]:
-        indices = np.arange(total_size)
-        if total_size < 10:
-            return indices, indices
-
-        stratify = None
-        if (
-            classification_indices is not None
-            and len(np.unique(classification_indices)) > 1
-        ):
-            stratify = classification_indices
-
-        train_idx, val_idx = train_test_split(
-            indices,
-            test_size=0.2,
-            random_state=42,
-            stratify=stratify,
-        )
-        return train_idx, val_idx
-
-    @staticmethod
-    def _build_dataloader(dataset: ExpertPositionDataset, shuffle: bool) -> DataLoader:
-        batch_size = min(256, max(8, len(dataset) // 4))
-        if batch_size > len(dataset):
-            batch_size = len(dataset)
-        batch_size = max(batch_size, 1)
-        return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle)
-
-    def _instantiate_model(self, model_config: Dict[str, Any], state_dict: Optional[Dict[str, Any]] = None) -> NeuralExpertModel:
-        regression_targets = model_config.get('regression_targets', [])
-        classification_lookup = model_config.get('classification_index_to_label', {})
-
-        model = NeuralExpertModel(
-            input_dim=model_config['input_dim'],
-            track_vocab_size=len(model_config.get('track_vocab', [])),
-            regression_dim=len(regression_targets),
-            classification_dim=len(classification_lookup) if model_config.get('classification_target') else 0,
-            hidden_layers=model_config.get('hidden_layers', [128, 128, 64]),
-        )
-
-        if state_dict is not None:
-            model.load_state_dict(state_dict)
-
-        model.to(self.device)
-        model.eval()
-        return model
-
-    def learn_expert_position_mapping(self, expert_df: pd.DataFrame) -> Dict[str, Any]:
-        print(f"[INFO] Learning expert position mapping from {len(expert_df)} expert data points")
-
-        features = self.extract_position_features(expert_df)
-        input_features = features['input_features']
-        target_features = features['target_features']
-        track_labels = features['track_labels']
-
-        if input_features.empty or target_features.empty:
-            raise ValueError("Insufficient features extracted from expert telemetry")
-
-        X = input_features[['normalized_position']].values.astype(np.float32)
-        X_scaled = self.position_scaler.fit_transform(X)
-
-        (
-            regression_matrix,
-            regression_targets,
-            target_scalers,
-            classification_indices,
-            classification_target,
-            index_to_label,
-        ) = self._prepare_targets(target_features)
-
-        track_series = track_labels.fillna('GLOBAL').astype(str)
-        track_vocab = sorted(track_series.unique().tolist()) or ['GLOBAL']
-        track_lookup = {name: idx for idx, name in enumerate(track_vocab)}
-        track_indices = track_series.map(track_lookup).to_numpy(dtype=np.int64)
-
-        train_idx, val_idx = self._split_indices(len(X_scaled), classification_indices)
-
-        regression_train = regression_matrix[train_idx] if regression_matrix is not None else None
-        regression_val = regression_matrix[val_idx] if regression_matrix is not None else None
-
-        class_train = classification_indices[train_idx] if classification_indices is not None else None
-        class_val = classification_indices[val_idx] if classification_indices is not None else None
-
-        train_dataset = ExpertPositionDataset(
-            X_scaled[train_idx],
-            track_indices[train_idx],
-            regression_targets=regression_train,
-            classification_targets=class_train,
-        )
-        val_dataset = ExpertPositionDataset(
-            X_scaled[val_idx],
-            track_indices[val_idx],
-            regression_targets=regression_val,
-            classification_targets=class_val,
-        )
-
-        train_loader = self._build_dataloader(train_dataset, shuffle=True)
-        val_loader = self._build_dataloader(val_dataset, shuffle=False)
-
-        model_config = {
-            'input_dim': X_scaled.shape[1],
-            'track_vocab': track_vocab,
-            'track_lookup': track_lookup,
-            'default_track': track_vocab[0],
-            'regression_targets': regression_targets,
-            'classification_target': classification_target,
-            'classification_index_to_label': {int(k): int(v) for k, v in index_to_label.items()},
-            'hidden_layers': [128, 128, 64],
-        }
-
-        model = NeuralExpertModel(
-            input_dim=model_config['input_dim'],
-            track_vocab_size=len(track_vocab),
-            regression_dim=len(regression_targets),
-            classification_dim=len(index_to_label) if classification_target else 0,
-            hidden_layers=model_config['hidden_layers'],
-        ).to(self.device)
-
-        optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-5)
-        criterion_regression = nn.MSELoss()
-        criterion_classification = nn.CrossEntropyLoss()
-
-        best_state: Optional[Dict[str, torch.Tensor]] = None
-        best_val_loss = float('inf')
-        epochs_without_improvement = 0
-        patience = 20
-        max_epochs = 200
-
-        for epoch in range(max_epochs):
-            model.train()
-            train_loss = 0.0
-            sample_count = 0
-
-            for batch in train_loader:
-                inputs = batch['inputs'].to(self.device)
-                track_idx = batch['track_idx'].to(self.device)
-
-                optimizer.zero_grad()
-                outputs = model(inputs, track_idx)
-
-                loss = 0.0
-
-                if 'regression_targets' in batch and model.regression_head is not None:
-                    regression_targets_tensor = batch['regression_targets'].to(self.device)
-                    loss = loss + criterion_regression(outputs['regression'], regression_targets_tensor)
-
-                if 'classification_targets' in batch and model.classification_head is not None:
-                    classification_targets_tensor = batch['classification_targets'].to(self.device)
-                    loss = loss + criterion_classification(outputs['classification'], classification_targets_tensor)
-
-                loss.backward()
-                optimizer.step()
-
-                train_loss += loss.item() * inputs.size(0)
-                sample_count += inputs.size(0)
-
-            if sample_count > 0:
-                train_loss /= sample_count
-
-            model.eval()
-            val_loss = 0.0
-            val_samples = 0
-
-            with torch.no_grad():
-                for batch in val_loader:
-                    inputs = batch['inputs'].to(self.device)
-                    track_idx = batch['track_idx'].to(self.device)
-                    outputs = model(inputs, track_idx)
-
-                    batch_loss = 0.0
-                    if 'regression_targets' in batch and model.regression_head is not None:
-                        regression_targets_tensor = batch['regression_targets'].to(self.device)
-                        batch_loss += criterion_regression(outputs['regression'], regression_targets_tensor)
-
-                    if 'classification_targets' in batch and model.classification_head is not None:
-                        classification_targets_tensor = batch['classification_targets'].to(self.device)
-                        batch_loss += criterion_classification(outputs['classification'], classification_targets_tensor)
-
-                    val_loss += batch_loss.item() * inputs.size(0)
-                    val_samples += inputs.size(0)
-
-            if val_samples > 0:
-                val_loss /= val_samples
-            else:
-                val_loss = train_loss
-
-            if val_loss < best_val_loss - 1e-5:
-                best_val_loss = val_loss
-                best_state = {key: value.detach().cpu() for key, value in model.state_dict().items()}
-                epochs_without_improvement = 0
-            else:
-                epochs_without_improvement += 1
-                if epochs_without_improvement >= patience:
-                    break
-
-        if best_state is not None:
-            model.load_state_dict(best_state)
-        else:
-            best_state = {key: value.detach().cpu() for key, value in model.state_dict().items()}
-
-        self._neural_model = model.eval()
-
-        # Collect validation predictions for metrics
-        regression_predictions = None
-        classification_predictions = None
-        if len(val_dataset) > 0:
-            reg_outputs: List[np.ndarray] = []
-            cls_outputs: List[np.ndarray] = []
-            with torch.no_grad():
-                for batch in val_loader:
-                    inputs = batch['inputs'].to(self.device)
-                    track_idx = batch['track_idx'].to(self.device)
-                    outputs = model(inputs, track_idx)
-
-                    if model.regression_head is not None and 'regression' in outputs:
-                        reg_outputs.append(outputs['regression'].cpu().numpy())
-
-                    if model.classification_head is not None and 'classification' in outputs:
-                        cls_outputs.append(torch.argmax(outputs['classification'], dim=1).cpu().numpy())
-
-            if reg_outputs:
-                regression_predictions = np.concatenate(reg_outputs, axis=0)
-            if cls_outputs:
-                classification_predictions = np.concatenate(cls_outputs, axis=0)
-
-        performance_metrics: Dict[str, Dict[str, float]] = {}
-        if regression_predictions is not None and regression_targets:
-            for idx, target_name in enumerate(regression_targets):
-                y_true = target_features.iloc[val_idx][target_name].to_numpy()
-                scaler = target_scalers[target_name]
-                y_pred_scaled = regression_predictions[:, idx].reshape(-1, 1)
-                y_pred = scaler.inverse_transform(y_pred_scaled).flatten()
-
-                try:
-                    r2 = float(r2_score(y_true, y_pred)) if len(np.unique(y_true)) > 1 else 0.0
-                except Exception:
-                    r2 = 0.0
-
+        
+        for target_name in velocity_targets:
+            if target_name in target_features.columns:
+                print(f"[INFO] Training velocity model for: {target_name}")
+                y = target_features[target_name].values
+                
+                X_train, X_test, y_train, y_test = train_test_split(
+                    X_scaled, y, test_size=0.2, random_state=42
+                )
+                
+                model = RandomForestRegressor(n_estimators=100, random_state=42, n_jobs=-1)
+                model.fit(X_train, y_train)
+                
+                y_pred = model.predict(X_test)
+                r2 = model.score(X_test, y_test)
+                mse = mean_squared_error(y_test, y_pred)
+                mae = mean_absolute_error(y_test, y_pred)
+                
+                models[target_name] = model
                 performance_metrics[target_name] = {
-                    'type': 'regression',
-                    'r2': r2,
-                    'mse': float(mean_squared_error(y_true, y_pred)),
-                    'mae': float(mean_absolute_error(y_true, y_pred)),
+                    'r2': float(r2),
+                    'mse': float(mse),
+                    'mae': float(mae),
+                    'type': 'regression'
                 }
-
-        if (
-            classification_target
-            and classification_predictions is not None
-            and classification_indices is not None
-        ):
-            y_true_indices = classification_indices[val_idx]
-            index_to_label_map = model_config['classification_index_to_label']
-            y_true_labels = [index_to_label_map.get(int(idx), 0) for idx in y_true_indices]
-            y_pred_labels = [index_to_label_map.get(int(idx), 0) for idx in classification_predictions]
-
-            try:
-                accuracy = float(accuracy_score(y_true_labels, y_pred_labels))
-            except Exception:
-                accuracy = 0.0
-
-            try:
-                f1 = float(f1_score(y_true_labels, y_pred_labels, average='weighted'))
-            except Exception:
-                f1 = 0.0
-
-            performance_metrics[classification_target] = {
-                'type': 'classification',
-                'accuracy': accuracy,
-                'f1': f1,
+                
+                print(f"[INFO] {target_name} - R²: {r2:.4f}, MSE: {mse:.4f}, MAE: {mae:.4f}")
+        
+        # Track position model (for consistency)
+        if EO.EXPERT_OPTIMAL_TRACK_POSITION.value in target_features.columns:
+            print(f"[INFO] Training track position model")
+            y = target_features[EO.EXPERT_OPTIMAL_TRACK_POSITION.value].values
+            
+            X_train, X_test, y_train, y_test = train_test_split(
+                X_scaled, y, test_size=0.2, random_state=42
+            )
+            
+            model = RandomForestRegressor(n_estimators=100, random_state=42, n_jobs=-1)
+            model.fit(X_train, y_train)
+            
+            y_pred = model.predict(X_test)
+            r2 = model.score(X_test, y_test)
+            mse = mean_squared_error(y_test, y_pred)
+            mae = mean_absolute_error(y_test, y_pred)
+            
+            models[EO.EXPERT_OPTIMAL_TRACK_POSITION.value] = model
+            performance_metrics[EO.EXPERT_OPTIMAL_TRACK_POSITION.value] = {
+                'r2': float(r2),
+                'mse': float(mse),
+                'mae': float(mae),
+                'type': 'regression'
             }
-
+            
+            print(f"[INFO] Track position - R²: {r2:.4f}, MSE: {mse:.4f}, MAE: {mae:.4f}")
+        
+        # Store the complete position model
         self.position_model = {
-            'model_state_dict': best_state,
-            'model_config': model_config,
+            'models': models,
             'position_scaler': self.position_scaler,
-            'target_scalers': target_scalers,
             'performance_metrics': performance_metrics,
             'input_features': ['normalized_position'],
-            'target_features': list(target_features.columns),
-            'train_size': len(train_dataset),
-            'val_size': len(val_dataset),
+            'target_features': list(target_features.columns)
         }
-
+        
         return {
             'modelData': self.position_model,
             'metadata': {
                 'performance_metrics': performance_metrics,
                 'input_features': ['normalized_position'],
                 'target_features': list(target_features.columns),
-                'models_trained': regression_targets + ([classification_target] if classification_target else []),
-                'total_training_samples': len(expert_df),
-                'track_vocab_size': len(track_vocab),
-                'tracks': track_vocab,
-            },
+                'models_trained': list(models.keys()),
+                'total_training_samples': len(expert_df)
+            }
         }
-
-    def _resolve_track_indices(
-        self,
-        track_names: Optional[Union[str, List[str]]],
-        batch_size: int,
-    ) -> np.ndarray:
-        if not self.position_model:
-            raise ValueError("Position model not trained")
-
-        config = self.position_model['model_config']
-        track_lookup = config.get('track_lookup', {})
-        default_track = config.get('default_track', 'GLOBAL')
-
-        if track_names is None:
-            track_names = [default_track] * batch_size
-        elif isinstance(track_names, str):
-            track_names = [track_names] * batch_size
-        elif len(track_names) == 1 and batch_size > 1:
-            track_names = track_names * batch_size
-
-        resolved = []
-        for name in track_names:
-            resolved.append(track_lookup.get(str(name), track_lookup.get(default_track, 0)))
-
-        return np.array(resolved, dtype=np.int64)
-
-    def _ensure_model(self) -> NeuralExpertModel:
-        if not self.position_model:
-            raise ValueError("Position model not trained")
-
-        if self._neural_model is None:
-            state_dict = self.position_model['model_state_dict']
-            model_config = self.position_model['model_config']
-            model = self._instantiate_model(model_config, state_dict)
-            self._neural_model = model
-        else:
-            self._neural_model.to(self.device)
-            self._neural_model.eval()
-
-        return self._neural_model
-
-    def predict_expert_actions_at_position(
-        self,
-        normalized_positions: Union[float, List[float], np.ndarray],
-        track_names: Optional[Union[str, List[str]]] = None,
-    ) -> Union[Dict[str, float], List[Dict[str, float]]]:
+    
+    def predict_expert_actions_at_position(self, normalized_positions: Union[float, List[float], np.ndarray]) -> Union[Dict[str, float], List[Dict[str, float]]]:
+        """
+        Predict expert actions at given normalized track position(s)
+        
+        Args:
+            normalized_positions: Single position or array of positions (0.0 to 1.0)
+            
+        Returns:
+            Dictionary with expert predictions, or list of dictionaries for multiple positions
+        """
         if not self.position_model:
             raise ValueError("No position model trained. Call learn_expert_position_mapping() first.")
-
+        
+        # Handle single position vs multiple positions
         single_position = isinstance(normalized_positions, (int, float))
         if single_position:
-            positions_array = np.array([[normalized_positions]], dtype=np.float32)
+            positions_array = np.array([[normalized_positions]])
         else:
-            positions_array = np.array(normalized_positions, dtype=np.float32).reshape(-1, 1)
-
-        positions_scaled = self.position_model['position_scaler'].transform(positions_array).astype(np.float32)
-        track_indices = self._resolve_track_indices(track_names, positions_scaled.shape[0])
-
-        model = self._ensure_model()
-
-        inputs_tensor = torch.from_numpy(positions_scaled).to(self.device)
-        track_tensor = torch.from_numpy(track_indices).to(self.device)
-
-        regression_predictions: Dict[str, np.ndarray] = {}
-        classification_predictions: Optional[np.ndarray] = None
-
-        with torch.no_grad():
-            outputs = model(inputs_tensor, track_tensor)
-
-            if model.regression_head is not None and 'regression' in outputs:
-                regression_output = outputs['regression'].cpu().numpy()
-                for idx, target_name in enumerate(self.position_model['model_config'].get('regression_targets', [])):
-                    scaler = self.position_model['target_scalers'][target_name]
-                    regression_predictions[target_name] = scaler.inverse_transform(
-                        regression_output[:, idx].reshape(-1, 1)
-                    ).flatten()
-
-            if model.classification_head is not None and 'classification' in outputs:
-                logits = outputs['classification']
-                classification_predictions = torch.argmax(logits, dim=1).cpu().numpy()
-
-        results: List[Dict[str, float]] = []
-        num_samples = positions_scaled.shape[0]
-        index_to_label_map = self.position_model['model_config'].get('classification_index_to_label', {})
-        classification_target = self.position_model['model_config'].get('classification_target')
-
-        for sample_idx in range(num_samples):
-            sample_result: Dict[str, float] = {}
-
-            for target_name, values in regression_predictions.items():
-                sample_result[target_name] = float(values[sample_idx])
-
-            if classification_target and classification_predictions is not None:
-                raw_label = index_to_label_map.get(int(classification_predictions[sample_idx]), 0)
-                sample_result[classification_target] = float(raw_label)
-
-            results.append(sample_result)
-
+            positions_array = np.array(normalized_positions).reshape(-1, 1)
+        
+        # Scale positions
+        positions_scaled = self.position_model['position_scaler'].transform(positions_array)
+        
+        # Make predictions for all models
+        predictions = {}
+        for model_name, model in self.position_model['models'].items():
+            pred = model.predict(positions_scaled)
+            predictions[model_name] = pred
+        
+        # Format results
         if single_position:
-            return results[0] if results else {}
-        return results
+            # Return single dictionary
+            result = {}
+            for model_name, pred_array in predictions.items():
+                result[model_name] = float(pred_array[0])
+            return result
+        else:
+            # Return list of dictionaries
+            results = []
+            for i in range(len(positions_array)):
+                result = {}
+                for model_name, pred_array in predictions.items():
+                    result[model_name] = float(pred_array[i])
+                results.append(result)
+            return results 
+
 
     def debug_position_model(self) -> Dict[str, Any]:
+        """
+        Debug method to inspect the current position model state
+        
+        Returns:
+            Dictionary with detailed model debugging information
+        """
         if not self.position_model:
             return {
                 'status': 'No model available',
                 'has_model': False,
-                'error': 'Position model not trained yet',
+                'error': 'Position model not trained yet'
             }
-
-        config = self.position_model.get('model_config', {})
-        return {
+        
+        debug_info = {
             'status': 'Model available',
             'has_model': True,
-            'model_structure': {
-                'tracks': config.get('track_vocab', []),
-                'regression_targets': config.get('regression_targets', []),
-                'classification_target': config.get('classification_target'),
-                'input_dim': config.get('input_dim'),
-                'hidden_layers': config.get('hidden_layers'),
-                'performance_metrics': self.position_model.get('performance_metrics', {}),
-            },
+            'model_structure': {}
         }
-
+        
+        # Check model structure
+        for key, value in self.position_model.items():
+            if key == 'models':
+                debug_info['model_structure']['models'] = {
+                    'count': len(value),
+                    'model_names': list(value.keys()),
+                    'model_types': [type(model).__name__ for model in value.values()]
+                }
+            elif key == 'position_scaler':
+                debug_info['model_structure']['position_scaler'] = {
+                    'type': type(value).__name__,
+                    'fitted': hasattr(value, 'mean_')
+                }
+            elif key == 'performance_metrics':
+                debug_info['model_structure']['performance_metrics'] = {
+                    'available_metrics': list(value.keys()),
+                    'metric_count': len(value)
+                }
+            else:
+                debug_info['model_structure'][key] = {
+                    'type': type(value).__name__,
+                    'value': str(value) if not isinstance(value, (list, dict)) else f"{type(value).__name__} with {len(value)} items"
+                }
+        
+        return debug_info
+    
     def validate_position_input(self, normalized_positions: Union[float, List[float], np.ndarray]) -> Dict[str, Any]:
+        """
+        Validate normalized position input for prediction
+        
+        Args:
+            normalized_positions: Position(s) to validate
+            
+        Returns:
+            Dictionary with validation results
+        """
         validation_results = {
             'valid': True,
             'errors': [],
             'warnings': [],
-            'input_analysis': {},
+            'input_analysis': {}
         }
-
+        
+        # Check if model exists
         if not self.position_model:
             validation_results['valid'] = False
             validation_results['errors'].append("No position model trained")
             return validation_results
-
+        
+        # Convert input to array for analysis
         if isinstance(normalized_positions, (int, float)):
-            positions_array = np.array([normalized_positions], dtype=np.float32)
+            positions_array = np.array([normalized_positions])
         else:
-            positions_array = np.array(normalized_positions, dtype=np.float32).flatten()
-
-        if positions_array.size == 0:
-            validation_results['valid'] = False
-            validation_results['errors'].append("No positions provided")
-            return validation_results
-
+            positions_array = np.array(normalized_positions).flatten()
+        
+        # Analyze input data
         validation_results['input_analysis'] = {
-            'count': int(positions_array.size),
+            'shape': positions_array.shape,
             'min_value': float(np.min(positions_array)),
             'max_value': float(np.max(positions_array)),
             'mean_value': float(np.mean(positions_array)),
             'has_nan': bool(np.isnan(positions_array).any()),
-            'has_inf': bool(np.isinf(positions_array).any()),
+            'has_inf': bool(np.isinf(positions_array).any())
         }
-
+        
+        # Check for problematic values
         if np.isnan(positions_array).any():
             validation_results['valid'] = False
             validation_results['errors'].append("Input contains NaN values")
+            
         if np.isinf(positions_array).any():
             validation_results['valid'] = False
             validation_results['errors'].append("Input contains infinite values")
+        
+        # Check position range (should be 0.0 to 1.0 for normalized positions)
         if np.any(positions_array < 0.0):
-            validation_results['warnings'].append("Some positions are below 0.0; expected normalized range [0, 1]")
+            validation_results['warnings'].append("Some positions are below 0.0 (not normalized)")
+            
         if np.any(positions_array > 1.0):
-            validation_results['warnings'].append("Some positions exceed 1.0; expected normalized range [0, 1]")
-
+            validation_results['warnings'].append("Some positions are above 1.0 (not normalized)")
+        
         return validation_results
-
+    
     def validate_prediction_input(self, current_state: pd.DataFrame) -> Dict[str, Any]:
+        """
+        Validate input data for prediction without actually making predictions
+        
+        Args:
+            current_state: Current telemetry state to validate
+            
+        Returns:
+            Dictionary with validation results
+        """
         validation_results = {
             'valid': True,
             'errors': [],
             'warnings': [],
             'input_analysis': {},
+            'feature_analysis': {}
         }
-
-        if not self.position_model:
+        
+        # Check if model exists
+        if not self.trajectory_model:
             validation_results['valid'] = False
-            validation_results['errors'].append("No position model trained")
+            validation_results['errors'].append("No trajectory model trained")
             return validation_results
-
-        if current_state.empty:
-            validation_results['valid'] = False
-            validation_results['errors'].append("Empty telemetry state provided")
-            return validation_results
-
+        
+        # Analyze input data
         validation_results['input_analysis'] = {
             'shape': current_state.shape,
             'columns': list(current_state.columns),
+            'dtypes': current_state.dtypes.to_dict(),
+            'missing_values': current_state.isnull().sum().to_dict(),
+            'infinite_values': np.isinf(current_state.select_dtypes(include=[np.number])).sum().to_dict()
         }
-
-        if 'Graphics_normalized_car_position' not in current_state.columns:
+        
+        # Check for problematic values
+        numeric_cols = current_state.select_dtypes(include=[np.number]).columns
+        for col in numeric_cols:
+            if current_state[col].isnull().sum() > 0:
+                validation_results['warnings'].append(f"Column {col} has {current_state[col].isnull().sum()} missing values")
+            if np.isinf(current_state[col]).sum() > 0:
+                validation_results['warnings'].append(f"Column {col} has {np.isinf(current_state[col]).sum()} infinite values")
+        
+        current_state
+        try:
+            # Extract features
+            trajectory_features = self.extract_trajectory_features(current_state)
+            
+            validation_results['feature_analysis'] = {
+                'extracted_features_count': trajectory_features.shape[1],
+                'extracted_features': list(trajectory_features.columns),
+                'required_features': self.trajectory_model['input_features']
+            }
+            
+            # Check for missing features
+            required_features = self.trajectory_model['input_features']
+            missing_features = [f for f in required_features if f not in trajectory_features.columns]
+            
+            if missing_features:
+                validation_results['valid'] = False
+                validation_results['errors'].append(f"Missing required features: {missing_features}")
+            
+            # Check feature data quality
+            feature_subset = trajectory_features[required_features].fillna(0)
+            
+            for feature in required_features:
+                if feature in trajectory_features.columns:
+                    feature_data = trajectory_features[feature]
+                    if feature_data.isnull().all():
+                        validation_results['warnings'].append(f"Feature {feature} is all null values")
+                    elif np.isinf(feature_data).any():
+                        validation_results['warnings'].append(f"Feature {feature} contains infinite values")
+                    elif feature_data.std() == 0:
+                        validation_results['warnings'].append(f"Feature {feature} has zero variance")
+            
+        except Exception as e:
             validation_results['valid'] = False
-            validation_results['errors'].append("Graphics_normalized_car_position column missing")
-
-        track_series = self._extract_track_series(current_state)
-        if track_series.empty:
-            validation_results['warnings'].append("No track metadata detected; default track profile will be used")
-
+            validation_results['errors'].append(f"Feature extraction failed: {str(e)}")
+            raise Exception(f"Feature extraction failed: {str(e)}")
+        
         return validation_results
 
 
@@ -983,35 +715,14 @@ class ExpertImitateLearningService:
             # Extract normalized positions from the input data
             if 'Graphics_normalized_car_position' in processed_df.columns:
                 normalized_positions = processed_df['Graphics_normalized_car_position'].values
-                track_series = self.position_learner._extract_track_series(processed_df)
-                optimal_actions = self.position_learner.predict_expert_actions_at_position(
-                    normalized_positions,
-                    track_names=track_series.tolist(),
-                )
+                optimal_actions = self.position_learner.predict_expert_actions_at_position(normalized_positions)
                 
                 # If multiple rows, average the predictions for consistency with old interface
                 if isinstance(optimal_actions, list):
-                    valid_actions = [action for action in optimal_actions if isinstance(action, dict)]
-
-                    if not valid_actions:
-                        predictions['optimal_actions'] = {
-                            'error': 'Model returned no valid predictions for the provided telemetry'
-                        }
-                    else:
-                        averaged_actions: Dict[str, float] = {}
-                        all_keys = set().union(*(action.keys() for action in valid_actions)) if valid_actions else set()
-
-                        for key in all_keys:
-                            values = [action.get(key) for action in valid_actions if key in action and action.get(key) is not None]
-                            if values:
-                                averaged_actions[key] = float(np.mean(values))
-
-                        if averaged_actions:
-                            predictions['optimal_actions'] = averaged_actions
-                        else:
-                            predictions['optimal_actions'] = {
-                                'error': 'Model predictions did not include actionable outputs'
-                            }
+                    averaged_actions = {}
+                    for key in optimal_actions[0].keys():
+                        averaged_actions[key] = np.mean([action[key] for action in optimal_actions])
+                    predictions['optimal_actions'] = averaged_actions
                 else:
                     predictions['optimal_actions'] = optimal_actions
             else:
@@ -1104,11 +815,7 @@ class ExpertImitateLearningService:
                     raise ValueError("Graphics_normalized_car_position not found in batch data")
                 
                 normalized_positions = batch_df['Graphics_normalized_car_position'].values
-                track_series = self.position_learner._extract_track_series(batch_df)
-                batch_predictions = self.position_learner.predict_expert_actions_at_position(
-                    normalized_positions,
-                    track_names=track_series.tolist(),
-                )
+                batch_predictions = self.position_learner.predict_expert_actions_at_position(normalized_positions)
                 return batch_predictions
             except Exception as e:
                 raise Exception(f"Batch prediction failed: {e}")
@@ -1218,8 +925,6 @@ class ExpertImitateLearningService:
         consistency_threshold: float = 1.0,
         min_segment_length: int = 20,
         min_segments: int = 0,
-        score_relaxation: float = 0.01,  # Keep a running best score and stop extending a window once the improvement/consistency score falls by more than
-        tail_window_fraction: float = 0.25, # Fraction of the current candidate window to validate independently to avoid long, weak tails
     ) -> List[List[Dict[str, Any]]]:
         """
         Identify contiguous telemetry slices that demonstrate measurable improvement or
@@ -1243,12 +948,6 @@ class ExpertImitateLearningService:
                 considering acceptance.
             min_segments: Minimum number of segments required; raises if the
                 condition is not met.
-            score_relaxation: Allowed drop in the passing score (0-1) after the
-                best scoring point before the segment is closed. Tightening this
-                value keeps segments focused around their strongest portion.
-            tail_window_fraction: Fraction of the current candidate window to
-                validate independently to avoid long, weak tails from being
-                appended to an otherwise strong segment.
 
         Returns:
             A list of telemetry segments, where each segment is a list of
@@ -1301,9 +1000,6 @@ class ExpertImitateLearningService:
         num_consistency_segments = 0
         window_evaluations = 0
 
-        score_relaxation = max(0.0, min(0.5, score_relaxation))
-        tail_window_fraction = float(np.clip(tail_window_fraction, 0.05, 0.5))
-
         idx = 0
         total_records = len(df)
         while idx < total_records:
@@ -1313,8 +1009,6 @@ class ExpertImitateLearningService:
 
             last_valid_end: Optional[int] = None
             last_pass_type: Optional[str] = None
-            best_score: Optional[float] = None
-            best_pass_type: Optional[str] = None
             max_end_index = min(total_records, idx + max_segment_length)
             evaluation_started = False
 
@@ -1328,38 +1022,8 @@ class ExpertImitateLearningService:
                 passes_consistency = summary.overall_consistency_rate >= consistency_threshold
 
                 if passes_improvement or passes_consistency:
-                    current_score = max(
-                        summary.overall_improvement_rate if passes_improvement else 0.0,
-                        summary.overall_consistency_rate if passes_consistency else 0.0,
-                    )
-                    current_pass_type = (
-                        "improvement"
-                        if passes_improvement and summary.overall_improvement_rate >= summary.overall_consistency_rate
-                        else "consistency"
-                    )
-
-                    if not self._segment_tail_meets_criteria(
-                        segment,
-                        improvement_threshold,
-                        consistency_threshold,
-                        min_segment_length,
-                        tail_window_fraction,
-                    ):
-                        if last_valid_end is not None:
-                            break
-                        idx += 1
-                        break
-
-                    if best_score is None or current_score > best_score:
-                        best_score = current_score
-                        best_pass_type = current_pass_type
-                        last_valid_end = end_idx
-                        last_pass_type = current_pass_type
-                    elif current_score >= (best_score or 0.0) - score_relaxation:
-                        last_valid_end = end_idx
-                        last_pass_type = current_pass_type
-                    else:
-                        break
+                    last_valid_end = end_idx
+                    last_pass_type = "improvement" if passes_improvement else "consistency"
                 else:
                     if last_valid_end is not None:
                         break
@@ -1374,7 +1038,7 @@ class ExpertImitateLearningService:
                 segment_df = df.iloc[idx : last_valid_end + 1]
                 optimal_segments.append(segment_df.to_dict("records"))
 
-                if (last_pass_type or best_pass_type) == "improvement":
+                if last_pass_type == "improvement":
                     num_improvement_segments += 1
                 else:
                     num_consistency_segments += 1
@@ -1459,18 +1123,15 @@ class ExpertImitateLearningService:
 
             # Driver push-to-limit analysis (0-1 intensity provided by TireGripAnalysisService)
             tire_feature = TireGripFeatureCatalog.ContextFeature.DRIVER_PUSH_TO_LIMIT.value
-            if tire_feature in segment.columns:
-                push_series = pd.to_numeric(segment[tire_feature], errors='coerce').fillna(0.0)
-                push_smoothed = _smooth_series(push_series)
-                if len(push_smoothed) > 1:
-                    summary.driver_push_available = True
-                    summary.driver_push_mean = float(np.mean(push_smoothed))
-                    sample_idx = np.arange(len(push_smoothed))
-                    summary.driver_push_trend = float(np.polyfit(sample_idx, push_smoothed, 1)[0])
-                    push_above_threshold_rate = float(np.mean(push_smoothed >= config.driver_push_high_threshold))
-                    summary.driver_push_high_rate = push_above_threshold_rate
-            else:
-                summary.driver_push_available = False
+            push_series = pd.to_numeric(segment[tire_feature], errors='coerce').fillna(0.0)
+            push_smoothed = _smooth_series(push_series)
+            if len(push_smoothed) > 1:
+                summary.driver_push_available = True
+                summary.driver_push_mean = float(np.mean(push_smoothed))
+                sample_idx = np.arange(len(push_smoothed))
+                summary.driver_push_trend = float(np.polyfit(sample_idx, push_smoothed, 1)[0])
+                push_above_threshold_rate = float(np.mean(push_smoothed >= config.driver_push_high_threshold))
+                summary.driver_push_high_rate = push_above_threshold_rate
 
             # Improvement and consistency calculations
             distance_improvement = distance_has_samples and summary.distance_to_line_trend < 0.0
@@ -1501,40 +1162,6 @@ class ExpertImitateLearningService:
             raise Exception(f"Error analyzing segment improvement: {e}")
 
         return summary
-
-    def _segment_tail_meets_criteria(
-        self,
-        segment: pd.DataFrame,
-        improvement_threshold: float,
-        consistency_threshold: float,
-        min_segment_length: int,
-        tail_window_fraction: float,
-    ) -> bool:
-        """Ensure the trailing portion of a candidate window independently satisfies acceptance heuristics."""
-
-        segment_length = len(segment)
-        if segment_length < max(3, min_segment_length):
-            return True
-
-        tail_window = max(
-            3,
-            int(segment_length * tail_window_fraction),
-            min_segment_length // 2,
-        )
-
-        if tail_window >= segment_length:
-            tail_window = max(3, segment_length // 2)
-
-        if tail_window <= 2:
-            return True
-
-        tail_segment = segment.iloc[-tail_window:]
-        tail_summary = self._analyze_segment_improvement(tail_segment)
-
-        tail_improvement = tail_summary.overall_improvement_rate >= improvement_threshold
-        tail_consistency = tail_summary.overall_consistency_rate >= consistency_threshold
-
-        return tail_improvement or tail_consistency
     
     # Visualization utilities moved to telemetry_segment_visualizer.visualize_optimal_segments
 
@@ -1551,28 +1178,37 @@ class ExpertImitateLearningService:
         print("[INFO] Serializing current position models (memory-efficient)...")
         
         try:
-            model_state = self.position_learner.position_model.get('model_state_dict')
-            if model_state is None:
-                raise ValueError("Position model is missing state dictionary")
-
-            cpu_state = {k: v.detach().cpu() for k, v in model_state.items()}
-
-            serialized_target_scalers = {}
-            for name, scaler in self.position_learner.position_model.get('target_scalers', {}).items():
-                serialized_target_scalers[name] = self.serialize_data(scaler)
-
-            result = {
-                'model_state_dict': self.serialize_data(cpu_state),
-                'position_scaler': self.serialize_data(self.position_learner.position_model['position_scaler']),
-                'target_scalers': serialized_target_scalers,
-                'model_config': self.position_learner.position_model.get('model_config', {}),
-                'performance_metrics': self.position_learner.position_model.get('performance_metrics', {}),
-                'input_features': self.position_learner.position_model.get('input_features', ['normalized_position']),
-                'target_features': self.position_learner.position_model.get('target_features', []),
-                'train_size': self.position_learner.position_model.get('train_size', 0),
-                'val_size': self.position_learner.position_model.get('val_size', 0),
-            }
-
+            # Build result structure directly without deep copying the entire model
+            result = {}
+            
+            # Serialize models individually to avoid holding multiple copies in memory
+            if 'models' in self.position_learner.position_model:
+                print("[INFO] Serializing position models...")
+                serialized_models = {}
+                
+                for model_name, model in self.position_learner.position_model['models'].items():
+                    print(f"[INFO] Serializing model: {model_name}")
+                    # Serialize directly without copying
+                    serialized_model_data = self.serialize_data(model)
+                    serialized_models[model_name] = serialized_model_data
+                    # Force garbage collection of intermediate objects
+                    import gc
+                    gc.collect()
+                
+                result['models'] = serialized_models
+                
+                # Serialize position scaler separately
+                if 'position_scaler' in self.position_learner.position_model:
+                    print("[INFO] Serializing position scaler...")
+                    result['position_scaler'] = self.serialize_data(self.position_learner.position_model['position_scaler'])
+            else:
+                raise ValueError("Invalid model structure - expected models in position_model")
+            
+            # Copy only metadata (lightweight) - no deep copy needed
+            for key in ['performance_metrics', 'input_features', 'target_features']:
+                if key in self.position_learner.position_model:
+                    result[key] = self.position_learner.position_model[key]
+            
             print("[INFO] Serialization completed successfully")
             return result
             
@@ -1595,37 +1231,33 @@ class ExpertImitateLearningService:
             print("[INFO] Deserializing imitation models...")
             
             # The serialized_results should be the direct position model structure
-            if 'model_state_dict' not in serialized_results:
-                raise ValueError("Serialized data missing model state")
-
-            print("[INFO] Deserializing position model state...")
-            state_dict = self.deserialize_data(serialized_results['model_state_dict'])
-
-            position_scaler = self.deserialize_data(serialized_results['position_scaler']) if 'position_scaler' in serialized_results else StandardScaler()
-
-            target_scalers_serialized = serialized_results.get('target_scalers', {})
-            target_scalers = {
-                name: self.deserialize_data(data) for name, data in target_scalers_serialized.items()
-            }
-
-            model_config = serialized_results.get('model_config', {})
-
-            self.position_learner.position_model = {
-                'model_state_dict': state_dict,
-                'model_config': model_config,
-                'position_scaler': position_scaler,
-                'target_scalers': target_scalers,
-                'performance_metrics': serialized_results.get('performance_metrics', {}),
-                'input_features': serialized_results.get('input_features', ['normalized_position']),
-                'target_features': serialized_results.get('target_features', []),
-                'train_size': serialized_results.get('train_size', 0),
-                'val_size': serialized_results.get('val_size', 0),
-            }
-
-            self.position_learner.position_scaler = position_scaler
-            self.position_learner._neural_model = None
-
-            print("[INFO] Successfully deserialized imitation learning model")
+            if 'models' in serialized_results:
+                print("[INFO] Deserializing position models...")
+                # Deserialize each model individually
+                deserialized_position_models = {}
+                for model_name, serialized_model in serialized_results['models'].items():
+                    print(f"[INFO] Deserializing model: {model_name}")
+                    deserialized_model = self.deserialize_data(serialized_model)
+                    deserialized_position_models[model_name] = deserialized_model
+                    
+                # Deserialize position scaler if present
+                deserialized_scaler = None
+                if 'position_scaler' in serialized_results:
+                    deserialized_scaler = self.deserialize_data(serialized_results['position_scaler'])
+                
+                # Construct the complete position model structure
+                self.position_learner.position_model = {
+                    'models': deserialized_position_models,
+                    'position_scaler': deserialized_scaler,
+                    'performance_metrics': serialized_results.get('performance_metrics', {}),
+                    'input_features': serialized_results.get('input_features', ['normalized_position']),
+                    'target_features': serialized_results.get('target_features', [])
+                }
+                
+                print(f"[INFO] Successfully deserialized and loaded {len(deserialized_position_models)} models")
+                print(f"[INFO] - Model names: {list(deserialized_position_models.keys())}")
+            else:
+                raise ValueError("No models found in serialized data")
                 
             return self
             

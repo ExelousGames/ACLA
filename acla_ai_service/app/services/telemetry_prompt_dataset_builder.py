@@ -126,24 +126,22 @@ class TelemetryPromptDatasetBuilder:
 
             chunk_records = chunk_df.to_dict("records")
             for record_index, record in enumerate(chunk_records):
-                segments = record.get("data")
-                if not isinstance(segments, list):
+                segment_candidates = self._resolve_segments_from_record(record)
+                if not segment_candidates:
                     continue
 
-                for segment_index, segment in enumerate(segments):
+                for segment_index, segment_timesteps in enumerate(segment_candidates):
                     stats.segments_processed += 1
-                    timesteps = self._extract_timesteps(segment)
 
-                    if len(timesteps) < (self.config.context_steps + self.config.prediction_steps):
+                    if len(segment_timesteps) < (self.config.context_steps + self.config.prediction_steps):
                         stats.skipped_short_segments += 1
                         continue
 
-                    # Slide across the segment to generate multiple windows
-                    end_limit = len(timesteps) - self.config.prediction_steps
+                    end_limit = len(segment_timesteps) - self.config.prediction_steps
                     for start_index in range(0, end_limit - self.config.context_steps + 1, self.config.context_stride):
                         stats.windows_generated += 1
-                        context_slice = timesteps[start_index : start_index + self.config.context_steps]
-                        future_slice = timesteps[
+                        context_slice = segment_timesteps[start_index : start_index + self.config.context_steps]
+                        future_slice = segment_timesteps[
                             start_index + self.config.context_steps : start_index + self.config.context_steps + self.config.prediction_steps
                         ]
 
@@ -187,7 +185,6 @@ class TelemetryPromptDatasetBuilder:
 
             if self.config.max_examples and stats.windows_kept >= self.config.max_examples:
                 break
-
         if shuffle:
             self._rng.shuffle(windows)
 
@@ -209,6 +206,41 @@ class TelemetryPromptDatasetBuilder:
     # ------------------------------------------------------------------
     # Prompt construction helpers
     # ------------------------------------------------------------------
+    def _resolve_segments_from_record(self, record: Dict[str, Any]) -> List[List[Dict[str, Any]]]:
+        """Return a list of segment timesteps extracted from a cache record."""
+
+        resolved_segments: List[List[Dict[str, Any]]] = []
+
+        raw_segments = record.get("data")
+        if isinstance(raw_segments, list) and raw_segments:
+            if all(isinstance(item, list) for item in raw_segments):
+                for segment in raw_segments:
+                    normalized = self._sanitize_segment(segment)
+                    if normalized:
+                        resolved_segments.append(normalized)
+            else:
+                normalized = self._sanitize_segment(raw_segments)
+                if normalized:
+                    resolved_segments.append(normalized)
+
+        if not resolved_segments:
+            normalized = self._sanitize_segment(record)
+            if normalized:
+                resolved_segments.append(normalized)
+
+        return resolved_segments
+
+    def _sanitize_segment(self, segment: Any) -> List[Dict[str, Any]]:
+        """Coerce various cached segment formats into an ordered timestep list."""
+
+        if isinstance(segment, list):
+            return [step for step in segment if isinstance(step, dict)]
+
+        if isinstance(segment, dict):
+            return self._extract_timesteps(segment)
+
+        return []
+
     def _build_dataset_entry(
         self,
         context_timesteps: Sequence[Dict[str, Any]],
@@ -223,15 +255,15 @@ class TelemetryPromptDatasetBuilder:
             return None
 
         annotation = annotation or {}
-        driver_note = annotation.get("driver_note")
-        explanation = annotation.get("coaching_explanation")
-        if not driver_note or not explanation:
-            return None
+        driver_note = (annotation.get("driver_note") or "").strip()
+        explanation = (annotation.get("coaching_explanation") or "").strip()
         plan_summary = self._summarize_future_plan(future_payload)
+
+        driver_request_text = driver_note if driver_note else "[pending annotation]"
 
         user_content = (
             "Task: Convert the numeric improvement plan into natural coaching commentary.\n"
-            f"Driver request: {driver_note}\n\n"
+            f"Driver request: {driver_request_text}\n\n"
             f"Recent telemetry window (last {self.config.context_steps} steps):\n"
             f"{json.dumps(context_payload, indent=2, ensure_ascii=False)}\n\n"
             f"Predicted improvement plan (next {self.config.prediction_steps} steps):\n"
@@ -267,7 +299,7 @@ class TelemetryPromptDatasetBuilder:
                 "telemetry_features": list(self.config.telemetry_features),
             },
             "plan_summary": plan_summary,
-            "annotation_complete": bool(explanation),
+            "annotation_complete": bool(driver_note and explanation),
         }
 
         entry = {
@@ -363,7 +395,13 @@ class TelemetryPromptDatasetBuilder:
             return int(key.strip())
         return None
 
-    def _extract_timesteps(self, segment_record: Dict[str, Any]) -> List[Dict[str, Any]]:
+    def _extract_timesteps(self, segment_record: Any) -> List[Dict[str, Any]]:
+        if isinstance(segment_record, (list, tuple)):
+            return [step for step in segment_record if isinstance(step, dict)]
+
+        if not isinstance(segment_record, dict):
+            return []
+
         step_items: List[Tuple[int, Dict[str, Any]]] = []
         for key, value in segment_record.items():
             if not isinstance(value, dict):

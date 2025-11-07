@@ -129,6 +129,10 @@ async def launch_annotation_ui(
 ) -> None:
     """Launch the Streamlit annotation UI and wait for it to exit."""
 
+    address = address or '0.0.0.0'
+    port = port or 8501
+    browser_host = public_host or (address if address != '0.0.0.0' else 'localhost')
+
     # Invoke Streamlit through the active interpreter to avoid PATH issues inside containers.
     cmd = [
         sys.executable,
@@ -141,41 +145,32 @@ async def launch_annotation_ui(
         str(dataset_path),
         '--dataset-dir',
         str(dataset_dir),
+        '--server-address',
+        address,
+        '--server-port',
+        str(port),
+        '--browser-address',
+        browser_host,
+        '--browser-port',
+        str(port),
     ]
 
     env = os.environ.copy()
-    if address:
-        env['STREAMLIT_SERVER_ADDRESS'] = address
-    if port:
-        env['STREAMLIT_SERVER_PORT'] = str(port)
-
-    # Keep the browser target predictable when running inside containers.
-    browser_host = public_host
-    if not browser_host:
-        if address and address != '0.0.0.0':
-            browser_host = address
-        else:
-            browser_host = 'localhost'
-
+    env.setdefault('STREAMLIT_SERVER_ADDRESS', address)
+    env.setdefault('STREAMLIT_SERVER_PORT', str(port))
     env.setdefault('STREAMLIT_BROWSER_SERVER_ADDRESS', browser_host)
-    if port:
-        env.setdefault('STREAMLIT_BROWSER_SERVER_PORT', str(port))
-
-    # Silence usage telemetry prompts in container logs unless explicitly overridden.
+    env.setdefault('STREAMLIT_BROWSER_SERVER_PORT', str(port))
     env.setdefault('STREAMLIT_BROWSER_GATHERUSAGESTATS', 'false')
 
-    advertised_port = port or env.get('STREAMLIT_BROWSER_SERVER_PORT', '8501')
     print(
         "[INFO] Streamlit annotation UI will be reachable at "
-        f"http://{env['STREAMLIT_BROWSER_SERVER_ADDRESS']}:{advertised_port}"
+        f"http://{browser_host}:{port}"
     )
 
-    def _run_streamlit() -> None:
-        completed = subprocess.run(cmd, env=env)
-        if completed.returncode not in (0, 130):  # 130 == interrupted (Ctrl+C)
-            raise RuntimeError(f"Streamlit exited with code {completed.returncode}")
-
-    await asyncio.to_thread(_run_streamlit)
+    process = await asyncio.create_subprocess_exec(*cmd, env=env)
+    return_code = await process.wait()
+    if return_code not in (0, 130):  # 130 == interrupted (Ctrl+C)
+        raise RuntimeError(f"Streamlit exited with code {return_code}")
 
 async def main(args: argparse.Namespace):
     """Main entry point for the transformer learning pipeline with flexible modes."""

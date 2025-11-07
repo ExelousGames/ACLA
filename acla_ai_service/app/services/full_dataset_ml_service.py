@@ -468,26 +468,25 @@ class Full_dataset_TelemetryMLService:
     
 
     
-    async def _fetch_and_cache_model(self,
-                                    model_type: str,
-                                    track_name: Optional[str] = None,
-                                    car_name: Optional[str] = None,
-                                    model_subtype: str = "complete_model_data",
-                                    deserializer_func=None) -> Tuple[Any, Dict[str, Any]]:
+    async def _fetch_and_cache_model(
+        self,
+        model_type: str,
+        *,
+        model_subtype: str = "complete_model_data",
+        deserializer_func=None
+    ) -> Tuple[Any, Dict[str, Any]]:
         """
         Fetch model from backend and cache the model instance directly.
         
         Args:
             model_type: Type of model ('imitation_learning', etc.)
-            track_name: Track name for the model (optional)
-            car_name: Car name for the model (optional)
             model_subtype: Subtype identifier for the model
             deserializer_func: Function to deserialize model data from backend and return model instance
             
         Returns:
             Tuple of (model_instance, metadata)
         """
-        print(f"[DEBUG] Fetching model from backend: {model_type}/{track_name}/{car_name}")
+        print(f"[DEBUG] Fetching model from backend: {model_type}")
         
         # getCompleteActiveModelData now always returns ActiveModelData or raises exception
         model_response: ActiveModelData = await self.backend_service.getCompleteActiveModelData(
@@ -501,15 +500,6 @@ class Full_dataset_TelemetryMLService:
             "backend_metadata": model_response.metadata,
             "model_subtype": model_subtype
         }
-
-        resolved_track_name = track_name or model_response.metadata.get("track_name") or "generic"
-        resolved_car_name = car_name or model_response.metadata.get("car_name") or "all_cars"
-        cache_metadata.update(
-            {
-                "resolved_track_name": resolved_track_name,
-                "resolved_car_name": resolved_car_name,
-            }
-        )
         
         # Deserialize the model instance
         if deserializer_func:
@@ -524,8 +514,6 @@ class Full_dataset_TelemetryMLService:
         print(f"[DEBUG] Caching model instance: {model_type}")
         self.model_cache.put(
             model_type=model_type,
-            track_name=resolved_track_name,
-            car_name=resolved_car_name,
             data=model_instance,  # Store model instance directly
             metadata=cache_metadata,
             model_subtype=model_subtype
@@ -535,14 +523,12 @@ class Full_dataset_TelemetryMLService:
         
         return model_instance, cache_metadata
     
-    def _cleanup_fetch_lock(self, cache_key: str, track_name: str, car_name: str):
+    def _cleanup_fetch_lock(self, cache_key: str):
         """
         Clean up fetch lock for a specific cache key
         
         Args:
             cache_key: The cache key used for locking
-            track_name: Track name for logging
-            car_name: Car name for logging
         """
         if cache_key in self._model_fetch_locks:
             try:
@@ -552,14 +538,12 @@ class Full_dataset_TelemetryMLService:
             except Exception as cleanup_error:
                 print(f"[WARNING] Error cleaning up fetch lock: {str(cleanup_error)}")
     
-    def _emergency_cleanup_fetch_lock(self, cache_key: str, track_name: str, car_name: str):
+    def _emergency_cleanup_fetch_lock(self, cache_key: str):
         """
         Emergency cleanup of fetch lock with additional safety checks
         
         Args:
             cache_key: The cache key used for locking
-            track_name: Track name for logging
-            car_name: Car name for logging
         """
         if hasattr(self, '_model_fetch_locks') and cache_key in self._model_fetch_locks:
             try:
@@ -569,20 +553,19 @@ class Full_dataset_TelemetryMLService:
             except Exception as cleanup_error:
                 print(f"[WARNING] Error during emergency lock cleanup: {str(cleanup_error)}")
     
-    async def _get_cached_model_or_fetch(self,
-                                        model_type: str,
-                                        track_name: Optional[str] = None,
-                                        car_name: Optional[str] = None,
-                                        model_subtype: str = "complete_model_data",
-                                        deserializer_func=None) -> Tuple[Any, Dict[str, Any]]:
+    async def _get_cached_model_or_fetch(
+        self,
+        model_type: str,
+        *,
+        model_subtype: str = "complete_model_data",
+        deserializer_func=None
+    ) -> Tuple[Any, Dict[str, Any]]:
         """
         Get model from cache or fetch from backend with thread-safe locking.
         Caches and retrieves model instances directly.
         
         Args:
             model_type: Type of model ('imitation_learning', etc.)
-            track_name: Track name for the model (optional)
-            car_name: Car name for the model (optional)
             model_subtype: Subtype identifier for the model
             deserializer_func: Function to deserialize model data from backend and return model instance
             
@@ -592,8 +575,6 @@ class Full_dataset_TelemetryMLService:
         # Generate consistent cache key using the same method as ModelCacheService
         cache_key = self.model_cache._generate_cache_key(
             model_type=model_type,
-            track_name=track_name,
-            car_name=car_name,
             model_subtype=model_subtype
         )
         
@@ -606,8 +587,6 @@ class Full_dataset_TelemetryMLService:
             # First, check cache info without accessing the data to avoid unnecessary hits
             cache_info = self.model_cache.get_cache_info(
                 model_type=model_type,
-                track_name=track_name,
-                car_name=car_name,
                 model_subtype=model_subtype
             )
             
@@ -617,8 +596,6 @@ class Full_dataset_TelemetryMLService:
                 # Get the actual cached data
                 cached_result = self.model_cache.get(
                     model_type=model_type,
-                    track_name=track_name,
-                    car_name=car_name,
                     model_subtype=model_subtype
                 )
                 
@@ -636,8 +613,6 @@ class Full_dataset_TelemetryMLService:
                 # Double-check cache after acquiring lock
                 cached_result = self.model_cache.get(
                     model_type=model_type,
-                    track_name=track_name,
-                    car_name=car_name,
                     model_subtype=model_subtype
                 )
                 
@@ -664,8 +639,6 @@ class Full_dataset_TelemetryMLService:
                     # The other thread should have cached the model, try cache again
                     cached_result = self.model_cache.get(
                         model_type=model_type,
-                        track_name=track_name,
-                        car_name=car_name,
                         model_subtype=model_subtype
                     )
                     if cached_result:
@@ -688,8 +661,6 @@ class Full_dataset_TelemetryMLService:
                 try:
                     model_instance, metadata = await self._fetch_and_cache_model(
                         model_type=model_type,
-                        track_name=track_name,
-                        car_name=car_name,
                         model_subtype=model_subtype,
                         deserializer_func=deserializer_func
                     )
@@ -700,7 +671,7 @@ class Full_dataset_TelemetryMLService:
                     raise fetch_error
                 finally:
                     # Always signal completion and clean up lock when we're the fetching thread
-                    self._cleanup_fetch_lock(cache_key, track_name or 'any', car_name or 'any')
+                    self._cleanup_fetch_lock(cache_key)
             
             # At this point, we should have the model instance
             if model_instance is None:
@@ -711,7 +682,7 @@ class Full_dataset_TelemetryMLService:
         except Exception as e:
             # Clean up any locks that might have been created by this thread
             if is_fetching_thread:
-                self._emergency_cleanup_fetch_lock(cache_key, track_name or 'any', car_name or 'any')
+                self._emergency_cleanup_fetch_lock(cache_key)
             
             raise e
     
@@ -873,8 +844,6 @@ class Full_dataset_TelemetryMLService:
                 tire_grip_service = TireGripAnalysisService()
                 tire_grip_service, _ = await self._get_cached_model_or_fetch(
                     model_type="tire_grip_analysis",
-                    track_name=resolved_track,
-                    car_name=resolved_car,
                     model_subtype="tire_grip_model_data",
                     deserializer_func=tire_grip_service.deserialize_tire_grip_model,
                 )
@@ -892,8 +861,6 @@ class Full_dataset_TelemetryMLService:
                 expert_service = ExpertImitateLearningService()
                 expert_service, _ = await self._get_cached_model_or_fetch(
                     model_type="imitation_learning",
-                    track_name=resolved_track,
-                    car_name=resolved_car,
                     model_subtype="imitation_model_data",
                     deserializer_func=expert_service.deserialize_imitation_model,
                 )
@@ -907,8 +874,6 @@ class Full_dataset_TelemetryMLService:
 
             transformer_model, transformer_metadata = await self._get_cached_model_or_fetch(
                 model_type="transformer_expert_action",
-                track_name=resolved_track,
-                car_name=resolved_car,
                 model_subtype="transformer_model_data",
                 deserializer_func=ExpertActionTransformer.deserialize_transformer_model,
             )
@@ -930,8 +895,6 @@ class Full_dataset_TelemetryMLService:
 
             llm_model, llm_metadata = await self._get_cached_model_or_fetch(
                 model_type="llm_guidance",
-                track_name=resolved_track,
-                car_name=resolved_car,
                 model_subtype="llm_adapter_data",
                 deserializer_func=self._deserialize_llm_model,
             )
