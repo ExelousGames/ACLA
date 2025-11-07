@@ -410,6 +410,9 @@ def main() -> None:
         if llm_error:
             st.sidebar.caption(f"LLM load issue: {llm_error}")
 
+    if llm_error:
+        st.warning(f"Auto-coaching is currently unavailable: {llm_error}")
+
     dataset_dir = Path(args.dataset_dir or DEFAULT_DATASET_DIR)
     dataset_dir.mkdir(parents=True, exist_ok=True)
 
@@ -547,9 +550,13 @@ def main() -> None:
 
     actions_col1, actions_col2, stats_col = st.columns([1, 1, 1])
 
+    if llm_error and st.session_state.get(raw_output_key):
+        st.session_state.pop(raw_output_key, None)
+        st.session_state.pop(key_focus_key, None)
+
     with actions_col1:
-        generate_disabled = not llm_available
-        generate_help = None if llm_available else "Train or import a guidance model to enable auto-suggestions."
+        generate_disabled = bool(llm_error) or not llm_available
+        generate_help = None if llm_available and not llm_error else (llm_error or "Train or import a guidance model to enable auto-suggestions.")
         if st.button(
             "Generate explanation",
             type="secondary",
@@ -557,7 +564,9 @@ def main() -> None:
             help=generate_help,
             use_container_width=True,
         ):
-            if not llm_available:
+            if llm_error:
+                st.error(f"Cannot generate coaching explanation right now: {llm_error}")
+            elif not llm_available:
                 st.warning("No guidance model available for inference.")
             elif not driver_note.strip():
                 st.warning("Please enter a driver note before requesting an explanation.")
@@ -579,7 +588,7 @@ def main() -> None:
                     )
 
                     try:
-                        raw_output = llm_model.generate(request) if llm_available else ""
+                        raw_output = llm_model.generate(request)
                         commentary = ml_service._parse_llm_output(raw_output)
                     except Exception as inference_error:  # pragma: no cover - inference safeguards
                         st.error(f"LLM generation failed: {inference_error}")
