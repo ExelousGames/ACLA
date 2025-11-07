@@ -34,6 +34,7 @@ import subprocess
 import sys
 import time
 from datetime import datetime
+import importlib.util
 import io
 from contextlib import redirect_stdout, redirect_stderr
 from typing import List, Optional
@@ -54,311 +55,151 @@ SUPPORTED_TRACKS = [
 
 
 def parse_arguments(argv: Optional[List[str]] = None) -> argparse.Namespace:
-    """Parse CLI arguments for the transformer learning pipeline."""
-
-    default_app = Path(__file__).parent.parent / 'ui' / 'telemetry_prompt_annotation_app.py'
+    """Parse CLI arguments for the unified transformer → LLM training pipeline."""
 
     parser = argparse.ArgumentParser(
-        description="Expert imitation transformer pipeline with optional annotation UI"
+        description="Train the ExpertActionTransformer and fine-tune the guidance LLM on its predictions"
     )
-    parser.add_argument('track_name', nargs='?', default=DEFAULT_TRACK, help='Track name to process')
+    parser.add_argument('track_name', nargs='?', default=DEFAULT_TRACK, help='Track name to process.')
     parser.add_argument(
-        '--mode',
-        choices=['both', 'annotate', 'train'],
-        default='both',
-        help='Pipeline mode: annotate only, train using existing annotations, or both sequentially.',
-    )
-    parser.add_argument(
-        '--dataset-path',
-        type=Path,
-        help='Existing prompt dataset JSONL file to reuse for training mode.',
-    )
-    parser.add_argument(
-        '--skip-ui',
-        action='store_true',
-        help='Skip launching the Streamlit annotation UI even in annotation modes.',
-    )
-    parser.add_argument(
-        '--ui-port',
+        '--transformer-epochs',
         type=int,
-        default=8501,
-        help='Port for the Streamlit UI (default: 8501).',
+        default=24,
+        help='Number of epochs for transformer training (default: 24).',
     )
     parser.add_argument(
-        '--ui-address',
-        type=str,
-        default='0.0.0.0',
-        help="Address for the Streamlit UI to bind to (default: '0.0.0.0').",
+        '--transformer-patience',
+        type=int,
+        default=6,
+        help='Early stopping patience for transformer training (default: 6).',
     )
     parser.add_argument(
-        '--ui-public-host',
-        type=str,
-        default=None,
-        help=(
-            "Host/IP to advertise for the Streamlit UI (default resolves to the bind address, "
-            "or 'localhost' when binding to 0.0.0.0)."
-        ),
+        '--transformer-batch-size',
+        type=int,
+        default=32,
+        help='Number of segments per GPU batch when training the transformer (default: 32).',
     )
     parser.add_argument(
-        '--streamlit-app',
-        type=Path,
-        default=default_app,
-        help='Path to the Streamlit annotation application.',
+        '--prediction-steps',
+        type=int,
+        help='Override the number of future steps the LLM should learn to verbalise.',
     )
     parser.add_argument(
         '--keep-dataset',
         action='store_true',
-        help='Do not delete the dataset file after training completes.',
+        help='Keep the generated JSONL dataset after LLM training (default: delete).',
     )
     parser.add_argument(
         '--no-shuffle',
         action='store_true',
-        help='Disable shuffling of windows when generating the dataset.',
+        help='Disable shuffling of prompt windows before writing the dataset.',
     )
     return parser.parse_args(argv)
 
 
-async def launch_annotation_ui(
-    app_path: Path,
-    dataset_path: Path,
-    dataset_dir: Path,
-    *,
-    address: Optional[str] = None,
-    port: Optional[int] = None,
-    public_host: Optional[str] = None,
-) -> None:
-    """Launch the Streamlit annotation UI and wait for it to exit."""
-
-    address = address or '0.0.0.0'
-    port = port or 8501
-    browser_host = public_host or (address if address != '0.0.0.0' else 'localhost')
-
-    # Invoke Streamlit through the active interpreter to avoid PATH issues inside containers.
-    cmd = [
-        sys.executable,
-        '-m',
-        'streamlit',
-        'run',
-        str(app_path),
-        '--',
-        '--dataset',
-        str(dataset_path),
-        '--dataset-dir',
-        str(dataset_dir),
-        '--server-address',
-        address,
-        '--server-port',
-        str(port),
-        '--browser-address',
-        browser_host,
-        '--browser-port',
-        str(port),
-    ]
-
-    env = os.environ.copy()
-    env.setdefault('STREAMLIT_SERVER_ADDRESS', address)
-    env.setdefault('STREAMLIT_SERVER_PORT', str(port))
-    env.setdefault('STREAMLIT_BROWSER_SERVER_ADDRESS', browser_host)
-    env.setdefault('STREAMLIT_BROWSER_SERVER_PORT', str(port))
-    env.setdefault('STREAMLIT_BROWSER_GATHERUSAGESTATS', 'false')
-
-    print(
-        "[INFO] Streamlit annotation UI will be reachable at "
-        f"http://{browser_host}:{port}"
-    )
-
-    process = await asyncio.create_subprocess_exec(*cmd, env=env)
-    return_code = await process.wait()
-    if return_code not in (0, 130):  # 130 == interrupted (Ctrl+C)
-        raise RuntimeError(f"Streamlit exited with code {return_code}")
-
 async def main(args: argparse.Namespace):
-    """Main entry point for the transformer learning pipeline with flexible modes."""
+    """Main entry point for the unified transformer → LLM training workflow."""
 
     start_time = time.time()
 
-    # Create output directory if it doesn't exist
     output_dir = current_dir / 'output'
     output_dir.mkdir(exist_ok=True)
 
-    # Generate timestamped log filename
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     track_name = args.track_name.lower()
     log_filename = output_dir / f'transformer_learning_{track_name}_{timestamp}.log'
-    
-    # Create a custom stdout/stderr that writes to both file and console
+
     class TeeOutput:
         def __init__(self, file_handle, original_stream):
             self.file = file_handle
             self.original = original_stream
-        
+
         def write(self, data):
             self.file.write(data)
-            self.file.flush()  # Ensure immediate write
+            self.file.flush()
             self.original.write(data)
             self.original.flush()
-        
+
         def flush(self):
             self.file.flush()
             self.original.flush()
-    
-    # Open log file and redirect output
+
     with open(log_filename, 'w', encoding='utf-8') as log_file:
-        # Create tee outputs
         tee_stdout = TeeOutput(log_file, sys.stdout)
         tee_stderr = TeeOutput(log_file, sys.stderr)
-        
-        # Redirect stdout and stderr
+
         old_stdout = sys.stdout
         old_stderr = sys.stderr
         sys.stdout = tee_stdout
         sys.stderr = tee_stderr
-        
+
         try:
-            print("🚀 Starting Expert Imitation Transformer Learning Pipeline...")
+            print("🚀 Starting Transformer ➜ LLM Guidance Training Pipeline...")
             print("=" * 80)
             print(f"📅 Started at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
             print(f"📝 Log file: {log_filename}")
             print("=" * 80)
-            
-            # Initialize ML service
+
             print("🔧 Initializing ML Service...")
             ml_service = Full_dataset_TelemetryMLService()
-            
+
             print(f"🏁 Target Track: {track_name}")
-            
-            # Validate track name (optional warning, doesn't block execution)
             if track_name not in SUPPORTED_TRACKS:
                 print(f"⚠️  Warning: '{track_name}' is not in the list of commonly supported tracks.")
                 print(f"    Supported tracks: {', '.join(SUPPORTED_TRACKS)}")
-                print("    Continuing anyway - track name will be passed to backend as-is.")
-            
+                print("    Continuing anyway – backend availability determines success.")
+
+            print("-" * 40)
+            print("⏳ Executing unified training stack")
+            print("   • Training ExpertActionTransformer")
+            print("   • Generating transformer-driven prompt dataset")
+            print("   • Fine-tuning guidance LLM on predicted plans")
             print("-" * 40)
 
-            print("⏳ Executing pipeline with mode:", args.mode)
-            if args.mode in ("annotate", "both"):
-                print("   • Preparing dataset for annotation")
-            if args.mode in ("both", "train"):
-                print("   • Training transformer model")
-            print("-" * 40)
-
-            annotation_result = None
-            training_result = None
-            dataset_path: Optional[Path] = args.dataset_path
-
-            if args.mode in ("annotate", "both"):
-                annotation_result = await ml_service.StartImitateExpertPipeline(
-                    trackName=track_name,
-                    pipeline_mode="annotate",
-                    shuffle_dataset=not args.no_shuffle,
-                )
-
-                dataset_path_value = annotation_result.get("dataset_path")
-                if dataset_path_value:
-                    dataset_path = Path(dataset_path_value)
-                    print(f"[INFO] Dataset created at {dataset_path}")
-                else:
-                    raise RuntimeError("Dataset path missing from annotation stage results")
-
-                if dataset_path and not args.skip_ui:
-                    app_path = args.streamlit_app
-                    if not app_path.exists():
-                        raise FileNotFoundError(f"Streamlit app not found at {app_path}")
-
-                    print("[INFO] Launching Streamlit annotation UI. Close the UI when finished annotating.")
-                    await launch_annotation_ui(
-                        app_path=app_path,
-                        dataset_path=dataset_path,
-                        dataset_dir=dataset_path.parent,
-                        address=args.ui_address,
-                        port=args.ui_port,
-                        public_host=args.ui_public_host,
-                    )
-                    refreshed_stats = ml_service._summarize_dataset(dataset_path)
-                    annotation_result["dataset_stats"] = refreshed_stats
-                else:
-                    print("[INFO] Skipping annotation UI launch (per configuration).")
-
-                if args.mode == "annotate":
-                    execution_time = time.time() - start_time
-                    final_results = {
-                        "success": True,
-                        "track_name": track_name,
-                        "mode": "annotate",
-                        "annotation": annotation_result,
-                    }
-                    display_results(final_results, execution_time)
-                    print(f"\n✅ All output has been saved to: {log_filename}")
-                    return
-
-            if args.mode in ("both", "train"):
-                if dataset_path is None:
-                    raise ValueError(
-                        "Dataset path required for training. Provide --dataset-path or run annotate mode first."
-                    )
-
-                if args.mode == "train" and annotation_result is None:
-                    annotation_result = {
-                        "dataset_path": str(dataset_path),
-                        "dataset_stats": ml_service._summarize_dataset(dataset_path),
-                        "mode": "train",
-                        "success": True,
-                    }
-
-                training_result = await ml_service.StartImitateExpertPipeline(
-                    trackName=track_name,
-                    pipeline_mode="train-only",
-                    dataset_path=dataset_path,
-                    cleanup_dataset_file=not args.keep_dataset,
-                )
+            result = await ml_service.run_transformer_guidance_training(
+                track_name=track_name,
+                annotations=None,
+                shuffle_dataset=not args.no_shuffle,
+                transformer_epochs=args.transformer_epochs,
+                transformer_patience=args.transformer_patience,
+                transformer_batch_size=args.transformer_batch_size,
+                prediction_steps=args.prediction_steps,
+                cleanup_dataset_file=not args.keep_dataset,
+            )
 
             execution_time = time.time() - start_time
+            display_results(result, execution_time, log_filename)
 
-            pipeline_success = True
-            if training_result is not None:
-                pipeline_success = bool(training_result.get("success", False))
-
-            final_results = {
-                "success": pipeline_success,
-                "track_name": track_name,
-                "mode": args.mode,
-                "annotation": annotation_result,
-                "training": training_result,
-            }
-
-            display_results(final_results, execution_time)
-            
-            print(f"\n✅ All output has been saved to: {log_filename}")
-            
         except KeyboardInterrupt:
             print("\n⚠️  Pipeline interrupted by user")
             return
-        except Exception as e:
+        except Exception as pipeline_error:
             execution_time = time.time() - start_time
-            print(f"\n❌ Critical Error occurred after {execution_time:.1f}s: {e}")
+            print(f"\n❌ Critical error occurred after {execution_time:.1f}s: {pipeline_error}")
             print("-" * 80)
             import traceback
             traceback.print_exc()
             print("-" * 80)
             return
         finally:
-            # Restore original stdout/stderr
             sys.stdout = old_stdout
             sys.stderr = old_stderr
 
-def display_results(results, execution_time: float):
+def display_results(results, execution_time: float, log_path: Path):
     """
     Display comprehensive results from the transformer learning pipeline
     
     Args:
         results: Dictionary containing all pipeline results
         execution_time: Total execution time in seconds
+        log_path: Path to the pipeline execution log file
     """
     print("\n" + "=" * 80)
     print("🎯 TELEMETRY LLM TRAINING PIPELINE RESULTS")
     print("=" * 80)
     print(f"⏱️  Total Execution Time: {execution_time:.1f}s ({execution_time/60:.1f}m)")
     print(f"📅 Completed at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"📝 Full log: {Path(log_path).resolve()}")
     
     if not results.get('success', False):
         print(f"\n❌ Pipeline failed with error: {results.get('error', 'Unknown error')}")
@@ -368,45 +209,70 @@ def display_results(results, execution_time: float):
     print("\n✅ Pipeline completed successfully!")
     print(f"🏁 Track: {results.get('track_name', 'Unknown')}")
 
-    annotation_info = results.get('annotation') or {}
-    training_wrapper = results.get('training') or {}
+    prediction_steps = results.get('prediction_steps')
+    if prediction_steps is not None:
+        print(f"🧭 Prediction horizon: {prediction_steps} steps")
 
-    dataset_path = annotation_info.get('dataset_path') or training_wrapper.get('dataset_path')
-    dataset_stats = annotation_info.get('dataset_stats') or training_wrapper.get('dataset_stats') or {}
-
+    dataset_path = results.get('dataset_path')
+    dataset_stats = results.get('dataset_stats') or {}
     if dataset_path or dataset_stats:
         print("\n📦 DATASET SUMMARY:")
-        print("-" * 40)
+        print("-" * 48)
         if dataset_path:
             print(f"  • Dataset file: {dataset_path}")
         if dataset_stats:
             for key, value in dataset_stats.items():
                 if key == 'dataset_path':
                     continue
-                print(f"  • {key.replace('_', ' ').title()}: {value}")
+                label = key.replace('_', ' ').title()
+                print(f"  • {label}: {value}")
 
-    llm_results = training_wrapper.get('llm_training') if training_wrapper else None
-    if llm_results and llm_results.get('success'):
+    transformer_training = results.get('transformer_training') or {}
+    transformer_metrics = transformer_training.get('training_metrics') or {}
+    transformer_metadata = transformer_training.get('metadata') or {}
+
+    if transformer_metrics or transformer_metadata:
+        print("\n🛠️  TRANSFORMER TRAINING SUMMARY:")
+        print("-" * 48)
+        if transformer_metrics:
+            print("  • Metrics:")
+            for key, value in transformer_metrics.items():
+                print(f"    - {key}: {value}")
+        if transformer_metadata:
+            epochs = transformer_metadata.get('epochs')
+            patience = transformer_metadata.get('patience')
+            batch_size = transformer_metadata.get('batch_size')
+            if any(v is not None for v in (epochs, patience, batch_size)):
+                print("  • Hyperparameters:")
+                if epochs is not None:
+                    print(f"    - epochs: {epochs}")
+                if patience is not None:
+                    print(f"    - patience: {patience}")
+                if batch_size is not None:
+                    print(f"    - batch size: {batch_size}")
+
+    llm_training = results.get('llm_training') or {}
+    if llm_training.get('success'):
         print("\n🤖 LOCAL LLM FINE-TUNING:")
-        print("-" * 40)
+        print("-" * 48)
 
-        training_metrics = llm_results.get('training_metrics', {})
+        training_metrics = llm_training.get('training_metrics', {})
         if training_metrics:
             print("  • Training metrics:")
             for key, value in training_metrics.items():
                 print(f"    - {key}: {value}")
 
-        adapter_dir = llm_results.get('adapter_directory')
+        adapter_dir = llm_training.get('adapter_directory')
         if adapter_dir:
             print(f"  • Adapter directory saved: {adapter_dir}")
 
         print("\n💾 ADAPTER PERSISTENCE:")
-        print("-" * 40)
+        print("-" * 48)
         print("  • ✅ LoRA adapter successfully saved to backend")
         print("  • ✅ Model ready for telemetry guidance inference")
 
-    elif training_wrapper:
-        error_message = training_wrapper.get('error') or 'No training metrics available'
+    elif llm_training:
+        error_message = llm_training.get('error') or 'No training metrics available'
         print(f"\n❌ LLM TRAINING FAILED: {error_message}")
         print("-" * 80)
     
@@ -414,7 +280,7 @@ def display_results(results, execution_time: float):
     print("🏆 PIPELINE EXECUTION COMPLETED")
     print("=" * 80)
     print("📝 Next Steps:")
-    if llm_results and llm_results.get('success'):
+    if llm_training and llm_training.get('success'):
         print("  • Model is ready for real-time driving assistance")
         print("  • Use the saved model for non-expert driver progression predictions")
         print("  • Monitor model performance in live racing scenarios")
@@ -446,30 +312,25 @@ def validate_requirements():
     """
     Validate that all required dependencies are available
     """
-    missing_deps = []
-    
-    try:
-        import torch
-    except ImportError:
-        missing_deps.append("PyTorch (torch)")
-    
-    try:
-        import numpy
-    except ImportError:
-        missing_deps.append("NumPy")
-    
-    try:
-        import pandas
-    except ImportError:
-        missing_deps.append("Pandas")
-    
+    required_modules = {
+        "torch": "PyTorch (torch)",
+        "numpy": "NumPy",
+        "pandas": "Pandas",
+    }
+
+    missing_deps = [
+        friendly_name
+        for module_name, friendly_name in required_modules.items()
+        if importlib.util.find_spec(module_name) is None
+    ]
+
     if missing_deps:
         print("❌ Missing required dependencies:")
         for dep in missing_deps:
             print(f"  • {dep}")
         print("\nPlease install missing dependencies and try again.")
         return False
-    
+
     return True
 
 if __name__ == "__main__":

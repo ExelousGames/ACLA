@@ -1,8 +1,7 @@
 """Streamlit UI for annotating telemetry prompt datasets.
 
-This tool lets race engineers review telemetry windows, capture driver notes
-alongside the raw telemetry, visualise samples, and attach coaching
-explanations before fine-tuning the local LLM.
+This tool lets race engineers review telemetry windows, visualise samples,
+and attach concise coaching explanations before fine-tuning the local LLM.
 """
 
 from __future__ import annotations
@@ -149,20 +148,19 @@ def load_dataset(path_str: str) -> List[Dict[str, Any]]:
             except json.JSONDecodeError:
                 continue
 
-            metadata = record.get("metadata", {})
-            annotation = metadata.get("annotation", {})
-            window = record.get("window", {})
-            driver_note = annotation.get("driver_note", "")
+            metadata = record.get("metadata", {}) or {}
+            annotation = metadata.get("annotation", {}) or {}
+            window = record.get("window", {}) or {}
             coaching_explanation = annotation.get("coaching_explanation", "")
 
             entries.append(
                 {
                     "window_id": metadata.get("window_id"),
                     "annotation_complete": bool(metadata.get("annotation_complete")),
-                    "driver_note": driver_note,
                     "coaching_explanation": coaching_explanation,
                     "window": window,
                     "config": metadata.get("config", {}),
+                    "metadata": metadata,
                     "messages": record.get("messages", []),
                     "raw": record,
                 }
@@ -192,25 +190,44 @@ def load_annotation_store(path_str: str) -> Dict[str, Dict[str, Any]]:
                 continue
             window_id = payload.get("window_id")
             if window_id:
-                store[window_id] = payload
+                store[window_id] = {
+                    "window_id": window_id,
+                    "coaching_explanation": payload.get("coaching_explanation", ""),
+                    "updated_at": payload.get("updated_at"),
+                }
 
     return store
 
 
-def _build_user_prompt(window: Dict[str, Any], config: Dict[str, Any], driver_note: str) -> str:
-    """Recreate the user prompt string with the supplied driver note."""
+def _build_user_prompt(
+    window: Dict[str, Any],
+    config: Dict[str, Any],
+    segment_metadata: Optional[Dict[str, Any]] = None,
+) -> str:
+    """Compose the LLM user prompt for segment-purpose explanations."""
 
-    context_steps = config.get("context_steps", len(window.get("context", [])))
-    prediction_steps = config.get("prediction_steps", len(window.get("future", [])))
-    context_payload = window.get("context", [])
+    context_payload = window.get("context", []) or []
+    future_payload = window.get("future", []) or []
+    context_steps = config.get("context_steps", len(context_payload))
+    prediction_steps = config.get("prediction_steps", len(future_payload))
+
+    metadata_payload: Dict[str, Any] = {
+        "context_steps": context_steps,
+        "future_steps": prediction_steps,
+    }
+    if segment_metadata:
+        metadata_payload.update(segment_metadata)
 
     return (
-        "Task: Forecast telemetry and continue the coaching explanation.\n"
-        f"Driver note (partial): {driver_note}\n\n"
-        f"Recent telemetry window (last {context_steps} steps):\n"
+        "Task: Provide a concise coaching explanation that captures the purpose of this telemetry segment.\n"
+        f"Segment metadata:\n{json.dumps(metadata_payload, indent=2, ensure_ascii=False)}\n\n"
+        "Telemetry context (ordered timesteps):\n"
         f"{json.dumps(context_payload, indent=2, ensure_ascii=False)}\n\n"
-        f"Provide the next {prediction_steps} telemetry steps in JSON "
-        "alongside a clear coaching explanation extending the driver note."
+        "Continuation of the segment (if available):\n"
+        f"{json.dumps(future_payload, indent=2, ensure_ascii=False)}\n\n"
+        "Respond with a JSON object containing:\n"
+        "- `coaching_summary`: 2-3 sentences describing the segment's focus or coaching insight.\n"
+        "- Optional `key_focus`: list of short bullet strings highlighting the key observations."
     )
 
 
@@ -218,7 +235,6 @@ def _save_annotation(
     dataset_path: Path,
     annotation_path: Path,
     window_id: str,
-    driver_note: str,
     coaching_explanation: str,
 ) -> Tuple[int, int]:
     """Persist the updated annotation to both dataset and annotation log."""
@@ -239,20 +255,20 @@ def _save_annotation(
 
             metadata = record.setdefault("metadata", {})
             window_meta = metadata.get("window_id")
-            window = record.get("window", {})
-            config = metadata.get("config", {})
+            window = record.get("window", {}) or {}
+            config = metadata.get("config", {}) or {}
+            segment_meta = metadata.get("segment_metadata")
 
             if window_meta == window_id:
                 annotation_block = metadata.setdefault("annotation", {})
-                annotation_block["driver_note"] = driver_note
+                annotation_block.pop("driver_note", None)
                 annotation_block["coaching_explanation"] = coaching_explanation
                 annotation_block["updated_at"] = datetime.utcnow().isoformat()
-                metadata["annotation_complete"] = bool(driver_note and coaching_explanation)
+                metadata["annotation_complete"] = bool(coaching_explanation)
 
-                user_prompt = _build_user_prompt(window, config, driver_note)
+                user_prompt = _build_user_prompt(window, config, segment_meta)
                 assistant_payload = {
-                    "future_telemetry": window.get("future", []),
-                    "coaching_explanation": coaching_explanation,
+                    "coaching_summary": coaching_explanation,
                 }
 
                 messages = record.setdefault("messages", [])
@@ -274,7 +290,6 @@ def _save_annotation(
     store = load_annotation_store(annotation_path.as_posix())
     store[window_id] = {
         "window_id": window_id,
-        "driver_note": driver_note,
         "coaching_explanation": coaching_explanation,
         "updated_at": datetime.utcnow().isoformat(),
     }
@@ -491,7 +506,7 @@ def main() -> None:
             {
                 "Window ID": entry["window_id"],
                 "Annotated": "Yes" if entry["annotation_complete"] else "No",
-                "Existing Driver Note": (entry["driver_note"][:50] + "…") if entry["driver_note"] else "",
+                "Existing Explanation": (entry["coaching_explanation"][:50] + "…") if entry["coaching_explanation"] else "",
             }
             for entry in entries_to_view
         ]
@@ -524,28 +539,23 @@ def main() -> None:
         st.info("Select at least one telemetry feature to visualise.")
 
     existing_annotation = store.get(selected_window_id, {})
-    driver_note_default = existing_annotation.get("driver_note") or selected_entry.get("driver_note", "")
     coaching_note_default = existing_annotation.get("coaching_explanation") or selected_entry.get("coaching_explanation", "")
 
     st.subheader("Annotation")
 
     active_window_key = "_active_annotation_window"
-    driver_key = f"driver_note_{selected_window_id}"
     coaching_key = f"coaching_note_{selected_window_id}"
     key_focus_key = f"{coaching_key}_key_focus"
     raw_output_key = f"{coaching_key}_raw_output"
 
     if st.session_state.get(active_window_key) != selected_window_id:
         st.session_state[active_window_key] = selected_window_id
-        st.session_state[driver_key] = driver_note_default
         st.session_state[coaching_key] = coaching_note_default
         st.session_state.pop(key_focus_key, None)
         st.session_state.pop(raw_output_key, None)
     else:
-        st.session_state.setdefault(driver_key, driver_note_default)
         st.session_state.setdefault(coaching_key, coaching_note_default)
 
-    driver_note = st.text_area("Driver note", key=driver_key, height=120)
     coaching_explanation = st.text_area("Coaching explanation", key=coaching_key, height=160)
 
     actions_col1, actions_col2, stats_col = st.columns([1, 1, 1])
@@ -568,15 +578,14 @@ def main() -> None:
                 st.error(f"Cannot generate coaching explanation right now: {llm_error}")
             elif not llm_available:
                 st.warning("No guidance model available for inference.")
-            elif not driver_note.strip():
-                st.warning("Please enter a driver note before requesting an explanation.")
             else:
                 with st.spinner("Generating coaching suggestion..."):
                     system_prompt = _extract_system_prompt(selected_entry)
+                    metadata = selected_entry.get("metadata", {}) or {}
                     user_prompt = _build_user_prompt(
                         selected_entry.get("window", {}),
                         config,
-                        driver_note.strip(),
+                        metadata.get("segment_metadata"),
                     )
                     request = GenerationRequest(
                         system_prompt=system_prompt,
@@ -609,7 +618,6 @@ def main() -> None:
                 dataset_path=dataset_path,
                 annotation_path=annotation_path,
                 window_id=selected_window_id,
-                driver_note=driver_note.strip(),
                 coaching_explanation=coaching_explanation.strip(),
             )
             load_dataset.clear()

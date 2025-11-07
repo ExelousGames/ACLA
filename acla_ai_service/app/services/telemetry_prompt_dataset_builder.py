@@ -17,15 +17,12 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
-from .Training_data_cache_service import TrainingOptimizedCache, training_cache
+try:  # Optional dependency; used only when tensors are present
+    import torch  # type: ignore
+except ImportError:  # pragma: no cover - torch not required for dataset building
+    torch = None  # type: ignore
 
-PLAN_SUMMARY_FEATURES = (
-    "Physics_gas",
-    "Physics_brake",
-    "Physics_steer_angle",
-    "Physics_speed_kmh",
-    "Physics_gear",
-)
+from .Training_data_cache_service import TrainingOptimizedCache, training_cache
 
 
 @dataclass
@@ -34,8 +31,7 @@ class PromptBuilderConfig:
 
     system_prompt: str = (
         "You are an elite Assetto Corsa Competizione race engineer. "
-        "Given recent telemetry and a predicted numeric driving plan, "
-        "translate the plan into concise coaching commentary."
+        "Given a telemetry segment, explain its purpose and provide concise coaching guidance."
     )
     context_steps: int = 20
     prediction_steps: int = 6
@@ -101,7 +97,8 @@ class TelemetryPromptDatasetBuilder:
         output_path: Path,
         *,
         annotations: Optional[Dict[str, Dict[str, Any]]] = None,
-        shuffle: bool = True,
+    shuffle: bool = True,
+    prediction_steps: Optional[int] = None,
     ) -> DatasetBuildStats:
         """Generate an instruction-tuning dataset from cached segments.
 
@@ -119,6 +116,9 @@ class TelemetryPromptDatasetBuilder:
         windows: List[Dict[str, Any]] = []
         self._window_counter = 0
 
+        effective_prediction_steps = prediction_steps or self.config.prediction_steps
+        context_steps = self.config.context_steps
+
         chunk_iterator = self.data_cache.get_cached_data_chunks(segments_cache_key)
         for chunk_index, chunk_df in enumerate(chunk_iterator):
             if chunk_df is None or chunk_df.empty:
@@ -133,16 +133,16 @@ class TelemetryPromptDatasetBuilder:
                 for segment_index, segment_timesteps in enumerate(segment_candidates):
                     stats.segments_processed += 1
 
-                    if len(segment_timesteps) < (self.config.context_steps + self.config.prediction_steps):
+                    if len(segment_timesteps) < (context_steps + effective_prediction_steps):
                         stats.skipped_short_segments += 1
                         continue
 
-                    end_limit = len(segment_timesteps) - self.config.prediction_steps
-                    for start_index in range(0, end_limit - self.config.context_steps + 1, self.config.context_stride):
+                    end_limit = len(segment_timesteps) - effective_prediction_steps
+                    for start_index in range(0, end_limit - context_steps + 1, self.config.context_stride):
                         stats.windows_generated += 1
-                        context_slice = segment_timesteps[start_index : start_index + self.config.context_steps]
+                        context_slice = segment_timesteps[start_index : start_index + context_steps]
                         future_slice = segment_timesteps[
-                            start_index + self.config.context_steps : start_index + self.config.context_steps + self.config.prediction_steps
+                            start_index + context_steps : start_index + context_steps + effective_prediction_steps
                         ]
 
                         if not self._passes_variance_check(context_slice, future_slice):
@@ -165,10 +165,11 @@ class TelemetryPromptDatasetBuilder:
                         annotation_payload = annotations.get(window_id) if annotations else None
 
                         entry = self._build_dataset_entry(
-                            context_slice,
-                            future_slice,
-                            window_info,
-                            annotation_payload,
+                            context_timesteps=context_slice,
+                            future_timesteps=future_slice,
+                            window_info=window_info,
+                            annotation=annotation_payload,
+                            prediction_steps=effective_prediction_steps,
                         )
                         if entry:
                             windows.append(entry)
@@ -193,7 +194,9 @@ class TelemetryPromptDatasetBuilder:
 
         with output_path.open("w", encoding="utf-8") as jsonl_file:
             for entry in windows:
-                jsonl_file.write(json.dumps(entry, ensure_ascii=False) + "\n")
+                jsonl_file.write(
+                    json.dumps(entry, ensure_ascii=False, default=self._json_default) + "\n"
+                )
 
         stats_summary = stats.to_dict()
         stats_summary.update({
@@ -243,34 +246,31 @@ class TelemetryPromptDatasetBuilder:
 
     def _build_dataset_entry(
         self,
+        *,
         context_timesteps: Sequence[Dict[str, Any]],
         future_timesteps: Sequence[Dict[str, Any]],
         window_info: Dict[str, Any],
         annotation: Optional[Dict[str, Any]] = None,
+        prediction_steps: int,
     ) -> Optional[Dict[str, Any]]:
         context_payload = self._format_timesteps(context_timesteps)
-        future_payload = self._format_timesteps(future_timesteps)
+        future_payload = self._clone_timesteps(future_timesteps)
 
-        if not context_payload or not future_payload:
+        if not context_payload:
             return None
 
         annotation = annotation or {}
-        driver_note = (annotation.get("driver_note") or "").strip()
         explanation = (annotation.get("coaching_explanation") or "").strip()
-        plan_summary = self._summarize_future_plan(future_payload)
-
-        driver_request_text = driver_note if driver_note else "[pending annotation]"
 
         user_content = (
-            "Task: Convert the numeric improvement plan into natural coaching commentary.\n"
-            f"Driver request: {driver_request_text}\n\n"
-            f"Recent telemetry window (last {self.config.context_steps} steps):\n"
-            f"{json.dumps(context_payload, indent=2, ensure_ascii=False)}\n\n"
-            f"Predicted improvement plan (next {self.config.prediction_steps} steps):\n"
-            f"{json.dumps(plan_summary, indent=2, ensure_ascii=False)}\n\n"
+            "Task: Describe the purpose and coaching focus of the following telemetry segment.\n"
+            f"Segment context (last {self.config.context_steps} steps):\n"
+            f"{json.dumps(context_payload, indent=2, ensure_ascii=False, default=self._json_default)}\n\n"
+            f"Segment continuation (next {prediction_steps} steps):\n"
+            f"{json.dumps(future_payload, indent=2, ensure_ascii=False, default=self._json_default)}\n\n"
             "Respond with a JSON object containing:\n"
-            "- `coaching_summary`: concise natural-language advice (2-3 sentences).\n"
-            "- Optional `key_focus`: list of bullet strings summarising critical adjustments."
+            "- `coaching_summary`: concise guidance capturing the segment's purpose.\n"
+            "- Optional `key_focus`: list of bullet strings highlighting the most important insights."
         )
 
         assistant_payload = {
@@ -283,7 +283,6 @@ class TelemetryPromptDatasetBuilder:
         metadata = {
             "window_id": window_info.get("window_id"),
             "annotation": {
-                "driver_note": driver_note,
                 "coaching_explanation": explanation,
                 "updated_at": annotation.get("updated_at") if annotation else None,
             },
@@ -295,11 +294,10 @@ class TelemetryPromptDatasetBuilder:
             },
             "config": {
                 "context_steps": self.config.context_steps,
-                "prediction_steps": self.config.prediction_steps,
+                "prediction_steps": prediction_steps,
                 "telemetry_features": list(self.config.telemetry_features),
             },
-            "plan_summary": plan_summary,
-            "annotation_complete": bool(driver_note and explanation),
+            "annotation_complete": bool(explanation),
         }
 
         entry = {
@@ -354,28 +352,18 @@ class TelemetryPromptDatasetBuilder:
             formatted.append(filtered)
         return formatted
 
+    @staticmethod
+    def _clone_timesteps(timesteps: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        cloned: List[Dict[str, Any]] = []
+        for step in timesteps:
+            if isinstance(step, dict):
+                cloned.append({key: value for key, value in step.items()})
+        return cloned
+
     def format_timesteps(self, timesteps: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Public helper for formatting timesteps consistent with the dataset builder."""
 
         return self._format_timesteps(timesteps)
-
-    def _summarize_future_plan(self, future_payload: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        summary: List[Dict[str, Any]] = []
-        for index, step in enumerate(future_payload):
-            if not isinstance(step, dict):
-                continue
-
-            actions: Dict[str, Any] = {}
-            for feature in PLAN_SUMMARY_FEATURES:
-                value = step.get(feature)
-                if value is None:
-                    continue
-                actions[feature] = value
-
-            if actions:
-                summary.append({"step": index + 1, "actions": actions})
-
-        return summary
 
     # ------------------------------------------------------------------
     # Utility helpers
@@ -386,6 +374,18 @@ class TelemetryPromptDatasetBuilder:
             return float(value) if value is not None else 0.0
         except (TypeError, ValueError):
             return 0.0
+
+    @staticmethod
+    def _json_default(value: Any) -> Any:
+        if isinstance(value, (np.generic,)):
+            return value.item()
+        if isinstance(value, np.ndarray):
+            return value.tolist()
+        if torch is not None and isinstance(value, torch.Tensor):
+            return value.detach().cpu().tolist()
+        if isinstance(value, (set, tuple)):
+            return list(value)
+        raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
 
     @staticmethod
     def _coerce_step_index(key: Any) -> Optional[int]:

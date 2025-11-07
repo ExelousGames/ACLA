@@ -53,7 +53,7 @@ from ..models.telemetry_models import (
     FeatureProcessor,
     _safe_float,
 )
-from ..models.transformer_model import ExpertActionTransformer
+# Transformer model imports no longer required for LLM workflows
 
 # Import backend service
 from .backend_service import backend_service
@@ -70,14 +70,6 @@ from .local_llm_service import LocalTelemetryLLM, LocalLLMConfig, GenerationRequ
 
 # Suppress sklearn warnings
 warnings.filterwarnings('ignore', category=UserWarning)
-
-ACTION_SUMMARY_FEATURES = (
-    "Physics_gas",
-    "Physics_brake",
-    "Physics_steer_angle",
-    "Physics_speed_kmh",
-    "Physics_gear",
-)
 
 class Full_dataset_TelemetryMLService:
     """
@@ -168,6 +160,7 @@ class Full_dataset_TelemetryMLService:
         annotations: Optional[Dict[str, Dict[str, Any]]] = None,
         output_path: Optional[Path] = None,
         shuffle: bool = True,
+        prediction_steps: Optional[int] = None,
     ) -> Tuple[Path, Dict[str, Any]]:
         """Build the LLM prompt dataset asynchronously from cached segments."""
 
@@ -181,6 +174,7 @@ class Full_dataset_TelemetryMLService:
                 output_path=dataset_path,
                 annotations=annotations,
                 shuffle=shuffle,
+                prediction_steps=prediction_steps,
             )
             dataset_summary = self._summarize_dataset(dataset_path)
             stats_dict = stats.to_dict()
@@ -366,74 +360,33 @@ class Full_dataset_TelemetryMLService:
         repeated_window = [dict(telemetry_record) for _ in range(max(1, context_steps))]
         return self.prompt_builder.format_timesteps(repeated_window)
 
-    def _summarize_transformer_sequence(
-        self,
-        sequence_predictions: List[Dict[str, Any]],
-        *,
-        max_steps: Optional[int] = None,
-    ) -> List[Dict[str, Any]]:
-        """Summarize transformer outputs for LLM prompting."""
-
-        if not sequence_predictions:
-            return []
-
-        limit = max_steps if isinstance(max_steps, int) and max_steps > 0 else len(sequence_predictions)
-        summary: List[Dict[str, Any]] = []
-
-        for step_data in sequence_predictions[:limit]:
-            if not isinstance(step_data, dict):
-                continue
-
-            step_index = step_data.get("step")
-            targets = step_data.get("all_targets")
-            targets = targets if isinstance(targets, dict) else {}
-
-            actions: Dict[str, Any] = {}
-            for feature in ACTION_SUMMARY_FEATURES:
-                value = targets.get(feature)
-                if value is None:
-                    continue
-                if isinstance(value, (int, float)) and not isinstance(value, bool):
-                    actions[feature] = round(float(value), 4)
-                else:
-                    actions[feature] = value
-
-            if not actions:
-                continue
-
-            summary.append(
-                {
-                    "step": int(step_index) if isinstance(step_index, (int, float)) else len(summary) + 1,
-                    "actions": actions,
-                }
-            )
-
-        return summary
-
     def _build_llm_user_prompt(
         self,
         *,
         context_timesteps: List[Dict[str, Any]],
-        plan_summary: List[Dict[str, Any]],
-        user_request: Optional[str] = None,
+        future_timesteps: Optional[List[Dict[str, Any]]] = None,
+        segment_metadata: Optional[Dict[str, Any]] = None,
     ) -> str:
-        """Create a commentary-focused user prompt for the LLM."""
+        """Create a segment-purpose prompt for the LLM."""
 
-        driver_request = (user_request or "Provide expert driving guidance for the upcoming sequence.").strip()
-        context_json = json.dumps(context_timesteps, indent=2, ensure_ascii=False)
-        plan_json = json.dumps(plan_summary or [], indent=2, ensure_ascii=False)
+        context_json = json.dumps(context_timesteps or [], indent=2, ensure_ascii=False)
+        future_json = json.dumps(future_timesteps or [], indent=2, ensure_ascii=False)
+
+        metadata_section = ""
+        if segment_metadata:
+            metadata_json = json.dumps(segment_metadata, indent=2, ensure_ascii=False)
+            metadata_section = f"Segment metadata:\n{metadata_json}\n\n"
 
         return (
-            "Task: Translate the numeric driving plan into clear coaching guidance.\n"
-            f"Driver request: {driver_request}\n\n"
-            "Recent telemetry snapshot (formatted):\n"
+            "Task: Provide a concise coaching explanation that captures the purpose of this telemetry segment.\n"
+            f"{metadata_section}"
+            "Telemetry context (ordered timesteps):\n"
             f"{context_json}\n\n"
-            "Predicted improvement plan from the ExpertActionTransformer (next steps):\n"
-            f"{plan_json}\n\n"
-            "Respond with a JSON object containing: \n"
-            "- `coaching_summary`: concise natural language guidance for the driver.\n"
-            "- Optional `key_focus`: list of bullet strings with the most important adjustments.\n"
-            "Do not repeat the raw numbers; convert them into actionable coaching commentary."
+            "Continuation of the segment (if available):\n"
+            f"{future_json}\n\n"
+            "Respond with a JSON object containing:\n"
+            "- `coaching_summary`: 2-3 sentences describing the segment focus or key coaching insight.\n"
+            "- Optional `key_focus`: list of short bullet strings for the most important adjustments or observations."
         )
 
     def _parse_llm_output(self, generated_text: str) -> Dict[str, Any]:
@@ -832,27 +785,13 @@ class Full_dataset_TelemetryMLService:
         telemetry_dict: Dict[str, Any],
         *,
         sequence_length: int = 40,
-        track_name: Optional[str] = None,
-        car_name: Optional[str] = None,
         user_request: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Generate numeric action plans via transformer and LLM commentary."""
+        """Generate segment-purpose guidance using the LLM without requiring the transformer."""
 
         try:
             import pandas as pd
 
-            resolved_track = (
-                track_name
-                or telemetry_dict.get("trackName")
-                or telemetry_dict.get("track_name")
-                or "generic"
-            )
-            resolved_car = (
-                car_name
-                or telemetry_dict.get("carName")
-                or telemetry_dict.get("car_name")
-                or "all_cars"
-            )
             driver_request = (user_request or "").strip()
 
             telemetry_df = pd.DataFrame([telemetry_dict])
@@ -900,26 +839,32 @@ class Full_dataset_TelemetryMLService:
             except Exception as enrichment_error:
                 print(f"[WARNING] Imitation learning enrichment failed: {enrichment_error}")
 
-            transformer_model, transformer_metadata = await self._get_cached_model_or_fetch(
-                model_type="transformer_expert_action",
-                model_subtype="transformer_model_data",
-                deserializer_func=ExpertActionTransformer.deserialize_transformer_model,
-            )
-
-            try:
-                transformer_result = transformer_model.predict_human_readable(
-                    current_telemetry=processed_telemetry_dict,
-                    sequence_length=sequence_length,
-                )
-            except Exception as transformer_error:
-                raise RuntimeError(f"Transformer prediction failed: {transformer_error}") from transformer_error
-
-            plan_summary = self._summarize_transformer_sequence(
-                transformer_result.get("sequence_predictions", []),
-                max_steps=sequence_length,
-            )
-
             context_payload = self._format_context_window(processed_telemetry_dict)
+
+            future_payload: List[Dict[str, Any]] = []
+            segment_metadata: Dict[str, Any] = {
+                "sequence_length_hint": sequence_length,
+            }
+            if driver_request:
+                segment_metadata["user_request"] = driver_request
+
+            telemetry_highlights = (
+                "Physics_speed_kmh",
+                "Physics_rpm",
+                "Physics_gear",
+                "Physics_brake",
+                "Physics_gas",
+                "Physics_steer_angle",
+                "Graphics_delta_lap_time",
+            )
+            for feature in telemetry_highlights:
+                value = processed_telemetry_dict.get(feature)
+                if value is None:
+                    continue
+                try:
+                    segment_metadata[feature] = _safe_float(value)
+                except Exception:
+                    segment_metadata[feature] = value
 
             llm_model, llm_metadata = await self._get_cached_model_or_fetch(
                 model_type="llm_guidance_v1",
@@ -929,8 +874,8 @@ class Full_dataset_TelemetryMLService:
 
             user_prompt = self._build_llm_user_prompt(
                 context_timesteps=context_payload,
-                plan_summary=plan_summary,
-                user_request=driver_request,
+                future_timesteps=future_payload,
+                segment_metadata=segment_metadata,
             )
             system_prompt = self.prompt_builder_config.system_prompt
 
@@ -946,22 +891,19 @@ class Full_dataset_TelemetryMLService:
             output_text = llm_model.generate(generation_request)
             commentary_payload = self._parse_llm_output(output_text)
 
-            sequence_predictions = transformer_result.get("sequence_predictions", [])
-
             return {
                 "status": "success",
                 "timestamp": datetime.now().isoformat(),
-                "track_name": resolved_track,
-                "car_name": resolved_car,
                 "user_request": driver_request,
-                "sequence_predictions": sequence_predictions,
+                "sequence_predictions": [],
                 "preprocessed_telemetry": processed_telemetry_dict,
                 "context_window": context_payload,
-                "plan_summary": plan_summary,
+                "future_window": future_payload,
+                "segment_metadata": segment_metadata,
                 "commentary": commentary_payload,
                 "transformer": {
-                    "metadata": transformer_metadata,
-                    "prediction": transformer_result,
+                    "metadata": None,
+                    "prediction": None,
                 },
                 "llm": {
                     "metadata": llm_metadata,
@@ -983,164 +925,119 @@ class Full_dataset_TelemetryMLService:
                 "error_type": type(error).__name__,
             }
 
-    async def StartImitateExpertPipeline(
+    async def run_transformer_guidance_training(
         self,
-        trackName: str,
+        track_name: str,
         *,
-        pipeline_mode: str = "full",
-        dataset_path: Optional[Path] = None,
-        annotation_map: Optional[Dict[str, Dict[str, Any]]] = None,
-        cleanup_dataset_file: Optional[bool] = None,
+        annotations: Optional[Dict[str, Dict[str, Any]]] = None,
         shuffle_dataset: bool = True,
-    ):
+        transformer_epochs: int = 24,
+        transformer_patience: int = 6,
+        transformer_batch_size: int = 32,
+        prediction_steps: Optional[int] = None,
+        cleanup_dataset_file: bool = True,
+    ) -> Dict[str, Any]:
+        """Stream telemetry, build a segment-purpose dataset, and fine-tune the LLM."""
 
-        """Execute the telemetry pipeline with configurable annotation/training phases."""
+        annotations = annotations or {}
+        prediction_horizon = prediction_steps or self.prompt_builder_config.prediction_steps
 
-        mode = (pipeline_mode or "full").lower()
-
-        if mode == "train-only":
-            if dataset_path is None:
-                raise ValueError("dataset_path is required when pipeline_mode='train-only'")
-
-            dataset_path = Path(dataset_path)
-            dataset_stats = self._summarize_dataset(dataset_path)
-            training_results = await self._train_llm_and_persist(
-                dataset_path=dataset_path,
-                dataset_stats=dataset_stats,
-                cleanup_dataset_file=cleanup_dataset_file if cleanup_dataset_file is not None else False,
-            )
-
-            return {
-                "success": training_results.get("success", False),
-                "llm_training": training_results,
-                "track_name": trackName,
-                "mode": mode,
-                "dataset_path": str(dataset_path),
-                "dataset_stats": dataset_stats,
-            }
-
-        training_required = mode == "full"
-        cleanup_after_training = cleanup_dataset_file if cleanup_dataset_file is not None else training_required
-        dataset_path_result: Optional[Path] = None
-        dataset_stats: Optional[Dict[str, Any]] = None
-        annotation_map = annotation_map or {}
-        
         self._print_section_divider("STREAMING TELEMETRY DATA FROM BACKEND DIRECTLY TO CACHE")
-        
-        # Always fetch from backend (no cache check)
+
+        # Stream sessions directly into cache for downstream processing
+        dataset_cache_key = f"racing_sessions_{track_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         try:
-            # Generate explicit cache key for this dataset
-            dataset_cache_key = f"racing_sessions_{trackName}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-            
-            # Stream sessions directly to cache without loading into memory
             sessions_metadata = await backend_service.get_all_racing_sessions_streaming(
                 cache_key=dataset_cache_key,
-                trackName=trackName
+                trackName=track_name,
             )
-            
-            if not sessions_metadata.get("success", False):
-                raise Exception(f"Failed to stream sessions: {sessions_metadata.get('message', 'Unknown error')}")
-            
-            print(f"[INFO] Successfully streamed {sessions_metadata['total_sessions']} sessions directly to cache")
-            print(f"[INFO] Processed {sessions_metadata['summary']['data_points_processed']} total records")
-            
-        except Exception as e:
-            print(f"[ERROR] Failed to stream sessions from backend: {str(e)}")
-            raise Exception(f"Backend streaming failed: {str(e)}") from e
+        except Exception as streaming_error:
+            raise RuntimeError(f"Backend streaming failed: {streaming_error}") from streaming_error
 
-        # Validate that we have sessions from backend streaming
+        if not sessions_metadata.get("success"):
+            raise RuntimeError(sessions_metadata.get("message") or "Backend streaming request failed")
+
         total_sessions = sessions_metadata.get("total_sessions", 0)
         total_records = sessions_metadata.get("summary", {}).get("data_points_processed", 0)
-        
+
         if total_sessions == 0:
-            raise ValueError("No sessions found")
+            raise ValueError("No sessions returned by backend")
         if total_records == 0:
-            raise ValueError("No telemetry data found")
-        
-        print(f"[INFO] Total sessions: {total_sessions}")
-        print(f"[INFO] Total telemetry records: {total_records}")
-        
+            raise ValueError("No telemetry data available for training")
+
+        print(f"[INFO] Successfully streamed {total_sessions} sessions and {total_records} telemetry records")
+
         self._print_section_divider("LARGE DATASET ASSUMED - USING EFFICIENT PROCESSING")
-        
-        # Always use efficient processing for large datasets - no fallback
-        # sessions_summary data is already cached, process directly from cache
+
         top_laps_telemetry_list, sessions_cache_key = await self.process_lap_sessions_efficiently(
             processed_session_data_cache_key=dataset_cache_key,
             max_memory_records=10000,
-            telemetry_time_gap_ms=200
+            telemetry_time_gap_ms=200,
         )
 
-        segment_length = 500  # Nominal segment length used for context window sizing
-        segments_cache_key = None
-        training_results: Optional[Dict[str, Any]] = None
+        self._print_section_divider("ENRICHING CONTEXTUAL DATA")
+        max_segment_length = 500
+        segments_cache_key: Optional[str] = None
+        transformer_training: Optional[Dict[str, Any]] = None
+        dataset_path_result: Optional[Path] = None
+        dataset_stats: Optional[Dict[str, Any]] = None
+        llm_training: Optional[Dict[str, Any]] = None
 
         try:
-            # enrich data - now using cache-based approach to avoid memory overflow
-            self._print_section_divider("ENRICHING CONTEXTUAL DATA")
-            segments_cache_key = await self.enriched_contextual_data(top_laps_telemetry_list, sessions_cache_key, segment_length=segment_length)
-            
-            # remove any unused variable to this point to free memory
-            del top_laps_telemetry_list
-            
-            # generate dataset for LLM guidance
-            dataset_path_result, dataset_stats = await self._generate_llm_prompt_dataset(
-                segments_cache_key=segments_cache_key,
-                annotations=annotation_map,
-                shuffle=shuffle_dataset,
-            )
-            print(
-                f"[INFO] LLM dataset ready at {dataset_path_result} (mode={mode})."
+            segments_cache_key = await self.enriched_contextual_data(
+                top_laps_telemetry_list,
+                sessions_cache_key,
+                max_segment_length=max_segment_length,
             )
 
-            if training_required:
-                self._print_section_divider("TRAINING LOCAL LLM GUIDANCE MODEL")
-                training_results = await self._train_llm_and_persist(
-                    dataset_path=dataset_path_result,
-                    dataset_stats=dataset_stats,
-                    cleanup_dataset_file=cleanup_after_training,
-                )
-            
+            # Free top-lap telemetry to conserve memory once cached
+            del top_laps_telemetry_list
+
+            dataset_path_result, dataset_stats = await self._generate_llm_prompt_dataset(
+                segments_cache_key=segments_cache_key,
+                annotations=annotations,
+                shuffle=shuffle_dataset,
+                prediction_steps=prediction_horizon,
+            )
+
+            print(f"[INFO] LLM dataset created at {dataset_path_result}")
+
+            llm_training = await self._train_llm_and_persist(
+                dataset_path=dataset_path_result,
+                dataset_stats=dataset_stats,
+                cleanup_dataset_file=cleanup_dataset_file,
+            )
+
+            if not llm_training.get("success"):
+                raise RuntimeError(llm_training.get("error") or "LLM fine-tuning failed")
+
         finally:
-            # Clean up cached data even if processing fails
             if sessions_cache_key:
                 try:
                     self.data_cache.clear_cache(sessions_cache_key)
                     print(f"[INFO] Cleaned up cached session data: {sessions_cache_key}")
-                except Exception as e:
-                    print(f"[WARNING] Failed to clean up session cache: {str(e)}")
-            
+                except Exception as cleanup_error:
+                    print(f"[WARNING] Failed cleaning session cache: {cleanup_error}")
+
             if segments_cache_key:
                 try:
                     self.data_cache.clear_cache(segments_cache_key)
-                    print(f"[INFO] Cleaned up cached segments data: {segments_cache_key}")
-                except Exception as e:
-                    print(f"[WARNING] Failed to clean up cached segments: {str(e)}")
+                    print(f"[INFO] Cleaned up cached segments: {segments_cache_key}")
+                except Exception as cleanup_error:
+                    print(f"[WARNING] Failed cleaning segment cache: {cleanup_error}")
 
-        if mode == "annotate":
-            self._print_section_divider("DATASET READY FOR ANNOTATION")
-            return {
-                "success": True,
-                "mode": mode,
-                "track_name": trackName,
-                "dataset_path": str(dataset_path_result) if dataset_path_result else None,
-                "dataset_stats": dataset_stats,
-            }
+        result_payload = {
+            "success": True,
+            "track_name": track_name,
+            "prediction_steps": prediction_horizon,
+            "transformer_training": transformer_training,
+            "dataset_path": str(dataset_path_result) if dataset_path_result else None,
+            "dataset_stats": dataset_stats,
+            "llm_training": llm_training,
+        }
 
-        if training_required:
-            if not training_results or not training_results.get("success"):
-                raise Exception("LLM training failed - no valid results produced")
-
-            self._print_section_divider("LLM TRAINING COMPLETED")
-            return {
-                "success": True,
-                "llm_training": training_results,
-                "track_name": trackName,
-                "mode": mode,
-                "dataset_path": str(dataset_path_result) if dataset_path_result else None,
-                "dataset_stats": dataset_stats,
-            }
-
-        raise ValueError(f"Unsupported pipeline mode: {pipeline_mode}")
+        self._print_section_divider("LLM TRAINING COMPLETED")
+        return result_payload
 
     def process_sessions_streaming(self, sessions_data: List[Dict[str, Any]], 
                                  chunk_size: int = 5000) -> Iterator[List[Dict[str, Any]]]:
@@ -1433,58 +1330,7 @@ class Full_dataset_TelemetryMLService:
         self.data_cache.clear_cache(track_name)
         print(f"[INFO] Cleared data cache" + (f" for {track_name}" if track_name else ""))
 
-    def print_data_cache_info(self):
-        """Print detailed training-optimized cache information"""
-        info = self.get_data_cache_info()
-        print("\n" + "="*60)
-        print("TRAINING-OPTIMIZED DATA CACHE INFORMATION")
-        print("="*60)
-        
-        print(f"Cache Entries: {info.get('cache_entries', 0)}")
-        print(f"Total Size: {info.get('total_size_mb', 0):.1f}MB")
-        print(f"Storage Format: {info.get('storage_format', 'Parquet with snappy compression')}")
-        print(f"Cache Directory: {info.get('cache_directory', 'N/A')}")
-        
-        print("\nOptimizations:")
-        print("  • Parquet-only storage for consistency")
-        print("  • Snappy compression for fast I/O")
-        print("  • Multi-part files for large datasets")
-        print("  • Streaming processing with minimal memory footprint")
-        print("  • Zero-copy operations for ML training pipelines")
-        print("="*60 + "\n")
-
-    async def _train_llm_guidance_model(
-        self,
-        segments_cache_key: str,
-    ) -> Dict[str, Any]:
-        """Fine-tune the local telemetry LLM using cached segments and persist the adapter."""
-
-        try:
-            dataset_path, dataset_stats = await self._generate_llm_prompt_dataset(
-                segments_cache_key=segments_cache_key,
-            )
-            print(
-                f"[INFO] Generated LLM prompt dataset at {dataset_path} with stats: {json.dumps(dataset_stats, indent=2)}"
-            )
-
-            training_results = await self._train_llm_and_persist(
-                dataset_path=dataset_path,
-                dataset_stats=dataset_stats,
-                cleanup_dataset_file=True,
-            )
-
-            return training_results
-
-        except Exception as error:
-            print(f"[ERROR] LLM guidance training failed: {error}")
-            return {
-                "success": False,
-                "error": str(error),
-            }
-
-
-
-    async def _enrich_chunk_with_context(self, chunk_data: List[Dict[str, Any]], 
+    async def _enrich_sessions_with_context(self, chunk_data: List[Dict[str, Any]], 
                                         imitation_learning: ExpertImitateLearningService, tire_service: TireGripAnalysisService) -> List[Dict[str, Any]]:
         """
         Enrich a single chunk with all contextual features
@@ -1583,7 +1429,7 @@ class Full_dataset_TelemetryMLService:
             print(f"[ERROR] Exception caching segment batch {batch_number}: {str(e)}")
             return False
 
-    async def enriched_contextual_data(self, top_laps_telemetry_list: List[Dict[str, Any]], sessions_cache_key: str, segment_length: int) -> str:
+    async def enriched_contextual_data(self, top_laps_telemetry_list: List[Dict[str, Any]], sessions_cache_key: str, max_segment_length: int) -> str:
         """
         Streamlined contextual data enrichment using chunk iterator approach.
         
@@ -1695,15 +1541,15 @@ class Full_dataset_TelemetryMLService:
             
             print(f"[INFO] Processing chunk {processed_chunks}: {len(chunk_data)} records")
             
-            # Step 3: Enrich chunk with contextual features
-            enriched_chunk_data = await self._enrich_chunk_with_context(
+            # Step 3: Enrich sessions with contextual features
+            enriched_chunk_data = await self._enrich_sessions_with_context(
                 chunk_data, imitation_learning, tire_service
             )
             
             # Step 4: Filter enriched chunk into segments
             chunk_segments = imitation_learning.filter_optimal_telemetry_segments(
                 enriched_chunk_data,
-                max_segment_length=segment_length,
+                max_segment_length=max_segment_length,
             )
             
             print(f"[INFO] Chunk {processed_chunks}: Generated {len(chunk_segments)} segments")

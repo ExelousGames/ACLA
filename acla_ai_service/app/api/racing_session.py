@@ -197,8 +197,6 @@ async def get_imitation_learning_expert_guidance(request: ImitationPredictReques
             # Call the telemetryMLService to get expert guidance
             result = await telemetryMLService.predict_expert_actions(
                 telemetry_dict=request.current_telemetry,
-                track_name=request.track_name,
-                car_name=request.car_name,
                 user_request=request.human_request,
             )
 
