@@ -931,9 +931,6 @@ class Full_dataset_TelemetryMLService:
         *,
         annotations: Optional[Dict[str, Dict[str, Any]]] = None,
         shuffle_dataset: bool = True,
-        transformer_epochs: int = 24,
-        transformer_patience: int = 6,
-        transformer_batch_size: int = 32,
         prediction_steps: Optional[int] = None,
         cleanup_dataset_file: bool = True,
     ) -> Dict[str, Any]:

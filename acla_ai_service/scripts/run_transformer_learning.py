@@ -160,9 +160,6 @@ async def main(args: argparse.Namespace):
                 track_name=track_name,
                 annotations=None,
                 shuffle_dataset=not args.no_shuffle,
-                transformer_epochs=args.transformer_epochs,
-                transformer_patience=args.transformer_patience,
-                transformer_batch_size=args.transformer_batch_size,
                 prediction_steps=args.prediction_steps,
                 cleanup_dataset_file=not args.keep_dataset,
             )
