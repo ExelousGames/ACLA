@@ -80,11 +80,6 @@ def parse_arguments(argv: Optional[List[str]] = None) -> argparse.Namespace:
         help='Number of segments per GPU batch when training the transformer (default: 32).',
     )
     parser.add_argument(
-        '--prediction-steps',
-        type=int,
-        help='Override the number of future steps the LLM should learn to verbalise.',
-    )
-    parser.add_argument(
         '--keep-dataset',
         action='store_true',
         help='Keep the generated JSONL dataset after LLM training (default: delete).',
@@ -158,9 +153,7 @@ async def main(args: argparse.Namespace):
 
             result = await ml_service.run_transformer_guidance_training(
                 track_name=track_name,
-                annotations=None,
                 shuffle_dataset=not args.no_shuffle,
-                prediction_steps=args.prediction_steps,
                 cleanup_dataset_file=not args.keep_dataset,
             )
 
@@ -205,10 +198,6 @@ def display_results(results, execution_time: float, log_path: Path):
     
     print("\n✅ Pipeline completed successfully!")
     print(f"🏁 Track: {results.get('track_name', 'Unknown')}")
-
-    prediction_steps = results.get('prediction_steps')
-    if prediction_steps is not None:
-        print(f"🧭 Prediction horizon: {prediction_steps} steps")
 
     dataset_path = results.get('dataset_path')
     dataset_stats = results.get('dataset_stats') or {}

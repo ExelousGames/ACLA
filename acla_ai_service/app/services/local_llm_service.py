@@ -97,6 +97,10 @@ class LocalLLMConfig:
     dataloader_num_workers: int = 2
     gradient_checkpointing_kwargs: Optional[Dict[str, Any]] = field(default_factory=dict)
 
+    use_hf_datasets: bool = True
+    hf_streaming: bool = False
+    hf_num_proc: Optional[int] = None
+
     # Generation defaults
     generation_max_new_tokens: int = 256
     generation_temperature: float = 0.9
@@ -122,35 +126,73 @@ class GenerationRequest:
 
 
 def _extract_messages(record: Dict[str, Any]) -> Optional[Tuple[str, str, str]]:
-    """Extract system/user/assistant text from a chat-formatted dictionary."""
+    """Extract system/user/assistant text from a normalized prompt/response record."""
 
-    messages = record.get("messages")
-    if not isinstance(messages, list):
+    if not isinstance(record, dict):
         return None
 
-    system_messages: List[str] = []
-    user_messages: List[str] = []
-    assistant_messages: List[str] = []
-
-    for message in messages:
-        role = message.get("role")
-        content = message.get("content")
-        if not isinstance(content, str):
-            continue
-        if role == "system":
-            system_messages.append(content)
-        elif role == "user":
-            user_messages.append(content)
-        elif role == "assistant":
-            assistant_messages.append(content)
-
-    if not user_messages or not assistant_messages:
+    prompt_text = record.get("prompt")
+    response_text = record.get("response")
+    if not isinstance(prompt_text, str):
+        return None
+    if not isinstance(response_text, str):
         return None
 
-    system_text = "\n\n".join(system_messages)
-    user_text = "\n\n".join(user_messages)
-    assistant_text = assistant_messages[-1]
-    return system_text, user_text, assistant_text
+    system_text = record.get("system_prompt")
+    if not isinstance(system_text, str):
+        system_text = ""
+
+    metadata = record.get("metadata")
+    if isinstance(metadata, dict):
+        meta_system = metadata.get("system_prompt")
+        if isinstance(meta_system, str) and not system_text:
+            system_text = meta_system
+
+    return system_text, prompt_text, response_text
+
+
+def _format_prompt_and_response(
+    tokenizer: "AutoTokenizer",
+    parsed: Tuple[str, str, str],
+) -> Tuple[str, str]:
+    """Create prompt/response text blocks for a parsed example."""
+
+    system_text, user_text, assistant_text = parsed
+
+    system_block = f"[SYSTEM]\n{system_text}\n[/SYSTEM]\n\n" if system_text else ""
+    user_block = f"[USER]\n{user_text}\n[/USER]\n\n"
+    assistant_prefix = "[ASSISTANT]\n"
+
+    prompt = f"{system_block}{user_block}{assistant_prefix}"
+    response = f"{assistant_text}{tokenizer.eos_token}"
+    return prompt, response
+
+
+def _build_tokenized_sample(
+    tokenizer: "AutoTokenizer",
+    prompt_text: str,
+    response_text: str,
+    max_seq_length: int,
+) -> Optional[Tuple[List[int], List[int], List[int]]]:
+    """Tokenize prompt/response blocks into training arrays."""
+
+    prompt_ids = tokenizer(
+        prompt_text,
+        add_special_tokens=False,
+    )["input_ids"]
+    response_ids = tokenizer(
+        response_text,
+        add_special_tokens=False,
+    )["input_ids"]
+
+    input_ids = prompt_ids + response_ids
+    if len(input_ids) > max_seq_length:
+        LOGGER.debug("Skipping sample exceeding max_seq_length=%s", max_seq_length)
+        return None
+
+    labels = [-100] * len(prompt_ids) + response_ids
+    attention_mask = [1] * len(input_ids)
+    return input_ids, labels, attention_mask
 
 
 class TelemetryPromptDataset(Dataset):
@@ -164,7 +206,7 @@ class TelemetryPromptDataset(Dataset):
     ) -> None:
         self.tokenizer = tokenizer
         self.max_seq_length = max_seq_length
-        self.samples: List[Tuple[List[int], List[int]]] = []
+        self.samples: List[Tuple[List[int], List[int], List[int]]] = []
         self.metadata: List[Dict[str, Any]] = []
 
         jsonl_path = Path(jsonl_path)
@@ -186,14 +228,20 @@ class TelemetryPromptDataset(Dataset):
                 if not parsed:
                     continue
 
-                prompt_text, response_text = self._format_prompt(parsed)
-                sample = self._build_sample(prompt_text, response_text)
+                prompt_text, response_text = _format_prompt_and_response(self.tokenizer, parsed)
+                sample = _build_tokenized_sample(
+                    self.tokenizer,
+                    prompt_text,
+                    response_text,
+                    self.max_seq_length,
+                )
                 if sample is None:
                     continue
 
-                input_ids, labels = sample
-                self.samples.append((input_ids, labels))
-                prompt_length = len(input_ids) - sum(1 for value in labels if value != -100)
+                input_ids, labels, attention_mask = sample
+                self.samples.append((input_ids, labels, attention_mask))
+                response_tokens = sum(1 for value in labels if value != -100)
+                prompt_length = len(input_ids) - response_tokens
                 self.metadata.append({
                     "line_number": line_number,
                     "prompt_tokens": prompt_length,
@@ -205,46 +253,17 @@ class TelemetryPromptDataset(Dataset):
 
         LOGGER.info("Loaded %d samples for fine-tuning", len(self.samples))
 
-    def _format_prompt(self, parsed: Tuple[str, str, str]) -> Tuple[str, str]:
-        system_text, user_text, assistant_text = parsed
-
-        system_block = f"[SYSTEM]\n{system_text}\n[/SYSTEM]\n\n" if system_text else ""
-        user_block = f"[USER]\n{user_text}\n[/USER]\n\n"
-        assistant_prefix = "[ASSISTANT]\n"
-
-        prompt = f"{system_block}{user_block}{assistant_prefix}"
-        response = f"{assistant_text}{self.tokenizer.eos_token}"
-        return prompt, response
-
-    def _build_sample(self, prompt_text: str, response_text: str) -> Optional[Tuple[List[int], List[int]]]:
-        prompt_ids = self.tokenizer(
-            prompt_text,
-            add_special_tokens=False,
-        )["input_ids"]
-        response_ids = self.tokenizer(
-            response_text,
-            add_special_tokens=False,
-        )["input_ids"]
-
-        input_ids = prompt_ids + response_ids
-        if len(input_ids) > self.max_seq_length:
-            LOGGER.debug("Skipping sample exceeding max_seq_length=%s", self.max_seq_length)
-            return None
-
-        labels = [-100] * len(prompt_ids) + response_ids
-        return input_ids, labels
-
     def __len__(self) -> int:
         return len(self.samples)
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
-        input_ids, labels = self.samples[idx]
+        input_ids, labels, attention_mask = self.samples[idx]
         input_tensor = torch.tensor(input_ids, dtype=torch.long)
         labels_tensor = torch.tensor(labels, dtype=torch.long)
-        attention_mask = torch.ones_like(input_tensor)
+        attention_tensor = torch.tensor(attention_mask, dtype=torch.long)
         return {
             "input_ids": input_tensor,
-            "attention_mask": attention_mask,
+            "attention_mask": attention_tensor,
             "labels": labels_tensor,
         }
 
@@ -341,19 +360,39 @@ class LocalTelemetryLLM:
         self.model = self._load_model(for_training=True)
         self.model.train()
 
-        dataset = TelemetryPromptDataset(
-            jsonl_path=dataset_path,
-            tokenizer=self.tokenizer,
-            max_seq_length=self.config.max_seq_length,
-        )
+        use_hf_datasets = self.config.use_hf_datasets
+        streaming_mode = use_hf_datasets and self.config.hf_streaming
 
-        eval_dataset: Optional[TelemetryPromptDataset] = None
-        if eval_dataset_path:
-            eval_dataset = TelemetryPromptDataset(
-                jsonl_path=eval_dataset_path,
+        if streaming_mode and not self.config.max_steps:
+            raise ValueError(
+                "Streaming Hugging Face datasets require 'max_steps' to be set in LocalLLMConfig."
+            )
+
+        if use_hf_datasets:
+            dataset = self._prepare_hf_prompt_dataset(
+                dataset_path=dataset_path,
+                streaming=self.config.hf_streaming,
+            )
+        else:
+            dataset = TelemetryPromptDataset(
+                jsonl_path=dataset_path,
                 tokenizer=self.tokenizer,
                 max_seq_length=self.config.max_seq_length,
             )
+
+        eval_dataset: Optional[Any] = None
+        if eval_dataset_path:
+            if use_hf_datasets:
+                eval_dataset = self._prepare_hf_prompt_dataset(
+                    dataset_path=eval_dataset_path,
+                    streaming=False,
+                )
+            else:
+                eval_dataset = TelemetryPromptDataset(
+                    jsonl_path=eval_dataset_path,
+                    tokenizer=self.tokenizer,
+                    max_seq_length=self.config.max_seq_length,
+                )
 
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -399,13 +438,121 @@ class LocalTelemetryLLM:
         self._save_model(output_dir)
 
         metrics = train_result.metrics
-        metrics["train_samples"] = len(dataset)
+
+        train_samples = getattr(dataset, "num_rows", None)
+        if train_samples is None and hasattr(dataset, "__len__"):
+            try:
+                train_samples = len(dataset)
+            except TypeError:
+                train_samples = None
+        if train_samples is not None:
+            metrics["train_samples"] = int(train_samples)
+
         if eval_dataset is not None:
-            metrics["eval_samples"] = len(eval_dataset)
+            eval_samples = getattr(eval_dataset, "num_rows", None)
+            if eval_samples is None and hasattr(eval_dataset, "__len__"):
+                try:
+                    eval_samples = len(eval_dataset)
+                except TypeError:
+                    eval_samples = None
+            if eval_samples is not None:
+                metrics["eval_samples"] = int(eval_samples)
         trainer.log_metrics("train", metrics)
         trainer.save_metrics("train", metrics)
 
         return metrics
+
+    def _prepare_hf_prompt_dataset(self, *, dataset_path: Path, streaming: bool):
+        """Load and preprocess a prompt dataset using Hugging Face datasets."""
+
+        try:
+            from datasets import load_dataset  # type: ignore[import-not-found]
+        except ImportError as exc:
+            raise ImportError(
+                "The 'datasets' package is required when use_hf_datasets=True. Install `datasets`."
+            ) from exc
+
+        data_files = {"train": str(dataset_path)}
+        dataset = load_dataset(
+            "json",
+            data_files=data_files,
+            split="train",
+            streaming=streaming,
+        )
+
+        def has_valid_messages(example: Dict[str, Any]) -> bool:
+            return _extract_messages(example) is not None
+
+        dataset = dataset.filter(
+            has_valid_messages,
+            batched=False,
+            load_from_cache_file=not streaming,
+        )
+
+        def tokenize_example(example: Dict[str, Any]) -> Dict[str, Any]:
+            parsed = _extract_messages(example)
+            if not parsed:
+                return {
+                    "skip": True,
+                    "input_ids": [],
+                    "labels": [],
+                    "attention_mask": [],
+                }
+
+            prompt_text, response_text = _format_prompt_and_response(self.tokenizer, parsed)
+            sample = _build_tokenized_sample(
+                self.tokenizer,
+                prompt_text,
+                response_text,
+                self.config.max_seq_length,
+            )
+
+            if sample is None:
+                return {
+                    "skip": True,
+                    "input_ids": [],
+                    "labels": [],
+                    "attention_mask": [],
+                }
+
+            input_ids, labels, attention_mask = sample
+            return {
+                "skip": False,
+                "input_ids": input_ids,
+                "labels": labels,
+                "attention_mask": attention_mask,
+            }
+
+        columns_to_remove = list(getattr(dataset, "column_names", [])) or None
+        dataset = dataset.map(
+            tokenize_example,
+            batched=False,
+            remove_columns=columns_to_remove,
+            load_from_cache_file=not streaming,
+            num_proc=None if (streaming or self.config.hf_num_proc is None) else self.config.hf_num_proc,
+        )
+
+        dataset = dataset.filter(
+            lambda example: not example.get("skip", False),
+            batched=False,
+            load_from_cache_file=not streaming,
+        )
+        if "skip" in getattr(dataset, "column_names", []):
+            dataset = dataset.remove_columns(["skip"])
+
+        dataset = dataset.with_format(type="torch")
+
+        if streaming:
+            iterator = dataset.take(1)
+            try:
+                next(iter(iterator))
+            except StopIteration as stop_error:
+                raise ValueError("No valid samples were parsed from the dataset") from stop_error
+        else:
+            if getattr(dataset, "num_rows", 0) == 0:
+                raise ValueError("No valid samples were parsed from the dataset")
+
+        return dataset
 
     def _save_model(self, output_dir: Path) -> None:
         output_dir = Path(output_dir)

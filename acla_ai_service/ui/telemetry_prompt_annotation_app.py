@@ -73,6 +73,14 @@ def _extract_system_prompt(entry: Dict[str, Any]) -> str:
     """Return the system prompt stored with a dataset entry."""
 
     raw_record = entry.get("raw", {})
+    if not isinstance(raw_record, dict):
+        return ""
+
+    metadata = raw_record.get("metadata", {}) or {}
+    system_prompt = metadata.get("system_prompt")
+    if isinstance(system_prompt, str) and system_prompt:
+        return system_prompt
+
     messages = raw_record.get("messages", []) if isinstance(raw_record, dict) else []
     for message in messages:
         if message.get("role") == "system":
@@ -148,20 +156,38 @@ def load_dataset(path_str: str) -> List[Dict[str, Any]]:
             except json.JSONDecodeError:
                 continue
 
-            metadata = record.get("metadata", {}) or {}
-            annotation = metadata.get("annotation", {}) or {}
-            window = record.get("window", {}) or {}
-            coaching_explanation = annotation.get("coaching_explanation", "")
+            metadata = record.get("metadata") or {}
+            if not isinstance(metadata, dict):
+                metadata = {}
+                record["metadata"] = metadata
+
+            annotation_block = metadata.get("annotation") if isinstance(metadata.get("annotation"), dict) else {}
+            window_payload = record.get("window")
+            if not isinstance(window_payload, dict):
+                window_payload = metadata.get("window") if isinstance(metadata.get("window"), dict) else {}
+
+            segment_payload = record.get("segment")
+            if segment_payload is None and window_payload:
+                segment_payload = window_payload.get("context", [])
+
+            response_text = record.get("response")
+            if isinstance(response_text, str):
+                coaching_explanation = response_text
+            else:
+                coaching_explanation = annotation_block.get("coaching_explanation", "")
+            if not isinstance(coaching_explanation, str):
+                coaching_explanation = ""
+            annotation_complete = bool(metadata.get("annotation_complete")) or bool((coaching_explanation or "").strip())
 
             entries.append(
                 {
                     "window_id": metadata.get("window_id"),
-                    "annotation_complete": bool(metadata.get("annotation_complete")),
+                    "annotation_complete": annotation_complete,
                     "coaching_explanation": coaching_explanation,
-                    "window": window,
+                    "segment": segment_payload or [],
+                    "window": window_payload or {"context": segment_payload or []},
                     "config": metadata.get("config", {}),
                     "metadata": metadata,
-                    "messages": record.get("messages", []),
                     "raw": record,
                 }
             )
@@ -255,27 +281,21 @@ def _save_annotation(
 
             metadata = record.setdefault("metadata", {})
             window_meta = metadata.get("window_id")
-            window = record.get("window", {}) or {}
-            config = metadata.get("config", {}) or {}
-            segment_meta = metadata.get("segment_metadata")
 
             if window_meta == window_id:
                 annotation_block = metadata.setdefault("annotation", {})
                 annotation_block.pop("driver_note", None)
                 annotation_block["coaching_explanation"] = coaching_explanation
                 annotation_block["updated_at"] = datetime.utcnow().isoformat()
-                metadata["annotation_complete"] = bool(coaching_explanation)
+                metadata["annotation_complete"] = bool(coaching_explanation.strip())
 
-                user_prompt = _build_user_prompt(window, config, segment_meta)
-                assistant_payload = {
-                    "coaching_summary": coaching_explanation,
-                }
-
-                messages = record.setdefault("messages", [])
-                if len(messages) >= 2:
-                    messages[1]["content"] = user_prompt
-                if len(messages) >= 3:
-                    messages[2]["content"] = json.dumps(assistant_payload, ensure_ascii=False)
+                record["response"] = coaching_explanation
+                if "explanation" in record:
+                    record.pop("explanation", None)
+                if "segment" not in record:
+                    window = metadata.get("window") if isinstance(metadata.get("window"), dict) else record.get("window", {})
+                    window = window or {}
+                    record["segment"] = window.get("context", [])
 
             if metadata.get("annotation_complete"):
                 annotated_examples += 1

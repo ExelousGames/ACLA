@@ -42,10 +42,6 @@ class TrainingOptimizedCache:
         self.metadata_db = self.cache_dir / "cache_metadata.db"
         self._init_metadata_db()
         
-        # Clean cache on initialization to ensure fresh start
-        print(f"[INFO] Cleaning cache directory on initialization...")
-        self.clear_cache()
-        
         # Large dataset optimization settings
         self.compression = 'snappy'  # Fast compression for large files
         self.row_group_size = 50000   # Conservative row groups for memory efficiency
@@ -253,6 +249,32 @@ class TrainingOptimizedCache:
                 return dict(zip(columns, row))
         
         return None
+
+    def has_cached_data(self, cache_key: str, max_age_hours: Optional[int] = None) -> bool:
+        """Check whether cache files exist for the given cache key."""
+        manifest_file = self.parquet_dir / f"{cache_key}_manifest.txt"
+        if not manifest_file.exists():
+            return False
+
+        try:
+            with open(manifest_file, 'r') as manifest_handle:
+                chunk_names = [line.strip() for line in manifest_handle if line.strip()]
+        except OSError as read_error:
+            print(f"[WARNING] Could not read manifest for {cache_key}: {read_error}")
+            return False
+
+        if not chunk_names:
+            return False
+
+        if not any((self.parquet_dir / name).exists() for name in chunk_names):
+            return False
+
+        if max_age_hours is not None:
+            metadata = self._get_cache_metadata(cache_key, max_age_hours)
+            if metadata is None:
+                return False
+
+        return True
     
     def _update_cache_metadata(self, cache_key: str, file_path: str, data_size_mb: float, 
                              chunk_count: int, record_count: int):
@@ -369,8 +391,8 @@ class TrainingOptimizedCache:
 
 
 # Create shared service instance - clean and simple
-training_cache = TrainingOptimizedCache()
+training_cache_service = TrainingOptimizedCache()
 
 def get_shared_data_cache():
     """Get the shared training-optimized cache instance"""
-    return training_cache
+    return training_cache_service

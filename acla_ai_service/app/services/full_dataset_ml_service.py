@@ -7,10 +7,8 @@ using your TelemetryFeatures and FeatureProcessor classes.
 
 import json
 import base64
-import zipfile
-import shutil
+from dataclasses import dataclass
 import pandas as pd
-from dataclasses import asdict
 
 from .corner_identification_unsupervised_service import CornerIdentificationUnsupervisedService
 from .tire_grip_analysis_service import TireGripAnalysisService
@@ -23,7 +21,6 @@ import numpy as np
 import joblib
 import warnings
 import pickle
-import io
 import asyncio
 import time
 from collections import Counter
@@ -53,7 +50,8 @@ from ..models.telemetry_models import (
     FeatureProcessor,
     _safe_float,
 )
-# Transformer model imports no longer required for LLM workflows
+# Transformer model utilities
+from ..models.transformer_model import prepare_and_train_coach_transformer_model
 
 # Import backend service
 from .backend_service import backend_service
@@ -62,30 +60,36 @@ from .backend_service import backend_service
 from .model_cache_service import model_cache_service
 
 # Import hybrid data cache service
-from .Training_data_cache_service import training_cache
+from .Training_data_cache_service import training_cache_service
 
 # Prompt dataset builder and local LLM integration
 from .telemetry_prompt_dataset_builder import TelemetryPromptDatasetBuilder, PromptBuilderConfig
 from .local_llm_service import LocalTelemetryLLM, LocalLLMConfig, GenerationRequest
+from .llm.telemetry_llm_orchestrator import TelemetryLLMOrchestrator
+from .llm.providers import (
+    LLMTrainingContext,
+    SegmentExplanationTrainingProvider,
+    TransformerDirectiveTrainingProvider,
+)
 
 # Suppress sklearn warnings
 warnings.filterwarnings('ignore', category=UserWarning)
 
+@dataclass
+class CacheConfig:
+    """Configuration for cache cleanup operations"""
+    session_data_cache_key: str = f"racing_sessions_"
+    session_cleanup: bool = True
+    processed_session_data_cache_key: str = f"racing_sessions_processed_"
+    processed_session_cleanup: bool = True
+    segments_cache_key: str = f"enriched_segments_"
+    segment_cleanup: bool = True
+
+
 class Full_dataset_TelemetryMLService:
     """
     Machine Learning Service for AC Competizione Telemetry Analysis
-    
-    Supports multiple prediction tasks:
-    - Lap time prediction (regression)
-    - Performance classification
-    - Driver behavior analysis
-    - Setup optimization
-    - Tire strategy
-    - Imitation learning from expert demonstrations
-    - Expert guidance and coaching
-    - Driving behavior comparison and analysis
-    - And more...
-    """
+    """ 
     
     def __init__(self, models_directory: str = "models"):
         """
@@ -111,10 +115,10 @@ class Full_dataset_TelemetryMLService:
         self.backend_service = backend_service
         
         # Model cache service integration
-        self.model_cache = model_cache_service
+        self.model_cache_service = model_cache_service
         
         # Use training-optimized data cache for large datasets
-        self.data_cache = training_cache
+        self.data_caching_service = training_cache_service
         print(f"[INFO] Using training-optimized data cache for large dataset processing")
         print(f"[INFO] Parquet-only storage optimized for ML training pipelines")
         
@@ -128,12 +132,25 @@ class Full_dataset_TelemetryMLService:
         self.llm_dataset_directory = self.models_directory / "llm_datasets"
         self.llm_dataset_directory.mkdir(parents=True, exist_ok=True)
 
+        self.llm_orchestrator = TelemetryLLMOrchestrator(
+            prompt_builder=self.prompt_builder,
+            llm_config=self.llm_config,
+            adapter_directory=self.llm_adapter_directory,
+            dataset_directory=self.llm_dataset_directory,
+            providers=[
+                SegmentExplanationTrainingProvider(self.prompt_builder),
+            ],
+        )
+
+        # Centralize cache key usage for coordinated cleanup
+        self.cache_config = CacheConfig()
+
         # Add a simple lock mechanism to prevent concurrent fetches of the same model
         self._model_fetch_locks = {}
         self._lock_creation_lock = asyncio.Lock()
         
         # Clear entire cache to ensure we start fresh with model instances only
-        self.model_cache.clear()
+        self.model_cache_service.clear()
         print("[INFO] Cleared entire cache on startup - will cache model instances directly")
         
         # Log cache configuration on startup
@@ -141,224 +158,26 @@ class Full_dataset_TelemetryMLService:
     
     def _log_cache_configuration(self):
         """Log cache configuration details"""
-        cache_stats = self.model_cache.get_stats()
+        cache_stats = self.model_cache_service.get_stats()
         print("\n" + "="*60)
         print("CACHE CONFIGURATION")
         print("="*60)
-        print(f"Max Cache Size: {self.model_cache.max_cache_size} models")
-        print(f"Max Memory: {self.model_cache.max_memory_mb}MB ({self.model_cache.max_memory_mb/1024:.1f}GB)")
-        print(f"Environment: {self.model_cache.environment}")
-        print(f"Default TTL: {self.model_cache.default_ttl_seconds}s ({self.model_cache.default_ttl_seconds/3600:.1f}h)")
-        print(f"Large Model Priority: {self.model_cache.config.get('performance', {}).get('large_model_priority', False)}")
+        print(f"Max Cache Size: {self.model_cache_service.max_cache_size} models")
+        print(f"Max Memory: {self.model_cache_service.max_memory_mb}MB ({self.model_cache_service.max_memory_mb/1024:.1f}GB)")
+        print(f"Environment: {self.model_cache_service.environment}")
+        print(f"Default TTL: {self.model_cache_service.default_ttl_seconds}s ({self.model_cache_service.default_ttl_seconds/3600:.1f}h)")
+        print(f"Large Model Priority: {self.model_cache_service.config.get('performance', {}).get('large_model_priority', False)}")
         print("Caching Strategy: Model instances cached directly")
         print("="*60 + "\n")
 
-    async def _generate_llm_prompt_dataset(
-        self,
-        segments_cache_key: str,
-        *,
-        annotations: Optional[Dict[str, Dict[str, Any]]] = None,
-        output_path: Optional[Path] = None,
-        shuffle: bool = True,
-        prediction_steps: Optional[int] = None,
-    ) -> Tuple[Path, Dict[str, Any]]:
-        """Build the LLM prompt dataset asynchronously from cached segments."""
-
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        dataset_filename = f"telemetry_segments_{timestamp}.jsonl"
-        dataset_path = Path(output_path) if output_path else self.llm_dataset_directory / dataset_filename
-
-        def _build_dataset() -> Tuple[Path, Dict[str, Any]]:
-            stats = self.prompt_builder.build_from_cached_segments(
-                segments_cache_key=segments_cache_key,
-                output_path=dataset_path,
-                annotations=annotations,
-                shuffle=shuffle,
-                prediction_steps=prediction_steps,
-            )
-            dataset_summary = self._summarize_dataset(dataset_path)
-            stats_dict = stats.to_dict()
-            stats_dict.update(
-                {
-                    "output_path": str(dataset_path),
-                    "total_examples": dataset_summary.get("total_examples", stats_dict.get("windows_kept", 0)),
-                    "annotated_examples": dataset_summary.get("annotated_examples", 0),
-                    "annotation_ratio": dataset_summary.get("annotation_ratio", 0.0),
-                }
-            )
-            return dataset_path, stats_dict
-
-        dataset_path_result, stats_dict = await asyncio.to_thread(_build_dataset)
-        return dataset_path_result, stats_dict
-
-    def _summarize_dataset(self, dataset_path: Path) -> Dict[str, Any]:
-        """Collect lightweight statistics for an existing dataset file."""
-
-        dataset_path = Path(dataset_path)
-        summary = {
-            "dataset_path": str(dataset_path),
-            "total_examples": 0,
-            "annotated_examples": 0,
-            "annotation_ratio": 0.0,
-        }
-
-        if not dataset_path.exists():
-            return summary
-
-        total_examples = 0
-        annotated_examples = 0
-        try:
-            with dataset_path.open("r", encoding="utf-8") as jsonl_file:
-                for line in jsonl_file:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    total_examples += 1
-                    try:
-                        record = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    metadata = record.get("metadata", {})
-                    if metadata.get("annotation_complete"):
-                        annotated_examples += 1
-        except Exception as error:
-            print(f"[WARNING] Failed to summarize dataset {dataset_path}: {error}")
-            return summary
-
-        summary["total_examples"] = total_examples
-        summary["annotated_examples"] = annotated_examples
-        summary["annotation_ratio"] = (annotated_examples / total_examples) if total_examples else 0.0
-        return summary
-
-    def _train_local_llm_sync(self, dataset_path: Path) -> Dict[str, Any]:
-        """Synchronous helper that fine-tunes the local LLM and returns metrics."""
-
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        dataset_identifier = (dataset_path.stem or "telemetry").replace(" ", "_")
-        adapter_dir = self.llm_adapter_directory / f"{dataset_identifier}_{timestamp}"
-        adapter_dir.mkdir(parents=True, exist_ok=True)
-
-        llm = LocalTelemetryLLM(config=self.llm_config)
-        metrics = llm.train(
-            dataset_path=dataset_path,
-            output_dir=adapter_dir,
-            eval_dataset_path=None,
-        )
-
-        serialized_adapter = self._serialize_adapter_directory(adapter_dir)
-        serialized_adapter["adapter_directory_name"] = adapter_dir.name
-
-        return {
-            "metrics": metrics,
-            "adapter_dir": adapter_dir,
-            "serialized_adapter": serialized_adapter,
-            "config": asdict(self.llm_config),
-        }
-
-    async def _train_local_llm(self, dataset_path: Path) -> Dict[str, Any]:
-        """Async wrapper for LLM fine-tuning."""
-
-        return await asyncio.to_thread(self._train_local_llm_sync, dataset_path)
-
-    async def _train_llm_and_persist(
-        self,
-        dataset_path: Path,
-        dataset_stats: Optional[Dict[str, Any]] = None,
-        cleanup_dataset_file: bool = True,
-    ) -> Dict[str, Any]:
-        """Fine-tune the LLM from an existing dataset and persist results."""
-
-        dataset_path = Path(dataset_path)
-        dataset_stats = dataset_stats or self._summarize_dataset(dataset_path)
-
-        training_artifacts = await self._train_local_llm(
-            dataset_path=dataset_path,
-        )
-
-        serialized_adapter = training_artifacts["serialized_adapter"]
-        adapter_dir: Path = training_artifacts["adapter_dir"]
-        metrics = training_artifacts["metrics"]
-
-        metadata_payload = {
-            "training_metrics": metrics,
-            "dataset_stats": dataset_stats,
-            "adapter_directory": adapter_dir.name,
-            "llm_config": training_artifacts["config"],
-            "generated_dataset": str(dataset_path),
-            "training_timestamp": datetime.now().isoformat(),
-        }
-
-        print(
-            f"[INFO] LLM fine-tuning complete. Saving adapter '{adapter_dir.name}' to backend"
-        )
-
-        await backend_service.save_ai_model(
-            model_type="llm_guidance_v1",
-            model_data=serialized_adapter,
-            metadata=metadata_payload,
-            is_active=True,
-        )
-
-        if cleanup_dataset_file:
-            try:
-                dataset_path.unlink(missing_ok=True)
-            except Exception as cleanup_error:
-                print(f"[WARNING] Failed to delete dataset file {dataset_path}: {cleanup_error}")
-
-        return {
-            "success": True,
-            "training_metrics": metrics,
-            "dataset_stats": dataset_stats,
-            "adapter_directory": adapter_dir.name,
-            "dataset_path": str(dataset_path),
-        }
-
-    def _serialize_adapter_directory(self, adapter_dir: Path) -> Dict[str, Any]:
-        """Zip the adapter directory and produce a backend-friendly payload."""
-
-        buffer = io.BytesIO()
-        with zipfile.ZipFile(buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as zip_file:
-            for file_path in adapter_dir.rglob("*"):
-                if file_path.is_file():
-                    arcname = file_path.relative_to(adapter_dir)
-                    zip_file.write(file_path, arcname=str(arcname))
-        buffer.seek(0)
-        encoded = base64.b64encode(buffer.read()).decode("utf-8")
-
-        return {
-            "adapter_zip_base64": encoded,
-            "created_at": datetime.now().isoformat(),
-        }
-
-    def _deserialize_llm_model(self, payload: Dict[str, Any]) -> LocalTelemetryLLM:
-        """Restore a fine-tuned LLM instance from backend payload data."""
-
-        encoded = payload.get("adapter_zip_base64")
-        adapter_name = payload.get("adapter_directory_name") or f"adapter_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-
-        if not encoded:
-            raise ValueError("Adapter payload missing 'adapter_zip_base64'")
-
-        target_dir = self.llm_adapter_directory / adapter_name
-        if target_dir.exists():
-            shutil.rmtree(target_dir)
-        target_dir.mkdir(parents=True, exist_ok=True)
-
-        raw_bytes = base64.b64decode(encoded)
-        buffer = io.BytesIO(raw_bytes)
-        with zipfile.ZipFile(buffer, mode="r") as zip_file:
-            zip_file.extractall(path=target_dir)
-
-        llm = LocalTelemetryLLM(config=self.llm_config)
-        llm.load_for_inference(adapter_path=target_dir)
-        return llm
+    # Dataset generation is now handled by TelemetryLLMOrchestrator providers.
 
     def _format_context_window(self, telemetry_record: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Construct and format a context window for inference from a single telemetry record."""
 
         context_steps = self.prompt_builder_config.context_steps
         repeated_window = [dict(telemetry_record) for _ in range(max(1, context_steps))]
-        return self.prompt_builder.format_timesteps(repeated_window)
+        return repeated_window
 
     def _build_llm_user_prompt(
         self,
@@ -416,7 +235,8 @@ class Full_dataset_TelemetryMLService:
 
     def clear_all_cache(self):
         """Clear cached LLM, imitation, corner, and tire model instances."""
-        self.model_cache.clear()
+        self.model_cache_service.clear()
+        self.llm_orchestrator.clear_llm_cache()
         print("[INFO] All cached model_cache entries cleared (corner & tire services are on-demand so no persistent cache to clear)")
     
     async def get_llm_guidance_model(
@@ -427,90 +247,13 @@ class Full_dataset_TelemetryMLService:
     ) -> Tuple[Optional[LocalTelemetryLLM], Optional[Dict[str, Any]]]:
         """Retrieve the active LLM guidance model if one has been saved."""
 
-        if force_refresh:
-            try:
-                self.model_cache.invalidate(
-                    model_type="llm_guidance_v1",
-                    model_subtype=model_subtype,
-                )
-            except Exception as invalidate_error:
-                print(f"[WARNING] Failed to invalidate LLM cache entry: {invalidate_error}")
-
-        try:
-            model_instance, metadata = await self._get_cached_model_or_fetch(
-                model_type="llm_guidance_v1",
-                model_subtype=model_subtype,
-                deserializer_func=self._deserialize_llm_model,
-            )
-            return model_instance, metadata
-        except Exception as fetch_error:
-            print(f"[WARNING] No active LLM guidance model available: {fetch_error}")
-            return None, {"error": str(fetch_error)}
-
-
-    
-    async def _fetch_and_cache_model(
-        self,
-        model_type: str,
-        *,
-        model_subtype: str = "complete_model_data",
-        deserializer_func=None
-    ) -> Tuple[Any, Dict[str, Any]]:
-        """
-        Fetch model from backend and cache the model instance directly.
-        
-        Args:
-            model_type: Type of model ('imitation_learning', etc.)
-            model_subtype: Subtype identifier for the model
-            deserializer_func: Function to deserialize model data from backend and return model instance
-            
-        Returns:
-            Tuple of (model_instance, metadata)
-        """
-        print(f"[DEBUG] Fetching model from backend: {model_type}")
-        
-        # getCompleteActiveModelData now always returns ActiveModelData or raises exception
-        model_response: ActiveModelData = await self.backend_service.getCompleteActiveModelData(
-            model_type
+        return await self.llm_orchestrator.get_llm_for_inference(
+            force_refresh=force_refresh,
+            model_subtype=model_subtype,
         )
-        # Prepare cache metadata with all available structured data
-        cache_metadata = {
-            "model_type": model_response.modelType,
-            "is_active": model_response.isActive,
-            "fetched_at": datetime.now().isoformat(),
-            "backend_metadata": model_response.metadata,
-            "model_subtype": model_subtype
-        }
-        
-        # Deserialize the model instance
-        if deserializer_func:
-            print(f"[DEBUG] Deserializing model instance: {model_type}")
-            model_instance = deserializer_func(model_response.modelData)
-            if model_instance is None:
-                raise Exception("Deserializer function returned None - must return model instance")
-        else:
-            raise ValueError("deserializer_func is required to deserialize model data")
-        
-        # Cache the model instance directly
-        print(f"[DEBUG] Caching model instance: {model_type}")
-        self.model_cache.put(
-            model_type=model_type,
-            data=model_instance,  # Store model instance directly
-            metadata=cache_metadata,
-            model_subtype=model_subtype
-        )
-        
-        print(f"[DEBUG] Successfully cached model instance: {model_type}")
-        
-        return model_instance, cache_metadata
-    
+
     def _cleanup_fetch_lock(self, cache_key: str):
-        """
-        Clean up fetch lock for a specific cache key
-        
-        Args:
-            cache_key: The cache key used for locking
-        """
+        """Clean up fetch lock for a specific cache key"""
         if cache_key in self._model_fetch_locks:
             try:
                 self._model_fetch_locks[cache_key].set()
@@ -518,6 +261,8 @@ class Full_dataset_TelemetryMLService:
                 print(f"[DEBUG] Released fetch lock for {cache_key}")
             except Exception as cleanup_error:
                 print(f"[WARNING] Error cleaning up fetch lock: {str(cleanup_error)}")
+
+    # Dataset generation is now handled by TelemetryLLMOrchestrator providers.
     
     def _emergency_cleanup_fetch_lock(self, cache_key: str):
         """
@@ -539,206 +284,136 @@ class Full_dataset_TelemetryMLService:
         model_type: str,
         *,
         model_subtype: str = "complete_model_data",
-        deserializer_func=None
+        deserializer_func=None,
     ) -> Tuple[Any, Dict[str, Any]]:
-        """
-        Get model from cache or fetch from backend with thread-safe locking.
-        Caches and retrieves model instances directly.
-        
-        Args:
-            model_type: Type of model ('imitation_learning', etc.)
-            model_subtype: Subtype identifier for the model
-            deserializer_func: Function to deserialize model data from backend and return model instance
-            
-        Returns:
-            Tuple of (model_instance, metadata)
-        """
-        # Generate consistent cache key using the same method as ModelCacheService
-        cache_key = self.model_cache._generate_cache_key(
+        """Get model from cache or fetch from backend with thread-safe locking."""
+
+        cache_key = self.model_cache_service.build_cache_key(
             model_type=model_type,
-            model_subtype=model_subtype
+            model_subtype=model_subtype,
         )
-        
-        # Use cache_key for locking to ensure consistency
+
+        model_instance: Optional[Any] = None
+        metadata: Dict[str, Any] = {}
         is_fetching_thread = False
-        model_instance = None
-        metadata = {}
-        
+        fetch_event: Optional[asyncio.Event] = None
+
         try:
-            # First, check cache info without accessing the data to avoid unnecessary hits
-            cache_info = self.model_cache.get_cache_info(
+            cached_result = self.model_cache_service.get(
                 model_type=model_type,
-                model_subtype=model_subtype
+                model_subtype=model_subtype,
             )
-            
-            if cache_info and not cache_info.get('is_expired', True):
-                print(f"[DEBUG] Cache hit for {cache_key} - age: {cache_info.get('ttl_remaining_seconds', 'N/A')}s remaining")
-                
-                # Get the actual cached data
-                cached_result = self.model_cache.get(
-                    model_type=model_type,
-                    model_subtype=model_subtype
-                )
-                
-                if cached_result:
-                    model_instance, metadata = cached_result
-                    print(f"[DEBUG] Retrieved cached model instance for {cache_key}")
-                    
-                    if model_instance is not None:
-                        return model_instance, metadata
-            else:
-                print(f"[DEBUG] Cache miss or expired for {cache_key}")
-            
-            # If no valid cached result, handle fetching with proper locking
+            if cached_result:
+                model_instance, metadata = cached_result
+                if model_instance is not None:
+                    return model_instance, metadata
+
             async with self._lock_creation_lock:
-                # Double-check cache after acquiring lock
-                cached_result = self.model_cache.get(
+                cached_result = self.model_cache_service.get(
                     model_type=model_type,
-                    model_subtype=model_subtype
+                    model_subtype=model_subtype,
                 )
-                
                 if cached_result:
                     model_instance, metadata = cached_result
-                    print(f"[DEBUG] Retrieved cached model instance (double-check) for {cache_key}")
-                    
                     if model_instance is not None:
                         return model_instance, metadata
-                
-                # Check if another thread is already fetching
-                if cache_key in self._model_fetch_locks:
-                    fetch_event = self._model_fetch_locks[cache_key]
-                else:
-                    # We're the first to request this model, create the event and mark ourselves as fetching
+
+                if cache_key not in self._model_fetch_locks:
                     self._model_fetch_locks[cache_key] = asyncio.Event()
                     is_fetching_thread = True
-            
-            # If we need to wait for another thread
-            if not model_instance and not is_fetching_thread:
+                else:
+                    fetch_event = self._model_fetch_locks[cache_key]
+
+            if not is_fetching_thread and fetch_event is not None:
                 try:
-                    print(f"[DEBUG] Waiting for another thread to fetch {cache_key}")
                     await fetch_event.wait()
-                    # The other thread should have cached the model, try cache again
-                    cached_result = self.model_cache.get(
+                    cached_result = self.model_cache_service.get(
                         model_type=model_type,
-                        model_subtype=model_subtype
+                        model_subtype=model_subtype,
                     )
                     if cached_result:
                         model_instance, metadata = cached_result
-                        
-                        if model_instance:
-                            print(f"[INFO] Using model cached by another thread for {cache_key}")
+                        if model_instance is not None:
                             return model_instance, metadata
-                    
+
                     print(f"[WARNING] Expected cached model not found after waiting for {cache_key}")
-                    # Continue to try fetching ourselves as fallback
                     is_fetching_thread = True
                 except Exception as wait_error:
-                    print(f"[ERROR] Error while waiting for model fetch: {str(wait_error)}")
-                    # Continue to try fetching ourselves as fallback
+                    print(f"[WARNING] Error while waiting for {cache_key}: {wait_error}")
                     is_fetching_thread = True
 
-            # If we are the fetching thread or no data in cache, do the actual fetch
-            if not model_instance and is_fetching_thread:
-                try:
-                    model_instance, metadata = await self._fetch_and_cache_model(
-                        model_type=model_type,
-                        model_subtype=model_subtype,
-                        deserializer_func=deserializer_func
-                    )
-                    print(f"[INFO] Successfully fetched and cached model for {cache_key}")
-                    
-                except Exception as fetch_error:
-                    print(f"[ERROR] Failed to fetch model {cache_key}: {str(fetch_error)}")
-                    raise fetch_error
-                finally:
-                    # Always signal completion and clean up lock when we're the fetching thread
-                    self._cleanup_fetch_lock(cache_key)
-            
-            # At this point, we should have the model instance
+            if is_fetching_thread:
+                model_instance, metadata = await self._fetch_and_cache_model(
+                    model_type=model_type,
+                    model_subtype=model_subtype,
+                    deserializer_func=deserializer_func,
+                )
+
             if model_instance is None:
-                raise Exception("Failed to obtain model instance from cache or backend")
-            
+                raise RuntimeError(f"Failed to obtain model instance for {cache_key}")
+
             return model_instance, metadata
-            
-        except Exception as e:
-            # Clean up any locks that might have been created by this thread
+
+        except Exception as error:
             if is_fetching_thread:
                 self._emergency_cleanup_fetch_lock(cache_key)
-            
-            raise e
-    
+            raise error
+        finally:
+            if is_fetching_thread:
+                self._cleanup_fetch_lock(cache_key)
+
     def _print_section_divider(self, title: str, width: int = 80):
-        """
-        Print a large, visually prominent section divider for console output
-        
-        Args:
-            title: Section title to display
-            width: Width of the divider (default 80 characters)
-        """
-        # Create the divider lines
-        border_line = "=" * width
-        title_line = f"║ {title.center(width - 4)} ║"
-        empty_line = f"║{' ' * (width - 2)}║"
-        
-        print("\n" + border_line + "\n" + empty_line + "\n" + title_line + "\n" + empty_line + "\n" + border_line + "\n", flush=True)
-        
-    def get_fetch_locks_status(self) -> Dict[str, Any]:
-        """
-        Get status of current fetch locks for debugging purposes
-        
-        Returns:
-            Dictionary with lock status information
-        """
-        return {
-            "active_locks": list(self._model_fetch_locks.keys()),
-            "lock_count": len(self._model_fetch_locks),
-            "timestamp": datetime.now().isoformat()
-        }
-    
+        """Print a large console divider to visually separate log sections."""
+
+        normalized_width = max(width, len(title) + 4)
+        divider = "=" * normalized_width
+        print(f"\n{divider}\n{title.center(normalized_width)}\n{divider}")
+
     def get_cache_debug_info(self) -> Dict[str, Any]:
-        """
-        Get comprehensive cache debugging information
-        
-        Returns:
-            Dictionary with cache and lock information
-        """
-        cache_stats = self.model_cache.get_stats()
+        """Get comprehensive cache debugging information."""
+
+        cache_stats = self.model_cache_service.get_stats()
         lock_status = self.get_fetch_locks_status()
-        
+        llm_cache = self.llm_orchestrator.get_cache_debug_info()
+
         return {
             "cache_stats": cache_stats,
             "fetch_locks": lock_status,
-            "timestamp": datetime.now().isoformat()
+            "llm_cache": llm_cache,
+            "timestamp": datetime.now().isoformat(),
         }
-    
+
     def print_cache_debug_info(self):
-        """
-        Print cache debugging information to console
-        """
+        """Print cache debugging information to console."""
+
         debug_info = self.get_cache_debug_info()
-        
-        print("\n" + "="*60)
+
+        print("\n" + "=" * 60)
         print("CACHE DEBUG INFORMATION")
-        print("="*60)
-        
+        print("=" * 60)
+
         cache_stats = debug_info["cache_stats"]
         print(f"Cache Size: {cache_stats['cache_size']}/{cache_stats['max_cache_size']}")
         print(f"Memory Usage: {cache_stats['memory_usage_mb']:.2f}/{cache_stats['max_memory_mb']} MB")
         print(f"Hit Rate: {cache_stats['hit_rate']:.2%}")
         print(f"Hits: {cache_stats['hits']}, Misses: {cache_stats['misses']}")
         print(f"Evictions: {cache_stats['evictions']}, Cleanups: {cache_stats['cleanups']}")
-        
+
         print(f"\nActive Fetch Locks: {debug_info['fetch_locks']['lock_count']}")
         for lock_key in debug_info['fetch_locks']['active_locks']:
             print(f"  - {lock_key}")
-        
-        print(f"\nCached Models:")
-        for entry in cache_stats.get('entries', []):
-            print(f"  - {entry['key']} ({entry['size_mb']:.2f} MB, accessed {entry['access_count']} times)")
-            if entry.get('ttl_remaining_seconds'):
-                print(f"    TTL remaining: {entry['ttl_remaining_seconds']:.0f}s")
-        
-        print("="*60 + "\n")
+
+        print("\nCached Models:")
+        for entry in cache_stats.get("entries", []):
+            print(
+                f"  - {entry['key']} ({entry['size_mb']:.2f} MB, accessed {entry['access_count']} times)"
+            )
+            ttl_remaining = entry.get("ttl_remaining_seconds")
+            if ttl_remaining:
+                print(f"    TTL remaining: {ttl_remaining:.0f}s")
+
+        print("=" * 60 + "\n")
+        self.llm_orchestrator.print_cache_debug_info()
     
     async def clear_stuck_fetch_locks(self, max_age_minutes: int = 10) -> Dict[str, Any]:
         """
@@ -752,32 +427,34 @@ class Full_dataset_TelemetryMLService:
         """
         cleared_locks = []
         
+        llm_result = await self.llm_orchestrator.clear_stuck_fetch_locks(max_age_minutes=max_age_minutes)
+
         try:
             async with self._lock_creation_lock:
-                # Since we can't track lock creation time in this simple implementation,
-                # we'll just clear all locks as an emergency measure
                 for cache_key in list(self._model_fetch_locks.keys()):
                     try:
                         self._model_fetch_locks[cache_key].set()
                         del self._model_fetch_locks[cache_key]
                         cleared_locks.append(cache_key)
-                    except Exception as e:
+                    except Exception:
                         pass
-            
+
             return {
                 "success": True,
                 "cleared_locks": cleared_locks,
                 "cleared_count": len(cleared_locks),
-                "timestamp": datetime.now().isoformat()
+                "timestamp": datetime.now().isoformat(),
+                "llm": llm_result,
             }
-            
-        except Exception as e:
+
+        except Exception as error:
             return {
                 "success": False,
-                "error": str(e),
+                "error": str(error),
                 "cleared_locks": cleared_locks,
                 "cleared_count": len(cleared_locks),
-                "timestamp": datetime.now().isoformat()
+                "timestamp": datetime.now().isoformat(),
+                "llm": llm_result,
             }
 
     async def predict_expert_actions(
@@ -866,11 +543,9 @@ class Full_dataset_TelemetryMLService:
                 except Exception:
                     segment_metadata[feature] = value
 
-            llm_model, llm_metadata = await self._get_cached_model_or_fetch(
-                model_type="llm_guidance_v1",
-                model_subtype="llm_adapter_data",
-                deserializer_func=self._deserialize_llm_model,
-            )
+            llm_model, llm_metadata = await self.llm_orchestrator.get_llm_for_inference()
+            if llm_model is None:
+                raise RuntimeError("LLM guidance model is not available")
 
             user_prompt = self._build_llm_user_prompt(
                 context_timesteps=context_payload,
@@ -929,24 +604,24 @@ class Full_dataset_TelemetryMLService:
         self,
         track_name: str,
         *,
-        annotations: Optional[Dict[str, Dict[str, Any]]] = None,
         shuffle_dataset: bool = True,
-        prediction_steps: Optional[int] = None,
         cleanup_dataset_file: bool = True,
     ) -> Dict[str, Any]:
         """Stream telemetry, build a segment-purpose dataset, and fine-tune the LLM."""
 
-        annotations = annotations or {}
-        prediction_horizon = prediction_steps or self.prompt_builder_config.prediction_steps
-
         self._print_section_divider("STREAMING TELEMETRY DATA FROM BACKEND DIRECTLY TO CACHE")
 
+        cache_config = self.cache_config
+
         # Stream sessions directly into cache for downstream processing
-        dataset_cache_key = f"racing_sessions_{track_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        dataset_cache_key = cache_config.session_data_cache_key
+        processed_sessions_cache_key = cache_config.processed_session_data_cache_key
+        segments_cache_key_base = cache_config.segments_cache_key
         try:
             sessions_metadata = await backend_service.get_all_racing_sessions_streaming(
                 cache_key=dataset_cache_key,
                 trackName=track_name,
+                cleanup_cache=cache_config.session_cleanup,
             )
         except Exception as streaming_error:
             raise RuntimeError(f"Backend streaming failed: {streaming_error}") from streaming_error
@@ -967,9 +642,11 @@ class Full_dataset_TelemetryMLService:
         self._print_section_divider("LARGE DATASET ASSUMED - USING EFFICIENT PROCESSING")
 
         top_laps_telemetry_list, sessions_cache_key = await self.process_lap_sessions_efficiently(
-            processed_session_data_cache_key=dataset_cache_key,
+            session_data_cache_key=dataset_cache_key,
             max_memory_records=10000,
             telemetry_time_gap_ms=200,
+            processed_sessions_cache_key=processed_sessions_cache_key,
+            clean_up = cache_config.processed_session_cleanup,
         )
 
         self._print_section_divider("ENRICHING CONTEXTUAL DATA")
@@ -985,52 +662,80 @@ class Full_dataset_TelemetryMLService:
                 top_laps_telemetry_list,
                 sessions_cache_key,
                 max_segment_length=max_segment_length,
+                segments_cache_key_override=segments_cache_key_base,
+                clean_up=cache_config.segment_cleanup,
             )
 
             # Free top-lap telemetry to conserve memory once cached
             del top_laps_telemetry_list
-
-            dataset_path_result, dataset_stats = await self._generate_llm_prompt_dataset(
+            
+            transformer_training = await prepare_and_train_coach_transformer_model(
+                data_cache=self.data_caching_service,
                 segments_cache_key=segments_cache_key,
-                annotations=annotations,
-                shuffle=shuffle_dataset,
-                prediction_steps=prediction_horizon,
+                segment_length_hint=max_segment_length,
             )
 
-            print(f"[INFO] LLM dataset created at {dataset_path_result}")
+            if not transformer_training.get("success"):
+                raise RuntimeError(transformer_training.get("error") or "Transformer training failed")
 
-            llm_training = await self._train_llm_and_persist(
-                dataset_path=dataset_path_result,
-                dataset_stats=dataset_stats,
+            await backend_service.save_ai_model(
+                model_type="transformer_expert_action",
+                model_data=transformer_training["serialized_model"],
+                metadata={
+                    "training_history": transformer_training["training_history"],
+                    "test_metrics": transformer_training["test_metrics"],
+                    "training_timestamp": datetime.now().isoformat()
+                },
+                is_active=True
+            )
+            
+            dataset_identifier = f"llm_guidance_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            training_context = LLMTrainingContext(
+                dataset_id=dataset_identifier,
+                segments_cache_key=segments_cache_key,
+                output_root=self.llm_dataset_directory / dataset_identifier,
+                data_caching_service=self.data_caching_service,
+                shuffle=shuffle_dataset,
+                metadata={
+                    "sessions_cache_key": sessions_cache_key,
+                    "segments_cache_key": segments_cache_key,
+                },
+            )
+
+            llm_training = await self.llm_orchestrator.run_training(
+                training_context,
                 cleanup_dataset_file=cleanup_dataset_file,
             )
 
             if not llm_training.get("success"):
                 raise RuntimeError(llm_training.get("error") or "LLM fine-tuning failed")
 
+            dataset_path = llm_training.get("dataset_path")
+            dataset_path_result = Path(dataset_path) if dataset_path else None
+            dataset_stats = llm_training.get("dataset_stats")
+
         finally:
             if sessions_cache_key:
                 try:
-                    self.data_cache.clear_cache(sessions_cache_key)
+                    self.data_caching_service.clear_cache(sessions_cache_key)
                     print(f"[INFO] Cleaned up cached session data: {sessions_cache_key}")
                 except Exception as cleanup_error:
                     print(f"[WARNING] Failed cleaning session cache: {cleanup_error}")
 
             if segments_cache_key:
                 try:
-                    self.data_cache.clear_cache(segments_cache_key)
+                    self.data_caching_service.clear_cache(segments_cache_key)
                     print(f"[INFO] Cleaned up cached segments: {segments_cache_key}")
                 except Exception as cleanup_error:
                     print(f"[WARNING] Failed cleaning segment cache: {cleanup_error}")
 
         result_payload = {
             "success": True,
-            "track_name": track_name,
-            "prediction_steps": prediction_horizon,
-            "transformer_training": transformer_training,
             "dataset_path": str(dataset_path_result) if dataset_path_result else None,
             "dataset_stats": dataset_stats,
+            "transformer_training": transformer_training,
             "llm_training": llm_training,
+            "llm_contributions": llm_training.get("contributions") if llm_training else None,
         }
 
         self._print_section_divider("LLM TRAINING COMPLETED")
@@ -1079,9 +784,12 @@ class Full_dataset_TelemetryMLService:
 
     async def process_lap_sessions_efficiently(
         self,
-        processed_session_data_cache_key: str,
+        session_data_cache_key: str,
+        *,
         max_memory_records: int = 10000,
         telemetry_time_gap_ms: int = 100,
+        processed_sessions_cache_key: Optional[str] = None,
+        clean_up: bool = True,
     ) -> Tuple[List[Dict[str, Any]], str]:
         """
         Streamlined processing of large cached datasets with a bounded memory footprint while caching
@@ -1091,16 +799,30 @@ class Full_dataset_TelemetryMLService:
             data_cache_key: Cache key that stores streamed sessions from the backend
             max_memory_records: Maximum number of session telemetry records kept in memory before flushing to cache
             telemetry_time_gap_ms: Maximum allowed gap (in milliseconds) between telemetry points when stripping laps
+            processed_sessions_cache_key: Optional override for cache key storing processed session data
+            clean_up: When True, clear existing processed session cache before processing
 
         Returns:
             Tuple of (top_laps_telemetry_list, sessions_cache_key)
         """
         print(
-            f"[INFO] Processing cached dataset '{processed_session_data_cache_key}' with {max_memory_records} in-memory session records"
+            f"[INFO] Processing cached dataset '{session_data_cache_key}' with {max_memory_records} in-memory session records"
         )
 
         top_laps: List[Dict[str, Any]] = []
-        sessions_cache_key = f"{processed_session_data_cache_key}_processed_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        processed_cache_key = processed_sessions_cache_key or f"{session_data_cache_key}_processed_"
+
+        if hasattr(self.data_caching_service, "has_cached_data") and self.data_caching_service.has_cached_data(processed_cache_key):
+            if clean_up:
+                try:
+                    self.data_caching_service.clear_cache(processed_cache_key)
+                    print(f"[INFO] Cleared existing cache for processed sessions: {processed_cache_key}")
+                except Exception as cleanup_error:
+                    print(f"[WARNING] Failed to clear cache '{processed_cache_key}': {cleanup_error}")
+            else:
+                print("processing skipped")
+                return [], processed_cache_key
+
         session_buffer: List[Dict[str, Any]] = []
         session_buffer_records = 0
         total_sessions_cached = 0
@@ -1119,8 +841,8 @@ class Full_dataset_TelemetryMLService:
                     yield entry
 
             try:
-                cache_success = await self.data_cache.cache_chunks_streaming(
-                    cache_key=sessions_cache_key,
+                cache_success = await self.data_caching_service.cache_chunks_streaming(
+                    cache_key=processed_cache_key,
                     chunks_iterator=buffer_iterator()
                 )
             except Exception as cache_error:
@@ -1129,7 +851,7 @@ class Full_dataset_TelemetryMLService:
 
             if cache_success:
                 cached_count = len(session_buffer)
-                print(f"[INFO] Cached {cached_count} session chunks ({session_buffer_records} records) [{reason}] -> {sessions_cache_key}")
+                print(f"[INFO] Cached {cached_count} session chunks ({session_buffer_records} records) [{reason}] -> {processed_cache_key}")
                 total_sessions_cached += cached_count
                 session_buffer = []
                 session_buffer_records = 0
@@ -1166,8 +888,8 @@ class Full_dataset_TelemetryMLService:
                     f"[DEBUG] Replaced slowest lap {slowest['id']} with {candidate['id']} (time: {candidate['lap_time_ms']}ms)"
                 )
 
-        session_chunks_iterator = self.data_cache.get_cached_data_chunks(cache_key=processed_session_data_cache_key)
-        print(f"[DEBUG] Created chunk iterator for cache key: {processed_session_data_cache_key}")
+        session_chunks_iterator = self.data_caching_service.get_cached_data_chunks(cache_key=session_data_cache_key)
+        print(f"[DEBUG] Created chunk iterator for cache key: {session_data_cache_key}")
 
         session_chunks_processed = 0
         for session_chunk_df in session_chunks_iterator:
@@ -1287,12 +1009,12 @@ class Full_dataset_TelemetryMLService:
 
         if not session_chunks_processed:
             raise ValueError(
-                f"No chunks were returned by iterator for cache key {processed_session_data_cache_key}. Check if data exists in cache."
+                f"No chunks were returned by iterator for cache key {session_data_cache_key}. Check if data exists in cache."
             )
 
         if not chunk_idx:
             raise ValueError(
-                f"All {session_chunks_processed} chunks failed processing for cache key {processed_session_data_cache_key}. Check data quality."
+                f"All {session_chunks_processed} chunks failed processing for cache key {session_data_cache_key}. Check data quality."
             )
 
         if len(top_laps) < 5:
@@ -1316,15 +1038,15 @@ class Full_dataset_TelemetryMLService:
         print(f"[SUCCESS] Selected top 5 laps: {len(top_laps_telemetry_list)} records")
         print(f"[SUCCESS] Cached {total_sessions_cached} session batches across {chunk_idx} chunks")
 
-        return top_laps_telemetry_list, sessions_cache_key
+        return top_laps_telemetry_list, processed_cache_key
 
     def get_data_cache_info(self) -> Dict[str, Any]:
         """Get information about the training-optimized data cache"""
-        return self.data_cache.get_cache_info()
+        return self.data_caching_service.get_cache_info()
 
     def clear_data_cache(self, track_name: Optional[str] = None):
         """Clear training-optimized data cache"""
-        self.data_cache.clear_cache(track_name)
+        self.data_caching_service.clear_cache(track_name)
         print(f"[INFO] Cleared data cache" + (f" for {track_name}" if track_name else ""))
 
     async def _enrich_sessions_with_context(self, chunk_data: List[Dict[str, Any]], 
@@ -1410,7 +1132,7 @@ class Full_dataset_TelemetryMLService:
             estimated_size_mb = (total_records * 60) / (1024 * 1024)  # 60 bytes per enriched record
             
             # Cache using the proper cache service method with correct parameters
-            cache_success = await self.data_cache.cache_chunks_streaming(
+            cache_success = await self.data_caching_service.cache_chunks_streaming(
                 cache_key=base_cache_key,
                 chunks_iterator=segments_generator()
             )
@@ -1426,7 +1148,15 @@ class Full_dataset_TelemetryMLService:
             print(f"[ERROR] Exception caching segment batch {batch_number}: {str(e)}")
             return False
 
-    async def enriched_contextual_data(self, top_laps_telemetry_list: List[Dict[str, Any]], sessions_cache_key: str, max_segment_length: int) -> str:
+    async def enriched_contextual_data(
+        self,
+        top_laps_telemetry_list: List[Dict[str, Any]],
+        sessions_cache_key: str,
+        max_segment_length: int,
+        *,
+        segments_cache_key_override: Optional[str] = None,
+        clean_up: bool = True,
+    ) -> str:
         """
         Streamlined contextual data enrichment using chunk iterator approach.
         
@@ -1438,7 +1168,9 @@ class Full_dataset_TelemetryMLService:
         Args:
             top_laps_telemetry_list: List of expert telemetry records for training models
             sessions_cache_key: Cache key for accessing cached session data via iterator
-            segment_length: Length of segments for transformer training
+            max_segment_length: Length of segments for transformer training
+            segments_cache_key_override: Optional override for cache key storing enriched segments
+            clean_up: When True, clear existing cache before processing; when False and cache exists, skip processing
             
         Returns:
             str - Cache key for accessing the enriched segments
@@ -1485,7 +1217,7 @@ class Full_dataset_TelemetryMLService:
         tire_service = TireGripAnalysisService()
 
         print("[INFO] Streaming cached session telemetry to train tire grip model")
-        session_training_iterator = self.data_cache.get_cached_data_chunks(
+        session_training_iterator = self.data_caching_service.get_cached_data_chunks(
             cache_key=sessions_cache_key
         )
         tire_grip_training = await tire_service.train_tire_grip_model_streaming(
@@ -1512,9 +1244,27 @@ class Full_dataset_TelemetryMLService:
         # Step 2: Process cached sessions via chunk iterator with enrichment
         self._print_section_divider("PROCESSING SESSION DATA VIA CHUNK ITERATOR")
         
-        segments_cache_key = f"enriched_segments_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        segments_cache_key = segments_cache_key_override or self.cache_config.segments_cache_key
+
+        cache_exists = False
+        if hasattr(self.data_caching_service, "has_cached_data"):
+            try:
+                cache_exists = self.data_caching_service.has_cached_data(segments_cache_key)
+            except Exception as cache_check_error:
+                print(f"[WARNING] Failed to check cache for {segments_cache_key}: {cache_check_error}")
+
+        if cache_exists:
+            if clean_up:
+                try:
+                    self.data_caching_service.clear_cache(segments_cache_key)
+                    print(f"[INFO] Cleared existing segments cache: {segments_cache_key}")
+                except Exception as cache_cleanup_error:
+                    print(f"[WARNING] Failed to clear segments cache {segments_cache_key}: {cache_cleanup_error}")
+            else:
+                print("processing skipped")
+                return segments_cache_key
         
-        session_chunks_iterator = self.data_cache.get_cached_data_chunks(
+        session_chunks_iterator = self.data_caching_service.get_cached_data_chunks(
             cache_key=sessions_cache_key  # Use the cache key where session data is stored
         )
         

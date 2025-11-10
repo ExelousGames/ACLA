@@ -188,7 +188,15 @@ class BackendService:
             logger.error(f"Backend request to {endpoint} failed: {str(e)}")
             raise Exception(f"Backend function call failed: {str(e)}\n")
 
-    async def get_all_racing_sessions_streaming(self, cache_key: str, trackName: Optional[str] = None, carName: Optional[str] = None, chunk_size: int = 1000, data_cache=None) -> Dict[str, Any]:
+    async def get_all_racing_sessions_streaming(
+        self,
+        cache_key: str,
+        trackName: Optional[str] = None,
+        carName: Optional[str] = None,
+        chunk_size: int = 1000,
+        cleanup_cache: bool = True,
+        data_cache=None
+    ) -> Dict[str, Any]:
         """
         Stream all racing sessions directly to cache without loading into memory
         Uses file streaming implementation for memory-efficient TB-scale data processing
@@ -198,6 +206,7 @@ class BackendService:
             trackName: Optional track name filter
             carName: Optional car name filter  
             chunk_size: Unused parameter (kept for API compatibility)
+            cleanup_cache: When True, remove existing cache for cache_key before streaming
             data_cache:  instance to stream data to (uses shared cache if None)
             
         Returns:
@@ -207,6 +216,27 @@ class BackendService:
             # Import shared cache here to avoid circular imports
             from .Training_data_cache_service import get_shared_data_cache
             data_cache = get_shared_data_cache()
+
+        # Ensure we always start with a clean cache entry for this key
+        if hasattr(data_cache, "has_cached_data") and data_cache.has_cached_data(cache_key):
+            if cleanup_cache:
+                try:
+                    logger.info(f"Removing existing cache entry for key '{cache_key}' before streaming")
+                    data_cache.clear_cache(cache_key)
+                except Exception as cache_error:
+                    logger.warning(f"Failed to clear existing cache entry '{cache_key}': {cache_error}")
+            else:
+                logger.info(f"Cache entry '{cache_key}' already populated; skipping backend fetch")
+                print("fetch skipped")
+                return {
+                    "success": True,
+                    "cached": True,
+                    "cache_key": cache_key,
+                    "streaming_mode": "file_based",
+                    "memory_efficient": True,
+                    "fetch_skipped": True,
+                    "message": "Existing cache reused without fetching"
+                }
             
         try:
             # Initialize the download to get metadata about all sessions

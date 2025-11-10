@@ -1,19 +1,17 @@
-"""Utilities for converting telemetry segments into prompt/response pairs for
-large language model fine-tuning.
+"""Utilities for converting telemetry segments into training-ready segment/explanation pairs.
 
 The legacy transformer pipeline predicted future telemetry sequences only.
-This builder prepares instruction-tuning data that teaches an LLM to output
-both future telemetry and a human-readable explanation when provided with
-partial coaching notes and recent telemetry context.
+This builder now emits lightweight records that couple a cleaned telemetry
+segment with the coaching explanation text (initially blank) that annotators
+will supply before fine-tuning the guidance model.
 """
 
 from __future__ import annotations
 
 import json
 import random
-from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from dataclasses import dataclass
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -22,7 +20,7 @@ try:  # Optional dependency; used only when tensors are present
 except ImportError:  # pragma: no cover - torch not required for dataset building
     torch = None  # type: ignore
 
-from .Training_data_cache_service import TrainingOptimizedCache, training_cache
+from .Training_data_cache_service import TrainingOptimizedCache, training_cache_service
 
 
 @dataclass
@@ -30,27 +28,15 @@ class PromptBuilderConfig:
     """Configuration for prompt construction."""
 
     system_prompt: str = (
-        "You are an elite Assetto Corsa Competizione race engineer. "
+        "You are an elite race engineer. "
         "Given a telemetry segment, explain its purpose and provide concise coaching guidance."
     )
-    context_steps: int = 20
-    prediction_steps: int = 6
-    context_stride: int = 5
+    context_steps: int = 20  # Reserved for backward compatibility; entire segment is used.
+    prediction_steps: int = 6  # Deprecated; segments no longer split into future windows.
+    context_stride: int = 5  # Deprecated; sliding window traversal removed.
     max_examples: Optional[int] = None
     random_seed: int = 42
-    telemetry_features: Sequence[str] = field(
-        default_factory=lambda: (
-            "Physics_speed_kmh",
-            "Physics_rpm",
-            "Physics_gear",
-            "Physics_brake",
-            "Physics_gas",
-            "Physics_steer_angle",
-            "Graphics_delta_lap_time",
-            "Graphics_normalized_car_position",
-            "Graphics_current_sector_index",
-        )
-    )
+    telemetry_features: Optional[Sequence[str]] = None
     round_floats: int = 4
     min_required_std: float = 1e-3
 
@@ -76,14 +62,14 @@ class DatasetBuildStats:
 
 
 class TelemetryPromptDatasetBuilder:
-    """Create prompt/response training pairs from cached telemetry segments."""
+    """Create segment/explanation training pairs from cached telemetry segments."""
 
     def __init__(
         self,
         data_cache: Optional[TrainingOptimizedCache] = None,
         config: Optional[PromptBuilderConfig] = None,
     ) -> None:
-        self.data_cache = data_cache or training_cache
+        self.data_cache = data_cache or training_cache_service
         self.config = config or PromptBuilderConfig()
         self._rng = random.Random(self.config.random_seed)
         self._window_counter = 0
@@ -94,198 +80,120 @@ class TelemetryPromptDatasetBuilder:
     def build_from_cached_segments(
         self,
         segments_cache_key: str,
-        output_path: Path,
         *,
-        annotations: Optional[Dict[str, Dict[str, Any]]] = None,
-    shuffle: bool = True,
-    prediction_steps: Optional[int] = None,
-    ) -> DatasetBuildStats:
-        """Generate an instruction-tuning dataset from cached segments.
+        shuffle: bool = True,
+        record_consumer: Optional[Callable[[Dict[str, Any]], None]] = None,
+    ) -> Tuple[List[Dict[str, Any]], DatasetBuildStats]:
+        """Generate normalized prompt/response records from cached segments.
 
         Args:
             segments_cache_key: Cache key that stores enriched transformer segments.
-            output_path: Destination JSONL file path; parent directory is created.
-            annotations: Optional mapping of window_id -> annotation payload.
-            shuffle: If True, windows are shuffled before writing to disk.
+            shuffle: If True, windows are shuffled before returning.
+            record_consumer: Optional callback invoked for each generated entry. When provided,
+                entries are streamed to the consumer instead of being accumulated in memory.
 
         Returns:
-            DatasetBuildStats with generation metrics.
+            A tuple of (entries, stats) where entries is a list of dictionaries describing each
+            segment window and stats contains generation metrics.
         """
 
         stats = DatasetBuildStats()
-        windows: List[Dict[str, Any]] = []
+        examples: List[Dict[str, Any]] = []
+        streaming_mode = record_consumer is not None
+
+        if streaming_mode and shuffle:
+            print(
+                "[WARN] Streaming dataset generation does not support shuffling; "
+                "results will be emitted in source order."
+            )
+
         self._window_counter = 0
 
-        effective_prediction_steps = prediction_steps or self.config.prediction_steps
-        context_steps = self.config.context_steps
-
-        chunk_iterator = self.data_cache.get_cached_data_chunks(segments_cache_key)
-        for chunk_index, chunk_df in enumerate(chunk_iterator):
+        segment_chunk_iterator = self.data_cache.get_cached_data_chunks(segments_cache_key)
+        for chunk_index, chunk_df in enumerate(segment_chunk_iterator):
             if chunk_df is None or chunk_df.empty:
                 continue
 
-            chunk_records = chunk_df.to_dict("records")
-            for record_index, record in enumerate(chunk_records):
-                segment_candidates = self._resolve_segments_from_record(record)
-                if not segment_candidates:
+            segment_records = chunk_df.to_dict("records")
+            for segment_index, segment in enumerate(segment_records):
+                stats.segments_processed += 1
+
+                if not segment:
+                    stats.skipped_short_segments += 1  # Keeps legacy metric name for empty segments.
                     continue
 
-                for segment_index, segment_timesteps in enumerate(segment_candidates):
-                    stats.segments_processed += 1
+                stats.windows_generated += 1
 
-                    if len(segment_timesteps) < (context_steps + effective_prediction_steps):
-                        stats.skipped_short_segments += 1
-                        continue
+                window_id = self._next_window_id(
+                    chunk_index=chunk_index,
+                    segment_index=segment_index,
+                    start_index=0,
+                )
+                window_info = {
+                    "window_id": window_id,
+                    "chunk_index": chunk_index,
+                    "segment_index": segment_index,
+                    "start_index": 0,
+                }
 
-                    end_limit = len(segment_timesteps) - effective_prediction_steps
-                    for start_index in range(0, end_limit - context_steps + 1, self.config.context_stride):
-                        stats.windows_generated += 1
-                        context_slice = segment_timesteps[start_index : start_index + context_steps]
-                        future_slice = segment_timesteps[
-                            start_index + context_steps : start_index + context_steps + effective_prediction_steps
-                        ]
-
-                        if not self._passes_variance_check(context_slice, future_slice):
-                            stats.skipped_low_variance += 1
-                            continue
-
-                        window_id = self._next_window_id(
-                            chunk_index=chunk_index,
-                            record_index=record_index,
-                            segment_index=segment_index,
-                            start_index=start_index,
-                        )
-                        window_info = {
-                            "window_id": window_id,
-                            "chunk_index": chunk_index,
-                            "record_index": record_index,
-                            "segment_index": segment_index,
-                            "start_index": start_index,
-                        }
-                        annotation_payload = annotations.get(window_id) if annotations else None
-
-                        entry = self._build_dataset_entry(
-                            context_timesteps=context_slice,
-                            future_timesteps=future_slice,
-                            window_info=window_info,
-                            annotation=annotation_payload,
-                            prediction_steps=effective_prediction_steps,
-                        )
-                        if entry:
-                            windows.append(entry)
-                            stats.windows_kept += 1
-
-                        if self.config.max_examples and stats.windows_kept >= self.config.max_examples:
-                            break
-
-                    if self.config.max_examples and stats.windows_kept >= self.config.max_examples:
-                        break
+                prompt_record = self._build_dataset_entry(
+                    context_timesteps=segment,
+                    window_info=window_info,
+                )
+                if prompt_record:
+                    if streaming_mode:
+                        if record_consumer:
+                            record_consumer(prompt_record)
+                        else:
+                            raise ValueError(
+                                "record_consumer callback is required in streaming mode."
+                            )
+                    else:
+                        examples.append(prompt_record)
+                    stats.windows_kept += 1
 
                 if self.config.max_examples and stats.windows_kept >= self.config.max_examples:
                     break
 
             if self.config.max_examples and stats.windows_kept >= self.config.max_examples:
                 break
-        if shuffle:
-            self._rng.shuffle(windows)
 
-        output_path = Path(output_path)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
+        if shuffle and not streaming_mode:
+            self._rng.shuffle(examples)
 
-        with output_path.open("w", encoding="utf-8") as jsonl_file:
-            for entry in windows:
-                jsonl_file.write(
-                    json.dumps(entry, ensure_ascii=False, default=self._json_default) + "\n"
-                )
-
+        total_examples = stats.windows_kept
         stats_summary = stats.to_dict()
         stats_summary.update({
-            "output_path": str(output_path),
-            "total_examples": len(windows),
+            "total_examples": total_examples,
         })
         print("[INFO] Prompt dataset generated:", json.dumps(stats_summary, indent=2))
-        return stats
+        return (examples if not streaming_mode else []), stats
 
     # ------------------------------------------------------------------
     # Prompt construction helpers
     # ------------------------------------------------------------------
-    def _resolve_segments_from_record(self, record: Dict[str, Any]) -> List[List[Dict[str, Any]]]:
-        """Return a list of segment timesteps extracted from a cache record."""
-
-        resolved_segments: List[List[Dict[str, Any]]] = []
-
-        raw_segments = record.get("data")
-        if isinstance(raw_segments, list) and raw_segments:
-            if all(isinstance(item, list) for item in raw_segments):
-                for segment in raw_segments:
-                    normalized = self._sanitize_segment(segment)
-                    if normalized:
-                        resolved_segments.append(normalized)
-            else:
-                normalized = self._sanitize_segment(raw_segments)
-                if normalized:
-                    resolved_segments.append(normalized)
-
-        if not resolved_segments:
-            normalized = self._sanitize_segment(record)
-            if normalized:
-                resolved_segments.append(normalized)
-
-        return resolved_segments
-
-    def _sanitize_segment(self, segment: Any) -> List[Dict[str, Any]]:
-        """Coerce various cached segment formats into an ordered timestep list."""
-
-        if isinstance(segment, list):
-            return [step for step in segment if isinstance(step, dict)]
-
-        if isinstance(segment, dict):
-            return self._extract_timesteps(segment)
-
-        return []
-
     def _build_dataset_entry(
         self,
         *,
-        context_timesteps: Sequence[Dict[str, Any]],
-        future_timesteps: Sequence[Dict[str, Any]],
+        context_timesteps: List[Dict[str, Any]],
         window_info: Dict[str, Any],
-        annotation: Optional[Dict[str, Any]] = None,
-        prediction_steps: int,
     ) -> Optional[Dict[str, Any]]:
-        context_payload = self._format_timesteps(context_timesteps)
-        future_payload = self._clone_timesteps(future_timesteps)
+        """Create a prompt/response record using the entire telemetry segment as context."""
 
-        if not context_payload:
+        if not context_timesteps:
             return None
 
-        annotation = annotation or {}
-        explanation = (annotation.get("coaching_explanation") or "").strip()
+        explanation = ""
+        raw_steps = len(context_timesteps)
 
-        user_content = (
-            "Task: Describe the purpose and coaching focus of the following telemetry segment.\n"
-            f"Segment context (last {self.config.context_steps} steps):\n"
-            f"{json.dumps(context_payload, indent=2, ensure_ascii=False, default=self._json_default)}\n\n"
-            f"Segment continuation (next {prediction_steps} steps):\n"
-            f"{json.dumps(future_payload, indent=2, ensure_ascii=False, default=self._json_default)}\n\n"
-            "Respond with a JSON object containing:\n"
-            "- `coaching_summary`: concise guidance capturing the segment's purpose.\n"
-            "- Optional `key_focus`: list of bullet strings highlighting the most important insights."
+        telemetry_feature_list = (
+            list(self.config.telemetry_features)
+            if self.config.telemetry_features is not None
+            else None
         )
-
-        assistant_payload = {
-            "coaching_summary": explanation,
-        }
-        key_focus = annotation.get("key_focus")
-        if key_focus:
-            assistant_payload["key_focus"] = key_focus
 
         metadata = {
             "window_id": window_info.get("window_id"),
-            "annotation": {
-                "coaching_explanation": explanation,
-                "updated_at": annotation.get("updated_at") if annotation else None,
-            },
             "source_indices": {
                 "chunk_index": window_info.get("chunk_index"),
                 "record_index": window_info.get("record_index"),
@@ -293,64 +201,57 @@ class TelemetryPromptDatasetBuilder:
                 "start_index": window_info.get("start_index"),
             },
             "config": {
-                "context_steps": self.config.context_steps,
-                "prediction_steps": prediction_steps,
-                "telemetry_features": list(self.config.telemetry_features),
+                "context_steps": raw_steps,
+                "prediction_steps": 0,
+                "telemetry_features": telemetry_feature_list,
             },
             "annotation_complete": bool(explanation),
+            "system_prompt": self.config.system_prompt,
         }
+        if telemetry_feature_list is None:
+            metadata["config"].pop("telemetry_features")
 
-        entry = {
-            "messages": [
-                {"role": "system", "content": self.config.system_prompt},
-                {"role": "user", "content": user_content},
-                {"role": "assistant", "content": json.dumps(assistant_payload, ensure_ascii=False)},
-            ],
-            "metadata": metadata,
-            "window": {
-                "context": context_payload,
-                "future": future_payload,
-            },
+        system_prompt = metadata.get("system_prompt") or ""
+        prompt_body = (
+            "Provide coaching explanation for the following telemetry segment.\n"
+            "Telemetry segment (ordered timesteps):\n"
+            f"{json.dumps(context_timesteps, indent=2, ensure_ascii=False, default=self._json_default)}"
+        )
+
+        clean_metadata = {
+            key: value
+            for key, value in metadata.items()
+            if key != "system_prompt"
         }
-        return entry
+        window_payload = {"context": context_timesteps}
+        if window_payload:
+            clean_metadata["window"] = window_payload
+
+        record: Dict[str, Any] = {
+            "prompt": prompt_body,
+            "response": explanation,
+        }
+        if system_prompt:
+            record["system_prompt"] = system_prompt
+        if clean_metadata:
+            record["metadata"] = clean_metadata
+        return record
 
     def _next_window_id(
         self,
         *,
         chunk_index: int,
-        record_index: int,
         segment_index: int,
         start_index: int,
     ) -> str:
         """Generate a reproducible identifier for each sliding window."""
 
         window_id = (
-            f"chunk{chunk_index:04d}-record{record_index:05d}-segment{segment_index:04d}-start{start_index:05d}-"
+            f"chunk{chunk_index:04d}-segment{segment_index:04d}-start{start_index:05d}-"
             f"window{self._window_counter:07d}"
         )
         self._window_counter += 1
         return window_id
-
-    def _format_timesteps(self, timesteps: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        formatted: List[Dict[str, Any]] = []
-        for relative_index, timestep in enumerate(timesteps):
-            filtered = {}
-            for feature in self.config.telemetry_features:
-                value = timestep.get(feature)
-                if value is None:
-                    continue
-
-                if isinstance(value, (int, float)) and not isinstance(value, bool):
-                    filtered[feature] = round(float(value), self.config.round_floats)
-                else:
-                    filtered[feature] = value
-
-            if not filtered:
-                continue
-
-            filtered["relative_index"] = relative_index
-            formatted.append(filtered)
-        return formatted
 
     @staticmethod
     def _clone_timesteps(timesteps: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -359,11 +260,6 @@ class TelemetryPromptDatasetBuilder:
             if isinstance(step, dict):
                 cloned.append({key: value for key, value in step.items()})
         return cloned
-
-    def format_timesteps(self, timesteps: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Public helper for formatting timesteps consistent with the dataset builder."""
-
-        return self._format_timesteps(timesteps)
 
     # ------------------------------------------------------------------
     # Utility helpers
@@ -386,51 +282,3 @@ class TelemetryPromptDatasetBuilder:
         if isinstance(value, (set, tuple)):
             return list(value)
         raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
-
-    @staticmethod
-    def _coerce_step_index(key: Any) -> Optional[int]:
-        if isinstance(key, int):
-            return key
-        if isinstance(key, str) and key.strip().isdigit():
-            return int(key.strip())
-        return None
-
-    def _extract_timesteps(self, segment_record: Any) -> List[Dict[str, Any]]:
-        if isinstance(segment_record, (list, tuple)):
-            return [step for step in segment_record if isinstance(step, dict)]
-
-        if not isinstance(segment_record, dict):
-            return []
-
-        step_items: List[Tuple[int, Dict[str, Any]]] = []
-        for key, value in segment_record.items():
-            if not isinstance(value, dict):
-                continue
-            step_idx = self._coerce_step_index(key)
-            if step_idx is None:
-                continue
-            step_items.append((step_idx, value))
-
-        step_items.sort(key=lambda item: item[0])
-        return [step for _, step in step_items]
-
-    def _passes_variance_check(
-        self,
-        context_timesteps: Sequence[Dict[str, Any]],
-        future_timesteps: Sequence[Dict[str, Any]],
-    ) -> bool:
-        """Skip windows that are effectively static (hard for LLM to learn from)."""
-        combined = context_timesteps + future_timesteps
-        feature_matrix: List[List[float]] = []
-        for step in combined:
-            row: List[float] = []
-            for feature in self.config.telemetry_features:
-                row.append(self._coerce_float(step.get(feature)))
-            feature_matrix.append(row)
-
-        matrix = np.asarray(feature_matrix, dtype=np.float32)
-        if not np.isfinite(matrix).all():
-            matrix = np.nan_to_num(matrix)
-
-        variances = matrix.var(axis=0)
-        return bool(np.any(variances > self.config.min_required_std))

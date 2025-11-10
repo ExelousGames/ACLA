@@ -2181,7 +2181,7 @@ class ExpertActionTrainer:
             'epochs_trained': epoch + 1,
             'final_lr': self.optimizer.param_groups[0]['lr']
         })
-    
+
     def evaluate(self, dataset: TelemetryActionDataset) -> Dict[str, Any]:
         """
         Run a targeted single-sequence evaluation comparing teacher-forced and
@@ -2560,3 +2560,103 @@ class ExpertActionTrainer:
             'model_parameters': sum(p.numel() for p in self.model.parameters()),
             'trainable_parameters': sum(p.numel() for p in self.model.parameters() if p.requires_grad)
         })
+
+
+async def prepare_and_train_coach_transformer_model(
+    data_cache: Any,
+    segments_cache_key: str,
+    segment_length_hint: Optional[int] = 50,
+) -> Dict[str, Any]:
+    """Train the ExpertActionTransformer using cached telemetry segments.
+
+    Args:
+        data_cache: Cache service that provides telemetry segments via ``get_cached_data_chunks``.
+        segments_cache_key: Cache key that identifies the prepared telemetry segments.
+        segment_length_hint: Optional hint for typical segment length, used to size positional encoding.
+
+    Returns:
+        Dictionary containing training history, evaluation metrics, and serialized model payload.
+    """
+
+    try:
+        print(f"[INFO] Creating streaming dataset from segments cache key: {segments_cache_key}")
+
+        dataset = TelemetryActionDataset(
+            data_cache=data_cache,
+            segments_cache_key=segments_cache_key,
+            segment_length_hint=segment_length_hint,
+            batch_size=32,
+            min_sequence_length=3,
+        )
+
+        use_cuda = torch.cuda.is_available()
+        if use_cuda:
+            # Enable TF32 on Ampere+ GPUs for faster matmuls without harming stability.
+            try:
+                torch.backends.cuda.matmul.allow_tf32 = True
+                torch.backends.cudnn.allow_tf32 = True
+            except Exception:
+                pass
+        print(f"[INFO] Device: {'CUDA' if use_cuda else 'CPU'}")
+
+        input_feature_names, action_feature_names = dataset.get_feature_names()
+        input_features_count = len(input_feature_names)
+
+        segment_info = dataset.get_segment_info()
+        length_stats = segment_info.get('length_statistics') or {}
+        print(
+            f"[INFO] Dataset info: {input_features_count} combined input features, {len(action_feature_names)} action features"
+        )
+        if length_stats:
+            median_length = length_stats.get('median')
+            median_display = f"{median_length:.1f}" if median_length is not None else "n/a"
+            print(
+                f"[INFO] Segment length distribution (timesteps): min={length_stats.get('min')} | "
+                f"median={median_display} | max={length_stats.get('max')}"
+            )
+
+        max_candidates = [10]
+        if length_stats.get('max') is not None:
+            max_candidates.append(int(length_stats['max']))
+        if segment_length_hint:
+            max_candidates.append(int(segment_length_hint))
+        max_sequence_length = max(max_candidates)
+
+        model = ExpertActionTransformer(
+            total_features_count=input_features_count,
+            d_model=256,
+            nhead=16,
+            num_layers=20,
+            sequence_length=max_sequence_length,
+        )
+
+        device = 'cuda' if use_cuda else 'cpu'
+        print(f"[DEBUG] Creating trainer on device: {device}")
+        trainer = ExpertActionTrainer(model, device=device, learning_rate=1e-4)
+
+        print("[DEBUG] Starting training loop...")
+        training_history = trainer.train(
+            train_dataset=dataset,
+            val_dataset=None,
+            epochs=30,
+            patience=10,
+        )
+        print("[DEBUG] Training loop completed successfully")
+
+        test_metrics = trainer.evaluate(dataset)
+        serialized_model = model.serialize_model()
+
+        return {
+            "success": True,
+            "training_history": training_history,
+            "test_metrics": test_metrics,
+            "model_info": trainer.get_model_info(),
+            "serialized_model": serialized_model,
+        }
+
+    except Exception as error:
+        print(f"[ERROR] Transformer training failed: {error}")
+        return {
+            "success": False,
+            "error": str(error),
+        }
