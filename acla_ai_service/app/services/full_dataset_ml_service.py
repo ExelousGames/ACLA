@@ -629,16 +629,6 @@ class Full_dataset_TelemetryMLService:
         if not sessions_metadata.get("success"):
             raise RuntimeError(sessions_metadata.get("message") or "Backend streaming request failed")
 
-        total_sessions = sessions_metadata.get("total_sessions", 0)
-        total_records = sessions_metadata.get("summary", {}).get("data_points_processed", 0)
-
-        if total_sessions == 0:
-            raise ValueError("No sessions returned by backend")
-        if total_records == 0:
-            raise ValueError("No telemetry data available for training")
-
-        print(f"[INFO] Successfully streamed {total_sessions} sessions and {total_records} telemetry records")
-
         self._print_section_divider("LARGE DATASET ASSUMED - USING EFFICIENT PROCESSING")
 
         top_laps_telemetry_list, sessions_cache_key = await self.process_lap_sessions_efficiently(
@@ -713,22 +703,9 @@ class Full_dataset_TelemetryMLService:
             dataset_path = llm_training.get("dataset_path")
             dataset_path_result = Path(dataset_path) if dataset_path else None
             dataset_stats = llm_training.get("dataset_stats")
-
-        finally:
-            if sessions_cache_key:
-                try:
-                    self.data_caching_service.clear_cache(sessions_cache_key)
-                    print(f"[INFO] Cleaned up cached session data: {sessions_cache_key}")
-                except Exception as cleanup_error:
-                    print(f"[WARNING] Failed cleaning session cache: {cleanup_error}")
-
-            if segments_cache_key:
-                try:
-                    self.data_caching_service.clear_cache(segments_cache_key)
-                    print(f"[INFO] Cleaned up cached segments: {segments_cache_key}")
-                except Exception as cleanup_error:
-                    print(f"[WARNING] Failed cleaning segment cache: {cleanup_error}")
-
+        except Exception as training_error:
+            raise RuntimeError(f"Transformer/LLM training failed: {training_error}") from training_error
+        
         result_payload = {
             "success": True,
             "dataset_path": str(dataset_path_result) if dataset_path_result else None,
@@ -1039,15 +1016,6 @@ class Full_dataset_TelemetryMLService:
         print(f"[SUCCESS] Cached {total_sessions_cached} session batches across {chunk_idx} chunks")
 
         return top_laps_telemetry_list, processed_cache_key
-
-    def get_data_cache_info(self) -> Dict[str, Any]:
-        """Get information about the training-optimized data cache"""
-        return self.data_caching_service.get_cache_info()
-
-    def clear_data_cache(self, track_name: Optional[str] = None):
-        """Clear training-optimized data cache"""
-        self.data_caching_service.clear_cache(track_name)
-        print(f"[INFO] Cleared data cache" + (f" for {track_name}" if track_name else ""))
 
     async def _enrich_sessions_with_context(self, chunk_data: List[Dict[str, Any]], 
                                         imitation_learning: ExpertImitateLearningService, tire_service: TireGripAnalysisService) -> List[Dict[str, Any]]:

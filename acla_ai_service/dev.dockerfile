@@ -53,6 +53,7 @@ RUN pip install --no-cache-dir \
     accelerate==0.24.1 \
     sentencepiece==0.1.99 \
     safetensors==0.4.2 \
+    datasets==2.15.0 \
     && pip install --no-cache-dir \
     # Visualization and data processing
     plotly==5.17.0 \
@@ -65,7 +66,7 @@ RUN pip install --no-cache-dir \
     pytest==7.4.0 \
     pytest-asyncio==0.21.1 \
     openai==1.3.7 \
-    streamlit==1.28.0 # provides the telemetry annotation UI
+    streamlit==1.28.0  # provides the telemetry annotation UI
 
 # Copy application code and setup in single layer
 COPY . .
