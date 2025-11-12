@@ -1084,24 +1084,15 @@ class Full_dataset_TelemetryMLService:
             # Store segments as structured chunk - cache service doesn't need to know about segments
             
             async def segments_generator():
-                """Generator for caching - store complete chunk with segments intact"""
-                # Package segments as a complete chunk - cache service treats this as opaque data
-                chunk_data = {
-                    "chunkId": f"batch_{batch_number}",  # Use chunkId format expected by cache service
-                    "data": segments_batch,  # Store segments as data payload
-                    "batch_number": batch_number,
-                    "segment_count": len(segments_batch),
-                    "total_records": sum(len(segment) for segment in segments_batch)
-                }
-                
-                # Yield the complete chunk
-                yield chunk_data
+                """Generator yielding raw segments data"""
+                for segment in segments_batch:
+                    yield segment
             
             # Estimate size for this batch
             total_records = sum(len(segment) for segment in segments_batch)
             estimated_size_mb = (total_records * 60) / (1024 * 1024)  # 60 bytes per enriched record
             
-            # Cache using the proper cache service method with correct parameters
+            # Cache raw segments directly
             cache_success = await self.telemetry_store.cache_chunks_streaming(
                 cache_key=base_cache_key,
                 chunks_iterator=segments_generator()
