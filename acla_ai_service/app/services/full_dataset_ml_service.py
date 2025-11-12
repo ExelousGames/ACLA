@@ -60,7 +60,7 @@ from .backend_service import backend_service
 from .model_cache_service import model_cache_service
 
 # Import hybrid data cache service
-from .Training_data_cache_service import training_cache_service
+from .zarr_telemetry_store import get_shared_zarr_store
 
 # Prompt dataset builder and local LLM integration
 from .telemetry_prompt_dataset_builder import TelemetryPromptDatasetBuilder, PromptBuilderConfig
@@ -79,9 +79,9 @@ warnings.filterwarnings('ignore', category=UserWarning)
 class CacheConfig:
     """Configuration for cache cleanup operations"""
     session_data_cache_key: str = f"racing_sessions_"
-    session_cleanup: bool = True
+    session_cleanup: bool = False
     processed_session_data_cache_key: str = f"racing_sessions_processed_"
-    processed_session_cleanup: bool = True
+    processed_session_cleanup: bool = False
     segments_cache_key: str = f"enriched_segments_"
     segment_cleanup: bool = True
 
@@ -117,10 +117,10 @@ class Full_dataset_TelemetryMLService:
         # Model cache service integration
         self.model_cache_service = model_cache_service
         
-        # Use training-optimized data cache for large datasets
-        self.data_caching_service = training_cache_service
-        print(f"[INFO] Using training-optimized data cache for large dataset processing")
-        print(f"[INFO] Parquet-only storage optimized for ML training pipelines")
+        # Use shared Zarr-backed telemetry store for large datasets
+        self.telemetry_store = get_shared_zarr_store()
+        print("[INFO] Using Zarr-based telemetry store for large dataset processing")
+        print(f"[INFO] Store directory: {self.telemetry_store.store_dir}")
         
         # Prompt dataset builder and LLM configuration
         self.prompt_builder = TelemetryPromptDatasetBuilder()
@@ -660,7 +660,7 @@ class Full_dataset_TelemetryMLService:
             del top_laps_telemetry_list
             
             transformer_training = await prepare_and_train_coach_transformer_model(
-                data_cache=self.data_caching_service,
+                data_cache=self.telemetry_store,
                 segments_cache_key=segments_cache_key,
                 segment_length_hint=max_segment_length,
             )
@@ -684,7 +684,7 @@ class Full_dataset_TelemetryMLService:
                 dataset_id=dataset_identifier,
                 segments_cache_key=segments_cache_key,
                 output_root=self.llm_dataset_directory / dataset_identifier,
-                data_caching_service=self.data_caching_service,
+                data_caching_service=self.telemetry_store,
                 shuffle=shuffle_dataset,
                 metadata={
                     "sessions_cache_key": sessions_cache_key,
@@ -789,10 +789,10 @@ class Full_dataset_TelemetryMLService:
         top_laps: List[Dict[str, Any]] = []
         processed_cache_key = processed_sessions_cache_key or f"{session_data_cache_key}_processed_"
 
-        if hasattr(self.data_caching_service, "has_cached_data") and self.data_caching_service.has_cached_data(processed_cache_key):
+        if self.telemetry_store.has_cached_data(processed_cache_key):
             if clean_up:
                 try:
-                    self.data_caching_service.clear_cache(processed_cache_key)
+                    self.telemetry_store.clear_cache(processed_cache_key)
                     print(f"[INFO] Cleared existing cache for processed sessions: {processed_cache_key}")
                 except Exception as cleanup_error:
                     print(f"[WARNING] Failed to clear cache '{processed_cache_key}': {cleanup_error}")
@@ -818,7 +818,7 @@ class Full_dataset_TelemetryMLService:
                     yield entry
 
             try:
-                cache_success = await self.data_caching_service.cache_chunks_streaming(
+                cache_success = await self.telemetry_store.cache_chunks_streaming(
                     cache_key=processed_cache_key,
                     chunks_iterator=buffer_iterator()
                 )
@@ -828,7 +828,9 @@ class Full_dataset_TelemetryMLService:
 
             if cache_success:
                 cached_count = len(session_buffer)
-                print(f"[INFO] Cached {cached_count} session chunks ({session_buffer_records} records) [{reason}] -> {processed_cache_key}")
+                print(
+                    f"[INFO] Cached {cached_count} session chunks ({session_buffer_records} records) [{reason}] -> {processed_cache_key}"
+                )
                 total_sessions_cached += cached_count
                 session_buffer = []
                 session_buffer_records = 0
@@ -865,7 +867,7 @@ class Full_dataset_TelemetryMLService:
                     f"[DEBUG] Replaced slowest lap {slowest['id']} with {candidate['id']} (time: {candidate['lap_time_ms']}ms)"
                 )
 
-        session_chunks_iterator = self.data_caching_service.get_cached_data_chunks(cache_key=session_data_cache_key)
+        session_chunks_iterator = self.telemetry_store.get_cached_data_chunks(cache_key=session_data_cache_key)
         print(f"[DEBUG] Created chunk iterator for cache key: {session_data_cache_key}")
 
         session_chunks_processed = 0
@@ -1100,7 +1102,7 @@ class Full_dataset_TelemetryMLService:
             estimated_size_mb = (total_records * 60) / (1024 * 1024)  # 60 bytes per enriched record
             
             # Cache using the proper cache service method with correct parameters
-            cache_success = await self.data_caching_service.cache_chunks_streaming(
+            cache_success = await self.telemetry_store.cache_chunks_streaming(
                 cache_key=base_cache_key,
                 chunks_iterator=segments_generator()
             )
@@ -1185,7 +1187,7 @@ class Full_dataset_TelemetryMLService:
         tire_service = TireGripAnalysisService()
 
         print("[INFO] Streaming cached session telemetry to train tire grip model")
-        session_training_iterator = self.data_caching_service.get_cached_data_chunks(
+        session_training_iterator = self.telemetry_store.get_cached_data_chunks(
             cache_key=sessions_cache_key
         )
         tire_grip_training = await tire_service.train_tire_grip_model_streaming(
@@ -1196,7 +1198,7 @@ class Full_dataset_TelemetryMLService:
                 "Tire grip training yielded no safe samples; cannot proceed with contextual enrichment"
             )
         tire_service_serialized = tire_service.serialize_tire_grip_model()
-        
+
         await self.backend_service.save_ai_model(
             model_type="tire_grip_analysis",
             model_data=tire_service_serialized,
@@ -1215,16 +1217,15 @@ class Full_dataset_TelemetryMLService:
         segments_cache_key = segments_cache_key_override or self.cache_config.segments_cache_key
 
         cache_exists = False
-        if hasattr(self.data_caching_service, "has_cached_data"):
-            try:
-                cache_exists = self.data_caching_service.has_cached_data(segments_cache_key)
-            except Exception as cache_check_error:
-                print(f"[WARNING] Failed to check cache for {segments_cache_key}: {cache_check_error}")
+        try:
+            cache_exists = self.telemetry_store.has_cached_data(segments_cache_key)
+        except Exception as cache_check_error:
+            print(f"[WARNING] Failed to check cache for {segments_cache_key}: {cache_check_error}")
 
         if cache_exists:
             if clean_up:
                 try:
-                    self.data_caching_service.clear_cache(segments_cache_key)
+                    self.telemetry_store.clear_cache(segments_cache_key)
                     print(f"[INFO] Cleared existing segments cache: {segments_cache_key}")
                 except Exception as cache_cleanup_error:
                     print(f"[WARNING] Failed to clear segments cache {segments_cache_key}: {cache_cleanup_error}")
@@ -1232,7 +1233,7 @@ class Full_dataset_TelemetryMLService:
                 print("processing skipped")
                 return segments_cache_key
         
-        session_chunks_iterator = self.data_caching_service.get_cached_data_chunks(
+        session_chunks_iterator = self.telemetry_store.get_cached_data_chunks(
             cache_key=sessions_cache_key  # Use the cache key where session data is stored
         )
         

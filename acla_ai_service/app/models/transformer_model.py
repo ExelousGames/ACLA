@@ -1311,7 +1311,8 @@ class TelemetryActionDataset(Dataset):
                  segments_cache_key: str,
                  segment_length_hint: Optional[int] = None,
                  batch_size: int = 32,
-                 min_sequence_length: int = 3):
+                 min_sequence_length: int = 3,
+                 sequence_bucket_size: int = 16):
         """
         Initialize simplified dataset for large chunks
         
@@ -1321,12 +1322,14 @@ class TelemetryActionDataset(Dataset):
             segment_length_hint: Optional expected length for segments (used for logging only)
             batch_size: GPU batch size for processing segments within chunks
             min_sequence_length: Minimum number of timesteps required to keep a segment
+            sequence_bucket_size: Approximate timestep window used when grouping sequences by length
         """
         self.data_cache = data_cache
         self.segments_cache_key = segments_cache_key
         self.segment_length_hint = segment_length_hint
         self.batch_size = batch_size
         self.min_sequence_length = max(2, min_sequence_length)
+        self.sequence_bucket_size = max(1, sequence_bucket_size)
         
         # Get basic chunk information
         self.chunk_count = self._count_chunks()
@@ -1336,6 +1339,7 @@ class TelemetryActionDataset(Dataset):
         self.feature_scaler = PerFeatureScaler(self.unified_features)
         self._features_fitted = False
         self._length_stats: Optional[Dict[str, Any]] = None
+        self._processed_chunks: Dict[int, List[Tuple[np.ndarray, np.ndarray, np.ndarray]]] = {}
 
         print(f"[INFO] ✓ Simplified dataset initialized: {self.chunk_count} large chunks")
         print(f"[INFO] ✓ GPU batch size: {batch_size}")
@@ -1458,6 +1462,9 @@ class TelemetryActionDataset(Dataset):
             return
         
         print(f"[INFO] Fitting feature scaling using all available chunks...")
+
+        # Drop any previously cached scaled sequences; they'll be regenerated with the new scaler.
+        self._processed_chunks.clear()
 
         stats = _RunningFeatureStats(len(self.unified_features))
         total_rows = 0
@@ -1627,6 +1634,26 @@ class TelemetryActionDataset(Dataset):
             return None
 
 
+    def _get_processed_chunk(self, chunk_idx: int) -> List[Tuple[np.ndarray, np.ndarray, np.ndarray]]:
+        """Return cached, fully scaled sequences for a chunk (build once, reuse each epoch)."""
+        cached = self._processed_chunks.get(chunk_idx)
+        if cached is not None:
+            return cached
+
+        chunk_records = self._load_chunk(chunk_idx)
+
+        processed_segments: List[Tuple[np.ndarray, np.ndarray, np.ndarray]] = []
+        for segment_record in chunk_records:
+            processed = self._process_segment_record(segment_record)
+            if processed is not None:
+                processed_segments.append(processed)
+
+        self._processed_chunks[chunk_idx] = processed_segments
+        print(
+            f"[DEBUG] Cached scaled sequences for chunk {chunk_idx}: {len(processed_segments)} segments"
+        )
+        return processed_segments
+
 
     def get_chunk_batches(self, chunk_idx: int):
         """
@@ -1643,9 +1670,21 @@ class TelemetryActionDataset(Dataset):
             
         # Ensure features are fitted
         self._ensure_features_fitted()
-        
-        # Load the chunk
-        chunk_records = self._load_chunk(chunk_idx)
+
+        processed_segments = self._get_processed_chunk(chunk_idx)
+
+        if not processed_segments:
+            return
+
+        bucket_size = self.sequence_bucket_size
+        buckets: Dict[int, List[Tuple[np.ndarray, np.ndarray, np.ndarray]]] = {}
+        for segment in processed_segments:
+            seq_len = segment[0].shape[0]
+            bucket_key = int((seq_len // bucket_size) * bucket_size)
+            buckets.setdefault(bucket_key, []).append(segment)
+
+        bucket_order = list(buckets.keys())
+        np.random.shuffle(bucket_order)
         
         batch_inputs: List[np.ndarray] = []
         batch_targets: List[np.ndarray] = []
@@ -1670,22 +1709,28 @@ class TelemetryActionDataset(Dataset):
                 padding_mask[row_idx, :seq_len] = False
 
             yield padded_inputs, padded_targets, padded_masks, padding_mask
-        
-        for segment_record in chunk_records:
-            processed = self._process_segment_record(segment_record)
-            if processed is None:
-                continue
-            
-            input_sequence, target_sequence, timestep_weights = processed
-            batch_inputs.append(input_sequence)
-            batch_targets.append(target_sequence)
-            batch_masks.append(timestep_weights)
-            
-            # Yield batch when we reach desired size
-            if len(batch_inputs) >= self.batch_size:
-                yield from _collate_and_yield()
+        for bucket_key in bucket_order:
+            bucket_segments = buckets[bucket_key]
+            permutation = np.random.permutation(len(bucket_segments))
 
-                # Reset for next batch
+            for idx in permutation:
+                input_sequence, target_sequence, timestep_weights = bucket_segments[idx]
+                batch_inputs.append(input_sequence)
+                batch_targets.append(target_sequence)
+                batch_masks.append(timestep_weights)
+
+                # Yield batch when we reach desired size
+                if len(batch_inputs) >= self.batch_size:
+                    yield from _collate_and_yield()
+
+                    # Reset for next batch to keep padding tight within the bucket
+                    batch_inputs = []
+                    batch_targets = []
+                    batch_masks = []
+
+            # Flush leftovers from this bucket before moving to the next length group
+            if batch_inputs:
+                yield from _collate_and_yield()
                 batch_inputs = []
                 batch_targets = []
                 batch_masks = []

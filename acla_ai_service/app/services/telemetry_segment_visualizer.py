@@ -56,9 +56,9 @@ def visualize_optimal_segments(
 
     if output_dir is None:
         output_dir = (
-            Path(__file__).resolve().parent.parent
+            Path(__file__).resolve().parent.parent.parent
             / "scripts"
-            / "debug_output"
+            / "output"
             / "transformer_eval"
             / "figures"
         )
@@ -380,9 +380,9 @@ def visualize_segment_position_coverage(
 
     if output_dir is None:
         output_dir = (
-            Path(__file__).resolve().parent.parent
+            Path(__file__).resolve().parent.parent.parent
             / "scripts"
-            / "debug_output"
+            / "output"
             / "transformer_eval"
             / "figures"
         )

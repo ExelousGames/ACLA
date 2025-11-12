@@ -60,6 +60,8 @@ RUN pip install --no-cache-dir \
     matplotlib==3.8.2 \
     seaborn==0.13.0 \
     pyarrow==14.0.0 \
+    zarr==2.16.1 \
+    numcodecs==0.12.1 \
     lz4==4.3.2 \
     xxhash==3.4.1 \
     # Development and AI tools

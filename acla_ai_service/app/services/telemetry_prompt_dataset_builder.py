@@ -20,7 +20,7 @@ try:  # Optional dependency; used only when tensors are present
 except ImportError:  # pragma: no cover - torch not required for dataset building
     torch = None  # type: ignore
 
-from .Training_data_cache_service import TrainingOptimizedCache, training_cache_service
+from .zarr_telemetry_store import ZarrTelemetryStore, get_shared_zarr_store
 
 
 @dataclass
@@ -66,10 +66,10 @@ class TelemetryPromptDatasetBuilder:
 
     def __init__(
         self,
-        data_cache: Optional[TrainingOptimizedCache] = None,
+        data_cache: Optional[ZarrTelemetryStore] = None,
         config: Optional[PromptBuilderConfig] = None,
     ) -> None:
-        self.data_cache = data_cache or training_cache_service
+        self.data_cache = data_cache or get_shared_zarr_store()
         self.config = config or PromptBuilderConfig()
         self._rng = random.Random(self.config.random_seed)
         self._window_counter = 0

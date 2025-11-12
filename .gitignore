@@ -95,3 +95,5 @@ report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 /acla_front/.venv/
 /acla_front/dist/
 /acla_ai_service/models/llm_datasets
+/acla_ai_service/telemetry_zarr_store
+/acla_ai_service/scripts/output

@@ -20,7 +20,7 @@ from ..backend_service import backend_service
 from ..local_llm_service import LocalLLMConfig, LocalTelemetryLLM
 from ..model_cache_service import model_cache_service
 from ..telemetry_prompt_dataset_builder import TelemetryPromptDatasetBuilder
-from ..Training_data_cache_service import training_cache_service
+from ..zarr_telemetry_store import get_shared_zarr_store
 from .providers import (
 	BaseLLMTrainingProvider,
 	LLMTrainingContext,
@@ -46,7 +46,7 @@ class TelemetryLLMOrchestrator:
 		self.dataset_directory = Path(dataset_directory)
 		self.backend_service = backend_service
 		self.model_cache = model_cache_service
-		self.data_cache = training_cache_service
+		self.data_cache = get_shared_zarr_store()
 
 		self.adapter_directory.mkdir(parents=True, exist_ok=True)
 		self.dataset_directory.mkdir(parents=True, exist_ok=True)

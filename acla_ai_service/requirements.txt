@@ -13,6 +13,8 @@ river==0.21.0
 
 # Optimized data storage and processing
 pyarrow==14.0.0
+zarr==2.16.1
+numcodecs==0.12.1
 lz4==4.3.2
 xxhash==3.4.1
 
