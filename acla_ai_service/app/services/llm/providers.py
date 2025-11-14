@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+from asyncio.subprocess import Process
 import json
+import os
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from datetime import datetime
+from typing import Any, Dict, List, Optional, Tuple
 
 from ..telemetry_prompt_dataset_builder import (
 	TelemetryPromptDatasetBuilder,
@@ -61,6 +65,17 @@ class PromptResponseExample:
 		return record
 
 
+@dataclass
+class AnnotationSessionArtifacts:
+	"""Container for files that coordinate annotation sessions."""
+
+	dataset_path: Path
+	annotation_path: Path
+	session_dir: Path
+	builder_stats: DatasetBuildStats
+	random_seed: int
+
+
 class BaseLLMTrainingProvider:
 	"""Interface for providers contributing prompt/response samples."""
 
@@ -72,7 +87,7 @@ class BaseLLMTrainingProvider:
 
 
 class SegmentExplanationTrainingProvider(BaseLLMTrainingProvider):
-	"""Wraps the legacy telemetry segment builder so it can take part in orchestration."""
+	"""Coordinates guided telemetry annotation sessions for segment explanations."""
 
 	name = "segment_explanation"
 
@@ -82,78 +97,59 @@ class SegmentExplanationTrainingProvider(BaseLLMTrainingProvider):
 		self._builder = builder
 
 	async def produce(self, context: LLMTrainingContext) -> Optional[LLMTrainingContribution]:
-		"""Check for existing annotated datasets and create a filtered training-ready dataset.
-		
-		Dataset creation is now handled by the annotation app UI.
-		This method validates that an annotated dataset exists, then creates a filtered
-		training dataset containing ONLY annotated samples.
-		"""
-		output_dir = context.output_root / self.name
-		output_dir.mkdir(parents=True, exist_ok=True)
-		dataset_path = output_dir / f"{context.dataset_id}_{self.name}.jsonl"
-		annotation_path = dataset_path.with_suffix(dataset_path.suffix + self.ANNOTATION_SUFFIX)
+		"""Orchestrate a guided annotation session and return the annotated dataset."""
 
-		# Check if dataset exists
-		if not dataset_path.exists():
-			print(f"\n[INFO] No dataset found at {dataset_path}")
-			print(f"[INFO] Please use the annotation app to create a dataset from cached segments.")
-			print(f"[INFO] Dataset will be created at: {dataset_path}")
-			return None
+		if not context.segments_cache_key:
+			raise RuntimeError("segments_cache_key is required to prepare telemetry samples for annotation")
 
-		# Read annotation statistics
+		session = await asyncio.to_thread(self._create_annotation_session, context)
+		print(
+			f"\n[INFO] Prepared annotation dataset ({session.builder_stats.windows_kept} windows) at {session.dataset_path}"
+		)
+
+		process = await self._launch_annotation_app(session)
+		try:
+			await self._await_session_completion(session, process)
+		except Exception:
+			await self._terminate_process(process)
+			raise
+		else:
+			await self._terminate_process(process)
+
+		annotated_dataset_path, annotated_ids = await asyncio.to_thread(
+			self._collect_annotated_dataset,
+			session,
+		)
+
 		annotation_summary = await asyncio.to_thread(
-			self._read_annotation_statistics, 
-			dataset_path, 
-			annotation_path
+			self._read_annotation_statistics,
+			session.dataset_path,
+			session.annotation_path,
 		)
-		
+
 		annotated_examples = annotation_summary.get("annotated_examples", 0)
-		total_examples = annotation_summary.get("total_examples", 0)
-
-		if total_examples == 0:
-			print(f"[WARN] Dataset at {dataset_path} is empty.")
-			return None
-
 		if annotated_examples == 0:
-			raise RuntimeError(
-				f"No telemetry annotations were found for {dataset_path}. "
-				"Please complete annotations in the annotation UI before proceeding with training."
-			)
-
-		# Create a filtered training dataset with only annotated samples
-		training_dataset_path = output_dir / f"{context.dataset_id}_{self.name}_training.jsonl"
-		filtered_count = await asyncio.to_thread(
-			self._create_filtered_training_dataset,
-			dataset_path,
-			training_dataset_path
-		)
-
-		if filtered_count == 0:
-			raise RuntimeError(
-				f"Failed to create training dataset. No annotated samples found in {dataset_path}."
-			)
-
-		print(f"[INFO] Created filtered training dataset with {filtered_count} annotated samples.")
-		print(f"[INFO] Training will use {filtered_count}/{total_examples} samples ({filtered_count/total_examples*100:.1f}% of total dataset).")
+			raise RuntimeError("Guided annotation session produced no annotated windows. Cannot continue with training.")
 
 		stats_dict = {
 			"provider": self.name,
-			"total_examples": total_examples,
+			"total_examples": annotation_summary.get("total_examples", 0),
 			"annotated_examples": annotated_examples,
-			"training_examples": filtered_count,
 			"annotation_coverage": annotation_summary.get("annotation_coverage", 0.0),
-			"output_path": str(training_dataset_path),
-			"source_dataset": str(dataset_path),
+			"output_path": str(annotated_dataset_path),
+			"builder_stats": session.builder_stats.to_dict(),
+			"annotation_session_seed": session.random_seed,
 		}
 
 		return LLMTrainingContribution(
 			provider_name=self.name,
-			dataset_path=training_dataset_path,
+			dataset_path=annotated_dataset_path,
 			stats=stats_dict,
 			metadata={
 				"builder": "telemetry_segments",
 				"annotations": annotation_summary,
-				"filtered": True,
+				"sample_dataset_path": str(session.dataset_path),
+				"selected_window_ids": annotated_ids,
 			},
 		)
 
@@ -222,49 +218,197 @@ class SegmentExplanationTrainingProvider(BaseLLMTrainingProvider):
 			"annotation_coverage": (annotated_examples / total_examples) if total_examples else 0.0,
 		}
 
-	def _create_filtered_training_dataset(
-		self,
-		source_dataset_path: Path,
-		output_dataset_path: Path
-	) -> int:
-		"""Create a new dataset file containing only annotated samples.
-		
-		Args:
-			source_dataset_path: Path to the full dataset with both annotated and unannotated samples
-			output_dataset_path: Path where the filtered training dataset will be written
-			
-		Returns:
-			Number of annotated samples written to the training dataset
-		"""
-		annotated_count = 0
-		
-		with source_dataset_path.open("r", encoding="utf-8") as source_file:
-			with output_dataset_path.open("w", encoding="utf-8") as output_file:
-				for line in source_file:
-					line = line.strip()
-					if not line:
-						continue
-					
-					try:
-						record = json.loads(line)
-					except json.JSONDecodeError:
-						continue
-					
-					# Only include records that have been annotated
-					metadata = record.get("metadata", {})
-					if not isinstance(metadata, dict):
-						continue
-					
-					is_annotated = metadata.get("annotation_complete", False)
-					if not is_annotated:
-						continue
-					
-					# Write the annotated record to the training dataset
-					output_file.write(json.dumps(record, ensure_ascii=False) + "\n")
-					annotated_count += 1
-		
-		return annotated_count
+	def _create_annotation_session(self, context: LLMTrainingContext) -> AnnotationSessionArtifacts:
+		output_dir = context.output_root / self.name
+		output_dir.mkdir(parents=True, exist_ok=True)
 
+		session_dir = output_dir / f"{context.dataset_id}_{self.name}_session"
+		session_dir.mkdir(parents=True, exist_ok=True)
+
+		dataset_filename = f"{context.dataset_id}_{self.name}_sample.jsonl"
+		sample_dataset_path = session_dir / dataset_filename
+		annotation_path = session_dir / f"{dataset_filename}{self.ANNOTATION_SUFFIX}"
+
+		for path in (sample_dataset_path, annotation_path):
+			path.unlink(missing_ok=True)
+
+		annotation_path.parent.mkdir(parents=True, exist_ok=True)
+		annotation_path.touch()
+
+		metadata = context.metadata or {}
+
+		raw_sample_size = metadata.get("annotation_sample_size", 25)
+		try:
+			sample_size = int(raw_sample_size)
+		except (TypeError, ValueError):
+			sample_size = 25
+		sample_size = max(1, sample_size)
+
+		raw_seed = metadata.get("annotation_random_seed")
+		if raw_seed is None:
+			raw_seed = int(datetime.utcnow().timestamp() * 1000)
+		try:
+			random_seed = int(raw_seed)
+		except (TypeError, ValueError):
+			random_seed = int(datetime.utcnow().timestamp() * 1000)
+
+		original_max_examples = self._builder.config.max_examples
+		original_rng_state = getattr(self._builder._rng, "getstate", lambda: None)()
+
+		try:
+			self._builder.config.max_examples = sample_size
+			if hasattr(self._builder._rng, "seed"):
+				self._builder._rng.seed(random_seed)
+			records, stats = self._builder.build_from_cached_segments(
+				segments_cache_key=context.segments_cache_key,
+				shuffle=True,
+			)
+		finally:
+			self._builder.config.max_examples = original_max_examples
+			if original_rng_state is not None and hasattr(self._builder._rng, "setstate"):
+				self._builder._rng.setstate(original_rng_state)
+
+		if not records:
+			raise RuntimeError("No telemetry windows were generated for annotation. Ensure cached segments are available.")
+
+		record_count = 0
+		window_id_found = False
+		with sample_dataset_path.open("w", encoding="utf-8") as handle:
+			for record in records:
+				metadata = record.get("metadata") or {}
+				if not isinstance(metadata, dict):
+					record["metadata"] = metadata = {}
+				window_id = metadata.get("window_id")
+				if isinstance(window_id, str) and window_id:
+					window_id_found = True
+				handle.write(
+					json.dumps(
+						record,
+						ensure_ascii=False,
+						default=self._builder._json_default,  # type: ignore[attr-defined]
+					)
+					+ "\n"
+				)
+				record_count += 1
+
+		if record_count == 0:
+			raise RuntimeError("Telemetry dataset write produced no records; aborting annotation session.")
+		if not window_id_found:
+			raise RuntimeError("Telemetry records are missing window IDs; cannot launch annotation session.")
+
+		return AnnotationSessionArtifacts(
+			dataset_path=sample_dataset_path.resolve(),
+			annotation_path=annotation_path.resolve(),
+			session_dir=session_dir.resolve(),
+			builder_stats=stats,
+			random_seed=random_seed,
+		)
+
+	async def _launch_annotation_app(self, session: AnnotationSessionArtifacts) -> Process:
+		script_path = Path(__file__).resolve().parents[3] / "ui" / "telemetry_prompt_annotation_app.py"
+		if not script_path.exists():
+			raise RuntimeError(f"Annotation UI script not found at {script_path}")
+
+		env = os.environ.copy()
+		env.setdefault("STREAMLIT_BROWSER_GATHER_USAGE_STATS", "false")
+
+		dataset_dir = session.dataset_path.parent
+		dataset_name = session.dataset_path.name
+
+		print(f"[INFO] Launching Streamlit annotation UI for {session.dataset_path}")
+
+		return await asyncio.create_subprocess_exec(
+			sys.executable,
+			"-m",
+			"streamlit",
+			"run",
+			str(script_path),
+			"--",
+			"--dataset",
+			dataset_name,
+			"--dataset-dir",
+			str(dataset_dir),
+			cwd=str(script_path.parent),
+			env=env,
+		)
+
+	async def _await_session_completion(
+		self,
+		session: AnnotationSessionArtifacts,
+		process: Process,
+	) -> None:
+		print("[INFO] Waiting for annotation UI to close. Close the browser/app when finished annotating.")
+		returncode = await process.wait()
+		if returncode not in (0, None):
+			raise RuntimeError(f"Annotation UI exited with non-zero status: {returncode}")
+
+	async def _terminate_process(self, process: Process) -> None:
+		if process.returncode is not None:
+			return
+
+		try:
+			process.terminate()
+		except ProcessLookupError:
+			return
+		except NotImplementedError:
+			process.kill()
+			await process.wait()
+			return
+
+		try:
+			await asyncio.wait_for(process.wait(), timeout=5)
+		except asyncio.TimeoutError:
+			process.kill()
+			await process.wait()
+
+	def _collect_annotated_dataset(
+		self,
+		session: AnnotationSessionArtifacts,
+	) -> Tuple[Path, List[str]]:
+		annotated_records: List[Dict[str, Any]] = []
+		annotated_ids: List[str] = []
+		with session.dataset_path.open("r", encoding="utf-8") as handle:
+			for raw_line in handle:
+				line = raw_line.strip()
+				if not line:
+					continue
+				try:
+					record = json.loads(line)
+				except json.JSONDecodeError:
+					continue
+
+				metadata = record.get("metadata") or {}
+				if not isinstance(metadata, dict):
+					record["metadata"] = metadata = {}
+
+				window_id = metadata.get("window_id")
+				if not isinstance(window_id, str) or not window_id:
+					continue
+
+				if metadata.get("annotation_complete"):
+					annotated_records.append(record)
+					annotated_ids.append(window_id)
+
+		if not annotated_records:
+			raise RuntimeError("No annotated windows were found in the dataset after the session completed.")
+
+		annotated_ids = list(dict.fromkeys(annotated_ids))
+
+		annotated_dataset_path = session.session_dir / f"{session.dataset_path.stem}_annotated.jsonl"
+		annotated_dataset_path.unlink(missing_ok=True)
+
+		with annotated_dataset_path.open("w", encoding="utf-8") as handle:
+			for record in annotated_records:
+				handle.write(
+					json.dumps(
+						record,
+						ensure_ascii=False,
+						default=self._builder._json_default,  # type: ignore[attr-defined]
+					)
+					+ "\n"
+				)
+
+		return annotated_dataset_path, annotated_ids
 
 
 class TransformerDirectiveTrainingProvider(BaseLLMTrainingProvider):

@@ -100,7 +100,8 @@ class Full_dataset_TelemetryMLService:
         Args:
             models_directory: Directory to save/load trained models
         """
-        self.models_directory = Path(models_directory)
+        # Resolve to an absolute path so downstream tooling operates on a single location
+        self.models_directory = Path(models_directory).resolve()
         self.models_directory.mkdir(exist_ok=True)
         
         self.telemetry_features = TelemetryFeatures()

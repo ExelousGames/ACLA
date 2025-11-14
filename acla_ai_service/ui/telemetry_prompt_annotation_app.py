@@ -11,6 +11,7 @@ import asyncio
 import json
 import os
 import random
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -20,6 +21,22 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
+
+def _ensure_app_module_on_path() -> None:
+    """Add the package root that contains `app/` to sys.path when running standalone."""
+
+    candidate = Path(__file__).resolve().parent
+    for _ in range(3):
+        if (candidate / "app").exists():
+            path_str = candidate.as_posix()
+            if path_str not in sys.path:
+                sys.path.insert(0, path_str)
+            return
+        candidate = candidate.parent
+
+
+_ensure_app_module_on_path()
+
 from app.services.full_dataset_ml_service import Full_dataset_TelemetryMLService
 from app.services.local_llm_service import GenerationRequest
 from app.services.telemetry_prompt_dataset_builder import DatasetBuildStats
@@ -27,7 +44,6 @@ from app.services.telemetry_prompt_dataset_builder import DatasetBuildStats
 # Default directory where datasets are written by the ML service
 DEFAULT_DATASET_DIR = Path(__file__).resolve().parents[1] / "models" / "llm_datasets"
 ANNOTATION_SUFFIX = ".annotations.jsonl"
-DEFAULT_SEGMENTS_CACHE_KEY = "enriched_segments_"
 
 
 # ---------------------------------------------------------------------------
@@ -323,73 +339,6 @@ def _save_annotation(
     return total_examples, annotated_examples
 
 
-def _create_dataset_from_cache(
-    segments_cache_key: str,
-    dataset_name: str,
-    output_dir: Path,
-    shuffle: bool = True,
-) -> Tuple[Optional[Path], Dict[str, Any]]:
-    """Create a new dataset from cached segments."""
-    
-    ml_service = get_ml_service()
-    
-    # Check if cache exists
-    if not ml_service.telemetry_store.has_cached_data(segments_cache_key):
-        return None, {
-            "error": f"Cache key '{segments_cache_key}' not found",
-            "available_caches": ml_service.telemetry_store.list_cache_keys(),
-        }
-    
-    output_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Generate dataset filename with timestamp
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    dataset_filename = f"{dataset_name}_{timestamp}.jsonl"
-    dataset_path = output_dir / dataset_filename
-    
-    print(f"[INFO] Creating dataset at {dataset_path}")
-    
-    try:
-        # Use the prompt dataset builder to create the dataset
-        builder = ml_service.prompt_dataset_builder
-        
-        with dataset_path.open("w", encoding="utf-8") as handle:
-            def consume(record: Dict[str, Any]) -> None:
-                handle.write(
-                    json.dumps(
-                        record,
-                        ensure_ascii=False,
-                        default=builder._json_default,
-                    )
-                    + "\n"
-                )
-            
-            _, stats = builder.build_from_cached_segments(
-                segments_cache_key=segments_cache_key,
-                shuffle=shuffle,
-                record_consumer=consume,
-            )
-        
-        if stats.windows_kept == 0:
-            dataset_path.unlink(missing_ok=True)
-            return None, {
-                "error": "No valid windows were generated from the cached segments",
-                "stats": stats.to_dict(),
-            }
-        
-        return dataset_path, {
-            "success": True,
-            "dataset_path": str(dataset_path),
-            "stats": stats.to_dict(),
-        }
-        
-    except Exception as error:
-        if dataset_path.exists():
-            dataset_path.unlink(missing_ok=True)
-        return None, {
-            "error": f"Failed to create dataset: {str(error)}",
-        }
-
 
 # ---------------------------------------------------------------------------
 # Visualisation helpers
@@ -673,70 +622,17 @@ def main() -> None:
     if llm_error:
         st.warning(f"Auto-coaching is currently unavailable: {llm_error}")
 
-    # Dataset creation section
-    st.sidebar.markdown("---")
-    st.sidebar.subheader("Create New Dataset")
-    
-    # List available cache keys
-    available_caches = ml_service.telemetry_store.list_cache_keys()
-    segments_caches = [key for key in available_caches if "segment" in key.lower() or "enriched" in key.lower()]
-    
-    if segments_caches:
-        st.sidebar.caption(f"Found {len(segments_caches)} segment cache(s)")
-        
-        cache_key_input = st.sidebar.selectbox(
-            "Select segment cache",
-            options=segments_caches,
-            index=0 if DEFAULT_SEGMENTS_CACHE_KEY in segments_caches else 0,
-        )
-        
-        dataset_name_input = st.sidebar.text_input(
-            "Dataset name",
-            value="segment_explanation",
-            help="Name for the new dataset file (timestamp will be appended)",
-        )
-        
-        shuffle_dataset = st.sidebar.checkbox(
-            "Shuffle segments",
-            value=True,
-            help="Randomly shuffle segments when creating the dataset",
-        )
-        
-        if st.sidebar.button("Create Dataset", type="primary", use_container_width=True):
-            with st.spinner("Creating dataset from cached segments..."):
-                dataset_path_result, result_info = _create_dataset_from_cache(
-                    segments_cache_key=cache_key_input,
-                    dataset_name=dataset_name_input,
-                    output_dir=dataset_dir / "segment_explanation",
-                    shuffle=shuffle_dataset,
-                )
-                
-                if dataset_path_result:
-                    st.sidebar.success(f"Dataset created successfully!")
-                    st.sidebar.caption(f"Path: {dataset_path_result.name}")
-                    stats = result_info.get("stats", {})
-                    if stats:
-                        st.sidebar.metric("Windows created", stats.get("windows_kept", 0))
-                    st.experimental_rerun()
-                else:
-                    error_msg = result_info.get("error", "Unknown error")
-                    st.sidebar.error(f"Failed to create dataset: {error_msg}")
-                    if "available_caches" in result_info:
-                        st.sidebar.caption(f"Available caches: {', '.join(result_info['available_caches'])}")
-    else:
-        st.sidebar.info("No segment caches found. Run the transformer training pipeline first to create cached segments.")
-        if available_caches:
-            st.sidebar.caption(f"Available caches: {', '.join(available_caches[:5])}")
-
-    st.sidebar.markdown("---")
-    st.sidebar.subheader("Annotate Existing Dataset")
-    
     dataset_dir = Path(args.dataset_dir or DEFAULT_DATASET_DIR)
     dataset_dir.mkdir(parents=True, exist_ok=True)
 
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("Annotate Existing Dataset")
+
     dataset_files = sorted(dataset_dir.rglob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
     if not dataset_files:
-        st.warning(f"No dataset files found in {dataset_dir}. Create a dataset first using the sidebar.")
+        st.warning(
+            f"No dataset files found in {dataset_dir}. Run the telemetry training pipeline to generate an annotation dataset."
+        )
         return
 
     dataset_labels = [str(file.relative_to(dataset_dir)) for file in dataset_files]
@@ -791,11 +687,15 @@ def main() -> None:
         "Only sampled windows appear below; remaining windows stay reserved for training datasets."
     )
 
-    st.sidebar.metric("Annotated", f"{annotated_examples}/{total_examples}",
-                      "{:.0%}".format(annotated_examples / total_examples) if total_examples else "0%")
+    st.sidebar.metric(
+        "Annotated",
+        f"{annotated_examples}/{total_examples}",
+        "{:.0%}".format(annotated_examples / total_examples) if total_examples else "0%",
+    )
     show_pending_only = st.sidebar.checkbox("Show only pending annotations", value=False)
 
-    entries_to_view = [entry for entry in entries if entry["window_id"] in sampled_window_ids]
+    selected_entries = [entry for entry in entries if entry["window_id"] in sampled_window_ids]
+    entries_to_view = list(selected_entries)
     if not entries_to_view:
         entries_to_view = entries
     if show_pending_only:
@@ -942,17 +842,27 @@ def main() -> None:
                         st.success("Coaching explanation generated. Review and edit before saving.")
 
     with actions_col2:
+        # Track if save button was just clicked to prevent duplicate saves during rerun
+        save_clicked_key = f"_save_clicked_{selected_window_id}"
+        
         if st.button("Save annotation", type="primary", use_container_width=True):
-            total, annotated = _save_annotation(
-                dataset_path=dataset_path,
-                annotation_path=annotation_path,
-                window_id=selected_window_id,
-                coaching_explanation=coaching_explanation.strip(),
-            )
-            load_dataset.clear()
-            load_annotation_store.clear()
-            st.success(f"Annotation saved for {selected_window_id}")
-            st.experimental_rerun()
+            # Only save if we haven't just saved in the previous frame
+            if not st.session_state.get(save_clicked_key, False):
+                st.session_state[save_clicked_key] = True
+                total, annotated = _save_annotation(
+                    dataset_path=dataset_path,
+                    annotation_path=annotation_path,
+                    window_id=selected_window_id,
+                    coaching_explanation=coaching_explanation.strip(),
+                )
+                # Clear caches before rerun
+                load_dataset.clear()
+                load_annotation_store.clear()
+                st.success(f"Annotation saved for {selected_window_id}")
+                st.rerun()
+        else:
+            # Reset the flag when button is not clicked
+            st.session_state[save_clicked_key] = False
 
     with stats_col:
         st.metric(
@@ -960,6 +870,20 @@ def main() -> None:
             f"{annotated_examples}/{total_examples}",
             "{:.0%}".format(annotated_examples / total_examples) if total_examples else "0%",
         )
+
+    # Add finish session button
+    st.markdown("---")
+    finish_col1, finish_col2 = st.columns([3, 1])
+    with finish_col1:
+        st.info("⚠️ When done annotating, click 'Finish Session' to close the app and continue training.")
+    with finish_col2:
+        if st.button("✅ Finish Session", type="primary", use_container_width=True):
+            st.success("Session complete! Closing annotation app...")
+            st.balloons()
+            import time
+            time.sleep(1)
+            # Exit the Streamlit process cleanly
+            os._exit(0)
 
     suggested_focus = st.session_state.get(key_focus_key)
     if suggested_focus:
