@@ -38,9 +38,8 @@ class CacheMetadata:
         # Data chunks start after the metadata chunk at index 0.
         return self.chunk_count + 1
 
-    def register_chunk(self, chunk_bytes: int, record_count: int) -> None:
+    def register_chunk(self, chunk_bytes: int) -> None:
         self.chunk_sizes.append(chunk_bytes)
-        self.total_records += record_count
         self.total_bytes += chunk_bytes
         self.updated_at = datetime.now().isoformat()
 
@@ -177,14 +176,12 @@ class ZarrTelemetryStore:
                 overwrite=True,
                 chunks=(chunk_len,),
             )
-            record_count = self._estimate_record_count(chunk_entry.payload)
             group[dataset_name].attrs.update({
-                "record_count": record_count,
                 "created_at": datetime.now().isoformat(),
                 "kind": "data",
             })
 
-            metadata.register_chunk(chunk_bytes=len(payload_bytes), record_count=record_count)
+            metadata.register_chunk(chunk_bytes=len(payload_bytes))
             processed += 1
 
         self._persist_metadata(group, metadata)
@@ -239,6 +236,19 @@ class ZarrTelemetryStore:
             return any(name != dataset_name for name in group.array_keys())
         except Exception:
             return False
+
+    def list_cache_keys(self) -> List[str]:
+        """List all available cache keys in the store."""
+        cache_keys = []
+        if not self.store_dir.exists():
+            return cache_keys
+        
+        for zarr_dir in self.store_dir.glob("*.zarr"):
+            cache_key = zarr_dir.stem
+            if self.has_cached_data(cache_key):
+                cache_keys.append(cache_key)
+        
+        return sorted(cache_keys)
 
     def clear_cache(self, cache_key: Optional[str] = None) -> None:
         if cache_key is None:

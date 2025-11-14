@@ -110,12 +110,17 @@ class TelemetryPromptDatasetBuilder:
         self._window_counter = 0
 
         segment_chunk_iterator = self.data_cache.get_cached_data_chunks(segments_cache_key)
-        for chunk_index, chunk_df in enumerate(segment_chunk_iterator):
-            if chunk_df is None or chunk_df.empty:
+        for chunk_index, chunk_data in enumerate(segment_chunk_iterator):
+            # chunk_data is a list of segments (List[List[Dict[str, Any]]])
+            if chunk_data is None or not chunk_data:
+                continue
+            
+            # Ensure chunk_data is a list
+            if not isinstance(chunk_data, list):
                 continue
 
-            segment_records = chunk_df.to_dict("records")
-            for segment_index, segment in enumerate(segment_records):
+            # chunk_data is already a list of segments, no need to call to_dict("records")
+            for segment_index, segment in enumerate(chunk_data):
                 stats.segments_processed += 1
 
                 if not segment:
@@ -166,7 +171,7 @@ class TelemetryPromptDatasetBuilder:
         stats_summary.update({
             "total_examples": total_examples,
         })
-        print("[INFO] Prompt dataset generated:", json.dumps(stats_summary, indent=2))
+        print("[INFO] Telemetry Prompt dataset generated:", json.dumps(stats_summary, indent=2))
         return (examples if not streaming_mode else []), stats
 
     # ------------------------------------------------------------------

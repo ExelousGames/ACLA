@@ -1366,30 +1366,31 @@ class TelemetryActionDataset(Dataset):
             chunks_iterator = self.data_cache.get_cached_data_chunks(self.segments_cache_key)
             first_chunk = next(chunks_iterator)
             
-            # Get first record and first timestep to extract feature names
-            first_record = first_chunk.iloc[0].to_dict()
-            first_timestep_data = first_record[0]  # Column 0 contains first timestep
+
+            # Get first segment from the chunk
+            first_segment = first_chunk[0]
             
-            if isinstance(first_timestep_data, dict):
-                feature_names = list(first_timestep_data.keys())
-                print(f"[INFO] Extracted {len(feature_names)} feature names")
-                return feature_names
-            else:
-                raise ValueError(f"Unexpected data structure: expected dict, got {type(first_timestep_data)}")
+            first_timestep = first_segment[0]
+            feature_names = list(first_timestep.keys())
+            
+            print(f"[INFO] Extracted {len(feature_names)} feature names from chunk with {len(first_chunk)} segments")
+            return feature_names
                 
         except Exception as e:
             raise ValueError(f"Failed to extract feature names: {str(e)}")
     
-    def _load_chunk(self, chunk_idx: int) -> List[Dict[str, Any]]:
-        """Load a specific chunk by index"""
+    def _load_chunk(self, chunk_idx: int) -> List[List[Dict[str, Any]]]:
+        """Load a specific chunk by index.
+        
+        Returns a list of segments, where each segment is a list of timestep dicts.
+        """
         chunks_iterator = self.data_cache.get_cached_data_chunks(self.segments_cache_key)
         
         # Skip to the desired chunk
-        for i, chunk_df in enumerate(chunks_iterator):
+        for i, chunk_data in enumerate(chunks_iterator):
             if i == chunk_idx:
-                chunk_records = chunk_df.to_dict('records')
-                print(f"[INFO] Loaded chunk {chunk_idx} with {len(chunk_records)} segments")
-                return chunk_records
+                print(f"[INFO] Loaded chunk {chunk_idx} with {len(chunk_data)} segments")
+                return chunk_data
         
         raise IndexError(f"Chunk {chunk_idx} not found")
     
@@ -1405,21 +1406,6 @@ class TelemetryActionDataset(Dataset):
                 return int(stripped)
         return None
 
-    def _extract_timesteps(self, segment_record: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Return ordered timestep dictionaries for a segment."""
-        timestep_items: List[Tuple[int, Dict[str, Any]]] = []
-
-        for key, value in segment_record.items():
-            if not isinstance(value, dict):
-                continue
-            step_index = self._coerce_step_index(key)
-            if step_index is None:
-                continue
-            timestep_items.append((step_index, value))
-
-        timestep_items.sort(key=lambda item: item[0])
-        return [data for _, data in timestep_items]
-
     def _ensure_length_stats(self, max_chunks: int = 3) -> None:
         """Compute basic segment length statistics if not already available."""
         if self._length_stats is not None:
@@ -1429,14 +1415,15 @@ class TelemetryActionDataset(Dataset):
 
         try:
             chunks_iterator = self.data_cache.get_cached_data_chunks(self.segments_cache_key)
-            for chunk_idx, chunk_df in enumerate(chunks_iterator):
+            for chunk_idx, chunk_data in enumerate(chunks_iterator):
                 if max_chunks is not None and chunk_idx >= max_chunks:
                     break
 
-                for record in chunk_df.to_dict('records'):
-                    timesteps = self._extract_timesteps(record)
-                    if len(timesteps) >= self.min_sequence_length:
-                        sampled_lengths.append(len(timesteps))
+
+                # Process each segment in the chunk
+                for segment in chunk_data:
+                    if len(segment) >= self.min_sequence_length:
+                        sampled_lengths.append(len(segment))
 
                 if sampled_lengths and max_chunks is None:
                     break
@@ -1472,18 +1459,22 @@ class TelemetryActionDataset(Dataset):
 
         chunk_iterator = self.data_cache.get_cached_data_chunks(self.segments_cache_key)
 
-        for chunk_idx, chunk_df in enumerate(chunk_iterator):
-            chunk_records = chunk_df.to_dict('records')
+        for chunk_idx, chunk_data in enumerate(chunk_iterator):
+            # Chunk should be a list of segments
+            if not isinstance(chunk_data, list):
+                print(f"[WARNING] Expected list chunk at index {chunk_idx}, got {type(chunk_data)}")
+                continue
+            
             chunk_rows: List[List[float]] = []
 
-            for record in chunk_records:
-                timesteps = self._extract_timesteps(record)
-                if len(timesteps) < self.min_sequence_length:
+            for segment in chunk_data:
+                # Segment is a list of timestep dicts
+                if not isinstance(segment, list) or len(segment) < self.min_sequence_length:
                     continue
 
-                all_lengths.append(len(timesteps))
+                all_lengths.append(len(segment))
 
-                for timestep_data in timesteps:
+                for timestep_data in segment:
                     if not isinstance(timestep_data, dict):
                         continue
 
@@ -1568,15 +1559,14 @@ class TelemetryActionDataset(Dataset):
             or None if the record cannot be processed.
         """
         try:
-            # Reconstruct the time series from the flattened segment data
-            timesteps = self._extract_timesteps(segment_record)
-            if len(timesteps) < self.min_sequence_length:
+            # Segment is a list of timestep dicts
+            if not isinstance(segment_record, list) or len(segment_record) < self.min_sequence_length:
                 return None
 
             sequence_data: List[List[float]] = []
             phase_weights: List[float] = []
 
-            for timestep_data in timesteps:
+            for timestep_data in segment_record:
                 feature_array: List[float] = []
                 for feature_name in self.unified_features:
                     try:

@@ -190,7 +190,7 @@ class BackendService:
 
     async def get_all_racing_sessions_streaming(
         self,
-        cache_key_prefix: str,
+        cache_key: str,
         trackName: Optional[str] = None,
         carName: Optional[str] = None,
         chunk_size: int = 1000,
@@ -218,20 +218,20 @@ class BackendService:
             data_cache = get_shared_zarr_store()
 
         # Ensure we always start with a clean cache entry for this key
-        if hasattr(data_cache, "has_cached_data") and data_cache.has_cached_data(cache_key_prefix):
+        if hasattr(data_cache, "has_cached_data") and data_cache.has_cached_data(cache_key):
             if cleanup_cache:
                 try:
-                    logger.info(f"Removing existing cache entry for key '{cache_key_prefix}' before streaming")
-                    data_cache.clear_cache(cache_key_prefix)
+                    logger.info(f"Removing existing cache entry for key '{cache_key}' before streaming")
+                    data_cache.clear_cache(cache_key)
                 except Exception as cache_error:
-                    logger.warning(f"Failed to clear existing cache entry '{cache_key_prefix}': {cache_error}")
+                    logger.warning(f"Failed to clear existing cache entry '{cache_key}': {cache_error}")
             else:
-                logger.info(f"Cache entry '{cache_key_prefix}' already populated; skipping backend fetch")
+                logger.info(f"Cache entry '{cache_key}' already populated; skipping backend fetch")
                 print("fetch skipped")
                 return {
                     "success": True,
                     "cached": True,
-                    "cache_key": cache_key_prefix,
+                    "cache_key": cache_key,
                     "streaming_mode": "file_based",
                     "memory_efficient": True,
                     "fetch_skipped": True,
@@ -280,10 +280,9 @@ class BackendService:
                             # Request session file stream from backend
                             session_data = await self._stream_session_file(session_id, session_meta)
                             
-                            yield {
-                                "chunkId": session_id,
-                                "data": session_data
-                            }
+                            # Store only the raw session telemetry so downstream consumers do not
+                            # rely on wrapper metadata while reconstructing dataframes.
+                            yield session_data
                             
                         except Exception as e:
                             logger.error(f"Failed to stream session {session_id}: {str(e)}")
@@ -344,7 +343,7 @@ class BackendService:
             
             # Stream sessions to cache
             cache_success = await data_cache.cache_chunks_streaming(
-                cache_key=cache_key_prefix,
+                cache_key=cache_key,
                 chunks_iterator=streamer,
             )
             
@@ -371,7 +370,7 @@ class BackendService:
                 "total_sessions": total_sessions,
                 "total_data_points": total_data_points,
                 "cached": True,
-                "cache_key": cache_key_prefix,
+                "cache_key": cache_key,
                 "streaming_mode": "file_based",
                 "memory_efficient": True,
                 "summary": {

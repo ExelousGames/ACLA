@@ -83,7 +83,9 @@ class CacheConfig:
     processed_session_data_cache_key: str = f"racing_sessions_processed_"
     processed_session_cleanup: bool = False
     segments_cache_key: str = f"enriched_segments_"
-    segment_cleanup: bool = True
+    segment_cleanup: bool = False
+    top_laps_cache_key: str = f"top_laps_"
+    skip_transformer_training: bool = True
 
 
 class Full_dataset_TelemetryMLService:
@@ -631,13 +633,38 @@ class Full_dataset_TelemetryMLService:
 
         self._print_section_divider("LARGE DATASET ASSUMED - USING EFFICIENT PROCESSING")
 
-        top_laps_telemetry_list, sessions_cache_key = await self.process_lap_sessions_efficiently(
-            session_data_cache_key=dataset_cache_key,
-            max_memory_records=10000,
-            telemetry_time_gap_ms=200,
-            processed_sessions_cache_key=processed_sessions_cache_key,
-            clean_up = cache_config.processed_session_cleanup,
-        )
+        # Check if top laps are already cached
+        top_laps_cache_key = cache_config.top_laps_cache_key
+        top_laps_telemetry_list = None
+        
+        if self.telemetry_store.has_cached_data(top_laps_cache_key) and self.telemetry_store.has_cached_data(processed_sessions_cache_key):
+            if cache_config.processed_session_cleanup:
+                print(f"[INFO] Cleaning up existing top laps cache: {top_laps_cache_key}")
+                self.telemetry_store.clear_cache(top_laps_cache_key)
+                print(f"[INFO] Cleaning up processed sessions cache: {processed_sessions_cache_key}")
+                self.telemetry_store.clear_cache(processed_sessions_cache_key)
+                # Force regeneration after cleanup
+                top_laps_telemetry_list = None
+            else:
+                try:
+                    print(f"[INFO] Found cached top laps at {top_laps_cache_key}, retrieving...")
+                    top_laps_telemetry_list = await self.get_cached_top_laps(
+                        top_laps_cache_key=top_laps_cache_key
+                    )
+                    print(f"[SUCCESS] Retrieved {len(top_laps_telemetry_list)} cached top lap telemetry records")
+                except Exception as cache_error:
+                    print(f"[WARNING] Failed to retrieve cached top laps: {cache_error}")
+                    print("[INFO] Will process sessions to regenerate top laps...")
+                    top_laps_telemetry_list = None
+        
+        # Process sessions if top laps not available from cache
+        if top_laps_telemetry_list is None:
+            top_laps_telemetry_list = await self.process_lap_sessions_efficiently(
+                session_data_cache_key=dataset_cache_key,
+                max_memory_records=10000,
+                telemetry_time_gap_ms=200,
+                processed_sessions_cache_key=processed_sessions_cache_key,
+            )
 
         self._print_section_divider("ENRICHING CONTEXTUAL DATA")
         max_segment_length = 500
@@ -647,37 +674,59 @@ class Full_dataset_TelemetryMLService:
         dataset_stats: Optional[Dict[str, Any]] = None
         llm_training: Optional[Dict[str, Any]] = None
 
+        # Check if enriched segments are already cached
+        if self.telemetry_store.has_cached_data(segments_cache_key_base):
+            if cache_config.segment_cleanup:
+                print(f"[INFO] Cleaning up existing segments cache: {segments_cache_key_base}")
+                self.telemetry_store.clear_cache(segments_cache_key_base)
+            else:
+                print(f"[INFO] Found cached segments at {segments_cache_key_base}, skipping enrichment")
+                segments_cache_key = segments_cache_key_base
+                # Skip enrichment and proceed directly to training
+        
         try:
-            segments_cache_key = await self.enriched_contextual_data(
-                top_laps_telemetry_list,
-                sessions_cache_key,
-                max_segment_length=max_segment_length,
-                segments_cache_key_override=segments_cache_key_base,
-                clean_up=cache_config.segment_cleanup,
-            )
+            # Only run enrichment if segments not cached or cleanup requested
+            if segments_cache_key is None:
+                segments_cache_key = await self.enriched_contextual_data(
+                    top_laps_telemetry_list,
+                    processed_sessions_cache_key,
+                    max_segment_length=max_segment_length,
+                    segments_cache_key_override=segments_cache_key_base,
+                )
 
             # Free top-lap telemetry to conserve memory once cached
-            del top_laps_telemetry_list
+            if top_laps_telemetry_list is not None:
+                del top_laps_telemetry_list
             
-            transformer_training = await prepare_and_train_coach_transformer_model(
-                data_cache=self.telemetry_store,
-                segments_cache_key=segments_cache_key,
-                segment_length_hint=max_segment_length,
-            )
+            # Conditionally train and save transformer model
+            if not cache_config.skip_transformer_training:
+                transformer_training = await prepare_and_train_coach_transformer_model(
+                    data_cache=self.telemetry_store,
+                    segments_cache_key=segments_cache_key,
+                    segment_length_hint=max_segment_length,
+                )
 
-            if not transformer_training.get("success"):
-                raise RuntimeError(transformer_training.get("error") or "Transformer training failed")
+                if not transformer_training.get("success"):
+                    raise RuntimeError(transformer_training.get("error") or "Transformer training failed")
 
-            await backend_service.save_ai_model(
-                model_type="transformer_expert_action",
-                model_data=transformer_training["serialized_model"],
-                metadata={
-                    "training_history": transformer_training["training_history"],
-                    "test_metrics": transformer_training["test_metrics"],
-                    "training_timestamp": datetime.now().isoformat()
-                },
-                is_active=True
-            )
+                await backend_service.save_ai_model(
+                    model_type="transformer_expert_action",
+                    model_data=transformer_training["serialized_model"],
+                    metadata={
+                        "training_history": transformer_training["training_history"],
+                        "test_metrics": transformer_training["test_metrics"],
+                        "training_timestamp": datetime.now().isoformat()
+                    },
+                    is_active=True
+                )
+                print("[INFO] ✓ Transformer model trained and saved")
+            else:
+                print("[INFO] ⊘ Skipping transformer training and model save (cache_config.skip_transformer_training=True)")
+                transformer_training = {
+                    "success": True,
+                    "skipped": True,
+                    "message": "Transformer training skipped by configuration"
+                }
             
             dataset_identifier = f"llm_guidance_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
             training_context = LLMTrainingContext(
@@ -687,7 +736,7 @@ class Full_dataset_TelemetryMLService:
                 data_caching_service=self.telemetry_store,
                 shuffle=shuffle_dataset,
                 metadata={
-                    "sessions_cache_key": sessions_cache_key,
+                    "processed_sessions_cache_key": processed_sessions_cache_key,
                     "segments_cache_key": segments_cache_key,
                 },
             )
@@ -710,9 +759,6 @@ class Full_dataset_TelemetryMLService:
             "success": True,
             "dataset_path": str(dataset_path_result) if dataset_path_result else None,
             "dataset_stats": dataset_stats,
-            "transformer_training": transformer_training,
-            "llm_training": llm_training,
-            "llm_contributions": llm_training.get("contributions") if llm_training else None,
         }
 
         self._print_section_divider("LLM TRAINING COMPLETED")
@@ -766,8 +812,7 @@ class Full_dataset_TelemetryMLService:
         max_memory_records: int = 10000,
         telemetry_time_gap_ms: int = 100,
         processed_sessions_cache_key: Optional[str] = None,
-        clean_up: bool = True,
-    ) -> Tuple[List[Dict[str, Any]], str]:
+    ) -> List[Dict[str, Any]]:
         """
         Streamlined processing of large cached datasets with a bounded memory footprint while caching
         full session telemetry for downstream training.
@@ -777,29 +822,15 @@ class Full_dataset_TelemetryMLService:
             max_memory_records: Maximum number of session telemetry records kept in memory before flushing to cache
             telemetry_time_gap_ms: Maximum allowed gap (in milliseconds) between telemetry points when stripping laps
             processed_sessions_cache_key: Optional override for cache key storing processed session data
-            clean_up: When True, clear existing processed session cache before processing
 
         Returns:
-            Tuple of (top_laps_telemetry_list, sessions_cache_key)
+            List of top laps telemetry records
         """
         print(
             f"[INFO] Processing cached dataset '{session_data_cache_key}' with {max_memory_records} in-memory session records"
         )
 
         top_laps: List[Dict[str, Any]] = []
-        processed_cache_key = processed_sessions_cache_key or f"{session_data_cache_key}_processed_"
-
-        if self.telemetry_store.has_cached_data(processed_cache_key):
-            if clean_up:
-                try:
-                    self.telemetry_store.clear_cache(processed_cache_key)
-                    print(f"[INFO] Cleared existing cache for processed sessions: {processed_cache_key}")
-                except Exception as cleanup_error:
-                    print(f"[WARNING] Failed to clear cache '{processed_cache_key}': {cleanup_error}")
-            else:
-                print("processing skipped")
-                return [], processed_cache_key
-
         session_buffer: List[Dict[str, Any]] = []
         session_buffer_records = 0
         total_sessions_cached = 0
@@ -819,7 +850,7 @@ class Full_dataset_TelemetryMLService:
 
             try:
                 cache_success = await self.telemetry_store.cache_chunks_streaming(
-                    cache_key=processed_cache_key,
+                    cache_key=processed_sessions_cache_key,
                     chunks_iterator=buffer_iterator()
                 )
             except Exception as cache_error:
@@ -829,7 +860,7 @@ class Full_dataset_TelemetryMLService:
             if cache_success:
                 cached_count = len(session_buffer)
                 print(
-                    f"[INFO] Cached {cached_count} session chunks ({session_buffer_records} records) [{reason}] -> {processed_cache_key}"
+                    f"[INFO] Cached {cached_count} session chunks ({session_buffer_records} records) [{reason}] -> {processed_sessions_cache_key}"
                 )
                 total_sessions_cached += cached_count
                 session_buffer = []
@@ -873,11 +904,8 @@ class Full_dataset_TelemetryMLService:
         session_chunks_processed = 0
         for session_chunk_df in session_chunks_iterator:
             session_chunks_processed += 1
-
-            if session_chunk_df is None or session_chunk_df.empty:
-                print(f"[DEBUG] Chunk {session_chunks_processed} is empty, skipping")
-                continue
-
+            session_chunk_df = pd.DataFrame(session_chunk_df)
+            
             try:
                 telemetry_df = session_chunk_df
                 print(f"[DEBUG] Processing {len(telemetry_df)} telemetry records from chunk {session_chunks_processed}")
@@ -949,16 +977,7 @@ class Full_dataset_TelemetryMLService:
                 )
 
                 if session_records:
-                    session_entry = {
-                        "chunkId": f"session_{chunk_idx}_{session_chunks_processed}",
-                        "data": session_records,
-                        "metadata": {
-                            "chunk_index": chunk_idx,
-                            "session_index": session_chunks_processed,
-                            "record_count": len(session_records),
-                        },
-                    }
-                    session_buffer.append(session_entry)
+                    session_buffer.append(session_records)
                     session_buffer_records += len(session_records)
 
                     if session_buffer_records >= max_memory_records:
@@ -1017,7 +1036,25 @@ class Full_dataset_TelemetryMLService:
         print(f"[SUCCESS] Selected top 5 laps: {len(top_laps_telemetry_list)} records")
         print(f"[SUCCESS] Cached {total_sessions_cached} session batches across {chunk_idx} chunks")
 
-        return top_laps_telemetry_list, processed_cache_key
+        # Cache top laps telemetry list for downstream use
+        top_laps_cache_key = self.cache_config.top_laps_cache_key
+        try:
+            async def top_laps_generator():
+                yield top_laps_telemetry_list  # Yield the telemetry list directly
+            
+            cache_success = await self.telemetry_store.cache_chunks_streaming(
+                cache_key=top_laps_cache_key,
+                chunks_iterator=top_laps_generator()
+            )
+            
+            if cache_success:
+                print(f"[SUCCESS] Cached {len(top_laps_telemetry_list)} top lap telemetry records to {top_laps_cache_key}")
+            else:
+                print(f"[WARNING] Failed to cache top laps to {top_laps_cache_key}")
+        except Exception as cache_error:
+            print(f"[WARNING] Error caching top laps: {cache_error}")
+
+        return top_laps_telemetry_list
 
     async def _enrich_sessions_with_context(self, chunk_data: List[Dict[str, Any]], 
                                         imitation_learning: ExpertImitateLearningService, tire_service: TireGripAnalysisService) -> List[Dict[str, Any]]:
@@ -1084,9 +1121,9 @@ class Full_dataset_TelemetryMLService:
             # Store segments as structured chunk - cache service doesn't need to know about segments
             
             async def segments_generator():
-                """Generator yielding raw segments data"""
-                for segment in segments_batch:
-                    yield segment
+                """Generator yielding entire batch as a single chunk"""
+                # Yield the entire batch as one chunk, not individual segments
+                yield segments_batch
             
             # Estimate size for this batch
             total_records = sum(len(segment) for segment in segments_batch)
@@ -1109,6 +1146,44 @@ class Full_dataset_TelemetryMLService:
             print(f"[ERROR] Exception caching segment batch {batch_number}: {str(e)}")
             return False
 
+    async def get_cached_top_laps(
+        self,
+        *,
+        top_laps_cache_key: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Retrieve cached top laps telemetry list for downstream use.
+        
+        Args:
+            top_laps_cache_key: Optional override for the cache key
+            
+        Returns:
+            List of telemetry records from the top 5 laps
+            
+        Raises:
+            ValueError: If top laps cache is not available
+        """
+        cache_key = top_laps_cache_key or self.cache_config.top_laps_cache_key
+        
+        try:
+            if not self.telemetry_store.has_cached_data(cache_key):
+                raise ValueError(f"No cached top laps found at key: {cache_key}")
+            
+            # Get the cached data chunks (should be just one chunk with the list)
+            chunks_iterator = self.telemetry_store.get_cached_data_chunks(cache_key=cache_key)
+            
+            for chunk in chunks_iterator:
+                # The chunk should be our top_laps_telemetry_list
+                if isinstance(chunk, list):
+                    print(f"[INFO] Retrieved {len(chunk)} top lap telemetry records from cache")
+                    return chunk
+            
+            raise ValueError(f"Cached data at {cache_key} has unexpected format")
+            
+        except Exception as error:
+            print(f"[ERROR] Failed to retrieve cached top laps: {error}")
+            raise
+
     async def enriched_contextual_data(
         self,
         top_laps_telemetry_list: List[Dict[str, Any]],
@@ -1116,7 +1191,6 @@ class Full_dataset_TelemetryMLService:
         max_segment_length: int,
         *,
         segments_cache_key_override: Optional[str] = None,
-        clean_up: bool = True,
     ) -> str:
         """
         Streamlined contextual data enrichment using chunk iterator approach.
@@ -1131,7 +1205,6 @@ class Full_dataset_TelemetryMLService:
             sessions_cache_key: Cache key for accessing cached session data via iterator
             max_segment_length: Length of segments for transformer training
             segments_cache_key_override: Optional override for cache key storing enriched segments
-            clean_up: When True, clear existing cache before processing; when False and cache exists, skip processing
             
         Returns:
             str - Cache key for accessing the enriched segments
@@ -1206,23 +1279,6 @@ class Full_dataset_TelemetryMLService:
         self._print_section_divider("PROCESSING SESSION DATA VIA CHUNK ITERATOR")
         
         segments_cache_key = segments_cache_key_override or self.cache_config.segments_cache_key
-
-        cache_exists = False
-        try:
-            cache_exists = self.telemetry_store.has_cached_data(segments_cache_key)
-        except Exception as cache_check_error:
-            print(f"[WARNING] Failed to check cache for {segments_cache_key}: {cache_check_error}")
-
-        if cache_exists:
-            if clean_up:
-                try:
-                    self.telemetry_store.clear_cache(segments_cache_key)
-                    print(f"[INFO] Cleared existing segments cache: {segments_cache_key}")
-                except Exception as cache_cleanup_error:
-                    print(f"[WARNING] Failed to clear segments cache {segments_cache_key}: {cache_cleanup_error}")
-            else:
-                print("processing skipped")
-                return segments_cache_key
         
         session_chunks_iterator = self.telemetry_store.get_cached_data_chunks(
             cache_key=sessions_cache_key  # Use the cache key where session data is stored
@@ -1240,6 +1296,9 @@ class Full_dataset_TelemetryMLService:
         coverage_sample_count = 0
         
         for session_chunk_df in session_chunks_iterator:
+            # Convert raw payload to DataFrame (iterator yields list/dict, not DataFrame)
+            session_chunk_df = pd.DataFrame(session_chunk_df)
+            
             if session_chunk_df is None or session_chunk_df.empty:
                 continue
             

@@ -17,14 +17,17 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 import streamlit as st
 
 from app.services.full_dataset_ml_service import Full_dataset_TelemetryMLService
 from app.services.local_llm_service import GenerationRequest
+from app.services.telemetry_prompt_dataset_builder import DatasetBuildStats
 
 # Default directory where datasets are written by the ML service
 DEFAULT_DATASET_DIR = Path(__file__).resolve().parents[1] / "models" / "llm_datasets"
 ANNOTATION_SUFFIX = ".annotations.jsonl"
+DEFAULT_SEGMENTS_CACHE_KEY = "enriched_segments_"
 
 
 # ---------------------------------------------------------------------------
@@ -320,6 +323,74 @@ def _save_annotation(
     return total_examples, annotated_examples
 
 
+def _create_dataset_from_cache(
+    segments_cache_key: str,
+    dataset_name: str,
+    output_dir: Path,
+    shuffle: bool = True,
+) -> Tuple[Optional[Path], Dict[str, Any]]:
+    """Create a new dataset from cached segments."""
+    
+    ml_service = get_ml_service()
+    
+    # Check if cache exists
+    if not ml_service.telemetry_store.has_cached_data(segments_cache_key):
+        return None, {
+            "error": f"Cache key '{segments_cache_key}' not found",
+            "available_caches": ml_service.telemetry_store.list_cache_keys(),
+        }
+    
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Generate dataset filename with timestamp
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    dataset_filename = f"{dataset_name}_{timestamp}.jsonl"
+    dataset_path = output_dir / dataset_filename
+    
+    print(f"[INFO] Creating dataset at {dataset_path}")
+    
+    try:
+        # Use the prompt dataset builder to create the dataset
+        builder = ml_service.prompt_dataset_builder
+        
+        with dataset_path.open("w", encoding="utf-8") as handle:
+            def consume(record: Dict[str, Any]) -> None:
+                handle.write(
+                    json.dumps(
+                        record,
+                        ensure_ascii=False,
+                        default=builder._json_default,
+                    )
+                    + "\n"
+                )
+            
+            _, stats = builder.build_from_cached_segments(
+                segments_cache_key=segments_cache_key,
+                shuffle=shuffle,
+                record_consumer=consume,
+            )
+        
+        if stats.windows_kept == 0:
+            dataset_path.unlink(missing_ok=True)
+            return None, {
+                "error": "No valid windows were generated from the cached segments",
+                "stats": stats.to_dict(),
+            }
+        
+        return dataset_path, {
+            "success": True,
+            "dataset_path": str(dataset_path),
+            "stats": stats.to_dict(),
+        }
+        
+    except Exception as error:
+        if dataset_path.exists():
+            dataset_path.unlink(missing_ok=True)
+        return None, {
+            "error": f"Failed to create dataset: {str(error)}",
+        }
+
+
 # ---------------------------------------------------------------------------
 # Visualisation helpers
 # ---------------------------------------------------------------------------
@@ -339,18 +410,37 @@ def _prepare_plot_data(window: Dict[str, Any], feature_names: List[str]) -> pd.D
     future_df = pd.DataFrame(future_records)
     future_df["phase"] = "future"
 
-    if "relative_index" in context_df.columns:
-        start_offset = context_df["relative_index"].max() + 1
-        future_df["relative_index"] = future_df.get("relative_index", pd.Series(range(len(future_df)))) + start_offset
+    # Create sequential timestamp index
+    context_df["timestamp_index"] = range(len(context_df))
+    if len(future_df) > 0:
+        start_offset = len(context_df)
+        future_df["timestamp_index"] = range(start_offset, start_offset + len(future_df))
 
     combined = pd.concat([context_df, future_df], ignore_index=True, sort=False)
     melted = combined.melt(
-        id_vars=[col for col in ["relative_index", "phase"] if col in combined.columns],
+        id_vars=["timestamp_index", "phase"],
         value_vars=[feature for feature in feature_names if feature in combined.columns],
         var_name="feature",
         value_name="value",
     )
     return melted
+
+
+def _extract_features_from_segment(segment: List[Dict[str, Any]]) -> List[str]:
+    """Extract all unique feature keys from a segment."""
+    
+    if not segment or not isinstance(segment, list):
+        return []
+    
+    # Get all keys from the first non-empty dictionary in the segment
+    for step in segment:
+        if isinstance(step, dict) and step:
+            # Return all keys, filtering out common metadata fields
+            excluded_fields = {"relative_index", "timestamp", "time", "index"}
+            features = [key for key in step.keys() if key not in excluded_fields]
+            return sorted(features)
+    
+    return []
 
 
 def _render_plot(data: pd.DataFrame) -> None:
@@ -362,13 +452,148 @@ def _render_plot(data: pd.DataFrame) -> None:
 
     fig = px.line(
         data,
-        x="relative_index" if "relative_index" in data.columns else data.index,
+        x="timestamp_index",
         y="value",
         color="feature",
         line_dash="phase" if "phase" in data.columns else None,
         markers=True,
     )
-    fig.update_layout(height=360, legend_orientation="h", legend_y=-0.2)
+    fig.update_layout(
+        height=360,
+        legend_orientation="h",
+        legend_y=-0.2,
+        xaxis_title="Timestamp Index",
+        yaxis_title="Value"
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def _render_3d_position_comparison(window: Dict[str, Any]) -> None:
+    """Render 3D comparison of expert optimal vs player positions."""
+    
+    context_records = window.get("context", [])
+    future_records = window.get("future", [])
+    
+    if not context_records and not future_records:
+        st.info("No telemetry data available for 3D position comparison.")
+        return
+    
+    # Combine context and future records
+    all_records = context_records + future_records
+    
+    # Check if position data exists
+    has_expert = any("expert_optimal_player_pos_x" in rec for rec in all_records)
+    has_player = any("Graphics_player_pos_x" in rec for rec in all_records)
+    
+    if not (has_expert or has_player):
+        st.info("No position data (expert or player) available for 3D visualization.")
+        return
+    
+    fig = go.Figure()
+    
+    # Extract expert optimal position
+    if has_expert:
+        expert_x = [rec.get("expert_optimal_player_pos_x") for rec in all_records if "expert_optimal_player_pos_x" in rec]
+        expert_y = [rec.get("expert_optimal_player_pos_y") for rec in all_records if "expert_optimal_player_pos_y" in rec]
+        expert_z = [rec.get("expert_optimal_player_pos_z") for rec in all_records if "expert_optimal_player_pos_z" in rec]
+        
+        if expert_x and expert_y and expert_z:
+            # Add trajectory line
+            fig.add_trace(go.Scatter3d(
+                x=expert_x,
+                y=expert_y,
+                z=expert_z,
+                mode='lines+markers',
+                name='Expert Optimal',
+                line=dict(color='green', width=4),
+                marker=dict(size=4, color='green')
+            ))
+            
+            # Add start point marker
+            fig.add_trace(go.Scatter3d(
+                x=[expert_x[0]],
+                y=[expert_y[0]],
+                z=[expert_z[0]],
+                mode='markers',
+                name='Expert Start',
+                marker=dict(size=12, color='lime', symbol='diamond', 
+                           line=dict(color='darkgreen', width=2)),
+                showlegend=True
+            ))
+            
+            # Add end point marker
+            fig.add_trace(go.Scatter3d(
+                x=[expert_x[-1]],
+                y=[expert_y[-1]],
+                z=[expert_z[-1]],
+                mode='markers',
+                name='Expert End',
+                marker=dict(size=12, color='darkgreen', symbol='square',
+                           line=dict(color='lime', width=2)),
+                showlegend=True
+            ))
+    
+    # Extract player position
+    if has_player:
+        player_x = [rec.get("Graphics_player_pos_x") for rec in all_records if "Graphics_player_pos_x" in rec]
+        player_y = [rec.get("Graphics_player_pos_y") for rec in all_records if "Graphics_player_pos_y" in rec]
+        player_z = [rec.get("Graphics_player_pos_z") for rec in all_records if "Graphics_player_pos_z" in rec]
+        
+        if player_x and player_y and player_z:
+            # Add trajectory line
+            fig.add_trace(go.Scatter3d(
+                x=player_x,
+                y=player_y,
+                z=player_z,
+                mode='lines+markers',
+                name='Player Actual',
+                line=dict(color='blue', width=4),
+                marker=dict(size=4, color='blue')
+            ))
+            
+            # Add start point marker
+            fig.add_trace(go.Scatter3d(
+                x=[player_x[0]],
+                y=[player_y[0]],
+                z=[player_z[0]],
+                mode='markers',
+                name='Player Start',
+                marker=dict(size=12, color='cyan', symbol='diamond',
+                           line=dict(color='darkblue', width=2)),
+                showlegend=True
+            ))
+            
+            # Add end point marker
+            fig.add_trace(go.Scatter3d(
+                x=[player_x[-1]],
+                y=[player_y[-1]],
+                z=[player_z[-1]],
+                mode='markers',
+                name='Player End',
+                marker=dict(size=12, color='darkblue', symbol='square',
+                           line=dict(color='cyan', width=2)),
+                showlegend=True
+            ))
+    
+    # Update layout
+    fig.update_layout(
+        title="3D Position Comparison: Expert Optimal vs Player Actual",
+        scene=dict(
+            xaxis_title="X Position",
+            yaxis_title="Y Position",
+            zaxis_title="Z Position",
+            aspectmode='data'
+        ),
+        height=600,
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="right",
+            x=1
+        )
+    )
+    
     st.plotly_chart(fig, use_container_width=True)
 
 
@@ -448,25 +673,84 @@ def main() -> None:
     if llm_error:
         st.warning(f"Auto-coaching is currently unavailable: {llm_error}")
 
+    # Dataset creation section
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("Create New Dataset")
+    
+    # List available cache keys
+    available_caches = ml_service.telemetry_store.list_cache_keys()
+    segments_caches = [key for key in available_caches if "segment" in key.lower() or "enriched" in key.lower()]
+    
+    if segments_caches:
+        st.sidebar.caption(f"Found {len(segments_caches)} segment cache(s)")
+        
+        cache_key_input = st.sidebar.selectbox(
+            "Select segment cache",
+            options=segments_caches,
+            index=0 if DEFAULT_SEGMENTS_CACHE_KEY in segments_caches else 0,
+        )
+        
+        dataset_name_input = st.sidebar.text_input(
+            "Dataset name",
+            value="segment_explanation",
+            help="Name for the new dataset file (timestamp will be appended)",
+        )
+        
+        shuffle_dataset = st.sidebar.checkbox(
+            "Shuffle segments",
+            value=True,
+            help="Randomly shuffle segments when creating the dataset",
+        )
+        
+        if st.sidebar.button("Create Dataset", type="primary", use_container_width=True):
+            with st.spinner("Creating dataset from cached segments..."):
+                dataset_path_result, result_info = _create_dataset_from_cache(
+                    segments_cache_key=cache_key_input,
+                    dataset_name=dataset_name_input,
+                    output_dir=dataset_dir / "segment_explanation",
+                    shuffle=shuffle_dataset,
+                )
+                
+                if dataset_path_result:
+                    st.sidebar.success(f"Dataset created successfully!")
+                    st.sidebar.caption(f"Path: {dataset_path_result.name}")
+                    stats = result_info.get("stats", {})
+                    if stats:
+                        st.sidebar.metric("Windows created", stats.get("windows_kept", 0))
+                    st.experimental_rerun()
+                else:
+                    error_msg = result_info.get("error", "Unknown error")
+                    st.sidebar.error(f"Failed to create dataset: {error_msg}")
+                    if "available_caches" in result_info:
+                        st.sidebar.caption(f"Available caches: {', '.join(result_info['available_caches'])}")
+    else:
+        st.sidebar.info("No segment caches found. Run the transformer training pipeline first to create cached segments.")
+        if available_caches:
+            st.sidebar.caption(f"Available caches: {', '.join(available_caches[:5])}")
+
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("Annotate Existing Dataset")
+    
     dataset_dir = Path(args.dataset_dir or DEFAULT_DATASET_DIR)
     dataset_dir.mkdir(parents=True, exist_ok=True)
 
-    dataset_files = sorted(dataset_dir.glob("*.jsonl"))
+    dataset_files = sorted(dataset_dir.rglob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
     if not dataset_files:
-        st.warning(f"No dataset files found in {dataset_dir}. Generate a dataset first.")
+        st.warning(f"No dataset files found in {dataset_dir}. Create a dataset first using the sidebar.")
         return
 
-    dataset_labels = [file.name for file in dataset_files]
+    dataset_labels = [str(file.relative_to(dataset_dir)) for file in dataset_files]
 
     default_index = 0
     if args.dataset:
-        try:
-            default_index = dataset_labels.index(Path(args.dataset).name)
-        except ValueError:
-            default_index = 0
+        target_name = Path(args.dataset).name
+        for idx, label in enumerate(dataset_labels):
+            if label.endswith(target_name):
+                default_index = idx
+                break
 
     selected_label = st.sidebar.selectbox("Dataset file", dataset_labels, index=default_index)
-    dataset_path = dataset_dir / selected_label
+    dataset_path = dataset_files[dataset_labels.index(selected_label)]
     annotation_path = dataset_path.with_suffix(dataset_path.suffix + ANNOTATION_SUFFIX)
 
     entries = load_dataset(dataset_path.as_posix())
@@ -545,11 +829,31 @@ def main() -> None:
         return
 
     config = selected_entry.get("config", {})
+    
+    # Try to get features from config first, then extract from segment data
     feature_options = config.get("telemetry_features", [])
+    if not feature_options:
+        # Extract features directly from the segment
+        segment = selected_entry.get("segment", [])
+        if not segment:
+            # Try to get from window context
+            window = selected_entry.get("window", {})
+            segment = window.get("context", []) if isinstance(window, dict) else []
+        
+        feature_options = _extract_features_from_segment(segment)
+    
+    # Set default features to Physics_gas, Physics_brake, and Physics_steer_angle
+    default_features = ["Physics_gas", "Physics_brake", "Physics_steer_angle"]
+    # Only use defaults that exist in feature_options
+    default_selection = [f for f in default_features if f in feature_options]
+    # If none of the preferred defaults exist, fall back to first 5 features
+    if not default_selection:
+        default_selection = feature_options[: min(5, len(feature_options))]
+    
     selected_features = st.multiselect(
         "Telemetry features to display",
         feature_options,
-        default=feature_options[: min(5, len(feature_options))],
+        default=default_selection,
     )
 
     if selected_features:
@@ -557,6 +861,11 @@ def main() -> None:
         _render_plot(plot_data)
     else:
         st.info("Select at least one telemetry feature to visualise.")
+    
+    # Add 3D position comparison visualization
+    st.subheader("3D Position Comparison")
+    window_data = selected_entry.get("window", {})
+    _render_3d_position_comparison(window_data)
 
     existing_annotation = store.get(selected_window_id, {})
     coaching_note_default = existing_annotation.get("coaching_explanation") or selected_entry.get("coaching_explanation", "")

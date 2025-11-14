@@ -82,106 +82,100 @@ class SegmentExplanationTrainingProvider(BaseLLMTrainingProvider):
 		self._builder = builder
 
 	async def produce(self, context: LLMTrainingContext) -> Optional[LLMTrainingContribution]:
-		if not context.segments_cache_key:
-			return None
-
+		"""Check for existing annotated datasets and create a filtered training-ready dataset.
+		
+		Dataset creation is now handled by the annotation app UI.
+		This method validates that an annotated dataset exists, then creates a filtered
+		training dataset containing ONLY annotated samples.
+		"""
 		output_dir = context.output_root / self.name
 		output_dir.mkdir(parents=True, exist_ok=True)
 		dataset_path = output_dir / f"{context.dataset_id}_{self.name}.jsonl"
+		annotation_path = dataset_path.with_suffix(dataset_path.suffix + self.ANNOTATION_SUFFIX)
 
-		def _build_dataset() -> DatasetBuildStats:
-
-			with dataset_path.open("w", encoding="utf-8") as handle:
-				def consume(record: Dict[str, Any]) -> None:
-					handle.write(
-						json.dumps(
-							record,
-							ensure_ascii=False,
-							default=self._builder._json_default,  # type: ignore[attr-defined]
-						)
-						+ "\n"
-					)
-
-				_, stats = self._builder.build_from_cached_segments(
-					segments_cache_key=context.segments_cache_key,
-					shuffle=context.shuffle,
-					record_consumer=consume,
-				)
-			return stats
-
-		stats = await asyncio.to_thread(_build_dataset)
-
-		annotation_summary = await asyncio.to_thread(self._apply_annotations_to_dataset, dataset_path)
-		annotated_examples = annotation_summary.get("annotated_examples", 0)
-		total_examples = annotation_summary.get("total_examples", stats.windows_kept)
-
-		if total_examples and annotated_examples == 0:
-			raise RuntimeError(
-				f"No telemetry annotations were found for {dataset_path}. Run the telemetry_prompt_annotation_app "
-				"to annotate the generated dataset before training."
-			)
-
-		if annotation_summary.get("pending_examples"):
-			print(
-				f"[WARN] Only {annotated_examples}/{total_examples} telemetry windows have annotations. "
-				"Unannotated windows will be skipped during training."
-			)
-
-		if stats.windows_kept == 0:
-			dataset_path.unlink(missing_ok=True)
+		# Check if dataset exists
+		if not dataset_path.exists():
+			print(f"\n[INFO] No dataset found at {dataset_path}")
+			print(f"[INFO] Please use the annotation app to create a dataset from cached segments.")
+			print(f"[INFO] Dataset will be created at: {dataset_path}")
 			return None
 
-		stats_dict = stats.to_dict()
-		stats_dict.update({
+		# Read annotation statistics
+		annotation_summary = await asyncio.to_thread(
+			self._read_annotation_statistics, 
+			dataset_path, 
+			annotation_path
+		)
+		
+		annotated_examples = annotation_summary.get("annotated_examples", 0)
+		total_examples = annotation_summary.get("total_examples", 0)
+
+		if total_examples == 0:
+			print(f"[WARN] Dataset at {dataset_path} is empty.")
+			return None
+
+		if annotated_examples == 0:
+			raise RuntimeError(
+				f"No telemetry annotations were found for {dataset_path}. "
+				"Please complete annotations in the annotation UI before proceeding with training."
+			)
+
+		# Create a filtered training dataset with only annotated samples
+		training_dataset_path = output_dir / f"{context.dataset_id}_{self.name}_training.jsonl"
+		filtered_count = await asyncio.to_thread(
+			self._create_filtered_training_dataset,
+			dataset_path,
+			training_dataset_path
+		)
+
+		if filtered_count == 0:
+			raise RuntimeError(
+				f"Failed to create training dataset. No annotated samples found in {dataset_path}."
+			)
+
+		print(f"[INFO] Created filtered training dataset with {filtered_count} annotated samples.")
+		print(f"[INFO] Training will use {filtered_count}/{total_examples} samples ({filtered_count/total_examples*100:.1f}% of total dataset).")
+
+		stats_dict = {
 			"provider": self.name,
 			"total_examples": total_examples,
 			"annotated_examples": annotated_examples,
+			"training_examples": filtered_count,
 			"annotation_coverage": annotation_summary.get("annotation_coverage", 0.0),
-			"output_path": str(dataset_path),
-		})
+			"output_path": str(training_dataset_path),
+			"source_dataset": str(dataset_path),
+		}
 
 		return LLMTrainingContribution(
 			provider_name=self.name,
-			dataset_path=dataset_path,
+			dataset_path=training_dataset_path,
 			stats=stats_dict,
 			metadata={
 				"builder": "telemetry_segments",
 				"annotations": annotation_summary,
+				"filtered": True,
 			},
 		)
 
-	def _apply_annotations_to_dataset(self, dataset_path: Path) -> Dict[str, Any]:
-		"""Merge saved annotations into freshly built dataset records."""
-		annotation_path = dataset_path.with_suffix(dataset_path.suffix + self.ANNOTATION_SUFFIX)
-		annotations: Dict[str, Dict[str, Any]] = {}
-		if annotation_path.exists():
-			with annotation_path.open("r", encoding="utf-8") as annotation_file:
-				for line in annotation_file:
-					line = line.strip()
-					if not line:
-						continue
-					try:
-						payload = json.loads(line)
-					except json.JSONDecodeError:
-						continue
-					window_id = payload.get("window_id")
-					if not window_id:
-						continue
-					explanation = payload.get("coaching_explanation", "")
-					if isinstance(explanation, str):
-						annotations[window_id] = {
-							"coaching_explanation": explanation,
-							"updated_at": payload.get("updated_at"),
-						}
 
-		updated_records: List[Dict[str, Any]] = []
+	def _read_annotation_statistics(self, dataset_path: Path, annotation_path: Path) -> Dict[str, Any]:
+		"""Read annotation statistics from the dataset after manual annotation."""
 		total_examples = 0
 		annotated_examples = 0
-		annotations_applied = 0
 		pending_examples = 0
-		changed = False
-		json_default = getattr(self._builder, "_json_default", None)
-
+		
+		if not dataset_path.exists():
+			return {
+				"annotation_path": None,
+				"annotation_store_found": False,
+				"annotations_available": 0,
+				"annotations_applied": 0,
+				"total_examples": 0,
+				"annotated_examples": 0,
+				"pending_examples": 0,
+				"annotation_coverage": 0.0,
+			}
+		
 		with dataset_path.open("r", encoding="utf-8") as dataset_file:
 			for line in dataset_file:
 				line = line.strip()
@@ -191,88 +185,86 @@ class SegmentExplanationTrainingProvider(BaseLLMTrainingProvider):
 					record = json.loads(line)
 				except json.JSONDecodeError:
 					continue
-
-				metadata = record.get("metadata")
+				
+				metadata = record.get("metadata", {})
 				if not isinstance(metadata, dict):
 					metadata = {}
-					record["metadata"] = metadata
-
-				existing_annotation = metadata.get("annotation") if isinstance(metadata.get("annotation"), dict) else None
-				window_id = metadata.get("window_id")
-
-				existing_response = record.get("response")
-				explanation = existing_response if isinstance(existing_response, str) else ""
-				if explanation:
-					explanation = explanation.strip()
-
-				if not explanation and existing_annotation:
-					candidate = existing_annotation.get("coaching_explanation")
-					if isinstance(candidate, str) and candidate.strip():
-						explanation = candidate.strip()
-
-				if not explanation and window_id and window_id in annotations:
-					store_payload = annotations[window_id]
-					explanation = (store_payload.get("coaching_explanation") or "").strip()
-					if explanation:
-						annotations_applied += 1
-
-				is_annotated = bool(explanation)
+				
+				is_annotated = metadata.get("annotation_complete", False)
 				if is_annotated:
 					annotated_examples += 1
 				else:
 					pending_examples += 1
-
-				if (existing_response or "") != (explanation or ""):
-					record["response"] = explanation or ""
-					changed = True
-				elif "response" not in record:
-					record["response"] = explanation or ""
-					changed = True
-
-				if metadata.get("annotation_complete") != is_annotated:
-					metadata["annotation_complete"] = is_annotated
-					changed = True
-
-				if is_annotated:
-					annotation_meta = metadata.setdefault("annotation", {})
-					if annotation_meta.get("coaching_explanation") != explanation:
-						annotation_meta["coaching_explanation"] = explanation
-						changed = True
-					if window_id and window_id in annotations:
-						updated_at = annotations[window_id].get("updated_at")
-						if updated_at and annotation_meta.get("updated_at") != updated_at:
-							annotation_meta["updated_at"] = updated_at
-							changed = True
-				elif existing_annotation and existing_annotation.get("coaching_explanation"):
-					existing_annotation["coaching_explanation"] = ""
-					changed = True
-
-				if "explanation" in record:
-					record.pop("explanation", None)
-					changed = True
-
-				metadata.setdefault("window_id", window_id)
-				updated_records.append(record)
 				total_examples += 1
-
-		if changed:
-			with dataset_path.open("w", encoding="utf-8") as dataset_file:
-				for record in updated_records:
-					if json_default:
-						dataset_file.write(json.dumps(record, ensure_ascii=False, default=json_default) + "\n")
-					else:
-						dataset_file.write(json.dumps(record, ensure_ascii=False) + "\n")
-
+		
+		# Count annotations from the annotation store
+		annotations_count = 0
+		if annotation_path.exists():
+			with annotation_path.open("r", encoding="utf-8") as annotation_file:
+				for line in annotation_file:
+					line = line.strip()
+					if not line:
+						continue
+					try:
+						json.loads(line)  # Just validate it's valid JSON
+						annotations_count += 1
+					except json.JSONDecodeError:
+						continue
+		
 		return {
 			"annotation_path": str(annotation_path) if annotation_path.exists() else None,
-			"annotation_store_found": bool(annotations),
-			"annotations_available": len(annotations),
-			"annotations_applied": annotations_applied,
+			"annotation_store_found": annotation_path.exists(),
+			"annotations_available": annotations_count,
+			"annotations_applied": annotated_examples,
 			"total_examples": total_examples,
 			"annotated_examples": annotated_examples,
 			"pending_examples": pending_examples,
 			"annotation_coverage": (annotated_examples / total_examples) if total_examples else 0.0,
 		}
+
+	def _create_filtered_training_dataset(
+		self,
+		source_dataset_path: Path,
+		output_dataset_path: Path
+	) -> int:
+		"""Create a new dataset file containing only annotated samples.
+		
+		Args:
+			source_dataset_path: Path to the full dataset with both annotated and unannotated samples
+			output_dataset_path: Path where the filtered training dataset will be written
+			
+		Returns:
+			Number of annotated samples written to the training dataset
+		"""
+		annotated_count = 0
+		
+		with source_dataset_path.open("r", encoding="utf-8") as source_file:
+			with output_dataset_path.open("w", encoding="utf-8") as output_file:
+				for line in source_file:
+					line = line.strip()
+					if not line:
+						continue
+					
+					try:
+						record = json.loads(line)
+					except json.JSONDecodeError:
+						continue
+					
+					# Only include records that have been annotated
+					metadata = record.get("metadata", {})
+					if not isinstance(metadata, dict):
+						continue
+					
+					is_annotated = metadata.get("annotation_complete", False)
+					if not is_annotated:
+						continue
+					
+					# Write the annotated record to the training dataset
+					output_file.write(json.dumps(record, ensure_ascii=False) + "\n")
+					annotated_count += 1
+		
+		return annotated_count
+
 
 
 class TransformerDirectiveTrainingProvider(BaseLLMTrainingProvider):
@@ -314,39 +306,43 @@ class TransformerDirectiveTrainingProvider(BaseLLMTrainingProvider):
 				)
 				prediction_steps = self._builder.config.prediction_steps
 
-				for chunk_df in chunk_iterator:
-					if chunk_df is None or chunk_df.empty:
+				for chunk_data in chunk_iterator:
+					# chunk_data is a list of segments (List[List[Dict[str, Any]]])
+					if chunk_data is None or not chunk_data:
+						continue
+					
+					# Ensure chunk_data is a list
+					if not isinstance(chunk_data, list):
 						continue
 
-					for raw_record in chunk_df.to_dict("records"):
-						segment_groups = self._builder._resolve_segments_from_record(raw_record)  # type: ignore[attr-defined]
-						if not segment_groups:
+					for segment in chunk_data:
+						segments_considered += 1
+						# segment is a list of telemetry dictionaries
+						if not segment or not isinstance(segment, list):
+							continue
+						
+						if len(segment) < self._builder.config.context_steps:
 							continue
 
-						for segment in segment_groups:
-							segments_considered += 1
-							if len(segment) < self._builder.config.context_steps:
-								continue
+						context_slice = segment[: self._builder.config.context_steps]
+						if not context_slice:
+							continue
 
-							context_slice = segment[: self._builder.config.context_steps]
-							if not context_slice:
-								continue
-
-							future_slice = segment[
-								self._builder.config.context_steps : self._builder.config.context_steps + prediction_steps
-							]
-							directive = self._build_directive(
-								context_slice,
-								future_slice,
-								context.metadata,
-							)
-							example = self._build_entry(
-								context_slice,
-								directive,
-								prediction_steps,
-								context.metadata,
-							)
-							handle.write(
+						future_slice = segment[
+							self._builder.config.context_steps : self._builder.config.context_steps + prediction_steps
+						]
+						directive = self._build_directive(
+							context_slice,
+							future_slice,
+							context.metadata,
+						)
+						example = self._build_entry(
+							context_slice,
+							directive,
+							prediction_steps,
+							context.metadata,
+						)
+						handle.write(
 							json.dumps(
 								example.to_record(),
 								ensure_ascii=False,
@@ -354,10 +350,10 @@ class TransformerDirectiveTrainingProvider(BaseLLMTrainingProvider):
 							)
 							+ "\n"
 						)
-							total_examples += 1
+						total_examples += 1
 
-							if self._max_samples and total_examples >= self._max_samples:
-								return
+						if self._max_samples and total_examples >= self._max_samples:
+							return
 
 		await asyncio.to_thread(_generate_examples)
 
