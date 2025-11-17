@@ -21,6 +21,7 @@ except ImportError:  # pragma: no cover - torch not required for dataset buildin
     torch = None  # type: ignore
 
 from .zarr_telemetry_store import ZarrTelemetryStore, get_shared_zarr_store
+from .llm.prompt_response_example import PromptResponseExample
 
 
 @dataclass
@@ -82,8 +83,8 @@ class TelemetryPromptDatasetBuilder:
         segments_cache_key: str,
         *,
         shuffle: bool = True,
-        record_consumer: Optional[Callable[[Dict[str, Any]], None]] = None,
-    ) -> Tuple[List[Dict[str, Any]], DatasetBuildStats]:
+        record_consumer: Optional[Callable[[PromptResponseExample], None]] = None,
+    ) -> Tuple[List[PromptResponseExample], DatasetBuildStats]:
         """Generate normalized prompt/response records from cached segments.
 
         Args:
@@ -93,12 +94,12 @@ class TelemetryPromptDatasetBuilder:
                 entries are streamed to the consumer instead of being accumulated in memory.
 
         Returns:
-            A tuple of (entries, stats) where entries is a list of dictionaries describing each
-            segment window and stats contains generation metrics.
+            A tuple of (entries, stats) where entries is a list of PromptResponseExample instances
+            describing each segment window and stats contains generation metrics.
         """
 
         stats = DatasetBuildStats()
-        examples: List[Dict[str, Any]] = []
+        examples: List[PromptResponseExample] = []
         streaming_mode = record_consumer is not None
 
         if streaming_mode and shuffle:
@@ -182,7 +183,7 @@ class TelemetryPromptDatasetBuilder:
         *,
         context_timesteps: List[Dict[str, Any]],
         window_info: Dict[str, Any],
-    ) -> Optional[Dict[str, Any]]:
+    ) -> Optional[PromptResponseExample]:
         """Create a prompt/response record using the entire telemetry segment as context."""
 
         if not context_timesteps:
@@ -232,14 +233,12 @@ class TelemetryPromptDatasetBuilder:
         if window_payload:
             clean_metadata["window"] = window_payload
 
-        record: Dict[str, Any] = {
-            "prompt": prompt_body,
-            "response": explanation,
-        }
-        if system_prompt:
-            record["system_prompt"] = system_prompt
-        if clean_metadata:
-            record["metadata"] = clean_metadata
+        record = PromptResponseExample(
+            prompt=prompt_body,
+            response=explanation,
+            system_prompt=system_prompt or None,
+            metadata=clean_metadata,
+        )
         return record
 
     def _next_window_id(

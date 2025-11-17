@@ -48,12 +48,13 @@ RUN pip install --no-cache-dir \
     torch==2.0.1 --index-url https://download.pytorch.org/whl/cu118 \
     && pip install --no-cache-dir \
     # Local LLM fine-tuning stack
-    transformers==4.35.2 \
-    peft==0.7.0 \
-    accelerate==0.24.1 \
+    transformers==4.37.2 \
+    tokenizers==0.15.1 \
+    peft==0.8.2 \
+    accelerate==0.26.1 \
     sentencepiece==0.1.99 \
     safetensors==0.4.2 \
-    datasets==2.15.0 \
+    datasets==2.16.1 \
     && pip install --no-cache-dir \
     # Visualization and data processing
     plotly==5.17.0 \

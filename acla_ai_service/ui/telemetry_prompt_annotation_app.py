@@ -6,7 +6,6 @@ and attach concise coaching explanations before fine-tuning the local LLM.
 
 from __future__ import annotations
 
-import argparse
 import asyncio
 import json
 import os
@@ -109,47 +108,33 @@ def _extract_system_prompt(entry: Dict[str, Any]) -> str:
     return ""
 
 
-def _parse_cli_args() -> argparse.Namespace:
-    """Parse optional CLI arguments passed via `streamlit run ... -- ...`."""
+def _get_config_from_env() -> Dict[str, Any]:
+	"""Get configuration from environment variables."""
+	return {
+		"dataset_path": os.getenv("ANNOTATION_DATASET_PATH", ""),
+		"dataset_dir": os.getenv("ANNOTATION_DATASET_DIR", ""),
+		"server_address": os.getenv("ANNOTATION_UI_SERVER_ADDRESS", "0.0.0.0"),
+		"server_port": int(os.getenv("ANNOTATION_UI_SERVER_PORT", "8501")),
+		"browser_address": os.getenv("ANNOTATION_UI_BROWSER_ADDRESS", ""),
+		"browser_port": int(os.getenv("ANNOTATION_UI_BROWSER_PORT", "0")) if os.getenv("ANNOTATION_UI_BROWSER_PORT") else 0,
+	}
+def _resolve_network_config(config: Dict[str, Any]) -> Tuple[str, int, Optional[str], Optional[int], str]:
+	"""Resolve the host/port pairing used for Streamlit when running in Docker."""
 
-    parser = argparse.ArgumentParser(add_help=False)
-    parser.add_argument("--dataset", type=str, default="")
-    parser.add_argument("--dataset-dir", type=str, default="")
-    parser.add_argument("--server-address", type=str, default="")
-    parser.add_argument("--server-port", type=int, default=0)
-    parser.add_argument("--browser-address", type=str, default="")
-    parser.add_argument("--browser-port", type=int, default=0)
-    args, _ = parser.parse_known_args()
-    return args
+	server_address = config.get("server_address") or "0.0.0.0"
+	server_port = config.get("server_port") or 8501
 
+	browser_address = config.get("browser_address") or ""
+	browser_port = config.get("browser_port") or 0
 
-def _resolve_network_config(args: argparse.Namespace) -> Tuple[str, int, Optional[str], Optional[int], str]:
-    """Resolve the host/port pairing used for Streamlit when running in Docker."""
+	if not browser_address and Path("/.dockerenv").exists():
+		browser_address = os.getenv("ANNOTATION_UI_HOST", "localhost")
 
-    env = os.getenv
+	effective_host = browser_address or server_address
+	effective_port = browser_port or server_port
+	access_url = f"http://{effective_host}:{effective_port}"
 
-    server_address = args.server_address or env("ANNOTATION_UI_SERVER_ADDRESS") or "0.0.0.0"
-    server_port = args.server_port or int(env("ANNOTATION_UI_SERVER_PORT", "8501"))
-
-    browser_address = args.browser_address or env("ANNOTATION_UI_BROWSER_ADDRESS") or ""
-    browser_port_raw: Optional[str] = ""
-    if args.browser_port:
-        browser_port_raw = str(args.browser_port)
-    elif env("ANNOTATION_UI_BROWSER_PORT"):
-        browser_port_raw = env("ANNOTATION_UI_BROWSER_PORT")
-
-    browser_port = int(browser_port_raw) if browser_port_raw else None
-
-    if not browser_address and Path("/.dockerenv").exists():
-        browser_address = env("ANNOTATION_UI_HOST", "localhost")
-
-    effective_host = browser_address or server_address
-    effective_port = browser_port or server_port
-    access_url = f"http://{effective_host}:{effective_port}"
-
-    return server_address, server_port, browser_address or None, browser_port, access_url
-
-
+	return server_address, server_port, browser_address or None, browser_port, access_url
 # ---------------------------------------------------------------------------
 # Dataset loading / persistence helpers
 # ---------------------------------------------------------------------------
@@ -592,315 +577,353 @@ def _get_annotation_sample(
 
 
 def main() -> None:
-    args = _parse_cli_args()
-    server_address, server_port, browser_address, browser_port, access_url = _resolve_network_config(args)
+	config = _get_config_from_env()
+	server_address, server_port, browser_address, browser_port, access_url = _resolve_network_config(config)
 
-    if os.environ.get("ANNOTATION_UI_URL_PRINTED") != access_url:
-        print(f"Telemetry annotation UI will be reachable at {access_url}", flush=True)
-        os.environ["ANNOTATION_UI_URL_PRINTED"] = access_url
+	if os.environ.get("ANNOTATION_UI_URL_PRINTED") != access_url:
+		print(f"Telemetry annotation UI will be reachable at {access_url}", flush=True)
+		os.environ["ANNOTATION_UI_URL_PRINTED"] = access_url
 
-    st.set_page_config(page_title="Telemetry Prompt Annotation", layout="wide")
-    st.title("Telemetry Prompt Annotation")
-    st.sidebar.info(f"Open {access_url} from the host browser")
-    st.sidebar.caption("Override via --server-port/--server-address or ANNOTATION_UI_* environment variables.")
+	st.set_page_config(page_title="Telemetry Prompt Annotation", layout="wide")
+	st.title("Telemetry Prompt Annotation")
+	st.sidebar.info(f"Open {access_url} from the host browser")
+	st.sidebar.caption("Override via ANNOTATION_UI_* environment variables.")
 
-    ml_service = get_ml_service()
-    llm_model, llm_metadata, llm_error = load_guidance_model()
-    llm_available = llm_model is not None
+	ml_service = get_ml_service()
+	llm_model, llm_metadata, llm_error = load_guidance_model()
+	llm_available = llm_model is not None
 
-    if llm_available:
-        st.sidebar.success("LLM guidance model loaded")
-        if llm_metadata and isinstance(llm_metadata, dict):
-            adapter_name = llm_metadata.get("backend_metadata", {}).get("adapter_directory")
-            if adapter_name:
-                st.sidebar.caption(f"Adapter: {adapter_name}")
-    else:
-        st.sidebar.info("LLM auto-coaching disabled. Train or import a guidance model to enable suggestions.")
-        if llm_error:
-            st.sidebar.caption(f"LLM load issue: {llm_error}")
+	if llm_available:
+		st.sidebar.success("LLM guidance model loaded")
+		if llm_metadata and isinstance(llm_metadata, dict):
+			adapter_name = llm_metadata.get("backend_metadata", {}).get("adapter_directory")
+			if adapter_name:
+				st.sidebar.caption(f"Adapter: {adapter_name}")
+	else:
+		st.sidebar.info("LLM auto-coaching disabled. Train or import a guidance model to enable suggestions.")
+		if llm_error:
+			st.sidebar.caption(f"LLM load issue: {llm_error}")
 
-    if llm_error:
-        st.warning(f"Auto-coaching is currently unavailable: {llm_error}")
+	if llm_error:
+		st.warning(f"Auto-coaching is currently unavailable: {llm_error}")
 
-    dataset_dir = Path(args.dataset_dir or DEFAULT_DATASET_DIR)
-    dataset_dir.mkdir(parents=True, exist_ok=True)
+	dataset_dir = Path(config.get("dataset_dir") or DEFAULT_DATASET_DIR)
+	dataset_dir.mkdir(parents=True, exist_ok=True)
 
-    st.sidebar.markdown("---")
-    st.sidebar.subheader("Annotate Existing Dataset")
+	st.sidebar.markdown("---")
+	st.sidebar.subheader("Annotate Existing Dataset")
 
-    dataset_files = sorted(dataset_dir.rglob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
-    if not dataset_files:
-        st.warning(
-            f"No dataset files found in {dataset_dir}. Run the telemetry training pipeline to generate an annotation dataset."
-        )
-        return
+	dataset_files = sorted(dataset_dir.rglob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
+	if not dataset_files:
+		st.warning(
+			f"No dataset files found in {dataset_dir}. Run the telemetry training pipeline to generate an annotation dataset."
+		)
+		return
 
-    dataset_labels = [str(file.relative_to(dataset_dir)) for file in dataset_files]
+	dataset_labels = [str(file.relative_to(dataset_dir)) for file in dataset_files]
 
-    default_index = 0
-    if args.dataset:
-        target_name = Path(args.dataset).name
-        for idx, label in enumerate(dataset_labels):
-            if label.endswith(target_name):
-                default_index = idx
-                break
+	default_index = 0
+	if config.get("dataset_path"):
+		target_name = Path(config["dataset_path"]).name
+		for idx, label in enumerate(dataset_labels):
+			if label.endswith(target_name):
+				default_index = idx
+				break
 
-    selected_label = st.sidebar.selectbox("Dataset file", dataset_labels, index=default_index)
-    dataset_path = dataset_files[dataset_labels.index(selected_label)]
-    annotation_path = dataset_path.with_suffix(dataset_path.suffix + ANNOTATION_SUFFIX)
+	selected_label = st.sidebar.selectbox("Dataset file", dataset_labels, index=default_index)
+	dataset_path = dataset_files[dataset_labels.index(selected_label)]
+	annotation_path = dataset_path.with_suffix(dataset_path.suffix + ANNOTATION_SUFFIX)
 
-    entries = load_dataset(dataset_path.as_posix())
-    if not entries:
-        st.warning("Dataset is empty or could not be parsed.")
-        return
+	entries = load_dataset(dataset_path.as_posix())
+	if not entries:
+		st.warning("Dataset is empty or could not be parsed.")
+		return
 
-    store = load_annotation_store(annotation_path.as_posix())
+	store = load_annotation_store(annotation_path.as_posix())
 
-    total_examples = len(entries)
-    annotated_examples = sum(1 for entry in entries if entry["annotation_complete"])
+	total_examples = len(entries)
+	annotated_examples = sum(1 for entry in entries if entry["annotation_complete"])
 
-    active_dataset_key = "_active_annotation_dataset"
-    dataset_identifier = dataset_path.as_posix()
-    if st.session_state.get(active_dataset_key) != dataset_identifier:
-        st.session_state[active_dataset_key] = dataset_identifier
-        st.session_state.pop(f"annotation_sample::{dataset_identifier}", None)
-        st.session_state.pop(f"annotation_sample::{dataset_identifier}::size", None)
+	active_dataset_key = "_active_annotation_dataset"
+	dataset_identifier = dataset_path.as_posix()
+	if st.session_state.get(active_dataset_key) != dataset_identifier:
+		st.session_state[active_dataset_key] = dataset_identifier
+		st.session_state.pop(f"annotation_sample::{dataset_identifier}", None)
+		st.session_state.pop(f"annotation_sample::{dataset_identifier}::size", None)
 
-    default_sample_size = min(50, total_examples) if total_examples else 1
-    sample_size = st.sidebar.number_input(
-        "Sample size for annotation",
-        min_value=1,
-        max_value=max(1, total_examples),
-        value=default_sample_size,
-        step=1,
-    )
-    reshuffle_requested = st.sidebar.button("Reshuffle sample", use_container_width=True)
+	default_sample_size = min(50, total_examples) if total_examples else 1
+	sample_size = st.sidebar.number_input(
+		"Sample size for annotation",
+		min_value=1,
+		max_value=max(1, total_examples),
+		value=default_sample_size,
+		step=1,
+	)
+	reshuffle_requested = st.sidebar.button("Reshuffle sample", use_container_width=True)
 
-    sampled_window_ids = _get_annotation_sample(
-        dataset_identifier,
-        [entry["window_id"] for entry in entries],
-        int(sample_size),
-        force_refresh=reshuffle_requested,
-    )
+	sampled_window_ids = _get_annotation_sample(
+		dataset_identifier,
+		[entry["window_id"] for entry in entries],
+		int(sample_size),
+		force_refresh=reshuffle_requested,
+	)
 
-    st.sidebar.caption(
-        "Only sampled windows appear below; remaining windows stay reserved for training datasets."
-    )
+	st.sidebar.caption(
+		"Only sampled windows appear below; remaining windows stay reserved for training datasets."
+	)
 
-    st.sidebar.metric(
-        "Annotated",
-        f"{annotated_examples}/{total_examples}",
-        "{:.0%}".format(annotated_examples / total_examples) if total_examples else "0%",
-    )
-    show_pending_only = st.sidebar.checkbox("Show only pending annotations", value=False)
+	st.sidebar.metric(
+		"Annotated",
+		f"{annotated_examples}/{total_examples}",
+		"{:.0%}".format(annotated_examples / total_examples) if total_examples else "0%",
+	)
+	show_pending_only = st.sidebar.checkbox("Show only pending annotations", value=False)
 
-    selected_entries = [entry for entry in entries if entry["window_id"] in sampled_window_ids]
-    entries_to_view = list(selected_entries)
-    if not entries_to_view:
-        entries_to_view = entries
-    if show_pending_only:
-        pending_entries = [entry for entry in entries_to_view if not entry["annotation_complete"]]
-        if pending_entries:
-            entries_to_view = pending_entries
-        else:
-            st.success("All sampled windows are annotated! Reshuffle the sample to review different windows.")
+	selected_entries = [entry for entry in entries if entry["window_id"] in sampled_window_ids]
+	entries_to_view = list(selected_entries)
+	if not entries_to_view:
+		entries_to_view = entries
+	if show_pending_only:
+		pending_entries = [entry for entry in entries_to_view if not entry["annotation_complete"]]
+		if pending_entries:
+			entries_to_view = pending_entries
+		else:
+			st.success("All sampled windows are annotated! Reshuffle the sample to review different windows.")
 
-    summary_df = pd.DataFrame(
-        [
-            {
-                "Window ID": entry["window_id"],
-                "Annotated": "Yes" if entry["annotation_complete"] else "No",
-                "Existing Explanation": (entry["coaching_explanation"][:50] + "…") if entry["coaching_explanation"] else "",
-            }
-            for entry in entries_to_view
-        ]
-    )
-    st.dataframe(summary_df, use_container_width=True, height=260)
+	summary_df = pd.DataFrame(
+		[
+			{
+				"Window ID": entry["window_id"],
+				"Annotated": "Yes" if entry["annotation_complete"] else "No",
+				"Existing Explanation": (entry["coaching_explanation"][:50] + "…") if entry["coaching_explanation"] else "",
+			}
+			for entry in entries_to_view
+		]
+	)
+	st.dataframe(summary_df, use_container_width=True, height=260)
 
-    window_ids = [entry["window_id"] for entry in entries_to_view]
-    if not window_ids:
-        st.error("No windows available for annotation.")
-        return
+	window_ids = [entry["window_id"] for entry in entries_to_view]
+	if not window_ids:
+		st.error("No windows available for annotation.")
+		return
 
-    selected_window_id = st.selectbox("Select window", window_ids)
-    selected_entry = next((entry for entry in entries if entry["window_id"] == selected_window_id), None)
-    if not selected_entry:
-        st.error("Unable to locate the selected window in the dataset.")
-        return
+	selected_window_id = st.selectbox("Select window", window_ids)
+	selected_entry = next((entry for entry in entries if entry["window_id"] == selected_window_id), None)
+	if not selected_entry:
+		st.error("Unable to locate the selected window in the dataset.")
+		return
 
-    config = selected_entry.get("config", {})
-    
-    # Try to get features from config first, then extract from segment data
-    feature_options = config.get("telemetry_features", [])
-    if not feature_options:
-        # Extract features directly from the segment
-        segment = selected_entry.get("segment", [])
-        if not segment:
-            # Try to get from window context
-            window = selected_entry.get("window", {})
-            segment = window.get("context", []) if isinstance(window, dict) else []
-        
-        feature_options = _extract_features_from_segment(segment)
-    
-    # Set default features to Physics_gas, Physics_brake, and Physics_steer_angle
-    default_features = ["Physics_gas", "Physics_brake", "Physics_steer_angle"]
-    # Only use defaults that exist in feature_options
-    default_selection = [f for f in default_features if f in feature_options]
-    # If none of the preferred defaults exist, fall back to first 5 features
-    if not default_selection:
-        default_selection = feature_options[: min(5, len(feature_options))]
-    
-    selected_features = st.multiselect(
-        "Telemetry features to display",
-        feature_options,
-        default=default_selection,
-    )
+	config = selected_entry.get("config", {})
+	
+	# Try to get features from config first, then extract from segment data
+	feature_options = config.get("telemetry_features", [])
+	if not feature_options:
+		# Extract features directly from the segment
+		segment = selected_entry.get("segment", [])
+		if not segment:
+			# Try to get from window context
+			window = selected_entry.get("window", {})
+			segment = window.get("context", []) if isinstance(window, dict) else []
+		
+		feature_options = _extract_features_from_segment(segment)
+	
+	# Set default features to Physics_gas, Physics_brake, and Physics_steer_angle
+	default_features = ["Physics_gas", "Physics_brake", "Physics_steer_angle"]
+	# Only use defaults that exist in feature_options
+	default_selection = [f for f in default_features if f in feature_options]
+	# If none of the preferred defaults exist, fall back to first 5 features
+	if not default_selection:
+		default_selection = feature_options[: min(5, len(feature_options))]
+	
+	selected_features = st.multiselect(
+		"Telemetry features to display",
+		feature_options,
+		default=default_selection,
+	)
 
-    if selected_features:
-        plot_data = _prepare_plot_data(selected_entry.get("window", {}), selected_features)
-        _render_plot(plot_data)
-    else:
-        st.info("Select at least one telemetry feature to visualise.")
-    
-    # Add 3D position comparison visualization
-    st.subheader("3D Position Comparison")
-    window_data = selected_entry.get("window", {})
-    _render_3d_position_comparison(window_data)
+	if selected_features:
+		plot_data = _prepare_plot_data(selected_entry.get("window", {}), selected_features)
+		_render_plot(plot_data)
+	else:
+		st.info("Select at least one telemetry feature to visualise.")
+	
+	# Add 3D position comparison visualization
+	st.subheader("3D Position Comparison")
+	window_data = selected_entry.get("window", {})
+	_render_3d_position_comparison(window_data)
 
-    existing_annotation = store.get(selected_window_id, {})
-    coaching_note_default = existing_annotation.get("coaching_explanation") or selected_entry.get("coaching_explanation", "")
+	existing_annotation = store.get(selected_window_id, {})
+	coaching_note_default = existing_annotation.get("coaching_explanation") or selected_entry.get("coaching_explanation", "")
 
-    st.subheader("Annotation")
+	st.subheader("Annotation")
 
-    active_window_key = "_active_annotation_window"
-    coaching_key = f"coaching_note_{selected_window_id}"
-    key_focus_key = f"{coaching_key}_key_focus"
-    raw_output_key = f"{coaching_key}_raw_output"
+	active_window_key = "_active_annotation_window"
+	coaching_key = f"coaching_note_{selected_window_id}"
+	key_focus_key = f"{coaching_key}_key_focus"
+	raw_output_key = f"{coaching_key}_raw_output"
 
-    if st.session_state.get(active_window_key) != selected_window_id:
-        st.session_state[active_window_key] = selected_window_id
-        st.session_state[coaching_key] = coaching_note_default
-        st.session_state.pop(key_focus_key, None)
-        st.session_state.pop(raw_output_key, None)
-    else:
-        st.session_state.setdefault(coaching_key, coaching_note_default)
+	if st.session_state.get(active_window_key) != selected_window_id:
+		st.session_state[active_window_key] = selected_window_id
+		st.session_state[coaching_key] = coaching_note_default
+		st.session_state.pop(key_focus_key, None)
+		st.session_state.pop(raw_output_key, None)
+	else:
+		st.session_state.setdefault(coaching_key, coaching_note_default)
 
-    coaching_explanation = st.text_area("Coaching explanation", key=coaching_key, height=160)
+	coaching_explanation = st.text_area("Coaching explanation", key=coaching_key, height=160)
 
-    actions_col1, actions_col2, stats_col = st.columns([1, 1, 1])
+	actions_col1, actions_col2, stats_col = st.columns([1, 1, 1])
 
-    if llm_error and st.session_state.get(raw_output_key):
-        st.session_state.pop(raw_output_key, None)
-        st.session_state.pop(key_focus_key, None)
+	if llm_error and st.session_state.get(raw_output_key):
+		st.session_state.pop(raw_output_key, None)
+		st.session_state.pop(key_focus_key, None)
 
-    with actions_col1:
-        generate_disabled = bool(llm_error) or not llm_available
-        generate_help = None if llm_available and not llm_error else (llm_error or "Train or import a guidance model to enable auto-suggestions.")
-        if st.button(
-            "Generate explanation",
-            type="secondary",
-            disabled=generate_disabled,
-            help=generate_help,
-            use_container_width=True,
-        ):
-            if llm_error:
-                st.error(f"Cannot generate coaching explanation right now: {llm_error}")
-            elif not llm_available:
-                st.warning("No guidance model available for inference.")
-            else:
-                with st.spinner("Generating coaching suggestion..."):
-                    system_prompt = _extract_system_prompt(selected_entry)
-                    metadata = selected_entry.get("metadata", {}) or {}
-                    user_prompt = _build_user_prompt(
-                        selected_entry.get("window", {}),
-                        config,
-                        metadata.get("segment_metadata"),
-                    )
-                    request = GenerationRequest(
-                        system_prompt=system_prompt,
-                        user_prompt=user_prompt,
-                        max_new_tokens=ml_service.llm_config.generation_max_new_tokens,
-                        temperature=ml_service.llm_config.generation_temperature,
-                        top_p=ml_service.llm_config.generation_top_p,
-                        do_sample=ml_service.llm_config.generation_do_sample,
-                    )
+	with actions_col1:
+		generate_disabled = bool(llm_error) or not llm_available
+		generate_help = None if llm_available and not llm_error else (llm_error or "Train or import a guidance model to enable auto-suggestions.")
+		if st.button(
+			"Generate explanation",
+			type="secondary",
+			disabled=generate_disabled,
+			help=generate_help,
+			use_container_width=True,
+		):
+			if llm_error:
+				st.error(f"Cannot generate coaching explanation right now: {llm_error}")
+			elif not llm_available:
+				st.warning("No guidance model available for inference.")
+			else:
+				with st.spinner("Generating coaching suggestion..."):
+					system_prompt = _extract_system_prompt(selected_entry)
+					metadata = selected_entry.get("metadata", {}) or {}
+					user_prompt = _build_user_prompt(
+						selected_entry.get("window", {}),
+						config,
+						metadata.get("segment_metadata"),
+					)
+					request = GenerationRequest(
+						system_prompt=system_prompt,
+						user_prompt=user_prompt,
+						max_new_tokens=ml_service.llm_config.generation_max_new_tokens,
+						temperature=ml_service.llm_config.generation_temperature,
+						top_p=ml_service.llm_config.generation_top_p,
+						do_sample=ml_service.llm_config.generation_do_sample,
+					)
 
-                    try:
-                        raw_output = llm_model.generate(request)
-                        commentary = ml_service._parse_llm_output(raw_output)
-                    except Exception as inference_error:  # pragma: no cover - inference safeguards
-                        st.error(f"LLM generation failed: {inference_error}")
-                    else:
-                        summary_text = commentary.get("coaching_summary") or commentary.get("summary") or raw_output
-                        st.session_state[coaching_key] = summary_text.strip()
-                        key_focus = commentary.get("key_focus")
-                        if isinstance(key_focus, list) and key_focus:
-                            st.session_state[key_focus_key] = key_focus
-                        else:
-                            st.session_state.pop(key_focus_key, None)
-                        st.session_state[raw_output_key] = raw_output
-                        st.success("Coaching explanation generated. Review and edit before saving.")
+					try:
+						raw_output = llm_model.generate(request)
+						commentary = ml_service._parse_llm_output(raw_output)
+					except Exception as inference_error:  # pragma: no cover - inference safeguards
+						st.error(f"LLM generation failed: {inference_error}")
+					else:
+						summary_text = commentary.get("coaching_summary") or commentary.get("summary") or raw_output
+						st.session_state[coaching_key] = summary_text.strip()
+						key_focus = commentary.get("key_focus")
+						if isinstance(key_focus, list) and key_focus:
+							st.session_state[key_focus_key] = key_focus
+						else:
+							st.session_state.pop(key_focus_key, None)
+						st.session_state[raw_output_key] = raw_output
+						st.success("Coaching explanation generated. Review and edit before saving.")
 
-    with actions_col2:
-        # Track if save button was just clicked to prevent duplicate saves during rerun
-        save_clicked_key = f"_save_clicked_{selected_window_id}"
-        
-        if st.button("Save annotation", type="primary", use_container_width=True):
-            # Only save if we haven't just saved in the previous frame
-            if not st.session_state.get(save_clicked_key, False):
-                st.session_state[save_clicked_key] = True
-                total, annotated = _save_annotation(
-                    dataset_path=dataset_path,
-                    annotation_path=annotation_path,
-                    window_id=selected_window_id,
-                    coaching_explanation=coaching_explanation.strip(),
-                )
-                # Clear caches before rerun
-                load_dataset.clear()
-                load_annotation_store.clear()
-                st.success(f"Annotation saved for {selected_window_id}")
-                st.rerun()
-        else:
-            # Reset the flag when button is not clicked
-            st.session_state[save_clicked_key] = False
+	with actions_col2:
+		# Track if save button was just clicked to prevent duplicate saves during rerun
+		save_clicked_key = f"_save_clicked_{selected_window_id}"
+		
+		if st.button("Save annotation", type="primary", use_container_width=True):
+			# Only save if we haven't just saved in the previous frame
+			if not st.session_state.get(save_clicked_key, False):
+				st.session_state[save_clicked_key] = True
+				total, annotated = _save_annotation(
+					dataset_path=dataset_path,
+					annotation_path=annotation_path,
+					window_id=selected_window_id,
+					coaching_explanation=coaching_explanation.strip(),
+				)
+				# Clear caches before rerun
+				load_dataset.clear()
+				load_annotation_store.clear()
+				st.success(f"Annotation saved for {selected_window_id}")
+				st.rerun()
+		else:
+			# Reset the flag when button is not clicked
+			st.session_state[save_clicked_key] = False
 
-    with stats_col:
-        st.metric(
-            "Annotation progress",
-            f"{annotated_examples}/{total_examples}",
-            "{:.0%}".format(annotated_examples / total_examples) if total_examples else "0%",
-        )
+	with stats_col:
+		st.metric(
+			"Annotation progress",
+			f"{annotated_examples}/{total_examples}",
+			"{:.0%}".format(annotated_examples / total_examples) if total_examples else "0%",
+		)
 
-    # Add finish session button
-    st.markdown("---")
-    finish_col1, finish_col2 = st.columns([3, 1])
-    with finish_col1:
-        st.info("⚠️ When done annotating, click 'Finish Session' to close the app and continue training.")
-    with finish_col2:
-        if st.button("✅ Finish Session", type="primary", use_container_width=True):
-            st.success("Session complete! Closing annotation app...")
-            st.balloons()
-            import time
-            time.sleep(1)
-            # Exit the Streamlit process cleanly
-            os._exit(0)
+	# Add finish session button
+	st.markdown("---")
+	finish_col1, finish_col2 = st.columns([3, 1])
+	with finish_col1:
+		st.info("⚠️ When done annotating, click 'Finish Session' to close the app and continue training.")
+	with finish_col2:
+		if st.button("✅ Finish Session", type="primary", use_container_width=True):
+			st.success("Session complete! Closing annotation app...")
+			st.balloons()
+			import time
+			time.sleep(1)
+			# Exit the Streamlit process cleanly
+			os._exit(0)
 
-    suggested_focus = st.session_state.get(key_focus_key)
-    if suggested_focus:
-        st.markdown("**Suggested focus areas**")
-        for item in suggested_focus:
-            st.markdown(f"- {item}")
+	suggested_focus = st.session_state.get(key_focus_key)
+	if suggested_focus:
+		st.markdown("**Suggested focus areas**")
+		for item in suggested_focus:
+			st.markdown(f"- {item}")
 
-    raw_output = st.session_state.get(raw_output_key)
-    if raw_output:
-        with st.expander("Raw LLM output", expanded=False):
-            st.code(raw_output, language="json")
+	raw_output = st.session_state.get(raw_output_key)
+	if raw_output:
+		with st.expander("Raw LLM output", expanded=False):
+			st.code(raw_output, language="json")
 
-    st.caption(
-        "Annotations are written back to the dataset file and a companion annotations log."
-        " Training can proceed once the necessary windows have notes and explanations."
-    )
+	st.caption(
+		"Annotations are written back to the dataset file and a companion annotations log."
+		" Training can proceed once the necessary windows have notes and explanations."
+	)
+
+
+def run_annotation_app(dataset_path: str, dataset_dir: str) -> None:
+	"""Programmatic entry point for launching the annotation app.
+	
+	Args:
+		dataset_path: Path to the specific dataset file to annotate
+		dataset_dir: Directory containing dataset files
+	"""
+	import streamlit.web.bootstrap as bootstrap
+	
+	# Set environment variables for the app
+	os.environ["ANNOTATION_DATASET_PATH"] = str(dataset_path)
+	os.environ["ANNOTATION_DATASET_DIR"] = str(dataset_dir)
+	os.environ["STREAMLIT_BROWSER_GATHER_USAGE_STATS"] = "false"
+	
+	# Get the path to this script
+	script_path = Path(__file__).resolve()
+	
+	print(f"[INFO] Starting Streamlit annotation app for {dataset_path}")
+	
+	# Run the Streamlit app programmatically
+	bootstrap.run(
+		str(script_path),
+		"",  # command_line args
+		[],  # args
+		{},  # flag_options
+	)
 
 
 if __name__ == "__main__":
-    main()
+	# Check if we have dataset path in environment
+	dataset_path = os.environ.get("ANNOTATION_DATASET_PATH")
+	dataset_dir = os.environ.get("ANNOTATION_DATASET_DIR")
+	
+	if dataset_path and dataset_dir:
+		# Called with environment variables set - set config and run main
+		# Don't use bootstrap.run here as it would create nested Streamlit instances
+		main()
+	else:
+		# Called directly, just run main
+		main()

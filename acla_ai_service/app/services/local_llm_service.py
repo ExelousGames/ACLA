@@ -10,9 +10,11 @@ from __future__ import annotations
 
 import json
 import logging
+import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
+from collections.abc import Mapping
 
 import torch
 from torch.utils.data import Dataset
@@ -127,7 +129,9 @@ class GenerationRequest:
 
 def _extract_messages(record: Dict[str, Any]) -> Optional[Tuple[str, str, str]]:
     """Extract system/user/assistant text from a normalized prompt/response record."""
-
+    if isinstance(record, Mapping):
+        print("record is Mapping:")
+        record = dict(record)
     if not isinstance(record, dict):
         return None
 
@@ -187,8 +191,7 @@ def _build_tokenized_sample(
 
     input_ids = prompt_ids + response_ids
     if len(input_ids) > max_seq_length:
-        LOGGER.debug("Skipping sample exceeding max_seq_length=%s", max_seq_length)
-        return None
+        raise ValueError(f"Skipping sample exceeding max_seq_length={max_seq_length}")
 
     labels = [-100] * len(prompt_ids) + response_ids
     attention_mask = [1] * len(input_ids)
@@ -284,17 +287,59 @@ class LocalTelemetryLLM:
     # ------------------------------------------------------------------
     # Model loading helpers
     # ------------------------------------------------------------------
+    def _clear_tokenizer_cache(self, tokenizer_name: str) -> None:
+        """Clear corrupted tokenizer cache files."""
+        if not self.config.cache_dir:
+            return
+        
+        cache_path = Path(self.config.cache_dir)
+        if not cache_path.exists():
+            return
+        
+        # Find and remove tokenizer-related cache files
+        try:
+            for model_dir in cache_path.glob("models--*"):
+                if tokenizer_name.replace("/", "--") in model_dir.name:
+                    LOGGER.info("Clearing tokenizer cache: %s", model_dir)
+                    shutil.rmtree(model_dir, ignore_errors=True)
+        except Exception as e:
+            LOGGER.warning("Failed to clear tokenizer cache: %s", str(e))
+    
     def _ensure_tokenizer(self) -> None:
         if self.tokenizer is not None:
             return
 
         tokenizer_name = self.config.tokenizer_name or self.config.base_model
         LOGGER.info("Loading tokenizer %s", tokenizer_name)
-        self.tokenizer = AutoTokenizer.from_pretrained(
-            tokenizer_name,
-            cache_dir=self.config.cache_dir,
-            use_fast=True,
-        )
+        
+        # Try loading fast tokenizer first, fall back to slow tokenizer if it fails
+        try:
+            self.tokenizer = AutoTokenizer.from_pretrained(
+                tokenizer_name,
+                cache_dir=self.config.cache_dir,
+                use_fast=True,
+            )
+        except Exception as e:
+            LOGGER.warning(
+                "Failed to load fast tokenizer for %s: %s. Attempting cache clear and slow tokenizer fallback.",
+                tokenizer_name,
+                str(e)
+            )
+            
+            # Clear cache and try with slow tokenizer
+            self._clear_tokenizer_cache(tokenizer_name)
+            
+            try:
+                self.tokenizer = AutoTokenizer.from_pretrained(
+                    tokenizer_name,
+                    cache_dir=self.config.cache_dir,
+                    use_fast=False,
+                    force_download=True,
+                )
+            except Exception as e2:
+                LOGGER.error("Failed to load slow tokenizer as well: %s", str(e2))
+                raise
+        
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
         if self.tokenizer.padding_side != "right":
@@ -500,6 +545,9 @@ class LocalTelemetryLLM:
                 }
 
             prompt_text, response_text = _format_prompt_and_response(self.tokenizer, parsed)
+            if not prompt_text or not response_text:
+                print("prompt_text or response_text is empty")
+                  
             sample = _build_tokenized_sample(
                 self.tokenizer,
                 prompt_text,
@@ -508,6 +556,7 @@ class LocalTelemetryLLM:
             )
 
             if sample is None:
+                print("sample is None")
                 return {
                     "skip": True,
                     "input_ids": [],
@@ -524,6 +573,7 @@ class LocalTelemetryLLM:
             }
 
         columns_to_remove = list(getattr(dataset, "column_names", [])) or None
+
         dataset = dataset.map(
             tokenize_example,
             batched=False,
