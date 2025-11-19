@@ -1036,7 +1036,13 @@ class ExpertImitateLearningService:
 
             if last_valid_end is not None:
                 segment_df = df.iloc[idx : last_valid_end + 1]
-                optimal_segments.append(segment_df.to_dict("records"))
+                pruned_segment_df = self._prune_segment_stagnant_samples(segment_df)
+                if len(pruned_segment_df) < len(segment_df):
+                    print(
+                        f"[DEBUG] Pruned {len(segment_df) - len(pruned_segment_df)} stagnant samples"
+                    )
+
+                optimal_segments.append(pruned_segment_df.to_dict("records"))
 
                 if last_pass_type == "improvement":
                     num_improvement_segments += 1
@@ -1065,6 +1071,62 @@ class ExpertImitateLearningService:
 
         return optimal_segments
     
+    def _prune_segment_stagnant_samples(
+        self,
+        segment_df: pd.DataFrame,
+        *,
+        change_thresholds: Optional[Dict[str, float]] = None,
+    ) -> pd.DataFrame:
+        """Drop timestamps that barely change driver inputs within a segment.
+
+        A row is removed when every monitored control (gas, brake, steer, gear)
+        changes less than its threshold compared to the previous row. This keeps
+        the segment focused on meaningful driver inputs while preserving at
+        least the first and last sample so downstream consumers retain context.
+        """
+
+        if segment_df is None or segment_df.empty or len(segment_df) <= 1:
+            return segment_df
+
+        thresholds = change_thresholds or {
+            "Physics_gas": 0.01,
+            "Physics_brake": 0.01,
+            "Physics_steer_angle": 0.01,
+            "Physics_gear": 0.0,
+        }
+
+        available_columns = [col for col in thresholds if col in segment_df.columns]
+        if len(available_columns) <= 1:
+            return segment_df
+
+        deltas = segment_df[available_columns].diff().abs()
+        keep_mask = np.zeros(len(segment_df), dtype=bool)
+        keep_mask[0] = True
+
+        for idx in range(1, len(segment_df)):
+            keep_sample = False
+            for col in available_columns:
+                delta = deltas.iloc[idx][col]
+                threshold = thresholds[col]
+                if col == "Physics_gear":
+                    if delta > threshold:
+                        keep_sample = True
+                        break
+                else:
+                    if delta > threshold:
+                        keep_sample = True
+                        break
+            keep_mask[idx] = keep_sample
+
+        keep_mask[-1] = True
+
+        pruned_segment = segment_df.loc[keep_mask].reset_index(drop=True)
+
+        if pruned_segment.empty or len(pruned_segment) < 2:
+            return segment_df
+
+        return pruned_segment
+
     def _analyze_segment_improvement(self, segment: pd.DataFrame) -> SegmentImprovementSummary:
         """
         Analyze improvement trends vs consistency within a telemetry segment.

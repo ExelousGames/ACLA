@@ -103,8 +103,6 @@ services:
       - ai-network
     deploy:
       resources:
-        limits:
-          memory: 7G
         reservations:
           memory: 1G
           devices:

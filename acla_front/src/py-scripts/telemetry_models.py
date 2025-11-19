@@ -703,7 +703,6 @@ class TelemetryFeatures:
             "Graphics_track_grip_status",
             "Graphics_current_tyre_set",
             "Graphics_is_valid_lap",
-            "time_delta_ms"
         ]
         
         
@@ -1207,57 +1206,9 @@ class FeatureProcessor:
                 continue
 
             stripped = working.iloc[keep_mask].copy()
-            stripped = self.add_time_delta(stripped, new_column="time_delta_ms", default_delta=0.0)
             stripped_laps.append(stripped.reset_index(drop=True))
 
         return stripped_laps
-
-    def add_time_delta(
-        self,
-        df: Optional[pd.DataFrame] = None,
-        new_column: str = "time_delta_ms",
-        default_delta: float = 0.0
-    ) -> pd.DataFrame:
-        """Add per-row time deltas to the provided DataFrame (or self.df by default)."""
-
-        target_df = self.df if df is None else df
-
-        if target_df is None:
-            target_df = pd.DataFrame()
-            if df is None:
-                self.df = target_df
-
-        if target_df.empty:
-            target_df[new_column] = default_delta
-            if df is None:
-                self.df = target_df
-            return target_df
-
-        time_column_name = "Graphics_current_time"
-        if time_column_name not in target_df.columns:
-            target_df[new_column] = default_delta
-            if df is None:
-                self.df = target_df
-            return target_df
-
-        numeric_series = pd.to_numeric(target_df[time_column_name], errors="coerce")
-        if numeric_series.isna().all():
-            target_df[new_column] = default_delta
-            if df is None:
-                self.df = target_df
-            return target_df
-
-        numeric_series = numeric_series.ffill().fillna(0.0)
-        deltas = numeric_series.diff().fillna(default_delta)
-        deltas[deltas < 0] = default_delta
-
-        target_df[new_column] = deltas.values
-
-        if df is None:
-            self.df = target_df
-
-        return target_df
-
     
     # ========================= Console Plotting Utilities ========================= #
     def plot_features_console(

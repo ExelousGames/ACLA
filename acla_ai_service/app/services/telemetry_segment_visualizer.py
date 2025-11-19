@@ -87,7 +87,6 @@ def visualize_optimal_segments(
         "Physics_velocity_y",
         "Physics_velocity_z",
         "Physics_speed_kmh",
-        "time_delta_ms",
     "Physics_gas",
     "Physics_brake",
     "Physics_steer_angle",
@@ -222,7 +221,9 @@ def visualize_optimal_segments(
         if legend_handles:
             ax_speed.legend(legend_handles, legend_labels, loc="lower left")
 
-        time_delta_series = segment_df["time_delta_ms"].to_numpy()
+        # Derive sample deltas from telemetry timestamps since explicit deltas are no longer provided.
+        telemetry_times_ms = segment_df["Graphics_current_time"].astype(float).to_numpy()
+        time_delta_series = np.diff(telemetry_times_ms, prepend=telemetry_times_ms[0]) / 1000.0
         push_to_limit_series = segment_df[
             tire_context.DRIVER_PUSH_TO_LIMIT.value
         ].to_numpy(dtype=float)

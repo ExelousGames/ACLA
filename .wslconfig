@@ -3,11 +3,8 @@
 # Copy this file to: %USERPROFILE%\.wslconfig
 
 [wsl2]
-# Limits VM memory to use no more than 12GB (allows for full container limits + overhead)
-memory=12GB
-
-# Sets the VM to use more processors for better performance
-processors=4
+# Limits VM memory to use no more than 20GB (allows for full container limits + overhead)
+# memory= 20GB
 
 # Specify a custom Linux kernel to use with your installed distros. The default kernel used can be found at https://github.com/microsoft/WSL2-Linux-Kernel
 # kernel=C:\\temp\\myCustomKernel

@@ -170,7 +170,9 @@ async def main(args: argparse.Namespace):
             import traceback
             traceback.print_exc()
             print("-" * 80)
-            return
+            sys.stdout = old_stdout
+            sys.stderr = old_stderr
+            sys.exit(1)
         finally:
             sys.stdout = old_stdout
             sys.stderr = old_stderr
@@ -192,8 +194,14 @@ def display_results(results, execution_time: float, log_path: Path):
     print(f"📝 Full log: {Path(log_path).resolve()}")
     
     if not results.get('success', False):
-        print(f"\n❌ Pipeline failed with error: {results.get('error', 'Unknown error')}")
+        error_msg = results.get('error', 'Unknown error')
+        print(f"\n❌ Pipeline failed with error: {error_msg}")
         print("-" * 80)
+        print("\n💡 Common causes:")
+        print("  • Insufficient training data (need at least 10 annotated examples)")
+        print("  • Dataset annotation was incomplete or skipped")
+        print("  • Backend service connection issues")
+        print("\n📝 Check the full log above for detailed error information")
         return
     
     print("\n✅ Pipeline completed successfully!")

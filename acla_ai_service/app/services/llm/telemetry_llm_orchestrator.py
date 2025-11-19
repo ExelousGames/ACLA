@@ -105,11 +105,23 @@ class TelemetryLLMOrchestrator:
 		dataset_summary["contributors"] = [c.provider_name for c in contributions]
 		dataset_summary["aggregate"] = aggregate_stats
 
-		training_result = await self._train_and_persist(
-			dataset_path=combined_dataset_path,
-			dataset_stats=dataset_summary,
-			cleanup_dataset_file=cleanup_dataset_file,
-		)
+		print("[INFO] Starting LLM training...")
+		print(f"[INFO] Dataset: {combined_dataset_path}")
+		print(f"[INFO] Total examples: {aggregate_stats.get('total_examples', 0)}")
+		print(f"[INFO] Annotated examples: {aggregate_stats.get('annotated_examples', 0)}")
+		
+		try:
+			training_result = await self._train_and_persist(
+				dataset_path=combined_dataset_path,
+				dataset_stats=dataset_summary,
+				cleanup_dataset_file=cleanup_dataset_file,
+			)
+		except ValueError as ve:
+			print(f"[ERROR] Training validation failed: {ve}")
+			raise RuntimeError(f"LLM training failed validation: {ve}") from ve
+		except Exception as train_error:
+			print(f"[ERROR] Training execution failed: {train_error}")
+			raise RuntimeError(f"LLM training execution failed: {train_error}") from train_error
 
 		if cleanup_dataset_file:
 			for contribution in contributions:
@@ -279,12 +291,27 @@ class TelemetryLLMOrchestrator:
 		adapter_dir = self.adapter_directory / f"{dataset_identifier}_{timestamp}"
 		adapter_dir.mkdir(parents=True, exist_ok=True)
 
-		llm = LocalTelemetryLLM(config=self.llm_config)
-		metrics = llm.train(
-			dataset_path=dataset_path,
-			output_dir=adapter_dir,
-			eval_dataset_path=None,
-		)
+		print(f"[INFO] Initializing LocalTelemetryLLM for training...")
+		print(f"[INFO] Dataset: {dataset_path}")
+		print(f"[INFO] Output directory: {adapter_dir}")
+		
+		try:
+			llm = LocalTelemetryLLM(config=self.llm_config)
+			print(f"[INFO] Starting LLM training (this may take a while)...")
+			metrics = llm.train(
+				dataset_path=dataset_path,
+				output_dir=adapter_dir,
+				eval_dataset_path=None,
+			)
+			print(f"[INFO] Training completed successfully")
+		except ValueError as ve:
+			print(f"[ERROR] LLM training validation error: {ve}")
+			raise
+		except Exception as e:
+			print(f"[ERROR] LLM training failed: {type(e).__name__}: {e}")
+			import traceback
+			traceback.print_exc()
+			raise
 
 		serialized_adapter = self._serialize_adapter_directory(adapter_dir)
 		serialized_adapter["adapter_directory_name"] = adapter_dir.name

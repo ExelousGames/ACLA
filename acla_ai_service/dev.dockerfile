@@ -1,4 +1,23 @@
-FROM python:3.11-slim
+FROM nvidia/cuda:11.8.0-cudnn8-devel-ubuntu22.04
+
+# Set timezone to avoid interactive prompt
+ENV DEBIAN_FRONTEND=noninteractive \
+    TZ=Etc/UTC
+
+# Install Python 3.11
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    software-properties-common \
+    && add-apt-repository ppa:deadsnakes/ppa \
+    && apt-get update && apt-get install -y --no-install-recommends \
+    python3.11 \
+    python3.11-dev \
+    python3.11-distutils \
+    python3-pip \
+    gcc \
+    g++ \
+    && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* \
+    && update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1 \
+    && update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1
 
 WORKDIR /app
 
@@ -9,13 +28,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PYTHONOPTIMIZE=1 \
     OMP_NUM_THREADS=2 \
-    MKL_NUM_THREADS=2
-
-# Install system dependencies and clean up in single layer
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc \
-    g++ \
-    && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+    MKL_NUM_THREADS=2 \
+    LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH \
+    CUDA_HOME=/usr/local/cuda
 
 # Copy requirements first for better caching
 COPY requirements.txt .
@@ -48,12 +63,15 @@ RUN pip install --no-cache-dir \
     torch==2.0.1 --index-url https://download.pytorch.org/whl/cu118 \
     && pip install --no-cache-dir \
     # Local LLM fine-tuning stack
+    huggingface-hub==0.35.3 \
     transformers==4.37.2 \
     tokenizers==0.15.1 \
     peft==0.8.2 \
     accelerate==0.26.1 \
+    bitsandbytes==0.42.0 \
     sentencepiece==0.1.99 \
     safetensors==0.4.2 \
+    tensorboard==2.15.1 \
     datasets==2.16.1 \
     && pip install --no-cache-dir \
     # Visualization and data processing

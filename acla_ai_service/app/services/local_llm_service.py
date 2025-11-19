@@ -10,10 +10,10 @@ from __future__ import annotations
 
 import json
 import logging
-import shutil
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 from collections.abc import Mapping
 
 import torch
@@ -63,6 +63,11 @@ class LocalLLMConfig:
     load_in_4bit: bool = False
     use_gradient_checkpointing: bool = True
     use_lora: bool = True
+    device_map: Union[str, Dict[str, Union[int, str]]] = "auto"
+    max_memory: Optional[Dict[str, Union[int, str]]] = None
+    offload_folder: Optional[str] = None
+    offload_state_dict: bool = False
+    low_cpu_mem_usage: bool = True
 
     lora_r: int = 16
     lora_alpha: int = 32
@@ -191,7 +196,20 @@ def _build_tokenized_sample(
 
     input_ids = prompt_ids + response_ids
     if len(input_ids) > max_seq_length:
-        raise ValueError(f"Skipping sample exceeding max_seq_length={max_seq_length}")
+        total_len = len(input_ids)
+        prompt_len = len(prompt_ids)
+        response_len = len(response_ids)
+        print(
+            "Skipping sample exceeding max_seq_length=%s (total_tokens=%s, prompt_tokens=%s, response_tokens=%s)",
+            max_seq_length,
+            total_len,
+            prompt_len,
+            response_len,
+        )
+        raise ValueError(
+            "Skipping sample exceeding max_seq_length="
+            f"{max_seq_length} (total_tokens={total_len}, prompt_tokens={prompt_len}, response_tokens={response_len})"
+        )
 
     labels = [-100] * len(prompt_ids) + response_ids
     attention_mask = [1] * len(input_ids)
@@ -287,24 +305,16 @@ class LocalTelemetryLLM:
     # ------------------------------------------------------------------
     # Model loading helpers
     # ------------------------------------------------------------------
-    def _clear_tokenizer_cache(self, tokenizer_name: str) -> None:
-        """Clear corrupted tokenizer cache files."""
-        if not self.config.cache_dir:
-            return
-        
-        cache_path = Path(self.config.cache_dir)
-        if not cache_path.exists():
-            return
-        
-        # Find and remove tokenizer-related cache files
-        try:
-            for model_dir in cache_path.glob("models--*"):
-                if tokenizer_name.replace("/", "--") in model_dir.name:
-                    LOGGER.info("Clearing tokenizer cache: %s", model_dir)
-                    shutil.rmtree(model_dir, ignore_errors=True)
-        except Exception as e:
-            LOGGER.warning("Failed to clear tokenizer cache: %s", str(e))
-    
+    def _raise_missing_local_resource(self, resource_name: str, cause: Exception) -> None:
+        """Raise a helpful error when required local files are missing."""
+
+        hint = (
+            f"Missing local files for '{resource_name}'. Ensure the model and tokenizer "
+            "artifacts are downloaded manually into the configured cache or path before "
+            "running the service."
+        )
+        raise FileNotFoundError(hint) from cause
+
     def _ensure_tokenizer(self) -> None:
         if self.tokenizer is not None:
             return
@@ -319,23 +329,27 @@ class LocalTelemetryLLM:
                 cache_dir=self.config.cache_dir,
                 use_fast=True,
             )
+        except OSError as os_error:
+            self._raise_missing_local_resource(tokenizer_name, os_error)
         except Exception as e:
             LOGGER.warning(
-                "Failed to load fast tokenizer for %s: %s. Attempting cache clear and slow tokenizer fallback.",
+                "Failed to load fast tokenizer for %s: %s. Attempting slow tokenizer fallback.",
                 tokenizer_name,
                 str(e)
             )
             
-            # Clear cache and try with slow tokenizer
-            self._clear_tokenizer_cache(tokenizer_name)
-            
+            fallback_kwargs = {
+                "cache_dir": self.config.cache_dir,
+                "use_fast": False,
+            }
+
             try:
                 self.tokenizer = AutoTokenizer.from_pretrained(
                     tokenizer_name,
-                    cache_dir=self.config.cache_dir,
-                    use_fast=False,
-                    force_download=True,
+                    **fallback_kwargs,
                 )
+            except OSError as fallback_os_error:
+                self._raise_missing_local_resource(tokenizer_name, fallback_os_error)
             except Exception as e2:
                 LOGGER.error("Failed to load slow tokenizer as well: %s", str(e2))
                 raise
@@ -353,14 +367,35 @@ class LocalTelemetryLLM:
         )
 
         LOGGER.info("Loading base model %s", self.config.base_model)
-        model = AutoModelForCausalLM.from_pretrained(
-            self.config.base_model,
-            cache_dir=self.config.cache_dir,
-            load_in_8bit=self.config.load_in_8bit,
-            load_in_4bit=self.config.load_in_4bit,
-            torch_dtype=None if (self.config.load_in_8bit or self.config.load_in_4bit) else torch_dtype,
-            device_map="auto",
-        )
+        load_kwargs: Dict[str, Any] = {
+            "cache_dir": self.config.cache_dir,
+            "load_in_8bit": self.config.load_in_8bit,
+            "load_in_4bit": self.config.load_in_4bit,
+            "torch_dtype": None if (self.config.load_in_8bit or self.config.load_in_4bit) else torch_dtype,
+            "device_map": self.config.device_map,
+        }
+
+        if self.config.max_memory:
+            load_kwargs["max_memory"] = self.config.max_memory
+
+        if self.config.offload_folder:
+            offload_path = Path(self.config.offload_folder)
+            offload_path.mkdir(parents=True, exist_ok=True)
+            load_kwargs["offload_folder"] = str(offload_path)
+
+        if self.config.offload_state_dict:
+            load_kwargs["offload_state_dict"] = True
+
+        if self.config.low_cpu_mem_usage is not None:
+            load_kwargs["low_cpu_mem_usage"] = self.config.low_cpu_mem_usage
+
+        try:
+            model = AutoModelForCausalLM.from_pretrained(
+                self.config.base_model,
+                **load_kwargs,
+            )
+        except OSError as load_error:
+            self._raise_missing_local_resource(self.config.base_model, load_error)
 
         if self.config.use_gradient_checkpointing and hasattr(model, "gradient_checkpointing_enable"):
             model.gradient_checkpointing_enable(**(self.config.gradient_checkpointing_kwargs or {}))
@@ -469,7 +504,46 @@ class LocalTelemetryLLM:
             mlm=False,
         )
 
-        trainer = Trainer(
+        class DeviceAwareTrainer(Trainer):
+            """Trainer that respects pre-sharded device maps during model move."""
+
+            def _should_skip_device_move(
+                self,
+                model: torch.nn.Module,
+                *,
+                _visited: Optional[set[int]] = None,
+            ) -> bool:
+                if _visited is None:
+                    _visited = set()
+
+                model_id = id(model)
+                if model_id in _visited:
+                    return False
+                _visited.add(model_id)
+
+                # HuggingFace populates `hf_device_map` when dispatching with accelerate.
+                device_map = getattr(model, "hf_device_map", None)
+                if device_map:
+                    return True
+
+                # LoRA models wrap the base model; check nested structures to avoid recursion.
+                base_model = getattr(model, "base_model", None)
+                if base_model and self._should_skip_device_move(base_model, _visited=_visited):  # type: ignore[arg-type]
+                    return True
+
+                inner_model = getattr(base_model, "model", None) if base_model else None
+                if inner_model and self._should_skip_device_move(inner_model, _visited=_visited):  # type: ignore[arg-type]
+                    return True
+
+                return False
+
+            def _move_model_to_device(self, model, device):  # type: ignore[override]
+                if self._should_skip_device_move(model):
+                    LOGGER.info("Skipping automatic model.to(%s); model already dispatched via device map", device)
+                    return model
+                return super()._move_model_to_device(model, device)
+
+        trainer = DeviceAwareTrainer(
             model=self.model,
             args=training_args,
             train_dataset=dataset,
@@ -477,10 +551,39 @@ class LocalTelemetryLLM:
             data_collator=data_collator,
         )
 
-        train_result = trainer.train()
-        trainer.save_state()
+        # Log dataset size before training
+        dataset_size = getattr(dataset, "num_rows", None)
+        if dataset_size is None and hasattr(dataset, "__len__"):
+            try:
+                dataset_size = len(dataset)
+            except TypeError:
+                dataset_size = "unknown"
+        
+        LOGGER.info("="*60)
+        LOGGER.info("Starting LLM fine-tuning")
+        LOGGER.info(f"Training samples: {dataset_size}")
+        LOGGER.info(f"Epochs: {self.config.num_train_epochs}")
+        LOGGER.info(f"Max steps: {self.config.max_steps or 'auto'}")
+        LOGGER.info("="*60)
 
-        self._save_model(output_dir)
+        try:
+            train_result = trainer.train()
+            trainer.save_state()
+            LOGGER.info("="*60)
+            LOGGER.info("Training completed successfully")
+            LOGGER.info("="*60)
+        except Exception as e:
+            LOGGER.error("="*60)
+            LOGGER.error(f"TRAINING FAILED: {type(e).__name__}: {str(e)}")
+            LOGGER.error("="*60)
+            raise RuntimeError(f"Training execution failed: {e}") from e
+
+        try:
+            self._save_model(output_dir)
+            LOGGER.info(f"Model saved successfully to {output_dir}")
+        except Exception as e:
+            LOGGER.error(f"Failed to save model: {e}")
+            raise RuntimeError(f"Model save failed: {e}") from e
 
         metrics = train_result.metrics
 
@@ -517,6 +620,26 @@ class LocalTelemetryLLM:
                 "The 'datasets' package is required when use_hf_datasets=True. Install `datasets`."
             ) from exc
 
+        # Early validation: check if dataset file exists and has content
+        if not dataset_path.exists():
+            raise FileNotFoundError(f"Dataset file not found: {dataset_path}")
+        
+        # Count lines in JSONL file for early validation
+        line_count = 0
+        with open(dataset_path, 'r', encoding='utf-8') as f:
+            for line in f:
+                if line.strip():
+                    line_count += 1
+        
+        LOGGER.info(f"Dataset file has {line_count} raw lines")
+        if line_count == 0:
+            raise ValueError(f"Dataset file is empty: {dataset_path}")
+        if line_count < 10:
+            LOGGER.warning(
+                f"Dataset file has only {line_count} lines. "
+                f"This may result in insufficient training data after filtering."
+            )
+
         data_files = {"train": str(dataset_path)}
         dataset = load_dataset(
             "json",
@@ -535,63 +658,161 @@ class LocalTelemetryLLM:
         )
 
         def tokenize_example(example: Dict[str, Any]) -> Dict[str, Any]:
-            parsed = _extract_messages(example)
-            if not parsed:
+            try:
+                parsed = _extract_messages(example)
+                if not parsed:
+                    print("[DEBUG] Failed to extract messages from example")
+                    return {
+                        "skip": True,
+                        "input_ids": [],
+                        "labels": [],
+                        "attention_mask": [],
+                    }
+
+                prompt_text, response_text = _format_prompt_and_response(self.tokenizer, parsed)
+                if not prompt_text or not response_text:
+                    print(f"[DEBUG] Empty prompt or response: prompt={bool(prompt_text)}, response={bool(response_text)}")
+                    return {
+                        "skip": True,
+                        "input_ids": [],
+                        "labels": [],
+                        "attention_mask": [],
+                    }
+                      
+                sample = _build_tokenized_sample(
+                    self.tokenizer,
+                    prompt_text,
+                    response_text,
+                    self.config.max_seq_length,
+                )
+
+                if sample is None:
+                    print("[DEBUG] Tokenization returned None")
+                    return {
+                        "skip": True,
+                        "input_ids": [],
+                        "labels": [],
+                        "attention_mask": [],
+                    }
+
+                input_ids, labels, attention_mask = sample
+                return {
+                    "skip": False,
+                    "input_ids": input_ids,
+                    "labels": labels,
+                    "attention_mask": attention_mask,
+                }
+            except Exception as tokenize_error:
+                print(f"[ERROR] Tokenization failed: {type(tokenize_error).__name__}: {tokenize_error}")
+                import traceback
+                traceback.print_exc()
                 return {
                     "skip": True,
                     "input_ids": [],
                     "labels": [],
                     "attention_mask": [],
                 }
-
-            prompt_text, response_text = _format_prompt_and_response(self.tokenizer, parsed)
-            if not prompt_text or not response_text:
-                print("prompt_text or response_text is empty")
-                  
-            sample = _build_tokenized_sample(
-                self.tokenizer,
-                prompt_text,
-                response_text,
-                self.config.max_seq_length,
-            )
-
-            if sample is None:
-                print("sample is None")
-                return {
-                    "skip": True,
-                    "input_ids": [],
-                    "labels": [],
-                    "attention_mask": [],
-                }
-
-            input_ids, labels, attention_mask = sample
-            return {
-                "skip": False,
-                "input_ids": input_ids,
-                "labels": labels,
-                "attention_mask": attention_mask,
-            }
 
         columns_to_remove = list(getattr(dataset, "column_names", [])) or None
 
-        dataset = dataset.map(
-            tokenize_example,
-            batched=False,
-            remove_columns=columns_to_remove,
-            load_from_cache_file=not streaming,
-            num_proc=None if (streaming or self.config.hf_num_proc is None) else self.config.hf_num_proc,
-        )
+        print(f"[DEBUG] Starting tokenization map operation...")
+        print(f"[DEBUG] Columns to remove: {columns_to_remove}")
+        print(f"[DEBUG] Streaming mode: {streaming}")
+        print(f"[DEBUG] Num proc: {None if (streaming or self.config.hf_num_proc is None) else self.config.hf_num_proc}")
+        print(f"[DEBUG] Dataset type: {type(dataset)}")
+        sys.stdout.flush()
+        
+        # Test tokenize on first example before running full map
+        print("[DEBUG] Testing tokenize_example on first row...")
+        sys.stdout.flush()
+        try:
+            first_example = next(iter(dataset))
+            print(f"[DEBUG] First example keys: {first_example.keys() if hasattr(first_example, 'keys') else type(first_example)}")
+            sys.stdout.flush()
+            
+            test_result = tokenize_example(first_example)
+            print(f"[DEBUG] Test tokenization result: skip={test_result.get('skip')}, has_input_ids={len(test_result.get('input_ids', [])) > 0}")
+            sys.stdout.flush()
+        except Exception as test_error:
+            print(f"[ERROR] Test tokenization failed: {test_error}")
+            import traceback
+            traceback.print_exc()
+            sys.stdout.flush()
+        
+        print("[DEBUG] About to call dataset.map()...")
+        sys.stdout.flush()
+        
+        # TODO: Performance Optimization - Re-enable dataset.map() with multiprocessing
+        # WORKAROUND: Manual iteration instead of dataset.map() due to hanging issues
+        # 
+        # Current issue: dataset.map() hangs silently due to:
+        # - Arrow/PyArrow serialization issues with complex tokenized outputs
+        # - Multiprocessing deadlocks in Docker with GPU/CUDA state
+        # - Memory mapping issues with /dev/shm limitations in containers
+        # 
+        # Future improvements to enable fast parallel processing:
+        # 1. Increase Docker shared memory: docker run --shm-size=2g
+        # 2. Use batched=True in map() for better Arrow compatibility
+        # 3. Implement custom collate function that's Arrow-serializable
+        # 4. Pre-serialize tokenizer output to simple types (lists of ints)
+        # 5. Set HF_DATASETS_CACHE to dedicated volume with more space
+        # 6. Use num_proc=4 or num_proc=8 for parallel tokenization
+        # 7. Consider using datasets.IterableDataset for very large datasets
+        # 
+        # Performance target: Process 1000+ examples in <30 seconds with multiprocessing
+        print("[DEBUG] Using manual iteration instead of dataset.map() to avoid hanging...")
+        sys.stdout.flush()
+        
+        try:
+            tokenized_examples = []
+            for idx, example in enumerate(dataset):
+                print(f"[DEBUG] Tokenizing example {idx + 1}...")
+                sys.stdout.flush()
+                result = tokenize_example(example)
+                if not result.get("skip", False):
+                    tokenized_examples.append(result)
+                    print(f"[DEBUG] Example {idx + 1} tokenized successfully (not skipped)")
+                else:
+                    print(f"[DEBUG] Example {idx + 1} skipped")
+                sys.stdout.flush()
+            
+            print(f"[DEBUG] Manual tokenization complete: {len(tokenized_examples)} examples kept")
+            sys.stdout.flush()
+            
+            if len(tokenized_examples) == 0:
+                raise ValueError("All examples were skipped during tokenization")
+            
+            # Convert to HF Dataset
+            from datasets import Dataset as HFDataset
+            dataset = HFDataset.from_dict({
+                "input_ids": [ex["input_ids"] for ex in tokenized_examples],
+                "labels": [ex["labels"] for ex in tokenized_examples],
+                "attention_mask": [ex["attention_mask"] for ex in tokenized_examples],
+            })
+            print(f"[DEBUG] Created new dataset with {len(dataset)} examples")
+            sys.stdout.flush()
+            
+        except KeyboardInterrupt:
+            print(f"[ERROR] Tokenization interrupted by user")
+            raise
+        except Exception as manual_error:
+            print(f"[ERROR] Manual tokenization failed: {type(manual_error).__name__}: {manual_error}")
+            import traceback
+            traceback.print_exc()
+            raise RuntimeError(f"Failed to tokenize dataset: {manual_error}") from manual_error
+        
+        print(f"[DEBUG] Skipping skip filter (already done in manual iteration)...")
+        sys.stdout.flush()
 
-        dataset = dataset.filter(
-            lambda example: not example.get("skip", False),
-            batched=False,
-            load_from_cache_file=not streaming,
-        )
-        if "skip" in getattr(dataset, "column_names", []):
-            dataset = dataset.remove_columns(["skip"])
-
+        print(f"[DEBUG] Converting dataset to torch format...")
+        sys.stdout.flush()
         dataset = dataset.with_format(type="torch")
+        print(f"[DEBUG] Dataset converted to torch format successfully")
+        sys.stdout.flush()
 
+        print(f"[DEBUG] Streaming mode: {streaming}")
+        print(f"[DEBUG] About to validate dataset size...")
+        
         if streaming:
             iterator = dataset.take(1)
             try:
@@ -599,8 +820,24 @@ class LocalTelemetryLLM:
             except StopIteration as stop_error:
                 raise ValueError("No valid samples were parsed from the dataset") from stop_error
         else:
-            if getattr(dataset, "num_rows", 0) == 0:
+            num_rows = getattr(dataset, "num_rows", 0)
+            print(f"[DEBUG] Dataset has num_rows attribute: {num_rows}")
+            LOGGER.info(f"Dataset preparation complete: {num_rows} samples after filtering and tokenization")
+            
+            if num_rows == 0:
+                print(f"[ERROR] Dataset is empty!")
                 raise ValueError("No valid samples were parsed from the dataset")
+            if num_rows < 10:
+                print(f"[ERROR] Dataset has insufficient samples: {num_rows}")
+                LOGGER.error(
+                    f"INSUFFICIENT TRAINING DATA: Only {num_rows} samples found. "
+                    f"Minimum required is 10 samples, recommended 100+ for meaningful fine-tuning."
+                )
+                raise ValueError(
+                    f"Insufficient training data: {num_rows} samples. "
+                    f"Need at least 10 samples, recommended 100+ for effective fine-tuning. "
+                    f"Please annotate more examples in the Streamlit UI before attempting to train."
+                )
 
         return dataset
 

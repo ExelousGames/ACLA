@@ -697,15 +697,12 @@ class TelemetryFeatures:
             "Physics_wheel_pressure_front_right",
             "Physics_wheel_pressure_rear_left",
             "Physics_wheel_pressure_rear_right",
-            "Physics_kerb_vibration",
-            "Physics_slip_vibration",
             "Physics_velocity_x",
             "Physics_velocity_y",
             "Physics_velocity_z",
             "Graphics_track_grip_status",
             "Graphics_current_tyre_set",
             "Graphics_is_valid_lap",
-            "time_delta_ms",
             "Static_car_model",
             "Static_track",
         ]
@@ -887,6 +884,10 @@ class FeatureProcessor:
                         '1': True, '0': False, 1: True, 0: False
                     }).fillna(False)
 
+        # Round float columns to six decimal places
+        float_columns = processed_df.select_dtypes(include=['float']).columns
+        processed_df[float_columns] = processed_df[float_columns].round(6)
+        
         # Persist cleaned frame so downstream helpers (e.g., add_time_delta) operate on enriched data
         self.df = processed_df
 
@@ -1335,56 +1336,9 @@ class FeatureProcessor:
                 continue
 
             stripped = working.iloc[keep_mask].copy()
-            stripped = self.add_time_delta(stripped, new_column="time_delta_ms", default_delta=0.0)
             stripped_laps.append(stripped.reset_index(drop=True))
 
         return stripped_laps
-
-    def add_time_delta(
-        self,
-        df: Optional[pd.DataFrame] = None,
-        new_column: str = "time_delta_ms",
-        default_delta: float = 0.0
-    ) -> pd.DataFrame:
-        """Add per-row time deltas to the provided DataFrame (or self.df by default)."""
-
-        target_df = self.df if df is None else df
-
-        if target_df is None:
-            target_df = pd.DataFrame()
-            if df is None:
-                self.df = target_df
-
-        if target_df.empty:
-            target_df[new_column] = default_delta
-            if df is None:
-                self.df = target_df
-            return target_df
-
-        time_col = "Graphics_current_time"
-        if time_col not in target_df.columns:
-            target_df[new_column] = default_delta
-            if df is None:
-                self.df = target_df
-            return target_df
-
-        numeric_series = pd.to_numeric(target_df[time_col], errors="coerce")
-        if numeric_series.isna().all():
-            target_df[new_column] = default_delta
-            if df is None:
-                self.df = target_df
-            return target_df
-
-        numeric_series = numeric_series.ffill().fillna(0.0)
-        deltas = numeric_series.diff().fillna(default_delta)
-        deltas[deltas < 0] = default_delta
-
-        target_df[new_column] = deltas.values
-
-        if df is None:
-            self.df = target_df
-
-        return target_df
 
     def flip_y_z_features(self) -> pd.DataFrame:
         """Swap values across *_y and *_z telemetry columns to align axis conventions."""

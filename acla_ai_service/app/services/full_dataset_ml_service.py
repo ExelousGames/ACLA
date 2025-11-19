@@ -128,7 +128,15 @@ class Full_dataset_TelemetryMLService:
         # Prompt dataset builder and LLM configuration
         self.prompt_builder = TelemetryPromptDatasetBuilder()
         self.prompt_builder_config = self.prompt_builder.config
-        self.llm_config = LocalLLMConfig()
+        self.llm_config = LocalLLMConfig(
+                                        offload_folder=self.models_directory / "llm_offload",
+                                        offload_state_dict=True,
+                                        base_model=self.models_directory / "Mistral-7B-Instruct-v0.2",
+                                        tokenizer_name=self.models_directory / "Mistral-7B-Instruct-v0.2",
+                                        max_seq_length=32000,    
+                                        max_memory={0: "8GiB", "cpu": "12GiB"},
+                                        load_in_4bit= True,       
+                                       )
 
         self.llm_adapter_directory = self.models_directory / "llm_adapters"
         self.llm_adapter_directory.mkdir(parents=True, exist_ok=True)
@@ -663,12 +671,12 @@ class Full_dataset_TelemetryMLService:
             top_laps_telemetry_list = await self.process_lap_sessions_efficiently(
                 session_data_cache_key=dataset_cache_key,
                 max_memory_records=10000,
-                telemetry_time_gap_ms=200,
+                telemetry_time_gap_ms=500,
                 processed_sessions_cache_key=processed_sessions_cache_key,
             )
 
         self._print_section_divider("ENRICHING CONTEXTUAL DATA")
-        max_segment_length = 500
+        max_segment_length = 20
         segments_cache_key: Optional[str] = None
         transformer_training: Optional[Dict[str, Any]] = None
         dataset_path_result: Optional[Path] = None
@@ -748,18 +756,37 @@ class Full_dataset_TelemetryMLService:
             )
 
             if not llm_training.get("success"):
-                raise RuntimeError(llm_training.get("error") or "LLM fine-tuning failed")
+                error_msg = llm_training.get("error") or "LLM fine-tuning failed"
+                print(f"[ERROR] LLM training failed: {error_msg}")
+                raise RuntimeError(error_msg)
 
             dataset_path = llm_training.get("dataset_path")
             dataset_path_result = Path(dataset_path) if dataset_path else None
             dataset_stats = llm_training.get("dataset_stats")
+        except RuntimeError as runtime_error:
+            print(f"[ERROR] Training pipeline error: {runtime_error}")
+            return {
+                "success": False,
+                "error": str(runtime_error),
+                "track_name": track_name,
+            }
         except Exception as training_error:
-            raise RuntimeError(f"Transformer/LLM training failed: {training_error}") from training_error
+            print(f"[ERROR] Unexpected training error: {training_error}")
+            import traceback
+            traceback.print_exc()
+            return {
+                "success": False,
+                "error": f"Transformer/LLM training failed: {training_error}",
+                "track_name": track_name,
+            }
         
         result_payload = {
             "success": True,
+            "track_name": track_name,
             "dataset_path": str(dataset_path_result) if dataset_path_result else None,
             "dataset_stats": dataset_stats,
+            "transformer_training": transformer_training,
+            "llm_training": llm_training,
         }
 
         self._print_section_divider("LLM TRAINING COMPLETED")
