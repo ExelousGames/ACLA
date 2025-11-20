@@ -13,6 +13,7 @@ import base64
 import uuid
 import re
 import numpy as np
+from pathlib import Path
 from app.core import settings
 from app.models.api_models import ActiveModelData
 
@@ -552,6 +553,8 @@ class BackendService:
                 return [convert_numpy_types(item) for item in obj]
             elif isinstance(obj, (np.bool_, bool)):
                 return bool(obj)
+            elif isinstance(obj, Path):
+                return str(obj)
             elif obj is None:
                 return None
             elif isinstance(obj, (str, int, float)):

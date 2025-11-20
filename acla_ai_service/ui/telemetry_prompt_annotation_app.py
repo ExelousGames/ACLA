@@ -73,12 +73,12 @@ def get_ml_service() -> Full_dataset_TelemetryMLService:
 
 
 @st.cache_resource(show_spinner=False)
-def load_guidance_model() -> Tuple[Optional[Any], Optional[Dict[str, Any]], Optional[str]]:
+def load_guidance_model(provider: str = "local") -> Tuple[Optional[Any], Optional[Dict[str, Any]], Optional[str]]:
     """Load the active LLM guidance model, if available."""
 
     service = get_ml_service()
     try:
-        model, metadata = _run_async(service.get_llm_guidance_model)
+        model, metadata = _run_async(service.get_llm_guidance_model, provider=provider)
         if model is None:
             error_msg = metadata.get("error") if isinstance(metadata, dict) else "No active model found"
             return None, metadata, error_msg
@@ -466,7 +466,7 @@ def _render_3d_position_comparison(window: Dict[str, Any]) -> None:
                            line=dict(color='lime', width=2)),
                 showlegend=True
             ))
-    
+
     # Extract player position
     if has_player:
         player_x = [rec.get("Graphics_player_pos_x") for rec in all_records if "Graphics_player_pos_x" in rec]
@@ -576,6 +576,55 @@ def _get_annotation_sample(
     return stored_sample
 
 
+def _generate_explanation_callback(
+    ml_service: Full_dataset_TelemetryMLService,
+    llm_model: Any,
+    selected_entry: Dict[str, Any],
+    config: Dict[str, Any],
+    coaching_key: str,
+    key_focus_key: str,
+    raw_output_key: str,
+    hf_model_id: Optional[str],
+) -> None:
+    """Callback to generate explanation and update session state."""
+    try:
+        system_prompt = _extract_system_prompt(selected_entry)
+        metadata = selected_entry.get("metadata", {}) or {}
+        user_prompt = _build_user_prompt(
+            selected_entry.get("window", {}),
+            config,
+            metadata.get("segment_metadata"),
+        )
+        request = GenerationRequest(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            max_new_tokens=ml_service.llm_config.generation_max_new_tokens,
+            temperature=ml_service.llm_config.generation_temperature,
+            top_p=ml_service.llm_config.generation_top_p,
+            do_sample=ml_service.llm_config.generation_do_sample,
+            model_id=hf_model_id,
+        )
+
+        raw_output = llm_model.generate(request)
+        commentary = ml_service._parse_llm_output(raw_output)
+        
+        summary_text = commentary.get("coaching_summary") or commentary.get("summary") or raw_output
+        st.session_state[coaching_key] = summary_text.strip()
+        
+        key_focus = commentary.get("key_focus")
+        if isinstance(key_focus, list) and key_focus:
+            st.session_state[key_focus_key] = key_focus
+        else:
+            st.session_state.pop(key_focus_key, None)
+            
+        st.session_state[raw_output_key] = raw_output
+        
+    except Exception as inference_error:
+        # We can't use st.error here easily as it might not render where we want
+        # Instead we could set a session state error variable
+        print(f"LLM generation failed: {inference_error}")
+
+
 def main() -> None:
 	config = _get_config_from_env()
 	server_address, server_port, browser_address, browser_port, access_url = _resolve_network_config(config)
@@ -589,8 +638,33 @@ def main() -> None:
 	st.sidebar.info(f"Open {access_url} from the host browser")
 	st.sidebar.caption("Override via ANNOTATION_UI_* environment variables.")
 
+	st.sidebar.markdown("---")
+	st.sidebar.subheader("Annotate Existing Dataset")
+
+	dataset_dir = Path(config.get("dataset_dir") or DEFAULT_DATASET_DIR)
+	dataset_dir.mkdir(parents=True, exist_ok=True)
+
+	st.sidebar.markdown("---")
+	st.sidebar.subheader("Inference Settings")
+	provider_option = st.sidebar.radio(
+		"Model Provider",
+		options=["Local", "Hugging Face Cloud"],
+		index=0,
+		help="Select 'Local' to use the locally trained adapter, or 'Hugging Face Cloud' to use the model hosted on HF Hub."
+	)
+	provider_key = "cloud" if provider_option == "Hugging Face Cloud" else "local"
+	
+	hf_model_id = None
+	if provider_key == "cloud":
+		hf_model_id = st.sidebar.text_input(
+			"Hugging Face Model ID",
+			value="",
+			placeholder="username/custom-model-name",
+			help="Enter the ID of your fine-tuned model on Hugging Face (e.g., 'username/autotrain-my-model'). If left empty, the base model will be used."
+		)
+
 	ml_service = get_ml_service()
-	llm_model, llm_metadata, llm_error = load_guidance_model()
+	llm_model, llm_metadata, llm_error = load_guidance_model(provider=provider_key)
 	llm_available = llm_model is not None
 
 	if llm_available:
@@ -613,7 +687,14 @@ def main() -> None:
 	st.sidebar.markdown("---")
 	st.sidebar.subheader("Annotate Existing Dataset")
 
-	dataset_files = sorted(dataset_dir.rglob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
+	# Filter out annotation files to show only source datasets
+	all_files = dataset_dir.rglob("*.jsonl")
+	dataset_files = sorted(
+		[f for f in all_files if not f.name.endswith(ANNOTATION_SUFFIX)],
+		key=lambda p: p.stat().st_mtime,
+		reverse=True
+	)
+
 	if not dataset_files:
 		st.warning(
 			f"No dataset files found in {dataset_dir}. Run the telemetry training pipeline to generate an annotation dataset."
@@ -622,15 +703,26 @@ def main() -> None:
 
 	dataset_labels = [str(file.relative_to(dataset_dir)) for file in dataset_files]
 
-	default_index = 0
-	if config.get("dataset_path"):
-		target_name = Path(config["dataset_path"]).name
-		for idx, label in enumerate(dataset_labels):
-			if label.endswith(target_name):
-				default_index = idx
-				break
+	# Initialize selection in session state if not present
+	if "selected_dataset_label" not in st.session_state:
+		default_label = dataset_labels[0]
+		if config.get("dataset_path"):
+			target_name = Path(config["dataset_path"]).name
+			for label in dataset_labels:
+				if label.endswith(target_name):
+					default_label = label
+					break
+		st.session_state["selected_dataset_label"] = default_label
 
-	selected_label = st.sidebar.selectbox("Dataset file", dataset_labels, index=default_index)
+	# Ensure the selected label is still valid
+	if st.session_state.get("selected_dataset_label") not in dataset_labels:
+		st.session_state["selected_dataset_label"] = dataset_labels[0]
+
+	selected_label = st.sidebar.selectbox(
+		"Dataset file", 
+		dataset_labels, 
+		key="selected_dataset_label"
+	)
 	dataset_path = dataset_files[dataset_labels.index(selected_label)]
 	annotation_path = dataset_path.with_suffix(dataset_path.suffix + ANNOTATION_SUFFIX)
 
@@ -781,50 +873,25 @@ def main() -> None:
 	with actions_col1:
 		generate_disabled = bool(llm_error) or not llm_available
 		generate_help = None if llm_available and not llm_error else (llm_error or "Train or import a guidance model to enable auto-suggestions.")
-		if st.button(
+		
+		st.button(
 			"Generate explanation",
 			type="secondary",
 			disabled=generate_disabled,
 			help=generate_help,
 			use_container_width=True,
-		):
-			if llm_error:
-				st.error(f"Cannot generate coaching explanation right now: {llm_error}")
-			elif not llm_available:
-				st.warning("No guidance model available for inference.")
-			else:
-				with st.spinner("Generating coaching suggestion..."):
-					system_prompt = _extract_system_prompt(selected_entry)
-					metadata = selected_entry.get("metadata", {}) or {}
-					user_prompt = _build_user_prompt(
-						selected_entry.get("window", {}),
-						config,
-						metadata.get("segment_metadata"),
-					)
-					request = GenerationRequest(
-						system_prompt=system_prompt,
-						user_prompt=user_prompt,
-						max_new_tokens=ml_service.llm_config.generation_max_new_tokens,
-						temperature=ml_service.llm_config.generation_temperature,
-						top_p=ml_service.llm_config.generation_top_p,
-						do_sample=ml_service.llm_config.generation_do_sample,
-					)
-
-					try:
-						raw_output = llm_model.generate(request)
-						commentary = ml_service._parse_llm_output(raw_output)
-					except Exception as inference_error:  # pragma: no cover - inference safeguards
-						st.error(f"LLM generation failed: {inference_error}")
-					else:
-						summary_text = commentary.get("coaching_summary") or commentary.get("summary") or raw_output
-						st.session_state[coaching_key] = summary_text.strip()
-						key_focus = commentary.get("key_focus")
-						if isinstance(key_focus, list) and key_focus:
-							st.session_state[key_focus_key] = key_focus
-						else:
-							st.session_state.pop(key_focus_key, None)
-						st.session_state[raw_output_key] = raw_output
-						st.success("Coaching explanation generated. Review and edit before saving.")
+			on_click=_generate_explanation_callback,
+			args=(
+				ml_service,
+				llm_model,
+				selected_entry,
+				config,
+				coaching_key,
+				key_focus_key,
+				raw_output_key,
+				hf_model_id,
+			),
+		)
 
 	with actions_col2:
 		# Track if save button was just clicked to prevent duplicate saves during rerun

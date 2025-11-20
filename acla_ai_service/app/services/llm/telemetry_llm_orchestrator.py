@@ -12,12 +12,15 @@ from collections import OrderedDict
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
+import traceback
 
 from app.models import ActiveModelData
+from app.core.config import settings
 
 from ..backend_service import backend_service
 from ..local_llm_service import LocalLLMConfig, LocalTelemetryLLM
+from ..hf_cloud_llm_service import HuggingFaceCloudLLM
 from ..model_cache_service import model_cache_service
 from ..telemetry_prompt_dataset_builder import TelemetryPromptDatasetBuilder
 from ..zarr_telemetry_store import get_shared_zarr_store
@@ -245,6 +248,14 @@ class TelemetryLLMOrchestrator:
 
 		training_artifacts = await self._train_llm(dataset_path=dataset_path)
 
+		if "cloud_training_info" in training_artifacts:
+			return await self._handle_cloud_training_result(
+				training_artifacts,
+				dataset_path,
+				dataset_stats,
+				cleanup_dataset_file
+			)
+
 		serialized_adapter = training_artifacts["serialized_adapter"]
 		adapter_dir: Path = training_artifacts["adapter_dir"]
 		metrics = training_artifacts["metrics"]
@@ -262,12 +273,13 @@ class TelemetryLLMOrchestrator:
 			f"[INFO] LLM fine-tuning complete. Saving adapter '{adapter_dir.name}' to backend"
 		)
 
-		await self.backend_service.save_ai_model(
-			model_type="llm_guidance_v1",
-			model_data=serialized_adapter,
-			metadata=metadata_payload,
-			is_active=True,
-		)
+		# await self.backend_service.save_ai_model(
+		# 	model_type="llm_guidance_v1",
+		# 	model_data=serialized_adapter,
+		# 	metadata=metadata_payload,
+		# 	is_active=True,
+		# )
+		print("[WARN] Model saving temporarily disabled by user request.")
 
 		if cleanup_dataset_file:
 			try:
@@ -282,8 +294,86 @@ class TelemetryLLMOrchestrator:
 			"serialized_adapter": serialized_adapter,
 		}
 
+	async def _handle_cloud_training_result(
+		self,
+		artifacts: Dict[str, Any],
+		dataset_path: Path,
+		dataset_stats: Dict[str, Any],
+		cleanup_dataset_file: bool,
+	) -> Dict[str, Any]:
+		cloud_info = artifacts["cloud_training_info"]
+		
+		metadata_payload = {
+			"training_mode": "cloud_hf",
+			"cloud_info": cloud_info,
+			"dataset_stats": dataset_stats,
+			"training_timestamp": datetime.now().isoformat(),
+		}
+
+		print(f"[INFO] Cloud training initiated. Saving reference locally.")
+
+		# Save reference to dedicated folder
+		references_dir = self.adapter_directory.parent / "llm_cloud_references"
+		references_dir.mkdir(parents=True, exist_ok=True)
+		
+		timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+		reference_file = references_dir / f"cloud_ref_{timestamp}.json"
+		
+		save_payload = {
+			"model_type": "llm_guidance_v1",
+			"cloud_reference": cloud_info,
+			"metadata": metadata_payload,
+			"is_active": False
+		}
+
+		try:
+			with reference_file.open("w", encoding="utf-8") as f:
+				json.dump(save_payload, f, indent=2, default=str)
+			print(f"[INFO] Cloud reference saved to: {reference_file}")
+		except Exception as e:
+			print(f"[ERROR] Failed to save cloud reference: {e}")
+
+		# We save a placeholder model record so the UI knows training was requested/started
+		# await self.backend_service.save_ai_model(
+		# 	model_type="llm_guidance_v1",
+		# 	model_data={"cloud_reference": cloud_info},
+		# 	metadata=metadata_payload,
+		# 	is_active=False,
+		# )
+		# print("[WARN] Cloud model reference saving temporarily disabled by user request.")
+
+		if cleanup_dataset_file:
+			try:
+				dataset_path.unlink(missing_ok=True)
+			except Exception as cleanup_error:
+				print(f"[WARNING] Failed to cleanup dataset file: {cleanup_error}")
+
+		return {
+			"success": True,
+			"cloud_info": cloud_info,
+			"local_reference_file": str(reference_file),
+			"message": "Cloud training initiated. Reference saved locally."
+		}
+
 	async def _train_llm(self, dataset_path: Path) -> Dict[str, Any]:
+		if settings.hf_training_enabled:
+			return await asyncio.to_thread(self._train_hf_cloud_sync, Path(dataset_path))
 		return await asyncio.to_thread(self._train_local_llm_sync, Path(dataset_path))
+
+	def _train_hf_cloud_sync(self, dataset_path: Path) -> Dict[str, Any]:
+		print(f"[INFO] Initializing HuggingFaceCloudLLM for training...")
+		try:
+			llm = HuggingFaceCloudLLM(config=self.llm_config)
+			metrics = llm.train(
+				dataset_path=dataset_path,
+				output_dir=self.adapter_directory, # Not used for cloud but required by interface
+			)
+			print(f"[INFO] Cloud training preparation completed successfully")
+			return metrics
+		except Exception as e:
+			print(f"[ERROR] Cloud training failed: {e}")
+			traceback.print_exc()
+			raise
 
 	def _train_local_llm_sync(self, dataset_path: Path) -> Dict[str, Any]:
 		timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -309,7 +399,6 @@ class TelemetryLLMOrchestrator:
 			raise
 		except Exception as e:
 			print(f"[ERROR] LLM training failed: {type(e).__name__}: {e}")
-			import traceback
 			traceback.print_exc()
 			raise
 
@@ -367,7 +456,15 @@ class TelemetryLLMOrchestrator:
 		*,
 		force_refresh: bool = False,
 		model_subtype: str = "llm_adapter_data",
-	) -> Tuple[Optional[LocalTelemetryLLM], Optional[Dict[str, Any]]]:
+		provider: str = "local",
+	) -> Tuple[Optional[Union[LocalTelemetryLLM, HuggingFaceCloudLLM]], Optional[Dict[str, Any]]]:
+		if provider == "cloud":
+			try:
+				llm = HuggingFaceCloudLLM(config=self.llm_config)
+				return llm, {"provider": "cloud", "model": self.llm_config.base_model}
+			except Exception as e:
+				return None, {"error": f"Failed to initialize cloud LLM: {e}"}
+
 		if force_refresh:
 			try:
 				self.model_cache.invalidate(

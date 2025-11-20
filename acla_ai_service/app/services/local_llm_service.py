@@ -125,6 +125,7 @@ class GenerationRequest:
     temperature: Optional[float] = None
     top_p: Optional[float] = None
     do_sample: Optional[bool] = None
+    model_id: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
