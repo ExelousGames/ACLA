@@ -74,3 +74,31 @@ class PromptResponseExample:
             system_prompt=system_prompt,
             metadata=safe_metadata,
         )
+
+    def __getitem__(self, key: str) -> Any:
+        """Allow dictionary-style access to attributes and metadata for compatibility."""
+        if key == "prompt":
+            return self.prompt
+        if key == "response":
+            return self.response
+        if key == "system_prompt":
+            return self.system_prompt
+        if key == "metadata":
+            return self.metadata
+
+        # Check metadata for other keys
+        if self.metadata and key in self.metadata:
+            return self.metadata[key]
+
+        # Special mappings for compatibility with legacy dict-based code
+        if key == "coaching_explanation":
+            return self.response
+
+        raise KeyError(f"'{key}' not found in PromptResponseExample or its metadata")
+
+    def get(self, key: str, default: Any = None) -> Any:
+        """Dictionary-style get method."""
+        try:
+            return self[key]
+        except KeyError:
+            return default

@@ -88,24 +88,30 @@ def load_guidance_model(provider: str = "local") -> Tuple[Optional[Any], Optiona
         return None, None, str(error)
 
 
-def _extract_system_prompt(entry: Dict[str, Any]) -> str:
+def _extract_system_prompt(entry: Any) -> str:
     """Return the system prompt stored with a dataset entry."""
 
-    raw_record = entry.get("raw", {})
-    if not isinstance(raw_record, dict):
-        return ""
+    # Check if it's a PromptResponseExample or has system_prompt attribute
+    if hasattr(entry, "system_prompt") and entry.system_prompt:
+        return entry.system_prompt
 
-    metadata = raw_record.get("metadata", {}) or {}
-    system_prompt = metadata.get("system_prompt")
-    if isinstance(system_prompt, str) and system_prompt:
-        return system_prompt
+    # Handle dictionary-like access
+    if hasattr(entry, "get"):
+        raw_record = entry.get("raw", {})
+        if not isinstance(raw_record, dict):
+            return ""
 
-    messages = raw_record.get("messages", []) if isinstance(raw_record, dict) else []
-    for message in messages:
-        if message.get("role") == "system":
-            content = message.get("content")
-            if isinstance(content, str):
-                return content
+        metadata = raw_record.get("metadata", {}) or {}
+        system_prompt = metadata.get("system_prompt")
+        if isinstance(system_prompt, str) and system_prompt:
+            return system_prompt
+
+        messages = raw_record.get("messages", []) if isinstance(raw_record, dict) else []
+        for message in messages:
+            if message.get("role") == "system":
+                content = message.get("content")
+                if isinstance(content, str):
+                    return content
     return ""
 
 
