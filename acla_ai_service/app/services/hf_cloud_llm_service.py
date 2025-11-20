@@ -36,14 +36,14 @@ class HuggingFaceCloudLLM:
         if not settings.hf_api_token:
             LOGGER.warning("HF_API_TOKEN not set. Cloud training will fail.")
 
-    def train(
+    def upload_dataset_for_training(
         self,
         dataset_path: Path,
         output_dir: Path,
         eval_dataset_path: Optional[Path] = None,
         repo_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Upload dataset to Hugging Face and trigger/prepare for cloud training."""
+        """Upload dataset to Hugging Face for AutoTrain (does not trigger training)."""
 
         if not settings.hf_api_token:
             raise ValueError("HF_API_TOKEN is required for cloud training.")
@@ -98,9 +98,7 @@ class HuggingFaceCloudLLM:
 
         LOGGER.info(f"Dataset uploaded successfully to https://huggingface.co/datasets/{repo_id}")
 
-        # 3. Trigger Training (Placeholder / AutoTrain link)
-        # In a real scenario, we might use the AutoTrain API here.
-        # For now, we return the info needed to start it manually or via a separate process.
+        # 3. Return Info (No actual training triggered)
         
         training_info = {
             "cloud_provider": "huggingface",
@@ -128,12 +126,29 @@ class HuggingFaceCloudLLM:
                     continue
                 try:
                     record = json.loads(line)
-                    cleaned_record = {
-                        "system_prompt": record.get("system_prompt", ""),
-                        "prompt": record.get("prompt"),
-                        "response": record.get("response"),
-                    }
-                    if cleaned_record["prompt"] and cleaned_record["response"]:
+                    
+                    # Prepare fields
+                    system_prompt = record.get("system_prompt", "")
+                    prompt = record.get("prompt", "")
+                    response = record.get("response", "")
+
+                    if prompt and response:
+                        # Construct 'text' column for AutoTrain SFT compatibility
+                        # Using a generic format: ### System: ... ### User: ... ### Assistant: ...
+                        text_parts = []
+                        if system_prompt:
+                            text_parts.append(f"### System:\n{system_prompt}")
+                        text_parts.append(f"### User:\n{prompt}")
+                        text_parts.append(f"### Assistant:\n{response}")
+                        
+                        full_text = "\n\n".join(text_parts)
+
+                        cleaned_record = {
+                            "text": full_text,
+                            "system_prompt": system_prompt,
+                            "prompt": prompt,
+                            "response": response,
+                        }
                         cleaned_records.append(cleaned_record)
                 except (json.JSONDecodeError, KeyError):
                     LOGGER.warning(f"Skipping malformed line in {dataset_path}")

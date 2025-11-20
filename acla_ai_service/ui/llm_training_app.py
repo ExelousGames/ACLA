@@ -144,7 +144,7 @@ def main():
                     # We need a dummy output_dir for the train method signature
                     dummy_output = dataset_dir / "hf_upload_output"
                     
-                    result = service.train(
+                    result = service.upload_dataset_for_training(
                         dataset_path=merged_file_path,
                         output_dir=dummy_output,
                         repo_id=hf_repo if hf_repo.strip() else None
