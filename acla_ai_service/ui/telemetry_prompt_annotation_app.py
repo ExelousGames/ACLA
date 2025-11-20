@@ -482,46 +482,6 @@ def _render_3d_position_comparison(window: Dict[str, Any]) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _get_annotation_sample(
-    dataset_identifier: str,
-    window_ids: List[str],
-    sample_size: int,
-    *,
-    force_refresh: bool = False,
-) -> List[str]:
-    """Return a stable random sample of window IDs for annotation."""
-
-    valid_ids = [window_id for window_id in window_ids if window_id]
-    if not valid_ids:
-        return []
-
-    session_key = f"annotation_sample::{dataset_identifier}"
-    size_key = f"{session_key}::size"
-
-    if force_refresh:
-        st.session_state.pop(session_key, None)
-        st.session_state.pop(size_key, None)
-
-    stored_sample: Optional[List[str]] = st.session_state.get(session_key)
-    stored_size = st.session_state.get(size_key)
-
-    if stored_sample:
-        stored_sample = [window_id for window_id in stored_sample if window_id in valid_ids]
-
-    if not stored_sample or stored_size != sample_size:
-        effective_size = max(1, min(sample_size, len(valid_ids)))
-        if effective_size >= len(valid_ids):
-            sampled_ids = list(valid_ids)
-        else:
-            sampled_ids = random.sample(valid_ids, effective_size)
-
-        st.session_state[session_key] = sampled_ids
-        st.session_state[size_key] = sample_size
-        return sampled_ids
-
-    return stored_sample
-
-
 def _generate_explanation_callback(
     ml_service: Full_dataset_TelemetryMLService,
     llm_model: Any,
@@ -583,12 +543,6 @@ def main() -> None:
 	st.title("Telemetry Prompt Annotation")
 	st.sidebar.info(f"Open {access_url} from the host browser")
 	st.sidebar.caption("Override via ANNOTATION_UI_* environment variables.")
-
-	st.sidebar.markdown("---")
-	st.sidebar.subheader("Annotate Existing Dataset")
-
-	dataset_dir = Path(config.get("dataset_dir") or DEFAULT_DATASET_DIR)
-	dataset_dir.mkdir(parents=True, exist_ok=True)
 
 	st.sidebar.markdown("---")
 	st.sidebar.subheader("Inference Settings")
@@ -686,29 +640,6 @@ def main() -> None:
 	dataset_identifier = dataset_path.as_posix()
 	if st.session_state.get(active_dataset_key) != dataset_identifier:
 		st.session_state[active_dataset_key] = dataset_identifier
-		st.session_state.pop(f"annotation_sample::{dataset_identifier}", None)
-		st.session_state.pop(f"annotation_sample::{dataset_identifier}::size", None)
-
-	default_sample_size = min(50, total_examples) if total_examples else 1
-	sample_size = st.sidebar.number_input(
-		"Sample size for annotation",
-		min_value=1,
-		max_value=max(1, total_examples),
-		value=default_sample_size,
-		step=1,
-	)
-	reshuffle_requested = st.sidebar.button("Reshuffle sample", use_container_width=True)
-
-	sampled_window_ids = _get_annotation_sample(
-		dataset_identifier,
-		[entry.get("window_id") for entry in entries if entry.get("window_id")],
-		int(sample_size),
-		force_refresh=reshuffle_requested,
-	)
-
-	st.sidebar.caption(
-		"Only sampled windows appear below; remaining windows stay reserved for training datasets."
-	)
 
 	st.sidebar.metric(
 		"Annotated",
@@ -717,16 +648,13 @@ def main() -> None:
 	)
 	show_pending_only = st.sidebar.checkbox("Show only pending annotations", value=False)
 
-	selected_entries = [entry for entry in entries if entry.get("window_id") in sampled_window_ids]
-	entries_to_view = list(selected_entries)
-	if not entries_to_view:
-		entries_to_view = entries
+	entries_to_view = list(entries)
 	if show_pending_only:
 		pending_entries = [entry for entry in entries_to_view if not entry.get("annotation_complete")]
 		if pending_entries:
 			entries_to_view = pending_entries
 		else:
-			st.success("All sampled windows are annotated! Reshuffle the sample to review different windows.")
+			st.success("All windows are annotated!")
 
 	summary_df = pd.DataFrame(
 		[
@@ -843,7 +771,7 @@ def main() -> None:
 		# Track if save button was just clicked to prevent duplicate saves during rerun
 		save_clicked_key = f"_save_clicked_{selected_window_id}"
 		
-		if st.button("Save annotation", type="primary", use_container_width=True):
+		if st.button("Save annotation", type="primary", use_container_width=True, key=f"save_btn_{selected_window_id}"):
 			# Only save if we haven't just saved in the previous frame
 			if not st.session_state.get(save_clicked_key, False):
 				st.session_state[save_clicked_key] = True
