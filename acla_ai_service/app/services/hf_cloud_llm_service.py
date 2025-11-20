@@ -145,9 +145,6 @@ class HuggingFaceCloudLLM:
 
                         cleaned_record = {
                             "text": full_text,
-                            "system_prompt": system_prompt,
-                            "prompt": prompt,
-                            "response": response,
                         }
                         cleaned_records.append(cleaned_record)
                 except (json.JSONDecodeError, KeyError):

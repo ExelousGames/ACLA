@@ -25,17 +25,8 @@ class PromptResponseExample:
         messages.append({"role": "user", "content": self.prompt})
         messages.append({"role": "assistant", "content": self.response})
 
-        # Construct text field for legacy/simple SFT
-        parts = []
-        if self.system_prompt:
-            parts.append(f"System: {self.system_prompt}")
-        parts.append(f"User: {self.prompt}")
-        parts.append(f"Assistant: {self.response}")
-        full_text = "\n\n".join(parts)
-
         #This structure allows AutoTrain to automatically detect the correct columns (text or messages) without manual mapping, while preserving your metadata in a separate column that won't interfere with training.
         record = {
-            "text": full_text,
             "messages": messages,
             "prompt": self.prompt,
             "response": self.response,
