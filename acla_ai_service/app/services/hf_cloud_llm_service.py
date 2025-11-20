@@ -41,6 +41,7 @@ class HuggingFaceCloudLLM:
         dataset_path: Path,
         output_dir: Path,
         eval_dataset_path: Optional[Path] = None,
+        repo_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Upload dataset to Hugging Face and trigger/prepare for cloud training."""
 
@@ -50,13 +51,14 @@ class HuggingFaceCloudLLM:
         cleaned_dataset_path = self._clean_dataset_for_training(dataset_path)
         cleaned_eval_path = self._clean_dataset_for_training(eval_dataset_path) if eval_dataset_path else None
         
-        if not self.username:
-            user_info = self.api.whoami()
-            self.username = user_info["name"]
+        if not repo_id:
+            if not self.username:
+                user_info = self.api.whoami()
+                self.username = user_info["name"]
 
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        dataset_name = f"acla-telemetry-training-{timestamp}"
-        repo_id = f"{self.username}/{dataset_name}"
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            dataset_name = f"acla-telemetry-training-{timestamp}"
+            repo_id = f"{self.username}/{dataset_name}"
 
         LOGGER.info(f"Preparing to upload dataset to Hugging Face: {repo_id}")
 

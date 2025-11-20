@@ -3,6 +3,12 @@ import os
 import json
 from pathlib import Path
 from typing import List, Dict, Any
+import sys
+
+# Add parent directory to path to allow importing app modules
+sys.path.append(str(Path(__file__).resolve().parents[1]))
+
+from app.services.hf_cloud_llm_service import HuggingFaceCloudLLM
 
 # Default directory where datasets are written
 # Assuming this file is in acla_ai_service/ui/
@@ -117,17 +123,45 @@ def main():
                 
         with col_hf:
             st.subheader("Upload to Hugging Face")
-            hf_repo = st.text_input("HF Repository ID", "exelous/acla-telemetry-instruct")
-            hf_token = st.text_input("HF Token", type="password")
+            hf_repo = st.text_input("HF Repository ID (Optional)", value="", help="Leave empty to automatically create a new dataset repository.")
             
             if st.button("Upload Datasets"):
-                if not hf_token:
-                    st.error("Please provide a Hugging Face token.")
-                else:
-                    st.info("Uploading to Hugging Face... (This is a placeholder)")
-                    # TODO: Call upload logic
-                    # from app.services.llm.uploader import upload_to_hf
-                    # upload_to_hf(selected_datasets, hf_repo, hf_token)
+                st.info("Uploading to Hugging Face...")
+                
+                # Merge datasets
+                merged_file_path = dataset_dir / "merged_training_data.jsonl"
+                try:
+                    with open(merged_file_path, 'w', encoding='utf-8') as outfile:
+                        for fname in selected_datasets:
+                            with open(fname, 'r', encoding='utf-8') as infile:
+                                for line in infile:
+                                    outfile.write(line)
+                    
+                    # Initialize service
+                    service = HuggingFaceCloudLLM()
+                    
+                    # Upload
+                    # We need a dummy output_dir for the train method signature
+                    dummy_output = dataset_dir / "hf_upload_output"
+                    
+                    result = service.train(
+                        dataset_path=merged_file_path,
+                        output_dir=dummy_output,
+                        repo_id=hf_repo if hf_repo.strip() else None
+                    )
+                    
+                    st.success(f"Upload complete! Dataset available at: {result['cloud_training_info']['dataset_url']}")
+                    st.json(result['cloud_training_info'])
+                    
+                except Exception as e:
+                    st.error(f"Upload failed: {str(e)}")
+                finally:
+                    # Cleanup merged file
+                    if merged_file_path.exists():
+                        try:
+                            os.remove(merged_file_path)
+                        except:
+                            pass
 
 if __name__ == "__main__":
     main()
