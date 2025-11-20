@@ -680,7 +680,7 @@ def main() -> None:
 	store = load_annotation_store(annotation_path.as_posix())
 
 	total_examples = len(entries)
-	annotated_examples = sum(1 for entry in entries if entry["annotation_complete"])
+	annotated_examples = sum(1 for entry in entries if entry.get("annotation_complete"))
 
 	active_dataset_key = "_active_annotation_dataset"
 	dataset_identifier = dataset_path.as_posix()
@@ -701,7 +701,7 @@ def main() -> None:
 
 	sampled_window_ids = _get_annotation_sample(
 		dataset_identifier,
-		[entry["window_id"] for entry in entries],
+		[entry.get("window_id") for entry in entries if entry.get("window_id")],
 		int(sample_size),
 		force_refresh=reshuffle_requested,
 	)
@@ -717,12 +717,12 @@ def main() -> None:
 	)
 	show_pending_only = st.sidebar.checkbox("Show only pending annotations", value=False)
 
-	selected_entries = [entry for entry in entries if entry["window_id"] in sampled_window_ids]
+	selected_entries = [entry for entry in entries if entry.get("window_id") in sampled_window_ids]
 	entries_to_view = list(selected_entries)
 	if not entries_to_view:
 		entries_to_view = entries
 	if show_pending_only:
-		pending_entries = [entry for entry in entries_to_view if not entry["annotation_complete"]]
+		pending_entries = [entry for entry in entries_to_view if not entry.get("annotation_complete")]
 		if pending_entries:
 			entries_to_view = pending_entries
 		else:
@@ -731,22 +731,22 @@ def main() -> None:
 	summary_df = pd.DataFrame(
 		[
 			{
-				"Window ID": entry["window_id"],
-				"Annotated": "Yes" if entry["annotation_complete"] else "No",
-				"Existing Explanation": (entry["coaching_explanation"][:50] + "…") if entry["coaching_explanation"] else "",
+				"Window ID": entry.get("window_id", "Unknown"),
+				"Annotated": "Yes" if entry.get("annotation_complete") else "No",
+				"Existing Explanation": (entry.get("coaching_explanation", "")[:50] + "…") if entry.get("coaching_explanation") else "",
 			}
 			for entry in entries_to_view
 		]
 	)
 	st.dataframe(summary_df, use_container_width=True, height=260)
 
-	window_ids = [entry["window_id"] for entry in entries_to_view]
+	window_ids = [entry.get("window_id") for entry in entries_to_view if entry.get("window_id")]
 	if not window_ids:
 		st.error("No windows available for annotation.")
 		return
 
 	selected_window_id = st.selectbox("Select window", window_ids)
-	selected_entry = next((entry for entry in entries if entry["window_id"] == selected_window_id), None)
+	selected_entry = next((entry for entry in entries if entry.get("window_id") == selected_window_id), None)
 	if not selected_entry:
 		st.error("Unable to locate the selected window in the dataset.")
 		return
