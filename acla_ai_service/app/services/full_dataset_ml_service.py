@@ -750,6 +750,7 @@ class Full_dataset_TelemetryMLService:
                 metadata={
                     "processed_sessions_cache_key": processed_sessions_cache_key,
                     "segments_cache_key": segments_cache_key,
+                    "annotation_sample_size": 50,
                 },
             )
 
