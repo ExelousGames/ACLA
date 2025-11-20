@@ -99,6 +99,7 @@ class SegmentExplanationTrainingProvider(BaseLLMTrainingProvider):
 				"builder": "telemetry_segments",
 				"sample_dataset_path": str(session.dataset_path),
 			},
+			cleanup=False,
 		)
 
 	def _read_annotation_statistics(self, dataset_path: Path, annotation_path: Path) -> Dict[str, Any]:
