@@ -339,7 +339,7 @@ class TelemetryLLMOrchestrator:
 		print(f"[INFO] Initializing HuggingFaceCloudLLM for training...")
 		try:
 			llm = HuggingFaceCloudLLM(config=self.llm_config)
-			metrics = llm.train(
+			metrics = llm.upload_dataset_for_training(
 				dataset_path=dataset_path,
 				output_dir=self.adapter_directory, # Not used for cloud but required by interface
 			)
