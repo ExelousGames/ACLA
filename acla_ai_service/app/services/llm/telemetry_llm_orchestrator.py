@@ -70,7 +70,7 @@ class TelemetryLLMOrchestrator:
 
 		self._providers[provider.name] = provider
 
-	async def run_training(
+	async def produce_datasets(
 		self,
 		context: LLMTrainingContext,
 		*,
@@ -98,48 +98,23 @@ class TelemetryLLMOrchestrator:
 		if not contributions:
 			raise RuntimeError("No dataset contributions were produced for LLM training")
 
-		combined_dataset_path = dataset_root / f"{context.dataset_id}_combined.jsonl"
+		print("[INFO] Dataset generation complete. Datasets produced:")
+		generated_datasets = []
+		for contribution in contributions:
+			print(f"[INFO] - Provider: {contribution.provider_name}")
+			print(f"[INFO]   Path: {contribution.dataset_path}")
+			print(f"[INFO]   Stats: {contribution.stats}")
+			generated_datasets.append({
+				"provider": contribution.provider_name,
+				"path": str(contribution.dataset_path),
+				"stats": contribution.stats
+			})
 
-		# Merge contributions into a single dataset file
-		aggregate_stats, dataset_summary = self._merge_contributions(
-			combined_dataset_path,
-			contributions,
-		)
-		dataset_summary["contributors"] = [c.provider_name for c in contributions]
-		dataset_summary["aggregate"] = aggregate_stats
-
-		print("[INFO] Starting LLM training...")
-		print(f"[INFO] Dataset: {combined_dataset_path}")
-		print(f"[INFO] Total examples: {aggregate_stats.get('total_examples', 0)}")
-		print(f"[INFO] Annotated examples: {aggregate_stats.get('annotated_examples', 0)}")
-		
-		try:
-			training_result = await self._train_and_persist(
-				dataset_path=combined_dataset_path,
-				dataset_stats=dataset_summary,
-				cleanup_dataset_file=cleanup_dataset_file,
-			)
-		except ValueError as ve:
-			print(f"[ERROR] Training validation failed: {ve}")
-			raise RuntimeError(f"LLM training failed validation: {ve}") from ve
-		except Exception as train_error:
-			print(f"[ERROR] Training execution failed: {train_error}")
-			raise RuntimeError(f"LLM training execution failed: {train_error}") from train_error
-
-		if cleanup_dataset_file:
-			for contribution in contributions:
-				if contribution.cleanup:
-					contribution.dataset_path.unlink(missing_ok=True)
-
-		training_result.update(
-			{
-				"dataset_path": str(combined_dataset_path),
-				"dataset_stats": dataset_summary,
-				"contributions": [contribution.stats for contribution in contributions],
-			}
-		)
-
-		return training_result
+		return {
+			"success": True,
+			"datasets": generated_datasets,
+			"contributions": [contribution.stats for contribution in contributions],
+		}
 
 	def _merge_contributions(
 		self,

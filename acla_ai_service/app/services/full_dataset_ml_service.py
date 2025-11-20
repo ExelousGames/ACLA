@@ -23,6 +23,7 @@ import warnings
 import pickle
 import asyncio
 import time
+import traceback
 from collections import Counter
 from typing import Dict, List, Any, Optional, Tuple, Union, Iterator, AsyncIterator
 from datetime import datetime
@@ -752,88 +753,50 @@ class Full_dataset_TelemetryMLService:
                 },
             )
 
-            llm_training = await self.llm_orchestrator.run_training(
+            llm_training = await self.llm_orchestrator.produce_datasets(
                 training_context,
-                cleanup_dataset_file=cleanup_dataset_file,
+                cleanup_dataset_file=False, # Do not cleanup, we need it for annotation
             )
 
             if not llm_training.get("success"):
-                error_msg = llm_training.get("error") or "LLM fine-tuning failed"
-                print(f"[ERROR] LLM training failed: {error_msg}")
+                error_msg = llm_training.get("error") or "LLM dataset generation failed"
+                print(f"[ERROR] LLM dataset generation failed: {error_msg}")
                 raise RuntimeError(error_msg)
 
-            dataset_path = llm_training.get("dataset_path")
-            dataset_path_result = Path(dataset_path) if dataset_path else None
-            dataset_stats = llm_training.get("dataset_stats")
+            generated_datasets = llm_training.get("datasets", [])
+            
+            print(f"[INFO] Generated {len(generated_datasets)} datasets:")
+            for ds in generated_datasets:
+                print(f"[INFO] - {ds['provider']}: {ds['path']}")
+            
+            print("[INFO] Ready for annotation. Launch the annotation UI with one of the dataset paths above.")
+            
         except RuntimeError as runtime_error:
-            print(f"[ERROR] Training pipeline error: {runtime_error}")
+            print(f"[ERROR] Pipeline error: {runtime_error}")
             return {
                 "success": False,
                 "error": str(runtime_error),
                 "track_name": track_name,
             }
         except Exception as training_error:
-            print(f"[ERROR] Unexpected training error: {training_error}")
-            import traceback
+            print(f"[ERROR] Unexpected error: {training_error}")
             traceback.print_exc()
             return {
                 "success": False,
-                "error": f"Transformer/LLM training failed: {training_error}",
+                "error": f"Transformer training / LLM dataset generation failed: {training_error}",
                 "track_name": track_name,
             }
         
         result_payload = {
             "success": True,
             "track_name": track_name,
-            "dataset_path": str(dataset_path_result) if dataset_path_result else None,
-            "dataset_stats": dataset_stats,
+            "datasets": generated_datasets,
             "transformer_training": transformer_training,
-            "llm_training": llm_training,
+            "llm_dataset_generation": llm_training,
         }
 
-        self._print_section_divider("LLM TRAINING COMPLETED")
+        self._print_section_divider("DATASET GENERATION COMPLETED")
         return result_payload
-
-    def process_sessions_streaming(self, sessions_data: List[Dict[str, Any]], 
-                                 chunk_size: int = 5000) -> Iterator[List[Dict[str, Any]]]:
-        """
-        Process session data in streaming chunks to avoid memory overflow
-        
-        Args:
-            sessions_data: List of session dictionaries
-            chunk_size: Number of records per chunk
-            
-        Yields:
-            Chunks of processed telemetry records
-        """
-        print(f"[INFO] Processing {len(sessions_data)} sessions in streaming chunks of {chunk_size}")
-        
-        current_chunk = []
-        processed_sessions = 0
-        
-        for session in sessions_data:
-            session_data = session.get("data", [])
-            if not session_data:
-                continue
-                
-            # Add session records to current chunk
-            current_chunk.extend(session_data)
-            processed_sessions += 1
-            
-            # Yield chunk when it reaches the size limit
-            while len(current_chunk) >= chunk_size:
-                yield current_chunk[:chunk_size]
-                current_chunk = current_chunk[chunk_size:]
-            
-            # Progress logging
-            if processed_sessions % 10 == 0:
-                print(f"[INFO] Processed {processed_sessions}/{len(sessions_data)} sessions")
-        
-        # Yield remaining records
-        if current_chunk:
-            yield current_chunk
-        
-        print(f"[INFO] Completed streaming processing of {processed_sessions} sessions")
 
     async def process_lap_sessions_efficiently(
         self,
