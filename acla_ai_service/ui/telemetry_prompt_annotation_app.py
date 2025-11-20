@@ -39,6 +39,7 @@ _ensure_app_module_on_path()
 from app.services.full_dataset_ml_service import Full_dataset_TelemetryMLService
 from app.services.local_llm_service import GenerationRequest
 from app.services.telemetry_prompt_dataset_builder import DatasetBuildStats
+from app.services.llm.prompt_response_example import PromptResponseExample
 
 # Default directory where datasets are written by the ML service
 DEFAULT_DATASET_DIR = Path(__file__).resolve().parents[1] / "models" / "llm_datasets"
@@ -141,62 +142,23 @@ def _resolve_network_config(config: Dict[str, Any]) -> Tuple[str, int, Optional[
 
 
 @st.cache_data(show_spinner=False)
-def load_dataset(path_str: str) -> List[Dict[str, Any]]:
-    """Load dataset records from disk into memory for quick annotation."""
-
-    dataset_path = Path(path_str)
-    entries: List[Dict[str, Any]] = []
-
-    if not dataset_path.exists():
-        return entries
-
-    with dataset_path.open("r", encoding="utf-8") as jsonl_file:
-        for line in jsonl_file:
+def load_dataset(path_str: str) -> List[PromptResponseExample]:
+    """Load a dataset of prompt-response examples from a JSONL file."""
+    if not path_str or not Path(path_str).exists():
+        return []
+    
+    records = []
+    with Path(path_str).open("r", encoding="utf-8") as f:
+        for line in f:
             line = line.strip()
             if not line:
                 continue
             try:
-                record = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-
-            metadata = record.get("metadata") or {}
-            if not isinstance(metadata, dict):
-                metadata = {}
-                record["metadata"] = metadata
-
-            annotation_block = metadata.get("annotation") if isinstance(metadata.get("annotation"), dict) else {}
-            window_payload = record.get("window")
-            if not isinstance(window_payload, dict):
-                window_payload = metadata.get("window") if isinstance(metadata.get("window"), dict) else {}
-
-            segment_payload = record.get("segment")
-            if segment_payload is None and window_payload:
-                segment_payload = window_payload.get("context", [])
-
-            response_text = record.get("response")
-            if isinstance(response_text, str):
-                coaching_explanation = response_text
-            else:
-                coaching_explanation = annotation_block.get("coaching_explanation", "")
-            if not isinstance(coaching_explanation, str):
-                coaching_explanation = ""
-            annotation_complete = bool(metadata.get("annotation_complete")) or bool((coaching_explanation or "").strip())
-
-            entries.append(
-                {
-                    "window_id": metadata.get("window_id"),
-                    "annotation_complete": annotation_complete,
-                    "coaching_explanation": coaching_explanation,
-                    "segment": segment_payload or [],
-                    "window": window_payload or {"context": segment_payload or []},
-                    "config": metadata.get("config", {}),
-                    "metadata": metadata,
-                    "raw": record,
-                }
-            )
-
-    return entries
+                data = json.loads(line)
+                records.append(PromptResponseExample.from_record(data))
+            except (json.JSONDecodeError, ValueError, TypeError) as e:
+                st.warning(f"Skipping invalid dataset line: {e}")
+    return records
 
 
 @st.cache_data(show_spinner=False)
@@ -267,50 +229,29 @@ def _save_annotation(
     window_id: str,
     coaching_explanation: str,
 ) -> Tuple[int, int]:
-    """Persist the updated annotation to both dataset and annotation log."""
+    """Persist the updated annotation to the dataset."""
 
-    dataset_records: List[Dict[str, Any]] = []
-    total_examples = 0
+    examples = load_dataset(dataset_path.as_posix())
+    if not examples:
+        return 0, 0
+
     annotated_examples = 0
-
-    with dataset_path.open("r", encoding="utf-8") as jsonl_file:
-        for line in jsonl_file:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                record = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-
-            metadata = record.setdefault("metadata", {})
-            window_meta = metadata.get("window_id")
-
-            if window_meta == window_id:
-                annotation_block = metadata.setdefault("annotation", {})
-                annotation_block.pop("driver_note", None)
-                annotation_block["coaching_explanation"] = coaching_explanation
-                annotation_block["updated_at"] = datetime.utcnow().isoformat()
-                metadata["annotation_complete"] = bool(coaching_explanation.strip())
-
-                record["response"] = coaching_explanation
-                if "explanation" in record:
-                    record.pop("explanation", None)
-                if "segment" not in record:
-                    window = metadata.get("window") if isinstance(metadata.get("window"), dict) else record.get("window", {})
-                    window = window or {}
-                    record["segment"] = window.get("context", [])
-
-            if metadata.get("annotation_complete"):
-                annotated_examples += 1
-            total_examples += 1
-            dataset_records.append(record)
+    for example in examples:
+        if example.metadata and example.metadata.get("window_id") == window_id:
+            example.response = coaching_explanation
+            if example.metadata:
+                example.metadata["annotation_complete"] = True
+            else:
+                example.metadata = {"annotation_complete": True, "window_id": window_id}
+        
+        if example.metadata and example.metadata.get("annotation_complete"):
+            annotated_examples += 1
 
     with dataset_path.open("w", encoding="utf-8") as jsonl_file:
-        for record in dataset_records:
-            jsonl_file.write(json.dumps(record, ensure_ascii=False) + "\n")
+        for example in examples:
+            jsonl_file.write(json.dumps(example.to_record(), ensure_ascii=False) + "\n")
 
-    # Update annotation store
+    # Update annotation store for quick lookup, though dataset is source of truth
     store = load_annotation_store(annotation_path.as_posix())
     store[window_id] = {
         "window_id": window_id,
@@ -318,11 +259,10 @@ def _save_annotation(
         "updated_at": datetime.utcnow().isoformat(),
     }
     with annotation_path.open("w", encoding="utf-8") as jsonl_file:
-        for payload in store.values():
-            jsonl_file.write(json.dumps(payload, ensure_ascii=False) + "\n")
+        for record in store.values():
+            jsonl_file.write(json.dumps(record, ensure_ascii=False) + "\n")
 
-    return total_examples, annotated_examples
-
+    return len(examples), annotated_examples
 
 
 # ---------------------------------------------------------------------------

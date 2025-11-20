@@ -46,6 +46,9 @@ class HuggingFaceCloudLLM:
 
         if not settings.hf_api_token:
             raise ValueError("HF_API_TOKEN is required for cloud training.")
+
+        cleaned_dataset_path = self._clean_dataset_for_training(dataset_path)
+        cleaned_eval_path = self._clean_dataset_for_training(eval_dataset_path) if eval_dataset_path else None
         
         if not self.username:
             user_info = self.api.whoami()
@@ -73,15 +76,15 @@ class HuggingFaceCloudLLM:
         # 2. Upload Dataset File
         try:
             upload_file(
-                path_or_fileobj=str(dataset_path),
+                path_or_fileobj=str(cleaned_dataset_path),
                 path_in_repo="train.jsonl",
                 repo_id=repo_id,
                 repo_type="dataset",
                 token=settings.hf_api_token
             )
-            if eval_dataset_path:
+            if cleaned_eval_path:
                 upload_file(
-                    path_or_fileobj=str(eval_dataset_path),
+                    path_or_fileobj=str(cleaned_eval_path),
                     path_in_repo="eval.jsonl",
                     repo_id=repo_id,
                     repo_type="dataset",
@@ -113,6 +116,33 @@ class HuggingFaceCloudLLM:
             "epoch": 0.0,
             "cloud_training_info": training_info
         }
+
+    def _clean_dataset_for_training(self, dataset_path: Path) -> Path:
+        """Create a temporary, cleaned version of the dataset for training."""
+        cleaned_records = []
+        with dataset_path.open("r", encoding="utf-8") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                try:
+                    record = json.loads(line)
+                    cleaned_record = {
+                        "system_prompt": record.get("system_prompt", ""),
+                        "prompt": record.get("prompt"),
+                        "response": record.get("response"),
+                    }
+                    if cleaned_record["prompt"] and cleaned_record["response"]:
+                        cleaned_records.append(cleaned_record)
+                except (json.JSONDecodeError, KeyError):
+                    LOGGER.warning(f"Skipping malformed line in {dataset_path}")
+
+        cleaned_path = dataset_path.parent / f"{dataset_path.stem}_cleaned.jsonl"
+        with cleaned_path.open("w", encoding="utf-8") as f:
+            for record in cleaned_records:
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        
+        LOGGER.info(f"Created cleaned dataset for training at: {cleaned_path}")
+        return cleaned_path
 
     def load_for_inference(self, adapter_path: Optional[Path] = None) -> None:
         """Not implemented for cloud trainer - inference should happen via API or local download."""

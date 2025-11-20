@@ -76,18 +76,41 @@ class SegmentExplanationTrainingProvider(BaseLLMTrainingProvider):
 		if not context.segments_cache_key:
 			raise RuntimeError("segments_cache_key is required to prepare telemetry samples for annotation")
 
-		session = await asyncio.to_thread(self._create_annotation_dataset, context)
+		metadata = context.metadata or {}
+		sample_size = int(metadata.get("annotation_sample_size", 25))
+		random_seed = int(metadata.get("annotation_random_seed", 0)) or int(datetime.utcnow().timestamp() * 1000)
+
+		original_max_examples = self._builder.config.max_examples
+		original_rng_state = getattr(self._builder._rng, "getstate", lambda: None)()
+
+		try:
+			self._builder.config.max_examples = sample_size
+			if hasattr(self._builder._rng, "seed"):
+				self._builder._rng.seed(random_seed)
+			records, stats = self._builder.build_from_cached_segments(
+				segments_cache_key=context.segments_cache_key,
+				shuffle=True,
+			)
+		finally:
+			self._builder.config.max_examples = original_max_examples
+			if original_rng_state is not None and hasattr(self._builder._rng, "setstate"):
+				self._builder._rng.setstate(original_rng_state)
+
+		if not records:
+			raise RuntimeError("No telemetry windows were generated for annotation. Ensure cached segments are available.")
+
+		session = await asyncio.to_thread(self._create_annotation_dataset, context, records)
 		print(
-			f"\n[INFO] Prepared annotation dataset ({session.builder_stats.windows_kept} windows) at {session.dataset_path}"
+			f"\n[INFO] Prepared annotation dataset ({stats.windows_kept} windows) at {session.dataset_path}"
 		)
 
 		stats_dict = {
 			"provider": self.name,
-			"total_examples": session.builder_stats.windows_kept,
+			"total_examples": stats.windows_kept,
 			"annotated_examples": 0,
 			"annotation_coverage": 0.0,
 			"output_path": str(session.dataset_path),
-			"builder_stats": session.builder_stats.to_dict(),
+			"builder_stats": stats.to_dict(),
 			"annotation_session_seed": session.random_seed,
 		}
 
@@ -164,7 +187,11 @@ class SegmentExplanationTrainingProvider(BaseLLMTrainingProvider):
 			"annotation_coverage": (annotated_examples / total_examples) if total_examples else 0.0,
 		}
 
-	def _create_annotation_dataset(self, context: LLMTrainingContext) -> AnnotationSessionArtifacts:
+	def _create_annotation_dataset(
+		self,
+		context: LLMTrainingContext,
+		records: List[PromptResponseExample],
+	) -> AnnotationSessionArtifacts:
 		output_dir = context.output_root / self.name
 		output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -179,70 +206,27 @@ class SegmentExplanationTrainingProvider(BaseLLMTrainingProvider):
 		annotation_path.touch()
 
 		metadata = context.metadata or {}
-
-		raw_sample_size = metadata.get("annotation_sample_size", 25)
-		try:
-			sample_size = int(raw_sample_size)
-		except (TypeError, ValueError):
-			sample_size = 25
-		sample_size = max(1, sample_size)
-
 		raw_seed = metadata.get("annotation_random_seed")
-		if raw_seed is None:
-			raw_seed = int(datetime.utcnow().timestamp() * 1000)
-		try:
-			random_seed = int(raw_seed)
-		except (TypeError, ValueError):
-			random_seed = int(datetime.utcnow().timestamp() * 1000)
-
-		original_max_examples = self._builder.config.max_examples
-		original_rng_state = getattr(self._builder._rng, "getstate", lambda: None)()
-
-		try:
-			self._builder.config.max_examples = sample_size
-			if hasattr(self._builder._rng, "seed"):
-				self._builder._rng.seed(random_seed)
-			records, stats = self._builder.build_from_cached_segments(
-				segments_cache_key=context.segments_cache_key,
-				shuffle=True,
-			)
-		finally:
-			self._builder.config.max_examples = original_max_examples
-			if original_rng_state is not None and hasattr(self._builder._rng, "setstate"):
-				self._builder._rng.setstate(original_rng_state)
+		random_seed = int(raw_seed) if raw_seed else int(datetime.utcnow().timestamp() * 1000)
 
 		if not records:
-			raise RuntimeError("No telemetry windows were generated for annotation. Ensure cached segments are available.")
+			raise RuntimeError("No telemetry windows were provided for annotation.")
 
-		record_count = 0
-		window_id_found = False
 		with sample_dataset_path.open("w", encoding="utf-8") as handle:
 			for example in records:
-				metadata = example.metadata or {}
-				if not isinstance(metadata, dict):
-					metadata = {}
-				window_id = metadata.get("window_id")
-				if isinstance(window_id, str) and window_id:
-					window_id_found = True
 				handle.write(
 					json.dumps(
 						example.to_record(),
 						ensure_ascii=False,
-						default=self._builder._json_default,  # type: ignore[attr-defined]
+						default=self._builder._json_default,
 					)
 					+ "\n"
 				)
-				record_count += 1
-
-		if record_count == 0:
-			raise RuntimeError("Telemetry dataset write produced no records; aborting annotation session.")
-		if not window_id_found:
-			raise RuntimeError("Telemetry records are missing window IDs; cannot launch annotation session.")
 
 		return AnnotationSessionArtifacts(
 			dataset_path=sample_dataset_path.resolve(),
 			annotation_path=annotation_path.resolve(),
-			builder_stats=stats,
+			builder_stats=DatasetBuildStats(windows_kept=len(records)),
 			random_seed=random_seed,
 		)
 
