@@ -16,6 +16,8 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 from collections.abc import Mapping
 
+from app.core.config import settings
+
 import torch
 from torch.utils.data import Dataset
 
@@ -126,6 +128,7 @@ class GenerationRequest:
     top_p: Optional[float] = None
     do_sample: Optional[bool] = None
     model_id: Optional[str] = None
+    api_token: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -329,6 +332,7 @@ class LocalTelemetryLLM:
                 tokenizer_name,
                 cache_dir=self.config.cache_dir,
                 use_fast=True,
+                token=settings.hf_api_token,
             )
         except OSError as os_error:
             self._raise_missing_local_resource(tokenizer_name, os_error)
@@ -342,6 +346,7 @@ class LocalTelemetryLLM:
             fallback_kwargs = {
                 "cache_dir": self.config.cache_dir,
                 "use_fast": False,
+                "token": settings.hf_api_token,
             }
 
             try:
@@ -374,6 +379,7 @@ class LocalTelemetryLLM:
             "load_in_4bit": self.config.load_in_4bit,
             "torch_dtype": None if (self.config.load_in_8bit or self.config.load_in_4bit) else torch_dtype,
             "device_map": self.config.device_map,
+            "token": settings.hf_api_token,
         }
 
         if self.config.max_memory:

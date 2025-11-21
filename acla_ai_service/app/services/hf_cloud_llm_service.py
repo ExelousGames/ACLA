@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import json
+import csv
 from pathlib import Path
 from typing import Any, Dict, Optional
 from datetime import datetime
@@ -79,7 +80,7 @@ class HuggingFaceCloudLLM:
         try:
             upload_file(
                 path_or_fileobj=str(cleaned_dataset_path),
-                path_in_repo="train.jsonl",
+                path_in_repo="train.csv",
                 repo_id=repo_id,
                 repo_type="dataset",
                 token=settings.hf_api_token
@@ -87,7 +88,7 @@ class HuggingFaceCloudLLM:
             if cleaned_eval_path:
                 upload_file(
                     path_or_fileobj=str(cleaned_eval_path),
-                    path_in_repo="eval.jsonl",
+                    path_in_repo="eval.csv",
                     repo_id=repo_id,
                     repo_type="dataset",
                     token=settings.hf_api_token
@@ -118,7 +119,7 @@ class HuggingFaceCloudLLM:
         }
 
     def _clean_dataset_for_training(self, dataset_path: Path) -> Path:
-        """Create a temporary, cleaned version of the dataset for training."""
+        """Create a temporary, cleaned version of the dataset for training (CSV format)."""
         cleaned_records = []
         with dataset_path.open("r", encoding="utf-8") as f:
             for line in f:
@@ -127,7 +128,12 @@ class HuggingFaceCloudLLM:
                 try:
                     record = json.loads(line)
                     
-                    # Prepare fields
+                    # Check if 'text' field already exists
+                    if "text" in record and isinstance(record["text"], str):
+                        cleaned_records.append(record["text"])
+                        continue
+
+                    # Prepare fields from components
                     system_prompt = record.get("system_prompt", "")
                     prompt = record.get("prompt", "")
                     response = record.get("response", "")
@@ -142,18 +148,16 @@ class HuggingFaceCloudLLM:
                         text_parts.append(f"### Assistant:\n{response}")
                         
                         full_text = "\n\n".join(text_parts)
-
-                        cleaned_record = {
-                            "text": full_text,
-                        }
-                        cleaned_records.append(cleaned_record)
+                        cleaned_records.append(full_text)
                 except (json.JSONDecodeError, KeyError):
                     LOGGER.warning(f"Skipping malformed line in {dataset_path}")
 
-        cleaned_path = dataset_path.parent / f"{dataset_path.stem}_cleaned.jsonl"
-        with cleaned_path.open("w", encoding="utf-8") as f:
-            for record in cleaned_records:
-                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        cleaned_path = dataset_path.parent / f"{dataset_path.stem}_cleaned.csv"
+        with cleaned_path.open("w", newline='', encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow(["text"])
+            for text in cleaned_records:
+                writer.writerow([text])
         
         LOGGER.info(f"Created cleaned dataset for training at: {cleaned_path}")
         return cleaned_path
@@ -164,57 +168,57 @@ class HuggingFaceCloudLLM:
         pass
 
     def generate(self, request: Any) -> str:
-        """Generate text using Hugging Face Inference API."""
-        if not settings.hf_api_token:
-            raise ValueError("HF_API_TOKEN is required for cloud generation.")
+        """Generate text using Hugging Face Inference Endpoint via OpenAI client."""
+        token = settings.hf_api_token
         
-        # If we have a repo_id from initialization or config, use it.
-        # Otherwise, we might need to pass it in the request or set it on the instance.
-        # For now, let's assume the user provides the model ID in the request or we use a default.
+        if not token:
+            print("[WARN] HF_API_TOKEN not found in settings. Cloud inference might fail for private models.")
+        else:
+            print(f"[INFO] Using HF_API_TOKEN from settings (starts with {token[:4]}...)")
         
-        # We'll use the base model from config if available, or a default.
-        # Ideally, the UI should allow selecting the model.
         model_id = getattr(request, "model_id", None) or self.config.base_model
         
-        # If model_id is a path (local), we can't use cloud inference easily unless we deploy it.
-        # But here we assume the user wants to use a HF Hub model.
-        
-        # Construct the payload
-        # The request object is likely GenerationRequest from local_llm_service
-        # which has system_prompt, user_prompt, etc.
-        
-        prompt = f"[SYSTEM]\n{request.system_prompt}\n[/SYSTEM]\n\n[USER]\n{request.user_prompt}\n[/USER]\n\n[ASSISTANT]\n"
-        
-        payload = {
-            "inputs": prompt,
-            "parameters": {
-                "max_new_tokens": request.max_new_tokens or 256,
-                "temperature": request.temperature or 0.7,
-                "top_p": request.top_p or 0.95,
-                "do_sample": request.do_sample if request.do_sample is not None else True,
-                "return_full_text": False
-            }
-        }
-        
-        import requests
-        api_url = f"https://api-inference.huggingface.co/models/{model_id}"
-        headers = {"Authorization": f"Bearer {settings.hf_api_token}"}
+        # Use the specific endpoint URL provided
+        base_url = "https://rw76u1tvv878sk5m.us-east-1.aws.endpoints.huggingface.cloud/v1/"
         
         try:
-            response = requests.post(api_url, headers=headers, json=payload)
-            response.raise_for_status()
-            result = response.json()
+            from openai import OpenAI
+        except ImportError:
+            return "Error: openai package is not installed. Please install it with `pip install openai`."
+
+        client = OpenAI(
+            base_url=base_url,
+            api_key=token
+        )
+
+        messages = []
+        if hasattr(request, "system_prompt") and request.system_prompt:
+            messages.append({"role": "system", "content": request.system_prompt})
+        
+        if hasattr(request, "user_prompt") and request.user_prompt:
+            messages.append({"role": "user", "content": request.user_prompt})
+
+        try:
+            print(f"[INFO] Sending request to HF Inference Endpoint: {base_url} for model {model_id}")
             
-            if isinstance(result, list) and len(result) > 0:
-                return result[0].get("generated_text", "")
-            elif isinstance(result, dict) and "generated_text" in result:
-                return result["generated_text"]
-            else:
-                return str(result)
-                
+            chat_completion = client.chat.completions.create(
+                model=model_id,
+                messages=messages,
+                stream=True,
+                max_tokens=request.max_new_tokens or 256,
+                temperature=request.temperature or 0.7,
+                top_p=request.top_p or 0.95,
+            )
+
+            full_response = ""
+            for message in chat_completion:
+                content = message.choices[0].delta.content
+                if content:
+                    full_response += content
+            
+            return full_response
+
         except Exception as e:
             error_msg = str(e)
-            if "410 Client Error: Gone" in error_msg or "404 Client Error: Not Found" in error_msg:
-                 return f"Error: Model not found or not accessible ({model_id}). If you are using a dataset ID, please use the trained model ID instead."
-            LOGGER.error(f"HF Cloud generation failed: {e}")
+            print(f"[ERROR] HF Cloud generation failed: {error_msg}")
             return f"Error generating explanation from cloud: {e}"

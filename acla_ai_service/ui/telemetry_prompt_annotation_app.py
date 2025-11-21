@@ -74,12 +74,12 @@ def get_ml_service() -> Full_dataset_TelemetryMLService:
 
 
 @st.cache_resource(show_spinner=False)
-def load_guidance_model(provider: str = "local") -> Tuple[Optional[Any], Optional[Dict[str, Any]], Optional[str]]:
+def load_guidance_model(provider: str = "local", model_id: Optional[str] = None) -> Tuple[Optional[Any], Optional[Dict[str, Any]], Optional[str]]:
     """Load the active LLM guidance model, if available."""
 
     service = get_ml_service()
     try:
-        model, metadata = _run_async(service.get_llm_guidance_model, provider=provider)
+        model, metadata = _run_async(service.get_llm_guidance_model, provider=provider, model_id=model_id)
         if model is None:
             error_msg = metadata.get("error") if isinstance(metadata, dict) else "No active model found"
             return None, metadata, error_msg
@@ -548,23 +548,35 @@ def main() -> None:
 	st.sidebar.subheader("Inference Settings")
 	provider_option = st.sidebar.radio(
 		"Model Provider",
-		options=["Local", "Hugging Face Cloud"],
+		options=["Local", "Hugging Face Cloud", "Hugging Face Local"],
 		index=0,
-		help="Select 'Local' to use the locally trained adapter, or 'Hugging Face Cloud' to use the model hosted on HF Hub."
+		help="Select 'Local' to use the locally trained adapter, 'Hugging Face Cloud' for Inference API, or 'Hugging Face Local' to download and run a HF model locally."
 	)
-	provider_key = "cloud" if provider_option == "Hugging Face Cloud" else "local"
+	
+	provider_key = "local"
+	if provider_option == "Hugging Face Cloud":
+		provider_key = "cloud"
+	elif provider_option == "Hugging Face Local":
+		provider_key = "hf_local"
 	
 	hf_model_id = None
-	if provider_key == "cloud":
+	
+	if provider_key in ["cloud", "hf_local"]:
 		hf_model_id = st.sidebar.text_input(
 			"Hugging Face Model ID",
 			value="",
 			placeholder="username/custom-model-name",
-			help="Enter the ID of your fine-tuned model on Hugging Face (e.g., 'username/autotrain-my-model'). If left empty, the base model will be used."
+			help="Enter the ID of your fine-tuned model on Hugging Face (e.g., 'username/autotrain-my-model')."
 		)
 
 	ml_service = get_ml_service()
-	llm_model, llm_metadata, llm_error = load_guidance_model(provider=provider_key)
+	
+	# Only load model if we have an ID for HF providers, or if it's local
+	if provider_key in ["cloud", "hf_local"] and not hf_model_id:
+		llm_model, llm_metadata, llm_error = None, None, "Please enter a Model ID"
+	else:
+		llm_model, llm_metadata, llm_error = load_guidance_model(provider=provider_key, model_id=hf_model_id)
+	
 	llm_available = llm_model is not None
 
 	if llm_available:

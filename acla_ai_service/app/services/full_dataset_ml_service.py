@@ -257,6 +257,7 @@ class Full_dataset_TelemetryMLService:
         force_refresh: bool = False,
         model_subtype: str = "llm_adapter_data",
         provider: str = "local",
+        model_id: Optional[str] = None,
     ) -> Tuple[Optional[Any], Optional[Dict[str, Any]]]:
         """Retrieve the active LLM guidance model if one has been saved."""
 
@@ -264,6 +265,7 @@ class Full_dataset_TelemetryMLService:
             force_refresh=force_refresh,
             model_subtype=model_subtype,
             provider=provider,
+            model_id=model_id,
         )
 
     def _cleanup_fetch_lock(self, cache_key: str):

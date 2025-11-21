@@ -9,7 +9,7 @@ import json
 import shutil
 import zipfile
 from collections import OrderedDict
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
@@ -432,6 +432,7 @@ class TelemetryLLMOrchestrator:
 		force_refresh: bool = False,
 		model_subtype: str = "llm_adapter_data",
 		provider: str = "local",
+		model_id: Optional[str] = None,
 	) -> Tuple[Optional[Union[LocalTelemetryLLM, HuggingFaceCloudLLM]], Optional[Dict[str, Any]]]:
 		if provider == "cloud":
 			try:
@@ -439,6 +440,40 @@ class TelemetryLLMOrchestrator:
 				return llm, {"provider": "cloud", "model": self.llm_config.base_model}
 			except Exception as e:
 				return None, {"error": f"Failed to initialize cloud LLM: {e}"}
+
+		if provider == "hf_local":
+			if not model_id:
+				return None, {"error": "Model ID is required for Hugging Face Local provider"}
+			
+			try:
+				# Check cache first
+				cached_result = self.model_cache.get(
+					model_type="hf_local",
+					model_subtype=model_id,
+				)
+				if cached_result and not force_refresh:
+					return cached_result[0], cached_result[1]
+
+				# Load model locally
+				print(f"[INFO] Loading HF model locally: {model_id}")
+				config = replace(self.llm_config, base_model=model_id)
+				llm = LocalTelemetryLLM(config=config)
+				
+				# Run in thread to avoid blocking event loop during heavy load
+				await asyncio.to_thread(llm.load_for_inference, adapter_path=None)
+				
+				metadata = {"provider": "hf_local", "model_id": model_id}
+				self.model_cache.put(
+					model_type="hf_local",
+					data=llm,
+					metadata=metadata,
+					model_subtype=model_id,
+				)
+				return llm, metadata
+			except Exception as e:
+				print(f"[ERROR] Failed to load local HF model: {e}")
+				traceback.print_exc()
+				return None, {"error": f"Failed to load local HF model: {e}"}
 
 		if force_refresh:
 			try:
