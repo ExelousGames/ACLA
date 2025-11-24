@@ -9,6 +9,7 @@ from .corner_identification_unsupervised_service import CornerIdentificationUnsu
 from .tire_grip_analysis_service import TireGripAnalysisService, tire_grip_analysis_service
 from .telemetry_prompt_dataset_builder import TelemetryPromptDatasetBuilder, PromptBuilderConfig
 from .local_llm_service import LocalLLMConfig, LocalTelemetryLLM, GenerationRequest
+from .segment_classifier_service import SegmentClassifierService, segment_classifier
 
 __all__ = [
     "AIService",
@@ -24,4 +25,6 @@ __all__ = [
     "LocalLLMConfig",
     "LocalTelemetryLLM",
     "GenerationRequest",
+    "SegmentClassifierService",
+    "segment_classifier",
 ]
