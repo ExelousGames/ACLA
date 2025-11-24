@@ -7,6 +7,7 @@ import pandas as pd
 import plotly.express as px
 import asyncio
 import json
+import zarr
 import sys
 import os
 from pathlib import Path
@@ -55,22 +56,46 @@ def load_session_keys(store) -> List[str]:
     # Filter for session keys if possible, or just return all
     return [k for k in keys if "racing_sessions" in k and "processed" not in k]
 
-@st.cache_data(max_entries=1)
-def load_session_data(cache_key: str) -> pd.DataFrame:
-    """Load session data from Zarr."""
+@st.cache_data(max_entries=1, show_spinner=False)
+def load_chunk_data(cache_key: str, chunk_index: int) -> pd.DataFrame:
+    """Load a specific chunk of session data from Zarr."""
     store = get_store()
-    chunks = store.get_cached_data_chunks(cache_key)
-    all_records = []
-    for chunk in chunks:
-        if isinstance(chunk, dict) and "data" in chunk:
-             all_records.extend(chunk["data"])
-        elif isinstance(chunk, list):
-            all_records.extend(chunk)
+    # Accessing internal method _group_path to avoid iterating all chunks
+    group_path = store._group_path(cache_key)
     
-    if not all_records:
+    if not group_path.exists():
         return pd.DataFrame()
-    
-    return pd.DataFrame(all_records)
+        
+    try:
+        # Open in read-only mode
+        group = zarr.open_group(str(group_path), mode="r")
+        chunk_name = f"chunk_{chunk_index:06d}"
+        
+        if chunk_name not in group:
+            return pd.DataFrame()
+            
+        raw_bytes = bytes(group[chunk_name][:])
+        chunk = json.loads(raw_bytes.decode("utf-8"))
+        
+        # Robust DataFrame creation
+        if isinstance(chunk, list):
+            df = pd.DataFrame(chunk)
+        elif isinstance(chunk, dict):
+            if "data" in chunk and isinstance(chunk["data"], list):
+                df = pd.DataFrame(chunk["data"])
+            else:
+                try:
+                    df = pd.DataFrame(chunk)
+                except ValueError:
+                    df = pd.DataFrame([chunk])
+        else:
+            return pd.DataFrame()
+            
+        return df
+        
+    except Exception as e:
+        print(f"Error loading chunk {chunk_index}: {e}")
+        return pd.DataFrame()
 
 def save_annotations(annotations: List[Dict[str, Any]]):
     """Save annotations to Zarr store."""
@@ -95,14 +120,31 @@ def main():
     selected_session_key = st.selectbox("Select Session", session_keys)
     
     if selected_session_key:
-        with st.spinner("Loading session data..."):
-            df = load_session_data(selected_session_key)
-        
-        if df.empty:
-            st.warning("Selected session has no data.")
+        # Get metadata to determine available chunks
+        metadata = store.get_cache_metadata(selected_session_key)
+        if not metadata or metadata.chunk_count == 0:
+            st.warning("Selected session has no data chunks.")
             return
 
-        st.write(f"Loaded {len(df)} records.")
+        # Chunk selection
+        col_sel1, col_sel2 = st.columns([1, 3])
+        with col_sel1:
+            chunk_index = st.number_input(
+                "Select Data Chunk", 
+                min_value=1, 
+                max_value=metadata.chunk_count, 
+                value=1,
+                help=f"Total chunks: {metadata.chunk_count}"
+            )
+        
+        with st.spinner(f"Loading chunk {chunk_index}..."):
+            df = load_chunk_data(selected_session_key, chunk_index)
+        
+        if df.empty:
+            st.warning("Selected chunk has no data.")
+            return
+
+        st.write(f"Loaded {len(df)} records from chunk {chunk_index} (Total chunks: {metadata.chunk_count}).")
         
         # Feature selection for visualization
         numeric_cols = df.select_dtypes(include=['number']).columns.tolist()
