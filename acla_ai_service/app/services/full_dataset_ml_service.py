@@ -88,7 +88,6 @@ class PipelineConfig:
     segments_cache_key: str = f"enriched_segments_"
     segment_cleanup: bool = False
     top_laps_cache_key: str = f"top_laps_"
-    skip_transformer_training: bool = True
 
 
 class Full_dataset_TelemetryMLService:
@@ -620,7 +619,7 @@ class Full_dataset_TelemetryMLService:
 
     async def prepare_training_data(
         self,
-        track_name: str,
+        track_name: Optional[str] = None,
     ):
         """Stream telemetry, build a segment-purpose dataset, and fine-tune the LLM."""
 
@@ -734,35 +733,27 @@ class Full_dataset_TelemetryMLService:
         generated_datasets = []
     
         try:
-            # Conditionally train and save transformer model
-            if not self.cache_config.skip_transformer_training:
-                transformer_training = await prepare_and_train_coach_transformer_model(
-                    data_cache=self.telemetry_store,
-                    segments_cache_key=segments_cache_key,
-                    segment_length_hint=max_segment_length,
-                )
+            # Train and save transformer model
+            transformer_training = await prepare_and_train_coach_transformer_model(
+                data_cache=self.telemetry_store,
+                segments_cache_key=segments_cache_key,
+                segment_length_hint=max_segment_length,
+            )
 
-                if not transformer_training.get("success"):
-                    raise RuntimeError(transformer_training.get("error") or "Transformer training failed")
+            if not transformer_training.get("success"):
+                raise RuntimeError(transformer_training.get("error") or "Transformer training failed")
 
-                await backend_service.save_ai_model(
-                    model_type="transformer_expert_action",
-                    model_data=transformer_training["serialized_model"],
-                    metadata={
-                        "training_history": transformer_training["training_history"],
-                        "test_metrics": transformer_training["test_metrics"],
-                        "training_timestamp": datetime.now().isoformat()
-                    },
-                    is_active=True
-                )
-                print("[INFO] ✓ Transformer model trained and saved")
-            else:
-                print("[INFO] ⊘ Skipping transformer training and model save (cache_config.skip_transformer_training=True)")
-                transformer_training = {
-                    "success": True,
-                    "skipped": True,
-                    "message": "Transformer training skipped by configuration"
-                }
+            await backend_service.save_ai_model(
+                model_type="transformer_expert_action",
+                model_data=transformer_training["serialized_model"],
+                metadata={
+                    "training_history": transformer_training["training_history"],
+                    "test_metrics": transformer_training["test_metrics"],
+                    "training_timestamp": datetime.now().isoformat()
+                },
+                is_active=True
+            )
+            print("[INFO] ✓ Transformer model trained and saved")
             
             dataset_identifier = f"llm_guidance_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
             training_context = LLMTrainingContext(
