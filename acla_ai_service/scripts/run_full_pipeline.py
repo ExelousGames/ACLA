@@ -71,8 +71,6 @@ async def main():
                 return
             
             # Update keys from result if available
-            if result.get("processed_sessions_cache_key"):
-                processed_sessions_cache_key = result.get("processed_sessions_cache_key")
             if result.get("max_segment_length"):
                 max_segment_length = result.get("max_segment_length")
                 

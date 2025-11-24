@@ -708,7 +708,6 @@ class Full_dataset_TelemetryMLService:
             return {
                 "success": True,
                 "segments_cache_key": segments_cache_key,
-                "processed_sessions_cache_key": processed_sessions_cache_key,
                 "max_segment_length": max_segment_length
             }
 

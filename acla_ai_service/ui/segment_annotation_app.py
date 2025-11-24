@@ -55,7 +55,7 @@ def load_session_keys(store) -> List[str]:
     # Filter for session keys if possible, or just return all
     return [k for k in keys if "racing_sessions" in k and "processed" not in k]
 
-@st.cache_data
+@st.cache_data(max_entries=1)
 def load_session_data(cache_key: str) -> pd.DataFrame:
     """Load session data from Zarr."""
     store = get_store()
