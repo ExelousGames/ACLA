@@ -193,24 +193,30 @@ class SegmentClassifierService:
             print(f"Prediction error: {e}")
             return []
 
-    async def scan_session(self, session_key: str, window_size: int = 100, step_size: int = 50) -> List[Dict[str, Any]]:
+    async def scan_session(self, session_key: Optional[str] = None, dataframe: Optional[pd.DataFrame] = None, window_size: int = 100, step_size: int = 50) -> List[Dict[str, Any]]:
         """Scan a session and find segments matching labels."""
         if self.model is None:
             if not self.load_model():
                 return []
 
-        chunks = self.store.get_cached_data_chunks(session_key)
-        all_records = []
-        for chunk in chunks:
-            if isinstance(chunk, dict) and "data" in chunk:
-                all_records.extend(chunk["data"])
-            elif isinstance(chunk, list):
-                all_records.extend(chunk)
-        
-        if not all_records:
+        if dataframe is not None:
+            df = dataframe
+        elif session_key:
+            chunks = self.store.get_cached_data_chunks(session_key)
+            all_records = []
+            for chunk in chunks:
+                if isinstance(chunk, dict) and "data" in chunk:
+                    all_records.extend(chunk["data"])
+                elif isinstance(chunk, list):
+                    all_records.extend(chunk)
+            
+            if not all_records:
+                return []
+            
+            df = pd.DataFrame(all_records)
+        else:
             return []
         
-        df = pd.DataFrame(all_records)
         found_segments = []
         
         # Get feature names from the first estimator if possible to align columns

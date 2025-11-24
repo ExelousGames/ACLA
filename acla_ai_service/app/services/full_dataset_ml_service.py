@@ -13,6 +13,7 @@ import pandas as pd
 from .corner_identification_unsupervised_service import CornerIdentificationUnsupervisedService
 from .tire_grip_analysis_service import TireGripAnalysisService
 from .imitate_expert_learning_service import ExpertImitateLearningService
+from .segment_classifier_service import segment_classifier
 from .telemetry_segment_visualizer import (
     visualize_optimal_segments,
     visualize_segment_position_coverage,
@@ -77,12 +78,13 @@ from .llm.providers import (
 warnings.filterwarnings('ignore', category=UserWarning)
 
 @dataclass
-class CacheConfig:
+class PipelineConfig:
     """Configuration for cache cleanup operations"""
     session_data_cache_key: str = f"racing_sessions_"
     session_cleanup: bool = False
     processed_session_data_cache_key: str = f"racing_sessions_processed_"
     processed_session_cleanup: bool = False
+    enriched_sessions_cache_key: str = f"racing_sessions_enriched_"
     segments_cache_key: str = f"enriched_segments_"
     segment_cleanup: bool = False
     top_laps_cache_key: str = f"top_laps_"
@@ -155,7 +157,7 @@ class Full_dataset_TelemetryMLService:
         )
 
         # Centralize cache key usage for coordinated cleanup
-        self.cache_config = CacheConfig()
+        self.cache_config = PipelineConfig()
 
         # Add a simple lock mechanism to prevent concurrent fetches of the same model
         self._model_fetch_locks = {}
@@ -616,13 +618,10 @@ class Full_dataset_TelemetryMLService:
                 "error_type": type(error).__name__,
             }
 
-    async def run_transformer_guidance_training(
+    async def prepare_training_data(
         self,
         track_name: str,
-        *,
-        shuffle_dataset: bool = True,
-        cleanup_dataset_file: bool = True,
-    ) -> Dict[str, Any]:
+    ):
         """Stream telemetry, build a segment-purpose dataset, and fine-tune the LLM."""
 
         self._print_section_divider("STREAMING TELEMETRY DATA FROM BACKEND DIRECTLY TO CACHE")
@@ -632,7 +631,7 @@ class Full_dataset_TelemetryMLService:
         # Stream sessions directly into cache for downstream processing
         dataset_cache_key = cache_config.session_data_cache_key
         processed_sessions_cache_key = cache_config.processed_session_data_cache_key
-        segments_cache_key_base = cache_config.segments_cache_key
+        segments_cache_key = cache_config.segments_cache_key
         try:
             sessions_metadata = await backend_service.get_all_racing_sessions_streaming(
                 cache_key=dataset_cache_key,
@@ -682,38 +681,61 @@ class Full_dataset_TelemetryMLService:
 
         self._print_section_divider("ENRICHING CONTEXTUAL DATA")
         max_segment_length = 20
-        segments_cache_key: Optional[str] = None
-        transformer_training: Optional[Dict[str, Any]] = None
-        dataset_path_result: Optional[Path] = None
-        dataset_stats: Optional[Dict[str, Any]] = None
-        llm_training: Optional[Dict[str, Any]] = None
 
         # Check if enriched segments are already cached
-        if self.telemetry_store.has_cached_data(segments_cache_key_base):
+        if self.telemetry_store.has_cached_data(segments_cache_key):
             if cache_config.segment_cleanup:
-                print(f"[INFO] Cleaning up existing segments cache: {segments_cache_key_base}")
-                self.telemetry_store.clear_cache(segments_cache_key_base)
+                print(f"[INFO] Cleaning up existing segments cache: {segments_cache_key}")
+                self.telemetry_store.clear_cache(segments_cache_key)
             else:
-                print(f"[INFO] Found cached segments at {segments_cache_key_base}, skipping enrichment")
-                segments_cache_key = segments_cache_key_base
+                print(f"[INFO] Found cached segments at {segments_cache_key}, skipping enrichment")
+                segments_cache_key = segments_cache_key
                 # Skip enrichment and proceed directly to training
         
         try:
             # Only run enrichment if segments not cached or cleanup requested
             if segments_cache_key is None:
-                segments_cache_key = await self.enriched_contextual_data(
+                enriched_sessions_cache_key = await self.enriched_contextual_data(
                     top_laps_telemetry_list,
                     processed_sessions_cache_key,
                     max_segment_length=max_segment_length,
-                    segments_cache_key_override=segments_cache_key_base,
+                    segments_cache_key_override=segments_cache_key,
                 )
 
             # Free top-lap telemetry to conserve memory once cached
             if top_laps_telemetry_list is not None:
                 del top_laps_telemetry_list
             
+            return {
+                "success": True,
+                "segments_cache_key": segments_cache_key,
+                "processed_sessions_cache_key": processed_sessions_cache_key,
+                "max_segment_length": max_segment_length
+            }
+
+        except RuntimeError as runtime_error:
+            print(f"[ERROR] Pipeline error: {runtime_error}")
+            return {
+                "success": False,
+                "error": str(runtime_error),
+            }
+        
+    async def run_transformer_guidance_training(
+        self,
+        segments_cache_key: str,
+        processed_sessions_cache_key: str,
+        max_segment_length: int = 20,
+        *,
+        shuffle_dataset: bool = True,
+    ) -> Dict[str, Any]:
+            
+        transformer_training: Optional[Dict[str, Any]] = None
+        llm_training: Optional[Dict[str, Any]] = None
+        generated_datasets = []
+    
+        try:
             # Conditionally train and save transformer model
-            if not cache_config.skip_transformer_training:
+            if not self.cache_config.skip_transformer_training:
                 transformer_training = await prepare_and_train_coach_transformer_model(
                     data_cache=self.telemetry_store,
                     segments_cache_key=segments_cache_key,
@@ -779,7 +801,6 @@ class Full_dataset_TelemetryMLService:
             return {
                 "success": False,
                 "error": str(runtime_error),
-                "track_name": track_name,
             }
         except Exception as training_error:
             print(f"[ERROR] Unexpected error: {training_error}")
@@ -787,12 +808,10 @@ class Full_dataset_TelemetryMLService:
             return {
                 "success": False,
                 "error": f"Transformer training / LLM dataset generation failed: {training_error}",
-                "track_name": track_name,
             }
         
         result_payload = {
             "success": True,
-            "track_name": track_name,
             "datasets": generated_datasets,
             "transformer_training": transformer_training,
             "llm_dataset_generation": llm_training,
@@ -1187,23 +1206,23 @@ class Full_dataset_TelemetryMLService:
         max_segment_length: int,
         *,
         segments_cache_key_override: Optional[str] = None,
-    ) -> str:
+    ) -> Tuple[str, Any]:
         """
         Streamlined contextual data enrichment using chunk iterator approach.
         
         1. Train all enrichment models using expert data
         2. Use chunk_iterator to process cached session data  
         3. Enrich each chunk with contextual features
-        4. Filter into segments and cache them in reasonable chunks
+        4. Cache enriched data
         
         Args:
             top_laps_telemetry_list: List of expert telemetry records for training models
             sessions_cache_key: Cache key for accessing cached session data via iterator
-            max_segment_length: Length of segments for transformer training
-            segments_cache_key_override: Optional override for cache key storing enriched segments
+            max_segment_length: Length of segments for transformer training (unused here, kept for compatibility)
+            segments_cache_key_override: Optional override for cache key (unused here)
             
         Returns:
-            str - Cache key for accessing the enriched segments
+            Tuple[str, Any] - (enriched_sessions_cache_key, imitation_learning_service)
         """
 
         # Step 1: Train all enrichment models using expert data
@@ -1274,22 +1293,13 @@ class Full_dataset_TelemetryMLService:
         # Step 2: Process cached sessions via chunk iterator with enrichment
         self._print_section_divider("PROCESSING SESSION DATA VIA CHUNK ITERATOR")
         
-        segments_cache_key = segments_cache_key_override or self.cache_config.segments_cache_key
+        enriched_sessions_cache_key = self.cache_config.enriched_sessions_cache_key
         
         session_chunks_iterator = self.telemetry_store.get_cached_data_chunks(
             cache_key=sessions_cache_key  # Use the cache key where session data is stored
         )
         
         processed_chunks = 0
-        total_segments_cached = 0
-        segments_per_cache = 5000  # Number of segments per cache batch
-        
-        current_segment_batch = []
-        cache_batch_number = 0
-
-        coverage_histogram_bins = np.linspace(0.0, 1.0, num=101)
-        coverage_histogram_counts = np.zeros(len(coverage_histogram_bins) - 1, dtype=np.float64)
-        coverage_sample_count = 0
         
         for session_chunk_df in session_chunks_iterator:
             # Convert raw payload to DataFrame (iterator yields list/dict, not DataFrame)
@@ -1308,11 +1318,82 @@ class Full_dataset_TelemetryMLService:
                 chunk_data, imitation_learning, tire_service
             )
             
-            # Step 4: Filter enriched chunk into segments
-            chunk_segments = imitation_learning.filter_optimal_telemetry_segments(
-                enriched_chunk_data,
-                max_segment_length=max_segment_length,
+            # Cache enriched chunk
+            async def enriched_chunk_generator():
+                yield enriched_chunk_data
+                
+            await self.telemetry_store.cache_chunks_streaming(
+                cache_key=enriched_sessions_cache_key,
+                chunks_iterator=enriched_chunk_generator()
             )
+            
+            # Clear chunk data to free memory
+            del chunk_data, enriched_chunk_data
+            
+            if processed_chunks % 5 == 0:
+                print(f"[INFO] Progress: {processed_chunks} chunks enriched and cached")
+        
+        print(f"[SUCCESS] Enrichment completed:")
+        print(f"  - Processed {processed_chunks} data chunks from cache")  
+        print(f"  - Enriched data cached to: {enriched_sessions_cache_key}")
+        
+        return enriched_sessions_cache_key, imitation_learning
+
+    async def process_and_cache_segments(
+        self,
+        enriched_sessions_cache_key: str,
+        segments_cache_key: str,
+        max_segment_length: int,
+    ) -> str:
+        """
+        Process enriched sessions: filter into segments, visualize, and cache.
+        
+        Args:
+            enriched_sessions_cache_key: Cache key for enriched session data
+            segments_cache_key: Cache key for storing segments
+            max_segment_length: Maximum length for segments
+            
+        Returns:
+            str - Cache key for the segments
+        """
+        self._print_section_divider("PROCESSING ENRICHED DATA INTO SEGMENTS")
+        
+        session_chunks_iterator = self.telemetry_store.get_cached_data_chunks(
+            cache_key=enriched_sessions_cache_key
+        )
+        
+        processed_chunks = 0
+        total_segments_cached = 0
+        segments_per_cache = 5000
+        
+        current_segment_batch = []
+        cache_batch_number = 0
+
+        coverage_histogram_bins = np.linspace(0.0, 1.0, num=101)
+        coverage_histogram_counts = np.zeros(len(coverage_histogram_bins) - 1, dtype=np.float64)
+        coverage_sample_count = 0
+        
+        for session_chunk_df in session_chunks_iterator:
+            session_chunk_df = pd.DataFrame(session_chunk_df)
+            if session_chunk_df is None or session_chunk_df.empty:
+                continue
+                
+            processed_chunks += 1
+            
+            print(f"[INFO] Processing enriched chunk {processed_chunks}: {len(session_chunk_df)} records")
+
+            # Filter using segment_classifier.scan_session
+            found_segments_metadata = await segment_classifier.scan_session(
+                dataframe=session_chunk_df, 
+                window_size=max_segment_length
+            )
+            
+            chunk_segments = []
+            for meta in found_segments_metadata:
+                start = meta['start_index']
+                end = meta['end_index']
+                segment_df = session_chunk_df.iloc[start:end]
+                chunk_segments.append(segment_df.to_dict('records'))
             
             print(f"[INFO] Chunk {processed_chunks}: Generated {len(chunk_segments)} segments")
 
@@ -1342,13 +1423,12 @@ class Full_dataset_TelemetryMLService:
                     coverage_histogram_counts += chunk_counts
                     coverage_sample_count += int(chunk_positions_np.size)
 
-            # Visualize this chunk immediately so artifacts reflect chunk-specific context
+            # Visualize
             if chunk_segments:
                 try:
                     visualization_payloads = visualize_optimal_segments(
                         chunk_segments,
                         max_segments=1,
-                        analyze_segment_fn=imitation_learning._analyze_segment_improvement,
                         file_name_prefix=f"{segments_cache_key}_chunk_{processed_chunks}",
                         return_base64=False
                     )
@@ -1357,12 +1437,10 @@ class Full_dataset_TelemetryMLService:
                 except Exception as viz_error:
                     print(f"[WARN] Failed to visualize chunk {processed_chunks}: {viz_error}")
             
-            # Add segments to current batch
+            # Batching
             current_segment_batch.extend(chunk_segments)
             
-            # Cache segments in batches of segments_per_cache size
             while len(current_segment_batch) >= segments_per_cache:
-                # Take exactly segments_per_cache segments for caching
                 batch_to_cache = current_segment_batch[:segments_per_cache]
                 await self._cache_segment_batch(
                     batch_to_cache,
@@ -1371,19 +1449,13 @@ class Full_dataset_TelemetryMLService:
                 )
                 total_segments_cached += len(batch_to_cache)
                 cache_batch_number += 1
-                
-                # Remove the cached segments from current batch
                 current_segment_batch = current_segment_batch[segments_per_cache:]
-                
                 print(f"[INFO] Cached chunk {cache_batch_number}: {len(batch_to_cache)} segments as single chunk, {total_segments_cached} total segments cached")
-            
-            # Clear chunk data to free memory
-            del chunk_data, enriched_chunk_data, chunk_segments
             
             if processed_chunks % 5 == 0:
                 print(f"[INFO] Progress: {processed_chunks} chunks processed, {total_segments_cached} segments cached")
-        
-        # Cache remaining segments in final batch
+
+        # Final batch
         if current_segment_batch:
             await self._cache_segment_batch(
                 current_segment_batch,
@@ -1391,15 +1463,14 @@ class Full_dataset_TelemetryMLService:
                 cache_batch_number
             )
             total_segments_cached += len(current_segment_batch)
-            current_segment_batch = []
             cache_batch_number += 1
-        
-        print(f"[SUCCESS] Enrichment completed:")
-        print(f"  - Processed {processed_chunks} data chunks from cache")  
-        print(f"  - Generated and cached {total_segments_cached} enriched segments")
-        print(f"  - Segments grouped into {cache_batch_number} cache chunks ({segments_per_cache} segments per chunk)")
-        print(f"  - Cache key for all chunks: {segments_cache_key}")
+            
+        print(f"[SUCCESS] Segment generation completed:")
+        print(f"  - Processed {processed_chunks} enriched chunks")
+        print(f"  - Generated and cached {total_segments_cached} segments")
+        print(f"  - Cache key: {segments_cache_key}")
 
+        # Coverage Viz
         try:
             if coverage_sample_count > 0:
                 coverage_payload = visualize_segment_position_coverage(
@@ -1412,13 +1483,11 @@ class Full_dataset_TelemetryMLService:
                 saved_path = coverage_payload.get("saved_path")
                 if saved_path:
                     print(f"[INFO] Saved normalized position coverage visualization to {saved_path}")
-                else:
-                    print("[INFO] Generated normalized position coverage visualization")
             else:
                 print("[WARN] No normalized car position samples found; skipping coverage visualization")
         except Exception as coverage_error:
             print(f"[WARN] Failed to generate normalized position coverage visualization: {coverage_error}")
-        
+            
         return segments_cache_key
     
 if __name__ == "__main__":
