@@ -28,9 +28,9 @@ def _ensure_app_module_on_path() -> None:
 _ensure_app_module_on_path()
 
 from app.services.zarr_telemetry_store import get_shared_zarr_store
+from app.services.full_dataset_ml_service import PipelineConfig
 
 # Constants
-ANNOTATION_CACHE_KEY = "manual_segment_annotations"
 DEFAULT_LABELS = ["Overtaking", "Tire Strategy", "Expert Line Adherence", "Mistake", "Recovery"]
 
 def _run_async(func, *args, **kwargs):
@@ -49,12 +49,6 @@ def _run_async(func, *args, **kwargs):
 @st.cache_resource
 def get_store():
     return get_shared_zarr_store()
-
-def load_session_keys(store) -> List[str]:
-    """Load available session cache keys."""
-    keys = store.list_cache_keys()
-    # Filter for session keys if possible, or just return all
-    return [k for k in keys if "racing_sessions" in k and "processed" not in k]
 
 @st.cache_data(max_entries=1, show_spinner=False)
 def load_chunk_data(cache_key: str, chunk_index: int) -> pd.DataFrame:
@@ -100,24 +94,27 @@ def load_chunk_data(cache_key: str, chunk_index: int) -> pd.DataFrame:
 def save_annotations(annotations: List[Dict[str, Any]]):
     """Save annotations to Zarr store."""
     store = get_store()
+    pipeline_config = PipelineConfig()
     
     # We append new annotations as a new chunk
     if annotations:
-        _run_async(store.cache_chunks_streaming, ANNOTATION_CACHE_KEY, [annotations])
-        st.success(f"Saved {len(annotations)} annotations to {ANNOTATION_CACHE_KEY}")
+        _run_async(store.cache_chunks_streaming, pipeline_config.annotation_cache_key, [annotations])
+        st.success(f"Saved {len(annotations)} annotations to {pipeline_config.annotation_cache_key}")
 
 def main():
     st.set_page_config(page_title="Segment Annotation App", layout="wide")
     st.title("Telemetry Segment Annotation")
 
     store = get_store()
-    session_keys = load_session_keys(store)
+    
+    pipeline_config = PipelineConfig()
+    selected_session_key = pipeline_config.processed_session_data_cache_key
 
-    if not session_keys:
-        st.warning("No racing sessions found in Zarr store.")
+    if selected_session_key not in store.list_cache_keys():
+        st.error(f"Data key '{selected_session_key}' not found. Please run the data preparation pipeline first.")
         return
-
-    selected_session_key = st.selectbox("Select Session", session_keys)
+    
+    st.info(f"Annotating data from: {selected_session_key}")
     
     if selected_session_key:
         # Get metadata to determine available chunks
