@@ -108,7 +108,7 @@ def main():
     store = get_store()
     
     pipeline_config = PipelineConfig()
-    selected_session_key = pipeline_config.processed_session_data_cache_key
+    selected_session_key = pipeline_config.enriched_sessions_cache_key
 
     if selected_session_key not in store.list_cache_keys():
         st.error(f"Data key '{selected_session_key}' not found. Please run the data preparation pipeline first.")
