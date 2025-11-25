@@ -179,6 +179,27 @@ def main():
                 plot_df = df.iloc[::len(df)//5000] # Approx 5000 points
             
             fig = px.line(plot_df, x=plot_df.index, y=viz_cols, title="Telemetry Data")
+            
+            # Visualize existing annotations
+            if "current_annotations" in st.session_state and st.session_state.current_annotations:
+                for ann in st.session_state.current_annotations:
+                    start = ann.get("start_index")
+                    end = ann.get("end_index")
+                    labels = ann.get("labels", [])
+                    label_str = ", ".join(labels) if isinstance(labels, list) else str(labels)
+                    
+                    if start is not None and end is not None:
+                        fig.add_vrect(
+                            x0=start, 
+                            x1=end, 
+                            fillcolor="green", 
+                            opacity=0.1, 
+                            layer="below", 
+                            line_width=0,
+                            annotation_text=label_str,
+                            annotation_position="top left"
+                        )
+
             st.plotly_chart(fig, use_container_width=True)
 
         st.subheader("Add Annotation")
