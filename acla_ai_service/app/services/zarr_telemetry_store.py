@@ -43,6 +43,17 @@ class CacheMetadata:
         self.total_bytes += chunk_bytes
         self.updated_at = datetime.now().isoformat()
 
+    def update_chunk(self, chunk_index: int, chunk_bytes: int) -> None:
+        # chunk_index is 1-based
+        list_index = chunk_index - 1
+        while len(self.chunk_sizes) <= list_index:
+            self.chunk_sizes.append(0)
+        
+        old_size = self.chunk_sizes[list_index]
+        self.chunk_sizes[list_index] = chunk_bytes
+        self.total_bytes = self.total_bytes - old_size + chunk_bytes
+        self.updated_at = datetime.now().isoformat()
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "cache_key": self.cache_key,
@@ -188,6 +199,43 @@ class ZarrTelemetryStore:
 
         return processed > 0
 
+    def save_chunk(self, cache_key: str, chunk_index: int, payload: Any) -> bool:
+        """Save a specific chunk index, overwriting if exists."""
+        group = self._open_group(cache_key, mode="a")
+        metadata = self._load_or_initialise_metadata(group, cache_key)
+
+        try:
+            payload_bytes = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        except (TypeError, ValueError) as serialization_error:
+            print(f"[WARNING] Failed to serialize chunk for {cache_key}: {serialization_error}")
+            return False
+
+        data_array = np.frombuffer(payload_bytes, dtype=np.uint8)
+        chunk_len = len(data_array)
+        
+        dataset_name = self._format_chunk_name(chunk_index)
+        
+        if chunk_len > 0:
+            group.create_dataset(
+                dataset_name,
+                data=data_array,
+                compressor=self.compressor,
+                overwrite=True,
+                chunks=(chunk_len,),
+            )
+            group[dataset_name].attrs.update({
+                "created_at": datetime.now().isoformat(),
+                "kind": "data",
+            })
+        else:
+            if dataset_name in group:
+                del group[dataset_name]
+        
+        metadata.update_chunk(chunk_index, chunk_len)
+        self._persist_metadata(group, metadata)
+        
+        return True
+
     def get_cached_data_chunks(self, cache_key: str) -> Iterator[Any]:
         """Yield cached chunks exactly as they were stored."""
 
@@ -211,6 +259,26 @@ class ZarrTelemetryStore:
                     continue
 
         return _generator()
+
+    def get_chunk(self, cache_key: str, chunk_index: int) -> Optional[Any]:
+        """Retrieve a specific chunk by its index."""
+        group_path = self._group_path(cache_key)
+        if not group_path.exists():
+            return None
+
+        group = self._open_group(cache_key, mode="r")
+        dataset_name = self._format_chunk_name(chunk_index)
+
+        if dataset_name not in group:
+            return None
+
+        try:
+            raw_bytes = bytes(group[dataset_name][:])
+            payload = json.loads(raw_bytes.decode("utf-8"))
+            return payload
+        except Exception as read_error:
+            print(f"[WARNING] Failed to read chunk '{dataset_name}' for {cache_key}: {read_error}")
+            return None
 
     def get_cache_metadata(self, cache_key: str) -> Optional[CacheMetadata]:
         group_path = self._group_path(cache_key)

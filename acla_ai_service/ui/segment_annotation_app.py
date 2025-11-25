@@ -91,37 +91,30 @@ def load_chunk_data(cache_key: str, chunk_index: int) -> pd.DataFrame:
         print(f"Error loading chunk {chunk_index}: {e}")
         return pd.DataFrame()
 
-def load_existing_annotations(session_key: str, chunk_index: int) -> List[Dict[str, Any]]:
-    """Load existing annotations for the specific session and chunk."""
+def load_annotations(chunk_index: int) -> List[Dict[str, Any]]:
+    """Load annotations for a specific chunk."""
     store = get_store()
     pipeline_config = PipelineConfig()
+    annotation_key = pipeline_config.annotation_cache_key
+    chunk_data = store.get_chunk(annotation_key, chunk_index)
     
-    if not store.has_cached_data(pipeline_config.annotation_cache_key):
-        return []
-        
-    annotations = []
-    try:
-        chunks_iterator = store.get_cached_data_chunks(pipeline_config.annotation_cache_key)
-        for chunk in chunks_iterator:
-            if isinstance(chunk, list):
-                for ann in chunk:
-                    if isinstance(ann, dict):
-                        if ann.get("session_key") == session_key and ann.get("chunk_index") == chunk_index:
-                            annotations.append(ann)
-    except Exception as e:
-        print(f"Error loading annotations: {e}")
-        
-    return annotations
+    if chunk_data:
+        if isinstance(chunk_data, list):
+            return chunk_data
+        if isinstance(chunk_data, dict) and "data" in chunk_data:
+             return chunk_data["data"]
+             
+    return []
 
-def save_annotations(annotations: List[Dict[str, Any]]):
+def save_annotations(chunk_index: int, annotations: List[Dict[str, Any]]):
     """Save annotations to Zarr store."""
     store = get_store()
     pipeline_config = PipelineConfig()
+    annotation_key = pipeline_config.annotation_cache_key
     
-    # We append new annotations as a new chunk
-    if annotations:
-        _run_async(store.cache_chunks_streaming, pipeline_config.annotation_cache_key, [annotations])
-        st.success(f"Saved {len(annotations)} annotations to {pipeline_config.annotation_cache_key}")
+    # Save to specific chunk index
+    store.save_chunk(annotation_key, chunk_index, annotations)
+    st.success(f"Saved {len(annotations)} annotations to {annotation_key} (chunk {chunk_index})")
 
 def main():
     st.set_page_config(page_title="Segment Annotation App", layout="wide")
@@ -158,6 +151,11 @@ def main():
         
         with st.spinner(f"Loading chunk {chunk_index}..."):
             df = load_chunk_data(selected_session_key, chunk_index)
+            
+            # Load existing annotations for this chunk if we switched chunks
+            if "last_chunk_index" not in st.session_state or st.session_state.last_chunk_index != chunk_index:
+                 st.session_state.current_annotations = load_annotations(chunk_index)
+                 st.session_state.last_chunk_index = chunk_index
         
         if df.empty:
             st.warning("Selected chunk has no data.")
@@ -181,39 +179,6 @@ def main():
                 plot_df = df.iloc[::len(df)//5000] # Approx 5000 points
             
             fig = px.line(plot_df, x=plot_df.index, y=viz_cols, title="Telemetry Data")
-            
-            # Visualize existing annotations
-            existing_anns = load_existing_annotations(selected_session_key, chunk_index)
-            
-            # Also visualize currently added (unsaved) annotations for this chunk
-            current_anns = []
-            if "current_annotations" in st.session_state:
-                current_anns = [
-                    a for a in st.session_state.current_annotations 
-                    if a.get("session_key") == selected_session_key and a.get("chunk_index") == chunk_index
-                ]
-            
-            # Combine and plot
-            for ann in existing_anns + current_anns:
-                start = ann.get("start_index", 0)
-                end = ann.get("end_index", 0)
-                labels = ann.get("labels", [])
-                label_text = ", ".join(labels) if isinstance(labels, list) else str(labels)
-                
-                # Use a different color for unsaved vs saved
-                is_unsaved = ann in current_anns
-                fill_color = "rgba(255, 165, 0, 0.2)" if is_unsaved else "rgba(0, 255, 0, 0.2)"
-                
-                fig.add_vrect(
-                    x0=start, 
-                    x1=end,
-                    fillcolor=fill_color,
-                    layer="below",
-                    line_width=0,
-                    annotation_text=label_text,
-                    annotation_position="top left"
-                )
-
             st.plotly_chart(fig, use_container_width=True)
 
         st.subheader("Add Annotation")
@@ -234,7 +199,6 @@ def main():
             else:
                 annotation = {
                     "session_key": selected_session_key,
-                    "chunk_index": int(chunk_index),
                     "start_index": int(start_idx),
                     "end_index": int(end_idx),
                     "labels": selected_labels,
@@ -248,12 +212,15 @@ def main():
                 st.success("Annotation added to list.")
 
         st.subheader("Current Session Annotations")
-        if "current_annotations" in st.session_state and st.session_state.current_annotations:
-            st.dataframe(pd.DataFrame(st.session_state.current_annotations))
+        if "current_annotations" in st.session_state:
+            if st.session_state.current_annotations:
+                st.dataframe(pd.DataFrame(st.session_state.current_annotations))
+            else:
+                st.info("No annotations added yet.")
             
             if st.button("Save All Annotations to Zarr"):
-                save_annotations(st.session_state.current_annotations)
-                st.session_state.current_annotations = [] # Clear after save
+                save_annotations(chunk_index, st.session_state.current_annotations)
+                # We don't clear annotations after save so user can see what is saved
         else:
             st.info("No annotations added yet.")
 
