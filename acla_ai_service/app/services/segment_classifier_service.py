@@ -28,7 +28,10 @@ class SegmentClassifierService:
 
     async def load_annotations(self) -> List[Dict[str, Any]]:
         """Load all annotations from Zarr."""
-        cache_key = "manual_segment_annotations"
+        # Import locally to avoid circular dependency
+        from .full_dataset_ml_service import PipelineConfig
+        cache_key = PipelineConfig().annotation_cache_key
+        
         if not self.store.has_cached_data(cache_key):
             return []
         

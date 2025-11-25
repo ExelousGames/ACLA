@@ -83,10 +83,10 @@ class PipelineConfig:
     session_data_cache_key: str = f"racing_sessions_"
     session_cleanup: bool = False
     processed_session_data_cache_key: str = f"racing_sessions_processed_"
-    processed_session_cleanup: bool = False
+    processed_session_cleanup: bool = True
     enriched_sessions_cache_key: str = f"racing_sessions_enriched_"
     segments_cache_key: str = f"enriched_segments_"
-    segment_cleanup: bool = False
+    segment_cleanup: bool = True
     top_laps_cache_key: str = f"top_laps_"
     annotation_cache_key: str = "manual_segment_annotations"
 
@@ -682,25 +682,15 @@ class Full_dataset_TelemetryMLService:
         self._print_section_divider("ENRICHING CONTEXTUAL DATA")
         max_segment_length = 20
 
-        # Check if enriched segments are already cached
-        if self.telemetry_store.has_cached_data(segments_cache_key):
-            if cache_config.segment_cleanup:
-                print(f"[INFO] Cleaning up existing segments cache: {segments_cache_key}")
-                self.telemetry_store.clear_cache(segments_cache_key)
-            else:
-                print(f"[INFO] Found cached segments at {segments_cache_key}, skipping enrichment")
-                segments_cache_key = segments_cache_key
-                # Skip enrichment and proceed directly to training
-        
+
         try:
             # Only run enrichment if segments not cached or cleanup requested
-            if segments_cache_key is None:
-                enriched_sessions_cache_key = await self.enriched_contextual_data(
-                    top_laps_telemetry_list,
-                    processed_sessions_cache_key,
-                    max_segment_length=max_segment_length,
-                    segments_cache_key_override=segments_cache_key,
-                )
+
+            print("[INFO] Enriching telemetry sessions with segment data...")
+            enriched_sessions_cache_key = await self.enriched_contextual_data(
+                top_laps_telemetry_list,
+                processed_sessions_cache_key,
+            )
 
             # Free top-lap telemetry to conserve memory once cached
             if top_laps_telemetry_list is not None:
@@ -708,7 +698,6 @@ class Full_dataset_TelemetryMLService:
             
             return {
                 "success": True,
-                "segments_cache_key": segments_cache_key,
                 "max_segment_length": max_segment_length
             }
 
@@ -1193,10 +1182,7 @@ class Full_dataset_TelemetryMLService:
     async def enriched_contextual_data(
         self,
         top_laps_telemetry_list: List[Dict[str, Any]],
-        sessions_cache_key: str,
-        max_segment_length: int,
-        *,
-        segments_cache_key_override: Optional[str] = None,
+        sessions_cache_key: str
     ) -> Tuple[str, Any]:
         """
         Streamlined contextual data enrichment using chunk iterator approach.
