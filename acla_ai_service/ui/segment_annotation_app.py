@@ -236,6 +236,21 @@ def main():
         if "current_annotations" in st.session_state:
             if st.session_state.current_annotations:
                 st.dataframe(pd.DataFrame(st.session_state.current_annotations))
+                
+                # Delete annotation functionality
+                col1, col2 = st.columns([3, 1])
+                with col1:
+                    del_idx = st.selectbox(
+                        "Select annotation to delete",
+                        options=range(len(st.session_state.current_annotations)),
+                        format_func=lambda x: f"{x}: {st.session_state.current_annotations[x]['labels']} ({st.session_state.current_annotations[x]['start_index']}-{st.session_state.current_annotations[x]['end_index']})"
+                    )
+                with col2:
+                    st.write("")
+                    st.write("")
+                    if st.button("Delete Selected"):
+                        st.session_state.current_annotations.pop(del_idx)
+                        st.rerun()
             else:
                 st.info("No annotations added yet.")
             
