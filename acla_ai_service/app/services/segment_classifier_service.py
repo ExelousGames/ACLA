@@ -196,11 +196,17 @@ class SegmentClassifierService:
             print(f"Prediction error: {e}")
             return []
 
-    async def scan_session(self, session_key: Optional[str] = None, dataframe: Optional[pd.DataFrame] = None, window_size: int = 100, step_size: int = 50) -> List[Dict[str, Any]]:
-        """Scan a session and find segments matching labels."""
+    async def scan_session(self, session_key: Optional[str] = None, dataframe: Optional[pd.DataFrame] = None, window_size: int = 100, step_size: int = 50) -> None:
+        """
+        Scan a session and find segments matching labels.
+        Uses a rolling window approach to ensure every index is classified based on the consensus of covering windows.
+        Note: step_size is ignored in this implementation to ensure maximum resolution (perfect matching).
+        
+        Modified to cache segments directly to store instead of returning them.
+        """
         if self.model is None:
             if not self.load_model():
-                return []
+                return
 
         if dataframe is not None:
             df = dataframe
@@ -214,29 +220,130 @@ class SegmentClassifierService:
                     all_records.extend(chunk)
             
             if not all_records:
-                return []
+                return
             
             df = pd.DataFrame(all_records)
         else:
-            return []
+            return
+        
+        numeric_df = df.select_dtypes(include=['number'])
+        if numeric_df.empty or len(df) < window_size:
+            return
+
+        # 1. Extract features using rolling window (effectively step_size=1)
+        # We must maintain the same feature order as in prepare_training_data:
+        # col_mean, col_std, col_min, col_max for each column
+        feature_dfs = []
+        for col in numeric_df.columns:
+            r = numeric_df[col].rolling(window=window_size)
+            feature_dfs.append(r.mean().rename(f"{col}_mean"))
+            feature_dfs.append(r.std().rename(f"{col}_std"))
+            feature_dfs.append(r.min().rename(f"{col}_min"))
+            feature_dfs.append(r.max().rename(f"{col}_max"))
+        
+        X = pd.concat(feature_dfs, axis=1)
+        
+        # The first window_size-1 rows will have NaNs because the window isn't full
+        # We only predict for valid full windows.
+        # The row at index `i` in X corresponds to the window ending at `i` (i.e., df[i-window_size+1 : i+1])
+        valid_indices = X.index[window_size-1:]
+        X_valid = X.loc[valid_indices].fillna(0)
+        
+        if X_valid.empty:
+            return
+
+        # 2. Predict labels for all valid windows
+        # y_pred is a binary matrix (n_samples, n_classes)
+        try:
+            y_pred = self.model.predict(X_valid)
+        except Exception as e:
+            print(f"Prediction error during scan: {e}")
+            return
+
+        # 3. Aggregate votes per index
+        # We map predictions back to the original timeline.
+        # A prediction at index `t` (end of window) applies to the range [t-window_size+1, t].
+        # We want to know for each index `i`, what is the consensus of all windows covering `i`.
+        
+        # Create a DataFrame of predictions indexed by the window end index
+        pred_df = pd.DataFrame(y_pred, index=valid_indices, columns=self.mlb.classes_)
+        
+        # Reindex to full df to align (fill missing with 0)
+        pred_df_full = pred_df.reindex(df.index, fill_value=0)
+        
+        # Calculate vote counts for each index.
+        # Vote count at `i` is the sum of predictions for all windows covering `i`.
+        # A window ending at `t` covers `i` if `t-window_size+1 <= i <= t` <=> `i <= t <= i+window_size-1`.
+        # So we sum `pred_df_full` from `t=i` to `t=i+window_size-1`.
+        # This is a forward rolling sum. We can implement it as a backward rolling sum shifted.
+        vote_counts = pred_df_full.rolling(window=window_size).sum().shift(-(window_size-1)).fillna(0)
+        
+        # Calculate coverage (how many windows cover each index)
+        # This handles the edges where fewer than window_size windows cover the index.
+        coverage = pd.Series(1, index=df.index).rolling(window=window_size).sum().shift(-(window_size-1)).fillna(0)
+        coverage[coverage == 0] = 1 # Avoid division by zero
+        
+        # Normalize votes to get scores [0, 1]
+        scores = vote_counts.div(coverage, axis=0)
+        
+        # 4. Threshold and Segment
+        threshold = 0.5
+        active_labels_df = scores > threshold
         
         found_segments = []
+        current_labels = []
+        current_start = 0
         
-        # Get feature names from the first estimator if possible to align columns
-        # Or just rely on pandas alignment if we had saved feature names.
-        # For now, we'll just extract features and predict.
+        # Iterate through to find contiguous segments with the same label set
+        for i in range(len(df)):
+            row = active_labels_df.iloc[i]
+            # Get labels that are True for this index
+            labels_at_i = row[row].index.tolist()
+            labels_at_i.sort()
+            
+            if i == 0:
+                current_labels = labels_at_i
+                current_start = 0
+            else:
+                if labels_at_i != current_labels:
+                    # Close previous segment if it had labels
+                    if current_labels:
+                        found_segments.append({
+                            "start_index": current_start,
+                            "end_index": i,
+                            "labels": current_labels
+                        })
+                    current_labels = labels_at_i
+                    current_start = i
         
-        for i in range(0, len(df) - window_size, step_size):
-            segment = df.iloc[i : i + window_size]
-            labels = self.predict_segment(segment)
-            if labels:
-                found_segments.append({
-                    "start_index": i,
-                    "end_index": i + window_size,
-                    "labels": labels
-                })
+        # Close final segment
+        if current_labels:
+            found_segments.append({
+                "start_index": current_start,
+                "end_index": len(df),
+                "labels": current_labels
+            })
         
-        return found_segments
+        # Extract and cache segments
+        chunk_segments = []
+        for meta in found_segments:
+            start = meta['start_index']
+            end = meta['end_index']
+            segment_df = df.iloc[start:end]
+            chunk_segments.append(segment_df.to_dict('records'))
+            
+        # Cache segments
+        from .full_dataset_ml_service import PipelineConfig
+        cache_key = PipelineConfig().segments_cache_key
+        
+        if chunk_segments:
+             async def segments_generator():
+                yield chunk_segments
+             
+             await self.store.cache_chunks_streaming(
+                cache_key=cache_key,
+                chunks_iterator=segments_generator()
+             )
 
 # Singleton instance
 segment_classifier = SegmentClassifierService()

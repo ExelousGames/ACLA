@@ -1340,15 +1340,6 @@ class Full_dataset_TelemetryMLService:
         )
         
         processed_chunks = 0
-        total_segments_cached = 0
-        segments_per_cache = 5000
-        
-        current_segment_batch = []
-        cache_batch_number = 0
-
-        coverage_histogram_bins = np.linspace(0.0, 1.0, num=101)
-        coverage_histogram_counts = np.zeros(len(coverage_histogram_bins) - 1, dtype=np.float64)
-        coverage_sample_count = 0
         
         for session_chunk_df in session_chunks_iterator:
             session_chunk_df = pd.DataFrame(session_chunk_df)
@@ -1360,92 +1351,84 @@ class Full_dataset_TelemetryMLService:
             print(f"[INFO] Processing enriched chunk {processed_chunks}: {len(session_chunk_df)} records")
 
             # Filter using segment_classifier.scan_session
-            found_segments_metadata = await segment_classifier.scan_session(
+            # scan_session now caches segments directly to the store for memory efficiency
+            await segment_classifier.scan_session(
                 dataframe=session_chunk_df, 
                 window_size=max_segment_length
             )
             
-            chunk_segments = []
-            for meta in found_segments_metadata:
-                start = meta['start_index']
-                end = meta['end_index']
-                segment_df = session_chunk_df.iloc[start:end]
-                chunk_segments.append(segment_df.to_dict('records'))
-            
-            print(f"[INFO] Chunk {processed_chunks}: Generated {len(chunk_segments)} segments")
-
-            if chunk_segments:
-                chunk_positions: List[float] = []
-                for segment in chunk_segments:
-                    for record in segment:
-                        position_value = record.get("Graphics_normalized_car_position")
-                        if position_value is None:
-                            continue
-                        try:
-                            normalized_position = float(position_value)
-                        except (TypeError, ValueError):
-                            continue
-                        if np.isnan(normalized_position):
-                            continue
-                        clamped_position = min(1.0, max(0.0, normalized_position))
-                        chunk_positions.append(clamped_position)
-
-                if chunk_positions:
-                    chunk_positions_np = np.asarray(chunk_positions, dtype=float)
-                    chunk_counts, _ = np.histogram(
-                        chunk_positions_np,
-                        bins=coverage_histogram_bins,
-                        range=(0.0, 1.0),
-                    )
-                    coverage_histogram_counts += chunk_counts
-                    coverage_sample_count += int(chunk_positions_np.size)
-
-            # Visualize
-            if chunk_segments:
-                try:
-                    visualization_payloads = visualize_optimal_segments(
-                        chunk_segments,
-                        max_segments=1,
-                        file_name_prefix=f"{segments_cache_key}_chunk_{processed_chunks}",
-                        return_base64=False
-                    )
-                    if visualization_payloads:
-                        print(f"[INFO] Generated {len(visualization_payloads)} visualizations for chunk {processed_chunks}")
-                except Exception as viz_error:
-                    print(f"[WARN] Failed to visualize chunk {processed_chunks}: {viz_error}")
-            
-            # Batching
-            current_segment_batch.extend(chunk_segments)
-            
-            while len(current_segment_batch) >= segments_per_cache:
-                batch_to_cache = current_segment_batch[:segments_per_cache]
-                await self._cache_segment_batch(
-                    batch_to_cache,
-                    segments_cache_key,
-                    cache_batch_number
-                )
-                total_segments_cached += len(batch_to_cache)
-                cache_batch_number += 1
-                current_segment_batch = current_segment_batch[segments_per_cache:]
-                print(f"[INFO] Cached chunk {cache_batch_number}: {len(batch_to_cache)} segments as single chunk, {total_segments_cached} total segments cached")
-            
             if processed_chunks % 5 == 0:
-                print(f"[INFO] Progress: {processed_chunks} chunks processed, {total_segments_cached} segments cached")
+                print(f"[INFO] Progress: {processed_chunks} chunks processed")
 
-        # Final batch
-        if current_segment_batch:
-            await self._cache_segment_batch(
-                current_segment_batch,
-                segments_cache_key,
-                cache_batch_number
-            )
-            total_segments_cached += len(current_segment_batch)
-            cache_batch_number += 1
-            
         print(f"[SUCCESS] Segment generation completed:")
         print(f"  - Processed {processed_chunks} enriched chunks")
-        print(f"  - Generated and cached {total_segments_cached} segments")
-        print(f"  - Cache key: {segments_cache_key}")
+        print(f"  - Segments cached to: {segments_cache_key}")
+
+        # Visualization logic
+        self._print_section_divider("GENERATING VISUALIZATIONS FROM CACHED SEGMENTS")
+        
+        coverage_histogram_bins = np.linspace(0.0, 1.0, num=101)
+        coverage_histogram_counts = np.zeros(len(coverage_histogram_bins) - 1, dtype=np.float64)
+        coverage_sample_count = 0
+        
+        segments_to_visualize = []
+        max_viz_segments = 5
+        
+        # Stream back the cached segments
+        cached_segments_iterator = self.telemetry_store.get_cached_data_chunks(segments_cache_key)
+        
+        processed_viz_chunks = 0
+        for chunk_segments in cached_segments_iterator:
+            if not chunk_segments:
+                continue
+                
+            # chunk_segments is List[List[Dict]]
+            
+            # Collect samples for detailed visualization (just take from the first few chunks)
+            if len(segments_to_visualize) < max_viz_segments:
+                remaining = max_viz_segments - len(segments_to_visualize)
+                segments_to_visualize.extend(chunk_segments[:remaining])
+            
+            # Accumulate coverage data
+            chunk_positions = []
+            for segment in chunk_segments:
+                for record in segment:
+                    position_value = record.get("Graphics_normalized_car_position")
+                    if position_value is not None:
+                        try:
+                            val = float(position_value)
+                            if not np.isnan(val):
+                                chunk_positions.append(min(1.0, max(0.0, val)))
+                        except (TypeError, ValueError):
+                            pass
+            
+            if chunk_positions:
+                chunk_positions_np = np.asarray(chunk_positions, dtype=float)
+                chunk_counts, _ = np.histogram(
+                    chunk_positions_np,
+                    bins=coverage_histogram_bins,
+                    range=(0.0, 1.0),
+                )
+                coverage_histogram_counts += chunk_counts
+                coverage_sample_count += int(chunk_positions_np.size)
+                
+            processed_viz_chunks += 1
+            if processed_viz_chunks % 10 == 0:
+                 print(f"[INFO] Processed {processed_viz_chunks} cached chunks for visualization...")
+
+        # Generate visualizations
+        if segments_to_visualize:
+             try:
+                visualization_payloads = visualize_optimal_segments(
+                    segments_to_visualize,
+                    max_segments=len(segments_to_visualize),
+                    file_name_prefix=f"{segments_cache_key}_sample",
+                    return_base64=False
+                )
+                if visualization_payloads:
+                    print(f"[INFO] Generated {len(visualization_payloads)} sample segment visualizations")
+             except Exception as viz_error:
+                print(f"[WARN] Failed to visualize sample segments: {viz_error}")
 
         # Coverage Viz
         try:
@@ -1464,7 +1447,7 @@ class Full_dataset_TelemetryMLService:
                 print("[WARN] No normalized car position samples found; skipping coverage visualization")
         except Exception as coverage_error:
             print(f"[WARN] Failed to generate normalized position coverage visualization: {coverage_error}")
-            
+
         return segments_cache_key
     
 if __name__ == "__main__":
