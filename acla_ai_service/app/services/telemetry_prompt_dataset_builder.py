@@ -175,6 +175,90 @@ class TelemetryPromptDatasetBuilder:
         print("[INFO] Telemetry Prompt dataset generated:", json.dumps(stats_summary, indent=2))
         return (examples if not streaming_mode else []), stats
 
+    def build_with_transformer_inference(
+        self,
+        segments_cache_key: str,
+        transformer_model: Any,
+        *,
+        sample_size: int = 25,
+    ) -> Tuple[List[PromptResponseExample], DatasetBuildStats]:
+        """Generate prompt/response records using transformer inference on sampled points.
+        
+        Uses reservoir sampling to select points from the cached dataset without loading
+        everything into memory.
+        """
+        stats = DatasetBuildStats()
+        
+        # Reservoir sampling to select items without loading all into memory
+        # We store (telemetry_point, metadata) tuples
+        reservoir: List[Tuple[Dict[str, Any], Dict[str, Any]]] = [] 
+        processed_count = 0
+        
+        segment_chunk_iterator = self.data_cache.get_cached_data_chunks(segments_cache_key)
+        
+        for chunk_index, chunk_data in enumerate(segment_chunk_iterator):
+            if not chunk_data or not isinstance(chunk_data, list):
+                continue
+                
+            for segment_index, segment in enumerate(chunk_data):
+                if not segment: 
+                    continue
+                
+                # To be efficient with large datasets, we sample points from segments
+                # instead of iterating every single point if possible.
+                # But for true uniform sampling we should iterate.
+                # Given "large dataset", let's iterate but keep it simple.
+                
+                for point_index, point in enumerate(segment):
+                    processed_count += 1
+                    
+                    if len(reservoir) < sample_size:
+                        meta = {
+                            "chunk_index": chunk_index,
+                            "segment_index": segment_index,
+                            "point_index": point_index,
+                            "session_identifier": segment[0].get("session_identifier", "unknown") if segment else "unknown"
+                        }
+                        reservoir.append((point, meta))
+                    else:
+                        # Reservoir sampling replacement
+                        j = self._rng.randint(0, processed_count - 1)
+                        if j < sample_size:
+                            meta = {
+                                "chunk_index": chunk_index,
+                                "segment_index": segment_index,
+                                "point_index": point_index,
+                                "session_identifier": segment[0].get("session_identifier", "unknown") if segment else "unknown"
+                            }
+                            reservoir[j] = (point, meta)
+                            
+        # Now run inference on the reservoir
+        examples = []
+        for point, meta in reservoir:
+            try:
+                prediction = transformer_model.predict_human_readable(point)
+                
+                prompt_text = f"Analyze the following telemetry state and suggest improvements:\n{json.dumps(point, indent=2, default=self._json_default)}"
+                response_text = json.dumps(prediction, indent=2, default=self._json_default)
+                
+                example = PromptResponseExample(
+                    prompt=prompt_text,
+                    response=response_text,
+                    system_prompt="You are an expert racing coach.",
+                    metadata={
+                        "source": "transformer_inference",
+                        "source_indices": meta
+                    }
+                )
+                examples.append(example)
+                stats.windows_kept += 1
+            except Exception as e:
+                print(f"[WARN] Transformer inference failed: {e}")
+                
+        stats.segments_processed = processed_count # Using this field for total points processed
+        
+        return examples, stats
+
     # ------------------------------------------------------------------
     # Prompt construction helpers
     # ------------------------------------------------------------------

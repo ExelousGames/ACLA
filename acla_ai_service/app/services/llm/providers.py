@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import random
 from dataclasses import dataclass, field
 from pathlib import Path
 from datetime import datetime
@@ -29,6 +30,8 @@ class LLMTrainingContext:
 	annotations: Optional[Dict[str, Dict[str, Any]]] = None
 	shuffle: bool = True
 	metadata: Dict[str, Any] = field(default_factory=dict)
+	transformer_model: Optional[Any] = None
+	enriched_sessions_cache_key: Optional[str] = None
 
 
 @dataclass
@@ -71,42 +74,36 @@ class SegmentExplanationTrainingProvider(BaseLLMTrainingProvider):
 		self._builder = builder
 
 	async def produce(self, context: LLMTrainingContext) -> Optional[LLMTrainingContribution]:
-		"""Orchestrate a guided annotation session and return the annotated dataset."""
+		"""Orchestrate a guided annotation session and formatted dataset."""
 
-		if not context.segments_cache_key:
-			raise RuntimeError("segments_cache_key is required to prepare telemetry samples for annotation")
+		if not context.enriched_sessions_cache_key:
+			raise RuntimeError("enriched_sessions_cache_key is required to prepare telemetry samples for annotation")
+
+		if not context.transformer_model:
+			raise RuntimeError("transformer_model is required for generating draft responses")
 
 		metadata = context.metadata or {}
 		sample_size = int(metadata.get("annotation_sample_size", 25))
 		random_seed = int(metadata.get("annotation_random_seed", 0)) or int(datetime.utcnow().timestamp() * 1000)
 
-		original_max_examples = self._builder.config.max_examples
-		original_rng_state = getattr(self._builder._rng, "getstate", lambda: None)()
-
-		try:
-			self._builder.config.max_examples = sample_size
-			if hasattr(self._builder._rng, "seed"):
-				self._builder._rng.seed(random_seed)
-			records, stats = self._builder.build_from_cached_segments(
-				segments_cache_key=context.segments_cache_key,
-				shuffle=True,
-			)
-		finally:
-			self._builder.config.max_examples = original_max_examples
-			if original_rng_state is not None and hasattr(self._builder._rng, "setstate"):
-				self._builder._rng.setstate(original_rng_state)
+		# Use the builder to generate samples with transformer inference
+		records, stats = self._builder.build_with_transformer_inference(
+			segments_cache_key=context.enriched_sessions_cache_key,
+			transformer_model=context.transformer_model,
+			sample_size=sample_size
+		)
 
 		if not records:
-			raise RuntimeError("No telemetry windows were generated for annotation. Ensure cached segments are available.")
+			raise RuntimeError("No telemetry windows were generated for annotation. Ensure cached sessions are available and transformer model is working.")
 
 		session = await asyncio.to_thread(self._create_annotation_dataset, context, records)
 		print(
-			f"\n[INFO] Prepared annotation dataset ({stats.windows_kept} windows) at {session.dataset_path}"
+			f"\n[INFO] Prepared annotation dataset ({len(records)} samples) at {session.dataset_path}"
 		)
 
 		stats_dict = {
 			"provider": self.name,
-			"total_examples": stats.windows_kept,
+			"total_examples": len(records),
 			"annotated_examples": 0,
 			"annotation_coverage": 0.0,
 			"output_path": str(session.dataset_path),
@@ -119,7 +116,7 @@ class SegmentExplanationTrainingProvider(BaseLLMTrainingProvider):
 			dataset_path=session.dataset_path,
 			stats=stats_dict,
 			metadata={
-				"builder": "telemetry_segments",
+				"builder": "transformer_inference",
 				"sample_dataset_path": str(session.dataset_path),
 			},
 			cleanup=False,

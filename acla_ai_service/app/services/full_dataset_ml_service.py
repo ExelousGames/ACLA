@@ -53,7 +53,7 @@ from ..models.telemetry_models import (
     _safe_float,
 )
 # Transformer model utilities
-from ..models.transformer_model import prepare_and_train_coach_transformer_model
+from .transformer_model import prepare_and_train_coach_transformer_model
 
 # Import backend service
 from .backend_service import backend_service

@@ -705,6 +705,11 @@ class TelemetryFeatures:
             "Graphics_is_valid_lap",
             "Static_car_model",
             "Static_track",
+            "Opponent_1_pos_x", "Opponent_1_pos_y", "Opponent_1_pos_z", "Opponent_1_distance", "Opponent_1_car_id",
+            "Opponent_2_pos_x", "Opponent_2_pos_y", "Opponent_2_pos_z", "Opponent_2_distance", "Opponent_2_car_id",
+            "Opponent_3_pos_x", "Opponent_3_pos_y", "Opponent_3_pos_z", "Opponent_3_distance", "Opponent_3_car_id",
+            "Opponent_4_pos_x", "Opponent_4_pos_y", "Opponent_4_pos_z", "Opponent_4_distance", "Opponent_4_car_id",
+            "Opponent_5_pos_x", "Opponent_5_pos_y", "Opponent_5_pos_z", "Opponent_5_distance", "Opponent_5_car_id",
         ]
         
         
@@ -734,64 +739,6 @@ class TelemetryFeatures:
         }
         
         return feature_map.get(model_type, cls.get_performance_critical_features())
-    
-    @classmethod
-    def filter_available_features(cls, feature_list: List[str], available_columns: List[str]) -> List[str]:
-        """
-        Filter feature list to only include features that are available in the data
-        
-        Args:
-            feature_list: List of desired features
-            available_columns: List of columns available in the dataset
-            
-        Returns:
-            List of features that are both desired and available
-        """
-        return [feature for feature in feature_list if feature in available_columns]
-    
-    @classmethod
-    def get_fallback_features(cls, available_columns: List[str], target_variable: str) -> List[str]:
-        """
-        Get fallback numeric features when specific features aren't available
-        
-        Args:
-            available_columns: List of available column names
-            target_variable: Target variable to exclude
-            
-        Returns:
-            List of numeric column names excluding the target
-        """
-        # Priority order for fallback features
-        priority_features = [
-            "Physics_speed_kmh", "Physics_gas", "Physics_brake", "Physics_steer_angle",
-            "Physics_gear", "Physics_rpm", "Physics_g_force_x", "Physics_g_force_y",
-            "Graphics_last_time", "Graphics_position", "Graphics_delta_lap_time"
-        ]
-        
-        # Get priority features that are available
-        fallback_features = [f for f in priority_features if f in available_columns and f != target_variable]
-        
-        # If we still don't have enough features, add any numeric columns
-        if len(fallback_features) < 5:
-            numeric_features = [col for col in available_columns 
-                              if col not in fallback_features and col != target_variable
-                              and any(keyword in col for keyword in ['Physics_', 'Graphics_'])
-                              and not any(skip in col.lower() for skip in ['str', 'text', 'name', 'id'])]
-            fallback_features.extend(numeric_features[:10])  # Add up to 10 more
-        
-        return fallback_features
-
-class TelemetryDataModel(BaseModel):
-    """Pydantic model for telemetry data validation"""
-    session_id: str
-    timestamp: Optional[float] = None
-    physics_data: Dict[str, Any] = {}
-    graphics_data: Dict[str, Any] = {}
-    static_data: Dict[str, Any] = {}
-    
-    class Config:
-        extra = "allow"  # Allow additional fields
-
 
 class FeatureProcessor:
     """Process and prepare telemetry features for AI analysis
@@ -1008,13 +955,20 @@ class FeatureProcessor:
         """Handle complex nested fields from AC Competizione telemetry
         player car coordinates is extracted from array of car coordinates, and named as Graphics_player_pos_x, Graphics_player_pos_y, Graphics_player_pos_z"""
         
-        # Handle Graphics_car_coordinates array - extract player car position
+        # Handle Graphics_car_coordinates array - extract player car position and opponents
         if 'Graphics_car_coordinates' in df.columns:
             try:
                 # Extract first car coordinates (player car) if it's a list
                 for idx in df.index:
                     car_coords_raw = df.loc[idx, 'Graphics_car_coordinates']
                     player_car_id = df.loc[idx, 'Graphics_player_car_id']
+                    
+                    # Get car IDs if available
+                    car_ids = []
+                    if 'Graphics_car_id' in df.columns:
+                        car_ids_raw = df.loc[idx, 'Graphics_car_id']
+                        if isinstance(car_ids_raw, list):
+                            car_ids = car_ids_raw
 
                     # Parse car coordinates using the helper function
                     car_coords = _parse_car_coordinates(car_coords_raw)
@@ -1025,25 +979,92 @@ class FeatureProcessor:
                             player_car_id = int(player_car_id) if player_car_id is not None else 0
                         except (ValueError, TypeError):
                             player_car_id = 0
-                            
+                        
+                        player_pos = {'x': 0.0, 'y': 0.0, 'z': 0.0}
+                        
                         if 0 <= player_car_id < len(car_coords):
                             player_coord = car_coords[player_car_id]
                             if isinstance(player_coord, dict):
-                                df.loc[idx, 'Graphics_player_pos_x'] = _safe_float(player_coord.get('x', 0))
-                                df.loc[idx, 'Graphics_player_pos_y'] = _safe_float(player_coord.get('y', 0))
-                                df.loc[idx, 'Graphics_player_pos_z'] = _safe_float(player_coord.get('z', 0))
+                                player_pos['x'] = _safe_float(player_coord.get('x', 0))
+                                player_pos['y'] = _safe_float(player_coord.get('y', 0))
+                                player_pos['z'] = _safe_float(player_coord.get('z', 0))
+                                
+                                df.loc[idx, 'Graphics_player_pos_x'] = player_pos['x']
+                                df.loc[idx, 'Graphics_player_pos_y'] = player_pos['y']
+                                df.loc[idx, 'Graphics_player_pos_z'] = player_pos['z']
                         else:
                             print(f"[DEBUG] Invalid player_car_id {player_car_id} for car_coords length {len(car_coords)}")
                             # Set default values
                             df.loc[idx, 'Graphics_player_pos_x'] = 0.0
                             df.loc[idx, 'Graphics_player_pos_y'] = 0.0
                             df.loc[idx, 'Graphics_player_pos_z'] = 0.0
+                        
+                        # Calculate distances to other cars
+                        opponents = []
+                        for i, coord in enumerate(car_coords):
+                            if i == player_car_id:
+                                continue
+                            
+                            if isinstance(coord, dict):
+                                cx = _safe_float(coord.get('x', 0))
+                                cy = _safe_float(coord.get('y', 0))
+                                cz = _safe_float(coord.get('z', 0))
+                                
+                                dist = math.sqrt(
+                                    (cx - player_pos['x'])**2 + 
+                                    (cy - player_pos['y'])**2 + 
+                                    (cz - player_pos['z'])**2
+                                )
+                                
+                                # Get car ID if available
+                                c_id = 0
+                                if i < len(car_ids):
+                                    c_id = car_ids[i]
+                                
+                                opponents.append({
+                                    'dist': dist,
+                                    'x': cx,
+                                    'y': cy,
+                                    'z': cz,
+                                    'id': c_id
+                                })
+                        
+                        # Sort by distance
+                        opponents.sort(key=lambda x: x['dist'])
+                        
+                        # Take top 5
+                        for i in range(5):
+                            prefix = f"Opponent_{i+1}"
+                            if i < len(opponents):
+                                opp = opponents[i]
+                                df.loc[idx, f"{prefix}_pos_x"] = opp['x']
+                                df.loc[idx, f"{prefix}_pos_y"] = opp['y']
+                                df.loc[idx, f"{prefix}_pos_z"] = opp['z']
+                                df.loc[idx, f"{prefix}_distance"] = opp['dist']
+                                df.loc[idx, f"{prefix}_car_id"] = opp['id']
+                            else:
+                                # Fill with "very large" values
+                                df.loc[idx, f"{prefix}_pos_x"] = 100000.0
+                                df.loc[idx, f"{prefix}_pos_y"] = 100000.0
+                                df.loc[idx, f"{prefix}_pos_z"] = 100000.0
+                                df.loc[idx, f"{prefix}_distance"] = 100000.0
+                                df.loc[idx, f"{prefix}_car_id"] = -1
+
                     else:
                         print(f"[DEBUG] Could not parse car_coords for row {idx}: {type(car_coords_raw)} -> {car_coords}")
                         # Set default values
                         df.loc[idx, 'Graphics_player_pos_x'] = 0.0
                         df.loc[idx, 'Graphics_player_pos_y'] = 0.0
                         df.loc[idx, 'Graphics_player_pos_z'] = 0.0
+                        
+                        # Fill opponents with default values
+                        for i in range(5):
+                            prefix = f"Opponent_{i+1}"
+                            df.loc[idx, f"{prefix}_pos_x"] = 100000.0
+                            df.loc[idx, f"{prefix}_pos_y"] = 100000.0
+                            df.loc[idx, f"{prefix}_pos_z"] = 100000.0
+                            df.loc[idx, f"{prefix}_distance"] = 100000.0
+                            df.loc[idx, f"{prefix}_car_id"] = -1
                         
                 # Remove the complex column after extraction
                 df.drop('Graphics_car_coordinates', axis=1, inplace=True)

@@ -1,5 +1,4 @@
 
-
 import sys
 import torch
 import torch.nn as nn
@@ -19,11 +18,11 @@ from sklearn.preprocessing import StandardScaler, MinMaxScaler
 from sklearn.metrics import mean_squared_error, mean_absolute_error
 
 # Import contextual feature catalogs for quality weighting
-from ..services.tire_grip_analysis_service import TireGripFeatureCatalog
-from ..services.imitate_expert_learning_service import (
+from .tire_grip_analysis_service import TireGripFeatureCatalog
+from .imitate_expert_learning_service import (
     ExpertFeatureCatalog,
 )
-from .telemetry_models import TelemetryFeatures, _safe_float
+from ..models.telemetry_models import TelemetryFeatures, _safe_float
 
 # Force unbuffered output for real-time print statements
 import os
