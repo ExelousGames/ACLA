@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import random
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -177,10 +178,11 @@ class TelemetryPromptDatasetBuilder:
 
     def build_with_transformer_inference(
         self,
-        segments_cache_key: str,
+        sessions_cache_key: str,
         transformer_model: Any,
         *,
         sample_size: int = 25,
+        output_path: Optional[Path] = None,
     ) -> Tuple[List[PromptResponseExample], DatasetBuildStats]:
         """Generate prompt/response records using transformer inference on sampled points.
         
@@ -194,9 +196,9 @@ class TelemetryPromptDatasetBuilder:
         reservoir: List[Tuple[Dict[str, Any], Dict[str, Any]]] = [] 
         processed_count = 0
         
-        segment_chunk_iterator = self.data_cache.get_cached_data_chunks(segments_cache_key)
+        session_chunk_iterator = self.data_cache.get_cached_data_chunks(sessions_cache_key)
         
-        for chunk_index, chunk_data in enumerate(segment_chunk_iterator):
+        for chunk_index, chunk_data in enumerate(session_chunk_iterator):
             if not chunk_data or not isinstance(chunk_data, list):
                 continue
                 
@@ -234,26 +236,51 @@ class TelemetryPromptDatasetBuilder:
                             
         # Now run inference on the reservoir
         examples = []
-        for point, meta in reservoir:
-            try:
-                prediction = transformer_model.predict_human_readable(point)
-                
-                prompt_text = f"Analyze the following telemetry state and suggest improvements:\n{json.dumps(point, indent=2, default=self._json_default)}"
-                response_text = json.dumps(prediction, indent=2, default=self._json_default)
-                
-                example = PromptResponseExample(
-                    prompt=prompt_text,
-                    response=response_text,
-                    system_prompt="You are an expert racing coach.",
-                    metadata={
-                        "source": "transformer_inference",
-                        "source_indices": meta
-                    }
-                )
-                examples.append(example)
-                stats.windows_kept += 1
-            except Exception as e:
-                print(f"[WARN] Transformer inference failed: {e}")
+        
+        file_handle = None
+        if output_path:
+            file_handle = output_path.open("w", encoding="utf-8")
+
+        try:
+            for point, meta in reservoir:
+                try:
+                    prediction = transformer_model.predict_human_readable(point)
+                    
+                    prompt_text = (
+                        f"Analyze the following telemetry state and suggest improvements:\n"
+                        f"Telemetry: {json.dumps(point, indent=2, default=self._json_default)}\n"
+                        f"Model Prediction: {json.dumps(prediction, indent=2, default=self._json_default)}"
+                    )
+                    response_text = ""
+                    
+                    example = PromptResponseExample(
+                        prompt=prompt_text,
+                        response=response_text,
+                        system_prompt="You are an expert racing coach.",
+                        metadata={
+                            "source": "transformer_inference",
+                            "source_indices": meta
+                        }
+                    )
+                    
+                    if file_handle:
+                        file_handle.write(
+                            json.dumps(
+                                example.to_record(),
+                                ensure_ascii=False,
+                                default=self._json_default,
+                            )
+                            + "\n"
+                        )
+                    else:
+                        examples.append(example)
+                        
+                    stats.windows_kept += 1
+                except Exception as e:
+                    print(f"[WARN] Transformer inference failed: {e}")
+        finally:
+            if file_handle:
+                file_handle.close()
                 
         stats.segments_processed = processed_count # Using this field for total points processed
         

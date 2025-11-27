@@ -84,26 +84,29 @@ class SegmentExplanationTrainingProvider(BaseLLMTrainingProvider):
 
 		metadata = context.metadata or {}
 		sample_size = int(metadata.get("annotation_sample_size", 25))
-		random_seed = int(metadata.get("annotation_random_seed", 0)) or int(datetime.utcnow().timestamp() * 1000)
+		
+		session = self._initialize_annotation_session(context)
 
 		# Use the builder to generate samples with transformer inference
 		records, stats = self._builder.build_with_transformer_inference(
-			segments_cache_key=context.enriched_sessions_cache_key,
+			sessions_cache_key=context.enriched_sessions_cache_key,
 			transformer_model=context.transformer_model,
-			sample_size=sample_size
+			sample_size=sample_size,
+			output_path=session.dataset_path
 		)
+		
+		session.builder_stats = stats
 
-		if not records:
+		if stats.windows_kept == 0:
 			raise RuntimeError("No telemetry windows were generated for annotation. Ensure cached sessions are available and transformer model is working.")
 
-		session = await asyncio.to_thread(self._create_annotation_dataset, context, records)
 		print(
-			f"\n[INFO] Prepared annotation dataset ({len(records)} samples) at {session.dataset_path}"
+			f"\n[INFO] Prepared annotation dataset ({stats.windows_kept} samples) at {session.dataset_path}"
 		)
 
 		stats_dict = {
 			"provider": self.name,
-			"total_examples": len(records),
+			"total_examples": stats.windows_kept,
 			"annotated_examples": 0,
 			"annotation_coverage": 0.0,
 			"output_path": str(session.dataset_path),
@@ -184,20 +187,17 @@ class SegmentExplanationTrainingProvider(BaseLLMTrainingProvider):
 			"annotation_coverage": (annotated_examples / total_examples) if total_examples else 0.0,
 		}
 
-	def _create_annotation_dataset(
+	def _initialize_annotation_session(
 		self,
 		context: LLMTrainingContext,
-		records: List[PromptResponseExample],
 	) -> AnnotationSessionArtifacts:
 		output_dir = context.output_root / self.name
 		output_dir.mkdir(parents=True, exist_ok=True)
 
-		dataset_filename = f"{context.dataset_id}_{self.name}_sample.jsonl"
+		timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+		dataset_filename = f"{context.dataset_id}_{self.name}_sample_{timestamp}.jsonl"
 		sample_dataset_path = output_dir / dataset_filename
 		annotation_path = output_dir / f"{dataset_filename}{self.ANNOTATION_SUFFIX}"
-
-		for path in (sample_dataset_path, annotation_path):
-			path.unlink(missing_ok=True)
 
 		annotation_path.parent.mkdir(parents=True, exist_ok=True)
 		annotation_path.touch()
@@ -206,24 +206,10 @@ class SegmentExplanationTrainingProvider(BaseLLMTrainingProvider):
 		raw_seed = metadata.get("annotation_random_seed")
 		random_seed = int(raw_seed) if raw_seed else int(datetime.utcnow().timestamp() * 1000)
 
-		if not records:
-			raise RuntimeError("No telemetry windows were provided for annotation.")
-
-		with sample_dataset_path.open("w", encoding="utf-8") as handle:
-			for example in records:
-				handle.write(
-					json.dumps(
-						example.to_record(),
-						ensure_ascii=False,
-						default=self._builder._json_default,
-					)
-					+ "\n"
-				)
-
 		return AnnotationSessionArtifacts(
 			dataset_path=sample_dataset_path.resolve(),
 			annotation_path=annotation_path.resolve(),
-			builder_stats=DatasetBuildStats(windows_kept=len(records)),
+			builder_stats=DatasetBuildStats(),
 			random_seed=random_seed,
 		)
 
