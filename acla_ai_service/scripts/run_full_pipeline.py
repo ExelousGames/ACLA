@@ -65,7 +65,8 @@ async def main():
             print("\n" + "="*50)
             print(" Step 1: Prepare Training Data")
             print("="*50)
-            result = await service.prepare_training_data()
+
+            result = await service.prepare_training_data(top_laps_count=20)
             if not result.get("success"):
                 print(f"Error in prepare_training_data: {result.get('error')}")
                 return

@@ -378,6 +378,9 @@ class TireGripAnalysisService:
         return torch.device(requested)
 
     def _default_feature_names(self) -> List[str]:
+        return self._input_feature_names() + self._engineered_feature_names()
+
+    def _input_feature_names(self) -> List[str]:
         return [
             "Physics_gas",
             "Physics_brake",
@@ -387,9 +390,6 @@ class TireGripAnalysisService:
             "Physics_rpm",
             "Physics_roll",
             "Physics_pitch",
-            "Physics_local_velocity_x",
-            "Physics_local_velocity_y",
-            "Physics_local_velocity_z",
             "Physics_velocity_x",
             "Physics_velocity_y",
             "Physics_velocity_z",
@@ -406,6 +406,10 @@ class TireGripAnalysisService:
             "Physics_tyre_core_temp_rear_left",
             "Physics_tyre_core_temp_rear_right",
             "Static_car_model",
+        ]
+
+    def _engineered_feature_names(self) -> List[str]:
+        return [
             "abs_steer",
             "gas_times_speed",
             "brake_times_speed",
@@ -434,24 +438,22 @@ class TireGripAnalysisService:
         if not telemetry_list:
             return pd.DataFrame()
 
-        df_raw = pd.DataFrame(telemetry_list)
-        try:
-            processor = FeatureProcessor(df_raw)
-            df = processor.general_cleaning_for_analysis()
-        except Exception:
-            df = df_raw.fillna(0.0)
+        df = pd.DataFrame(telemetry_list)
+
+        # Validate required columns
+        # We require all input features except Static_car_model which has a default
+        required_inputs = set(self._input_feature_names())
+
+        required_inputs.update(self._slip_columns())
+        # Note: _longitudinal_slip_columns are already in _input_feature_names
+
+        missing_columns = sorted(list(required_inputs - set(df.columns)))
+        if missing_columns:
+            raise ValueError(f"Input telemetry is missing required columns: {missing_columns}")
 
         self._ensure_slip_angle_unit(df)
         self._encode_car_model(df)
 
-        required_columns = set(self._feature_names + self._slip_columns() + self._longitudinal_slip_columns())
-        required_columns.add("Physics_speed_kmh")
-        required_columns.add("Physics_rpm")
-        required_columns.add("Physics_gear")
-        for col in required_columns:
-            if col not in df.columns:
-                df[col] = 0.0
-        df[list(required_columns)] = df[list(required_columns)].apply(pd.to_numeric, errors="coerce").fillna(0.0)
         return df
 
     def _slip_columns(self) -> List[str]:

@@ -8,7 +8,7 @@ from httpx import request
 from pydantic import BaseModel
 import asyncio
 from app.services.full_dataset_ml_service import Full_dataset_TelemetryMLService
-from app.services.telemetry_service import TelemetryService
+
 
 router = APIRouter(prefix="/racing-session", tags=["racing-session"])
 
@@ -55,7 +55,6 @@ class ImitationPredictRequest(BaseModel):
     user_id: Optional[str] = None
     
 # Initialize telemetry service
-telemetry_service = TelemetryService()
 telemetryMLService = Full_dataset_TelemetryMLService()
 
 

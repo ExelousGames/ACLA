@@ -11,7 +11,7 @@ from .api_models import (
     AiModelDto,
     ActiveModelData
 )
-from .telemetry_models import TelemetryFeatures, FeatureProcessor, TelemetryDataModel
+from .telemetry_models import TelemetryFeatures, FeatureProcessor
 
 __all__ = [
     "DatasetInfo",
@@ -21,7 +21,6 @@ __all__ = [
     "HealthResponse",
     "TelemetryFeatures",
     "FeatureProcessor",
-    "TelemetryDataModel",
     "AiModelDto",
     "ActiveModelData"
 ]

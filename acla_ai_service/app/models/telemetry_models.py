@@ -837,7 +837,6 @@ class FeatureProcessor:
         
         # Persist cleaned frame so downstream helpers (e.g., add_time_delta) operate on enriched data
         self.df = processed_df
-
         return processed_df
     
     def split_into_laps(self, df: Optional[pd.DataFrame] = None) -> List[Dict[str, Any]]:
@@ -967,8 +966,10 @@ class FeatureProcessor:
                     car_ids = []
                     if 'Graphics_car_id' in df.columns:
                         car_ids_raw = df.loc[idx, 'Graphics_car_id']
-                        if isinstance(car_ids_raw, list):
-                            car_ids = car_ids_raw
+                        # Use helper to parse car IDs (handles lists and strings)
+                        parsed_ids = _parse_car_coordinates(car_ids_raw)
+                        if isinstance(parsed_ids, list):
+                            car_ids = parsed_ids
 
                     # Parse car coordinates using the helper function
                     car_coords = _parse_car_coordinates(car_coords_raw)

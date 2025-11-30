@@ -8,7 +8,6 @@ import asyncio
 from openai import AsyncOpenAI
 from app.services.full_dataset_ml_service import Full_dataset_TelemetryMLService
 from app.core import settings
-from app.services.telemetry_service import TelemetryService
 from app.services.backend_service import BackendService
 
 
@@ -17,7 +16,6 @@ class AIService:
     
     def __init__(self):
         self.openai_client = AsyncOpenAI(api_key=settings.openai_api_key) if settings.openai_api_key else None
-        self.telemetry_service = TelemetryService()
         self.backend_service = BackendService()
         self.telemetryMLService = Full_dataset_TelemetryMLService()
     def get_available_functions(self) -> List[Dict[str, Any]]:

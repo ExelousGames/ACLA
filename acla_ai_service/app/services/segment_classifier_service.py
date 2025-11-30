@@ -1,30 +1,57 @@
 """
-Service for training and using a Random Forest Classifier to identify behavioral segments.
+Service for training and using an LSTM Classifier to identify behavioral segments.
+Refactored to support variable length segments and learn temporal relations.
 """
 
 import numpy as np
 import pandas as pd
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.multioutput import MultiOutputClassifier
-from sklearn.preprocessing import MultiLabelBinarizer
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import Dataset, DataLoader, TensorDataset
+from sklearn.preprocessing import MultiLabelBinarizer, StandardScaler
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report
 import joblib
 from pathlib import Path
 from typing import List, Dict, Any, Tuple, Optional
 import asyncio
+import json
 
 from .zarr_telemetry_store import get_shared_zarr_store
+
+class LSTMModel(nn.Module):
+    def __init__(self, input_dim, hidden_dim, output_dim, num_layers=2):
+        super(LSTMModel, self).__init__()
+        self.hidden_dim = hidden_dim
+        self.num_layers = num_layers
+        self.lstm = nn.LSTM(input_dim, hidden_dim, num_layers, batch_first=True, dropout=0.2)
+        self.fc = nn.Linear(hidden_dim, output_dim)
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x):
+        # x: (batch, seq_len, input_dim)
+        # Initialize hidden state with zeros
+        h0 = torch.zeros(self.num_layers, x.size(0), self.hidden_dim).to(x.device)
+        c0 = torch.zeros(self.num_layers, x.size(0), self.hidden_dim).to(x.device)
+        
+        out, _ = self.lstm(x, (h0, c0))
+        # out: (batch, seq_len, hidden_dim)
+        out = self.fc(out)
+        return self.sigmoid(out)
 
 class SegmentClassifierService:
     def __init__(self, models_directory: str = "models"):
         self.models_directory = Path(models_directory).resolve()
         self.models_directory.mkdir(exist_ok=True)
-        self.model_path = self.models_directory / "segment_classifier.joblib"
+        self.model_path = self.models_directory / "segment_classifier.pth"
         self.mlb_path = self.models_directory / "segment_labels.joblib"
+        self.scaler_path = self.models_directory / "segment_scaler.joblib"
         self.store = get_shared_zarr_store()
         self.model = None
-        self.mlb = None # MultiLabelBinarizer
+        self.mlb = None 
+        self.scaler = None
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     async def load_annotations(self) -> List[Dict[str, Any]]:
         """Load all annotations from Zarr."""
@@ -48,15 +75,26 @@ class SegmentClassifierService:
                  annotations.append(chunk)
         return annotations
 
-    async def prepare_training_data(self) -> Tuple[pd.DataFrame, np.ndarray]:
-        """Load annotations and corresponding telemetry to create X and y."""
+    async def prepare_training_data(self, sequence_length: int = 100, stride: int = 50) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Load sessions and create sequences for training.
+        Returns X (samples, seq_len, features) and y (samples, seq_len, classes).
+        """
         annotations = await self.load_annotations()
         if not annotations:
             raise ValueError("No annotations found.")
 
-        X_list = []
-        y_labels = []
-
+        # 1. Collect all unique labels
+        all_labels = set()
+        for ann in annotations:
+            all_labels.update(ann.get("labels", []))
+        
+        if not all_labels:
+            raise ValueError("No labels found in annotations.")
+            
+        self.mlb = MultiLabelBinarizer()
+        self.mlb.fit([list(all_labels)]) # Fit on all possible labels
+        
         # Group annotations by session to minimize session loading
         anns_by_session = {}
         for ann in annotations:
@@ -65,6 +103,10 @@ class SegmentClassifierService:
                 anns_by_session[s_key] = []
             anns_by_session[s_key].append(ann)
 
+        X_sequences = []
+        y_sequences = []
+        raw_data_list = []
+        
         for session_key, session_anns in anns_by_session.items():
             # Load session data
             chunks = self.store.get_cached_data_chunks(session_key)
@@ -79,77 +121,114 @@ class SegmentClassifierService:
                 continue
             
             df = pd.DataFrame(all_records)
-            
-            # Ensure numeric columns
             numeric_df = df.select_dtypes(include=['number'])
+            
+            if numeric_df.empty:
+                continue
+                
+            # Create target array
+            y_session = np.zeros((len(df), len(self.mlb.classes_)))
             
             for ann in session_anns:
                 start = ann["start_index"]
                 end = ann["end_index"]
+                labels = ann["labels"]
                 
-                if start >= len(df) or end > len(df):
-                    continue
+                # Transform labels to binary vector
+                label_vec = self.mlb.transform([labels])[0]
                 
-                segment_df = numeric_df.iloc[start:end]
-                if segment_df.empty:
-                    continue
-
-                # Feature extraction: Aggregates over the segment
-                # Mean, Std, Min, Max for each column
-                features = {}
-                for col in segment_df.columns:
-                    features[f"{col}_mean"] = segment_df[col].mean()
-                    features[f"{col}_std"] = segment_df[col].std()
-                    features[f"{col}_min"] = segment_df[col].min()
-                    features[f"{col}_max"] = segment_df[col].max()
+                # Clip indices
+                start = max(0, start)
+                end = min(len(df), end)
                 
-                X_list.append(features)
-                y_labels.append(ann["labels"])
+                if start < end:
+                    y_session[start:end] = np.maximum(y_session[start:end], label_vec)
 
-        if not X_list:
-            raise ValueError("No valid training segments found.")
+            raw_data_list.append((numeric_df.values, y_session))
 
-        X = pd.DataFrame(X_list)
-        X = X.fillna(0) # Handle NaNs
+        if not raw_data_list:
+             raise ValueError("No valid training data found.")
+
+        # Fit Scaler
+        self.scaler = StandardScaler()
+        all_features = np.vstack([d[0] for d in raw_data_list])
+        self.scaler.fit(all_features)
         
-        self.mlb = MultiLabelBinarizer()
-        y = self.mlb.fit_transform(y_labels)
-        
-        return X, y
+        # Create sequences
+        for data_values, y_session in raw_data_list:
+            scaled_data = self.scaler.transform(data_values)
+            
+            num_samples = len(scaled_data)
+            # Create overlapping sequences
+            for i in range(0, num_samples - sequence_length + 1, stride):
+                X_seq = scaled_data[i : i + sequence_length]
+                y_seq = y_session[i : i + sequence_length]
+                
+                X_sequences.append(X_seq)
+                y_sequences.append(y_seq)
 
-    async def train_model(self):
-        """Train the Random Forest Classifier."""
+        if not X_sequences:
+            raise ValueError("Not enough data to create sequences.")
+
+        return np.array(X_sequences), np.array(y_sequences)
+
+    async def train_model(self, epochs=10, batch_size=32, learning_rate=0.001):
+        """Train the LSTM Classifier."""
         print("Preparing training data...")
         X, y = await self.prepare_training_data()
         
-        print(f"Training on {len(X)} samples with {X.shape[1]} features.")
+        print(f"Training on {len(X)} sequences of length {X.shape[1]} with {X.shape[2]} features.")
         
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+        # Convert to tensors
+        X_tensor = torch.FloatTensor(X)
+        y_tensor = torch.FloatTensor(y)
         
-        # Use MultiOutputClassifier with RandomForest
-        forest = RandomForestClassifier(n_estimators=100, random_state=42)
-        self.model = MultiOutputClassifier(forest, n_jobs=-1)
+        dataset = TensorDataset(X_tensor, y_tensor)
+        dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
         
-        self.model.fit(X_train, y_train)
+        input_dim = X.shape[2]
+        output_dim = y.shape[2]
+        hidden_dim = 64
         
-        print("Model trained.")
-        y_pred = self.model.predict(X_test)
+        self.model = LSTMModel(input_dim, hidden_dim, output_dim).to(self.device)
+        criterion = nn.BCELoss()
+        optimizer = optim.Adam(self.model.parameters(), lr=learning_rate)
         
-        # Print classification report
-        for i, label in enumerate(self.mlb.classes_):
-            print(f"Report for {label}:")
-            print(classification_report(y_test[:, i], y_pred[:, i]))
+        self.model.train()
+        for epoch in range(epochs):
+            total_loss = 0
+            for batch_X, batch_y in dataloader:
+                batch_X, batch_y = batch_X.to(self.device), batch_y.to(self.device)
+                
+                optimizer.zero_grad()
+                outputs = self.model(batch_X)
+                loss = criterion(outputs, batch_y)
+                loss.backward()
+                optimizer.step()
+                
+                total_loss += loss.item()
+            
+            print(f"Epoch {epoch+1}/{epochs}, Loss: {total_loss/len(dataloader):.4f}")
 
-        # Save model and label binarizer
-        joblib.dump(self.model, self.model_path)
+        # Save model and artifacts
+        torch.save(self.model.state_dict(), self.model_path)
         joblib.dump(self.mlb, self.mlb_path)
+        joblib.dump(self.scaler, self.scaler_path)
         print(f"Model saved to {self.model_path}")
 
     def load_model(self):
         """Load the trained model."""
-        if self.model_path.exists() and self.mlb_path.exists():
-            self.model = joblib.load(self.model_path)
+        if self.model_path.exists() and self.mlb_path.exists() and self.scaler_path.exists():
             self.mlb = joblib.load(self.mlb_path)
+            self.scaler = joblib.load(self.scaler_path)
+            
+            input_dim = self.scaler.mean_.shape[0]
+            output_dim = len(self.mlb.classes_)
+            hidden_dim = 64 
+            
+            self.model = LSTMModel(input_dim, hidden_dim, output_dim).to(self.device)
+            self.model.load_state_dict(torch.load(self.model_path, map_location=self.device))
+            self.model.eval()
             return True
         return False
 
@@ -163,46 +242,26 @@ class SegmentClassifierService:
         if numeric_df.empty:
             return []
 
-        features = {}
-        for col in numeric_df.columns:
-            features[f"{col}_mean"] = numeric_df[col].mean()
-            features[f"{col}_std"] = numeric_df[col].std()
-            features[f"{col}_min"] = numeric_df[col].min()
-            features[f"{col}_max"] = numeric_df[col].max()
+        X_scaled = self.scaler.transform(numeric_df.values)
+        X_tensor = torch.FloatTensor(X_scaled).unsqueeze(0).to(self.device)
         
-        # Align features with training data (fill missing with 0)
-        # Note: In a real scenario, we should save the feature names used during training
-        # For now, we assume the columns are consistent or we handle it dynamically if we had the feature list
-        # To be safe, we should probably save feature names.
-        # But for this prototype, let's just create a DF and hope columns match or use what we have.
-        # A better way is to save feature columns in __init__ or train.
+        with torch.no_grad():
+            outputs = self.model(X_tensor)
+            # Take max probability over the segment or average?
+            # Let's take the average probability across the segment
+            probs = outputs.squeeze(0).mean(dim=0).cpu().numpy()
+            
+        threshold = 0.5
+        labels = []
+        for i, p in enumerate(probs):
+            if p > threshold:
+                labels.append(self.mlb.classes_[i])
         
-        # Let's assume we just pass the dict and let DataFrame handle it, 
-        # but we need to ensure column order/existence matches training.
-        # For robustness, let's just return the raw prediction for now.
-        
-        X_input = pd.DataFrame([features])
-        
-        # Handle missing columns that were in training
-        # We need to know training columns. 
-        # Let's assume we reload them or just try predict.
-        # Ideally we save feature_names_in_ with the model.
-        
-        try:
-            y_pred = self.model.predict(X_input)
-            labels = self.mlb.inverse_transform(y_pred)
-            return list(labels[0])
-        except Exception as e:
-            print(f"Prediction error: {e}")
-            return []
+        return labels
 
-    async def scan_session(self, session_key: Optional[str] = None, dataframe: Optional[pd.DataFrame] = None, window_size: int = 100, step_size: int = 50) -> None:
+    async def scan_session(self, session_key: Optional[str] = None, dataframe: Optional[pd.DataFrame] = None, **kwargs) -> None:
         """
-        Scan a session and find segments matching labels.
-        Uses a rolling window approach to ensure every index is classified based on the consensus of covering windows.
-        Note: step_size is ignored in this implementation to ensure maximum resolution (perfect matching).
-        
-        Modified to cache segments directly to store instead of returning them.
+        Scan a session and find segments matching labels using LSTM.
         """
         if self.model is None:
             if not self.load_model():
@@ -227,68 +286,21 @@ class SegmentClassifierService:
             return
         
         numeric_df = df.select_dtypes(include=['number'])
-        if numeric_df.empty or len(df) < window_size:
+        if numeric_df.empty:
             return
 
-        # 1. Extract features using rolling window (effectively step_size=1)
-        # We must maintain the same feature order as in prepare_training_data:
-        # col_mean, col_std, col_min, col_max for each column
-        feature_dfs = []
-        for col in numeric_df.columns:
-            r = numeric_df[col].rolling(window=window_size)
-            feature_dfs.append(r.mean().rename(f"{col}_mean"))
-            feature_dfs.append(r.std().rename(f"{col}_std"))
-            feature_dfs.append(r.min().rename(f"{col}_min"))
-            feature_dfs.append(r.max().rename(f"{col}_max"))
+        # Scale
+        X_scaled = self.scaler.transform(numeric_df.values)
+        X_tensor = torch.FloatTensor(X_scaled).unsqueeze(0).to(self.device) # (1, seq_len, features)
         
-        X = pd.concat(feature_dfs, axis=1)
-        
-        # The first window_size-1 rows will have NaNs because the window isn't full
-        # We only predict for valid full windows.
-        # The row at index `i` in X corresponds to the window ending at `i` (i.e., df[i-window_size+1 : i+1])
-        valid_indices = X.index[window_size-1:]
-        X_valid = X.loc[valid_indices].fillna(0)
-        
-        if X_valid.empty:
-            return
-
-        # 2. Predict labels for all valid windows
-        # y_pred is a binary matrix (n_samples, n_classes)
-        try:
-            y_pred = self.model.predict(X_valid)
-        except Exception as e:
-            print(f"Prediction error during scan: {e}")
-            return
-
-        # 3. Aggregate votes per index
-        # We map predictions back to the original timeline.
-        # A prediction at index `t` (end of window) applies to the range [t-window_size+1, t].
-        # We want to know for each index `i`, what is the consensus of all windows covering `i`.
-        
-        # Create a DataFrame of predictions indexed by the window end index
-        pred_df = pd.DataFrame(y_pred, index=valid_indices, columns=self.mlb.classes_)
-        
-        # Reindex to full df to align (fill missing with 0)
-        pred_df_full = pred_df.reindex(df.index, fill_value=0)
-        
-        # Calculate vote counts for each index.
-        # Vote count at `i` is the sum of predictions for all windows covering `i`.
-        # A window ending at `t` covers `i` if `t-window_size+1 <= i <= t` <=> `i <= t <= i+window_size-1`.
-        # So we sum `pred_df_full` from `t=i` to `t=i+window_size-1`.
-        # This is a forward rolling sum. We can implement it as a backward rolling sum shifted.
-        vote_counts = pred_df_full.rolling(window=window_size).sum().shift(-(window_size-1)).fillna(0)
-        
-        # Calculate coverage (how many windows cover each index)
-        # This handles the edges where fewer than window_size windows cover the index.
-        coverage = pd.Series(1, index=df.index).rolling(window=window_size).sum().shift(-(window_size-1)).fillna(0)
-        coverage[coverage == 0] = 1 # Avoid division by zero
-        
-        # Normalize votes to get scores [0, 1]
-        scores = vote_counts.div(coverage, axis=0)
-        
-        # 4. Threshold and Segment
+        # Inference
+        with torch.no_grad():
+            outputs = self.model(X_tensor) # (1, seq_len, num_classes)
+            probs = outputs.squeeze(0).cpu().numpy() # (seq_len, num_classes)
+            
+        # Threshold and Segment
         threshold = 0.5
-        active_labels_df = scores > threshold
+        active_mask = probs > threshold
         
         found_segments = []
         current_labels = []
@@ -296,9 +308,10 @@ class SegmentClassifierService:
         
         # Iterate through to find contiguous segments with the same label set
         for i in range(len(df)):
-            row = active_labels_df.iloc[i]
             # Get labels that are True for this index
-            labels_at_i = row[row].index.tolist()
+            row_mask = active_mask[i]
+            labels_indices = np.where(row_mask)[0]
+            labels_at_i = [self.mlb.classes_[idx] for idx in labels_indices]
             labels_at_i.sort()
             
             if i == 0:
