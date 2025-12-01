@@ -19,6 +19,7 @@ import asyncio
 import json
 
 from .zarr_telemetry_store import get_shared_zarr_store
+from app.models.segment_models import AnnotatedSegment, LABEL_MAPPING, PredictedSegment
 
 class LSTMModel(nn.Module):
     def __init__(self, input_dim, hidden_dim, output_dim, num_layers=2):
@@ -29,16 +30,18 @@ class LSTMModel(nn.Module):
         self.fc = nn.Linear(hidden_dim, output_dim)
         self.sigmoid = nn.Sigmoid()
 
-    def forward(self, x):
+    def forward(self, x, hidden=None):
         # x: (batch, seq_len, input_dim)
-        # Initialize hidden state with zeros
-        h0 = torch.zeros(self.num_layers, x.size(0), self.hidden_dim).to(x.device)
-        c0 = torch.zeros(self.num_layers, x.size(0), self.hidden_dim).to(x.device)
+        # Initialize hidden state with zeros if not provided
+        if hidden is None:
+            h0 = torch.zeros(self.num_layers, x.size(0), self.hidden_dim).to(x.device)
+            c0 = torch.zeros(self.num_layers, x.size(0), self.hidden_dim).to(x.device)
+            hidden = (h0, c0)
         
-        out, _ = self.lstm(x, (h0, c0))
+        out, hidden = self.lstm(x, hidden)
         # out: (batch, seq_len, hidden_dim)
         out = self.fc(out)
-        return self.sigmoid(out)
+        return self.sigmoid(out), hidden
 
 class SegmentClassifierService:
     def __init__(self, models_directory: str = "models", max_length: int = 100):
@@ -54,7 +57,7 @@ class SegmentClassifierService:
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.max_length = max_length
 
-    async def load_annotations(self) -> List[Dict[str, Any]]:
+    async def load_annotations(self) -> List[AnnotatedSegment]:
         """Load all annotations from Zarr."""
         # Import locally to avoid circular dependency
         from .full_dataset_ml_service import PipelineConfig
@@ -66,14 +69,20 @@ class SegmentClassifierService:
         chunks = self.store.get_cached_data_chunks(cache_key)
         annotations = []
         for chunk in chunks:
+            chunk_data = []
             if isinstance(chunk, list):
-                annotations.extend(chunk)
+                chunk_data = chunk
+            elif isinstance(chunk, dict) and "data" in chunk:
+                 chunk_data = chunk["data"]
             elif isinstance(chunk, dict) and "payload" in chunk:
-                 # Handle wrapped payload if necessary, though store usually returns raw payload
-                 annotations.append(chunk["payload"])
+                 chunk_data = [chunk["payload"]]
             else:
-                 # Fallback if chunk is a single item
-                 annotations.append(chunk)
+                 chunk_data = [chunk]
+            
+            for d in chunk_data:
+                if isinstance(d, dict):
+                    annotations.append(AnnotatedSegment.from_dict(d))
+                    
         return annotations
 
     async def prepare_training_data(self) -> Tuple[np.ndarray, np.ndarray]:
@@ -85,10 +94,12 @@ class SegmentClassifierService:
         if not annotations:
             raise ValueError("No annotations found.")
 
-        # 1. Collect all unique labels
+        # 1. Collect all unique labels (mapped to strings)
         all_labels = set()
         for ann in annotations:
-            all_labels.update(ann.get("labels", []))
+            # Map integer labels to string labels
+            mapped_labels = [LABEL_MAPPING.get(l, str(l)) for l in ann.labels]
+            all_labels.update(mapped_labels)
         
         if not all_labels:
             raise ValueError("No labels found in annotations.")
@@ -96,52 +107,28 @@ class SegmentClassifierService:
         self.mlb = MultiLabelBinarizer()
         self.mlb.fit([list(all_labels)]) 
         
-        anns_by_session = {}
-        for ann in annotations:
-            s_key = ann["session_key"]
-            if s_key not in anns_by_session:
-                anns_by_session[s_key] = []
-            anns_by_session[s_key].append(ann)
-
         raw_segments = [] # List of (X_data, y_data)
         
-        for session_key, session_anns in anns_by_session.items():
-            # Load session data
-            chunks = self.store.get_cached_data_chunks(session_key)
-            all_records = []
-            for chunk in chunks:
-                if isinstance(chunk, dict) and "data" in chunk:
-                    all_records.extend(chunk["data"])
-                elif isinstance(chunk, list):
-                    all_records.extend(chunk)
-            
-            if not all_records:
+        for ann in annotations:
+            if not ann.telemetry_data:
                 continue
-            
-            df = pd.DataFrame(all_records)
+                
+            df = pd.DataFrame(ann.telemetry_data)
             numeric_df = df.select_dtypes(include=['number'])
             
             if numeric_df.empty:
                 continue
                 
-            data_values = numeric_df.values
+            seg_X = numeric_df.values
             
-            for ann in session_anns:
-                start = max(0, ann["start_index"])
-                end = min(len(df), ann["end_index"])
-                labels = ann["labels"]
-                
-                if start >= end:
-                    continue
-                
-                # Extract segment
-                seg_X = data_values[start:end]
-                
-                # Create target
-                label_vec = self.mlb.transform([labels])[0]
-                seg_y = np.tile(label_vec, (len(seg_X), 1))
-                
-                raw_segments.append((seg_X, seg_y))
+            # Map labels
+            mapped_labels = [LABEL_MAPPING.get(l, str(l)) for l in ann.labels]
+            
+            # Create target
+            label_vec = self.mlb.transform([mapped_labels])[0]
+            seg_y = np.tile(label_vec, (len(seg_X), 1))
+            
+            raw_segments.append((seg_X, seg_y))
 
         if not raw_segments:
              raise ValueError("No valid training data found.")
@@ -203,7 +190,7 @@ class SegmentClassifierService:
                 batch_X, batch_y = batch_X.to(self.device), batch_y.to(self.device)
                 
                 optimizer.zero_grad()
-                outputs = self.model(batch_X)
+                outputs, _ = self.model(batch_X)
                 loss = criterion(outputs, batch_y)
                 loss.backward()
                 optimizer.step()
@@ -258,7 +245,7 @@ class SegmentClassifierService:
         X_tensor = torch.FloatTensor(X_scaled).unsqueeze(0).to(self.device)
         
         with torch.no_grad():
-            outputs = self.model(X_tensor)
+            outputs, _ = self.model(X_tensor)
             # Take max probability over the segment or average?
             # Let's take the average probability across the segment
             # Only consider valid outputs (ignore padding)
@@ -273,46 +260,44 @@ class SegmentClassifierService:
         
         return labels
 
-    async def scan_session(self, session_key: Optional[str] = None, dataframe: Optional[pd.DataFrame] = None, **kwargs) -> None:
+    async def scan_session(self, dataframe: Optional[pd.DataFrame] = None, target_labels: Optional[List[str]] = None, **kwargs) -> None:
         """
         Scan a session and find segments matching labels using LSTM.
         Identifies intervals, extracts actual segments, and saves to cache.
         """
         if self.model is None:
             if not self.load_model():
-                return
+                return []
 
         if dataframe is not None:
             df = dataframe
-        elif session_key:
-            chunks = self.store.get_cached_data_chunks(session_key)
-            all_records = []
-            for chunk in chunks:
-                if isinstance(chunk, dict) and "data" in chunk:
-                    all_records.extend(chunk["data"])
-                elif isinstance(chunk, list):
-                    all_records.extend(chunk)
-            
-            if not all_records:
-                return
-            
-            df = pd.DataFrame(all_records)
         else:
-            return
+            return []
         
         numeric_df = df.select_dtypes(include=['number'])
         if numeric_df.empty:
-            return
+            return []
 
         # Scale
         X_scaled = self.scaler.transform(numeric_df.values)
-        X_tensor = torch.FloatTensor(X_scaled).unsqueeze(0).to(self.device) # (1, seq_len, features)
         
-        # Inference
+        # Inference with chunking to handle long sessions
         self.model.eval()
+        all_probs = []
+        hidden = None
+        chunk_size = self.max_length
+        
         with torch.no_grad():
-            outputs = self.model(X_tensor) # (1, seq_len, num_classes)
-            probs = outputs.squeeze(0).cpu().numpy() # (seq_len, num_classes)
+            for i in range(0, len(X_scaled), chunk_size):
+                chunk = X_scaled[i : i + chunk_size]
+                X_tensor = torch.FloatTensor(chunk).unsqueeze(0).to(self.device)
+                outputs, hidden = self.model(X_tensor, hidden)
+                all_probs.append(outputs.squeeze(0).cpu().numpy())
+                
+        if not all_probs:
+            return []
+
+        probs = np.concatenate(all_probs, axis=0)
             
         # Threshold and Segment
         threshold = 0.5
@@ -356,19 +341,23 @@ class SegmentClassifierService:
         # Extract and cache segments
         chunk_segments = []
         for meta in found_segments:
+            if target_labels:
+                if not any(label in meta["labels"] for label in target_labels):
+                    continue
+
             start = meta['start_index']
             end = meta['end_index']
             segment_df = df.iloc[start:end]
             
             # Extract actual data and wrap with metadata
             segment_data = segment_df.to_dict('records')
-            chunk_segments.append({
-                "labels": meta["labels"],
-                "start_index": start,
-                "end_index": end,
-                "data": segment_data,
-                "session_key": session_key if session_key else "unknown"
-            })
+            
+            predicted_segment = PredictedSegment(
+                labels=meta["labels"],
+                telemetry_data=segment_data
+            )
+            
+            chunk_segments.append(predicted_segment.to_dict())
             
         # Cache segments
         from .full_dataset_ml_service import PipelineConfig

@@ -13,7 +13,7 @@ import sys
 import os
 from pathlib import Path
 from typing import List, Dict, Any, Optional
-from datetime import datetime
+from dataclasses import dataclass, field, asdict
 
 # Ensure app module is on path
 def _ensure_app_module_on_path() -> None:
@@ -30,23 +30,7 @@ _ensure_app_module_on_path()
 
 from app.services.zarr_telemetry_store import get_shared_zarr_store
 from app.services.full_dataset_ml_service import PipelineConfig
-
-# Constants
-LABEL_MAPPING = {
-    1: "Overtaking",
-    2: "Tire Strategy",
-    3: "Expert Line Adherence",
-    4: "Mistake - Brake too early",
-    5: "Recovery",
-    6: "Mistake - Brake too late",
-    7: "Mistake - Brake too much",
-    8: "Mistake - Brake too little",
-    9: "Mistake - Accelerate too early",
-    10: "Mistake - Accelerate too late",
-    11: "Mistake - Accelerate too little",
-    12: "Mistake - Accelerate too much",
-}
-LABEL_NAME_TO_ID = {v: k for k, v in LABEL_MAPPING.items()}
+from app.models.segment_models import AnnotatedSegment, LABEL_MAPPING, LABEL_NAME_TO_ID
 
 def get_display_labels(labels):
     """Convert label IDs or strings to display strings."""
@@ -119,29 +103,31 @@ def load_chunk_data(cache_key: str, chunk_index: int) -> pd.DataFrame:
         print(f"Error loading chunk {chunk_index}: {e}")
         return pd.DataFrame()
 
-def load_annotations(chunk_index: int) -> List[Dict[str, Any]]:
+def load_annotations(chunk_index: int) -> List[AnnotatedSegment]:
     """Load annotations for a specific chunk."""
     store = get_store()
     pipeline_config = PipelineConfig()
     annotation_key = pipeline_config.annotation_cache_key
     chunk_data = store.get_chunk(annotation_key, chunk_index)
     
+    raw_data = []
     if chunk_data:
         if isinstance(chunk_data, list):
-            return chunk_data
-        if isinstance(chunk_data, dict) and "data" in chunk_data:
-             return chunk_data["data"]
+            raw_data = chunk_data
+        elif isinstance(chunk_data, dict) and "data" in chunk_data:
+             raw_data = chunk_data["data"]
              
-    return []
+    return [AnnotatedSegment.from_dict(d) for d in raw_data]
 
-def save_annotations(chunk_index: int, annotations: List[Dict[str, Any]]):
+def save_annotations(chunk_index: int, annotations: List[AnnotatedSegment]):
     """Save annotations to Zarr store."""
     store = get_store()
     pipeline_config = PipelineConfig()
     annotation_key = pipeline_config.annotation_cache_key
     
     # Save to specific chunk index
-    store.save_chunk(annotation_key, chunk_index, annotations)
+    data_to_save = [a.to_dict() for a in annotations]
+    store.save_chunk(annotation_key, chunk_index, data_to_save)
     st.success(f"Saved {len(annotations)} annotations to {annotation_key} (chunk {chunk_index})")
 
 def main():
@@ -236,28 +222,26 @@ def main():
                     plot_df = df.iloc[::len(df)//5000] # Approx 5000 points
                 
                 fig = px.line(plot_df, x=plot_df.index, y=viz_cols, title=f"Telemetry Data - Graph {graph_id}")
-                fig.update_layout(uirevision=f"{chunk_index}_{graph_id}")
-                
                 # Visualize existing annotations
-                if "current_annotations" in st.session_state and st.session_state.current_annotations:
-                    for ann in st.session_state.current_annotations:
-                        start = ann.get("start_index")
-                        end = ann.get("end_index")
-                        labels = ann.get("labels", [])
-                        display_labels = get_display_labels(labels)
-                        label_str = ", ".join(display_labels)
+                # if "current_annotations" in st.session_state and st.session_state.current_annotations:
+                #     for ann in st.session_state.current_annotations:
+                #         start = ann.start_index
+                #         end = ann.end_index
+                #         labels = ann.labels
+                #         display_labels = get_display_labels(labels)
+                #         label_str = ", ".join(display_labels)
                         
-                        if start is not None and end is not None:
-                            fig.add_vrect(
-                                x0=start, 
-                                x1=end, 
-                                fillcolor="green", 
-                                opacity=0.1, 
-                                layer="below", 
-                                line_width=0,
-                                annotation_text=label_str,
-                                annotation_position="top left"
-                            )
+                #         if start is not None and end is not None:
+                #             fig.add_vrect(
+                #                 x0=start, 
+                #                 x1=end, 
+                #                 fillcolor="green", 
+                #                 opacity=0.1, 
+                #                 layer="below", 
+                #                 line_width=0,
+                #                 annotation_text=label_str,
+                #                 annotation_position="top left"
+                #             )
 
                 st.plotly_chart(fig, use_container_width=True)
         
@@ -519,7 +503,7 @@ def main():
             end_idx = st.number_input("End Index", min_value=0, max_value=len(df)-1, value=min(100, len(df)-1))
             
         selected_labels = st.multiselect("Labels", list(LABEL_MAPPING.values()))
-        
+
         if st.button("Add Annotation"):
             if start_idx >= end_idx:
                 st.error("Start index must be less than end index.")
@@ -527,14 +511,16 @@ def main():
                 st.error("Please select at least one label.")
             else:
                 label_ids = [LABEL_NAME_TO_ID[l] for l in selected_labels if l in LABEL_NAME_TO_ID]
-                annotation = {
-                    "session_key": selected_session_key,
-                    "start_index": int(start_idx),
-                    "end_index": int(end_idx),
-                    "labels": label_ids,
-                    "timestamp": datetime.now().isoformat(),
-                    "segment_length": int(end_idx - start_idx)
-                }
+                
+                # Extract telemetry data
+                segment_df = df.iloc[int(start_idx):int(end_idx)]
+                telemetry_data = segment_df.to_dict(orient="records")
+
+                annotation = AnnotatedSegment(
+                    labels=label_ids,
+                    segment_length=int(end_idx - start_idx),
+                    telemetry_data=telemetry_data
+                )
                 
                 if "current_annotations" not in st.session_state:
                     st.session_state.current_annotations = []
@@ -547,8 +533,10 @@ def main():
                 # Create display version with string labels
                 display_data = []
                 for ann in st.session_state.current_annotations:
-                    d = ann.copy()
-                    d["labels"] = ", ".join(get_display_labels(ann.get("labels", [])))
+                    d = ann.to_dict()
+                    d["labels"] = ", ".join(get_display_labels(ann.labels))
+                    if "telemetry_data" in d:
+                        del d["telemetry_data"]
                     display_data.append(d)
                 st.dataframe(pd.DataFrame(display_data))
                 
@@ -565,7 +553,7 @@ def main():
                     st.selectbox(
                         "Select annotation to delete",
                         options=range(len(st.session_state.current_annotations)),
-                        format_func=lambda x: f"{x}: {', '.join(get_display_labels(st.session_state.current_annotations[x]['labels']))} ({st.session_state.current_annotations[x]['start_index']}-{st.session_state.current_annotations[x]['end_index']})",
+                        format_func=lambda x: f"{x}: {', '.join(get_display_labels(st.session_state.current_annotations[x].labels))} (Length: {st.session_state.current_annotations[x].segment_length})",
                         key="delete_annotation_idx"
                     )
                 with col2:

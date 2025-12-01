@@ -32,6 +32,7 @@ from typing import Dict, List, Any, Optional, Tuple, Union, Iterator, AsyncItera
 from datetime import datetime
 from pathlib import Path
 from app.models import AiModelDto, ActiveModelData
+from app.models.segment_models import PredictedSegment
 
 # Scikit-learn imports
 from sklearn.model_selection import train_test_split, cross_val_score, GridSearchCV, StratifiedKFold
@@ -1396,17 +1397,23 @@ class Full_dataset_TelemetryMLService:
             if not chunk_segments:
                 continue
                 
-            # chunk_segments is List[List[Dict]]
+            # chunk_segments is List[Dict] (PredictedSegment dicts)
             
             # Collect samples for detailed visualization (just take from the first few chunks)
             if len(segments_to_visualize) < max_viz_segments:
                 remaining = max_viz_segments - len(segments_to_visualize)
-                segments_to_visualize.extend(chunk_segments[:remaining])
-            
+                for seg_dict in chunk_segments[:remaining]:
+                    # Use PredictedSegment to ensure structure
+                    pred_seg = PredictedSegment(**seg_dict)
+                    # Visualizer likely expects list of records
+                    segments_to_visualize.append(pred_seg.telemetry_data)
+
             # Accumulate coverage data
             chunk_positions = []
-            for segment in chunk_segments:
-                for record in segment:
+            for segment_item in chunk_segments:
+                telemetry_data = segment_item.get("telemetry_data", [])
+                
+                for record in telemetry_data:
                     position_value = record.get("Graphics_normalized_car_position")
                     if position_value is not None:
                         try:

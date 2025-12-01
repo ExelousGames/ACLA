@@ -1369,6 +1369,10 @@ class TelemetryActionDataset(Dataset):
             # Get first segment from the chunk
             first_segment = first_chunk[0]
             
+            # Handle PredictedSegment structure
+            if isinstance(first_segment, dict) and "telemetry_data" in first_segment:
+                first_segment = first_segment["telemetry_data"]
+
             first_timestep = first_segment[0]
             feature_names = list(first_timestep.keys())
             
@@ -1421,6 +1425,10 @@ class TelemetryActionDataset(Dataset):
 
                 # Process each segment in the chunk
                 for segment in chunk_data:
+                    # Handle PredictedSegment structure
+                    if isinstance(segment, dict) and "telemetry_data" in segment:
+                        segment = segment["telemetry_data"]
+
                     if len(segment) >= self.min_sequence_length:
                         sampled_lengths.append(len(segment))
 
@@ -1467,6 +1475,10 @@ class TelemetryActionDataset(Dataset):
             chunk_rows: List[List[float]] = []
 
             for segment in chunk_data:
+                # Handle PredictedSegment structure
+                if isinstance(segment, dict) and "telemetry_data" in segment:
+                    segment = segment["telemetry_data"]
+
                 # Segment is a list of timestep dicts
                 if not isinstance(segment, list) or len(segment) < self.min_sequence_length:
                     continue
@@ -1558,6 +1570,10 @@ class TelemetryActionDataset(Dataset):
             or None if the record cannot be processed.
         """
         try:
+            # Handle PredictedSegment structure
+            if isinstance(segment_record, dict) and "telemetry_data" in segment_record:
+                segment_record = segment_record["telemetry_data"]
+
             # Segment is a list of timestep dicts
             if not isinstance(segment_record, list) or len(segment_record) < self.min_sequence_length:
                 return None
@@ -1802,6 +1818,10 @@ class TelemetryActionDataset(Dataset):
         lengths: List[int] = []
 
         for idx, segment in enumerate(unified_segments):
+            # Handle PredictedSegment structure
+            if isinstance(segment, dict) and "telemetry_data" in segment:
+                segment = segment["telemetry_data"]
+
             seg_length = len(segment)
             lengths.append(seg_length)
             if seg_length < min_length:
