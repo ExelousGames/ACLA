@@ -32,7 +32,34 @@ from app.services.zarr_telemetry_store import get_shared_zarr_store
 from app.services.full_dataset_ml_service import PipelineConfig
 
 # Constants
-DEFAULT_LABELS = ["Overtaking", "Tire Strategy", "Expert Line Adherence", "Mistake", "Recovery"]
+LABEL_MAPPING = {
+    1: "Overtaking",
+    2: "Tire Strategy",
+    3: "Expert Line Adherence",
+    4: "Mistake - Brake too early",
+    5: "Recovery",
+    6: "Mistake - Brake too late",
+    7: "Mistake - Brake too much",
+    8: "Mistake - Brake too little",
+    9: "Mistake - Accelerate too early",
+    10: "Mistake - Accelerate too late",
+    11: "Mistake - Accelerate too little",
+    12: "Mistake - Accelerate too much",
+}
+LABEL_NAME_TO_ID = {v: k for k, v in LABEL_MAPPING.items()}
+
+def get_display_labels(labels):
+    """Convert label IDs or strings to display strings."""
+    if not isinstance(labels, list):
+        labels = [labels]
+    
+    display_labels = []
+    for l in labels:
+        if isinstance(l, int):
+            display_labels.append(LABEL_MAPPING.get(l, f"Unknown({l})"))
+        else:
+            display_labels.append(str(l))
+    return display_labels
 
 def _run_async(func, *args, **kwargs):
     """Execute an async function from a synchronous context."""
@@ -217,7 +244,8 @@ def main():
                         start = ann.get("start_index")
                         end = ann.get("end_index")
                         labels = ann.get("labels", [])
-                        label_str = ", ".join(labels) if isinstance(labels, list) else str(labels)
+                        display_labels = get_display_labels(labels)
+                        label_str = ", ".join(display_labels)
                         
                         if start is not None and end is not None:
                             fig.add_vrect(
@@ -490,7 +518,7 @@ def main():
         with col2:
             end_idx = st.number_input("End Index", min_value=0, max_value=len(df)-1, value=min(100, len(df)-1))
             
-        selected_labels = st.multiselect("Labels", DEFAULT_LABELS)
+        selected_labels = st.multiselect("Labels", list(LABEL_MAPPING.values()))
         
         if st.button("Add Annotation"):
             if start_idx >= end_idx:
@@ -498,11 +526,12 @@ def main():
             elif not selected_labels:
                 st.error("Please select at least one label.")
             else:
+                label_ids = [LABEL_NAME_TO_ID[l] for l in selected_labels if l in LABEL_NAME_TO_ID]
                 annotation = {
                     "session_key": selected_session_key,
                     "start_index": int(start_idx),
                     "end_index": int(end_idx),
-                    "labels": selected_labels,
+                    "labels": label_ids,
                     "timestamp": datetime.now().isoformat(),
                     "segment_length": int(end_idx - start_idx)
                 }
@@ -515,7 +544,13 @@ def main():
         st.subheader("Current Session Annotations")
         if "current_annotations" in st.session_state:
             if st.session_state.current_annotations:
-                st.dataframe(pd.DataFrame(st.session_state.current_annotations))
+                # Create display version with string labels
+                display_data = []
+                for ann in st.session_state.current_annotations:
+                    d = ann.copy()
+                    d["labels"] = ", ".join(get_display_labels(ann.get("labels", [])))
+                    display_data.append(d)
+                st.dataframe(pd.DataFrame(display_data))
                 
                 # Delete annotation functionality
                 col1, col2 = st.columns([3, 1])
@@ -526,12 +561,11 @@ def main():
                         st.session_state.current_annotations.pop(idx)
                         # Auto-save to ensure persistence
                         save_annotations(st.session_state.chunk_selector, st.session_state.current_annotations)
-
                 with col1:
                     st.selectbox(
                         "Select annotation to delete",
                         options=range(len(st.session_state.current_annotations)),
-                        format_func=lambda x: f"{x}: {st.session_state.current_annotations[x]['labels']} ({st.session_state.current_annotations[x]['start_index']}-{st.session_state.current_annotations[x]['end_index']})",
+                        format_func=lambda x: f"{x}: {', '.join(get_display_labels(st.session_state.current_annotations[x]['labels']))} ({st.session_state.current_annotations[x]['start_index']}-{st.session_state.current_annotations[x]['end_index']})",
                         key="delete_annotation_idx"
                     )
                 with col2:

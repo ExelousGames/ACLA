@@ -41,7 +41,7 @@ class LSTMModel(nn.Module):
         return self.sigmoid(out)
 
 class SegmentClassifierService:
-    def __init__(self, models_directory: str = "models"):
+    def __init__(self, models_directory: str = "models", max_length: int = 100):
         self.models_directory = Path(models_directory).resolve()
         self.models_directory.mkdir(exist_ok=True)
         self.model_path = self.models_directory / "segment_classifier.pth"
@@ -52,6 +52,7 @@ class SegmentClassifierService:
         self.mlb = None 
         self.scaler = None
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.max_length = max_length
 
     async def load_annotations(self) -> List[Dict[str, Any]]:
         """Load all annotations from Zarr."""
@@ -75,10 +76,10 @@ class SegmentClassifierService:
                  annotations.append(chunk)
         return annotations
 
-    async def prepare_training_data(self, sequence_length: int = 100, stride: int = 50) -> Tuple[np.ndarray, np.ndarray]:
+    async def prepare_training_data(self) -> Tuple[np.ndarray, np.ndarray]:
         """
         Load sessions and create sequences for training.
-        Returns X (samples, seq_len, features) and y (samples, seq_len, classes).
+        Refactored to handle variable length segments from annotations.
         """
         annotations = await self.load_annotations()
         if not annotations:
@@ -93,9 +94,8 @@ class SegmentClassifierService:
             raise ValueError("No labels found in annotations.")
             
         self.mlb = MultiLabelBinarizer()
-        self.mlb.fit([list(all_labels)]) # Fit on all possible labels
+        self.mlb.fit([list(all_labels)]) 
         
-        # Group annotations by session to minimize session loading
         anns_by_session = {}
         for ann in annotations:
             s_key = ann["session_key"]
@@ -103,9 +103,7 @@ class SegmentClassifierService:
                 anns_by_session[s_key] = []
             anns_by_session[s_key].append(ann)
 
-        X_sequences = []
-        y_sequences = []
-        raw_data_list = []
+        raw_segments = [] # List of (X_data, y_data)
         
         for session_key, session_anns in anns_by_session.items():
             # Load session data
@@ -126,49 +124,53 @@ class SegmentClassifierService:
             if numeric_df.empty:
                 continue
                 
-            # Create target array
-            y_session = np.zeros((len(df), len(self.mlb.classes_)))
+            data_values = numeric_df.values
             
             for ann in session_anns:
-                start = ann["start_index"]
-                end = ann["end_index"]
+                start = max(0, ann["start_index"])
+                end = min(len(df), ann["end_index"])
                 labels = ann["labels"]
                 
-                # Transform labels to binary vector
+                if start >= end:
+                    continue
+                
+                # Extract segment
+                seg_X = data_values[start:end]
+                
+                # Create target
                 label_vec = self.mlb.transform([labels])[0]
+                seg_y = np.tile(label_vec, (len(seg_X), 1))
                 
-                # Clip indices
-                start = max(0, start)
-                end = min(len(df), end)
-                
-                if start < end:
-                    y_session[start:end] = np.maximum(y_session[start:end], label_vec)
+                raw_segments.append((seg_X, seg_y))
 
-            raw_data_list.append((numeric_df.values, y_session))
-
-        if not raw_data_list:
+        if not raw_segments:
              raise ValueError("No valid training data found.")
 
-        # Fit Scaler
+        # Fit Scaler on all data
         self.scaler = StandardScaler()
-        all_features = np.vstack([d[0] for d in raw_data_list])
-        self.scaler.fit(all_features)
+        all_X = np.vstack([item[0] for item in raw_segments])
+        self.scaler.fit(all_X)
         
-        # Create sequences
-        for data_values, y_session in raw_data_list:
-            scaled_data = self.scaler.transform(data_values)
+        X_sequences = []
+        y_sequences = []
+        
+        for seg_X, seg_y in raw_segments:
+            scaled_X = self.scaler.transform(seg_X)
             
-            num_samples = len(scaled_data)
-            # Create overlapping sequences
-            for i in range(0, num_samples - sequence_length + 1, stride):
-                X_seq = scaled_data[i : i + sequence_length]
-                y_seq = y_session[i : i + sequence_length]
+            # Chunk into max_length
+            length = len(scaled_X)
+            for i in range(0, length, self.max_length):
+                chunk_X = scaled_X[i : i + self.max_length]
+                chunk_y = seg_y[i : i + self.max_length]
                 
-                X_sequences.append(X_seq)
-                y_sequences.append(y_seq)
-
-        if not X_sequences:
-            raise ValueError("Not enough data to create sequences.")
+                # Pad if necessary
+                if len(chunk_X) < self.max_length:
+                    pad_len = self.max_length - len(chunk_X)
+                    chunk_X = np.pad(chunk_X, ((0, pad_len), (0, 0)), 'constant')
+                    chunk_y = np.pad(chunk_y, ((0, pad_len), (0, 0)), 'constant')
+                
+                X_sequences.append(chunk_X)
+                y_sequences.append(chunk_y)
 
         return np.array(X_sequences), np.array(y_sequences)
 
@@ -243,13 +245,25 @@ class SegmentClassifierService:
             return []
 
         X_scaled = self.scaler.transform(numeric_df.values)
+        
+        # Handle max_length and padding
+        original_len = len(X_scaled)
+        if original_len > self.max_length:
+             X_scaled = X_scaled[:self.max_length]
+             original_len = self.max_length
+        elif original_len < self.max_length:
+             pad_len = self.max_length - original_len
+             X_scaled = np.pad(X_scaled, ((0, pad_len), (0, 0)), 'constant')
+
         X_tensor = torch.FloatTensor(X_scaled).unsqueeze(0).to(self.device)
         
         with torch.no_grad():
             outputs = self.model(X_tensor)
             # Take max probability over the segment or average?
             # Let's take the average probability across the segment
-            probs = outputs.squeeze(0).mean(dim=0).cpu().numpy()
+            # Only consider valid outputs (ignore padding)
+            valid_outputs = outputs[0, :original_len, :]
+            probs = valid_outputs.mean(dim=0).cpu().numpy()
             
         threshold = 0.5
         labels = []
@@ -262,6 +276,7 @@ class SegmentClassifierService:
     async def scan_session(self, session_key: Optional[str] = None, dataframe: Optional[pd.DataFrame] = None, **kwargs) -> None:
         """
         Scan a session and find segments matching labels using LSTM.
+        Identifies intervals, extracts actual segments, and saves to cache.
         """
         if self.model is None:
             if not self.load_model():
@@ -294,6 +309,7 @@ class SegmentClassifierService:
         X_tensor = torch.FloatTensor(X_scaled).unsqueeze(0).to(self.device) # (1, seq_len, features)
         
         # Inference
+        self.model.eval()
         with torch.no_grad():
             outputs = self.model(X_tensor) # (1, seq_len, num_classes)
             probs = outputs.squeeze(0).cpu().numpy() # (seq_len, num_classes)
@@ -343,7 +359,16 @@ class SegmentClassifierService:
             start = meta['start_index']
             end = meta['end_index']
             segment_df = df.iloc[start:end]
-            chunk_segments.append(segment_df.to_dict('records'))
+            
+            # Extract actual data and wrap with metadata
+            segment_data = segment_df.to_dict('records')
+            chunk_segments.append({
+                "labels": meta["labels"],
+                "start_index": start,
+                "end_index": end,
+                "data": segment_data,
+                "session_key": session_key if session_key else "unknown"
+            })
             
         # Cache segments
         from .full_dataset_ml_service import PipelineConfig
