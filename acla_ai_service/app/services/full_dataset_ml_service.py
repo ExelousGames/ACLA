@@ -1090,12 +1090,7 @@ class Full_dataset_TelemetryMLService:
             raise RuntimeError(f"Failed to extract imitation features: {str(e)}")
         
         chunk_grip_features = []
-        try:
-            if not getattr(tire_service, "_trained", False):
-                raise RuntimeError("Tire grip service must be trained before extracting features")
-            chunk_grip_features = await tire_service.extract_tire_grip_features(chunk_data)
-        except Exception as e:
-            raise RuntimeError(f"Failed to extract tire grip features: {str(e)}")
+        chunk_grip_features = await tire_service.extract_tire_grip_features(chunk_data)
         
         # Combine all features into enriched records
         enriched_chunk = []
