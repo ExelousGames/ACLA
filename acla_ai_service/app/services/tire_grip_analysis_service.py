@@ -49,7 +49,7 @@ class SlipEnvelopeConfig:
     # Weights for the combined metric
     slip_angle_weight: float = 1.0
     slip_ratio_weight: float = 1.0
-    gas_weight: float = 0.5
+    gas_weight: float = 1.0
 
     slip_angle_unit: str = "auto"  # 'deg', 'rad', or 'auto'
 
@@ -94,11 +94,11 @@ class TireGripAnalysisService:
         w_long = self.config.slip_ratio_weight
         w_gas = self.config.gas_weight
         
-        # Calculate magnitude of the push vector
-        push_index = np.sqrt(
-            (w_lat * norm_lateral) ** 2 + 
-            (w_long * norm_longitudinal) ** 2 + 
-            (w_gas * gas) ** 2
+        # Calculate push index as the maximum of the normalized factors
+        # If any factor is at the limit (1.0), the push index is 1.0
+        push_index = np.maximum(
+            w_lat * norm_lateral,
+            np.maximum(w_long * norm_longitudinal, w_gas * gas)
         )
 
         feature_name = self.feature_catalog.ContextFeature.DRIVER_PUSH_TO_LIMIT.value
