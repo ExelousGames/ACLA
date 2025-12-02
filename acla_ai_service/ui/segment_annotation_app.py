@@ -197,6 +197,15 @@ def main():
 
         st.write(f"Loaded {len(df)} records from chunk {chunk_index} (Total chunks: {metadata.chunk_count}).")
         
+        # Global visualization range control
+        viz_start_idx, viz_end_idx = st.slider(
+            "Global Visualization Range",
+            min_value=0,
+            max_value=len(df),
+            value=(0, len(df)),
+            key="global_viz_range"
+        )
+
         # Feature selection for visualization
         numeric_cols = df.select_dtypes(include=['number']).columns.tolist()
         default_cols = ["speed_kmh", "gas", "brake", "steer_angle"]
@@ -235,10 +244,13 @@ def main():
                     graphs_to_remove.append(graph_id)
 
             if viz_cols:
+                # Apply global range filter
+                sliced_df = df.iloc[viz_start_idx:viz_end_idx]
+
                 # Downsample for plotting if too large
-                plot_df = df
-                if len(df) > 10000:
-                    plot_df = df.iloc[::len(df)//5000] # Approx 5000 points
+                plot_df = sliced_df
+                if len(sliced_df) > 10000:
+                    plot_df = sliced_df.iloc[::len(sliced_df)//5000] # Approx 5000 points
                 
                 fig = px.line(plot_df, x=plot_df.index, y=viz_cols, title=f"Telemetry Data - Graph {graph_id}")
                 # Visualize existing annotations

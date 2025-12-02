@@ -15,6 +15,7 @@ LABEL_MAPPING = {
     10: "Mistake - Accelerate too late",
     11: "Mistake - Accelerate too little",
     12: "Mistake - Accelerate too much",
+    13: "Expert Speed Adherence",
 }
 LABEL_NAME_TO_ID = {v: k for k, v in LABEL_MAPPING.items()}
 
