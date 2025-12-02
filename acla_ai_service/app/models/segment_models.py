@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field, asdict
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 # Constants
 LABEL_MAPPING = {
@@ -22,6 +22,9 @@ LABEL_NAME_TO_ID = {v: k for k, v in LABEL_MAPPING.items()}
 class AnnotatedSegment:
     labels: List[int]
     segment_length: int
+    start_index: Optional[int] = None
+    end_index: Optional[int] = None
+    chunk_index: Optional[int] = None
     telemetry_data: List[Dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -32,6 +35,9 @@ class AnnotatedSegment:
         return cls(
             labels=data.get("labels", []),
             segment_length=data.get("segment_length", 0),
+            start_index=data.get("start_index"),
+            end_index=data.get("end_index"),
+            chunk_index=data.get("chunk_index"),
             telemetry_data=data.get("telemetry_data", [])
         )
 

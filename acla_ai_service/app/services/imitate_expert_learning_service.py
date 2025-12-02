@@ -884,12 +884,15 @@ class ExpertImitateLearningService:
                         row_features[EO.EXPERT_OPTIMAL_PLAYER_POS_Y.value] = expert_pos_y
                         row_features[EO.EXPERT_OPTIMAL_PLAYER_POS_Z.value] = expert_pos_z
 
-                        row_features[EO.EXPERT_OPTIMAL_VELOCITY_X.value] = exp_velocity_x
-                        row_features[EO.EXPERT_OPTIMAL_VELOCITY_Y.value] = exp_velocity_y
-                        row_features[EO.EXPERT_OPTIMAL_VELOCITY_Z.value] = exp_velocity_z
-
                         expert_speed = float(row_predictions.get(EO.EXPERT_OPTIMAL_SPEED.value, exp_velocity_magnitude))
                         row_features[EO.EXPERT_OPTIMAL_SPEED.value] = expert_speed
+
+                        # Add expert throttle and brake predictions
+                        expert_throttle = float(row_predictions.get(EO.EXPERT_OPTIMAL_THROTTLE.value, 0.0))
+                        row_features[EO.EXPERT_OPTIMAL_THROTTLE.value] = expert_throttle
+
+                        expert_brake = float(row_predictions.get(EO.EXPERT_OPTIMAL_BRAKE.value, 0.0))
+                        row_features[EO.EXPERT_OPTIMAL_BRAKE.value] = expert_brake
 
                         # Store only velocity alignment feature
                         row_features[ContextFeature.EXPERT_VELOCITY_ALIGNMENT.value] = float(velocity_alignment)

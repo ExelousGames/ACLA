@@ -30,6 +30,10 @@ _ensure_app_module_on_path()
 
 from app.services.zarr_telemetry_store import get_shared_zarr_store
 from app.services.full_dataset_ml_service import PipelineConfig
+import app.models.segment_models
+import importlib
+# Force reload to pick up model changes (e.g. new fields)
+importlib.reload(app.models.segment_models)
 from app.models.segment_models import AnnotatedSegment, LABEL_MAPPING, LABEL_NAME_TO_ID
 
 def get_display_labels(labels):
@@ -117,7 +121,12 @@ def load_annotations(chunk_index: int) -> List[AnnotatedSegment]:
         elif isinstance(chunk_data, dict) and "data" in chunk_data:
              raw_data = chunk_data["data"]
              
-    return [AnnotatedSegment.from_dict(d) for d in raw_data]
+    segments = [AnnotatedSegment.from_dict(d) for d in raw_data]
+    # Ensure chunk_index is set for loaded segments
+    for s in segments:
+        if s.chunk_index is None:
+            s.chunk_index = chunk_index
+    return segments
 
 def save_annotations(chunk_index: int, annotations: List[AnnotatedSegment]):
     """Save annotations to Zarr store."""
@@ -132,6 +141,16 @@ def save_annotations(chunk_index: int, annotations: List[AnnotatedSegment]):
 
 def main():
     st.set_page_config(page_title="Segment Annotation App", layout="wide")
+    
+    # Add sidebar controls
+    with st.sidebar:
+        st.header("App Controls")
+        if st.button("Finish & Exit", type="primary", help="Close the app and return to the pipeline"):
+            st.success("Exiting...")
+            import time
+            time.sleep(0.5)
+            os._exit(0)
+
     st.title("Telemetry Segment Annotation")
 
     store = get_store()
@@ -223,25 +242,60 @@ def main():
                 
                 fig = px.line(plot_df, x=plot_df.index, y=viz_cols, title=f"Telemetry Data - Graph {graph_id}")
                 # Visualize existing annotations
-                # if "current_annotations" in st.session_state and st.session_state.current_annotations:
-                #     for ann in st.session_state.current_annotations:
-                #         start = ann.start_index
-                #         end = ann.end_index
-                #         labels = ann.labels
-                #         display_labels = get_display_labels(labels)
-                #         label_str = ", ".join(display_labels)
+                if "current_annotations" in st.session_state and st.session_state.current_annotations:
+                    for ann in st.session_state.current_annotations:
+                        # Ensure we only visualize annotations for the current chunk
+                        ann_chunk = getattr(ann, "chunk_index", None)
+                        if ann_chunk is not None and ann_chunk != chunk_index:
+                            continue
+
+                        start = getattr(ann, "start_index", None)
+                        end = getattr(ann, "end_index", None)
+
+                        # Fallback for legacy annotations without start/end index
+                        if (start is None or end is None) and ann.telemetry_data:
+                            try:
+                                # Attempt to locate the segment in the current dataframe
+                                first_row = ann.telemetry_data[0]
+                                # Use a subset of columns to match
+                                match_cols = [c for c in first_row.keys() if c in df.columns]
+                                if match_cols:
+                                    # Filter using the first few columns to narrow down candidates
+                                    mask = pd.Series(True, index=df.index)
+                                    # Use up to 5 columns for matching to be robust but fast
+                                    for col in match_cols[:5]:
+                                        mask &= (df[col] == first_row[col])
+                                    
+                                    matches = df[mask].index
+                                    if not matches.empty:
+                                        # Take the first match
+                                        found_start = matches[0]
+                                        # Calculate end based on segment length
+                                        found_end = found_start + ann.segment_length
+                                        
+                                        # Update the object in memory
+                                        ann.start_index = int(found_start)
+                                        ann.end_index = int(found_end)
+                                        start = ann.start_index
+                                        end = ann.end_index
+                            except Exception as e:
+                                print(f"Could not recover indices for annotation: {e}")
+
+                        labels = ann.labels
+                        display_labels = get_display_labels(labels)
+                        label_str = ", ".join(display_labels)
                         
-                #         if start is not None and end is not None:
-                #             fig.add_vrect(
-                #                 x0=start, 
-                #                 x1=end, 
-                #                 fillcolor="green", 
-                #                 opacity=0.1, 
-                #                 layer="below", 
-                #                 line_width=0,
-                #                 annotation_text=label_str,
-                #                 annotation_position="top left"
-                #             )
+                        if start is not None and end is not None:
+                            fig.add_vrect(
+                                x0=start, 
+                                x1=end, 
+                                fillcolor="green", 
+                                opacity=0.1, 
+                                layer="below", 
+                                line_width=0,
+                                annotation_text=label_str,
+                                annotation_position="top left"
+                            )
 
                 st.plotly_chart(fig, use_container_width=True)
         
@@ -519,6 +573,9 @@ def main():
                 annotation = AnnotatedSegment(
                     labels=label_ids,
                     segment_length=int(end_idx - start_idx),
+                    start_index=int(start_idx),
+                    end_index=int(end_idx),
+                    chunk_index=int(chunk_index),
                     telemetry_data=telemetry_data
                 )
                 
