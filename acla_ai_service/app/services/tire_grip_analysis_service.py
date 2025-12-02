@@ -51,7 +51,7 @@ class SlipEnvelopeConfig:
     slip_ratio_weight: float = 1.0
     gas_weight: float = 1.0
 
-    slip_angle_unit: str = "auto"  # 'deg', 'rad', or 'auto'
+    slip_angle_unit: str = "rad"  # 'deg', 'rad', or 'auto'
 
     def combined_limit(self) -> float:
         return max(self.front_slip_limit, self.rear_slip_limit)
