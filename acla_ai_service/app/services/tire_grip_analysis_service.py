@@ -34,15 +34,14 @@ class TireGripFeatureCatalog:
 
 
 EPS = 1e-6
-RADIAN_DETECTION_THRESHOLD = 1.0  # Slip angles below this (abs) likely expressed in radians
 
 
 @dataclass
 class SlipEnvelopeConfig:
     """Hyperparameters governing the slip-envelope calculation."""
 
-    front_slip_limit: float = 6.0  # Units must match telemetry (deg or rad)
-    rear_slip_limit: float = 7.0
+    front_slip_limit: float = 0.105  # ~6.0 degrees in radians
+    rear_slip_limit: float = 0.122   # ~7.0 degrees in radians
     front_longitudinal_slip_limit: float = 0.1  # Dimensionless slip ratio
     rear_longitudinal_slip_limit: float = 0.1
     
@@ -50,8 +49,6 @@ class SlipEnvelopeConfig:
     slip_angle_weight: float = 1.0
     slip_ratio_weight: float = 1.0
     gas_weight: float = 1.0
-
-    slip_angle_unit: str = "rad"  # 'deg', 'rad', or 'auto'
 
     def combined_limit(self) -> float:
         return max(self.front_slip_limit, self.rear_slip_limit)
@@ -63,8 +60,6 @@ class TireGripAnalysisService:
     def __init__(self, config: Optional[SlipEnvelopeConfig] = None):
         self.feature_catalog = TireGripFeatureCatalog
         self.config = config or SlipEnvelopeConfig()
-        self._slip_angle_unit: Optional[str] = None
-        self._config_slip_converted: bool = False
 
     # ------------------------------------------------------------------
     # Public API
@@ -94,12 +89,15 @@ class TireGripAnalysisService:
         w_long = self.config.slip_ratio_weight
         w_gas = self.config.gas_weight
         
-        # Calculate push index as the maximum of the normalized factors
-        # If any factor is at the limit (1.0), the push index is 1.0
-        push_index = np.maximum(
-            w_lat * norm_lateral,
-            np.maximum(w_long * norm_longitudinal, w_gas * gas)
-        )
+        # Friction Circle for tires: sqrt((lat)^2 + (long)^2)
+        # This captures that you can't brake 100% and turn 100% at the same time.
+        # If we just used max(), 70% braking + 70% turning would look like 0.7 (safe),
+        # but in reality sqrt(0.7^2 + 0.7^2) ~= 1.0 (at the limit).
+        tire_utilization = np.sqrt((w_lat * norm_lateral)**2 + (w_long * norm_longitudinal)**2)
+
+        # Calculate push index as the maximum of the tire utilization and gas
+        # We keep gas separate because it represents engine limit/driver intent on straights
+        push_index = np.maximum(tire_utilization, w_gas * gas)
 
         feature_name = self.feature_catalog.ContextFeature.DRIVER_PUSH_TO_LIMIT.value
         return [{feature_name: float(value)} for value in push_index]
@@ -158,7 +156,6 @@ class TireGripAnalysisService:
         if missing_columns:
             raise ValueError(f"Input telemetry is missing required columns: {missing_columns}")
 
-        self._ensure_slip_angle_unit(df)
         return df
 
     def _slip_columns(self) -> List[str]:
@@ -176,60 +173,6 @@ class TireGripAnalysisService:
             "Physics_slip_ratio_rear_left",
             "Physics_slip_ratio_rear_right",
         ]
-
-    def _ensure_slip_angle_unit(self, df: pd.DataFrame) -> None:
-        if self._slip_angle_unit is not None:
-            return
-
-        configured = (self.config.slip_angle_unit or "auto").strip().lower()
-        if configured in {"deg", "degree", "degrees"}:
-            self._slip_angle_unit = "deg"
-            self.config.slip_angle_unit = "deg"
-            return
-        if configured in {"rad", "radian", "radians"}:
-            self._slip_angle_unit = "rad"
-            self.config.slip_angle_unit = "rad"
-            return
-
-        slip_cols = [col for col in self._slip_columns() if col in df.columns]
-        if not slip_cols:
-            self._slip_angle_unit = "deg"
-            self.config.slip_angle_unit = "deg"
-            return
-
-        slip_values = df[slip_cols].to_numpy(dtype=float)
-        if slip_values.size == 0:
-            self._slip_angle_unit = "deg"
-            self.config.slip_angle_unit = "deg"
-            return
-
-        max_slip = float(np.nanmax(np.abs(slip_values)))
-        if not np.isfinite(max_slip):
-            max_slip = 0.0
-
-        if max_slip <= EPS:
-            return
-
-        if max_slip <= RADIAN_DETECTION_THRESHOLD:
-            self._slip_angle_unit = "rad"
-            self._convert_config_slip_limits_to_radians_if_needed()
-        else:
-            self._slip_angle_unit = "deg"
-
-        self.config.slip_angle_unit = self._slip_angle_unit
-
-    def _convert_config_slip_limits_to_radians_if_needed(self) -> None:
-        if self._config_slip_converted:
-            return
-
-        max_limit = max(self.config.front_slip_limit, self.config.rear_slip_limit)
-        
-        if max_limit > 1.5:
-            self.config.front_slip_limit = math.radians(self.config.front_slip_limit)
-            self.config.rear_slip_limit = math.radians(self.config.rear_slip_limit)
-            print("[INFO] Tire grip slip limits converted from degrees to radians to match telemetry")
-
-        self._config_slip_converted = True
 
     def _max_lateral_slip(self, df: pd.DataFrame) -> np.ndarray:
         front_slip = df[["Physics_slip_angle_front_left", "Physics_slip_angle_front_right"]].abs().max(axis=1)
