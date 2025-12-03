@@ -248,12 +248,8 @@ def main():
                 # Apply global range filter
                 sliced_df = df.iloc[viz_start_idx:viz_end_idx]
 
-                # Downsample for plotting if too large
-                plot_df = sliced_df
-                if len(sliced_df) > 10000:
-                    plot_df = sliced_df.iloc[::len(sliced_df)//5000] # Approx 5000 points
-                
-                fig = px.line(plot_df, x=plot_df.index, y=viz_cols, title=f"Telemetry Data - Graph {graph_id}")
+                # Plot without downsampling
+                fig = px.line(sliced_df, x=sliced_df.index, y=viz_cols, title=f"Telemetry Data - Graph {graph_id}")
                 # Visualize existing annotations
                 if "current_annotations" in st.session_state and st.session_state.current_annotations:
                     for ann in st.session_state.current_annotations:
@@ -264,35 +260,6 @@ def main():
 
                         start = getattr(ann, "start_index", None)
                         end = getattr(ann, "end_index", None)
-
-                        # Fallback for legacy annotations without start/end index
-                        if (start is None or end is None) and ann.telemetry_data:
-                            try:
-                                # Attempt to locate the segment in the current dataframe
-                                first_row = ann.telemetry_data[0]
-                                # Use a subset of columns to match
-                                match_cols = [c for c in first_row.keys() if c in df.columns]
-                                if match_cols:
-                                    # Filter using the first few columns to narrow down candidates
-                                    mask = pd.Series(True, index=df.index)
-                                    # Use up to 5 columns for matching to be robust but fast
-                                    for col in match_cols[:5]:
-                                        mask &= (df[col] == first_row[col])
-                                    
-                                    matches = df[mask].index
-                                    if not matches.empty:
-                                        # Take the first match
-                                        found_start = matches[0]
-                                        # Calculate end based on segment length
-                                        found_end = found_start + ann.segment_length
-                                        
-                                        # Update the object in memory
-                                        ann.start_index = int(found_start)
-                                        ann.end_index = int(found_end)
-                                        start = ann.start_index
-                                        end = ann.end_index
-                            except Exception as e:
-                                print(f"Could not recover indices for annotation: {e}")
 
                         labels = ann.labels
                         display_labels = get_display_labels(labels)
