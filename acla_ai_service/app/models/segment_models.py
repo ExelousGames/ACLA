@@ -71,8 +71,7 @@ class SegmentFeatureCatalog:
         """
         features = set()
         features.update(TelemetryFeatures.get_features_for_imitate_expert())
-        features.update([f.value for f in ExpertFeatureCatalog.ContextFeature])
-        features.update([f.value for f in ExpertFeatureCatalog.ExpertOptimalFeature])
         features.update([f.value for f in TireGripFeatureCatalog.ContextFeature])
+        features.update([f.value for f in ExpertFeatureCatalog.ExpertFeatures])
         return list(features)
 

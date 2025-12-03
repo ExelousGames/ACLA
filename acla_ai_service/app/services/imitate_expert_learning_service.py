@@ -58,9 +58,26 @@ class ExpertFeatureCatalog:
         SPEED_DIFFERENCE = 'speed_difference' # Difference between current speed and expert optimal speed (km/h)
         DISTANCE_TO_EXPERT_LINE = 'distance_to_expert_line' # distance between current position and expert optimal racing line (meters)
 
+
+    class ExpertFeatures (str, Enum):
+        # Optimal action predictions 
+        EXPERT_OPTIMAL_SPEED = 'expert_optimal_speed'
+        EXPERT_OPTIMAL_THROTTLE = 'expert_optimal_throttle'
+        EXPERT_OPTIMAL_BRAKE = 'expert_optimal_brake'
+        EXPERT_OPTIMAL_PLAYER_POS_X = 'expert_optimal_player_pos_x'
+        EXPERT_OPTIMAL_PLAYER_POS_Y = 'expert_optimal_player_pos_y'
+        EXPERT_OPTIMAL_PLAYER_POS_Z = 'expert_optimal_player_pos_z'
+
+        # Context features
+        EXPERT_VELOCITY_ALIGNMENT = 'expert_velocity_alignment'
+        SPEED_DIFFERENCE = 'speed_difference' 
+        DISTANCE_TO_EXPERT_LINE = 'distance_to_expert_line'
+
     # Flat list for convenience (now only expert optimal + derived)
     CONTEXT_FEATURES: List[str] = [f.value for f in ContextFeature]
+    
 
+    
 @dataclass(frozen=True)
 class SegmentImprovementConfig:
     """Centralized thresholds and heuristics used during segment improvement analysis."""
@@ -788,7 +805,7 @@ class ExpertImitateLearningService:
             context metrics, and enriched driver/expert positional data for visualization.
         """
         
-        ContextFeature = ExpertFeatureCatalog.ContextFeature
+        ExpertFeatures = ExpertFeatureCatalog.ExpertFeatures
         if not telemetry_data:
             return []
         if not self.position_learner.position_model:
@@ -849,10 +866,9 @@ class ExpertImitateLearningService:
                         curr_velocity_z = float(current_row.get('Physics_velocity_z', 0.0))
 
                         # Expert optimal velocities from predictions (using ExpertOptimalFeature mapping)
-                        EO = ExpertFeatureCatalog.ExpertOptimalFeature
-                        exp_velocity_x = float(row_predictions.get(EO.EXPERT_OPTIMAL_VELOCITY_X.value, curr_velocity_x))
-                        exp_velocity_y = float(row_predictions.get(EO.EXPERT_OPTIMAL_VELOCITY_Y.value, curr_velocity_y))
-                        exp_velocity_z = float(row_predictions.get(EO.EXPERT_OPTIMAL_VELOCITY_Z.value, curr_velocity_z))
+                        exp_velocity_x = float(row_predictions.get(ExpertFeatureCatalog.ExpertOptimalFeature.EXPERT_OPTIMAL_VELOCITY_X.value, curr_velocity_x))
+                        exp_velocity_y = float(row_predictions.get(ExpertFeatureCatalog.ExpertOptimalFeature.EXPERT_OPTIMAL_VELOCITY_Y.value, curr_velocity_y))
+                        exp_velocity_z = float(row_predictions.get(ExpertFeatureCatalog.ExpertOptimalFeature.EXPERT_OPTIMAL_VELOCITY_Z.value, curr_velocity_z))
 
                         # Calculate velocity alignment (dot product normalized)
                         # If moving in same direction as expert, alignment = 1.0
@@ -876,30 +892,30 @@ class ExpertImitateLearningService:
                         current_speed = float(current_row.get('Physics_speed_kmh', curr_velocity_magnitude))
 
                         # Store expert optimal predictions for visualization with safe fallbacks
-                        expert_pos_x = float(row_predictions.get(EO.EXPERT_OPTIMAL_PLAYER_POS_X.value, current_pos_x))
-                        expert_pos_y = float(row_predictions.get(EO.EXPERT_OPTIMAL_PLAYER_POS_Y.value, current_pos_y))
-                        expert_pos_z = float(row_predictions.get(EO.EXPERT_OPTIMAL_PLAYER_POS_Z.value, current_pos_z))
+                        expert_pos_x = float(row_predictions.get(ExpertFeatureCatalog.ExpertOptimalFeature.EXPERT_OPTIMAL_PLAYER_POS_X.value, current_pos_x))
+                        expert_pos_y = float(row_predictions.get(ExpertFeatureCatalog.ExpertOptimalFeature.EXPERT_OPTIMAL_PLAYER_POS_Y.value, current_pos_y))
+                        expert_pos_z = float(row_predictions.get(ExpertFeatureCatalog.ExpertOptimalFeature.EXPERT_OPTIMAL_PLAYER_POS_Z.value, current_pos_z))
 
-                        row_features[EO.EXPERT_OPTIMAL_PLAYER_POS_X.value] = expert_pos_x
-                        row_features[EO.EXPERT_OPTIMAL_PLAYER_POS_Y.value] = expert_pos_y
-                        row_features[EO.EXPERT_OPTIMAL_PLAYER_POS_Z.value] = expert_pos_z
+                        row_features[ExpertFeatures.EXPERT_OPTIMAL_PLAYER_POS_X.value] = expert_pos_x
+                        row_features[ExpertFeatures.EXPERT_OPTIMAL_PLAYER_POS_Y.value] = expert_pos_y
+                        row_features[ExpertFeatures.EXPERT_OPTIMAL_PLAYER_POS_Z.value] = expert_pos_z
 
-                        expert_speed = float(row_predictions.get(EO.EXPERT_OPTIMAL_SPEED.value, exp_velocity_magnitude))
-                        row_features[EO.EXPERT_OPTIMAL_SPEED.value] = expert_speed
+                        expert_speed = float(row_predictions.get(ExpertFeatureCatalog.ExpertOptimalFeature.EXPERT_OPTIMAL_SPEED.value, exp_velocity_magnitude))
+                        row_features[ExpertFeatures.EXPERT_OPTIMAL_SPEED.value] = expert_speed
 
                         # Add expert throttle and brake predictions
-                        expert_throttle = float(row_predictions.get(EO.EXPERT_OPTIMAL_THROTTLE.value, 0.0))
-                        row_features[EO.EXPERT_OPTIMAL_THROTTLE.value] = expert_throttle
+                        expert_throttle = float(row_predictions.get(ExpertFeatureCatalog.ExpertOptimalFeature.EXPERT_OPTIMAL_THROTTLE.value, 0.0))
+                        row_features[ExpertFeatures.EXPERT_OPTIMAL_THROTTLE.value] = expert_throttle
 
-                        expert_brake = float(row_predictions.get(EO.EXPERT_OPTIMAL_BRAKE.value, 0.0))
-                        row_features[EO.EXPERT_OPTIMAL_BRAKE.value] = expert_brake
+                        expert_brake = float(row_predictions.get(ExpertFeatureCatalog.ExpertOptimalFeature.EXPERT_OPTIMAL_BRAKE.value, 0.0))
+                        row_features[ExpertFeatures.EXPERT_OPTIMAL_BRAKE.value] = expert_brake
 
                         # Store only velocity alignment feature
-                        row_features[ContextFeature.EXPERT_VELOCITY_ALIGNMENT.value] = float(velocity_alignment)
+                        row_features[ExpertFeatures.EXPERT_VELOCITY_ALIGNMENT.value] = float(velocity_alignment)
 
                         # Calculate speed difference
                         speed_difference = expert_speed - current_speed
-                        row_features[ContextFeature.SPEED_DIFFERENCE.value] = float(speed_difference)
+                        row_features[ExpertFeatures.SPEED_DIFFERENCE.value] = float(speed_difference)
 
                         # Calculate distance to expert line (negative if off to left, positive if off to right)
                         distance_to_expert_line = np.sqrt(
@@ -907,7 +923,7 @@ class ExpertImitateLearningService:
                             (expert_pos_y - current_pos_y) ** 2 +
                             (expert_pos_z - current_pos_z) ** 2
                         )
-                        row_features[ContextFeature.DISTANCE_TO_EXPERT_LINE.value] = float(distance_to_expert_line)
+                        row_features[ExpertFeatures.DISTANCE_TO_EXPERT_LINE.value] = float(distance_to_expert_line)
 
                     except Exception as _e:
                         raise Exception(f"Velocity alignment calculation failed: {_e}")
