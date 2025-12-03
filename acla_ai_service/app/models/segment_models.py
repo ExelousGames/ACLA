@@ -1,6 +1,10 @@
 from dataclasses import dataclass, field, asdict
 from typing import List, Dict, Any, Optional
 
+from app.models.telemetry_models import TelemetryFeatures
+from app.services.imitate_expert_learning_service import ExpertFeatureCatalog
+from app.services.tire_grip_analysis_service import TireGripFeatureCatalog
+
 # Constants
 LABEL_MAPPING = {
     1: "Overtaking",
@@ -49,3 +53,24 @@ class PredictedSegment:
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
+
+
+class SegmentFeatureCatalog:
+    """
+    Centralized catalog for all features used in segment analysis and modeling.
+    Aggregates features from various services and models.
+    """
+
+    @staticmethod
+    def get_all_available_features() -> List[str]:
+        """
+        Returns a unique list of all features available for segment analysis.
+        Combines base telemetry, expert optimal, expert context, and tire grip context.
+        """
+        features = set()
+        features.update(TelemetryFeatures.get_features_for_imitate_expert())
+        features.update([f.value for f in ExpertFeatureCatalog.ContextFeature])
+        features.update([f.value for f in ExpertFeatureCatalog.ExpertOptimalFeature])
+        features.update([f.value for f in TireGripFeatureCatalog.ContextFeature])
+        return list(features)
+

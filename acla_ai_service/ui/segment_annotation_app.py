@@ -11,6 +11,7 @@ import json
 import zarr
 import sys
 import os
+import time
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass, field, asdict
@@ -560,83 +561,202 @@ def main():
         else:
             st.info("Position data (Graphics_player_pos_x/y) not available in this dataset.")
 
-        st.subheader("Add Annotation")
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            start_idx = st.number_input("Start Index", min_value=0, max_value=len(df)-1, value=0)
-        with col2:
-            end_idx = st.number_input("End Index", min_value=0, max_value=len(df)-1, value=min(100, len(df)-1))
-            
-        selected_labels = st.multiselect("Labels", list(LABEL_MAPPING.values()))
+        # --- Unified Annotation Management ---
+        st.markdown("---")
+        st.subheader("Manage Annotations")
 
-        if st.button("Add Annotation"):
-            if start_idx >= end_idx:
-                st.error("Start index must be less than end index.")
-            elif not selected_labels:
-                st.error("Please select at least one label.")
+        # Ensure annotations list exists
+        if "current_annotations" not in st.session_state:
+            st.session_state.current_annotations = []
+
+
+
+        # 1. Select Mode/Annotation
+        annotation_options = ["Create New"]
+        if st.session_state.current_annotations:
+             annotation_options.extend(range(len(st.session_state.current_annotations)))
+
+        def format_func(option):
+            if option == "Create New":
+                return "➕ Create New Annotation"
             else:
-                label_ids = [LABEL_NAME_TO_ID[l] for l in selected_labels if l in LABEL_NAME_TO_ID]
-                
-                # Extract telemetry data
-                segment_df = df.iloc[int(start_idx):int(end_idx)]
-                telemetry_data = segment_df.to_dict(orient="records")
+                ann = st.session_state.current_annotations[option]
+                labels = ", ".join(get_display_labels(ann.labels))
+                return f"#{option}: {labels} (Start: {ann.start_index}, End: {ann.end_index})"
 
-                annotation = AnnotatedSegment(
-                    labels=label_ids,
-                    segment_length=int(end_idx - start_idx),
-                    start_index=int(start_idx),
-                    end_index=int(end_idx),
-                    chunk_index=int(chunk_index),
-                    telemetry_data=telemetry_data
+        selected_option = st.selectbox(
+            "Select Action / Annotation",
+            options=annotation_options,
+            format_func=format_func,
+            key="annotation_selector"
+        )
+
+        # 2. The Form
+        with st.container():
+            # Determine default values based on selection
+            if selected_option == "Create New":
+                form_title = "Add New Annotation"
+                default_start = 0
+                default_end = min(100, len(df)-1)
+                default_labels = []
+                submit_label = "Add Annotation"
+                is_edit = False
+            else:
+                form_title = f"Edit Annotation #{selected_option}"
+                ann = st.session_state.current_annotations[selected_option]
+                default_start = ann.start_index
+                default_end = ann.end_index
+                default_labels = [l for l in get_display_labels(ann.labels) if l in LABEL_MAPPING.values()]
+                submit_label = "Update Annotation"
+                is_edit = True
+
+            st.markdown(f"**{form_title}**")
+            
+            col_form1, col_form2 = st.columns(2)
+            with col_form1:
+                form_start = st.number_input(
+                    "Start Index", 
+                    min_value=0, 
+                    max_value=len(df)-1, 
+                    value=default_start,
+                    key=f"form_start_{selected_option}"
                 )
-                
-                if "current_annotations" not in st.session_state:
-                    st.session_state.current_annotations = []
-                st.session_state.current_annotations.append(annotation)
-                st.success("Annotation added to list.")
-
-        st.subheader("Current Session Annotations")
-        if "current_annotations" in st.session_state:
-            if st.session_state.current_annotations:
-                # Create display version with string labels
-                display_data = []
-                for ann in st.session_state.current_annotations:
-                    d = ann.to_dict()
-                    d["labels"] = ", ".join(get_display_labels(ann.labels))
-                    if "telemetry_data" in d:
-                        del d["telemetry_data"]
-                    display_data.append(d)
-                st.dataframe(pd.DataFrame(display_data))
-                
-                # Delete annotation functionality
-                col1, col2 = st.columns([3, 1])
-                
-                def delete_callback():
-                    idx = st.session_state.delete_annotation_idx
-                    if 0 <= idx < len(st.session_state.current_annotations):
-                        st.session_state.current_annotations.pop(idx)
-                        # Auto-save to ensure persistence
-                        save_annotations(st.session_state.chunk_selector, st.session_state.current_annotations)
-                with col1:
-                    st.selectbox(
-                        "Select annotation to delete",
-                        options=range(len(st.session_state.current_annotations)),
-                        format_func=lambda x: f"{x}: {', '.join(get_display_labels(st.session_state.current_annotations[x].labels))} (Length: {st.session_state.current_annotations[x].segment_length})",
-                        key="delete_annotation_idx"
-                    )
-                with col2:
-                    st.write("")
-                    st.write("")
-                    st.button("Delete Selected", on_click=delete_callback)
-            else:
-                st.info("No annotations added yet.")
+            with col_form2:
+                form_end = st.number_input(
+                    "End Index", 
+                    min_value=0, 
+                    max_value=len(df)-1, 
+                    value=default_end,
+                    key=f"form_end_{selected_option}"
+                )
             
-            if st.button("Save All Annotations to Zarr"):
-                save_annotations(chunk_index, st.session_state.current_annotations)
-                # We don't clear annotations after save so user can see what is saved
+            form_labels = st.multiselect(
+                "Labels", 
+                list(LABEL_MAPPING.values()), 
+                default=default_labels,
+                key=f"form_labels_{selected_option}"
+            )
+
+            # Actions
+            col_actions = st.columns([1, 1, 1, 3])
+            
+            with col_actions[0]:
+                if st.button(submit_label, type="primary", key=f"submit_{selected_option}"):
+                    if form_start >= form_end:
+                        st.error("Start index must be less than end index.")
+                    elif not form_labels:
+                        st.error("Please select at least one label.")
+                    else:
+                        label_ids = [LABEL_NAME_TO_ID[l] for l in form_labels if l in LABEL_NAME_TO_ID]
+                        
+                        # Extract telemetry data
+                        segment_df = df.iloc[int(form_start):int(form_end)]
+                        telemetry_data = segment_df.to_dict(orient="records")
+
+                        if is_edit:
+                            # Update existing
+                            ann = st.session_state.current_annotations[selected_option]
+                            ann.start_index = int(form_start)
+                            ann.end_index = int(form_end)
+                            ann.segment_length = int(form_end - form_start)
+                            ann.labels = label_ids
+                            ann.telemetry_data = telemetry_data
+                            st.success("Annotation updated!")
+                        else:
+                            # Create new
+                            annotation = AnnotatedSegment(
+                                labels=label_ids,
+                                segment_length=int(form_end - form_start),
+                                start_index=int(form_start),
+                                end_index=int(form_end),
+                                chunk_index=int(chunk_index),
+                                telemetry_data=telemetry_data
+                            )
+                            st.session_state.current_annotations.append(annotation)
+                            st.success("Annotation added!")
+                        
+                        save_annotations(chunk_index, st.session_state.current_annotations)
+                        st.rerun()
+
+            with col_actions[1]:
+                if is_edit:
+                    if st.button("Delete", type="secondary", key=f"delete_{selected_option}"):
+                        st.session_state.current_annotations.pop(selected_option)
+                        save_annotations(chunk_index, st.session_state.current_annotations)
+                        st.success("Annotation deleted!")
+                        st.rerun()
+                elif selected_option == "Create New":
+                    def on_auto_detect():
+                        st.session_state.auto_detect_triggered = True
+
+                    st.button("Auto-Detect", help="Detect segments in the specified range matching selected labels", on_click=on_auto_detect)
+
+                    if st.session_state.get("auto_detect_triggered", False):
+                        st.session_state.auto_detect_triggered = False
+                        if form_start >= form_end:
+                            st.error("Start index must be less than end index.")
+                        else:
+                            with st.spinner("Running classifier..."):
+                                from app.services.segment_classifier_service import segment_classifier
+                                try:
+                                    # Slice the dataframe
+                                    scan_df = df.iloc[int(form_start):int(form_end)]
+                                    detected = segment_classifier.scan_telemetry_data(scan_df)
+                                    
+                                    new_anns = []
+                                    if detected:
+                                        for d in detected:
+                                            # Filter by selected labels if any are selected
+                                            relevant_labels = []
+                                            if form_labels:
+                                                relevant_labels = [l for l in d.labels if l in form_labels]
+                                            else:
+                                                relevant_labels = d.labels
+
+                                            if relevant_labels:
+                                                # Convert to IDs
+                                                label_ids = []
+                                                for name in relevant_labels:
+                                                    if name in LABEL_NAME_TO_ID:
+                                                        label_ids.append(LABEL_NAME_TO_ID[name])
+                                                
+                                                if label_ids:
+                                                    ann = AnnotatedSegment(
+                                                        labels=label_ids,
+                                                        segment_length=len(d.telemetry_data),
+                                                        telemetry_data=d.telemetry_data,
+                                                        chunk_index=chunk_index
+                                                    )
+                                                    new_anns.append(ann)
+                                        
+                                        if new_anns:
+                                            st.session_state.current_annotations.extend(new_anns)
+                                            st.success(f"Added {len(new_anns)} segments.")
+                                            save_annotations(chunk_index, st.session_state.current_annotations)
+                                            st.rerun()
+                                        else:
+                                            st.warning("No segments found matching selected labels.")
+                                    else:
+                                        st.info("No segments detected.")
+                                except Exception as e:
+                                    st.error(f"Error: {e}")
+
+        # 3. List View
+        st.subheader("Current Session Annotations List")
+        if st.session_state.current_annotations:
+            display_data = []
+            for ann in st.session_state.current_annotations:
+                d = ann.to_dict()
+                d["labels"] = ", ".join(get_display_labels(ann.labels))
+                if "telemetry_data" in d:
+                    del d["telemetry_data"]
+                display_data.append(d)
+            st.dataframe(pd.DataFrame(display_data), use_container_width=True)
         else:
             st.info("No annotations added yet.")
+            
+        if st.button("Force Save All to Zarr"):
+            save_annotations(chunk_index, st.session_state.current_annotations)
 
 if __name__ == "__main__":
     main()

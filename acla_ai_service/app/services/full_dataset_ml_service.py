@@ -1362,7 +1362,7 @@ class Full_dataset_TelemetryMLService:
 
             # Filter using segment_classifier.scan_session
             # scan_session now caches segments directly to the store for memory efficiency
-            await segment_classifier.scan_session(
+            await segment_classifier.scan_telemetry_data(
                 dataframe=session_chunk_df, 
                 window_size=max_segment_length
             )

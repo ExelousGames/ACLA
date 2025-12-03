@@ -19,7 +19,7 @@ import asyncio
 import json
 
 from .zarr_telemetry_store import get_shared_zarr_store
-from app.models.segment_models import AnnotatedSegment, LABEL_MAPPING, PredictedSegment
+from app.models.segment_models import AnnotatedSegment, LABEL_MAPPING, PredictedSegment, SegmentFeatureCatalog
 
 class LSTMModel(nn.Module):
     def __init__(self, input_dim, hidden_dim, output_dim, num_layers=2):
@@ -88,7 +88,7 @@ class SegmentClassifierService:
     async def prepare_training_data(self) -> Tuple[np.ndarray, np.ndarray]:
         """
         Load sessions and create sequences for training.
-        Refactored to handle variable length segments from annotations.
+        handle variable length segments from annotations.
         """
         annotations = await self.load_annotations()
         if not annotations:
@@ -107,6 +107,9 @@ class SegmentClassifierService:
         self.mlb = MultiLabelBinarizer()
         self.mlb.fit([list(all_labels)]) 
         
+        # Get expected features for integrity check
+        expected_features = SegmentFeatureCatalog.get_all_available_features()
+
         raw_segments = [] # List of (X_data, y_data)
         
         for ann in annotations:
@@ -114,12 +117,32 @@ class SegmentClassifierService:
                 continue
                 
             df = pd.DataFrame(ann.telemetry_data)
-            numeric_df = df.select_dtypes(include=['number'])
             
-            if numeric_df.empty:
+            # Feature Integrity Check
+            current_features = df.columns.tolist()
+            missing_features = [f for f in expected_features if f not in current_features]
+            extra_features = [f for f in current_features if f not in expected_features]
+
+            if missing_features:
+                print(f"Warning: Segment missing features (filling with 0): {missing_features}")
+                for f in missing_features:
+                    df[f] = 0
+            
+            if extra_features:
+                print(f"Warning: Segment has extra features (removing): {extra_features}")
+                df = df.drop(columns=extra_features)
+            
+            # Check order
+            if df.columns.tolist() != expected_features:
+                print(f"Warning: Feature order mismatch. Expected first 5: {expected_features[:5]}. Actual first 5: {df.columns.tolist()[:5]}")
+            
+            # Ensure numeric
+            df = df.apply(pd.to_numeric, errors='coerce').fillna(0)
+            
+            if df.empty:
                 continue
                 
-            seg_X = numeric_df.values
+            seg_X = df.values
             
             # Map labels
             mapped_labels = [LABEL_MAPPING.get(l, str(l)) for l in ann.labels]
@@ -259,6 +282,96 @@ class SegmentClassifierService:
                 labels.append(self.mlb.classes_[i])
         
         return labels
+
+    def scan_telemetry_data(self, dataframe: pd.DataFrame) -> List[PredictedSegment]:
+        """
+        Scan a dataframe and return found segments with labels.
+        """
+        if self.model is None:
+            if not self.load_model():
+                return []
+        
+        df = dataframe
+        numeric_df = df.select_dtypes(include=['number'])
+        if numeric_df.empty:
+            return []
+
+        # Scale
+        X_scaled = self.scaler.transform(numeric_df.values)
+        
+        # Inference with chunking to handle long sessions
+        self.model.eval()
+        all_probs = []
+        hidden = None
+        chunk_size = self.max_length
+        
+        with torch.no_grad():
+            for i in range(0, len(X_scaled), chunk_size):
+                chunk = X_scaled[i : i + chunk_size]
+                X_tensor = torch.FloatTensor(chunk).unsqueeze(0).to(self.device)
+                outputs, hidden = self.model(X_tensor, hidden)
+                all_probs.append(outputs.squeeze(0).cpu().numpy())
+                
+        if not all_probs:
+            return []
+
+        probs = np.concatenate(all_probs, axis=0)
+            
+        # Threshold and Segment
+        threshold = 0.5
+        active_mask = probs > threshold
+        
+        found_segments = []
+        current_labels = []
+        current_start = 0
+        
+        # Iterate through to find contiguous segments with the same label set
+        for i in range(len(df)):
+            # Get labels that are True for this index
+            row_mask = active_mask[i]
+            labels_indices = np.where(row_mask)[0]
+            labels_at_i = [self.mlb.classes_[idx] for idx in labels_indices]
+            labels_at_i.sort()
+            
+            if i == 0:
+                current_labels = labels_at_i
+                current_start = 0
+            else:
+                if labels_at_i != current_labels:
+                    # Close previous segment if it had labels
+                    if current_labels:
+                        found_segments.append({
+                            "start_index": current_start,
+                            "end_index": i,
+                            "labels": current_labels
+                        })
+                    current_labels = labels_at_i
+                    current_start = i
+        
+        # Close final segment
+        if current_labels:
+            found_segments.append({
+                "start_index": current_start,
+                "end_index": len(df),
+                "labels": current_labels
+            })
+        
+        results = []
+        for meta in found_segments:
+            start = meta['start_index']
+            end = meta['end_index']
+            segment_df = df.iloc[start:end]
+            
+            # Extract actual data and wrap with metadata
+            segment_data = segment_df.to_dict('records')
+            
+            predicted_segment = PredictedSegment(
+                labels=meta["labels"],
+                telemetry_data=segment_data
+            )
+            results.append(predicted_segment)
+            
+        return results
 
     async def scan_session(self, dataframe: Optional[pd.DataFrame] = None, target_labels: Optional[List[str]] = None, **kwargs) -> None:
         """
