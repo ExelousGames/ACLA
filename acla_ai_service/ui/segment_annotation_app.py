@@ -688,11 +688,18 @@ def main():
                                                         label_ids.append(LABEL_NAME_TO_ID[name])
                                                 
                                                 if label_ids:
+                                                    # Calculate absolute indices within the chunk
+                                                    # d.start_index and d.end_index are relative to scan_df
+                                                    abs_start = int(form_start) + (d.start_index if d.start_index is not None else 0)
+                                                    abs_end = int(form_start) + (d.end_index if d.end_index is not None else len(d.telemetry_data))
+
                                                     ann = AnnotatedSegment(
                                                         labels=label_ids,
                                                         segment_length=len(d.telemetry_data),
                                                         telemetry_data=d.telemetry_data,
-                                                        chunk_index=chunk_index
+                                                        chunk_index=chunk_index,
+                                                        start_index=abs_start,
+                                                        end_index=abs_end
                                                     )
                                                     new_anns.append(ann)
                                         

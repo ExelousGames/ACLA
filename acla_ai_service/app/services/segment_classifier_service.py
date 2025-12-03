@@ -367,7 +367,9 @@ class SegmentClassifierService:
             
             predicted_segment = PredictedSegment(
                 labels=meta["labels"],
-                telemetry_data=segment_data
+                telemetry_data=segment_data,
+                start_index=start,
+                end_index=end
             )
             results.append(predicted_segment)
             
@@ -467,7 +469,9 @@ class SegmentClassifierService:
             
             predicted_segment = PredictedSegment(
                 labels=meta["labels"],
-                telemetry_data=segment_data
+                telemetry_data=segment_data,
+                start_index=start,
+                end_index=end
             )
             
             chunk_segments.append(predicted_segment.to_dict())

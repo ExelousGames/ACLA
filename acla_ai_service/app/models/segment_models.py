@@ -50,6 +50,8 @@ class AnnotatedSegment:
 class PredictedSegment:
     labels: List[str]
     telemetry_data: List[Dict[str, Any]] = field(default_factory=list)
+    start_index: Optional[int] = None
+    end_index: Optional[int] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
