@@ -203,7 +203,7 @@ def main():
             "Global Visualization Range",
             min_value=0,
             max_value=len(df),
-            value=(0, len(df)),
+            value=(0, min(len(df), 5000)),
             key="global_viz_range"
         )
 
