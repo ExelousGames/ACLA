@@ -133,8 +133,22 @@ class SegmentClassifierService:
                 df = df.drop(columns=extra_features)
             
             # Check order
-            if df.columns.tolist() != expected_features:
-                print(f"Warning: Feature order mismatch. Expected first 5: {expected_features[:5]}. Actual first 5: {df.columns.tolist()[:5]}")
+            current_cols = df.columns.tolist()
+            if current_cols != expected_features:
+                print(f"Warning: Feature order mismatch.")
+                for i, (exp, act) in enumerate(zip(expected_features, current_cols)):
+                    if exp != act:
+                        print(f"  First mismatch at index {i}: Expected '{exp}', Got '{act}'")
+                        start_ctx = max(0, i - 2)
+                        end_ctx = min(len(expected_features), i + 3)
+                        print(f"  Expected context: {expected_features[start_ctx:end_ctx]}")
+                        print(f"  Actual context:   {current_cols[start_ctx:end_ctx]}")
+                        break
+                if len(expected_features) != len(current_cols):
+                    print(f"  Length mismatch: Expected {len(expected_features)}, Got {len(current_cols)}")
+                
+                # Reorder if necessary (optional fix, but good for safety)
+                df = df[expected_features]
             
             # Ensure numeric
             df = df.apply(pd.to_numeric, errors='coerce').fillna(0)
@@ -292,7 +306,22 @@ class SegmentClassifierService:
                 return []
         
         df = dataframe
-        numeric_df = df.select_dtypes(include=['number'])
+        
+        # Align features with training data
+        expected_features = SegmentFeatureCatalog.get_all_available_features()
+        
+        # 1. Ensure all expected features exist
+        for feature in expected_features:
+            if feature not in df.columns:
+                df[feature] = 0
+                
+        # 2. Select only expected features in correct order
+        df = df[expected_features]
+        
+        # 3. Ensure numeric
+        df = df.apply(pd.to_numeric, errors='coerce').fillna(0)
+        
+        numeric_df = df
         if numeric_df.empty:
             return []
 

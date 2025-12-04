@@ -35,7 +35,7 @@ import app.models.segment_models
 import importlib
 # Force reload to pick up model changes (e.g. new fields)
 importlib.reload(app.models.segment_models)
-from app.models.segment_models import AnnotatedSegment, LABEL_MAPPING, LABEL_NAME_TO_ID
+from app.models.segment_models import AnnotatedSegment, LABEL_MAPPING, LABEL_NAME_TO_ID, SegmentFeatureCatalog
 
 def get_display_labels(labels):
     """Convert label IDs or strings to display strings."""
@@ -607,43 +607,58 @@ def main():
             # Actions
             col_actions = st.columns([1, 1, 1, 3])
             
-            with col_actions[0]:
-                if st.button(submit_label, type="primary", key=f"submit_{selected_option}"):
-                    if form_start >= form_end:
-                        st.error("Start index must be less than end index.")
-                    elif not form_labels:
-                        st.error("Please select at least one label.")
-                    else:
-                        label_ids = [LABEL_NAME_TO_ID[l] for l in form_labels if l in LABEL_NAME_TO_ID]
-                        
-                        # Extract telemetry data
-                        segment_df = df.iloc[int(form_start):int(form_end)]
-                        telemetry_data = segment_df.to_dict(orient="records")
+            def handle_submit():
+                # Access values from session state
+                s_start = st.session_state[f"form_start_{selected_option}"]
+                s_end = st.session_state[f"form_end_{selected_option}"]
+                s_labels = st.session_state[f"form_labels_{selected_option}"]
+                
+                if s_start >= s_end:
+                    st.session_state.temp_error = "Start index must be less than end index."
+                    return
+                if not s_labels:
+                    st.session_state.temp_error = "Please select at least one label."
+                    return
+                
+                label_ids = [LABEL_NAME_TO_ID[l] for l in s_labels if l in LABEL_NAME_TO_ID]
+                
+                # Extract telemetry data
+                segment_df = df.iloc[int(s_start):int(s_end)]
+                telemetry_data = segment_df.to_dict(orient="records")
 
-                        if is_edit:
-                            # Update existing
-                            ann = st.session_state.current_annotations[selected_option]
-                            ann.start_index = int(form_start)
-                            ann.end_index = int(form_end)
-                            ann.segment_length = int(form_end - form_start)
-                            ann.labels = label_ids
-                            ann.telemetry_data = telemetry_data
-                            st.success("Annotation updated!")
-                        else:
-                            # Create new
-                            annotation = AnnotatedSegment(
-                                labels=label_ids,
-                                segment_length=int(form_end - form_start),
-                                start_index=int(form_start),
-                                end_index=int(form_end),
-                                chunk_index=int(chunk_index),
-                                telemetry_data=telemetry_data
-                            )
-                            st.session_state.current_annotations.append(annotation)
-                            st.success("Annotation added!")
-                        
-                        save_annotations(chunk_index, st.session_state.current_annotations)
-                        st.rerun()
+                if is_edit:
+                    # Update existing
+                    ann = st.session_state.current_annotations[selected_option]
+                    ann.start_index = int(s_start)
+                    ann.end_index = int(s_end)
+                    ann.segment_length = int(s_end - s_start)
+                    ann.labels = label_ids
+                    ann.telemetry_data = telemetry_data
+                    st.session_state.temp_success = "Annotation updated!"
+                else:
+                    # Create new
+                    annotation = AnnotatedSegment(
+                        labels=label_ids,
+                        segment_length=int(s_end - s_start),
+                        start_index=int(s_start),
+                        end_index=int(s_end),
+                        chunk_index=int(chunk_index),
+                        telemetry_data=telemetry_data
+                    )
+                    st.session_state.current_annotations.append(annotation)
+                    st.session_state.temp_success = "Annotation added!"
+                
+                save_annotations(chunk_index, st.session_state.current_annotations)
+
+            with col_actions[0]:
+                st.button(submit_label, type="primary", key=f"submit_{selected_option}", on_click=handle_submit)
+            
+            if "temp_error" in st.session_state:
+                st.error(st.session_state.temp_error)
+                del st.session_state.temp_error
+            if "temp_success" in st.session_state:
+                st.success(st.session_state.temp_success)
+                del st.session_state.temp_success
 
             with col_actions[1]:
                 if is_edit:

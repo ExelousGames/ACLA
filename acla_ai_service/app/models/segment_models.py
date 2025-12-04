@@ -20,6 +20,7 @@ LABEL_MAPPING = {
     11: "Mistake - Accelerate too little",
     12: "Mistake - Accelerate too much",
     13: "Expert Speed Adherence",
+    14: "Mistake - Release brake not smoothly",
 }
 LABEL_NAME_TO_ID = {v: k for k, v in LABEL_MAPPING.items()}
 
@@ -69,9 +70,11 @@ class SegmentFeatureCatalog:
         Returns a unique list of all features available for segment analysis.
         Combines base telemetry, expert optimal, expert context, and tire grip context.
         """
-        features = set()
-        features.update(TelemetryFeatures.get_features_for_imitate_expert())
-        features.update([f.value for f in TireGripFeatureCatalog.ContextFeature])
-        features.update([f.value for f in ExpertFeatureCatalog.ExpertFeatures])
-        return list(features)
+        features = []
+        features.extend(TelemetryFeatures.get_features_for_imitate_expert())
+        features.extend([f.value for f in ExpertFeatureCatalog.ExpertFeatures])
+        features.extend([f.value for f in TireGripFeatureCatalog.ContextFeature])
+
+        # Use dict.fromkeys to remove duplicates while preserving insertion order
+        return list(dict.fromkeys(features))
 

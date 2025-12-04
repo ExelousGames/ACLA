@@ -61,13 +61,12 @@ class ExpertFeatureCatalog:
 
     class ExpertFeatures (str, Enum):
         # Optimal action predictions 
-        EXPERT_OPTIMAL_SPEED = 'expert_optimal_speed'
-        EXPERT_OPTIMAL_THROTTLE = 'expert_optimal_throttle'
-        EXPERT_OPTIMAL_BRAKE = 'expert_optimal_brake'
         EXPERT_OPTIMAL_PLAYER_POS_X = 'expert_optimal_player_pos_x'
         EXPERT_OPTIMAL_PLAYER_POS_Y = 'expert_optimal_player_pos_y'
         EXPERT_OPTIMAL_PLAYER_POS_Z = 'expert_optimal_player_pos_z'
-
+        EXPERT_OPTIMAL_SPEED = 'expert_optimal_speed'
+        EXPERT_OPTIMAL_THROTTLE = 'expert_optimal_throttle'
+        EXPERT_OPTIMAL_BRAKE = 'expert_optimal_brake'
         # Context features
         EXPERT_VELOCITY_ALIGNMENT = 'expert_velocity_alignment'
         SPEED_DIFFERENCE = 'speed_difference' 
