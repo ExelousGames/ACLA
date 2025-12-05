@@ -60,6 +60,7 @@ services:
     volumes:
       - ./acla_backend:/app
       - /app/node_modules
+      - /app/dist
     depends_on:
       - mongodb
       - ai_service
@@ -81,7 +82,6 @@ services:
       context: ./acla_ai_service
       dockerfile: dev.dockerfile
     container_name: acla_ai_service_c
-    gpus: all
     env_file:
       - .dev.env
       - .env.secrets
@@ -91,9 +91,6 @@ services:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - BACKEND_USERNAME=${BACKEND_USERNAME}
       - BACKEND_PASSWORD=${BACKEND_PASSWORD}
-      # Enable NVIDIA runtime features if GPUs are available on the host
-      - NVIDIA_VISIBLE_DEVICES=all
-      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
     volumes:
       - ./acla_ai_service:/app
     ports:
@@ -105,8 +102,6 @@ services:
       resources:
         reservations:
           memory: 1G
-          devices:
-            - capabilities: [ gpu ]
 
   mongodb:
     build: ./acla_db
@@ -121,7 +116,7 @@ services:
       MONGO_INITDB_DATABASE: ${MONGO_DATEBASE}
     volumes:
       - ./acla_db/init-mongo.js:/docker-entrypoint-initdb.d/init-mongo.js
-      - ./acla_db/mongodb_data:/data/db
+      - mongodb_data:/data/db
       - ./acla_db/backups:/backups
     env_file:
       - .dev.env
@@ -151,7 +146,7 @@ services:
       #use the created admin user inside this compose file for authenticated database access
       ME_CONFIG_MONGODB_URL: mongodb://${MONGO_ADMINUSERNAME}:${MONGO_ADMINPASSWORD}@mongodb_c:27017
     volumes:
-      - ./acla_db/mongodb_data:/data/db
+      - mongodb_data:/data/db:ro
     networks:
       - db-network
     depends_on:
@@ -162,6 +157,10 @@ services:
           memory: 128M
         reservations:
           memory: 64M
+
+volumes:
+  mongodb_data:
+    driver: local
 
 networks:
   db-network:

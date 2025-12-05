@@ -2,7 +2,7 @@
 
 # ACLA Development Environment Startup Script
 
-echo "🚀 Starting ACLA Development Environment with AI Service..."
+echo "�� Starting ACLA Development Environment with AI Service..."
 
 # Check if Docker is running
 if ! docker info > /dev/null 2>&1; then
@@ -10,13 +10,25 @@ if ! docker info > /dev/null 2>&1; then
     exit 1
 fi
 
+# Detect GPU
+if command -v nvidia-smi &> /dev/null && nvidia-smi &> /dev/null; then
+    echo "✅ NVIDIA GPU detected."
+    COMPOSE_OVERRIDE_ARGS="-f docker-compose.nvidia.yaml"
+elif [ -e /dev/kfd ] && [ -e /dev/dri ] && command -v rocminfo &> /dev/null; then
+    echo "✅ AMD GPU detected (ROCm)."
+    COMPOSE_OVERRIDE_ARGS="-f docker-compose.amd.yaml"
+else
+    echo "⚠️  No supported GPU detected. Defaulting to NVIDIA profile."
+    COMPOSE_OVERRIDE_ARGS="-f docker-compose.nvidia.yaml"
+fi
+
 # Stop any existing containers
 echo "🧹 Cleaning up existing containers..."
-docker-compose --env-file .dev.env --env-file .env.secrets -f docker-compose.dev.yaml down
+docker compose --env-file .dev.env --env-file .env.secrets -f docker-compose.dev.yaml $COMPOSE_OVERRIDE_ARGS down --remove-orphans
 
 # Build and start all services
 echo "🔨 Building and starting services..."
-docker-compose --env-file .dev.env --env-file .env.secrets -f docker-compose.dev.yaml up --build -d
+docker compose --env-file .dev.env --env-file .env.secrets -f docker-compose.dev.yaml $COMPOSE_OVERRIDE_ARGS up --build -d
 
 # Wait for services to start
 echo "⏳ Waiting for services to initialize..."
@@ -80,4 +92,9 @@ echo "   - Performance scoring and recommendations"
 echo "   - Pattern detection in racing behavior"
 echo "   - Sector-wise performance analysis"
 echo ""
-echo "📚 See AI_SERVICE_GUIDE.md for detailed documentation"
+echo ""
+echo "💾 Memory Usage Tips:"
+echo "   - If WSL uses too much memory, run 'optimize-memory.bat'"
+echo "   - Stop containers when not developing: docker-compose -f docker-compose.dev.yaml down"
+echo "   - Clean up regularly: docker system prune -f"
+echo ""

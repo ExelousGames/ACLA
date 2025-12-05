@@ -1,0 +1,15 @@
+services:
+  ai_service:
+    build:
+      context: ./acla_ai_service
+      dockerfile: dev.amd.dockerfile
+    privileged: true
+    volumes:
+      - /dev/kfd:/dev/kfd
+      - /dev/dri:/dev/dri
+    group_add:
+      - video
+      - render
+    environment:
+      - HSA_OVERRIDE_GFX_VERSION=11.0.0
+      - ROCM_PATH=/opt/rocm

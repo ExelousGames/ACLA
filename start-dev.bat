@@ -15,13 +15,24 @@ if errorlevel 1 (
     exit /b 1
 )
 
+REM Detect GPU
+set COMPOSE_OVERRIDE_ARGS=-f docker-compose.nvidia.yaml
+nvidia-smi >nul 2>&1
+if %errorlevel% equ 0 (
+    echo ✅ NVIDIA GPU detected.
+    set COMPOSE_OVERRIDE_ARGS=-f docker-compose.nvidia.yaml
+) else (
+    echo ⚠️  No NVIDIA GPU detected. Defaulting to NVIDIA profile.
+    set COMPOSE_OVERRIDE_ARGS=-f docker-compose.nvidia.yaml
+)
+
 REM Stop any existing containers
 echo 🧹 Cleaning up existing containers...
-docker-compose --env-file .dev.env --env-file .env.secrets -f docker-compose.dev.yaml down
+docker-compose --env-file .dev.env --env-file .env.secrets -f docker-compose.dev.yaml %COMPOSE_OVERRIDE_ARGS% down
 
 REM Build and start all services
 echo 🔨 Building and starting services...
-docker-compose --env-file .dev.env --env-file .env.secrets -f docker-compose.dev.yaml up --build -d
+docker-compose --env-file .dev.env --env-file .env.secrets -f docker-compose.dev.yaml %COMPOSE_OVERRIDE_ARGS% up --build -d
 
 REM Wait for services to start
 echo ⏳ Waiting for services to initialize...
@@ -74,7 +85,6 @@ echo    - Performance scoring and recommendations
 echo    - Pattern detection in racing behavior
 echo    - Sector-wise performance analysis
 echo.
-echo 📚 See AI_SERVICE_GUIDE.md for detailed documentation
 echo.
 echo 💾 Memory Usage Tips:
 echo    - If WSL uses too much memory, run 'optimize-memory.bat'

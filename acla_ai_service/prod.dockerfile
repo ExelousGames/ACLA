@@ -33,13 +33,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     CUDA_HOME=/usr/local/cuda
 
 # Copy requirements first for better caching
-COPY requirements.txt .
+COPY requirements.common.txt .
+COPY requirements.nvidia.txt .
 
-# Install Python dependencies and attempt CUDA PyTorch upgrade
-RUN pip install --no-cache-dir -r requirements.txt \
-    && (pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cu118 "torch==2.0.1+cu118" \
-    && echo "Installed CUDA-enabled PyTorch (cu118).") \
-    || echo "CUDA-enabled PyTorch wheel not available; using CPU-only PyTorch."
+# Install Python dependencies
+RUN pip install --no-cache-dir -r requirements.nvidia.txt
 
 # Copy application code and set ownership
 COPY . .

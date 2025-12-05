@@ -37,6 +37,8 @@ services:
     container_name: acla_backend_c
     env_file:
       - .prod.env
+    volumes:
+      - /app/dist
     depends_on:
       - ai_service
     ports:
@@ -83,12 +85,16 @@ services:
       MONGO_INITDB_DATABASE: ${MONGO_DATEBASE}
     volumes:
       - ./acla_db/init-mongo.js:/docker-entrypoint-initdb.d/init-mongo.js
-      - ./acla_db/mongodb_data:/data/db
+      - mongodb_data:/data/db
       - ../db_backups:/backups
     env_file:
       - .prod.env
     ports:
       - "27017:27017"
+
+volumes:
+  mongodb_data:
+    driver: local
 
 networks:
   frontend-network:

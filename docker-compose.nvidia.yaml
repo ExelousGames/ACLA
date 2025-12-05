@@ -1,0 +1,13 @@
+services:
+  ai_service:
+    build:
+      context: ./acla_ai_service
+      dockerfile: dev.dockerfile
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: [ gpu ]
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
