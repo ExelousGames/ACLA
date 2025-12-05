@@ -54,7 +54,22 @@ class SegmentClassifierService:
         self.model = None
         self.mlb = None 
         self.scaler = None
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        
+        # Device selection with explicit AMD/NVIDIA support check
+        if torch.cuda.is_available():
+            self.device = torch.device("cuda")
+            try:
+                device_name = torch.cuda.get_device_name(0)
+                if hasattr(torch.version, 'hip') and torch.version.hip:
+                    print(f"SegmentClassifierService: AMD GPU detected (ROCm): {device_name}")
+                else:
+                    print(f"SegmentClassifierService: NVIDIA GPU detected (CUDA): {device_name}")
+            except Exception as e:
+                print(f"SegmentClassifierService: GPU detected but failed to get name: {e}")
+        else:
+            self.device = torch.device("cpu")
+            print("SegmentClassifierService: No GPU detected, using CPU.")
+
         self.max_length = max_length
 
     async def load_annotations(self) -> List[AnnotatedSegment]:

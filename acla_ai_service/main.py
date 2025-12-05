@@ -22,8 +22,17 @@ from app.main import app
 try:
     import torch
     _cuda_available = torch.cuda.is_available()
-    _device_name = torch.cuda.get_device_name(0) if _cuda_available else "CPU"
-    print(f"[AI Service] Torch version: {getattr(torch, '__version__', 'unknown')} | CUDA available: {_cuda_available} | Device: {_device_name}")
+    _device_name = "CPU"
+    _backend_type = "CPU"
+    
+    if _cuda_available:
+        _device_name = torch.cuda.get_device_name(0)
+        if hasattr(torch.version, 'hip') and torch.version.hip:
+            _backend_type = "ROCm (AMD)"
+        else:
+            _backend_type = "CUDA (NVIDIA)"
+            
+    print(f"[AI Service] Torch version: {getattr(torch, '__version__', 'unknown')} | Backend: {_backend_type} | Device: {_device_name}")
 except Exception as _e:
     print(f"[AI Service] Torch import failed or CUDA check error: {_e}")
 

@@ -22,12 +22,18 @@ else
     COMPOSE_OVERRIDE_ARGS="-f docker-compose.nvidia.yaml"
 fi
 
-# Stop any existing containers
-echo "🧹 Cleaning up existing containers..."
-docker compose --env-file .dev.env --env-file .env.secrets -f docker-compose.dev.yaml $COMPOSE_OVERRIDE_ARGS down --remove-orphans
+# Stop and remove all containers
+echo "🧹 Removing all existing containers..."
+docker compose --env-file .dev.env --env-file .env.secrets -f docker-compose.dev.yaml $COMPOSE_OVERRIDE_ARGS down --remove-orphans --volumes
+
+echo "🗑️  Removing all stopped containers..."
+docker container prune -f
+
+echo "🗑️  Cleaning up dangling volumes..."
+docker volume prune -f
 
 # Build and start all services
-echo "🔨 Building and starting services..."
+echo "🔨 Building and starting services fresh..."
 docker compose --env-file .dev.env --env-file .env.secrets -f docker-compose.dev.yaml $COMPOSE_OVERRIDE_ARGS up --build -d
 
 # Wait for services to start
@@ -84,13 +90,6 @@ echo "   Mongo Express: http://localhost:8081"
 echo ""
 echo "📖 To view logs: docker-compose -f docker-compose.dev.yaml logs -f [service_name]"
 echo "📖 To stop services: docker-compose -f docker-compose.dev.yaml down"
-echo ""
-echo "🤖 AI Service Features:"
-echo "   - Automatic racing session analysis"
-echo "   - Natural language queries about racing data"
-echo "   - Performance scoring and recommendations"
-echo "   - Pattern detection in racing behavior"
-echo "   - Sector-wise performance analysis"
 echo ""
 echo ""
 echo "💾 Memory Usage Tips:"

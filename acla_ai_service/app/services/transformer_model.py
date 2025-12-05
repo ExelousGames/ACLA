@@ -1876,9 +1876,24 @@ class ExpertActionTrainer:
         self.model = model.to(device)
         self._cuda = device.startswith('cuda') and torch.cuda.is_available()
 
-        # Enable cuDNN benchmark for faster kernels on GPU
+        # Detect specific GPU architecture
+        self._is_amd = False
+        if self._cuda:
+            try:
+                # Check for ROCm/HIP (AMD)
+                if hasattr(torch.version, 'hip') and torch.version.hip is not None:
+                    self._is_amd = True
+                    print(f"[INFO] AMD GPU detected (ROCm {torch.version.hip})")
+                else:
+                    print(f"[INFO] NVIDIA GPU detected (CUDA {torch.version.cuda})")
+            except Exception:
+                pass
+
+        # Enable cuDNN benchmark for faster kernels on NVIDIA GPU
+        # On AMD, MIOpen handles this, but setting cudnn.benchmark doesn't hurt usually.
+        # However, to be safe and explicit, we only enable it for NVIDIA.
         try:
-            if self._cuda:
+            if self._cuda and not self._is_amd:
                 torch.backends.cudnn.benchmark = True
         except Exception:
             pass
@@ -1892,7 +1907,8 @@ class ExpertActionTrainer:
 
         # Favor higher matmul precision/tensor cores where applicable (PyTorch 2.0+)
         try:
-            torch.set_float32_matmul_precision('high')
+            if not self._is_amd:
+                torch.set_float32_matmul_precision('high')
         except Exception:
             pass
         self.learning_rate = learning_rate
@@ -2647,8 +2663,11 @@ async def prepare_and_train_coach_transformer_model(
         if use_cuda:
             # Enable TF32 on Ampere+ GPUs for faster matmuls without harming stability.
             try:
-                torch.backends.cuda.matmul.allow_tf32 = True
-                torch.backends.cudnn.allow_tf32 = True
+                # Check for AMD GPU (ROCm) to avoid setting NVIDIA-specific flags
+                is_amd = hasattr(torch.version, 'hip') and torch.version.hip is not None
+                if not is_amd:
+                    torch.backends.cuda.matmul.allow_tf32 = True
+                    torch.backends.cudnn.allow_tf32 = True
             except Exception:
                 pass
         print(f"[INFO] Device: {'CUDA' if use_cuda else 'CPU'}")
