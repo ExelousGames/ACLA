@@ -62,7 +62,6 @@ services:
       - /app/node_modules
     depends_on:
       - mongodb
-      - ai_service
     ports:
       - '7001:7001'
     networks:

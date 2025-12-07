@@ -1,7 +1,7 @@
 @echo off
 REM ACLA Development Environment Startup Script for Windows
 
-echo 🚀 Starting ACLA Development Environment with AI Service...
+echo 🚀 Starting ACLA Development Environment (Core Services)...
 
 REM Check WSL memory configuration
 if not exist "%USERPROFILE%\.wslconfig" (
@@ -15,24 +15,13 @@ if errorlevel 1 (
     exit /b 1
 )
 
-REM Detect GPU
-set COMPOSE_OVERRIDE_ARGS=-f docker-compose.nvidia.yaml
-nvidia-smi >nul 2>&1
-if %errorlevel% equ 0 (
-    echo ✅ NVIDIA GPU detected.
-    set COMPOSE_OVERRIDE_ARGS=-f docker-compose.nvidia.yaml
-) else (
-    echo ⚠️  No NVIDIA GPU detected. Defaulting to NVIDIA profile.
-    set COMPOSE_OVERRIDE_ARGS=-f docker-compose.nvidia.yaml
-)
-
 REM Stop any existing containers
 echo 🧹 Cleaning up existing containers...
-docker-compose --env-file .dev.env --env-file .env.secrets -f docker-compose.dev.yaml %COMPOSE_OVERRIDE_ARGS% down
+docker-compose --env-file .dev.env --env-file .env.secrets -f docker-compose.dev.yaml down
 
-REM Build and start all services
+REM Build and start core services
 echo 🔨 Building and starting services...
-docker-compose --env-file .dev.env --env-file .env.secrets -f docker-compose.dev.yaml %COMPOSE_OVERRIDE_ARGS% up --build -d
+docker-compose --env-file .dev.env --env-file .env.secrets -f docker-compose.dev.yaml up --build -d frontend backend_proxy backend mongodb mongo-express
 
 REM Wait for services to start
 echo ⏳ Waiting for services to initialize...
@@ -57,38 +46,18 @@ if %errorlevel% equ 0 (
     echo ❌ Frontend failed to start
 )
 
-REM Check AI service
-curl -f http://localhost:8000/health >nul 2>&1
-if %errorlevel% equ 0 (
-    echo ✅ AI Service is running at http://localhost:8000
-) else (
-    echo ❌ AI Service failed to start
-)
-
 echo.
 echo 🎉 ACLA Development Environment is ready!
 echo.
 echo 📋 Service URLs:
 echo    Frontend:      http://localhost:3000
 echo    Backend:       http://localhost:7001
-echo    AI Service:    http://localhost:8000
 echo    MongoDB:       http://localhost:27017
 echo    Mongo Express: http://localhost:8081
+echo.
+echo ℹ️  To run AI Service, use 'start-ai-service.sh' (in WSL/Linux)
 echo.
 echo 📖 To view logs: docker-compose -f docker-compose.dev.yaml logs -f [service_name]
 echo 📖 To stop services: docker-compose -f docker-compose.dev.yaml down
 echo.
-echo 🤖 AI Service Features:
-echo    - Automatic racing session analysis
-echo    - Natural language queries about racing data
-echo    - Performance scoring and recommendations
-echo    - Pattern detection in racing behavior
-echo    - Sector-wise performance analysis
 echo.
-echo.
-echo 💾 Memory Usage Tips:
-echo    - If WSL uses too much memory, run 'optimize-memory.bat'
-echo    - Stop containers when not developing: docker-compose -f docker-compose.dev.yaml down
-echo    - Clean up regularly: docker system prune -f
-
-pause

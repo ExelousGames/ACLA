@@ -2,7 +2,7 @@
 
 # ACLA Development Environment Startup Script
 
-echo "�� Starting ACLA Development Environment with AI Service..."
+echo "🚀 Starting ACLA Development Environment (Core Services)..."
 
 # Check if Docker is running
 if ! docker info > /dev/null 2>&1; then
@@ -10,21 +10,9 @@ if ! docker info > /dev/null 2>&1; then
     exit 1
 fi
 
-# Detect GPU
-if command -v nvidia-smi &> /dev/null && nvidia-smi &> /dev/null; then
-    echo "✅ NVIDIA GPU detected."
-    COMPOSE_OVERRIDE_ARGS="-f docker-compose.nvidia.yaml"
-elif [ -e /dev/kfd ] && [ -e /dev/dri ] && command -v rocminfo &> /dev/null; then
-    echo "✅ AMD GPU detected (ROCm)."
-    COMPOSE_OVERRIDE_ARGS="-f docker-compose.amd.yaml"
-else
-    echo "⚠️  No supported GPU detected. Defaulting to NVIDIA profile."
-    COMPOSE_OVERRIDE_ARGS="-f docker-compose.nvidia.yaml"
-fi
-
 # Stop and remove all containers
 echo "🧹 Removing all existing containers..."
-docker compose --env-file .dev.env --env-file .env.secrets -f docker-compose.dev.yaml $COMPOSE_OVERRIDE_ARGS down --remove-orphans --volumes
+docker compose --env-file .dev.env --env-file .env.secrets -f docker-compose.dev.yaml down --remove-orphans --volumes
 
 echo "🗑️  Removing all stopped containers..."
 docker container prune -f
@@ -32,9 +20,9 @@ docker container prune -f
 echo "🗑️  Cleaning up dangling volumes..."
 docker volume prune -f
 
-# Build and start all services
+# Build and start core services
 echo "🔨 Building and starting services fresh..."
-docker compose --env-file .dev.env --env-file .env.secrets -f docker-compose.dev.yaml $COMPOSE_OVERRIDE_ARGS up --build -d
+docker compose --env-file .dev.env --env-file .env.secrets -f docker-compose.dev.yaml up --build -d frontend backend_proxy backend mongodb mongo-express
 
 # Wait for services to start
 echo "⏳ Waiting for services to initialize..."
@@ -57,13 +45,6 @@ else
     echo "❌ Frontend failed to start"
 fi
 
-# Check AI service
-if curl -f http://localhost:8000/health > /dev/null 2>&1; then
-    echo "✅ AI Service is running at http://localhost:8000"
-else
-    echo "❌ AI Service failed to start"
-fi
-
 # Check MongoDB
 if curl -f http://localhost:27017 > /dev/null 2>&1; then
     echo "✅ MongoDB is running at http://localhost:27017"
@@ -84,9 +65,10 @@ echo ""
 echo "📋 Service URLs:"
 echo "   Frontend:      http://localhost:3000"
 echo "   Backend:       http://localhost:7001"
-echo "   AI Service:    http://localhost:8000"
 echo "   MongoDB:       http://localhost:27017"
 echo "   Mongo Express: http://localhost:8081"
+echo ""
+echo "ℹ️  To run AI Service, use './start-ai-service.sh'"
 echo ""
 echo "📖 To view logs: docker-compose -f docker-compose.dev.yaml logs -f [service_name]"
 echo "📖 To stop services: docker-compose -f docker-compose.dev.yaml down"
