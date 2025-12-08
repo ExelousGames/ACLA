@@ -84,7 +84,7 @@ warnings.filterwarnings('ignore', category=UserWarning)
 class PipelineConfig:
     """Configuration for cache cleanup operations"""
     session_data_cache_key: str = f"racing_sessions_"
-    session_cleanup: bool = False
+    session_cleanup: bool = True
     processed_session_data_cache_key: str = f"racing_sessions_processed_"
     processed_session_cleanup: bool = True
     enriched_sessions_cache_key: str = f"racing_sessions_enriched_"

@@ -69,6 +69,12 @@ class SegmentClassifierService:
         else:
             self.device = torch.device("cpu")
             print("SegmentClassifierService: No GPU detected, using CPU.")
+            try:
+                print(f"Debug: torch.cuda.is_available()={torch.cuda.is_available()}")
+                print(f"Debug: torch.version.cuda={torch.version.cuda}")
+                print(f"Debug: torch.version.hip={getattr(torch.version, 'hip', 'None')}")
+            except Exception as e:
+                print(f"Debug: Error getting torch version info: {e}")
 
         self.max_length = max_length
 

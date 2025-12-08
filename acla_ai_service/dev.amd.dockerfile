@@ -1,4 +1,4 @@
-FROM rocm/dev-ubuntu-22.04:7.1
+FROM rocm/dev-ubuntu-22.04:6.2
 
 # Set timezone to avoid interactive prompt
 ENV DEBIAN_FRONTEND=noninteractive \
@@ -30,14 +30,17 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONOPTIMIZE=1 \
     OMP_NUM_THREADS=2 \
     MKL_NUM_THREADS=2 \
-    HSA_OVERRIDE_GFX_VERSION=10.3.0
+    HSA_OVERRIDE_GFX_VERSION=11.0.0
 
 # Copy requirements first for better caching
-COPY requirements.common.txt .
 COPY requirements.amd.txt .
+COPY requirements.common.txt .
 
-# Install Python dependencies
+# Install PyTorch with ROCm support first
 RUN pip install --no-cache-dir -r requirements.amd.txt
+
+# Install other dependencies
+RUN pip install --no-cache-dir -r requirements.common.txt
 
 # Copy the rest of the application
 COPY . .
