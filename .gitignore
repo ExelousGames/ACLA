@@ -99,3 +99,4 @@ report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 /acla_ai_service/scripts/output
 /acla_ai_service/models/llm_adapters
 /acla_ai_service/models
+/acla_ai_service/scripts/telemetry_zarr_store

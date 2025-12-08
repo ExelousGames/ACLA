@@ -1,4 +1,4 @@
 -r requirements.common.txt
-torch==2.0.1 --index-url https://download.pytorch.org/whl/rocm5.4.2
-torchvision --index-url https://download.pytorch.org/whl/rocm5.4.2
-torchaudio --index-url https://download.pytorch.org/whl/rocm5.4.2
+torch --index-url https://download.pytorch.org/whl/rocm7.1
+torchvision --index-url https://download.pytorch.org/whl/rocm7.1
+torchaudio --index-url https://download.pytorch.org/whl/rocm7.1

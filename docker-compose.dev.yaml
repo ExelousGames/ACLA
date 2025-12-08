@@ -67,7 +67,6 @@ services:
     networks:
       - db-network
       - frontend-network
-      - ai-network
     deploy:
       resources:
         limits:
@@ -94,8 +93,7 @@ services:
     ports:
       - '8000:8000'
       - '8501:8501'
-    networks:
-      - ai-network
+    network_mode: "host"
     deploy:
       resources:
         reservations:
@@ -165,7 +163,4 @@ networks:
     driver: bridge
 
   frontend-network:
-    driver: bridge
-
-  ai-network:
     driver: bridge

@@ -4,9 +4,13 @@ services:
       context: ./acla_ai_service
       dockerfile: dev.amd.dockerfile
     privileged: true
-    volumes:
+    ipc: host
+    devices:
       - /dev/kfd:/dev/kfd
       - /dev/dri:/dev/dri
+      - /dev/mem:/dev/mem
+    security_opt:
+      - seccomp=unconfined
     group_add:
       - video
       - render
