@@ -623,7 +623,6 @@ class Full_dataset_TelemetryMLService:
 
     async def prepare_training_data(
         self,
-        track_name: Optional[str] = None,
         top_laps_count: int = 5,
     ):
         """Stream telemetry, build a segment-purpose dataset, and fine-tune the LLM."""
@@ -640,7 +639,6 @@ class Full_dataset_TelemetryMLService:
         try:
             sessions_metadata = await backend_service.get_all_racing_sessions_streaming(
                 cache_key=dataset_cache_key,
-                trackName=track_name,
                 cleanup_cache=cache_config.session_cleanup,
             )
         except Exception as streaming_error:
@@ -835,7 +833,7 @@ class Full_dataset_TelemetryMLService:
             f"[INFO] Processing cached dataset '{session_data_cache_key}' with immediate caching"
         )
 
-        top_laps: List[Dict[str, Any]] = []
+        top_laps: Dict[str, List[Dict[str, Any]]] = {}
         total_sessions_cached = 0
         total_processed = 0
         chunk_idx = 0
@@ -843,20 +841,32 @@ class Full_dataset_TelemetryMLService:
         features = self._imitate_expert_feature_names or self.telemetry_features.get_features_for_imitate_expert()
 
         def update_top_laps(candidate: Dict[str, Any]) -> None:
-            """Maintain the fastest laps for expert reference."""
-            if len(top_laps) < top_laps_count:
-                top_laps.append(candidate)
+            """Maintain the fastest laps for expert reference per track."""
+            records = candidate.get("records", [])
+            if not records:
+                return
+            
+            # Get track name from first record
+            track_name = records[0].get("Static_track", "unknown_track")
+            
+            if track_name not in top_laps:
+                top_laps[track_name] = []
+            
+            track_top_laps = top_laps[track_name]
+
+            if len(track_top_laps) < top_laps_count:
+                track_top_laps.append(candidate)
                 print(
-                    f"[DEBUG] Added lap {candidate['id']} to top laps ({len(top_laps)}/{top_laps_count}, time: {candidate['lap_time_ms']}ms)"
+                    f"[DEBUG] Added lap {candidate['id']} to top laps for {track_name} ({len(track_top_laps)}/{top_laps_count}, time: {candidate['lap_time_ms']}ms)"
                 )
                 return
 
-            slowest_idx = max(range(len(top_laps)), key=lambda idx: top_laps[idx]["lap_time_ms"])
-            slowest = top_laps[slowest_idx]
+            slowest_idx = max(range(len(track_top_laps)), key=lambda idx: track_top_laps[idx]["lap_time_ms"])
+            slowest = track_top_laps[slowest_idx]
             if candidate["lap_time_ms"] < slowest["lap_time_ms"]:
-                top_laps[slowest_idx] = candidate
+                track_top_laps[slowest_idx] = candidate
                 print(
-                    f"[DEBUG] Replaced slowest lap {slowest['id']} with {candidate['id']} (time: {candidate['lap_time_ms']}ms)"
+                    f"[DEBUG] Replaced slowest lap {slowest['id']} with {candidate['id']} for {track_name} (time: {candidate['lap_time_ms']}ms)"
                 )
 
         session_chunks_iterator = self.telemetry_store.get_cached_data_chunks(cache_key=session_data_cache_key)
@@ -943,12 +953,13 @@ class Full_dataset_TelemetryMLService:
         print(f"[DEBUG] - Total chunks processed: {session_chunks_processed}")
         print(f"[DEBUG] - Valid chunks processed: {chunk_idx}")
         print(f"[DEBUG] - Total records processed: {total_processed}")
-        print(f"[DEBUG] - Top laps found: {len(top_laps)}")
+        print(f"[DEBUG] - Tracks found: {len(top_laps)}")
         print(f"[DEBUG] - Session chunks cached: {total_sessions_cached}")
 
         if top_laps:
-            lap_times = [lap_info["lap_time_ms"] for lap_info in top_laps]
-            print(f"[DEBUG] Top lap times: {sorted(lap_times)}")
+            for track_name, laps in top_laps.items():
+                lap_times = [lap_info["lap_time_ms"] for lap_info in laps]
+                print(f"[DEBUG] Top lap times for {track_name}: {sorted(lap_times)}")
 
         if not session_chunks_processed:
             raise ValueError(
@@ -960,22 +971,27 @@ class Full_dataset_TelemetryMLService:
                 f"All {session_chunks_processed} chunks failed processing for cache key {session_data_cache_key}. Check data quality."
             )
 
-        if len(top_laps) < top_laps_count:
-            raise ValueError(
-                f"Insufficient top laps found: {len(top_laps)}/{top_laps_count} required. Processed {chunk_idx} valid chunks."
+        if not top_laps:
+             raise ValueError(
+                f"No top laps found. Processed {chunk_idx} valid chunks."
             )
 
         if total_sessions_cached == 0:
             raise ValueError("No session data cached for transformer training")
 
-        top_laps.sort(key=lambda entry: entry["lap_time_ms"])
-
         top_laps_telemetry_list: List[Dict[str, Any]] = []
-        for lap_info in top_laps:
-            top_laps_telemetry_list.extend(lap_info["records"])
+        
+        for track_name, track_laps in top_laps.items():
+            if len(track_laps) < top_laps_count:
+                 print(f"[WARNING] Insufficient top laps found for {track_name}: {len(track_laps)}/{top_laps_count}")
+            
+            track_laps.sort(key=lambda entry: entry["lap_time_ms"])
+            
+            for lap_info in track_laps:
+                top_laps_telemetry_list.extend(lap_info["records"])
 
         print(f"[SUCCESS] Processed {chunk_idx} chunks")
-        print(f"[SUCCESS] Selected top {len(top_laps)} laps: {len(top_laps_telemetry_list)} records")
+        print(f"[SUCCESS] Selected top laps from {len(top_laps)} tracks: {len(top_laps_telemetry_list)} records")
         print(f"[SUCCESS] Cached {total_sessions_cached} session batches across {chunk_idx} chunks")
 
         # Cache top laps telemetry list for downstream use
@@ -1045,7 +1061,9 @@ class Full_dataset_TelemetryMLService:
             session_records = filtered_session_df.to_dict("records")
 
             # Split into laps using the processed session
-            lap_structs = processor.split_into_laps(filtered_session_df)
+            # split_into_laps requires some features which will be removed by filter_features_by_list.
+            # thus, session and candidates will do filter_features_by_list separately.
+            lap_structs = processor.split_into_laps(stripped_session_df)
             if not lap_structs:
                 return chunk_idx, 0, [], session_records, None
 
@@ -1053,7 +1071,8 @@ class Full_dataset_TelemetryMLService:
                 lap_metrics = lap_struct["metrics"]
                 lap_df = lap_struct["dataframe"]
                 
-                lap_records = lap_df.to_dict("records") if not lap_df.empty else []
+                filtered_lap_df = processor.filter_features_by_list(lap_df, features)
+                lap_records = filtered_lap_df.to_dict("records") if not filtered_lap_df.empty else []
 
                 lap_identifier = (
                     f"{chunk_idx}_{lap_struct['lap_sequence']}_{lap_metrics.get('lap_time_ms', 'na')}"
