@@ -17,7 +17,10 @@ if errorlevel 1 (
 
 REM Stop any existing containers
 echo 🧹 Cleaning up existing containers...
-docker-compose --env-file .dev.env --env-file .env.secrets -f docker-compose.dev.yaml down
+docker-compose --env-file .dev.env --env-file .env.secrets -f docker-compose.dev.yaml down  --remove-orphans
+
+echo "🗑️  Removing all stopped containers..."
+docker container prune -f
 
 REM Build and start core services
 echo 🔨 Building and starting services...

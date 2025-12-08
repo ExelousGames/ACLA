@@ -12,13 +12,10 @@ fi
 
 # Stop and remove all containers
 echo "🧹 Removing all existing containers..."
-docker compose --env-file .dev.env --env-file .env.secrets -f docker-compose.dev.yaml down --remove-orphans --volumes
+docker compose --env-file .dev.env --env-file .env.secrets -f docker-compose.dev.yaml down --remove-orphans
 
 echo "🗑️  Removing all stopped containers..."
 docker container prune -f
-
-echo "🗑️  Cleaning up dangling volumes..."
-docker volume prune -f
 
 # Build and start core services
 echo "🔨 Building and starting services fresh..."
