@@ -1028,20 +1028,32 @@ class Full_dataset_TelemetryMLService:
             if processed_df.empty:
                 return chunk_idx, 0, [], [], None
 
-            lap_structs = processor.split_into_laps(processed_df)
-            if not lap_structs:
+            # Strip by time gap on the whole session chunk
+            stripped_dfs = processor.strip_dataframe_by_time_gap([processed_df], telemetry_time_gap_ms)
+            stripped_session_df = stripped_dfs[0]
+
+            if stripped_session_df.empty:
                 return chunk_idx, 0, [], [], None
 
-            lap_frames: List[pd.DataFrame] = [lap_struct["dataframe"] for lap_struct in lap_structs]
-            stripped_lap_frames = processor.strip_dataframe_by_time_gap(lap_frames, telemetry_time_gap_ms)
+            # Filter features on the whole session chunk
+            filtered_session_df = processor.filter_features_by_list(stripped_session_df, features)
+            
+            if filtered_session_df.empty:
+                 return chunk_idx, 0, [], [], None
 
-            for lap_index, (lap_struct, stripped_df) in enumerate(zip(lap_structs, stripped_lap_frames)):
+            # Use filtered_session_df for session_records
+            session_records = filtered_session_df.to_dict("records")
+
+            # Split into laps using the processed session
+            lap_structs = processor.split_into_laps(filtered_session_df)
+            if not lap_structs:
+                return chunk_idx, 0, [], session_records, None
+
+            for lap_struct in lap_structs:
                 lap_metrics = lap_struct["metrics"]
-                lap_metrics["record_count_after_gap"] = len(stripped_df)
-
-                filtered_df = processor.filter_features_by_list(stripped_df, features) if not stripped_df.empty else pd.DataFrame()
+                lap_df = lap_struct["dataframe"]
                 
-                lap_records = filtered_df.to_dict("records") if not filtered_df.empty else []
+                lap_records = lap_df.to_dict("records") if not lap_df.empty else []
 
                 lap_identifier = (
                     f"{chunk_idx}_{lap_struct['lap_sequence']}_{lap_metrics.get('lap_time_ms', 'na')}"
@@ -1057,9 +1069,6 @@ class Full_dataset_TelemetryMLService:
                 if lap_metrics["is_full_valid"] and lap_metrics["lap_time_ms"] is not None and lap_records:
                     laps_processed_in_chunk += 1
                     candidates.append(candidate_entry)
-                
-                if lap_records:
-                    session_records.extend(lap_records)
             
             return chunk_idx, laps_processed_in_chunk, candidates, session_records, None
 
