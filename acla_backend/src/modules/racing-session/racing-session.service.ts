@@ -129,7 +129,8 @@ export class RacingSessionService {
             dataChunkFileIds: dataChunkFileIds,
             chunkSize: chunkSize,
             totalChunks: totalChunks,
-            totalDataPoints: data.length
+            totalDataPoints: data.length,
+            created_date: new Date()
         });
     }
 
@@ -270,8 +271,8 @@ export class RacingSessionService {
                 let totalDataPoints = 0;
                 let isFirstChunk = true;
 
-                // Start JSON array
-                writeStream.write('[');
+                // Start JSON object with _id and data array
+                writeStream.write(`{"_id":"${session._id.toString()}","data":[`);
 
                 if (session.dataChunkFileIds && session.dataChunkFileIds.length > 0) {
                     // Stream each chunk and append to file
@@ -323,8 +324,8 @@ export class RacingSessionService {
                     }
                 }
 
-                // End JSON array and close file
-                writeStream.write(']');
+                // End JSON array and object, and close file
+                writeStream.write(']}');
                 writeStream.end();
 
                 // Wait for write stream to finish
