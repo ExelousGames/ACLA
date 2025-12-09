@@ -99,15 +99,23 @@ class Full_dataset_TelemetryMLService:
     Machine Learning Service for AC Competizione Telemetry Analysis
     """ 
     
-    def __init__(self, models_directory: str = "models"):
+    def __init__(self, models_directory: Optional[str] = None):
         """
         Initialize the ML service
         
         Args:
-            models_directory: Directory to save/load trained models
+            models_directory: Directory to save/load trained models.
+                            If None, defaults to 'models' in the project root.
         """
         # Resolve to an absolute path so downstream tooling operates on a single location
-        self.models_directory = Path(models_directory).resolve()
+        if models_directory:
+            self.models_directory = Path(models_directory).resolve()
+        else:
+            # Default to project_root/models
+            # This file is in app/services/full_dataset_ml_service.py
+            # Project root is ../../..
+            self.models_directory = Path(__file__).resolve().parents[2] / "models"
+
         self.models_directory.mkdir(exist_ok=True)
         
         self.telemetry_features = TelemetryFeatures()

@@ -100,12 +100,18 @@ class ZarrTelemetryStore:
 
     def __init__(
         self,
-        store_directory: str = "telemetry_zarr_store",
+        store_directory: Optional[str] = None,
         *,
         compressor: Optional[Blosc] = None,
         chunk_max_mb: float = 10,
     ) -> None:
-        self.store_dir = Path(store_directory)
+        if store_directory:
+            self.store_dir = Path(store_directory)
+        else:
+            # Default to acla_ai_service/telemetry_zarr_store relative to this file
+            # This ensures consistent location regardless of CWD
+            self.store_dir = Path(__file__).resolve().parents[2] / "telemetry_zarr_store"
+
         self.store_dir.mkdir(parents=True, exist_ok=True)
         self.compressor = compressor or Blosc(cname="zstd", clevel=5, shuffle=Blosc.BITSHUFFLE)
         # Allow callers to specify in megabytes while storing the byte ceiling internally.
