@@ -250,6 +250,9 @@ const SessionAnalysis = () => {
 
         writeQueueRef.current = nextWrite
             .catch((error) => {
+                if (error instanceof Error && error.message === 'Telemetry writer disposed') {
+                    return;
+                }
                 console.error('Telemetry write failed', error);
             })
             .then(() => undefined);
@@ -262,7 +265,7 @@ const SessionAnalysis = () => {
         });
     };
 
-    const readRecordedSessionData = async (onProgress?: (read: number, total: number | null) => void): Promise<any[]> => {
+    const readRecordedSessionData = async (onProgress?: (read: number, total: number | null, bytesRead?: number, totalBytes?: number) => void): Promise<any[]> => {
         const currentFilePath = recordingFilePathRef.current || recordedSessionDataFilePath;
         console.log('readRecordedSessionData called with file path:', currentFilePath);
 
@@ -302,16 +305,18 @@ const SessionAnalysis = () => {
                     try {
                         const obj = JSON.parse(message);
                         if (obj.type === 'progress') {
-                            if (onProgress) onProgress(obj.read, obj.total ?? null);
+                            if (onProgress) onProgress(obj.read, obj.total ?? null, obj.bytesRead, obj.totalBytes);
+                        } else if (obj.type === 'chunk') {
+                            if (Array.isArray(obj.data)) {
+                                allData.push(...obj.data);
+                            }
                         } else if (obj.type === 'complete') {
                             completeReceived = true;
                             if (Array.isArray(obj.data)) {
                                 allData.push(...obj.data);
-                                console.log('Telemetry data complete. Points:', obj.data.length);
-                                resolve(allData);
-                            } else {
-                                resolve([]);
                             }
+                            console.log('Telemetry data complete. Points:', allData.length);
+                            resolve(allData);
                             cleanup();
                         } else if (obj.type === 'error') {
                             console.error('Error from telemetry reader:', obj.message);

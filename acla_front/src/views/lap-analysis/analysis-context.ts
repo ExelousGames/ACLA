@@ -19,7 +19,7 @@ export interface AnalysisContextType {
     setRecordedSessionStaticsData: (data: {}) => void;
     setRecordedSessionDataFilePath: (filePath: string | null) => void;
     writeRecordedLiveSessionData: (data: any) => Promise<void>;
-    readRecordedSessionData: (onProgress?: (read: number, total: number | null) => void) => Promise<any[]>;
+    readRecordedSessionData: (onProgress?: (read: number, total: number | null, bytesRead?: number, totalBytes?: number) => void) => Promise<any[]>;
     finalizeRecordingWrites: () => Promise<void>;
     clearRecordingSession: () => void;
     setActiveVisualizations: Dispatch<SetStateAction<VisualizationInstance[]>>;

@@ -19,7 +19,7 @@ enum RecordingState {
 
 type StopReason = 'manual' | 'pause' | 'error' | 'complete';
 
-const UPLOAD_CHUNK_SIZE = 5;
+const UPLOAD_CHUNK_SIZE = 1000;
 const POST_UPLOAD_RESET_DELAY_MS = 1200;
 const POST_SUCCESS_DIALOG_CLOSE_MS = 800;
 
@@ -477,6 +477,12 @@ export default function LiveAnalysisSessionRecording() {
         void startRecording({ resumeExisting: true });
     }, [TelemetryDataLiveStatus, isUploading, startRecording, state, uploadDialogOpen]);
 
+    useEffect(() => {
+        if (state === RecordingState.RECORDING && TelemetryDataLiveStatus === ACC_STATUS.ACC_PAUSE) {
+            void stopRecordingProcess('pause');
+        }
+    }, [state, TelemetryDataLiveStatus, stopRecordingProcess]);
+
     const cleanupTelemetryFile = useCallback(async (filePath: string) => {
         try { const options: PythonShellOptions = { mode: 'text', pythonOptions: ['-u'], scriptPath: 'src/py-scripts', args: [filePath] }; await window.electronAPI.runPythonScript('delete_telemetry_file.py', options); } catch { }
     }, []);
@@ -504,12 +510,14 @@ export default function LiveAnalysisSessionRecording() {
             // Reserve progress ranges: 0-40% for reading, 40-90% for chunk upload, 90-100% finalize
             let estimatedTotal: number | null = null;
             let lastRead = 0;
-            const data = await analysisContext.readRecordedSessionData((read, total) => {
+            const data = await analysisContext.readRecordedSessionData((read, total, bytesRead, totalBytes) => {
                 lastRead = read;
                 if (total && total > 0) estimatedTotal = total;
                 // If total known compute percentage otherwise logarithmic approximation
                 let pct: number;
-                if (estimatedTotal) {
+                if (totalBytes && totalBytes > 0 && bytesRead !== undefined) {
+                    pct = Math.min(bytesRead / totalBytes, 1) * 40;
+                } else if (estimatedTotal) {
                     pct = Math.min(read / estimatedTotal, 1) * 40; // scale into 0-40
                 } else {
                     // Unknown total: approach 40% asymptotically
@@ -525,7 +533,26 @@ export default function LiveAnalysisSessionRecording() {
             const initResp = await apiService.post('/racing-session/upload/init', metadata); if (!initResp.data) throw new Error('Failed to initialize upload');
             const { uploadId } = initResp.data as UploadRacingSessionInitReturnDto;
             setUploadProgress(55); setUploadStatus(`Uploading ${chunks.length} chunks...`);
-            for (let i = 0; i < chunks.length; i++) { const params = new URLSearchParams(); params.append('uploadId', uploadId); await apiService.post(`/racing-session/upload/chunk?${params.toString()}`, { chunk: chunks[i], chunkIndex: i }); const pct = Math.floor(55 + (i + 1) / chunks.length * 35); setUploadProgress(pct); setUploadStatus(`Uploading chunk ${i + 1} of ${chunks.length}...`); }
+            for (let i = 0; i < chunks.length; i++) {
+                let retries = 3;
+                let success = false;
+                while (retries > 0 && !success) {
+                    try {
+                        const params = new URLSearchParams();
+                        params.append('uploadId', uploadId);
+                        await apiService.post(`/racing-session/upload/chunk?${params.toString()}`, { chunk: chunks[i], chunkIndex: i });
+                        success = true;
+                    } catch (err) {
+                        console.warn(`Chunk ${i} upload failed, retrying... (${retries} attempts left)`, err);
+                        retries--;
+                        if (retries === 0) throw err;
+                        await new Promise(resolve => setTimeout(resolve, 1000 * (4 - retries))); // Exponential backoff: 1s, 2s, 3s
+                    }
+                }
+                const pct = Math.floor(55 + (i + 1) / chunks.length * 35);
+                setUploadProgress(pct);
+                setUploadStatus(`Uploading chunk ${i + 1} of ${chunks.length}...`);
+            }
             setUploadProgress(92); setUploadStatus('Finalizing upload...');
             const final = new URLSearchParams(); final.append('uploadId', uploadId); await apiService.post(`/racing-session/upload/complete?${final.toString()}`, {});
             setUploadProgress(100); setUploadStatus('Upload completed successfully!');
@@ -533,7 +560,14 @@ export default function LiveAnalysisSessionRecording() {
             setTimeout(() => { setIsUploading(false); setTimeout(() => resetToChecking(), POST_SUCCESS_DIALOG_CLOSE_MS); }, POST_UPLOAD_RESET_DELAY_MS);
             uploadInFlightRef.current = false;
             return true;
-        } catch (e) { setUploadError(e instanceof Error ? e.message : 'Upload failed'); setIsUploading(false); setShowRetryButton(true); uploadInFlightRef.current = false; return false; }
+        } catch (e: any) {
+            const errorMessage = e?.message || (e instanceof Error ? e.message : 'Upload failed');
+            setUploadError(errorMessage);
+            setIsUploading(false);
+            setShowRetryButton(true);
+            uploadInFlightRef.current = false;
+            return false;
+        }
     }, [analysisContext, auth, cleanupTelemetryFile, resetToChecking, hasRecordedData]);
 
     const handleCancelUpload = useCallback(async () => { if (analysisContext.recordedSessionDataFilePath) await cleanupTelemetryFile(analysisContext.recordedSessionDataFilePath); resetToChecking(); }, [analysisContext, cleanupTelemetryFile, resetToChecking]);

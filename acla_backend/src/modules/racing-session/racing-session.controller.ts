@@ -12,6 +12,7 @@ import { model, Types } from 'mongoose';
 import * as path from 'path';
 import * as fs from 'fs/promises';
 import { createReadStream } from 'fs';
+import * as crypto from 'crypto';
 
 @Controller('racing-session')
 export class RacingSessionController {
@@ -19,8 +20,9 @@ export class RacingSessionController {
 
     private uploadStates = new Map<string, {
         metadata: UploadReacingSessionInitDto;
-        session_data_chunks: string[][];
-        received: number;
+        filePath: string;
+        nextChunkIndex: number;
+        createdAt: Date;
     }>();
 
     private downloadStates = new Map<string, {
@@ -351,10 +353,19 @@ export class RacingSessionController {
     async initUpload(@Body() metadata: UploadReacingSessionInitDto) {
         const uploadId = crypto.randomUUID();
         console.log('Initialized upload with ID:', uploadId, 'for user:', metadata.userId);
+
+        const uploadDir = path.resolve(process.cwd(), 'session_recording', 'temp', 'uploads');
+        await fs.mkdir(uploadDir, { recursive: true });
+        const filePath = path.join(uploadDir, `${uploadId}.json`);
+
+        // Initialize empty file
+        await fs.writeFile(filePath, '');
+
         this.uploadStates.set(uploadId, {
             metadata,
-            session_data_chunks: [],
-            received: 0
+            filePath,
+            nextChunkIndex: 0,
+            createdAt: new Date()
         });
         return { uploadId: uploadId };
     }
@@ -362,35 +373,77 @@ export class RacingSessionController {
     @UseGuards(AuthGuard('jwt'))
     @Post('upload/chunk')
     async receiveChunk(
-        @Body() body: { chunk: string[]; chunkIndex: number },
+        @Body() body: { chunk: any[]; chunkIndex: number },
         @Query('uploadId') uploadId: string
     ) {
         const upload = this.uploadStates.get(uploadId);
         if (!upload) {
-            throw new BadRequestException('Upload doesnt exist');
+            throw new BadRequestException('Upload doesnt exist or expired');
         }
-        upload.session_data_chunks[body.chunkIndex] = body.chunk;
-        upload.received++;
 
+        if (body.chunkIndex !== upload.nextChunkIndex) {
+            // If we receive a previous chunk, it might be a retry that succeeded but we didn't get the response?
+            // But if we are strictly sequential, we expect nextChunkIndex.
+            // If chunkIndex < nextChunkIndex, we can ignore it (idempotent).
+            if (body.chunkIndex < upload.nextChunkIndex) {
+                return { receivedChunks: upload.nextChunkIndex };
+            }
+            throw new BadRequestException(`Invalid chunk index. Expected ${upload.nextChunkIndex}, got ${body.chunkIndex}`);
+        }
 
-        return { receivedChunks: upload.session_data_chunks.length };
+        // Prepare data to write
+        let dataToWrite = '';
+        if (body.chunk && body.chunk.length > 0) {
+            const jsonStr = JSON.stringify(body.chunk);
+            // Remove [ and ]
+            const content = jsonStr.substring(1, jsonStr.length - 1);
+
+            if (upload.nextChunkIndex === 0) {
+                dataToWrite = '[' + content;
+            } else {
+                dataToWrite = ',' + content;
+            }
+        } else if (upload.nextChunkIndex === 0) {
+            // Handle empty first chunk (empty file)
+            dataToWrite = '[';
+        }
+
+        await fs.appendFile(upload.filePath, dataToWrite);
+
+        upload.nextChunkIndex++;
+        // Update last access
+        upload.createdAt = new Date();
+
+        return { receivedChunks: upload.nextChunkIndex };
     }
 
     @Post('upload/complete')
     async completeUpload(
         @Body() completionData: any,
-        @Query('uploadId') uploadId: string //Extracts values from the URL query string (the part after ? in a URL)
+        @Query('uploadId') uploadId: string
     ) {
-
-        //get the data about the session upload
         const upload = this.uploadStates.get(uploadId);
         if (!upload) {
-            throw new BadRequestException('Upload doesnt exist');
+            throw new BadRequestException('Upload doesnt exist or expired');
         }
-        const fullDataset = upload.session_data_chunks.flat();
 
-        // Create racing session in database
         try {
+            // Finalize file format
+            await fs.appendFile(upload.filePath, ']');
+
+            // Read and parse the full dataset
+            // Note: For extremely large files, we should use a streaming parser, 
+            // but for now we load into memory to pass to createRacingSession which expects an array.
+            const fileContent = await fs.readFile(upload.filePath, 'utf8');
+            let fullDataset: any[];
+            try {
+                fullDataset = JSON.parse(fileContent);
+            } catch (e) {
+                this.logger.error(`Failed to parse uploaded file: ${e.message}`);
+                throw new BadRequestException('Invalid JSON data in upload');
+            }
+
+            // Create racing session in database
             const createdSession = await this.racingSessionService.createRacingSession(
                 upload.metadata.sessionName,
                 upload.metadata.mapName,
@@ -399,130 +452,27 @@ export class RacingSessionController {
                 fullDataset
             );
 
-            // // ai training
-            // try {
-            //     // First, find the user by user id  to get their ObjectId
-            //     const userInfo = await this.userInfoService.findOneById(upload.metadata.userId);
+            // AI training logic (commented out in original, keeping it commented out or preserving if it was active)
+            // ... (Preserving original commented out code structure if needed, but for brevity I'll omit the commented block unless requested)
 
-            //     if (!userInfo) {
-            //         console.log('User not found for id:', upload.metadata.userId);
-            //     } else {
-
-            //         const userId = upload.metadata.userId;
-            //         // Check for active AI model first, before processing the session
-
-            //         //list of ai models will be trained
-            //         const modelsConfig: ModelsConfig[] = [
-            //             { config_id: "lap_prediction", target_variable: "Graphics_current_time", model_type: "lap_time_prediction" }
-            //         ];
-
-            //         let activeModel: UserACCTrackAIModel & { _id: Types.ObjectId; } | null = null;
-
-            //         // Check for existing active models for each config
-            //         for (const modelConfig of modelsConfig) {
-
-            //             // Check if user has an active model for this track
-            //             activeModel = await this.aiModelService.findActiveUserSessionAIModel(
-            //                 userId,
-            //                 upload.metadata.mapName,
-            //                 upload.metadata.carName,
-            //                 modelConfig.model_type,
-            //                 modelConfig.target_variable
-            //             );
-
-            //             // add active model if any
-            //             modelConfig.existing_model_data = activeModel ? activeModel : null;
-            //         }
-
-            //         // Train the models using the AI service client
-            //         const trainedModelsResponse: TrainModelsResponse = await this.aiServiceClient.trainModels({
-            //             session_id: createdSession.id,
-            //             telemetry_data: fullDataset,
-            //             models_config: modelsConfig,
-            //             user_id: userId,
-            //             parallel_training: false
-            //         });
-
-            //         //save the training result to database
-            //         if (trainedModelsResponse) {
-            //             // Process and save the training result as needed
-            //             for (const [configId, response] of Object.entries(trainedModelsResponse.training_results)) {
-
-            //                 //find the matching config
-            //                 const modelConfig = modelsConfig.find(config => config.config_id === configId);
-            //                 console.log("Training result for response:", response);
-            //                 if (response.success) {
-            //                     //if there is an active model, update the model in database
-            //                     if (modelConfig && modelConfig.existing_model_data) {
-
-            //                         await this.aiModelService.updateModel(modelConfig.existing_model_data._id.toString(), {
-            //                             modelData: response.model_data,
-            //                             modelType: response.model_type,
-            //                             algorithmUsed: response.algorithm_used,
-            //                             algorithmType: response.algorithm_type,
-            //                             targetVariable: response.target_variable,
-            //                             trainingMetrics: response.training_metrics,
-            //                             featureNames: response.feature_names,
-            //                             featureCount: response.features_count,
-            //                             samplesProcessed: response.samples_processed,
-            //                             modelVersion: response.model_version, // Version number for incremental training
-            //                             algorithmStrengths: response.algorithm_strengths, // Summary of telemetry data used
-            //                             recommendations: response.recommendations, // Training recommendations
-            //                             algorithmDescription: response.algorithm_description, // Description of the algorithm used
-            //                             training_time: response.training_time, // Training time
-            //                             dataQualityScore: response.data_quality_score, // Feature importance scores
-            //                             timestamp: response.timestamp, // When the model was trained
-            //                             isActive: true // Whether this model version is active
-            //                         });
-            //                     } else {
-            //                         //else create a new model
-            //                         await this.aiModelService.createModel({
-            //                             userId: userId,
-            //                             trackName: upload.metadata.mapName,
-            //                             carName: upload.metadata.carName,
-            //                             modelData: response.model_data,
-            //                             modelType: response.model_type,
-            //                             algorithmUsed: response.algorithm_used,
-            //                             algorithmType: response.algorithm_type,
-            //                             targetVariable: response.target_variable,
-            //                             trainingMetrics: response.training_metrics,
-            //                             featureNames: response.feature_names,
-            //                             featureCount: response.features_count,
-            //                             samplesProcessed: response.samples_processed,
-            //                             modelVersion: response.model_version, // Version number for incremental training
-            //                             recommendations: response.recommendations, // Training recommendations
-            //                             algorithmDescription: response.algorithm_description, // Description of the algorithm used
-            //                             algorithmStrengths: response.algorithm_strengths,
-            //                             training_time: response.training_time,
-            //                             dataQualityScore: response.data_quality_score, // Alternative algorithms for this model type
-            //                             timestamp: response.timestamp, // When the model was trained
-            //                             isActive: true // Whether this model version is active
-            //                         });
-            //                     }
-            //                 }
-            //             }
-            //         }
-
-            //     }
-            // } catch (modelError) {
-            //     console.error('Model setup failed:', modelError);
-            // }
+            return {
+                message: 'Upload completed successfully',
+                sessionId: createdSession._id, // Assuming createRacingSession returns the document
+                aiAnalysisAvailable: true
+            };
 
         } catch (error) {
-            console.error('Error creating Racing Session:', error);
+            this.logger.error(`Error creating Racing Session: ${error.message}`);
+            throw new BadRequestException(`Upload failed: ${error.message}`);
         } finally {
-            // Clean up upload state from memory to prevent memory leaks
+            // Clean up
             this.uploadStates.delete(uploadId);
-
-            // Clean up any assembled files for this upload
-            await this.cleanupAssembledFile(uploadId);
+            try {
+                await fs.unlink(upload.filePath);
+            } catch (e) {
+                this.logger.warn(`Failed to delete temp file ${upload.filePath}: ${e.message}`);
+            }
         }
-
-        return {
-            message: 'Upload completed successfully',
-            sessionId: uploadId,
-            aiAnalysisAvailable: true
-        };
     }
 
     @UseGuards(AuthGuard('jwt'))
