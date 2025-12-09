@@ -1032,19 +1032,21 @@ class Full_dataset_TelemetryMLService:
         """
         Process a single chunk of telemetry data in a separate thread.
         """
-        # Handle new payload format with _id
-        session_identifier = str(chunk_idx)
-        if isinstance(chunk_data, dict) and "data" in chunk_data and "_id" in chunk_data:
-            session_identifier = str(chunk_data["_id"])
-            chunk_data = chunk_data["data"]
+        chunk_id = str(chunk_idx)
+        actual_data = chunk_data
 
-        print(f"[DEBUG] Thread started processing chunk {session_identifier} ({len(chunk_data)} records)")
+        if isinstance(chunk_data, dict) and "_id" in chunk_data:
+            chunk_id = chunk_data["_id"]
+            if "data" in chunk_data:
+                actual_data = chunk_data["data"]
+
+        print(f"[DEBUG] Thread started processing chunk {chunk_idx} (ID: {chunk_id}) ({len(actual_data)} records)")
         laps_processed_in_chunk = 0
         candidates: List[Dict[str, Any]] = []
         session_records: List[Dict[str, Any]] = []
 
         try:
-            session_chunk_df = pd.DataFrame(chunk_data)
+            session_chunk_df = pd.DataFrame(actual_data)
             telemetry_df = session_chunk_df
             
             # Basic validation
@@ -1089,7 +1091,7 @@ class Full_dataset_TelemetryMLService:
                 lap_records = filtered_lap_df.to_dict("records") if not filtered_lap_df.empty else []
 
                 lap_identifier = (
-                    f"{session_identifier}_{lap_struct['lap_sequence']}_{lap_metrics.get('lap_time_ms', 'na')}"
+                    f"{chunk_id}_{lap_struct['lap_sequence']}_{lap_metrics.get('lap_time_ms', 'na')}"
                 )
 
                 candidate_entry = {

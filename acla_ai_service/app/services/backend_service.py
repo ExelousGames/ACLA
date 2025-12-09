@@ -290,7 +290,7 @@ class BackendService:
                             # Continue with other sessions instead of failing completely
                             continue
                 
-                async def _stream_session_file(self, session_id: str, session_meta: dict) -> list:
+                async def _stream_session_file(self, session_id: str, session_meta: dict) -> Any:
                     """Stream a single session file from backend and parse JSON"""
                     try:
                         # Prepare request for file streaming
@@ -326,7 +326,7 @@ class BackendService:
                                 session_data = json.loads(content)
                                 
                                 # Return the parsed session data
-                                return session_data if isinstance(session_data, list) else []
+                                return session_data
                                 
                     except httpx.HTTPStatusError as e:
                         raise Exception(f"HTTP {e.response.status_code}: Failed to download session file")
