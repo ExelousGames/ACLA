@@ -13,7 +13,7 @@ import shutil
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, AsyncIterator, Dict, Iterable, Iterator, List, Optional
+from typing import Any, AsyncIterator, Dict, Iterable, Iterator, List, Optional, Union
 
 import numpy as np
 import zarr
@@ -93,6 +93,7 @@ class CacheMetadata:
 @dataclass
 class ChunkPayload:
     payload: Any
+    chunk_id: Optional[str] = None
 
 
 class ZarrTelemetryStore:
@@ -185,7 +186,8 @@ class ZarrTelemetryStore:
                 print(f"[WARNING] Encountered empty chunk payload for {cache_key} (index {metadata.next_chunk_index})")
                 continue
 
-            dataset_name = self._format_chunk_name(metadata.next_chunk_index)
+            chunk_identifier = chunk_entry.chunk_id if chunk_entry.chunk_id else metadata.next_chunk_index
+            dataset_name = self._format_chunk_name(chunk_identifier)
             group.create_dataset(
                 dataset_name,
                 data=data_array,
@@ -205,7 +207,7 @@ class ZarrTelemetryStore:
 
         return processed > 0
 
-    def save_chunk(self, cache_key: str, chunk_index: int, payload: Any) -> bool:
+    def save_chunk(self, cache_key: str, chunk_index: Union[int, str], payload: Any) -> bool:
         """Save a specific chunk index, overwriting if exists."""
         group = self._open_group(cache_key, mode="a")
         metadata = self._load_or_initialise_metadata(group, cache_key)
@@ -237,12 +239,16 @@ class ZarrTelemetryStore:
             if dataset_name in group:
                 del group[dataset_name]
         
-        metadata.update_chunk(chunk_index, chunk_len)
+        if isinstance(chunk_index, int):
+            metadata.update_chunk(chunk_index, chunk_len)
+        else:
+            metadata.updated_at = datetime.now().isoformat()
+
         self._persist_metadata(group, metadata)
         
         return True
 
-    def get_cached_data_chunks(self, cache_key: str) -> Iterator[Any]:
+    def get_cached_data_chunks(self, cache_key: str, include_ids: bool = False) -> Iterator[Any]:
         """Yield cached chunks exactly as they were stored."""
 
         group_path = self._group_path(cache_key)
@@ -259,15 +265,18 @@ class ZarrTelemetryStore:
                 try:
                     raw_bytes = bytes(group[chunk_name][:])
                     payload = json.loads(raw_bytes.decode("utf-8"))
-                    yield payload
+                    if include_ids:
+                        yield (payload, chunk_name)
+                    else:
+                        yield payload
                 except Exception as read_error:  # pragma: no cover - safety logging
                     print(f"[WARNING] Failed to read chunk '{chunk_name}' for {cache_key}: {read_error}")
                     continue
 
         return _generator()
 
-    def get_chunk(self, cache_key: str, chunk_index: int) -> Optional[Any]:
-        """Retrieve a specific chunk by its index."""
+    def get_chunk(self, cache_key: str, chunk_index: Union[int, str]) -> Optional[Any]:
+        """Retrieve a specific chunk by its index or ID."""
         group_path = self._group_path(cache_key)
         if not group_path.exists():
             return None
@@ -444,8 +453,10 @@ class ZarrTelemetryStore:
         })
 
     @staticmethod
-    def _format_chunk_name(index: int) -> str:
-        return f"chunk_{index:06d}"
+    def _format_chunk_name(index: Union[int, str]) -> str:
+        if isinstance(index, int):
+            return f"chunk_{index:06d}"
+        return str(index)
 
     @staticmethod
     def _normalise_chunk_payload(candidate: Any) -> ChunkPayload:
@@ -453,8 +464,10 @@ class ZarrTelemetryStore:
             return candidate
 
         if isinstance(candidate, tuple) and candidate:
-            # Allow callers to yield (payload, ...) without forcing a custom dataclass.
-            return ChunkPayload(payload=candidate[0])
+            # Allow callers to yield (payload, chunk_id)
+            payload = candidate[0]
+            chunk_id = candidate[1] if len(candidate) > 1 else None
+            return ChunkPayload(payload=payload, chunk_id=chunk_id)
 
         return ChunkPayload(payload=candidate)
 

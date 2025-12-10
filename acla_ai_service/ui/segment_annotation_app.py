@@ -67,9 +67,23 @@ def _run_async(func, *args, **kwargs):
 def get_store():
     return get_shared_zarr_store()
 
+def get_available_sessions(cache_key: str) -> List[str]:
+    """Get list of available session IDs from the store."""
+    store = get_store()
+    group_path = store._group_path(cache_key)
+    if not group_path.exists():
+        return []
+    try:
+        group = zarr.open_group(str(group_path), mode="r")
+        # Filter out metadata chunk
+        sessions = [k for k in group.array_keys() if k != "chunk_000000"]
+        return sorted(sessions)
+    except Exception:
+        return []
+
 @st.cache_data(max_entries=1, show_spinner=False)
-def load_chunk_data(cache_key: str, chunk_index: int) -> pd.DataFrame:
-    """Load a specific chunk of session data from Zarr."""
+def load_session_data(cache_key: str, session_id: str) -> pd.DataFrame:
+    """Load a specific session of data from Zarr."""
     store = get_store()
     # Accessing internal method _group_path to avoid iterating all chunks
     group_path = store._group_path(cache_key)
@@ -80,7 +94,7 @@ def load_chunk_data(cache_key: str, chunk_index: int) -> pd.DataFrame:
     try:
         # Open in read-only mode
         group = zarr.open_group(str(group_path), mode="r")
-        chunk_name = f"chunk_{chunk_index:06d}"
+        chunk_name = session_id
         
         if chunk_name not in group:
             return pd.DataFrame()
@@ -105,15 +119,15 @@ def load_chunk_data(cache_key: str, chunk_index: int) -> pd.DataFrame:
         return df
         
     except Exception as e:
-        print(f"Error loading chunk {chunk_index}: {e}")
+        print(f"Error loading session {session_id}: {e}")
         return pd.DataFrame()
 
-def load_annotations(chunk_index: int) -> List[AnnotatedSegment]:
-    """Load annotations for a specific chunk."""
+def load_annotations(session_id: str) -> List[AnnotatedSegment]:
+    """Load annotations for a specific session."""
     store = get_store()
     pipeline_config = PipelineConfig()
     annotation_key = pipeline_config.annotation_cache_key
-    chunk_data = store.get_chunk(annotation_key, chunk_index)
+    chunk_data = store.get_chunk(annotation_key, session_id)
     
     raw_data = []
     if chunk_data:
@@ -126,10 +140,10 @@ def load_annotations(chunk_index: int) -> List[AnnotatedSegment]:
     # Ensure chunk_index is set for loaded segments
     for s in segments:
         if s.chunk_index is None:
-            s.chunk_index = chunk_index
+            s.chunk_index = session_id
     return segments
 
-def save_annotations(chunk_index: int, annotations: List[AnnotatedSegment]):
+def save_annotations(session_id: str, annotations: List[AnnotatedSegment]):
     """Save annotations to Zarr store."""
     store = get_store()
     pipeline_config = PipelineConfig()
@@ -137,8 +151,8 @@ def save_annotations(chunk_index: int, annotations: List[AnnotatedSegment]):
     
     # Save to specific chunk index
     data_to_save = [a.to_dict() for a in annotations]
-    store.save_chunk(annotation_key, chunk_index, data_to_save)
-    st.success(f"Saved {len(annotations)} annotations to {annotation_key} (chunk {chunk_index})")
+    store.save_chunk(annotation_key, session_id, data_to_save)
+    st.success(f"Saved {len(annotations)} annotations to {annotation_key} (session {session_id})")
 
 def main():
     st.set_page_config(page_title="Segment Annotation App", layout="wide")
@@ -166,37 +180,40 @@ def main():
     st.info(f"Annotating data from: {selected_session_key}")
     
     if selected_session_key:
-        # Get metadata to determine available chunks
+        # Get metadata to determine available sessions
         metadata = store.get_cache_metadata(selected_session_key)
         if not metadata or metadata.chunk_count == 0:
-            st.warning("Selected session has no data chunks.")
+            st.warning("Selected session key has no data.")
             return
 
-        # Chunk selection
+        # Session selection
+        available_sessions = get_available_sessions(selected_session_key)
+        
+        if not available_sessions:
+             st.warning("Selected session key has no data.")
+             return
+
         col_sel1, col_sel2 = st.columns([1, 3])
         with col_sel1:
-            chunk_index = st.number_input(
-                "Select Data Chunk", 
-                min_value=1, 
-                max_value=metadata.chunk_count, 
-                value=1,
-                help=f"Total chunks: {metadata.chunk_count}",
-                key="chunk_selector"
+            session_id = st.selectbox(
+                "Select Session", 
+                options=available_sessions,
+                key="session_selector"
             )
         
-        with st.spinner(f"Loading chunk {chunk_index}..."):
-            df = load_chunk_data(selected_session_key, chunk_index)
+        with st.spinner(f"Loading session {session_id}..."):
+            df = load_session_data(selected_session_key, session_id)
             
-            # Load existing annotations for this chunk if we switched chunks
-            if "last_chunk_index" not in st.session_state or st.session_state.last_chunk_index != chunk_index:
-                 st.session_state.current_annotations = load_annotations(chunk_index)
-                 st.session_state.last_chunk_index = chunk_index
+            # Load existing annotations for this session if we switched sessions
+            if "last_session_id" not in st.session_state or st.session_state.last_session_id != session_id:
+                 st.session_state.current_annotations = load_annotations(session_id)
+                 st.session_state.last_session_id = session_id
         
         if df.empty:
-            st.warning("Selected chunk has no data.")
+            st.warning("Selected session has no data.")
             return
 
-        st.write(f"Loaded {len(df)} records from chunk {chunk_index} (Total chunks: {metadata.chunk_count}).")
+        st.write(f"Loaded {len(df)} records from session {session_id} (Total sessions: {metadata.chunk_count}).")
         
         # Global visualization range control
         viz_start_idx, viz_end_idx = st.slider(
@@ -253,9 +270,9 @@ def main():
                 # Visualize existing annotations
                 if "current_annotations" in st.session_state and st.session_state.current_annotations:
                     for ann in st.session_state.current_annotations:
-                        # Ensure we only visualize annotations for the current chunk
+                        # Ensure we only visualize annotations for the current session
                         ann_chunk = getattr(ann, "chunk_index", None)
-                        if ann_chunk is not None and ann_chunk != chunk_index:
+                        if ann_chunk is not None and ann_chunk != session_id:
                             continue
 
                         start = getattr(ann, "start_index", None)
@@ -521,7 +538,7 @@ def main():
                 if not use_3d:
                     fig_map.update_yaxes(scaleanchor="x", scaleratio=1)
                 
-                fig_map.update_layout(uirevision=chunk_index)
+                fig_map.update_layout(uirevision=session_id)
                 st.plotly_chart(fig_map, use_container_width=True)
             else:
                 st.info("No active cars found at this timestamp.")
@@ -642,13 +659,13 @@ def main():
                         segment_length=int(s_end - s_start),
                         start_index=int(s_start),
                         end_index=int(s_end),
-                        chunk_index=int(chunk_index),
+                        chunk_index=session_id,
                         telemetry_data=telemetry_data
                     )
                     st.session_state.current_annotations.append(annotation)
                     st.session_state.temp_success = "Annotation added!"
                 
-                save_annotations(chunk_index, st.session_state.current_annotations)
+                save_annotations(session_id, st.session_state.current_annotations)
 
             with col_actions[0]:
                 st.button(submit_label, type="primary", key=f"submit_{selected_option}", on_click=handle_submit)
@@ -664,7 +681,7 @@ def main():
                 if is_edit:
                     if st.button("Delete", type="secondary", key=f"delete_{selected_option}"):
                         st.session_state.current_annotations.pop(selected_option)
-                        save_annotations(chunk_index, st.session_state.current_annotations)
+                        save_annotations(session_id, st.session_state.current_annotations)
                         st.success("Annotation deleted!")
                         st.rerun()
                 elif selected_option == "Create New":
@@ -703,7 +720,7 @@ def main():
                                                         label_ids.append(LABEL_NAME_TO_ID[name])
                                                 
                                                 if label_ids:
-                                                    # Calculate absolute indices within the chunk
+                                                    # Calculate absolute indices within the session
                                                     # d.start_index and d.end_index are relative to scan_df
                                                     abs_start = int(form_start) + (d.start_index if d.start_index is not None else 0)
                                                     abs_end = int(form_start) + (d.end_index if d.end_index is not None else len(d.telemetry_data))
@@ -712,7 +729,7 @@ def main():
                                                         labels=label_ids,
                                                         segment_length=len(d.telemetry_data),
                                                         telemetry_data=d.telemetry_data,
-                                                        chunk_index=chunk_index,
+                                                        chunk_index=session_id,
                                                         start_index=abs_start,
                                                         end_index=abs_end
                                                     )
@@ -721,7 +738,7 @@ def main():
                                         if new_anns:
                                             st.session_state.current_annotations.extend(new_anns)
                                             st.success(f"Added {len(new_anns)} segments.")
-                                            save_annotations(chunk_index, st.session_state.current_annotations)
+                                            save_annotations(session_id, st.session_state.current_annotations)
                                             st.rerun()
                                         else:
                                             st.warning("No segments found matching selected labels.")
@@ -745,7 +762,7 @@ def main():
             st.info("No annotations added yet.")
             
         if st.button("Force Save All to Zarr"):
-            save_annotations(chunk_index, st.session_state.current_annotations)
+            save_annotations(session_id, st.session_state.current_annotations)
 
 if __name__ == "__main__":
     main()

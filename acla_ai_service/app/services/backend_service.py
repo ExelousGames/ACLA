@@ -279,11 +279,18 @@ class BackendService:
                         
                         try:
                             # Request session file stream from backend
-                            session_data = await self._stream_session_file(session_id, session_meta)
+                            session_payload = await self._stream_session_file(session_id, session_meta)
+                            
+                            chunk_id = session_id
+                            chunk_data = session_payload
+
+                            if isinstance(session_payload, dict):
+                                chunk_id = session_payload.get("_id", session_id)
+                                chunk_data = session_payload.get("data", session_payload)
                             
                             # Store only the raw session telemetry so downstream consumers do not
                             # rely on wrapper metadata while reconstructing dataframes.
-                            yield session_data
+                            yield (chunk_data, chunk_id)
                             
                         except Exception as e:
                             logger.error(f"Failed to stream session {session_id}: {str(e)}")

@@ -877,14 +877,14 @@ class Full_dataset_TelemetryMLService:
                     f"[DEBUG] Replaced slowest lap {slowest['id']} with {candidate['id']} for {track_name} (time: {candidate['lap_time_ms']}ms)"
                 )
 
-        session_chunks_iterator = self.telemetry_store.get_cached_data_chunks(cache_key=session_data_cache_key)
+        session_chunks_iterator = self.telemetry_store.get_cached_data_chunks(cache_key=session_data_cache_key, include_ids=True)
         print(f"[DEBUG] Created chunk iterator for cache key: {session_data_cache_key}")
 
         session_chunks_processed = 0
 
         async def process_chunk_result(result_tuple):
             nonlocal chunk_idx, total_sessions_cached
-            c_idx, laps_processed, candidates, records, error = result_tuple
+            c_idx, laps_processed, candidates, records, error, chunk_id = result_tuple
             
             if error:
                 print(f"[WARNING] Chunk {c_idx} processing failed: {error}")
@@ -899,7 +899,7 @@ class Full_dataset_TelemetryMLService:
             # Save immediately to telemetry_store
             if records:
                 async def single_chunk_generator():
-                    yield records
+                    yield (records, chunk_id)
 
                 try:
                     cache_success = await self.telemetry_store.cache_chunks_streaming(
@@ -908,7 +908,7 @@ class Full_dataset_TelemetryMLService:
                     )
                     if cache_success:
                         total_sessions_cached += 1
-                        print(f"[INFO] Immediately cached chunk {c_idx} ({len(records)} records)")
+                        print(f"[INFO] Immediately cached chunk {c_idx} (ID: {chunk_id}) ({len(records)} records)")
                     else:
                         print(f"[WARNING] Failed to cache chunk {c_idx}")
                 except Exception as cache_error:
@@ -923,13 +923,14 @@ class Full_dataset_TelemetryMLService:
             pending_aws = set()
             
             # Submit tasks
-            for session_chunk_df in session_chunks_iterator:
+            for chunk_tuple in session_chunks_iterator:
+                session_chunk_df, chunk_id = chunk_tuple
                 session_chunks_processed += 1
                 
                 future = executor.submit(
                     self._process_single_chunk,
                     session_chunk_df,
-                    session_chunks_processed,
+                    chunk_id,
                     features,
                     telemetry_time_gap_ms
                 )
@@ -1025,21 +1026,19 @@ class Full_dataset_TelemetryMLService:
     @staticmethod
     def _process_single_chunk(
         chunk_data: Any,
-        chunk_idx: int,
+        chunk_idx: Union[int, str],
         features: List[str],
         telemetry_time_gap_ms: int
-    ) -> Tuple[int, int, List[Dict[str, Any]], List[Dict[str, Any]], Optional[Exception]]:
+    ) -> Tuple[int, int, List[Dict[str, Any]], List[Dict[str, Any]], Optional[Exception], Optional[str]]:
         """
         Process a single chunk of telemetry data in a separate thread.
         """
         chunk_id = str(chunk_idx)
         actual_data = chunk_data
 
-        if isinstance(chunk_data, dict) and "_id" in chunk_data:
-            chunk_id = chunk_data["_id"]
-            if "data" in chunk_data:
-                actual_data = chunk_data["data"]
-
+        # Downstream consumers should rely on chunk_idx passed from the iterator
+        # The chunk payload now contains only the data, not the _id wrapper
+        
         print(f"[DEBUG] Thread started processing chunk {chunk_idx} (ID: {chunk_id}) ({len(actual_data)} records)")
         laps_processed_in_chunk = 0
         candidates: List[Dict[str, Any]] = []
@@ -1051,27 +1050,27 @@ class Full_dataset_TelemetryMLService:
             
             # Basic validation
             if telemetry_df.empty:
-                return chunk_idx, 0, [], [], None
+                return chunk_idx, 0, [], [], None, chunk_id
 
             processor = FeatureProcessor(telemetry_df)
             processor.general_cleaning_for_analysis()
             processed_df = processor.flip_y_z_features()
 
             if processed_df.empty:
-                return chunk_idx, 0, [], [], None
+                return chunk_idx, 0, [], [], None, chunk_id
 
             # Strip by time gap on the whole session chunk
             stripped_dfs = processor.strip_dataframe_by_time_gap([processed_df], telemetry_time_gap_ms)
             stripped_session_df = stripped_dfs[0]
 
             if stripped_session_df.empty:
-                return chunk_idx, 0, [], [], None
+                return chunk_idx, 0, [], [], None, chunk_id
 
             # Filter features on the whole session chunk
             filtered_session_df = processor.filter_features_by_list(stripped_session_df, features)
             
             if filtered_session_df.empty:
-                 return chunk_idx, 0, [], [], None
+                 return chunk_idx, 0, [], [], None, chunk_id
 
             # Use filtered_session_df for session_records
             session_records = filtered_session_df.to_dict("records")
@@ -1081,7 +1080,7 @@ class Full_dataset_TelemetryMLService:
             # thus, session and candidates will do filter_features_by_list separately.
             lap_structs = processor.split_into_laps(stripped_session_df)
             if not lap_structs:
-                return chunk_idx, 0, [], session_records, None
+                return chunk_idx, 0, [], session_records, None, chunk_id
 
             for lap_struct in lap_structs:
                 lap_metrics = lap_struct["metrics"]
@@ -1105,10 +1104,10 @@ class Full_dataset_TelemetryMLService:
                     laps_processed_in_chunk += 1
                     candidates.append(candidate_entry)
             
-            return chunk_idx, laps_processed_in_chunk, candidates, session_records, None
+            return chunk_idx, laps_processed_in_chunk, candidates, session_records, None, chunk_id
 
         except Exception as e:
-            return chunk_idx, 0, [], [], e
+            return chunk_idx, 0, [], [], e, chunk_id
 
     async def _enrich_sessions_with_context(self, chunk_data: List[Dict[str, Any]], 
                                         imitation_learning: ExpertImitateLearningService, tire_service: TireGripAnalysisService) -> List[Dict[str, Any]]:
@@ -1327,12 +1326,14 @@ class Full_dataset_TelemetryMLService:
         enriched_sessions_cache_key = self.cache_config.enriched_sessions_cache_key
         
         session_chunks_iterator = self.telemetry_store.get_cached_data_chunks(
-            cache_key=sessions_cache_key  # Use the cache key where session data is stored
+            cache_key=sessions_cache_key,  # Use the cache key where session data is stored
+            include_ids=True
         )
         
         processed_chunks = 0
         
-        for session_chunk_df in session_chunks_iterator:
+        for chunk_tuple in session_chunks_iterator:
+            session_chunk_df, chunk_id = chunk_tuple
             # Convert raw payload to DataFrame (iterator yields list/dict, not DataFrame)
             session_chunk_df = pd.DataFrame(session_chunk_df)
             
@@ -1351,7 +1352,7 @@ class Full_dataset_TelemetryMLService:
             
             # Cache enriched chunk
             async def enriched_chunk_generator():
-                yield enriched_chunk_data
+                yield (enriched_chunk_data, chunk_id)
                 
             await self.telemetry_store.cache_chunks_streaming(
                 cache_key=enriched_sessions_cache_key,
@@ -1390,12 +1391,14 @@ class Full_dataset_TelemetryMLService:
         self._print_section_divider("PROCESSING ENRICHED DATA INTO SEGMENTS")
         
         session_chunks_iterator = self.telemetry_store.get_cached_data_chunks(
-            cache_key=enriched_sessions_cache_key
+            cache_key=enriched_sessions_cache_key,
+            include_ids=True
         )
         
         processed_chunks = 0
         
-        for session_chunk_df in session_chunks_iterator:
+        for chunk_tuple in session_chunks_iterator:
+            session_chunk_df, chunk_id = chunk_tuple
             session_chunk_df = pd.DataFrame(session_chunk_df)
             if session_chunk_df is None or session_chunk_df.empty:
                 continue
@@ -1408,7 +1411,8 @@ class Full_dataset_TelemetryMLService:
             # scan_session now caches segments directly to the store for memory efficiency
             await segment_classifier.scan_telemetry_data(
                 dataframe=session_chunk_df, 
-                window_size=max_segment_length
+                window_size=max_segment_length,
+                # chunk_id=chunk_id # Assuming scan_telemetry_data can take chunk_id if needed, but user didn't ask to change segment_classifier
             )
             
             if processed_chunks % 5 == 0:
