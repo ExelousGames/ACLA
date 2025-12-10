@@ -122,11 +122,9 @@ def load_session_data(cache_key: str, session_id: str) -> pd.DataFrame:
         print(f"Error loading session {session_id}: {e}")
         return pd.DataFrame()
 
-def load_annotations(session_id: str) -> List[AnnotatedSegment]:
+def load_annotations(session_id: str, annotation_key: str) -> List[AnnotatedSegment]:
     """Load annotations for a specific session."""
     store = get_store()
-    pipeline_config = PipelineConfig()
-    annotation_key = pipeline_config.annotation_cache_key
     chunk_data = store.get_chunk(annotation_key, session_id)
     
     raw_data = []
@@ -143,11 +141,9 @@ def load_annotations(session_id: str) -> List[AnnotatedSegment]:
             s.chunk_index = session_id
     return segments
 
-def save_annotations(session_id: str, annotations: List[AnnotatedSegment]):
+def save_annotations(session_id: str, annotations: List[AnnotatedSegment], annotation_key: str):
     """Save annotations to Zarr store."""
     store = get_store()
-    pipeline_config = PipelineConfig()
-    annotation_key = pipeline_config.annotation_cache_key
     
     # Save to specific chunk index
     data_to_save = [a.to_dict() for a in annotations]
@@ -157,6 +153,9 @@ def save_annotations(session_id: str, annotations: List[AnnotatedSegment]):
 def main():
     st.set_page_config(page_title="Segment Annotation App", layout="wide")
     
+    store = get_store()
+    pipeline_config = PipelineConfig()
+
     # Add sidebar controls
     with st.sidebar:
         st.header("App Controls")
@@ -165,12 +164,56 @@ def main():
             import time
             time.sleep(0.5)
             os._exit(0)
+        
+        st.markdown("---")
+        st.header("Annotation Dataset")
+        
+        # Dataset Selection Logic
+        default_ann_key = pipeline_config.annotation_cache_key
+        
+        # Get all keys and filter/sort
+        all_keys = store.list_cache_keys()
+        
+        dataset_mode = st.radio("Dataset Mode", ["Select Existing", "Create New"], key="dataset_mode")
+        
+        selected_annotation_key = default_ann_key
+        
+        if dataset_mode == "Select Existing":
+            # Filter keys to only those containing the annotation cache key
+            options = sorted([k for k in all_keys if default_ann_key in k])
+            
+            # Put default at top if exists
+            index = 0
+            if default_ann_key in options:
+                index = options.index(default_ann_key)
+            elif options:
+                index = 0
+            
+            selected_annotation_key = st.selectbox("Select Dataset", options, index=index, key="dataset_select")
+        else:
+            new_dataset_suffix = st.text_input("New Dataset Name Suffix", value="custom_v1")
+            if new_dataset_suffix:
+                # Auto-prepend the default key if not present
+                if new_dataset_suffix.startswith(default_ann_key):
+                    selected_annotation_key = new_dataset_suffix
+                else:
+                    # Add underscore if needed
+                    sep = "_" if not default_ann_key.endswith("_") and not new_dataset_suffix.startswith("_") else ""
+                    selected_annotation_key = f"{default_ann_key}{sep}{new_dataset_suffix}"
+                
+                st.info(f"Will create/use dataset: **{selected_annotation_key}**")
+            else:
+                st.warning("Please enter a dataset name suffix.")
+                selected_annotation_key = None
 
     st.title("Telemetry Segment Annotation")
 
-    store = get_store()
+    if not selected_annotation_key:
+        st.warning("Please select or create an annotation dataset in the sidebar.")
+        return
+
+    st.info(f"Using Annotation Dataset: **{selected_annotation_key}**")
     
-    pipeline_config = PipelineConfig()
     selected_session_key = pipeline_config.enriched_sessions_cache_key
 
     if selected_session_key not in store.list_cache_keys():
@@ -193,11 +236,19 @@ def main():
              st.warning("Selected session key has no data.")
              return
 
+        # Get annotated sessions for the selected dataset
+        annotated_sessions = set(get_available_sessions(selected_annotation_key))
+
+        def format_session_option(s):
+            status = "✅" if s in annotated_sessions else "⭕"
+            return f"{status} {s}"
+
         col_sel1, col_sel2 = st.columns([1, 3])
         with col_sel1:
             session_id = st.selectbox(
                 "Select Session", 
                 options=available_sessions,
+                format_func=format_session_option,
                 key="session_selector"
             )
         
@@ -205,9 +256,14 @@ def main():
             df = load_session_data(selected_session_key, session_id)
             
             # Load existing annotations for this session if we switched sessions
-            if "last_session_id" not in st.session_state or st.session_state.last_session_id != session_id:
-                 st.session_state.current_annotations = load_annotations(session_id)
+            if ("last_session_id" not in st.session_state or 
+                st.session_state.last_session_id != session_id or 
+                "last_annotation_key" not in st.session_state or
+                st.session_state.last_annotation_key != selected_annotation_key):
+                
+                 st.session_state.current_annotations = load_annotations(session_id, selected_annotation_key)
                  st.session_state.last_session_id = session_id
+                 st.session_state.last_annotation_key = selected_annotation_key
         
         if df.empty:
             st.warning("Selected session has no data.")
@@ -665,7 +721,7 @@ def main():
                     st.session_state.current_annotations.append(annotation)
                     st.session_state.temp_success = "Annotation added!"
                 
-                save_annotations(session_id, st.session_state.current_annotations)
+                save_annotations(session_id, st.session_state.current_annotations, selected_annotation_key)
 
             with col_actions[0]:
                 st.button(submit_label, type="primary", key=f"submit_{selected_option}", on_click=handle_submit)
@@ -681,7 +737,7 @@ def main():
                 if is_edit:
                     if st.button("Delete", type="secondary", key=f"delete_{selected_option}"):
                         st.session_state.current_annotations.pop(selected_option)
-                        save_annotations(session_id, st.session_state.current_annotations)
+                        save_annotations(session_id, st.session_state.current_annotations, selected_annotation_key)
                         st.success("Annotation deleted!")
                         st.rerun()
                 elif selected_option == "Create New":
@@ -738,7 +794,7 @@ def main():
                                         if new_anns:
                                             st.session_state.current_annotations.extend(new_anns)
                                             st.success(f"Added {len(new_anns)} segments.")
-                                            save_annotations(session_id, st.session_state.current_annotations)
+                                            save_annotations(session_id, st.session_state.current_annotations, selected_annotation_key)
                                             st.rerun()
                                         else:
                                             st.warning("No segments found matching selected labels.")
@@ -762,7 +818,7 @@ def main():
             st.info("No annotations added yet.")
             
         if st.button("Force Save All to Zarr"):
-            save_annotations(session_id, st.session_state.current_annotations)
+            save_annotations(session_id, st.session_state.current_annotations, selected_annotation_key)
 
 if __name__ == "__main__":
     main()
