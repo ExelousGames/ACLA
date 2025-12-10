@@ -135,6 +135,69 @@ export class RacingSessionService {
     }
 
     /**
+     * Uploads a single chunk of session data to GridFS.
+     * @param chunk - The data chunk to upload.
+     * @param metadata - Metadata for the chunk.
+     * @returns The ObjectId of the uploaded file.
+     */
+    async uploadSessionChunk(
+        chunk: any[],
+        metadata: {
+            session_name: string;
+            map: string;
+            car_name: string;
+            userId: string;
+            chunkIndex: number;
+            chunkSize: number;
+        }
+    ): Promise<ObjectId> {
+        const filename = `session_${metadata.session_name}_${metadata.map}_${metadata.car_name}_chunk_${metadata.chunkIndex}_${Date.now()}.json`;
+        const fileId = await this.gridfsService.uploadJSON(
+            chunk,
+            filename,
+            {
+                ...metadata,
+                createdAt: new Date()
+            },
+            GRIDFS_BUCKETS.RACING_SESSIONS
+        );
+        return fileId as unknown as ObjectId;
+    }
+
+    /**
+     * Creates a racing session from a list of pre-uploaded GridFS file IDs.
+     * @param session_name 
+     * @param map 
+     * @param car_name 
+     * @param userId 
+     * @param dataChunkFileIds 
+     * @param totalDataPoints 
+     * @param chunkSize 
+     * @returns 
+     */
+    async createRacingSessionFromChunks(
+        session_name: string,
+        map: string,
+        car_name: string,
+        userId: string,
+        dataChunkFileIds: ObjectId[],
+        totalDataPoints: number,
+        chunkSize: number
+    ) {
+        return this.racingSession.create({
+            session_name,
+            map,
+            car_name,
+            user_id: userId,
+            dataChunkFileIds: dataChunkFileIds,
+            chunkSize: chunkSize,
+            totalChunks: dataChunkFileIds.length,
+            totalDataPoints: totalDataPoints,
+            created_date: new Date()
+        });
+    }
+
+    /**
      * Initializes streaming download by preparing session files on disk
      * @param trackName - Track name to filter sessions (optional)
      * @param carName - Car name to filter sessions (optional)

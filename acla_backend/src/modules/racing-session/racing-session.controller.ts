@@ -20,7 +20,9 @@ export class RacingSessionController {
 
     private uploadStates = new Map<string, {
         metadata: UploadReacingSessionInitDto;
-        filePath: string;
+        fileIds: Types.ObjectId[];
+        totalDataPoints: number;
+        buffer: any[];
         nextChunkIndex: number;
         createdAt: Date;
     }>();
@@ -354,16 +356,11 @@ export class RacingSessionController {
         const uploadId = crypto.randomUUID();
         console.log('Initialized upload with ID:', uploadId, 'for user:', metadata.userId);
 
-        const uploadDir = path.resolve(process.cwd(), 'session_recording', 'temp', 'uploads');
-        await fs.mkdir(uploadDir, { recursive: true });
-        const filePath = path.join(uploadDir, `${uploadId}.json`);
-
-        // Initialize empty file
-        await fs.writeFile(filePath, '');
-
         this.uploadStates.set(uploadId, {
             metadata,
-            filePath,
+            fileIds: [],
+            totalDataPoints: 0,
+            buffer: [],
             nextChunkIndex: 0,
             createdAt: new Date()
         });
@@ -391,24 +388,28 @@ export class RacingSessionController {
             throw new BadRequestException(`Invalid chunk index. Expected ${upload.nextChunkIndex}, got ${body.chunkIndex}`);
         }
 
-        // Prepare data to write
-        let dataToWrite = '';
         if (body.chunk && body.chunk.length > 0) {
-            const jsonStr = JSON.stringify(body.chunk);
-            // Remove [ and ]
-            const content = jsonStr.substring(1, jsonStr.length - 1);
-
-            if (upload.nextChunkIndex === 0) {
-                dataToWrite = '[' + content;
-            } else {
-                dataToWrite = ',' + content;
-            }
-        } else if (upload.nextChunkIndex === 0) {
-            // Handle empty first chunk (empty file)
-            dataToWrite = '[';
+            upload.buffer = upload.buffer.concat(body.chunk);
+            upload.totalDataPoints += body.chunk.length;
         }
 
-        await fs.appendFile(upload.filePath, dataToWrite);
+        // If buffer is large enough, upload to GridFS
+        const CHUNK_SIZE = 1000;
+        while (upload.buffer.length >= CHUNK_SIZE) {
+            const chunkToUpload = upload.buffer.splice(0, CHUNK_SIZE);
+            const fileId = await this.racingSessionService.uploadSessionChunk(
+                chunkToUpload,
+                {
+                    session_name: upload.metadata.sessionName,
+                    map: upload.metadata.mapName,
+                    car_name: upload.metadata.carName,
+                    userId: upload.metadata.userId,
+                    chunkIndex: upload.fileIds.length,
+                    chunkSize: CHUNK_SIZE
+                }
+            );
+            upload.fileIds.push(fileId as unknown as Types.ObjectId);
+        }
 
         upload.nextChunkIndex++;
         // Update last access
@@ -428,32 +429,32 @@ export class RacingSessionController {
         }
 
         try {
-            // Finalize file format
-            await fs.appendFile(upload.filePath, ']');
-
-            // Read and parse the full dataset
-            // Note: For extremely large files, we should use a streaming parser, 
-            // but for now we load into memory to pass to createRacingSession which expects an array.
-            const fileContent = await fs.readFile(upload.filePath, 'utf8');
-            let fullDataset: any[];
-            try {
-                fullDataset = JSON.parse(fileContent);
-            } catch (e) {
-                this.logger.error(`Failed to parse uploaded file: ${e.message}`);
-                throw new BadRequestException('Invalid JSON data in upload');
+            // Upload remaining buffer
+            if (upload.buffer.length > 0) {
+                const fileId = await this.racingSessionService.uploadSessionChunk(
+                    upload.buffer,
+                    {
+                        session_name: upload.metadata.sessionName,
+                        map: upload.metadata.mapName,
+                        car_name: upload.metadata.carName,
+                        userId: upload.metadata.userId,
+                        chunkIndex: upload.fileIds.length,
+                        chunkSize: 1000
+                    }
+                );
+                upload.fileIds.push(fileId as unknown as Types.ObjectId);
             }
 
             // Create racing session in database
-            const createdSession = await this.racingSessionService.createRacingSession(
+            const createdSession = await this.racingSessionService.createRacingSessionFromChunks(
                 upload.metadata.sessionName,
                 upload.metadata.mapName,
                 upload.metadata.carName,
                 upload.metadata.userId,
-                fullDataset
+                upload.fileIds as unknown as any[],
+                upload.totalDataPoints,
+                1000
             );
-
-            // AI training logic (commented out in original, keeping it commented out or preserving if it was active)
-            // ... (Preserving original commented out code structure if needed, but for brevity I'll omit the commented block unless requested)
 
             return {
                 message: 'Upload completed successfully',
@@ -467,11 +468,6 @@ export class RacingSessionController {
         } finally {
             // Clean up
             this.uploadStates.delete(uploadId);
-            try {
-                await fs.unlink(upload.filePath);
-            } catch (e) {
-                this.logger.warn(`Failed to delete temp file ${upload.filePath}: ${e.message}`);
-            }
         }
     }
 
