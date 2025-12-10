@@ -66,6 +66,7 @@ from .model_cache_service import model_cache_service
 
 # Import hybrid data cache service
 from .zarr_telemetry_store import get_shared_zarr_store
+from app.config.pipeline_config import PipelineConfig
 
 # Prompt dataset builder and local LLM integration
 from .telemetry_prompt_dataset_builder import TelemetryPromptDatasetBuilder, PromptBuilderConfig
@@ -79,19 +80,6 @@ from .llm.providers import (
 
 # Suppress sklearn warnings
 warnings.filterwarnings('ignore', category=UserWarning)
-
-@dataclass
-class PipelineConfig:
-    """Configuration for cache cleanup operations"""
-    session_data_cache_key: str = f"racing_sessions_"
-    session_cleanup: bool = True
-    processed_session_data_cache_key: str = f"racing_sessions_processed_"
-    processed_session_cleanup: bool = True
-    enriched_sessions_cache_key: str = f"racing_sessions_enriched_"
-    segments_cache_key: str = f"enriched_segments_"
-    segment_cleanup: bool = True
-    top_laps_cache_key: str = f"top_laps_"
-    annotation_cache_key: str = "manual_segment_annotations"
 
 
 class Full_dataset_TelemetryMLService:

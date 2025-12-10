@@ -81,7 +81,7 @@ class SegmentClassifierService:
     async def load_annotations(self) -> List[AnnotatedSegment]:
         """Load all annotations from Zarr."""
         # Import locally to avoid circular dependency
-        from .full_dataset_ml_service import PipelineConfig
+        from app.config.pipeline_config import PipelineConfig
         cache_key = PipelineConfig().annotation_cache_key
         
         if not self.store.has_cached_data(cache_key):
@@ -527,7 +527,7 @@ class SegmentClassifierService:
             chunk_segments.append(predicted_segment.to_dict())
             
         # Cache segments
-        from .full_dataset_ml_service import PipelineConfig
+        from app.config.pipeline_config import PipelineConfig
         cache_key = PipelineConfig().segments_cache_key
         
         if chunk_segments:

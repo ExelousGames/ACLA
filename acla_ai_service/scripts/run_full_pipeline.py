@@ -9,7 +9,8 @@ import os
 # parents[1] = acla_ai_service (or /app in docker)
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.services.full_dataset_ml_service import Full_dataset_TelemetryMLService, PipelineConfig
+from app.services.full_dataset_ml_service import Full_dataset_TelemetryMLService
+from app.config.pipeline_config import PipelineConfig
 from app.services.segment_classifier_service import segment_classifier
 
 def confirm_step(step_name):

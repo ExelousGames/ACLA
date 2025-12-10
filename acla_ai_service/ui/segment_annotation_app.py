@@ -30,7 +30,7 @@ def _ensure_app_module_on_path() -> None:
 _ensure_app_module_on_path()
 
 from app.services.zarr_telemetry_store import get_shared_zarr_store
-from app.services.full_dataset_ml_service import PipelineConfig
+from app.config.pipeline_config import PipelineConfig
 import app.models.segment_models
 import importlib
 # Force reload to pick up model changes (e.g. new fields)
