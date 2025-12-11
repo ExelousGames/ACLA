@@ -662,7 +662,7 @@ class Full_dataset_TelemetryMLService:
             else:
                 try:
                     print(f"[INFO] Found cached top laps at {top_laps_cache_key}, retrieving...")
-                    top_laps_telemetry_list = await self.get_cached_top_laps(
+                    top_laps_telemetry_list = await self.get_cached_all_top_laps_in_one_list(
                         top_laps_cache_key=top_laps_cache_key
                     )
                     print(f"[SUCCESS] Retrieved {len(top_laps_telemetry_list)} cached top lap telemetry records")
@@ -673,12 +673,16 @@ class Full_dataset_TelemetryMLService:
         
         # Process sessions if top laps not available from cache
         if top_laps_telemetry_list is None:
-            top_laps_telemetry_list = await self.process_lap_sessions_efficiently(
+            await self.process_lap_sessions_efficiently(
                 session_data_cache_key=dataset_cache_key,
                 max_memory_records=10000,
                 telemetry_time_gap_ms=500,
                 processed_sessions_cache_key=processed_sessions_cache_key,
                 top_laps_count=top_laps_count,
+            )
+            
+            top_laps_telemetry_list = await self.get_cached_all_top_laps_in_one_list(
+                top_laps_cache_key=top_laps_cache_key
             )
 
         self._print_section_divider("ENRICHING CONTEXTUAL DATA")
@@ -810,7 +814,7 @@ class Full_dataset_TelemetryMLService:
         telemetry_time_gap_ms: int = 100,
         processed_sessions_cache_key: Optional[str] = None,
         top_laps_count: int = 5,
-    ) -> List[Dict[str, Any]]:
+    ) -> None:
         """
         Streamlined processing of large cached datasets with a bounded memory footprint while caching
         full session telemetry for downstream training.
@@ -821,9 +825,6 @@ class Full_dataset_TelemetryMLService:
             telemetry_time_gap_ms: Maximum allowed gap (in milliseconds) between telemetry points when stripping laps
             processed_sessions_cache_key: Optional override for cache key storing processed session data
             top_laps_count: Number of fastest laps to keep for expert reference (default: 5)
-
-        Returns:
-            List of top laps telemetry records
         """
         print(
             f"[INFO] Processing cached dataset '{session_data_cache_key}' with immediate caching"
@@ -976,19 +977,8 @@ class Full_dataset_TelemetryMLService:
         if total_sessions_cached == 0:
             raise ValueError("No session data cached for transformer training")
 
-        top_laps_telemetry_list: List[Dict[str, Any]] = []
-        
-        for track_name, track_laps in top_laps.items():
-            if len(track_laps) < top_laps_count:
-                 print(f"[WARNING] Insufficient top laps found for {track_name}: {len(track_laps)}/{top_laps_count}")
-            
-            track_laps.sort(key=lambda entry: entry["lap_time_ms"])
-            
-            for lap_info in track_laps:
-                top_laps_telemetry_list.extend(lap_info["records"])
-
         print(f"[SUCCESS] Processed {chunk_idx} chunks")
-        print(f"[SUCCESS] Selected top laps from {len(top_laps)} tracks: {len(top_laps_telemetry_list)} records")
+        print(f"[SUCCESS] Selected top laps from {len(top_laps)} tracks")
         print(f"[SUCCESS] Cached {total_sessions_cached} session batches across {chunk_idx} chunks")
 
         # Cache top laps telemetry list for downstream use
@@ -997,13 +987,18 @@ class Full_dataset_TelemetryMLService:
             async def top_laps_generator():
                 # Yield each track's top laps as a separate chunk
                 for track_name, track_laps in top_laps.items():
+                    if len(track_laps) < top_laps_count:
+                        print(f"[WARNING] Insufficient top laps found for {track_name}: {len(track_laps)}/{top_laps_count}")
+                    
+                    track_laps.sort(key=lambda entry: entry["lap_time_ms"])
+
                     track_records = []
                     for lap_info in track_laps:
                         track_records.extend(lap_info["records"])
                     
                     if track_records:
                         print(f"[DEBUG] Yielding top laps chunk for {track_name} ({len(track_records)} records)")
-                        yield track_records
+                        yield (track_records, track_name)
             
             cache_success = await self.telemetry_store.cache_chunks_streaming(
                 cache_key=top_laps_cache_key,
@@ -1016,8 +1011,6 @@ class Full_dataset_TelemetryMLService:
                 print(f"[WARNING] Failed to cache top laps to {top_laps_cache_key}")
         except Exception as cache_error:
             print(f"[WARNING] Error caching top laps: {cache_error}")
-
-        return top_laps_telemetry_list
 
     @staticmethod
     def _process_single_chunk(
@@ -1189,7 +1182,7 @@ class Full_dataset_TelemetryMLService:
             print(f"[ERROR] Exception caching segment batch {batch_number}: {str(e)}")
             return False
 
-    async def get_cached_top_laps(
+    async def get_cached_all_top_laps_in_one_list(
         self,
         *,
         top_laps_cache_key: Optional[str] = None,
@@ -1219,6 +1212,10 @@ class Full_dataset_TelemetryMLService:
             chunk_count = 0
             
             for chunk in chunks_iterator:
+                # Handle both raw list and (data, id) tuple formats
+                if isinstance(chunk, tuple):
+                    chunk = chunk[0]
+
                 if isinstance(chunk, list):
                     all_top_laps.extend(chunk)
                     chunk_count += 1
@@ -1258,10 +1255,16 @@ class Full_dataset_TelemetryMLService:
 
         # Step 1: Train all enrichment models using expert data
         self._print_section_divider("TRAINING ENRICHMENT MODELS WITH EXPERT DATA")
-        print(top_laps_telemetry_list[0].keys())
+        if top_laps_telemetry_list and len(top_laps_telemetry_list) > 0:
+             print(f"[DEBUG] Top laps keys: {list(top_laps_telemetry_list[0].keys())}")
+
         # Train imitation learning model
         imitation_learning = ExpertImitateLearningService()
-        imitation_result = imitation_learning.train_ai_model(top_laps_telemetry_list)
+        
+        # Use cached top laps for imitation learning (per track)
+        top_laps_cache_key = self.cache_config.top_laps_cache_key
+        imitation_result = await imitation_learning.train_ai_model(top_laps_cache_key)
+
         serialized_data = imitation_learning.serialize_learning_model()
         if not serialized_data:
             raise Exception("No serialized model data available from imitation learning")
