@@ -197,9 +197,25 @@ class ExpertPositionLearner:
         if 'Graphics_normalized_car_position' in df.columns:
             target_features[EO.EXPERT_OPTIMAL_TRACK_POSITION.value] = df['Graphics_normalized_car_position']
         
-        # Clean data
-        input_features = input_features.fillna(0)
-        target_features = target_features.fillna(0)
+        # Clean data - Drop rows with missing values instead of filling with 0
+        # Filling with 0 creates massive outliers for position coordinates (0,0,0)
+        # which ruins the model training if there are any gaps in telemetry.
+        
+        # Combine to ensure we drop rows consistently
+        combined = pd.concat([input_features, target_features], axis=1)
+        
+        # Drop rows where any feature is NaN
+        combined_clean = combined.dropna()
+        
+        if len(combined) != len(combined_clean):
+            print(f"[WARNING] Dropped {len(combined) - len(combined_clean)} rows with missing values during feature extraction")
+            
+        # Split back into input and target
+        input_cols = input_features.columns
+        target_cols = target_features.columns
+        
+        input_features = combined_clean[input_cols]
+        target_features = combined_clean[target_cols]
         
         return {
             'input_features': input_features,
@@ -733,12 +749,6 @@ class ExpertImitateLearningService:
             print(f"[INFO] Processing top laps for track: {chunk_id} ({len(chunk_data)} records)")
             
             processed_df = pd.DataFrame(chunk_data)
-
-            # Check if we are overwriting an existing model for this track
-            if 'Static_track' in processed_df.columns and not processed_df.empty:
-                track_name = processed_df['Static_track'].iloc[0]
-                if track_name in self.position_learner.track_models:
-                    print(f"[WARNING] Overwriting existing model for track '{track_name}'! This means previous chunks are being discarded.")
             
             # Learn expert position mapping (this is the only learning model)
             self.position_learner.learn_expert_position_mapping(processed_df)
