@@ -703,22 +703,18 @@ class ExpertImitateLearningService:
         from .zarr_telemetry_store import get_shared_zarr_store
         return get_shared_zarr_store()
 
-    async def train_ai_model(self, top_laps_cache_key: str, learning_objectives: List[str] = None) -> Dict[str, Any]:
+    async def train_ai_model(self, top_laps_cache_key: str) -> Dict[str, Any]:
         """
         Learn from expert driving demonstrations using cached top laps.
         
         Args:
             top_laps_cache_key: Cache key for top laps data
-            learning_objectives: List of what to learn ('trajectory')
             
         Returns:
             Dictionary with trained models and learning insights, serialized objects and ready for storage
         """
-        if learning_objectives is None:
-            learning_objectives = ['trajectory']
         
         print(f"[INFO {self.__class__.__name__}] Learning from cached top laps: {top_laps_cache_key}")
-        print(f"[INFO {self.__class__.__name__}] Learning objectives: {learning_objectives}")
 
         telemetry_store = self.get_shared_data_cache()
         if not telemetry_store.has_cached_data(top_laps_cache_key):
@@ -737,11 +733,16 @@ class ExpertImitateLearningService:
             print(f"[INFO] Processing top laps for track: {chunk_id} ({len(chunk_data)} records)")
             
             processed_df = pd.DataFrame(chunk_data)
+
+            # Check if we are overwriting an existing model for this track
+            if 'Static_track' in processed_df.columns and not processed_df.empty:
+                track_name = processed_df['Static_track'].iloc[0]
+                if track_name in self.position_learner.track_models:
+                    print(f"[WARNING] Overwriting existing model for track '{track_name}'! This means previous chunks are being discarded.")
             
             # Learn expert position mapping (this is the only learning model)
-            if 'trajectory' in learning_objectives:
-                self.position_learner.learn_expert_position_mapping(processed_df)
-                total_samples += len(processed_df)
+            self.position_learner.learn_expert_position_mapping(processed_df)
+            total_samples += len(processed_df)
         
         # Construct results
         overall_metrics = {}
@@ -763,10 +764,7 @@ class ExpertImitateLearningService:
             }
         }
 
-        if 'trajectory' in learning_objectives:
-             results['learning_summary'] = self._generate_learning_summary(results)
-        else:
-            raise ValueError("No valid learning objectives provided. Expected 'trajectory'.")
+        results['learning_summary'] = self._generate_learning_summary(results)
 
         return results
     
