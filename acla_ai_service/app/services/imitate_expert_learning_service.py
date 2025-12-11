@@ -130,18 +130,10 @@ class SegmentImprovementSummary:
 
 
 class ExpertPositionLearner:
-    """Learn expert actions based on normalized track position from multiple expert laps"""
+    """Learn expert actions based on normalized track position from multiple expert laps, per track."""
     
     def __init__(self):
-        self.position_model = None
-        self.scaler = StandardScaler()
-        self.position_scaler = StandardScaler()  # Separate scaler for position input
-        
-        # Models for different output types
-        self.action_models = {}  # For steering, gas, brake
-        self.gear_model = None   # Classification model for gear
-        self.position_models = {} # For position x,y,z predictions
-        self.velocity_models = {} # For velocity x,y,z predictions
+        self.track_models = {} # Dictionary to store models per track: {track_name: model_data}
     
     def extract_position_features(self, df: pd.DataFrame) -> Dict[str, pd.DataFrame]:
         """
@@ -151,7 +143,7 @@ class ExpertPositionLearner:
             df: Telemetry DataFrame
             
         Returns:
-            Dictionary with input features (normalized position) and target features (expert actions/states)
+            Dictionary with input features (normalized position, track) and target features (expert actions/states)
         """
         input_features = pd.DataFrame()
         target_features = pd.DataFrame()
@@ -161,6 +153,12 @@ class ExpertPositionLearner:
             input_features['normalized_position'] = df['Graphics_normalized_car_position']
         else:
             raise ValueError("Graphics_normalized_car_position not found - this is required for position-based learning")
+
+        # Input feature: track name
+        if 'Static_track' in df.columns:
+            input_features['track'] = df['Static_track']
+        else:
+            raise ValueError("Static_track not found - this is required for multi-track learning")
         
         # Target features: Expert actions and states
         EO = ExpertFeatureCatalog.ExpertOptimalFeature
@@ -210,7 +208,7 @@ class ExpertPositionLearner:
     
     def learn_expert_position_mapping(self, expert_df: pd.DataFrame) -> Dict[str, Any]:
         """
-        Learn expert actions from normalized track position using multiple expert laps
+        Learn expert actions from normalized track position using multiple expert laps, per track.
         
         Args:
             expert_df: Expert driver telemetry data from multiple laps
@@ -234,206 +232,231 @@ class ExpertPositionLearner:
         print(f"[INFO] Target features shape: {target_features.shape}")
         print(f"[INFO] Available targets: {list(target_features.columns)}")
         
-        # Prepare input (normalized position)
-        X = input_features[['normalized_position']].values
-        X_scaled = self.position_scaler.fit_transform(X)
+        # Group by track
+        tracks = input_features['track'].unique()
+        print(f"[INFO] Found {len(tracks)} tracks: {tracks}")
         
-        # Train models for each target
-        models = {}
-        performance_metrics = {}
+        overall_metrics = {}
         
-        EO = ExpertFeatureCatalog.ExpertOptimalFeature
-        
-        # Action models (regression)
-        action_targets = [
-            EO.EXPERT_OPTIMAL_STEERING.value,
-            EO.EXPERT_OPTIMAL_THROTTLE.value,
-            EO.EXPERT_OPTIMAL_BRAKE.value,
-            EO.EXPERT_OPTIMAL_SPEED.value
-        ]
-        
-        for target_name in action_targets:
-            if target_name in target_features.columns:
-                print(f"[INFO] Training action model for: {target_name}")
-                y = target_features[target_name].values
+        for track in tracks:
+            print(f"[INFO] Training models for track: {track}")
+            
+            # Filter data for this track
+            track_mask = input_features['track'] == track
+            track_input = input_features[track_mask]
+            track_target = target_features[track_mask]
+            
+            # Prepare input (normalized position)
+            X = track_input[['normalized_position']].values
+            
+            # Create and fit scaler for this track
+            position_scaler = StandardScaler()
+            X_scaled = position_scaler.fit_transform(X)
+            
+            # Train models for each target
+            models = {}
+            performance_metrics = {}
+            
+            EO = ExpertFeatureCatalog.ExpertOptimalFeature
+            
+            # Action models (regression)
+            action_targets = [
+                EO.EXPERT_OPTIMAL_STEERING.value,
+                EO.EXPERT_OPTIMAL_THROTTLE.value,
+                EO.EXPERT_OPTIMAL_BRAKE.value,
+                EO.EXPERT_OPTIMAL_SPEED.value
+            ]
+            
+            for target_name in action_targets:
+                if target_name in track_target.columns:
+                    # print(f"[INFO] Training action model for: {target_name}")
+                    y = track_target[target_name].values
+                    
+                    # Split data
+                    X_train, X_test, y_train, y_test = train_test_split(
+                        X_scaled, y, test_size=0.2, random_state=42
+                    )
+                    
+                    # Train model
+                    model = RandomForestRegressor(n_estimators=100, random_state=42, n_jobs=-1)
+                    model.fit(X_train, y_train)
+                    
+                    # Evaluate
+                    y_pred = model.predict(X_test)
+                    r2 = model.score(X_test, y_test)
+                    mse = mean_squared_error(y_test, y_pred)
+                    mae = mean_absolute_error(y_test, y_pred)
+                    
+                    models[target_name] = model
+                    performance_metrics[target_name] = {
+                        'r2': float(r2),
+                        'mse': float(mse),
+                        'mae': float(mae),
+                        'type': 'regression'
+                    }
+                    
+                    # print(f"[INFO] {target_name} - R²: {r2:.4f}, MSE: {mse:.4f}, MAE: {mae:.4f}")
+            
+            # Gear model (classification)
+            if EO.EXPERT_OPTIMAL_GEAR.value in track_target.columns:
+                # print(f"[INFO] Training gear classification model")
+                y = track_target[EO.EXPERT_OPTIMAL_GEAR.value].values
                 
-                # Split data
+                X_train, X_test, y_train, y_test = train_test_split(
+                    X_scaled, y, test_size=0.2, random_state=42, stratify=y
+                )
+                
+                model = RandomForestClassifier(n_estimators=100, random_state=42, n_jobs=-1)
+                model.fit(X_train, y_train)
+                
+                y_pred = model.predict(X_test)
+                accuracy = accuracy_score(y_test, y_pred)
+                f1 = f1_score(y_test, y_pred, average='weighted')
+                
+                models[EO.EXPERT_OPTIMAL_GEAR.value] = model
+                performance_metrics[EO.EXPERT_OPTIMAL_GEAR.value] = {
+                    'accuracy': float(accuracy),
+                    'f1': float(f1),
+                    'type': 'classification'
+                }
+                
+                # print(f"[INFO] Gear - Accuracy: {accuracy:.4f}, F1: {f1:.4f}")
+            
+            # Position models (regression)
+            position_targets = [
+                EO.EXPERT_OPTIMAL_PLAYER_POS_X.value,
+                EO.EXPERT_OPTIMAL_PLAYER_POS_Y.value,
+                EO.EXPERT_OPTIMAL_PLAYER_POS_Z.value
+            ]
+            
+            for target_name in position_targets:
+                if target_name in track_target.columns:
+                    # print(f"[INFO] Training position model for: {target_name}")
+                    y = track_target[target_name].values
+                    
+                    X_train, X_test, y_train, y_test = train_test_split(
+                        X_scaled, y, test_size=0.2, random_state=42
+                    )
+                    
+                    model = RandomForestRegressor(n_estimators=100, random_state=42, n_jobs=-1)
+                    model.fit(X_train, y_train)
+                    
+                    y_pred = model.predict(X_test)
+                    r2 = model.score(X_test, y_test)
+                    mse = mean_squared_error(y_test, y_pred)
+                    mae = mean_absolute_error(y_test, y_pred)
+                    
+                    models[target_name] = model
+                    performance_metrics[target_name] = {
+                        'r2': float(r2),
+                        'mse': float(mse),
+                        'mae': float(mae),
+                        'type': 'regression'
+                    }
+                    
+                    # print(f"[INFO] {target_name} - R²: {r2:.4f}, MSE: {mse:.4f}, MAE: {mae:.4f}")
+            
+            # Velocity models (regression)
+            velocity_targets = [
+                EO.EXPERT_OPTIMAL_VELOCITY_X.value,
+                EO.EXPERT_OPTIMAL_VELOCITY_Y.value,
+                EO.EXPERT_OPTIMAL_VELOCITY_Z.value
+            ]
+            
+            for target_name in velocity_targets:
+                if target_name in track_target.columns:
+                    # print(f"[INFO] Training velocity model for: {target_name}")
+                    y = track_target[target_name].values
+                    
+                    X_train, X_test, y_train, y_test = train_test_split(
+                        X_scaled, y, test_size=0.2, random_state=42
+                    )
+                    
+                    model = RandomForestRegressor(n_estimators=100, random_state=42, n_jobs=-1)
+                    model.fit(X_train, y_train)
+                    
+                    y_pred = model.predict(X_test)
+                    r2 = model.score(X_test, y_test)
+                    mse = mean_squared_error(y_test, y_pred)
+                    mae = mean_absolute_error(y_test, y_pred)
+                    
+                    models[target_name] = model
+                    performance_metrics[target_name] = {
+                        'r2': float(r2),
+                        'mse': float(mse),
+                        'mae': float(mae),
+                        'type': 'regression'
+                    }
+                    
+                    # print(f"[INFO] {target_name} - R²: {r2:.4f}, MSE: {mse:.4f}, MAE: {mae:.4f}")
+            
+            # Track position model (for consistency)
+            if EO.EXPERT_OPTIMAL_TRACK_POSITION.value in track_target.columns:
+                # print(f"[INFO] Training track position model")
+                y = track_target[EO.EXPERT_OPTIMAL_TRACK_POSITION.value].values
+                
                 X_train, X_test, y_train, y_test = train_test_split(
                     X_scaled, y, test_size=0.2, random_state=42
                 )
                 
-                # Train model
                 model = RandomForestRegressor(n_estimators=100, random_state=42, n_jobs=-1)
                 model.fit(X_train, y_train)
                 
-                # Evaluate
                 y_pred = model.predict(X_test)
                 r2 = model.score(X_test, y_test)
                 mse = mean_squared_error(y_test, y_pred)
                 mae = mean_absolute_error(y_test, y_pred)
                 
-                models[target_name] = model
-                performance_metrics[target_name] = {
+                models[EO.EXPERT_OPTIMAL_TRACK_POSITION.value] = model
+                performance_metrics[EO.EXPERT_OPTIMAL_TRACK_POSITION.value] = {
                     'r2': float(r2),
                     'mse': float(mse),
                     'mae': float(mae),
                     'type': 'regression'
                 }
                 
-                print(f"[INFO] {target_name} - R²: {r2:.4f}, MSE: {mse:.4f}, MAE: {mae:.4f}")
-        
-        # Gear model (classification)
-        if EO.EXPERT_OPTIMAL_GEAR.value in target_features.columns:
-            print(f"[INFO] Training gear classification model")
-            y = target_features[EO.EXPERT_OPTIMAL_GEAR.value].values
+                # print(f"[INFO] Track position - R²: {r2:.4f}, MSE: {mse:.4f}, MAE: {mae:.4f}")
             
-            X_train, X_test, y_train, y_test = train_test_split(
-                X_scaled, y, test_size=0.2, random_state=42, stratify=y
-            )
-            
-            model = RandomForestClassifier(n_estimators=100, random_state=42, n_jobs=-1)
-            model.fit(X_train, y_train)
-            
-            y_pred = model.predict(X_test)
-            accuracy = accuracy_score(y_test, y_pred)
-            f1 = f1_score(y_test, y_pred, average='weighted')
-            
-            models[EO.EXPERT_OPTIMAL_GEAR.value] = model
-            performance_metrics[EO.EXPERT_OPTIMAL_GEAR.value] = {
-                'accuracy': float(accuracy),
-                'f1': float(f1),
-                'type': 'classification'
-            }
-            
-            print(f"[INFO] Gear - Accuracy: {accuracy:.4f}, F1: {f1:.4f}")
-        
-        # Position models (regression)
-        position_targets = [
-            EO.EXPERT_OPTIMAL_PLAYER_POS_X.value,
-            EO.EXPERT_OPTIMAL_PLAYER_POS_Y.value,
-            EO.EXPERT_OPTIMAL_PLAYER_POS_Z.value
-        ]
-        
-        for target_name in position_targets:
-            if target_name in target_features.columns:
-                print(f"[INFO] Training position model for: {target_name}")
-                y = target_features[target_name].values
-                
-                X_train, X_test, y_train, y_test = train_test_split(
-                    X_scaled, y, test_size=0.2, random_state=42
-                )
-                
-                model = RandomForestRegressor(n_estimators=100, random_state=42, n_jobs=-1)
-                model.fit(X_train, y_train)
-                
-                y_pred = model.predict(X_test)
-                r2 = model.score(X_test, y_test)
-                mse = mean_squared_error(y_test, y_pred)
-                mae = mean_absolute_error(y_test, y_pred)
-                
-                models[target_name] = model
-                performance_metrics[target_name] = {
-                    'r2': float(r2),
-                    'mse': float(mse),
-                    'mae': float(mae),
-                    'type': 'regression'
-                }
-                
-                print(f"[INFO] {target_name} - R²: {r2:.4f}, MSE: {mse:.4f}, MAE: {mae:.4f}")
-        
-        # Velocity models (regression)
-        velocity_targets = [
-            EO.EXPERT_OPTIMAL_VELOCITY_X.value,
-            EO.EXPERT_OPTIMAL_VELOCITY_Y.value,
-            EO.EXPERT_OPTIMAL_VELOCITY_Z.value
-        ]
-        
-        for target_name in velocity_targets:
-            if target_name in target_features.columns:
-                print(f"[INFO] Training velocity model for: {target_name}")
-                y = target_features[target_name].values
-                
-                X_train, X_test, y_train, y_test = train_test_split(
-                    X_scaled, y, test_size=0.2, random_state=42
-                )
-                
-                model = RandomForestRegressor(n_estimators=100, random_state=42, n_jobs=-1)
-                model.fit(X_train, y_train)
-                
-                y_pred = model.predict(X_test)
-                r2 = model.score(X_test, y_test)
-                mse = mean_squared_error(y_test, y_pred)
-                mae = mean_absolute_error(y_test, y_pred)
-                
-                models[target_name] = model
-                performance_metrics[target_name] = {
-                    'r2': float(r2),
-                    'mse': float(mse),
-                    'mae': float(mae),
-                    'type': 'regression'
-                }
-                
-                print(f"[INFO] {target_name} - R²: {r2:.4f}, MSE: {mse:.4f}, MAE: {mae:.4f}")
-        
-        # Track position model (for consistency)
-        if EO.EXPERT_OPTIMAL_TRACK_POSITION.value in target_features.columns:
-            print(f"[INFO] Training track position model")
-            y = target_features[EO.EXPERT_OPTIMAL_TRACK_POSITION.value].values
-            
-            X_train, X_test, y_train, y_test = train_test_split(
-                X_scaled, y, test_size=0.2, random_state=42
-            )
-            
-            model = RandomForestRegressor(n_estimators=100, random_state=42, n_jobs=-1)
-            model.fit(X_train, y_train)
-            
-            y_pred = model.predict(X_test)
-            r2 = model.score(X_test, y_test)
-            mse = mean_squared_error(y_test, y_pred)
-            mae = mean_absolute_error(y_test, y_pred)
-            
-            models[EO.EXPERT_OPTIMAL_TRACK_POSITION.value] = model
-            performance_metrics[EO.EXPERT_OPTIMAL_TRACK_POSITION.value] = {
-                'r2': float(r2),
-                'mse': float(mse),
-                'mae': float(mae),
-                'type': 'regression'
-            }
-            
-            print(f"[INFO] Track position - R²: {r2:.4f}, MSE: {mse:.4f}, MAE: {mae:.4f}")
-        
-        # Store the complete position model
-        self.position_model = {
-            'models': models,
-            'position_scaler': self.position_scaler,
-            'performance_metrics': performance_metrics,
-            'input_features': ['normalized_position'],
-            'target_features': list(target_features.columns)
-        }
-        
-        return {
-            'modelData': self.position_model,
-            'metadata': {
+            # Store the complete position model for this track
+            self.track_models[track] = {
+                'models': models,
+                'position_scaler': position_scaler,
                 'performance_metrics': performance_metrics,
                 'input_features': ['normalized_position'],
+                'target_features': list(target_features.columns)
+            }
+            
+            overall_metrics[track] = performance_metrics
+        
+        return {
+            'modelData': self.track_models,
+            'metadata': {
+                'performance_metrics': overall_metrics,
+                'input_features': ['normalized_position', 'track'],
                 'target_features': list(target_features.columns),
-                'models_trained': list(models.keys()),
+                'models_trained': list(self.track_models.keys()),
                 'total_training_samples': len(expert_df)
             }
         }
     
-    def predict_expert_actions_at_position(self, normalized_positions: Union[float, List[float], np.ndarray]) -> Union[Dict[str, float], List[Dict[str, float]]]:
+    def predict_expert_actions_at_position(self, track_name: str, normalized_positions: Union[float, List[float], np.ndarray]) -> Union[Dict[str, float], List[Dict[str, float]]]:
         """
-        Predict expert actions at given normalized track position(s)
+        Predict expert actions at given normalized track position(s) for a specific track.
         
         Args:
+            track_name: Name of the track to predict for
             normalized_positions: Single position or array of positions (0.0 to 1.0)
             
         Returns:
             Dictionary with expert predictions, or list of dictionaries for multiple positions
         """
-        if not self.position_model:
-            raise ValueError("No position model trained. Call learn_expert_position_mapping() first.")
+        if not self.track_models:
+            raise ValueError("No track models trained. Call learn_expert_position_mapping() first.")
+        
+        if track_name not in self.track_models:
+            raise ValueError(f"No model trained for track: {track_name}")
+            
+        track_model_data = self.track_models[track_name]
         
         # Handle single position vs multiple positions
         single_position = isinstance(normalized_positions, (int, float))
@@ -442,12 +465,12 @@ class ExpertPositionLearner:
         else:
             positions_array = np.array(normalized_positions).reshape(-1, 1)
         
-        # Scale positions
-        positions_scaled = self.position_model['position_scaler'].transform(positions_array)
+        # Scale positions using track-specific scaler
+        positions_scaled = track_model_data['position_scaler'].transform(positions_array)
         
         # Make predictions for all models
         predictions = {}
-        for model_name, model in self.position_model['models'].items():
+        for model_name, model in track_model_data['models'].items():
             pred = model.predict(positions_scaled)
             predictions[model_name] = pred
         
@@ -476,50 +499,55 @@ class ExpertPositionLearner:
         Returns:
             Dictionary with detailed model debugging information
         """
-        if not self.position_model:
+        if not self.track_models:
             return {
-                'status': 'No model available',
+                'status': 'No models available',
                 'has_model': False,
-                'error': 'Position model not trained yet'
+                'error': 'Position models not trained yet'
             }
         
         debug_info = {
-            'status': 'Model available',
+            'status': 'Models available',
             'has_model': True,
-            'model_structure': {}
+            'tracks': list(self.track_models.keys()),
+            'track_details': {}
         }
         
-        # Check model structure
-        for key, value in self.position_model.items():
-            if key == 'models':
-                debug_info['model_structure']['models'] = {
-                    'count': len(value),
-                    'model_names': list(value.keys()),
-                    'model_types': [type(model).__name__ for model in value.values()]
-                }
-            elif key == 'position_scaler':
-                debug_info['model_structure']['position_scaler'] = {
-                    'type': type(value).__name__,
-                    'fitted': hasattr(value, 'mean_')
-                }
-            elif key == 'performance_metrics':
-                debug_info['model_structure']['performance_metrics'] = {
-                    'available_metrics': list(value.keys()),
-                    'metric_count': len(value)
-                }
-            else:
-                debug_info['model_structure'][key] = {
-                    'type': type(value).__name__,
-                    'value': str(value) if not isinstance(value, (list, dict)) else f"{type(value).__name__} with {len(value)} items"
-                }
+        for track, model_data in self.track_models.items():
+            track_info = {}
+            # Check model structure
+            for key, value in model_data.items():
+                if key == 'models':
+                    track_info['models'] = {
+                        'count': len(value),
+                        'model_names': list(value.keys()),
+                        'model_types': [type(model).__name__ for model in value.values()]
+                    }
+                elif key == 'position_scaler':
+                    track_info['position_scaler'] = {
+                        'type': type(value).__name__,
+                        'fitted': hasattr(value, 'mean_')
+                    }
+                elif key == 'performance_metrics':
+                    track_info['performance_metrics'] = {
+                        'available_metrics': list(value.keys()),
+                        'metric_count': len(value)
+                    }
+                else:
+                    track_info[key] = {
+                        'type': type(value).__name__,
+                        'value': str(value) if not isinstance(value, (list, dict)) else f"{type(value).__name__} with {len(value)} items"
+                    }
+            debug_info['track_details'][track] = track_info
         
         return debug_info
     
-    def validate_position_input(self, normalized_positions: Union[float, List[float], np.ndarray]) -> Dict[str, Any]:
+    def validate_position_input(self, track_name: str, normalized_positions: Union[float, List[float], np.ndarray]) -> Dict[str, Any]:
         """
         Validate normalized position input for prediction
         
         Args:
+            track_name: Track to validate for
             normalized_positions: Position(s) to validate
             
         Returns:
@@ -533,9 +561,14 @@ class ExpertPositionLearner:
         }
         
         # Check if model exists
-        if not self.position_model:
+        if not self.track_models:
             validation_results['valid'] = False
-            validation_results['errors'].append("No position model trained")
+            validation_results['errors'].append("No position models trained")
+            return validation_results
+            
+        if track_name not in self.track_models:
+            validation_results['valid'] = False
+            validation_results['errors'].append(f"No model for track: {track_name}")
             return validation_results
         
         # Convert input to array for analysis
@@ -722,16 +755,29 @@ class ExpertImitateLearningService:
         predictions = {}
         
         # Check if models exist
-        if not self.position_learner.position_model:
-            print("[WARNING] No position model available")
+        if not self.position_learner.track_models:
+            print("[WARNING] No position models available")
             return {"error": "No trained models available"}
         
+        if processed_df.empty:
+            return {"error": "Empty input dataframe"}
+        
         try:
+            # Extract track name
+            if 'Static_track' in processed_df.columns:
+                # Assuming single track for prediction request
+                track_name = processed_df['Static_track'].iloc[0]
+            else:
+                return {"error": "Static_track not found in input data"}
             
             # Extract normalized positions from the input data
             if 'Graphics_normalized_car_position' in processed_df.columns:
                 normalized_positions = processed_df['Graphics_normalized_car_position'].values
-                optimal_actions = self.position_learner.predict_expert_actions_at_position(normalized_positions)
+                
+                try:
+                    optimal_actions = self.position_learner.predict_expert_actions_at_position(track_name, normalized_positions)
+                except ValueError as e:
+                    return {"error": str(e)}
                 
                 # If multiple rows, average the predictions for consistency with old interface
                 if isinstance(optimal_actions, list):
@@ -765,18 +811,28 @@ class ExpertImitateLearningService:
             summary['learning_completed'].append('position_learning')
             
             # Calculate average performance metric, handling both regression (r2) and classification (accuracy) models
-            performance_metrics = results['metadata']['performance_metrics']
+            # performance_metrics is now {track_name: {model_name: metrics}}
+            all_performance_metrics = results['metadata']['performance_metrics']
             
-            # Separate regression and classification metrics
-            r2_scores = [metrics['r2'] for metrics in performance_metrics.values() if 'r2' in metrics]
-            accuracy_scores = [metrics['accuracy'] for metrics in performance_metrics.values() if 'accuracy' in metrics]
+            r2_scores = []
+            accuracy_scores = []
+            total_models = 0
+            
+            for track_metrics in all_performance_metrics.values():
+                for metrics in track_metrics.values():
+                    if 'r2' in metrics:
+                        r2_scores.append(metrics['r2'])
+                    if 'accuracy' in metrics:
+                        accuracy_scores.append(metrics['accuracy'])
+                    total_models += 1
             
             # Calculate average scores
             avg_r2 = np.mean(r2_scores) if r2_scores else 0.0
             avg_accuracy = np.mean(accuracy_scores) if accuracy_scores else 0.0
             
             summary['position_summary'] = {
-                'models_trained': len(results['metadata']['models_trained']),
+                'models_trained': total_models,
+                'tracks_trained': len(all_performance_metrics),
                 'input_features': len(results['metadata']['input_features']),
                 'target_features': len(results['metadata']['target_features']),
                 'avg_r2_score': avg_r2,
@@ -807,7 +863,7 @@ class ExpertImitateLearningService:
         ExpertFeatures = ExpertFeatureCatalog.ExpertFeatures
         if not telemetry_data:
             return []
-        if not self.position_learner.position_model:
+        if not self.position_learner.track_models:
             raise ValueError("No trained imitation models available. Train or load models before calling extract_expert_state_for_telemetry().")
 
         try:
@@ -818,21 +874,31 @@ class ExpertImitateLearningService:
         expert_feature_rows: List[Dict[str, Any]] = []
 
         # Position models should already be loaded/deserialized
-        if not self.position_learner.position_model:
+        if not self.position_learner.track_models:
             raise ValueError("Position model not loaded. Call train_ai_model() or deserialize_imitation_model() first.")
 
         def predict_expert_batch(batch_df: pd.DataFrame) -> List[Dict[str, float]]:
             """Predict expert actions for a batch of normalized positions - much faster than row-by-row"""
-            if not self.position_learner.position_model:
+            if not self.position_learner.track_models:
                 return [{} for _ in range(len(batch_df))]
             try:
                 # Extract normalized positions from batch
                 if 'Graphics_normalized_car_position' not in batch_df.columns:
                     raise ValueError("Graphics_normalized_car_position not found in batch data")
                 
+                if 'Static_track' not in batch_df.columns:
+                    # If track is missing, we can't predict. Return empty.
+                    return [{} for _ in range(len(batch_df))]
+                
+                # Assuming single track per batch as per optimization
+                track_name = batch_df['Static_track'].iloc[0]
+                
+                if track_name not in self.position_learner.track_models:
+                    return [{} for _ in range(len(batch_df))]
+                    
                 normalized_positions = batch_df['Graphics_normalized_car_position'].values
-                batch_predictions = self.position_learner.predict_expert_actions_at_position(normalized_positions)
-                return batch_predictions
+                return self.position_learner.predict_expert_actions_at_position(track_name, normalized_positions)
+
             except Exception as e:
                 raise Exception(f"Batch prediction failed: {e}")
 
@@ -1252,7 +1318,7 @@ class ExpertImitateLearningService:
         Returns:
             Dictionary with serialized models ready for storage/transmission
         """
-        if not self.position_learner.position_model:
+        if not self.position_learner.track_models:
             raise ValueError("No trained models available to serialize. Train models first.")
         
         print("[INFO] Serializing current position models (memory-efficient)...")
@@ -1261,33 +1327,37 @@ class ExpertImitateLearningService:
             # Build result structure directly without deep copying the entire model
             result = {}
             
-            # Serialize models individually to avoid holding multiple copies in memory
-            if 'models' in self.position_learner.position_model:
-                print("[INFO] Serializing position models...")
-                serialized_models = {}
-                
-                for model_name, model in self.position_learner.position_model['models'].items():
-                    print(f"[INFO] Serializing model: {model_name}")
-                    # Serialize directly without copying
-                    serialized_model_data = self.serialize_data(model)
-                    serialized_models[model_name] = serialized_model_data
-                    # Force garbage collection of intermediate objects
-                    import gc
-                    gc.collect()
-                
-                result['models'] = serialized_models
-                
-                # Serialize position scaler separately
-                if 'position_scaler' in self.position_learner.position_model:
-                    print("[INFO] Serializing position scaler...")
-                    result['position_scaler'] = self.serialize_data(self.position_learner.position_model['position_scaler'])
-            else:
-                raise ValueError("Invalid model structure - expected models in position_model")
+            # Serialize models per track
+            serialized_tracks = {}
             
-            # Copy only metadata (lightweight) - no deep copy needed
-            for key in ['performance_metrics', 'input_features', 'target_features']:
-                if key in self.position_learner.position_model:
-                    result[key] = self.position_learner.position_model[key]
+            for track_name, track_data in self.position_learner.track_models.items():
+                print(f"[INFO] Serializing models for track: {track_name}")
+                serialized_track_data = {}
+                
+                # Serialize models
+                if 'models' in track_data:
+                    serialized_models = {}
+                    for model_name, model in track_data['models'].items():
+                        # Serialize directly without copying
+                        serialized_model_data = self.serialize_data(model)
+                        serialized_models[model_name] = serialized_model_data
+                        # Force garbage collection
+                        import gc
+                        gc.collect()
+                    serialized_track_data['models'] = serialized_models
+                
+                # Serialize scaler
+                if 'position_scaler' in track_data:
+                    serialized_track_data['position_scaler'] = self.serialize_data(track_data['position_scaler'])
+                
+                # Copy metadata
+                for key in ['performance_metrics', 'input_features', 'target_features']:
+                    if key in track_data:
+                        serialized_track_data[key] = track_data[key]
+                
+                serialized_tracks[track_name] = serialized_track_data
+            
+            result['track_models'] = serialized_tracks
             
             print("[INFO] Serialization completed successfully")
             return result
@@ -1310,34 +1380,36 @@ class ExpertImitateLearningService:
         try:
             print("[INFO] Deserializing imitation models...")
             
-            # The serialized_results should be the direct position model structure
-            if 'models' in serialized_results:
-                print("[INFO] Deserializing position models...")
-                # Deserialize each model individually
-                deserialized_position_models = {}
-                for model_name, serialized_model in serialized_results['models'].items():
-                    print(f"[INFO] Deserializing model: {model_name}")
-                    deserialized_model = self.deserialize_data(serialized_model)
-                    deserialized_position_models[model_name] = deserialized_model
+            if 'track_models' in serialized_results:
+                print("[INFO] Deserializing track models...")
+                deserialized_track_models = {}
+                
+                for track_name, track_data in serialized_results['track_models'].items():
+                    print(f"[INFO] Deserializing models for track: {track_name}")
+                    deserialized_track_data = {}
                     
-                # Deserialize position scaler if present
-                deserialized_scaler = None
-                if 'position_scaler' in serialized_results:
-                    deserialized_scaler = self.deserialize_data(serialized_results['position_scaler'])
+                    # Deserialize models
+                    if 'models' in track_data:
+                        deserialized_models = {}
+                        for model_name, serialized_model in track_data['models'].items():
+                            deserialized_models[model_name] = self.deserialize_data(serialized_model)
+                        deserialized_track_data['models'] = deserialized_models
+                    
+                    # Deserialize scaler
+                    if 'position_scaler' in track_data:
+                        deserialized_track_data['position_scaler'] = self.deserialize_data(track_data['position_scaler'])
+                    
+                    # Copy metadata
+                    for key in ['performance_metrics', 'input_features', 'target_features']:
+                        if key in track_data:
+                            deserialized_track_data[key] = track_data[key]
+                            
+                    deserialized_track_models[track_name] = deserialized_track_data
                 
-                # Construct the complete position model structure
-                self.position_learner.position_model = {
-                    'models': deserialized_position_models,
-                    'position_scaler': deserialized_scaler,
-                    'performance_metrics': serialized_results.get('performance_metrics', {}),
-                    'input_features': serialized_results.get('input_features', ['normalized_position']),
-                    'target_features': serialized_results.get('target_features', [])
-                }
-                
-                print(f"[INFO] Successfully deserialized and loaded {len(deserialized_position_models)} models")
-                print(f"[INFO] - Model names: {list(deserialized_position_models.keys())}")
+                self.position_learner.track_models = deserialized_track_models
+                print(f"[INFO] Successfully deserialized models for {len(deserialized_track_models)} tracks")
             else:
-                raise ValueError("No models found in serialized data")
+                raise ValueError("No track_models found in serialized data")
                 
             return self
             

@@ -995,7 +995,15 @@ class Full_dataset_TelemetryMLService:
         top_laps_cache_key = self.cache_config.top_laps_cache_key
         try:
             async def top_laps_generator():
-                yield top_laps_telemetry_list  # Yield the telemetry list directly
+                # Yield each track's top laps as a separate chunk
+                for track_name, track_laps in top_laps.items():
+                    track_records = []
+                    for lap_info in track_laps:
+                        track_records.extend(lap_info["records"])
+                    
+                    if track_records:
+                        print(f"[DEBUG] Yielding top laps chunk for {track_name} ({len(track_records)} records)")
+                        yield track_records
             
             cache_success = await self.telemetry_store.cache_chunks_streaming(
                 cache_key=top_laps_cache_key,
@@ -1003,7 +1011,7 @@ class Full_dataset_TelemetryMLService:
             )
             
             if cache_success:
-                print(f"[SUCCESS] Cached {len(top_laps_telemetry_list)} top lap telemetry records to {top_laps_cache_key}")
+                print(f"[SUCCESS] Cached top lap telemetry records to {top_laps_cache_key} (separate chunks per track)")
             else:
                 print(f"[WARNING] Failed to cache top laps to {top_laps_cache_key}")
         except Exception as cache_error:
@@ -1108,7 +1116,6 @@ class Full_dataset_TelemetryMLService:
             tire_service: Trained tire grip service
             
         Returns:
-            List of enriched telemetry records
         """
         if not chunk_data:
             return []
@@ -1205,16 +1212,22 @@ class Full_dataset_TelemetryMLService:
             if not self.telemetry_store.has_cached_data(cache_key):
                 raise ValueError(f"No cached top laps found at key: {cache_key}")
             
-            # Get the cached data chunks (should be just one chunk with the list)
+            # Get the cached data chunks
             chunks_iterator = self.telemetry_store.get_cached_data_chunks(cache_key=cache_key)
             
-            for chunk in chunks_iterator:
-                # The chunk should be our top_laps_telemetry_list
-                if isinstance(chunk, list):
-                    print(f"[INFO] Retrieved {len(chunk)} top lap telemetry records from cache")
-                    return chunk
+            all_top_laps = []
+            chunk_count = 0
             
-            raise ValueError(f"Cached data at {cache_key} has unexpected format")
+            for chunk in chunks_iterator:
+                if isinstance(chunk, list):
+                    all_top_laps.extend(chunk)
+                    chunk_count += 1
+            
+            if chunk_count > 0:
+                print(f"[INFO] Retrieved {len(all_top_laps)} top lap telemetry records from {chunk_count} cache chunks")
+                return all_top_laps
+            
+            raise ValueError(f"Cached data at {cache_key} has unexpected format or is empty")
             
         except Exception as error:
             print(f"[ERROR] Failed to retrieve cached top laps: {error}")
