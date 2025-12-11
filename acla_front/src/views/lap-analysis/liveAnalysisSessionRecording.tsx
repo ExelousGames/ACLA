@@ -345,11 +345,15 @@ export default function LiveAnalysisSessionRecording() {
         try {
             const result = await window.electronAPI.stopPythonScript(shellId);
             if (!result?.success) {
-                applyStopOutcome('error');
+                if (recordingShellIdRef.current === null) return;
+                console.warn('Stop script reported failure, applying intended outcome', reason);
+                applyStopOutcome(reason);
             }
         } catch (error) {
             console.error('Failed to stop python script', error);
-            applyStopOutcome('error');
+            if (recordingShellIdRef.current === null) return;
+            console.warn('Stop script threw error, applying intended outcome', reason);
+            applyStopOutcome(reason);
         }
     }, [applyStopOutcome, state]);
 
