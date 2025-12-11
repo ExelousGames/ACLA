@@ -197,25 +197,9 @@ class ExpertPositionLearner:
         if 'Graphics_normalized_car_position' in df.columns:
             target_features[EO.EXPERT_OPTIMAL_TRACK_POSITION.value] = df['Graphics_normalized_car_position']
         
-        # Clean data - Drop rows with missing values instead of filling with 0
-        # Filling with 0 creates massive outliers for position coordinates (0,0,0)
-        # which ruins the model training if there are any gaps in telemetry.
-        
-        # Combine to ensure we drop rows consistently
-        combined = pd.concat([input_features, target_features], axis=1)
-        
-        # Drop rows where any feature is NaN
-        combined_clean = combined.dropna()
-        
-        if len(combined) != len(combined_clean):
-            print(f"[WARNING] Dropped {len(combined) - len(combined_clean)} rows with missing values during feature extraction")
-            
-        # Split back into input and target
-        input_cols = input_features.columns
-        target_cols = target_features.columns
-        
-        input_features = combined_clean[input_cols]
-        target_features = combined_clean[target_cols]
+        # Clean data
+        input_features = input_features.fillna(0)
+        target_features = target_features.fillna(0)
         
         return {
             'input_features': input_features,

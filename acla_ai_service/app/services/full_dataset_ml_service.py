@@ -1065,9 +1065,7 @@ class Full_dataset_TelemetryMLService:
             session_records = filtered_session_df.to_dict("records")
 
             # Split into laps using the processed session
-            # split_into_laps requires some features which will be removed by filter_features_by_list.
-            # thus, session and candidates will do filter_features_by_list separately.
-            lap_structs = processor.split_into_laps(stripped_session_df)
+            lap_structs = processor.split_into_laps(filtered_session_df)
             if not lap_structs:
                 return chunk_idx, 0, [], session_records, None, chunk_id
 
@@ -1075,8 +1073,7 @@ class Full_dataset_TelemetryMLService:
                 lap_metrics = lap_struct["metrics"]
                 lap_df = lap_struct["dataframe"]
                 
-                filtered_lap_df = processor.filter_features_by_list(lap_df, features)
-                lap_records = filtered_lap_df.to_dict("records") if not filtered_lap_df.empty else []
+                lap_records = lap_df.to_dict("records") if not lap_df.empty else []
 
                 lap_identifier = (
                     f"{chunk_id}_{lap_struct['lap_sequence']}_{lap_metrics.get('lap_time_ms', 'na')}"
