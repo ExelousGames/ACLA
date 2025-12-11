@@ -839,6 +839,10 @@ class Full_dataset_TelemetryMLService:
 
         def update_top_laps(candidate: Dict[str, Any]) -> None:
             """Maintain the fastest laps for expert reference per track."""
+            # Only consider fully valid laps for top laps
+            if not candidate.get("is_full_valid"):
+                return
+
             records = candidate.get("records", [])
             if not records:
                 return
@@ -1084,6 +1088,7 @@ class Full_dataset_TelemetryMLService:
                     "lap_time_ms": lap_metrics["lap_time_ms"] if lap_metrics["lap_time_ms"] is not None else float("inf"),
                     "lap_num": lap_struct["lap_num"],
                     "records": lap_records,
+                    "is_full_valid": lap_metrics.get("is_full_valid", False),
                 }
 
                 if lap_metrics["is_full_valid"] and lap_metrics["lap_time_ms"] is not None and lap_records:
