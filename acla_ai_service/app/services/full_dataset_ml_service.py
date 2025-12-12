@@ -1029,8 +1029,7 @@ class Full_dataset_TelemetryMLService:
                 return chunk_idx, 0, [], [], None, chunk_id
 
             # Strip by time gap on the whole session chunk
-            stripped_dfs = processor.strip_dataframe_by_time_gap([processed_df], telemetry_time_gap_ms)
-            stripped_session_df = stripped_dfs[0]
+            stripped_session_df = processor.strip_dataframe_by_time_gap(processed_df, telemetry_time_gap_ms)
 
             if stripped_session_df.empty:
                 return chunk_idx, 0, [], [], None, chunk_id

@@ -855,35 +855,21 @@ class FeatureProcessor:
 
         working = target_df.copy()
 
-        working["Graphics_completed_lap"] = pd.to_numeric(
-            working["Graphics_completed_lap"], errors="coerce"
-        ).ffill().bfill()
-        if working["Graphics_completed_lap"].isna().all():
-            raise ValueError("Unable to derive completed lap counters from telemetry data")
-
+        # Data is assumed to be clean already
         working["Graphics_completed_lap"] = working["Graphics_completed_lap"].astype(int)
-        working["__current_time_ms__"] = pd.to_numeric(
-            working["Graphics_current_time"], errors="coerce"
-        ).fillna(0.0)
+        working["__current_time_ms__"] = working["Graphics_current_time"]
+        working["Graphics_is_valid_lap"] = working["Graphics_is_valid_lap"].astype(int)
+        working["__normalized_pos__"] = working["Graphics_normalized_car_position"]
 
-        valid_series = working["Graphics_is_valid_lap"]
-        if valid_series.dtype != bool and not np.issubdtype(valid_series.dtype, np.number):
-            valid_series = valid_series.apply(
-                lambda v: 1 if str(v).strip().lower() in {"1", "true", "t", "yes"} else 0
-            )
-        valid_series = pd.to_numeric(valid_series, errors="coerce").fillna(0.0).clip(0, 1)
-        working["Graphics_is_valid_lap"] = valid_series.astype(int)
-
-        working["__normalized_pos__"] = pd.to_numeric(
-            working["Graphics_normalized_car_position"], errors="coerce"
-        )
-
-        base_completed = int(working["Graphics_completed_lap"].min())
-        working["__lap_sequence__"] = (working["Graphics_completed_lap"] - base_completed).astype(int)
+        # Create a group ID that increments every time the lap number changes to preserve order and handle disjoint laps
+        working["__lap_group__"] = (working["Graphics_completed_lap"] != working["Graphics_completed_lap"].shift()).cumsum()
 
         lap_structs: List[Dict[str, Any]] = []
 
-        for lap_sequence, lap_df in working.groupby("__lap_sequence__", sort=True):
+        # Use sort=False to process groups in the order they appear in the dataframe
+        for i, (_, lap_df) in enumerate(working.groupby("__lap_group__", sort=False)):
+            lap_sequence = i
+            
             lap_metrics = {
                 "records": len(lap_df),
                 "lap_time_ms": None,
@@ -919,8 +905,8 @@ class FeatureProcessor:
                 coverage_ok = (
                     min_pos is not None
                     and max_pos is not None
-                    and min_pos <= 0.15
-                    and max_pos >= 0.85
+                    and min_pos <= 0.1
+                    and max_pos >= 0.9
                     and (max_pos - min_pos) >= 0.7
                 )
 
@@ -931,7 +917,7 @@ class FeatureProcessor:
             original_lap_number = int(lap_df["Graphics_completed_lap"].iloc[-1])
 
             lap_output_df = lap_df.drop(
-                columns=["__current_time_ms__", "__normalized_pos__", "__lap_sequence__"], errors="ignore"
+                columns=["__current_time_ms__", "__normalized_pos__", "__lap_group__"], errors="ignore"
             ).reset_index(drop=True)
             lap_output_df["lap_id"] = lap_sequence
 
@@ -1188,175 +1174,61 @@ class FeatureProcessor:
         
         return filtered_df
 
-    def _filter_top_performance_laps(self, df: pd.DataFrame, keepTopLapsPercent: float=0.01) -> tuple[List[float], List[pd.DataFrame]]:
-        """Simpler fastest-lap filter.
-
-        Steps:
-        1. Validate required columns.
-        2. Derive lap ids directly from the completed lap counter.
-        3. For each lap: ensure minimum rows, coverage of track, and validity ratio.
-        4. Compute lap time (uses last Graphics_current_time in ms -> seconds).
-        5. Keep the fastest top N percent (at least one lap).
-
-        Args:
-            df: Telemetry DataFrame (already cleaned / processed).
-            keepTopLapsPercent: Fraction (0-1] of fastest laps to retain (default 0.01 = top 1%).
-
-        Returns:
-            (list_of_lap_times_ms, list_of_lap_dfs)
-        """
-        if df.empty:
-            return [], []
-
-        required = [
-            'Graphics_is_valid_lap',
-            'Graphics_completed_lap',
-            'Graphics_normalized_car_position',
-            'Graphics_current_time'
-        ]
-        missing = [c for c in required if c not in df.columns]
-        if missing:
-            # If we cannot validate laps, just return everything as one block (backwards compatible fallback)
-            if not df.empty:
-                # Try to get lap time from Graphics_current_time
-                lap_time_ms = 0
-                if 'Graphics_current_time' in df.columns:
-                    lap_time_ms = pd.to_numeric(df['Graphics_current_time'], errors='coerce').max()
-                
-                return [lap_time_ms if lap_time_ms > 0 else float('inf')], [df.copy()]
-            return [], []
-
-        work = df.copy()
-
-        # Ensure numeric types where possible
-        work['Graphics_completed_lap'] = pd.to_numeric(work['Graphics_completed_lap'], errors='coerce').ffill().fillna(0).astype(int)
-        work['Graphics_current_time'] = pd.to_numeric(work['Graphics_current_time'], errors='coerce').fillna(0)
-
-        # Treat any non-boolean as boolean-like
-        valid_col = work['Graphics_is_valid_lap']
-        if valid_col.dtype != 'bool':
-            work['Graphics_is_valid_lap'] = valid_col.apply(lambda v: 1 if str(v).lower() in ['1','true','t','yes'] else 0)
-        else:
-            work['Graphics_is_valid_lap'] = work['Graphics_is_valid_lap'].astype(int)
-
-        # Lap id is simply the completed lap counter value (relative)
-        base = work['Graphics_completed_lap'].min()
-        work['lap_id'] = work['Graphics_completed_lap'] - base
-
-        laps = []  # (lap_id, lap_time_seconds, lap_df)
-        for lap_id, lap_df in work.groupby('lap_id'):
-            # Basic size filter
-            if len(lap_df) < 10:
-                continue
-
-            # Track coverage validation
-            pos = lap_df['Graphics_normalized_car_position'].dropna()
-            if pos.empty:
-                continue
-            min_p, max_p = pos.min(), pos.max()
-            coverage_ok = (min_p <= 0.15) and (max_p >= 0.85) and ((max_p - min_p) >= 0.7)
-            if not coverage_ok:
-                continue
-
-            # Validity ratio (>=95% like original stricter path)
-            valid_ratio = lap_df['Graphics_is_valid_lap'].mean()
-            if valid_ratio < 0.95:
-                continue
-
-            # Lap time: take maximum current_time (milliseconds) to avoid next lap contamination
-            # Graphics_current_time represents current lap time, so max should be the actual lap time
-            lap_time_ms = lap_df['Graphics_current_time'].max()
-            if lap_time_ms <= 0:
-                continue
-
-            laps.append((lap_id, lap_time_ms, lap_df))
-
-        if not laps:
-            return [], []
-
-        # Sort by lap time ascending
-        laps.sort(key=lambda x: x[1])
-
-        # Bound keepTopLapsPercent
-        pct = max(0.0, min(1.0, keepTopLapsPercent)) or 0.01
-        n_keep = max(1, int(np.ceil(len(laps) * pct)))
-        selected = laps[:n_keep]
-
-        lap_times_ms = [l[1] for l in selected]
-        individual = [l[2].copy() for l in selected]
-        return lap_times_ms, individual
-
     def strip_dataframe_by_time_gap(
         self,
-        lap_dataframes: List[pd.DataFrame],
+        df: pd.DataFrame,
         gap_between: float
-    ) -> List[pd.DataFrame]:
-        """Down-sample lap telemetry frames using a fixed time gap in milliseconds.
-
-        This helper is intentionally placed after ``_filter_top_performance_laps`` so it can
-        operate on the lap-specific DataFrames that method returns. Each lap is processed
-        independently and rows are retained in their original order.
+    ) -> pd.DataFrame:
+        """Down-sample telemetry frames using a fixed time gap in milliseconds.
 
         Args:
-            lap_dataframes: Lap DataFrames emitted by ``_filter_top_performance_laps``.
+            df: DataFrame containing telemetry data.
             gap_between: Minimum spacing between retained samples (ms).
 
         Returns:
-            List of lap DataFrames with rows removed so consecutive samples are at least
+            DataFrame with rows removed so consecutive samples are at least
             ``gap_between`` milliseconds apart.
         """
 
         if gap_between <= 0:
             raise ValueError("gap_between must be a positive value in milliseconds")
 
-        if not lap_dataframes:
-            return []
+        if df is None or df.empty:
+            return pd.DataFrame()
 
-        stripped_laps: List[pd.DataFrame] = []
+        if 'Graphics_current_time' not in df.columns:
+            return df.copy()
 
-        for lap_df in lap_dataframes:
-            if lap_df is None:
-                stripped_laps.append(pd.DataFrame())
+        working = df.copy()
+        time_values = pd.to_numeric(
+            working['Graphics_current_time'], errors='coerce'
+        ).to_numpy(dtype=float)
+
+        valid_mask = ~np.isnan(time_values)
+        working = working.iloc[valid_mask].copy()
+        time_values = time_values[valid_mask]
+
+        if time_values.size == 0:
+            return df.iloc[0:0].copy()
+
+        keep_mask = np.zeros(len(working), dtype=bool)
+        last_selected = None
+
+        for idx, current_time in enumerate(time_values):
+            if last_selected is None or current_time < last_selected:
+                keep_mask[idx] = True
+                last_selected = current_time
                 continue
 
-            if lap_df.empty or 'Graphics_current_time' not in lap_df.columns:
-                stripped_laps.append(lap_df.reset_index(drop=True))
-                continue
+            if (current_time - last_selected) >= gap_between:
+                keep_mask[idx] = True
+                last_selected = current_time
 
-            working = lap_df.copy()
-            time_values = pd.to_numeric(
-                working['Graphics_current_time'], errors='coerce'
-            ).to_numpy(dtype=float)
+        if not keep_mask.any():
+            return df.iloc[0:0].copy()
 
-            valid_mask = ~np.isnan(time_values)
-            working = working.iloc[valid_mask].copy()
-            time_values = time_values[valid_mask]
-
-            if time_values.size == 0:
-                stripped_laps.append(lap_df.iloc[0:0].copy())
-                continue
-
-            keep_mask = np.zeros(len(working), dtype=bool)
-            last_selected = None
-
-            for idx, current_time in enumerate(time_values):
-                if last_selected is None or current_time < last_selected:
-                    keep_mask[idx] = True
-                    last_selected = current_time
-                    continue
-
-                if (current_time - last_selected) >= gap_between:
-                    keep_mask[idx] = True
-                    last_selected = current_time
-
-            if not keep_mask.any():
-                stripped_laps.append(working.iloc[0:0].copy())
-                continue
-
-            stripped = working.iloc[keep_mask].copy()
-            stripped_laps.append(stripped.reset_index(drop=True))
-
-        return stripped_laps
+        stripped = working.iloc[keep_mask].copy()
+        return stripped.reset_index(drop=True)
 
     def flip_y_z_features(self) -> pd.DataFrame:
         """Swap values across *_y and *_z telemetry columns to align axis conventions."""
