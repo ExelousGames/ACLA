@@ -21,7 +21,7 @@ from pathlib import Path
 # Scikit-learn imports for trajectory learning
 from sklearn.model_selection import train_test_split, GroupShuffleSplit
 from sklearn.preprocessing import StandardScaler
-from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier
+from sklearn.neural_network import MLPRegressor, MLPClassifier
 from sklearn.metrics import mean_squared_error, mean_absolute_error, accuracy_score, f1_score
 from sklearn.decomposition import PCA
 
@@ -151,6 +151,9 @@ class ExpertPositionLearner:
         # Input feature: normalized track position (primary input)
         if 'Graphics_normalized_car_position' in df.columns:
             input_features['normalized_position'] = df['Graphics_normalized_car_position']
+            # Add cyclic features for neural network to handle track loop continuity
+            input_features['sin_pos'] = np.sin(2 * np.pi * input_features['normalized_position'])
+            input_features['cos_pos'] = np.cos(2 * np.pi * input_features['normalized_position'])
         else:
             raise ValueError("Graphics_normalized_car_position not found - this is required for position-based learning")
 
@@ -252,8 +255,9 @@ class ExpertPositionLearner:
         print(f"[INFO] Training models for track: {track}")
         
         overall_metrics = {}
-        # Prepare input (normalized position)
-        X = input_features[['normalized_position']].values
+        # Prepare input (normalized position + cyclic features)
+        # Using sin/cos helps the neural network understand the track is a loop
+        X = input_features[['normalized_position', 'sin_pos', 'cos_pos']].values
         groups = np.array(lap_ids)
         
         # Create and fit scaler for this track
@@ -261,61 +265,83 @@ class ExpertPositionLearner:
         X_scaled = position_scaler.fit_transform(X)
         
         # Use GroupShuffleSplit to ensure we don't leak data from the same lap into both train and test
-        gss = GroupShuffleSplit(n_splits=1, test_size=0.2, random_state=42)
-        train_idx, test_idx = next(gss.split(X_scaled, groups=groups))
+        unique_groups = np.unique(groups)
+        if len(unique_groups) > 1:
+            gss = GroupShuffleSplit(n_splits=1, test_size=0.2, random_state=42)
+            train_idx, test_idx = next(gss.split(X_scaled, groups=groups))
+        else:
+            # Fallback to simple split if only one group (lap) is available
+            print("[WARN] Only one expert lap available. Splitting data randomly within the lap.")
+            train_idx, test_idx = train_test_split(np.arange(len(X_scaled)), test_size=0.2, random_state=42)
         
         X_train, X_test = X_scaled[train_idx], X_scaled[test_idx]
         
-        # Train models for each target
         # Train models for each target
         models = {}
         performance_metrics = {}
         
         EO = ExpertFeatureCatalog.ExpertOptimalFeature
         
-        # Action models (regression)
-        action_targets = [
-            EO.EXPERT_OPTIMAL_STEERING.value,
-            EO.EXPERT_OPTIMAL_THROTTLE.value,
-            EO.EXPERT_OPTIMAL_BRAKE.value,
-            EO.EXPERT_OPTIMAL_SPEED.value
-        ]
+        # Identify all regression targets
+        regression_targets = []
         
-        for target_name in action_targets:
-            if target_name in target_features.columns:
-                # print(f"[INFO] Training action model for: {target_name}")
-                y = target_features[target_name].values
-                
-                # Split data
-                y_train, y_test = y[train_idx], y[test_idx]
-                
-                # Train model
-                model = RandomForestRegressor(n_estimators=100, random_state=42, n_jobs=-1)
-                model.fit(X_train, y_train)
-                
-                # Evaluate
-                y_pred = model.predict(X_test)
-                r2 = model.score(X_test, y_test)
-                mse = mean_squared_error(y_test, y_pred)
-                mae = mean_absolute_error(y_test, y_pred)
-                
-                models[target_name] = model
-                performance_metrics[target_name] = {
-                    'r2': float(r2),
-                    'mse': float(mse),
-                    'mae': float(mae),
-                    'type': 'regression'
-                }
-                
-                # print(f"[INFO] {target_name} - R²: {r2:.4f}, MSE: {mse:.4f}, MAE: {mae:.4f}")
+        # 1. Action targets
+        for t in [EO.EXPERT_OPTIMAL_STEERING.value, EO.EXPERT_OPTIMAL_THROTTLE.value, 
+                  EO.EXPERT_OPTIMAL_BRAKE.value, EO.EXPERT_OPTIMAL_SPEED.value]:
+            if t in target_features.columns:
+                regression_targets.append(t)
         
-        # Gear model (classification)
+        # 2. Position targets
+        for t in [EO.EXPERT_OPTIMAL_PLAYER_POS_X.value, EO.EXPERT_OPTIMAL_PLAYER_POS_Y.value, 
+                  EO.EXPERT_OPTIMAL_PLAYER_POS_Z.value]:
+            if t in target_features.columns:
+                regression_targets.append(t)
+
+        # 3. Velocity targets
+        for t in [EO.EXPERT_OPTIMAL_VELOCITY_X.value, EO.EXPERT_OPTIMAL_VELOCITY_Y.value, 
+                  EO.EXPERT_OPTIMAL_VELOCITY_Z.value]:
+            if t in target_features.columns:
+                regression_targets.append(t)
+                
+        # 4. Track position target
+        if EO.EXPERT_OPTIMAL_TRACK_POSITION.value in target_features.columns:
+            regression_targets.append(EO.EXPERT_OPTIMAL_TRACK_POSITION.value)
+
+        # Train Combined Regressor
+        if regression_targets:
+            print(f"[INFO] Training combined MLP regressor for {len(regression_targets)} targets")
+            y = target_features[regression_targets].values
+            y_train, y_test = y[train_idx], y[test_idx]
+            
+            # Larger network for combined task
+            model = MLPRegressor(hidden_layer_sizes=(200, 150, 100), activation='tanh', solver='adam', max_iter=1000, random_state=42)
+            model.fit(X_train, y_train)
+            
+            y_pred = model.predict(X_test)
+            
+            # Calculate individual metrics for reporting
+            from sklearn.metrics import r2_score
+            mse = mean_squared_error(y_test, y_pred, multioutput='raw_values')
+            mae = mean_absolute_error(y_test, y_pred, multioutput='raw_values')
+            r2_raw = r2_score(y_test, y_pred, multioutput='raw_values')
+            
+            models['combined_regression'] = model
+            
+            for i, target in enumerate(regression_targets):
+                 performance_metrics[target] = {
+                    'r2': float(r2_raw[i]),
+                    'mse': float(mse[i]),
+                    'mae': float(mae[i]),
+                    'type': 'regression_combined'
+                 }
+        
+        # Train Gear Classifier (Separate)
         if EO.EXPERT_OPTIMAL_GEAR.value in target_features.columns:
             # print(f"[INFO] Training gear classification model")
             y = target_features[EO.EXPERT_OPTIMAL_GEAR.value].values
             y_train, y_test = y[train_idx], y[test_idx]
             
-            model = RandomForestClassifier(n_estimators=100, random_state=42, n_jobs=-1)
+            model = MLPClassifier(hidden_layer_sizes=(100, 50), activation='relu', solver='adam', max_iter=1000, random_state=42)
             model.fit(X_train, y_train)
             
             y_pred = model.predict(X_test)
@@ -328,101 +354,14 @@ class ExpertPositionLearner:
                 'f1': float(f1),
                 'type': 'classification'
             }
-            
-            # print(f"[INFO] Gear - Accuracy: {accuracy:.4f}, F1: {f1:.4f}")
-        
-        # Position models (regression)
-        position_targets = [
-            EO.EXPERT_OPTIMAL_PLAYER_POS_X.value,
-            EO.EXPERT_OPTIMAL_PLAYER_POS_Y.value,
-            EO.EXPERT_OPTIMAL_PLAYER_POS_Z.value
-        ]
-        
-        for target_name in position_targets:
-            if target_name in target_features.columns:
-                # print(f"[INFO] Training position model for: {target_name}")
-                y = target_features[target_name].values
-                
-                y_train, y_test = y[train_idx], y[test_idx]
-                
-                model = RandomForestRegressor(n_estimators=100, random_state=42, n_jobs=-1)
-                model.fit(X_train, y_train)
-                
-                y_pred = model.predict(X_test)
-                r2 = model.score(X_test, y_test)
-                mse = mean_squared_error(y_test, y_pred)
-                mae = mean_absolute_error(y_test, y_pred)
-                
-                models[target_name] = model
-                performance_metrics[target_name] = {
-                    'r2': float(r2),
-                    'mse': float(mse),
-                    'mae': float(mae),
-                    'type': 'regression'
-                }
-                
-                # print(f"[INFO] {target_name} - R²: {r2:.4f}, MSE: {mse:.4f}, MAE: {mae:.4f}")
-        
-        # Velocity models (regression)
-        velocity_targets = [
-            EO.EXPERT_OPTIMAL_VELOCITY_X.value,
-            EO.EXPERT_OPTIMAL_VELOCITY_Y.value,
-            EO.EXPERT_OPTIMAL_VELOCITY_Z.value
-        ]
-        
-        for target_name in velocity_targets:
-            if target_name in target_features.columns:
-                # print(f"[INFO] Training velocity model for: {target_name}")
-                y = target_features[target_name].values
-                
-                y_train, y_test = y[train_idx], y[test_idx]
-                
-                model = RandomForestRegressor(n_estimators=100, random_state=42, n_jobs=-1)
-                y_pred = model.predict(X_test)
-                r2 = model.score(X_test, y_test)
-                mse = mean_squared_error(y_test, y_pred)
-                mae = mean_absolute_error(y_test, y_pred)
-                
-                models[target_name] = model
-                performance_metrics[target_name] = {
-                    'r2': float(r2),
-                    'mse': float(mse),
-                    'mae': float(mae),
-                    'type': 'regression'
-                }
-                
-                # print(f"[INFO] {target_name} - R²: {r2:.4f}, MSE: {mse:.4f}, MAE: {mae:.4f}")
-        
-        # Track position model (for consistency)
-        if EO.EXPERT_OPTIMAL_TRACK_POSITION.value in target_features.columns:
-            # print(f"[INFO] Training track position model")
-            y = target_features[EO.EXPERT_OPTIMAL_TRACK_POSITION.value].values
-            y_train, y_test = y[train_idx], y[test_idx]
-            
-            model = RandomForestRegressor(n_estimators=100, random_state=42, n_jobs=-1)
-            model.fit(X_train, y_train)
-            
-            y_pred = model.predict(X_test)
-            r2 = model.score(X_test, y_test)
-            mse = mean_squared_error(y_test, y_pred)
-            mae = mean_absolute_error(y_test, y_pred)
-            
-            models[EO.EXPERT_OPTIMAL_TRACK_POSITION.value] = model
-            performance_metrics[EO.EXPERT_OPTIMAL_TRACK_POSITION.value] = {
-                'r2': float(r2),
-                'mse': float(mse),
-                'mae': float(mae),
-                'type': 'regression'
-            }
-            
-            # print(f"[INFO] Track position - R²: {r2:.4f}, MSE: {mse:.4f}, MAE: {mae:.4f}")
         
         # Store the complete position model for this track
         self.track_models[track] = {
             'models': models,
             'position_scaler': position_scaler,
             'performance_metrics': performance_metrics,
-            'input_features': ['normalized_position'],
+            'regression_targets': regression_targets,
+            'input_features': ['normalized_position', 'sin_pos', 'cos_pos'],
             'target_features': list(target_features.columns)
         }
         
@@ -461,16 +400,42 @@ class ExpertPositionLearner:
         # Handle single position vs multiple positions
         single_position = isinstance(normalized_positions, (int, float))
         if single_position:
-            positions_array = np.array([[normalized_positions]])
+            pos_val = float(normalized_positions)
+            # Create feature vector: [pos, sin(2*pi*pos), cos(2*pi*pos)]
+            positions_array = np.array([[
+                pos_val, 
+                np.sin(2 * np.pi * pos_val), 
+                np.cos(2 * np.pi * pos_val)
+            ]])
         else:
-            positions_array = np.array(normalized_positions).reshape(-1, 1)
+            raw_pos = np.array(normalized_positions).reshape(-1, 1)
+            # Create feature matrix with cyclic features
+            sin_pos = np.sin(2 * np.pi * raw_pos)
+            cos_pos = np.cos(2 * np.pi * raw_pos)
+            positions_array = np.hstack([raw_pos, sin_pos, cos_pos])
         
         # Scale positions using track-specific scaler
         positions_scaled = track_model_data['position_scaler'].transform(positions_array)
         
         # Make predictions for all models
         predictions = {}
+        
+        # Handle combined regression model
+        if 'combined_regression' in track_model_data['models']:
+            model = track_model_data['models']['combined_regression']
+            reg_targets = track_model_data.get('regression_targets', [])
+            
+            # Predict all targets at once
+            pred_matrix = model.predict(positions_scaled) # shape (n_samples, n_targets)
+            
+            # Unpack predictions
+            for i, target_name in enumerate(reg_targets):
+                predictions[target_name] = pred_matrix[:, i]
+                
+        # Handle other models (like gear or legacy individual models)
         for model_name, model in track_model_data['models'].items():
+            if model_name == 'combined_regression':
+                continue
             pred = model.predict(positions_scaled)
             predictions[model_name] = pred
         

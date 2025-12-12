@@ -76,7 +76,7 @@ class CornerIdentificationUnsupervisedService:
         gas_raw = df.get('Physics_gas', pd.Series(0.0, index=df.index)).fillna(0.0).clip(0.0, 1.0)
         gas_smooth = pd.Series(self._smooth_signal(gas_raw), index=df.index)
 
-        speed_kmh = df.get('Physics_speed_kmh', pd.Series(0.0, index=df.index)).fillna(method='ffill').fillna(0.0)
+        speed_kmh = df.get('Physics_speed_kmh', pd.Series(0.0, index=df.index)).ffill().fillna(0.0)
         
         if global_max_speed is not None:
             max_s = max(1.0, global_max_speed)
@@ -88,7 +88,7 @@ class CornerIdentificationUnsupervisedService:
         yaw_signal = None
         for yaw_key in ['Physics_yaw', 'Physics_world_yaw', 'Graphics_yaw']:
             if yaw_key in df.columns:
-                yaw_signal = df[yaw_key].fillna(method='ffill').fillna(method='bfill')
+                yaw_signal = df[yaw_key].ffill().bfill()
                 break
         if yaw_signal is None:
             yaw_signal = steering_smooth
@@ -790,7 +790,7 @@ class CornerIdentificationUnsupervisedService:
         if len(signal_array) >= self.smoothing_window:
             return savgol_filter(signal_array, self.smoothing_window, 2)
         else:
-            return pd.Series(signal_array).rolling(window=3, center=True).mean().fillna(method='bfill').fillna(method='ffill').values
+            return pd.Series(signal_array).rolling(window=3, center=True).mean().bfill().ffill().values
 
     def _find_consistent_corners(self, lap_corner_data: List[List[Dict]]) -> List[Dict[str, Any]]:
         """Find corners that appear consistently across laps."""
@@ -861,7 +861,7 @@ class CornerIdentificationUnsupervisedService:
             }]
         
         # Find apex (minimum speed)
-        speeds = corner_df['Physics_speed_kmh'].fillna(method='ffill').fillna(method='bfill')
+        speeds = corner_df['Physics_speed_kmh'].ffill().bfill()
         apex_idx = speeds.idxmin()
         apex_relative = (apex_idx - corner_df.index[0]) / len(corner_df)
         
@@ -938,7 +938,7 @@ class CornerIdentificationUnsupervisedService:
             return pd.Series([], dtype=float)
         
         if 'Graphics_normalized_car_position' in df.columns:
-            pos = df['Graphics_normalized_car_position'].fillna(method='ffill').fillna(method='bfill')
+            pos = df['Graphics_normalized_car_position'].ffill().bfill()
             return pos.clip(0.0, 1.0).reset_index(drop=True)
         
         # Fallback to linear interpolation
