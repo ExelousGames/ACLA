@@ -688,7 +688,6 @@ class Full_dataset_TelemetryMLService:
         self._print_section_divider("ENRICHING CONTEXTUAL DATA")
         max_segment_length = 20
 
-
         try:
             # Only run enrichment if segments not cached or cleanup requested
 
@@ -810,7 +809,6 @@ class Full_dataset_TelemetryMLService:
         self,
         session_data_cache_key: str,
         *,
-        max_memory_records: int = 10000,
         telemetry_time_gap_ms: int = 100,
         processed_sessions_cache_key: Optional[str] = None,
         top_laps_count: int = 5,
@@ -994,10 +992,10 @@ class Full_dataset_TelemetryMLService:
 
                     track_records = []
                     for lap_info in track_laps:
-                        track_records.extend(lap_info["records"])
+                        track_records.append(lap_info["records"])
                     
                     if track_records:
-                        print(f"[DEBUG] Yielding top laps chunk for {track_name} ({len(track_records)} records)")
+                        print(f"[DEBUG] Yielding top laps chunk for {track_name} ({len(track_records)} laps)")
                         yield (track_records, track_name)
             
             cache_success = await self.telemetry_store.cache_chunks_streaming(
