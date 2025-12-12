@@ -372,8 +372,6 @@ class ExpertPositionLearner:
         
         for target_name in velocity_targets:
             if target_name in target_features.columns:
-        for target_name in velocity_targets:
-            if target_name in target_features.columns:
                 # print(f"[INFO] Training velocity model for: {target_name}")
                 y = target_features[target_name].values
                 
