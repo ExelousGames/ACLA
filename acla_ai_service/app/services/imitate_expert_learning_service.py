@@ -19,7 +19,7 @@ from datetime import datetime
 from pathlib import Path
 
 # Scikit-learn imports for trajectory learning
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split, GroupShuffleSplit
 from sklearn.preprocessing import StandardScaler
 from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier
 from sklearn.metrics import mean_squared_error, mean_absolute_error, accuracy_score, f1_score
@@ -206,28 +206,40 @@ class ExpertPositionLearner:
             'target_features': target_features
         }
     
-    def learn_expert_position_mapping(self, expert_df: pd.DataFrame) -> Dict[str, Any]:
+    def learn_expert_position_mapping(self, expert_laps: List[List[Dict[str, Any]]]) -> Dict[str, Any]:
         """
         Learn expert actions from normalized track position using multiple expert laps, per track.
         
         Args:
-            expert_df: Expert driver telemetry data from multiple laps
+            expert_laps: List of expert driver telemetry laps (each lap is a list of records)
             
         Returns:
             Dictionary with learned position-based model and insights
         """
-        print(f"[INFO] Learning expert position mapping from {len(expert_df)} expert data points")
+        print(f"[INFO] Learning expert position mapping from {len(expert_laps)} expert laps")
         
-        # Extract position-based features
-        feature_data = self.extract_position_features(expert_df)
-        input_features = feature_data['input_features']
-        target_features = feature_data['target_features']
+        all_input_features = []
+        all_target_features = []
+        lap_ids = []
         
-        if len(input_features) == 0:
-            raise ValueError("No input features extracted")
-        if len(target_features.columns) == 0:
-            raise ValueError("No target features extracted")
+        for i, lap_data in enumerate(expert_laps):
+            if not lap_data:
+                continue
+                
+            lap_df = pd.DataFrame(lap_data)
             
+            # Extract position-based features for this lap
+            feature_data = self.extract_position_features(lap_df)
+            all_input_features.append(feature_data['input_features'])
+            all_target_features.append(feature_data['target_features'])
+            lap_ids.extend([i] * len(feature_data['input_features']))
+            
+        if not all_input_features:
+             raise ValueError("No valid features extracted from laps")
+
+        input_features = pd.concat(all_input_features, ignore_index=True)
+        target_features = pd.concat(all_target_features, ignore_index=True)
+        
         print(f"[INFO] Input features shape: {input_features.shape}")
         print(f"[INFO] Target features shape: {target_features.shape}")
         print(f"[INFO] Available targets: {list(target_features.columns)}")
@@ -240,14 +252,21 @@ class ExpertPositionLearner:
         print(f"[INFO] Training models for track: {track}")
         
         overall_metrics = {}
-        
         # Prepare input (normalized position)
         X = input_features[['normalized_position']].values
+        groups = np.array(lap_ids)
         
         # Create and fit scaler for this track
         position_scaler = StandardScaler()
         X_scaled = position_scaler.fit_transform(X)
         
+        # Use GroupShuffleSplit to ensure we don't leak data from the same lap into both train and test
+        gss = GroupShuffleSplit(n_splits=1, test_size=0.2, random_state=42)
+        train_idx, test_idx = next(gss.split(X_scaled, groups=groups))
+        
+        X_train, X_test = X_scaled[train_idx], X_scaled[test_idx]
+        
+        # Train models for each target
         # Train models for each target
         models = {}
         performance_metrics = {}
@@ -268,9 +287,7 @@ class ExpertPositionLearner:
                 y = target_features[target_name].values
                 
                 # Split data
-                X_train, X_test, y_train, y_test = train_test_split(
-                    X_scaled, y, test_size=0.2, random_state=42
-                )
+                y_train, y_test = y[train_idx], y[test_idx]
                 
                 # Train model
                 model = RandomForestRegressor(n_estimators=100, random_state=42, n_jobs=-1)
@@ -296,10 +313,7 @@ class ExpertPositionLearner:
         if EO.EXPERT_OPTIMAL_GEAR.value in target_features.columns:
             # print(f"[INFO] Training gear classification model")
             y = target_features[EO.EXPERT_OPTIMAL_GEAR.value].values
-            
-            X_train, X_test, y_train, y_test = train_test_split(
-                X_scaled, y, test_size=0.2, random_state=42, stratify=y
-            )
+            y_train, y_test = y[train_idx], y[test_idx]
             
             model = RandomForestClassifier(n_estimators=100, random_state=42, n_jobs=-1)
             model.fit(X_train, y_train)
@@ -329,9 +343,7 @@ class ExpertPositionLearner:
                 # print(f"[INFO] Training position model for: {target_name}")
                 y = target_features[target_name].values
                 
-                X_train, X_test, y_train, y_test = train_test_split(
-                    X_scaled, y, test_size=0.2, random_state=42
-                )
+                y_train, y_test = y[train_idx], y[test_idx]
                 
                 model = RandomForestRegressor(n_estimators=100, random_state=42, n_jobs=-1)
                 model.fit(X_train, y_train)
@@ -360,16 +372,14 @@ class ExpertPositionLearner:
         
         for target_name in velocity_targets:
             if target_name in target_features.columns:
+        for target_name in velocity_targets:
+            if target_name in target_features.columns:
                 # print(f"[INFO] Training velocity model for: {target_name}")
                 y = target_features[target_name].values
                 
-                X_train, X_test, y_train, y_test = train_test_split(
-                    X_scaled, y, test_size=0.2, random_state=42
-                )
+                y_train, y_test = y[train_idx], y[test_idx]
                 
                 model = RandomForestRegressor(n_estimators=100, random_state=42, n_jobs=-1)
-                model.fit(X_train, y_train)
-                
                 y_pred = model.predict(X_test)
                 r2 = model.score(X_test, y_test)
                 mse = mean_squared_error(y_test, y_pred)
@@ -389,10 +399,7 @@ class ExpertPositionLearner:
         if EO.EXPERT_OPTIMAL_TRACK_POSITION.value in target_features.columns:
             # print(f"[INFO] Training track position model")
             y = target_features[EO.EXPERT_OPTIMAL_TRACK_POSITION.value].values
-            
-            X_train, X_test, y_train, y_test = train_test_split(
-                X_scaled, y, test_size=0.2, random_state=42
-            )
+            y_train, y_test = y[train_idx], y[test_idx]
             
             model = RandomForestRegressor(n_estimators=100, random_state=42, n_jobs=-1)
             model.fit(X_train, y_train)
@@ -430,7 +437,7 @@ class ExpertPositionLearner:
                 'input_features': ['normalized_position', 'track'],
                 'target_features': list(target_features.columns),
                 'models_trained': list(self.track_models.keys()),
-                'total_training_samples': len(expert_df)
+                'total_training_samples': len(input_features)
             }
         }
     
@@ -730,13 +737,11 @@ class ExpertImitateLearningService:
             if not chunk_data:
                 continue
 
-            print(f"[INFO] Processing top laps for track: {chunk_id} ({len(chunk_data)} records)")
-            
-            processed_df = pd.DataFrame(chunk_data)
+            print(f"[INFO] Processing top laps for track: {chunk_id} ({len(chunk_data)} laps)")
             
             # Learn expert position mapping (this is the only learning model)
-            self.position_learner.learn_expert_position_mapping(processed_df)
-            total_samples += len(processed_df)
+            self.position_learner.learn_expert_position_mapping(chunk_data)
+            total_samples += sum(len(lap) for lap in chunk_data)
         
         # Construct results
         overall_metrics = {}

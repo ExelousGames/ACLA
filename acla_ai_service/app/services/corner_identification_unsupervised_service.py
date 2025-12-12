@@ -58,7 +58,7 @@ class CornerIdentificationUnsupervisedService:
         s = steering_series.fillna(0.0)
         return s.clip(-1.0, 1.0)
 
-    def _compute_enhanced_features(self, df: pd.DataFrame) -> pd.DataFrame:
+    def _compute_enhanced_features(self, df: pd.DataFrame, global_max_speed: Optional[float] = None) -> pd.DataFrame:
         """Compute enhanced telemetry features for unsupervised corner detection."""
         if df.empty:
             return pd.DataFrame()
@@ -77,7 +77,13 @@ class CornerIdentificationUnsupervisedService:
         gas_smooth = pd.Series(self._smooth_signal(gas_raw), index=df.index)
 
         speed_kmh = df.get('Physics_speed_kmh', pd.Series(0.0, index=df.index)).fillna(method='ffill').fillna(0.0)
-        speed_norm = speed_kmh / max(1.0, float(speed_kmh.max()))
+        
+        if global_max_speed is not None:
+            max_s = max(1.0, global_max_speed)
+        else:
+            max_s = max(1.0, float(speed_kmh.max()))
+            
+        speed_norm = speed_kmh / max_s
 
         yaw_signal = None
         for yaw_key in ['Physics_yaw', 'Physics_world_yaw', 'Graphics_yaw']:
@@ -598,39 +604,76 @@ class CornerIdentificationUnsupervisedService:
             self._last_serialized = None
             return self
         
-    async def learn_track_corner_patterns(self, telemetry_data: List[Dict[str, Any]]) -> Dict[str, Any]:
+    async def learn_track_corner_patterns(self, laps_data: List[List[Dict[str, Any]]]) -> Dict[str, Any]:
         """
         Learn track corner layout from multiple laps.
         
         Args:
-            telemetry_data: Clean telemetry data from multiple laps
+            laps_data: List of laps, where each lap is a list of telemetry records
             
         Returns:
             Dictionary with track layout learning results
         """
         try:
-            print(f"[INFO] Learning track layout from telemetry data")
+            print(f"[INFO] Learning track layout from {len(laps_data)} laps")
             
-            if not telemetry_data:
+            if not laps_data:
                 return {
                     "success": False,
-                    "error": "No telemetry data provided",
+                    "error": "No lap data provided",
                     "track_map": []
                 }
             
-            df = pd.DataFrame(telemetry_data)
-            feature_df = self._compute_enhanced_features(df)
-            
-            # Split data into individual laps
-            lap_slices = self._detect_lap_slices(df)
-            if len(lap_slices) < 2:
+            if len(laps_data) < 2:
                 return {
                     "success": False,
                     "error": "Need at least 2 laps to learn track layout",
                     "track_map": []
                 }
             
-            print(f"[INFO] Found {len(lap_slices)} laps")
+            # Calculate global max speed for consistent normalization
+            global_max_speed = 1.0
+            for lap_records in laps_data:
+                if not lap_records: continue
+                temp_df = pd.DataFrame(lap_records)
+                if 'Physics_speed_kmh' in temp_df:
+                    m = temp_df['Physics_speed_kmh'].max()
+                    if pd.notna(m) and m > global_max_speed:
+                        global_max_speed = float(m)
+            
+            # Process each lap individually to compute features correctly
+            all_raw_dfs = []
+            all_feature_dfs = []
+            lap_slices = []
+            current_idx = 0
+            
+            for lap_records in laps_data:
+                if not lap_records:
+                    continue
+                    
+                lap_df = pd.DataFrame(lap_records)
+                # Compute features per lap to avoid boundary artifacts
+                lap_features = self._compute_enhanced_features(lap_df, global_max_speed=global_max_speed)
+                
+                n_samples = len(lap_df)
+                lap_slices.append((current_idx, current_idx + n_samples))
+                current_idx += n_samples
+                
+                all_raw_dfs.append(lap_df)
+                all_feature_dfs.append(lap_features)
+            
+            if not all_feature_dfs:
+                return {
+                    "success": False,
+                    "error": "No valid lap data found",
+                    "track_map": []
+                }
+                
+            # Concatenate for HMM processing
+            df = pd.concat(all_raw_dfs, ignore_index=True)
+            feature_df = pd.concat(all_feature_dfs, ignore_index=True)
+            
+            print(f"[INFO] Processed {len(lap_slices)} laps with total {len(df)} samples")
             
             hmm_inputs = self._prepare_hmm_training_data(feature_df, lap_slices)
             if hmm_inputs is None:
@@ -886,27 +929,7 @@ class CornerIdentificationUnsupervisedService:
         
         return result
 
-    def _detect_lap_slices(self, df: pd.DataFrame) -> List[Tuple[int, int]]:
-        """Detect lap boundaries."""
-        n = len(df)
-        if n == 0:
-            return []
 
-        boundaries = [0]
-        
-        # Look for wrap-around in normalized position
-        if 'Graphics_normalized_car_position' in df.columns:
-            pos = df['Graphics_normalized_car_position'].fillna(0.0)
-            diff = pos.diff()
-            # Large negative diff indicates lap boundary
-            lap_boundaries = diff[diff < -0.5].index.tolist()
-            boundaries.extend(lap_boundaries)
-        
-        boundaries = sorted(set(b for b in boundaries if 0 <= b <= n))
-        if boundaries[-1] != n:
-            boundaries.append(n)
-
-        return [(s, e) for s, e in zip(boundaries[:-1], boundaries[1:]) if e - s > 0]
 
     def _build_position_series(self, df: pd.DataFrame) -> pd.Series:
         """Build 0..1 position series for a lap."""

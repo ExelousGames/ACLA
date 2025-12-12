@@ -647,7 +647,7 @@ class Full_dataset_TelemetryMLService:
 
         # Check if top laps are already cached
         top_laps_cache_key = cache_config.top_laps_cache_key
-        top_laps_telemetry_list = None
+        top_laps_available = False
         
         if self.telemetry_store.has_cached_data(top_laps_cache_key) and self.telemetry_store.has_cached_data(processed_sessions_cache_key):
             if cache_config.processed_session_cleanup:
@@ -658,31 +658,18 @@ class Full_dataset_TelemetryMLService:
                 print(f"[INFO] Cleaning up enriched sessions cache: {enriched_sessions_cache_key}")
                 self.telemetry_store.clear_cache(enriched_sessions_cache_key)
                 # Force regeneration after cleanup
-                top_laps_telemetry_list = None
+                top_laps_available = False
             else:
-                try:
-                    print(f"[INFO] Found cached top laps at {top_laps_cache_key}, retrieving...")
-                    top_laps_telemetry_list = await self.get_cached_all_top_laps_in_one_list(
-                        top_laps_cache_key=top_laps_cache_key
-                    )
-                    print(f"[SUCCESS] Retrieved {len(top_laps_telemetry_list)} cached top lap telemetry records")
-                except Exception as cache_error:
-                    print(f"[WARNING] Failed to retrieve cached top laps: {cache_error}")
-                    print("[INFO] Will process sessions to regenerate top laps...")
-                    top_laps_telemetry_list = None
+                top_laps_available = True
+                print(f"[INFO] Using existing top laps from cache: {top_laps_cache_key}")
         
         # Process sessions if top laps not available from cache
-        if top_laps_telemetry_list is None:
+        if not top_laps_available:
             await self.process_lap_sessions_efficiently(
                 session_data_cache_key=dataset_cache_key,
-                max_memory_records=10000,
                 telemetry_time_gap_ms=500,
                 processed_sessions_cache_key=processed_sessions_cache_key,
                 top_laps_count=top_laps_count,
-            )
-            
-            top_laps_telemetry_list = await self.get_cached_all_top_laps_in_one_list(
-                top_laps_cache_key=top_laps_cache_key
             )
 
         self._print_section_divider("ENRICHING CONTEXTUAL DATA")
@@ -693,13 +680,8 @@ class Full_dataset_TelemetryMLService:
 
             print("[INFO] Enriching telemetry sessions with segment data...")
             enriched_sessions_cache_key = await self.enriched_contextual_data(
-                top_laps_telemetry_list,
                 processed_sessions_cache_key,
             )
-
-            # Free top-lap telemetry to conserve memory once cached
-            if top_laps_telemetry_list is not None:
-                del top_laps_telemetry_list
             
             return {
                 "success": True,
@@ -1181,7 +1163,7 @@ class Full_dataset_TelemetryMLService:
         self,
         *,
         top_laps_cache_key: Optional[str] = None,
-    ) -> List[Dict[str, Any]]:
+    ) -> List[List[Dict[str, Any]]]:
         """
         Retrieve cached top laps telemetry list for downstream use.
         
@@ -1189,7 +1171,7 @@ class Full_dataset_TelemetryMLService:
             top_laps_cache_key: Optional override for the cache key
             
         Returns:
-            List of telemetry records from the top laps
+            List of laps, where each lap is a list of telemetry records
             
         Raises:
             ValueError: If top laps cache is not available
@@ -1216,7 +1198,7 @@ class Full_dataset_TelemetryMLService:
                     chunk_count += 1
             
             if chunk_count > 0:
-                print(f"[INFO] Retrieved {len(all_top_laps)} top lap telemetry records from {chunk_count} cache chunks")
+                print(f"[INFO] Retrieved {len(all_top_laps)} top laps from {chunk_count} cache chunks")
                 return all_top_laps
             
             raise ValueError(f"Cached data at {cache_key} has unexpected format or is empty")
@@ -1227,7 +1209,6 @@ class Full_dataset_TelemetryMLService:
 
     async def enriched_contextual_data(
         self,
-        top_laps_telemetry_list: List[Dict[str, Any]],
         sessions_cache_key: str
     ) -> Tuple[str, Any]:
         """
@@ -1239,10 +1220,7 @@ class Full_dataset_TelemetryMLService:
         4. Cache enriched data
         
         Args:
-            top_laps_telemetry_list: List of expert telemetry records for training models
             sessions_cache_key: Cache key for accessing cached session data via iterator
-            max_segment_length: Length of segments for transformer training (unused here, kept for compatibility)
-            segments_cache_key_override: Optional override for cache key (unused here)
             
         Returns:
             Tuple[str, Any] - (enriched_sessions_cache_key, imitation_learning_service)
@@ -1250,9 +1228,7 @@ class Full_dataset_TelemetryMLService:
 
         # Step 1: Train all enrichment models using expert data
         self._print_section_divider("TRAINING ENRICHMENT MODELS WITH EXPERT DATA")
-        if top_laps_telemetry_list and len(top_laps_telemetry_list) > 0:
-             print(f"[DEBUG] Top laps keys: {list(top_laps_telemetry_list[0].keys())}")
-
+        
         # Train imitation learning model
         imitation_learning = ExpertImitateLearningService()
         
@@ -1275,8 +1251,16 @@ class Full_dataset_TelemetryMLService:
         # Train corner identification model
         from .corner_identification_unsupervised_service import CornerIdentificationUnsupervisedService
         corner_service = CornerIdentificationUnsupervisedService()
-        corner_model = await corner_service.learn_track_corner_patterns(top_laps_telemetry_list)
+        
+        # Retrieve top laps for corner identification
+        print(f"[INFO] Retrieving top laps for corner identification from {top_laps_cache_key}")
+        top_laps_list = await self.get_cached_all_top_laps_in_one_list(top_laps_cache_key=top_laps_cache_key)
+        
+        corner_model = await corner_service.learn_track_corner_patterns(top_laps_list)
         corner_serialized = corner_service.serialize_corner_identification_model()
+        
+        # Free memory
+        del top_laps_list
         
         await self.backend_service.save_ai_model(
             model_type="corner_identification",
