@@ -836,99 +836,50 @@ class FeatureProcessor:
         return processed_df
     
     def split_into_laps(self, df: Optional[pd.DataFrame] = None) -> List[Dict[str, Any]]:
-        """Segment telemetry into laps with validity and completeness metrics."""
-
+        """
+        Split telemetry into laps preserving original row order.
+        
+        Returns:
+            List of dicts with keys: lap_num, lap_time_ms, dataframe
+        """
         target_df = df if df is not None else self.df
 
-        required_columns = {
-            "Graphics_completed_lap",
-            "Graphics_current_time",
-            "Graphics_is_valid_lap",
-            "Graphics_normalized_car_position",
-        }
-
+        required_columns = {"Graphics_completed_lap", "Graphics_current_time"}
         missing_columns = [col for col in required_columns if col not in target_df.columns]
         if missing_columns:
             raise ValueError(
-                "Missing required telemetry columns for lap segmentation: " + ", ".join(missing_columns)
+                "Missing required columns for lap split: " + ", ".join(missing_columns)
             )
 
         working = target_df.copy()
-
-        # Data is assumed to be clean already
         working["Graphics_completed_lap"] = working["Graphics_completed_lap"].astype(int)
-        working["__current_time_ms__"] = working["Graphics_current_time"]
-        working["Graphics_is_valid_lap"] = working["Graphics_is_valid_lap"].astype(int)
-        working["__normalized_pos__"] = working["Graphics_normalized_car_position"]
 
-        # Create a group ID that increments every time the lap number changes to preserve order and handle disjoint laps
-        working["__lap_group__"] = (working["Graphics_completed_lap"] != working["Graphics_completed_lap"].shift()).cumsum()
+        # Group by consecutive lap number changes to preserve order
+        working["__lap_group__"] = (
+            working["Graphics_completed_lap"] != working["Graphics_completed_lap"].shift()
+        ).cumsum()
 
         lap_structs: List[Dict[str, Any]] = []
 
-        # Use sort=False to process groups in the order they appear in the dataframe
-        for i, (_, lap_df) in enumerate(working.groupby("__lap_group__", sort=False)):
-            lap_sequence = i
-            
-            lap_metrics = {
-                "records": len(lap_df),
-                "lap_time_ms": None,
-                "valid_ratio": 0.0,
-                "coverage": {"min": None, "max": None},
-                "is_full": False,
-                "is_valid": False,
-                "is_full_valid": False,
-            }
+        for _, lap_df in working.groupby("__lap_group__", sort=False):
+            lap_num = int(lap_df["Graphics_completed_lap"].iloc[-1])
 
-            time_values = lap_df["__current_time_ms__"].to_numpy(dtype=float)
+            # Get lap time from max current_time
+            time_values = lap_df["Graphics_current_time"].to_numpy(dtype=float)
+            lap_time_ms = None
             if time_values.size and not np.isnan(time_values).all():
-                lap_time_ms = float(np.nanmax(time_values))
-                if np.isfinite(lap_time_ms) and lap_time_ms > 0:
-                    lap_metrics["lap_time_ms"] = lap_time_ms
+                max_time = float(np.nanmax(time_values))
+                if np.isfinite(max_time) and max_time > 0:
+                    lap_time_ms = max_time
 
-            valid_values = lap_df["Graphics_is_valid_lap"].to_numpy(dtype=float)
-            if valid_values.size:
-                lap_metrics["valid_ratio"] = float(np.nanmean(valid_values))
+            # Drop helper column, preserve original order
+            lap_output_df = lap_df.drop(columns=["__lap_group__"], errors="ignore")
 
-            position_values = lap_df["__normalized_pos__"].to_numpy(dtype=float)
-            finite_positions = position_values[np.isfinite(position_values)]
-            if finite_positions.size:
-                lap_metrics["coverage"]["min"] = float(np.nanmin(finite_positions))
-                lap_metrics["coverage"]["max"] = float(np.nanmax(finite_positions))
-
-            enough_samples = lap_metrics["records"] >= 10
-            has_lap_time = lap_metrics["lap_time_ms"] is not None
-            coverage_ok = False
-            if finite_positions.size:
-                min_pos = lap_metrics["coverage"]["min"]
-                max_pos = lap_metrics["coverage"]["max"]
-                coverage_ok = (
-                    min_pos is not None
-                    and max_pos is not None
-                    and min_pos <= 0.1
-                    and max_pos >= 0.9
-                    and (max_pos - min_pos) >= 0.7
-                )
-
-            lap_metrics["is_valid"] = lap_metrics["valid_ratio"] >= 0.95
-            lap_metrics["is_full"] = enough_samples and has_lap_time and coverage_ok
-            lap_metrics["is_full_valid"] = lap_metrics["is_full"] and lap_metrics["is_valid"]
-
-            original_lap_number = int(lap_df["Graphics_completed_lap"].iloc[-1])
-
-            lap_output_df = lap_df.drop(
-                columns=["__current_time_ms__", "__normalized_pos__", "__lap_group__"], errors="ignore"
-            ).reset_index(drop=True)
-            lap_output_df["lap_id"] = lap_sequence
-
-            lap_structs.append(
-                {
-                    "lap_sequence": int(lap_sequence),
-                    "lap_num": original_lap_number,
-                    "dataframe": lap_output_df,
-                    "metrics": lap_metrics,
-                }
-            )
+            lap_structs.append({
+                "lap_num": lap_num,
+                "lap_time_ms": lap_time_ms,
+                "dataframe": lap_output_df,
+            })
 
         return lap_structs
 
@@ -1256,111 +1207,3 @@ class FeatureProcessor:
             print("[INFO] No *_y/_z feature pairs found to flip.")
 
         return self.df
-
-    
-    # ========================= Console Plotting Utilities ========================= #
-    def plot_features_console(
-        self,
-        features: List[str],
-        width: int = 60,
-        window: Optional[int] = None,
-        use_unicode: bool = True,
-        title: Optional[str] = None,
-    ) -> None:
-        """Print compact console plots (sparklines) and stats for selected features.
-
-        For each requested feature, this prints a single-line sparkline representing
-        the time series over the chosen window, followed by Lowest/Mid(=median)/Highest
-        values computed from numeric data only.
-
-        Args:
-            features: List of column names to visualize.
-            width: Target number of character buckets in the sparkline (>=10 recommended).
-            window: If provided, only the last N rows are used for plotting/stats.
-            use_unicode: Use Unicode blocks (▁▂▃▄▅▆▇█). If False, uses ASCII fallback.
-            title: Optional header title printed above the plots.
-
-        Notes:
-            - Non-numeric values are coerced with pandas to NaN then dropped for stats.
-            - If a feature has no numeric data after coercion, a message is shown.
-            - If a feature isn't found, it's reported and skipped.
-        """
-        if self.df is None or self.df.empty:
-            print("[WARNING] DataFrame is empty; nothing to plot.")
-            return
-
-        # Determine working frame (apply tail window if requested)
-        work_df = self.df.tail(window) if isinstance(window, int) and window > 0 else self.df
-
-        # Prepare glyph sets
-        blocks = "▁▂▃▄▅▆▇█" if use_unicode else " .:-=+*#%@"
-        n_levels = len(blocks)
-
-        def to_numeric_series(col_name: str) -> Optional[pd.Series]:
-            if col_name not in work_df.columns:
-                print(f"[INFO] Feature not found: {col_name}")
-                return None
-            s = pd.to_numeric(work_df[col_name], errors='coerce')
-            return s
-
-        def render_sparkline(values: np.ndarray, buckets: int) -> str:
-            # Downsample or aggregate into 'buckets' points using simple chunked mean
-            if values.size == 0:
-                return "".ljust(buckets)
-            buckets = max(1, int(buckets))
-            if values.size <= buckets:
-                # Pad by repeating last value to reach buckets
-                pad = np.full(buckets - values.size, values[-1]) if values.size < buckets else np.array([])
-                series = np.concatenate([values, pad])
-            else:
-                # Chunked mean aggregation
-                idx = np.linspace(0, values.size, num=buckets + 1, dtype=int)
-                series = np.array([
-                    values[idx[i]:idx[i+1]].mean() if idx[i] < idx[i+1] else values[min(idx[i], values.size-1)]
-                    for i in range(buckets)
-                ])
-
-            vmin = np.nanmin(series)
-            vmax = np.nanmax(series)
-            if not np.isfinite(vmin) or not np.isfinite(vmax):
-                return blocks[0] * buckets
-            if vmax - vmin == 0:
-                # Flat line
-                level = (n_levels - 1) // 2
-                return blocks[level] * buckets
-
-            norm = (series - vmin) / (vmax - vmin)
-            idxs = np.clip((norm * (n_levels - 1)).round().astype(int), 0, n_levels - 1)
-            chars = ''.join(blocks[i] for i in idxs)
-            return chars
-
-        # Header
-        if title:
-            print(f"\n=== {title} ===")
-        print(f"[Console Plot] width={width} window={'last ' + str(window) if window else 'all'} rows\n")
-
-        name_width = 34  # left label column width
-        width = max(10, int(width))
-
-        for feat in features:
-            s = to_numeric_series(feat)
-            if s is None:
-                continue
-
-            s_clean = s.dropna()
-            if s_clean.empty:
-                print(f"{feat:<{name_width}} | (no numeric data)")
-                continue
-
-            vals = s_clean.to_numpy(dtype=float)
-
-            # Stats
-            lowest = float(np.nanmin(vals))
-            highest = float(np.nanmax(vals))
-            mid = float(np.nanmedian(vals))
-
-            spark = render_sparkline(vals, width)
-            stats = f"Lowest: {_safe_float(lowest):.3f} | Mid: {_safe_float(mid):.3f} | Highest: {_safe_float(highest):.3f}"
-            print(f"{feat:<{name_width}} | {spark}  {stats}")
-
-        print("")

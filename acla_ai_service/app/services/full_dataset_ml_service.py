@@ -1048,24 +1048,25 @@ class Full_dataset_TelemetryMLService:
             if not lap_structs:
                 return chunk_idx, 0, [], session_records, None, chunk_id
 
-            for lap_struct in lap_structs:
-                lap_metrics = lap_struct["metrics"]
+            for i, lap_struct in enumerate(lap_structs):
                 lap_df = lap_struct["dataframe"]
+                lap_time_ms = lap_struct["lap_time_ms"]
                 
                 lap_records = lap_df.to_dict("records") if not lap_df.empty else []
 
                 lap_identifier = (
-                    f"{chunk_id}_{lap_struct['lap_sequence']}_{lap_metrics.get('lap_time_ms', 'na')}"
+                    f"{chunk_id}_{i}_{lap_time_ms or 'na'}"
                 )
 
                 candidate_entry = {
                     "id": lap_identifier,
-                    "lap_time_ms": lap_metrics["lap_time_ms"] if lap_metrics["lap_time_ms"] is not None else float("inf"),
+                    "lap_time_ms": lap_time_ms if lap_time_ms is not None else float("inf"),
                     "lap_num": lap_struct["lap_num"],
                     "records": lap_records,
                 }
 
-                if lap_metrics["is_full_valid"] and lap_metrics["lap_time_ms"] is not None and lap_records:
+                # Include all laps with valid time and records
+                if lap_time_ms is not None and lap_records:
                     laps_processed_in_chunk += 1
                     candidates.append(candidate_entry)
             
