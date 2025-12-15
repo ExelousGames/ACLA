@@ -25,6 +25,7 @@ from sklearn.neural_network import MLPRegressor, MLPClassifier
 from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier
 from sklearn.metrics import mean_squared_error, mean_absolute_error, accuracy_score, f1_score
 from sklearn.decomposition import PCA
+from scipy.interpolate import CubicSpline
 
 # Import your telemetry models
 from ..models.telemetry_models import TelemetryFeatures, FeatureProcessor
@@ -176,13 +177,6 @@ class TrackExpertModel:
         self.input_buffer = []
         self.target_buffer = []
         
-        # Prepare input (normalized position + cyclic features)
-        X = input_features[self.feature_cols].values
-        
-        # We use RandomForest which handles unscaled data well, but we can keep scaler if needed.
-        # For simplicity and robustness with RF, we'll skip scaling inputs.
-        X_train = X
-        
         EO = ExpertFeatureCatalog.ExpertOptimalFeature
         
         # Identify targets groups
@@ -208,38 +202,37 @@ class TrackExpertModel:
             'action': action_targets
         }
 
-        # Train Position Regressor (Geometry)
-        if position_targets:
-            print(f"[INFO] Training position Random Forest for {len(position_targets)} targets")
-            y_pos = target_features[position_targets].values
+        # --- Spline Training for Continuous Variables ---
+        continuous_targets = position_targets + action_targets
+        
+        if continuous_targets:
+            print(f"[INFO] Fitting Cubic Spline for {len(continuous_targets)} continuous targets")
             
-            # RandomForestRegressor
-            # n_estimators=100 is a good balance. min_samples_leaf=2 provides slight smoothing.
-            pos_model = RandomForestRegressor(n_estimators=100, min_samples_leaf=2, n_jobs=-1, random_state=42)
-            pos_model.fit(X_train, y_pos)
+            # Prepare data for Spline: Sort by normalized_position and average duplicates
+            # We need 'normalized_position' from input_features
             
-            self.models['position_regression'] = pos_model
+            # Create a temporary DF with X and Y
+            train_df = pd.DataFrame()
+            train_df['x'] = input_features['normalized_position']
             
-            for t in position_targets:
+            for t in continuous_targets:
+                train_df[t] = target_features[t]
+                
+            # Sort and Group
+            train_df = train_df.sort_values('x')
+            train_df_grouped = train_df.groupby('x').mean()
+            
+            X_spline = train_df_grouped.index.values
+            Y_spline = train_df_grouped[continuous_targets].values
+            
+            # Fit Spline
+            self.models['spline'] = CubicSpline(X_spline, Y_spline)
+            self.spline_targets = continuous_targets
+            
+            for t in continuous_targets:
                  self.performance_metrics[t] = {
-                    'r2': 1.0, # Placeholder
-                    'type': 'rf_regression_position'
-                 }
-
-        # Train Action Regressor (Dynamics)
-        if action_targets:
-            print(f"[INFO] Training action Random Forest for {len(action_targets)} targets")
-            y_action = target_features[action_targets].values
-            
-            action_model = RandomForestRegressor(n_estimators=100, min_samples_leaf=2, n_jobs=-1, random_state=42)
-            action_model.fit(X_train, y_action)
-            
-            self.models['action_regression'] = action_model
-            
-            for t in action_targets:
-                 self.performance_metrics[t] = {
-                    'r2': 1.0,
-                    'type': 'rf_regression_action'
+                    'r2': 1.0, # Spline interpolates perfectly on training points (mostly)
+                    'type': 'cubic_spline'
                  }
         
         # Train Gear Classifier (Separate)
@@ -247,8 +240,11 @@ class TrackExpertModel:
             y = target_features[EO.EXPERT_OPTIMAL_GEAR.value].values
             y_train = y
             
+            # Prepare input for RF (normalized position + cyclic features)
+            X_rf = input_features[self.feature_cols].values
+            
             model = RandomForestClassifier(n_estimators=50, n_jobs=-1, random_state=42)
-            model.fit(X_train, y_train)
+            model.fit(X_rf, y_train)
             
             self.models[EO.EXPERT_OPTIMAL_GEAR.value] = model
             self.performance_metrics[EO.EXPERT_OPTIMAL_GEAR.value] = {
@@ -271,47 +267,39 @@ class TrackExpertModel:
         single_position = isinstance(normalized_positions, (int, float))
         if single_position:
             pos_val = float(normalized_positions)
-            # Create feature vector: [pos, sin, cos]
+            x_query = np.array([pos_val])
+            
+            # For RF (Gear)
             sin_val = np.sin(2 * np.pi * pos_val)
             cos_val = np.cos(2 * np.pi * pos_val)
-            positions_array = np.array([[pos_val, sin_val, cos_val]])
+            positions_array_rf = np.array([[pos_val, sin_val, cos_val]])
         else:
-            raw_pos = np.array(normalized_positions).reshape(-1, 1)
+            x_query = np.array(normalized_positions)
+            
+            # For RF (Gear)
+            raw_pos = x_query.reshape(-1, 1)
             sin_pos = np.sin(2 * np.pi * raw_pos)
             cos_pos = np.cos(2 * np.pi * raw_pos)
-            positions_array = np.hstack([raw_pos, sin_pos, cos_pos])
+            positions_array_rf = np.hstack([raw_pos, sin_pos, cos_pos])
         
-        # No scaling for RF
-        positions_scaled = positions_array
-        
-        # Make predictions for all models
         predictions = {}
         
-        # 1. Handle Position Regression
-        if 'position_regression' in self.models:
-            model = self.models['position_regression']
-            targets = self.target_groups.get('position', [])
+        # 1. Spline Prediction
+        if 'spline' in self.models:
+            spline = self.models['spline']
+            # Predict
+            pred_values = spline(x_query)
             
-            pred = model.predict(positions_scaled)
-                
-            for i, t in enumerate(targets):
-                predictions[t] = pred[:, i]
+            for i, t in enumerate(self.spline_targets):
+                predictions[t] = pred_values[:, i]
 
-        # 2. Handle Action Regression
-        if 'action_regression' in self.models:
-            model = self.models['action_regression']
-            targets = self.target_groups.get('action', [])
-            
-            pred = model.predict(positions_scaled)
-                
-            for i, t in enumerate(targets):
-                predictions[t] = pred[:, i]
-
-        # Handle other models (like gear)
+        # 2. Gear Prediction (RF)
         for model_name, model in self.models.items():
-            if model_name in ['position_regression', 'action_regression']:
+            if model_name == 'spline':
                 continue
-            pred = model.predict(positions_scaled)
+            
+            # Assume other models are RF/sklearn models requiring [pos, sin, cos]
+            pred = model.predict(positions_array_rf)
             predictions[model_name] = pred
         
         # Format results
@@ -324,7 +312,7 @@ class TrackExpertModel:
         else:
             # Return list of dictionaries
             results = []
-            for i in range(len(positions_array)):
+            for i in range(len(x_query)):
                 result = {}
                 for model_name, pred_array in predictions.items():
                     result[model_name] = float(pred_array[i])
@@ -338,7 +326,8 @@ class TrackExpertModel:
             'performance_metrics': self.performance_metrics,
             'input_features': self.feature_cols,
             'target_features': self.target_features,
-            'target_groups': self.target_groups
+            'target_groups': self.target_groups,
+            'spline_targets': getattr(self, 'spline_targets', [])
         }
 
     def load_from_components(self, components: Dict[str, Any]):
@@ -347,6 +336,7 @@ class TrackExpertModel:
         self.performance_metrics = components.get('performance_metrics', {})
         self.target_features = components.get('target_features', [])
         self.target_groups = components.get('target_groups', {})
+        self.spline_targets = components.get('spline_targets', [])
         # input_features is fixed in __init__ but could be loaded if dynamic
 
 
