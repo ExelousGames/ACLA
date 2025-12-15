@@ -19,17 +19,10 @@ from datetime import datetime
 from pathlib import Path
 
 # Scikit-learn imports for trajectory learning
-from sklearn.model_selection import train_test_split, GroupShuffleSplit
-from sklearn.preprocessing import StandardScaler
-from sklearn.neural_network import MLPRegressor, MLPClassifier
-from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier
-from sklearn.metrics import mean_squared_error, mean_absolute_error, accuracy_score, f1_score
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.decomposition import PCA
 from scipy.interpolate import CubicSpline
 
-# Import your telemetry models
-from ..models.telemetry_models import TelemetryFeatures, FeatureProcessor
-from .tire_grip_analysis_service import TireGripFeatureCatalog
 
 warnings.filterwarnings('ignore', category=UserWarning)
 
@@ -142,7 +135,7 @@ class TrackExpertModel:
         self.performance_metrics: Dict[str, Any] = {}
         self.target_groups: Dict[str, List[str]] = {}
         self.target_features: List[str] = []
-        self.feature_cols = ['normalized_position', 'normalized_pos_sin', 'normalized_pos_cos']
+        self.feature_cols = ['normalized_position']
         
         # Buffers for incremental data loading
         self.input_buffer: List[pd.DataFrame] = []
@@ -270,17 +263,13 @@ class TrackExpertModel:
             x_query = np.array([pos_val])
             
             # For RF (Gear)
-            sin_val = np.sin(2 * np.pi * pos_val)
-            cos_val = np.cos(2 * np.pi * pos_val)
-            positions_array_rf = np.array([[pos_val, sin_val, cos_val]])
+            positions_array_rf = np.array([[pos_val]])
         else:
             x_query = np.array(normalized_positions)
             
             # For RF (Gear)
             raw_pos = x_query.reshape(-1, 1)
-            sin_pos = np.sin(2 * np.pi * raw_pos)
-            cos_pos = np.cos(2 * np.pi * raw_pos)
-            positions_array_rf = np.hstack([raw_pos, sin_pos, cos_pos])
+            positions_array_rf = raw_pos
         
         predictions = {}
         
@@ -362,9 +351,6 @@ class ExpertPositionLearner:
         # Input feature: normalized track position (primary input)
         if 'Graphics_normalized_car_position' in df.columns:
             input_features['normalized_position'] = df['Graphics_normalized_car_position']
-            # Add cyclic features for loop closure
-            input_features['normalized_pos_sin'] = np.sin(2 * np.pi * input_features['normalized_position'])
-            input_features['normalized_pos_cos'] = np.cos(2 * np.pi * input_features['normalized_position'])
         else:
             raise ValueError("Graphics_normalized_car_position not found - this is required for position-based learning")
 
@@ -565,7 +551,7 @@ class ExpertImitateLearningService:
             'modelData': {t: m.get_serializable_components() for t, m in self.position_learner.track_models.items()},
             'metadata': {
                 'performance_metrics': overall_metrics,
-                'input_features': ['normalized_position', 'normalized_pos_sin', 'normalized_pos_cos', 'track'],
+                'input_features': ['normalized_position', 'track'],
                 'target_features': list(all_targets),
                 'models_trained': list(self.position_learner.track_models.keys()),
                 'total_training_samples': total_samples
