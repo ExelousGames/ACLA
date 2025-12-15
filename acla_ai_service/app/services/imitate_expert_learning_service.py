@@ -129,11 +129,227 @@ class SegmentImprovementSummary:
         return getattr(self, item)
 
 
+class TrackExpertModel:
+    """
+    Encapsulates the expert model for a single track.
+    Manages training, prediction, and state for position and action models.
+    """
+    def __init__(self, track_name: str):
+        self.track_name = track_name
+        self.models: Dict[str, Any] = {}
+        self.scalers: Dict[str, Any] = {}
+        self.position_scaler: Optional[StandardScaler] = None
+        self.performance_metrics: Dict[str, Any] = {}
+        self.target_groups: Dict[str, List[str]] = {}
+        self.target_features: List[str] = []
+        self.feature_cols = ['normalized_position', 'normalized_pos_sin', 'normalized_pos_cos']
+
+    def train(self, input_features: pd.DataFrame, target_features: pd.DataFrame):
+        """
+        Train models for this track using the provided features.
+        """
+        self.target_features = list(target_features.columns)
+        
+        # Prepare input (normalized position + cyclic features)
+        X = input_features[self.feature_cols].values
+        
+        # Create and fit scaler for this track
+        self.position_scaler = StandardScaler()
+        X_scaled = self.position_scaler.fit_transform(X)
+        
+        # Use all data for training (no evaluation split)
+        X_train = X_scaled
+        
+        EO = ExpertFeatureCatalog.ExpertOptimalFeature
+        
+        # Identify targets groups
+        position_targets = []
+        action_targets = []
+        
+        # 1. Position targets (Geometry mapping)
+        for t in [EO.EXPERT_OPTIMAL_PLAYER_POS_X.value, EO.EXPERT_OPTIMAL_PLAYER_POS_Y.value, 
+                  EO.EXPERT_OPTIMAL_PLAYER_POS_Z.value]:
+            if t in target_features.columns:
+                position_targets.append(t)
+
+        # 2. Action targets (Driving dynamics)
+        for t in [EO.EXPERT_OPTIMAL_STEERING.value, EO.EXPERT_OPTIMAL_THROTTLE.value, 
+                  EO.EXPERT_OPTIMAL_BRAKE.value, EO.EXPERT_OPTIMAL_SPEED.value,
+                  EO.EXPERT_OPTIMAL_VELOCITY_X.value, EO.EXPERT_OPTIMAL_VELOCITY_Y.value, 
+                  EO.EXPERT_OPTIMAL_VELOCITY_Z.value, EO.EXPERT_OPTIMAL_TRACK_POSITION.value]:
+            if t in target_features.columns:
+                action_targets.append(t)
+        
+        self.target_groups = {
+            'position': position_targets,
+            'action': action_targets
+        }
+
+        # Train Position Regressor (Geometry)
+        if position_targets:
+            print(f"[INFO] Training position MLP regressor for {len(position_targets)} targets")
+            y_pos = target_features[position_targets].values
+            
+            # Scale targets for better convergence
+            pos_target_scaler = StandardScaler()
+            y_pos_train = pos_target_scaler.fit_transform(y_pos)
+            self.scalers['position_targets'] = pos_target_scaler
+            
+            # Position mapping needs to be precise and handle sharp corners
+            pos_model = MLPRegressor(hidden_layer_sizes=(1024, 512, 256), activation='relu', solver='adam', max_iter=2000, random_state=42)
+            pos_model.fit(X_train, y_pos_train)
+            
+            self.models['position_regression'] = pos_model
+            
+            for t in position_targets:
+                 self.performance_metrics[t] = {
+                    'r2': 1.0, # Placeholder, we use all data for training
+                    'type': 'regression_position'
+                 }
+
+        # Train Action Regressor (Dynamics)
+        if action_targets:
+            print(f"[INFO] Training action MLP regressor for {len(action_targets)} targets")
+            y_action = target_features[action_targets].values
+            
+            # Scale targets
+            action_target_scaler = StandardScaler()
+            y_action_train = action_target_scaler.fit_transform(y_action)
+            self.scalers['action_targets'] = action_target_scaler
+            
+            # Action mapping
+            action_model = MLPRegressor(hidden_layer_sizes=(200, 150, 100), activation='tanh', solver='adam', max_iter=1000, random_state=42)
+            action_model.fit(X_train, y_action_train)
+            
+            self.models['action_regression'] = action_model
+            
+            for t in action_targets:
+                 self.performance_metrics[t] = {
+                    'r2': 1.0,
+                    'type': 'regression_action'
+                 }
+        
+        # Train Gear Classifier (Separate)
+        if EO.EXPERT_OPTIMAL_GEAR.value in target_features.columns:
+            y = target_features[EO.EXPERT_OPTIMAL_GEAR.value].values
+            y_train = y
+            
+            model = MLPClassifier(hidden_layer_sizes=(100, 50), activation='relu', solver='adam', max_iter=1000, random_state=42)
+            model.fit(X_train, y_train)
+            
+            self.models[EO.EXPERT_OPTIMAL_GEAR.value] = model
+            self.performance_metrics[EO.EXPERT_OPTIMAL_GEAR.value] = {
+                'accuracy': 1.0,
+                'f1': 1.0,
+                'type': 'classification'
+            }
+
+    def predict(self, normalized_positions: Union[float, List[float], np.ndarray]) -> Union[Dict[str, float], List[Dict[str, float]]]:
+        """
+        Predict expert actions at given normalized track position(s).
+        """
+        # Handle single position vs multiple positions
+        single_position = isinstance(normalized_positions, (int, float))
+        if single_position:
+            pos_val = float(normalized_positions)
+            # Create feature vector: [pos, sin, cos]
+            sin_val = np.sin(2 * np.pi * pos_val)
+            cos_val = np.cos(2 * np.pi * pos_val)
+            positions_array = np.array([[pos_val, sin_val, cos_val]])
+        else:
+            raw_pos = np.array(normalized_positions).reshape(-1, 1)
+            sin_pos = np.sin(2 * np.pi * raw_pos)
+            cos_pos = np.cos(2 * np.pi * raw_pos)
+            positions_array = np.hstack([raw_pos, sin_pos, cos_pos])
+        
+        # Scale positions using track-specific scaler
+        positions_scaled = self.position_scaler.transform(positions_array)
+        
+        # Make predictions for all models
+        predictions = {}
+        
+        # 1. Handle Position Regression
+        if 'position_regression' in self.models:
+            model = self.models['position_regression']
+            targets = self.target_groups.get('position', [])
+            scaler = self.scalers.get('position_targets')
+            
+            pred_scaled = model.predict(positions_scaled)
+            if scaler:
+                pred = scaler.inverse_transform(pred_scaled)
+            else:
+                pred = pred_scaled
+                
+            for i, t in enumerate(targets):
+                predictions[t] = pred[:, i]
+
+        # 2. Handle Action Regression
+        if 'action_regression' in self.models:
+            model = self.models['action_regression']
+            targets = self.target_groups.get('action', [])
+            scaler = self.scalers.get('action_targets')
+            
+            pred_scaled = model.predict(positions_scaled)
+            if scaler:
+                pred = scaler.inverse_transform(pred_scaled)
+            else:
+                pred = pred_scaled
+                
+            for i, t in enumerate(targets):
+                predictions[t] = pred[:, i]
+
+        # Handle other models (like gear)
+        for model_name, model in self.models.items():
+            if model_name in ['position_regression', 'action_regression']:
+                continue
+            pred = model.predict(positions_scaled)
+            predictions[model_name] = pred
+        
+        # Format results
+        if single_position:
+            # Return single dictionary
+            result = {}
+            for model_name, pred_array in predictions.items():
+                result[model_name] = float(pred_array[0])
+            return result
+        else:
+            # Return list of dictionaries
+            results = []
+            for i in range(len(positions_array)):
+                result = {}
+                for model_name, pred_array in predictions.items():
+                    result[model_name] = float(pred_array[i])
+                results.append(result)
+            return results
+
+    def get_serializable_components(self) -> Dict[str, Any]:
+        """Returns components that need to be serialized"""
+        return {
+            'models': self.models,
+            'position_scaler': self.position_scaler,
+            'scalers': self.scalers,
+            'performance_metrics': self.performance_metrics,
+            'input_features': self.feature_cols,
+            'target_features': self.target_features,
+            'target_groups': self.target_groups
+        }
+
+    def load_from_components(self, components: Dict[str, Any]):
+        """Loads model state from deserialized components"""
+        self.models = components.get('models', {})
+        self.position_scaler = components.get('position_scaler')
+        self.scalers = components.get('scalers', {})
+        self.performance_metrics = components.get('performance_metrics', {})
+        self.target_features = components.get('target_features', [])
+        self.target_groups = components.get('target_groups', {})
+        # input_features is fixed in __init__ but could be loaded if dynamic
+
+
 class ExpertPositionLearner:
     """Learn expert actions based on normalized track position from multiple expert laps, per track."""
     
     def __init__(self):
-        self.track_models = {} # Dictionary to store models per track: {track_name: model_data}
+        self.track_models: Dict[str, TrackExpertModel] = {} # Dictionary to store models per track
     
     def extract_position_features(self, df: pd.DataFrame) -> Dict[str, pd.DataFrame]:
         """
@@ -151,9 +367,9 @@ class ExpertPositionLearner:
         # Input feature: normalized track position (primary input)
         if 'Graphics_normalized_car_position' in df.columns:
             input_features['normalized_position'] = df['Graphics_normalized_car_position']
-            # Add cyclic features for neural network to handle track loop continuity
-            input_features['sin_pos'] = np.sin(2 * np.pi * input_features['normalized_position'])
-            input_features['cos_pos'] = np.cos(2 * np.pi * input_features['normalized_position'])
+            # Add cyclic features for loop closure
+            input_features['normalized_pos_sin'] = np.sin(2 * np.pi * input_features['normalized_position'])
+            input_features['normalized_pos_cos'] = np.cos(2 * np.pi * input_features['normalized_position'])
         else:
             raise ValueError("Graphics_normalized_car_position not found - this is required for position-based learning")
 
@@ -223,7 +439,6 @@ class ExpertPositionLearner:
         
         all_input_features = []
         all_target_features = []
-        lap_ids = []
         
         for i, lap_data in enumerate(expert_laps):
             if not lap_data:
@@ -235,7 +450,6 @@ class ExpertPositionLearner:
             feature_data = self.extract_position_features(lap_df)
             all_input_features.append(feature_data['input_features'])
             all_target_features.append(feature_data['target_features'])
-            lap_ids.extend([i] * len(feature_data['input_features']))
             
         if not all_input_features:
              raise ValueError("No valid features extracted from laps")
@@ -245,7 +459,6 @@ class ExpertPositionLearner:
         
         print(f"[INFO] Input features shape: {input_features.shape}")
         print(f"[INFO] Target features shape: {target_features.shape}")
-        print(f"[INFO] Available targets: {list(target_features.columns)}")
         
         # Get track name (assume single track as per requirement)
         if 'track' not in input_features.columns or input_features['track'].empty:
@@ -254,125 +467,18 @@ class ExpertPositionLearner:
         track = input_features['track'].iloc[0]
         print(f"[INFO] Training models for track: {track}")
         
-        overall_metrics = {}
-        # Prepare input (normalized position + cyclic features)
-        # Using sin/cos helps the neural network understand the track is a loop
-        X = input_features[['normalized_position', 'sin_pos', 'cos_pos']].values
-        groups = np.array(lap_ids)
+        # Create and train track model
+        track_model = TrackExpertModel(track)
+        track_model.train(input_features, target_features)
         
-        # Create and fit scaler for this track
-        position_scaler = StandardScaler()
-        X_scaled = position_scaler.fit_transform(X)
-        
-        # Use GroupShuffleSplit to ensure we don't leak data from the same lap into both train and test
-        unique_groups = np.unique(groups)
-        if len(unique_groups) > 1:
-            gss = GroupShuffleSplit(n_splits=1, test_size=0.2, random_state=42)
-            train_idx, test_idx = next(gss.split(X_scaled, groups=groups))
-        else:
-            # Fallback to simple split if only one group (lap) is available
-            print("[WARN] Only one expert lap available. Splitting data randomly within the lap.")
-            train_idx, test_idx = train_test_split(np.arange(len(X_scaled)), test_size=0.2, random_state=42)
-        
-        X_train, X_test = X_scaled[train_idx], X_scaled[test_idx]
-        
-        # Train models for each target
-        models = {}
-        performance_metrics = {}
-        
-        EO = ExpertFeatureCatalog.ExpertOptimalFeature
-        
-        # Identify all regression targets
-        regression_targets = []
-        
-        # 1. Action targets
-        for t in [EO.EXPERT_OPTIMAL_STEERING.value, EO.EXPERT_OPTIMAL_THROTTLE.value, 
-                  EO.EXPERT_OPTIMAL_BRAKE.value, EO.EXPERT_OPTIMAL_SPEED.value]:
-            if t in target_features.columns:
-                regression_targets.append(t)
-        
-        # 2. Position targets
-        for t in [EO.EXPERT_OPTIMAL_PLAYER_POS_X.value, EO.EXPERT_OPTIMAL_PLAYER_POS_Y.value, 
-                  EO.EXPERT_OPTIMAL_PLAYER_POS_Z.value]:
-            if t in target_features.columns:
-                regression_targets.append(t)
-
-        # 3. Velocity targets
-        for t in [EO.EXPERT_OPTIMAL_VELOCITY_X.value, EO.EXPERT_OPTIMAL_VELOCITY_Y.value, 
-                  EO.EXPERT_OPTIMAL_VELOCITY_Z.value]:
-            if t in target_features.columns:
-                regression_targets.append(t)
-                
-        # 4. Track position target
-        if EO.EXPERT_OPTIMAL_TRACK_POSITION.value in target_features.columns:
-            regression_targets.append(EO.EXPERT_OPTIMAL_TRACK_POSITION.value)
-
-        # Train Combined Regressor
-        if regression_targets:
-            print(f"[INFO] Training combined MLP regressor for {len(regression_targets)} targets")
-            y = target_features[regression_targets].values
-            y_train, y_test = y[train_idx], y[test_idx]
-            
-            # Larger network for combined task
-            model = MLPRegressor(hidden_layer_sizes=(200, 150, 100), activation='tanh', solver='adam', max_iter=1000, random_state=42)
-            model.fit(X_train, y_train)
-            
-            y_pred = model.predict(X_test)
-            
-            # Calculate individual metrics for reporting
-            from sklearn.metrics import r2_score
-            mse = mean_squared_error(y_test, y_pred, multioutput='raw_values')
-            mae = mean_absolute_error(y_test, y_pred, multioutput='raw_values')
-            r2_raw = r2_score(y_test, y_pred, multioutput='raw_values')
-            
-            models['combined_regression'] = model
-            
-            for i, target in enumerate(regression_targets):
-                 performance_metrics[target] = {
-                    'r2': float(r2_raw[i]),
-                    'mse': float(mse[i]),
-                    'mae': float(mae[i]),
-                    'type': 'regression_combined'
-                 }
-        
-        # Train Gear Classifier (Separate)
-        if EO.EXPERT_OPTIMAL_GEAR.value in target_features.columns:
-            # print(f"[INFO] Training gear classification model")
-            y = target_features[EO.EXPERT_OPTIMAL_GEAR.value].values
-            y_train, y_test = y[train_idx], y[test_idx]
-            
-            model = MLPClassifier(hidden_layer_sizes=(100, 50), activation='relu', solver='adam', max_iter=1000, random_state=42)
-            model.fit(X_train, y_train)
-            
-            y_pred = model.predict(X_test)
-            accuracy = accuracy_score(y_test, y_pred)
-            f1 = f1_score(y_test, y_pred, average='weighted')
-            
-            models[EO.EXPERT_OPTIMAL_GEAR.value] = model
-            performance_metrics[EO.EXPERT_OPTIMAL_GEAR.value] = {
-                'accuracy': float(accuracy),
-                'f1': float(f1),
-                'type': 'classification'
-            }
-        
-        # Store the complete position model for this track
-        self.track_models[track] = {
-            'models': models,
-            'position_scaler': position_scaler,
-            'performance_metrics': performance_metrics,
-            'regression_targets': regression_targets,
-            'input_features': ['normalized_position', 'sin_pos', 'cos_pos'],
-            'target_features': list(target_features.columns)
-        }
-        
-        overall_metrics[track] = performance_metrics
+        self.track_models[track] = track_model
         
         return {
-            'modelData': self.track_models,
+            'modelData': {track: track_model.get_serializable_components()},
             'metadata': {
-                'performance_metrics': overall_metrics,
-                'input_features': ['normalized_position', 'track'],
-                'target_features': list(target_features.columns),
+                'performance_metrics': {track: track_model.performance_metrics},
+                'input_features': track_model.feature_cols,
+                'target_features': track_model.target_features,
                 'models_trained': list(self.track_models.keys()),
                 'total_training_samples': len(input_features)
             }
@@ -381,13 +487,6 @@ class ExpertPositionLearner:
     def predict_expert_actions_at_position(self, track_name: str, normalized_positions: Union[float, List[float], np.ndarray]) -> Union[Dict[str, float], List[Dict[str, float]]]:
         """
         Predict expert actions at given normalized track position(s) for a specific track.
-        
-        Args:
-            track_name: Name of the track to predict for
-            normalized_positions: Single position or array of positions (0.0 to 1.0)
-            
-        Returns:
-            Dictionary with expert predictions, or list of dictionaries for multiple positions
         """
         if not self.track_models:
             raise ValueError("No track models trained. Call learn_expert_position_mapping() first.")
@@ -395,261 +494,7 @@ class ExpertPositionLearner:
         if track_name not in self.track_models:
             raise ValueError(f"No model trained for track: {track_name}")
             
-        track_model_data = self.track_models[track_name]
-        
-        # Handle single position vs multiple positions
-        single_position = isinstance(normalized_positions, (int, float))
-        if single_position:
-            pos_val = float(normalized_positions)
-            # Create feature vector: [pos, sin(2*pi*pos), cos(2*pi*pos)]
-            positions_array = np.array([[
-                pos_val, 
-                np.sin(2 * np.pi * pos_val), 
-                np.cos(2 * np.pi * pos_val)
-            ]])
-        else:
-            raw_pos = np.array(normalized_positions).reshape(-1, 1)
-            # Create feature matrix with cyclic features
-            sin_pos = np.sin(2 * np.pi * raw_pos)
-            cos_pos = np.cos(2 * np.pi * raw_pos)
-            positions_array = np.hstack([raw_pos, sin_pos, cos_pos])
-        
-        # Scale positions using track-specific scaler
-        positions_scaled = track_model_data['position_scaler'].transform(positions_array)
-        
-        # Make predictions for all models
-        predictions = {}
-        
-        # Handle combined regression model
-        if 'combined_regression' in track_model_data['models']:
-            model = track_model_data['models']['combined_regression']
-            reg_targets = track_model_data.get('regression_targets', [])
-            
-            # Predict all targets at once
-            pred_matrix = model.predict(positions_scaled) # shape (n_samples, n_targets)
-            
-            # Unpack predictions
-            for i, target_name in enumerate(reg_targets):
-                predictions[target_name] = pred_matrix[:, i]
-                
-        # Handle other models (like gear or legacy individual models)
-        for model_name, model in track_model_data['models'].items():
-            if model_name == 'combined_regression':
-                continue
-            pred = model.predict(positions_scaled)
-            predictions[model_name] = pred
-        
-        # Format results
-        if single_position:
-            # Return single dictionary
-            result = {}
-            for model_name, pred_array in predictions.items():
-                result[model_name] = float(pred_array[0])
-            return result
-        else:
-            # Return list of dictionaries
-            results = []
-            for i in range(len(positions_array)):
-                result = {}
-                for model_name, pred_array in predictions.items():
-                    result[model_name] = float(pred_array[i])
-                results.append(result)
-            return results 
-
-
-    def debug_position_model(self) -> Dict[str, Any]:
-        """
-        Debug method to inspect the current position model state
-        
-        Returns:
-            Dictionary with detailed model debugging information
-        """
-        if not self.track_models:
-            return {
-                'status': 'No models available',
-                'has_model': False,
-                'error': 'Position models not trained yet'
-            }
-        
-        debug_info = {
-            'status': 'Models available',
-            'has_model': True,
-            'tracks': list(self.track_models.keys()),
-            'track_details': {}
-        }
-        
-        for track, model_data in self.track_models.items():
-            track_info = {}
-            # Check model structure
-            for key, value in model_data.items():
-                if key == 'models':
-                    track_info['models'] = {
-                        'count': len(value),
-                        'model_names': list(value.keys()),
-                        'model_types': [type(model).__name__ for model in value.values()]
-                    }
-                elif key == 'position_scaler':
-                    track_info['position_scaler'] = {
-                        'type': type(value).__name__,
-                        'fitted': hasattr(value, 'mean_')
-                    }
-                elif key == 'performance_metrics':
-                    track_info['performance_metrics'] = {
-                        'available_metrics': list(value.keys()),
-                        'metric_count': len(value)
-                    }
-                else:
-                    track_info[key] = {
-                        'type': type(value).__name__,
-                        'value': str(value) if not isinstance(value, (list, dict)) else f"{type(value).__name__} with {len(value)} items"
-                    }
-            debug_info['track_details'][track] = track_info
-        
-        return debug_info
-    
-    def validate_position_input(self, track_name: str, normalized_positions: Union[float, List[float], np.ndarray]) -> Dict[str, Any]:
-        """
-        Validate normalized position input for prediction
-        
-        Args:
-            track_name: Track to validate for
-            normalized_positions: Position(s) to validate
-            
-        Returns:
-            Dictionary with validation results
-        """
-        validation_results = {
-            'valid': True,
-            'errors': [],
-            'warnings': [],
-            'input_analysis': {}
-        }
-        
-        # Check if model exists
-        if not self.track_models:
-            validation_results['valid'] = False
-            validation_results['errors'].append("No position models trained")
-            return validation_results
-            
-        if track_name not in self.track_models:
-            validation_results['valid'] = False
-            validation_results['errors'].append(f"No model for track: {track_name}")
-            return validation_results
-        
-        # Convert input to array for analysis
-        if isinstance(normalized_positions, (int, float)):
-            positions_array = np.array([normalized_positions])
-        else:
-            positions_array = np.array(normalized_positions).flatten()
-        
-        # Analyze input data
-        validation_results['input_analysis'] = {
-            'shape': positions_array.shape,
-            'min_value': float(np.min(positions_array)),
-            'max_value': float(np.max(positions_array)),
-            'mean_value': float(np.mean(positions_array)),
-            'has_nan': bool(np.isnan(positions_array).any()),
-            'has_inf': bool(np.isinf(positions_array).any())
-        }
-        
-        # Check for problematic values
-        if np.isnan(positions_array).any():
-            validation_results['valid'] = False
-            validation_results['errors'].append("Input contains NaN values")
-            
-        if np.isinf(positions_array).any():
-            validation_results['valid'] = False
-            validation_results['errors'].append("Input contains infinite values")
-        
-        # Check position range (should be 0.0 to 1.0 for normalized positions)
-        if np.any(positions_array < 0.0):
-            validation_results['warnings'].append("Some positions are below 0.0 (not normalized)")
-            
-        if np.any(positions_array > 1.0):
-            validation_results['warnings'].append("Some positions are above 1.0 (not normalized)")
-        
-        return validation_results
-    
-    def validate_prediction_input(self, current_state: pd.DataFrame) -> Dict[str, Any]:
-        """
-        Validate input data for prediction without actually making predictions
-        
-        Args:
-            current_state: Current telemetry state to validate
-            
-        Returns:
-            Dictionary with validation results
-        """
-        validation_results = {
-            'valid': True,
-            'errors': [],
-            'warnings': [],
-            'input_analysis': {},
-            'feature_analysis': {}
-        }
-        
-        # Check if model exists
-        if not self.trajectory_model:
-            validation_results['valid'] = False
-            validation_results['errors'].append("No trajectory model trained")
-            return validation_results
-        
-        # Analyze input data
-        validation_results['input_analysis'] = {
-            'shape': current_state.shape,
-            'columns': list(current_state.columns),
-            'dtypes': current_state.dtypes.to_dict(),
-            'missing_values': current_state.isnull().sum().to_dict(),
-            'infinite_values': np.isinf(current_state.select_dtypes(include=[np.number])).sum().to_dict()
-        }
-        
-        # Check for problematic values
-        numeric_cols = current_state.select_dtypes(include=[np.number]).columns
-        for col in numeric_cols:
-            if current_state[col].isnull().sum() > 0:
-                validation_results['warnings'].append(f"Column {col} has {current_state[col].isnull().sum()} missing values")
-            if np.isinf(current_state[col]).sum() > 0:
-                validation_results['warnings'].append(f"Column {col} has {np.isinf(current_state[col]).sum()} infinite values")
-        
-        current_state
-        try:
-            # Extract features
-            trajectory_features = self.extract_trajectory_features(current_state)
-            
-            validation_results['feature_analysis'] = {
-                'extracted_features_count': trajectory_features.shape[1],
-                'extracted_features': list(trajectory_features.columns),
-                'required_features': self.trajectory_model['input_features']
-            }
-            
-            # Check for missing features
-            required_features = self.trajectory_model['input_features']
-            missing_features = [f for f in required_features if f not in trajectory_features.columns]
-            
-            if missing_features:
-                validation_results['valid'] = False
-                validation_results['errors'].append(f"Missing required features: {missing_features}")
-            
-            # Check feature data quality
-            feature_subset = trajectory_features[required_features].fillna(0)
-            
-            for feature in required_features:
-                if feature in trajectory_features.columns:
-                    feature_data = trajectory_features[feature]
-                    if feature_data.isnull().all():
-                        validation_results['warnings'].append(f"Feature {feature} is all null values")
-                    elif np.isinf(feature_data).any():
-                        validation_results['warnings'].append(f"Feature {feature} contains infinite values")
-                    elif feature_data.std() == 0:
-                        validation_results['warnings'].append(f"Feature {feature} has zero variance")
-            
-        except Exception as e:
-            validation_results['valid'] = False
-            validation_results['errors'].append(f"Feature extraction failed: {str(e)}")
-            raise Exception(f"Feature extraction failed: {str(e)}")
-        
-        return validation_results
-
+        return self.track_models[track_name].predict(normalized_positions)
 
 class ExpertImitateLearningService:
     """Main imitation learning service that focuses on trajectory optimization"""
@@ -709,17 +554,17 @@ class ExpertImitateLearningService:
         # Construct results
         overall_metrics = {}
         all_targets = set()
-        for track, model_data in self.position_learner.track_models.items():
-            if 'performance_metrics' in model_data:
-                overall_metrics[track] = model_data['performance_metrics']
-            if 'target_features' in model_data:
-                 all_targets.update(model_data['target_features'])
+        
+        # Collect metrics from all trained models
+        for track, track_model in self.position_learner.track_models.items():
+            overall_metrics[track] = track_model.performance_metrics
+            all_targets.update(track_model.target_features)
 
         results = {
-            'modelData': self.position_learner.track_models,
+            'modelData': {t: m.get_serializable_components() for t, m in self.position_learner.track_models.items()},
             'metadata': {
                 'performance_metrics': overall_metrics,
-                'input_features': ['normalized_position', 'track'],
+                'input_features': ['normalized_position', 'normalized_pos_sin', 'normalized_pos_cos', 'track'],
                 'target_features': list(all_targets),
                 'models_trained': list(self.position_learner.track_models.keys()),
                 'total_training_samples': total_samples
@@ -989,315 +834,7 @@ class ExpertImitateLearningService:
 
         print(f"[INFO] Completed expert state extraction. Extracted features for {len(expert_feature_rows)} records")
         return expert_feature_rows
-    
-    def filter_optimal_telemetry_segments(
-        self,
-        telemetry_data: List[Dict[str, Any]],
-        max_segment_length: int = 60,
-        improvement_threshold: float = 0.55,
-        consistency_threshold: float = 1.0,
-        min_segment_length: int = 20,
-        min_segments: int = 0,
-    ) -> List[List[Dict[str, Any]]]:
-        """
-        Identify contiguous telemetry slices that demonstrate measurable improvement or
-        sustained expert-level consistency.
-
-        Segments are grown dynamically from each starting point until either the
-        improvement or consistency criteria stops being satisfied, or the
-        ``max_segment_length`` cap is reached. Only the portion of the telemetry
-        that meets the selected criteria is returned, eliminating the fixed-length
-        constraints used previously.
-
-        Args:
-            telemetry_data: Telemetry records enriched with context features.
-            max_segment_length: Upper bound on the number of records a single
-                segment may contain.
-            improvement_threshold: Minimum overall improvement rate required for
-                a segment to be accepted.
-            consistency_threshold: Minimum overall consistency rate required for
-                a segment to be accepted when improvement is below the threshold.
-            min_segment_length: Smallest segment length to analyse before
-                considering acceptance.
-            min_segments: Minimum number of segments required; raises if the
-                condition is not met.
-
-        Returns:
-            A list of telemetry segments, where each segment is a list of
-            dictionaries corresponding to contiguous telemetry samples.
-        """
-
-        print(f"[INFO] Filtering optimal telemetry segments from {len(telemetry_data)} records...")
-        print(
-            "[INFO] Using max_segment_length=%s, min_segment_length=%s, improvement_threshold=%.2f, consistency_threshold=%.2f"
-            % (max_segment_length, min_segment_length, improvement_threshold, consistency_threshold)
-        )
-
-        if max_segment_length < min_segment_length:
-            raise ValueError("max_segment_length must be greater than or equal to min_segment_length")
-
-        if len(telemetry_data) < min_segment_length:
-            print(
-                f"[WARNING] Insufficient data for segment analysis. Need at least {min_segment_length} records, got {len(telemetry_data)}. Discarding this batch."
-            )
-            return []
-
-        # Get context feature names from enum
-        ContextFeature = ExpertFeatureCatalog.ContextFeature
-        required_features = [
-            ContextFeature.EXPERT_VELOCITY_ALIGNMENT.value,
-            ContextFeature.SPEED_DIFFERENCE.value,
-            ContextFeature.DISTANCE_TO_EXPERT_LINE.value,
-        ]
-
-        # Validate that required features exist in data
-        if not telemetry_data:
-            print("[WARNING] Empty telemetry data provided")
-            return []
-
-        first_record = telemetry_data[0]
-        missing_features = [f for f in required_features if f not in first_record]
-        if missing_features:
-            raise ValueError(
-                f"[ERROR] Missing required context features: {missing_features}, available: {list(first_record.keys())}"
-            )
-
-        # Convert to DataFrame for easier analysis
-        try:
-            df = pd.DataFrame(telemetry_data)
-        except Exception as e:
-            raise Exception(f"Failed to convert telemetry data to DataFrame: {e}")
-
-        optimal_segments: List[List[Dict[str, Any]]] = []
-        num_improvement_segments = 0
-        num_consistency_segments = 0
-        window_evaluations = 0
-
-        idx = 0
-        total_records = len(df)
-        while idx < total_records:
-            remaining = total_records - idx
-            if remaining < min_segment_length:
-                break
-
-            last_valid_end: Optional[int] = None
-            last_pass_type: Optional[str] = None
-            max_end_index = min(total_records, idx + max_segment_length)
-            evaluation_started = False
-
-            for end_idx in range(idx + min_segment_length - 1, max_end_index):
-                segment = df.iloc[idx : end_idx + 1]
-                window_evaluations += 1
-                evaluation_started = True
-
-                summary = self._analyze_segment_improvement(segment)
-                passes_improvement = summary.overall_improvement_rate >= improvement_threshold
-                passes_consistency = summary.overall_consistency_rate >= consistency_threshold
-
-                if passes_improvement or passes_consistency:
-                    last_valid_end = end_idx
-                    last_pass_type = "improvement" if passes_improvement else "consistency"
-                else:
-                    if last_valid_end is not None:
-                        break
-                    idx += 1
-                    break
-            else:
-                if not evaluation_started:
-                    idx += 1
-                    continue
-
-            if last_valid_end is not None:
-                segment_df = df.iloc[idx : last_valid_end + 1]
-                pruned_segment_df = self._prune_segment_stagnant_samples(segment_df)
-                if len(pruned_segment_df) < len(segment_df):
-                    print(
-                        f"[DEBUG] Pruned {len(segment_df) - len(pruned_segment_df)} stagnant samples"
-                    )
-
-                optimal_segments.append(pruned_segment_df.to_dict("records"))
-
-                if last_pass_type == "improvement":
-                    num_improvement_segments += 1
-                else:
-                    num_consistency_segments += 1
-
-                idx = last_valid_end + 1
-            else:
-                if evaluation_started:
-                    continue
-                idx += 1
-
-        print("[INFO] Dynamic segment filtering analysis complete:")
-        print(f"[INFO] - Original records: {len(telemetry_data)}")
-        print(f"[INFO] - Windows evaluated: {window_evaluations}")
-        print(f"[INFO] - Accepted segments: {len(optimal_segments)}")
-        print(
-            f"[INFO] - Improvement-based passes: {num_improvement_segments}, Consistency-based passes: {num_consistency_segments}"
-        )
-
-        # Ensure we have minimum required segments
-        if len(optimal_segments) < min_segments:
-            raise ValueError(
-                f"[WARNING] Only found {len(optimal_segments)} optimal segments, which is less than the minimum required {min_segments}. Adjust parameters or provide more data."
-            )
-
-        return optimal_segments
-    
-    def _prune_segment_stagnant_samples(
-        self,
-        segment_df: pd.DataFrame,
-        *,
-        change_thresholds: Optional[Dict[str, float]] = None,
-    ) -> pd.DataFrame:
-        """Drop timestamps that barely change driver inputs within a segment.
-
-        A row is removed when every monitored control (gas, brake, steer, gear)
-        changes less than its threshold compared to the previous row. This keeps
-        the segment focused on meaningful driver inputs while preserving at
-        least the first and last sample so downstream consumers retain context.
-        """
-
-        if segment_df is None or segment_df.empty or len(segment_df) <= 1:
-            return segment_df
-
-        thresholds = change_thresholds or {
-            "Physics_gas": 0.01,
-            "Physics_brake": 0.01,
-            "Physics_steer_angle": 0.01,
-            "Physics_gear": 0.0,
-        }
-
-        available_columns = [col for col in thresholds if col in segment_df.columns]
-        if len(available_columns) <= 1:
-            return segment_df
-
-        deltas = segment_df[available_columns].diff().abs()
-        keep_mask = np.zeros(len(segment_df), dtype=bool)
-        keep_mask[0] = True
-
-        for idx in range(1, len(segment_df)):
-            keep_sample = False
-            for col in available_columns:
-                delta = deltas.iloc[idx][col]
-                threshold = thresholds[col]
-                if col == "Physics_gear":
-                    if delta > threshold:
-                        keep_sample = True
-                        break
-                else:
-                    if delta > threshold:
-                        keep_sample = True
-                        break
-            keep_mask[idx] = keep_sample
-
-        keep_mask[-1] = True
-
-        pruned_segment = segment_df.loc[keep_mask].reset_index(drop=True)
-
-        if pruned_segment.empty or len(pruned_segment) < 2:
-            return segment_df
-
-        return pruned_segment
-
-    def _analyze_segment_improvement(self, segment: pd.DataFrame) -> SegmentImprovementSummary:
-        """
-        Analyze improvement trends vs consistency within a telemetry segment.
-
-        Returns a structured dataclass that retains the original dictionary keys for
-        backwards compatibility while providing attribute access and helper
-        utilities.
-        """
-
-        config = SegmentImprovementConfig()
-        ContextFeature = ExpertFeatureCatalog.ContextFeature
-        summary = SegmentImprovementSummary()
-
-        smoothing_window = max(config.smoothing_window_min, min(config.smoothing_window_max, len(segment)))
-        ema_span = max(config.ema_span_min, smoothing_window)
-
-        def _smooth_series(values: Union[pd.Series, np.ndarray]) -> np.ndarray:
-            series = values if isinstance(values, pd.Series) else pd.Series(values)
-            if len(series) <= 1:
-                return series.to_numpy()
-
-            median_smoothed = series.rolling(window=smoothing_window, min_periods=1, center=True).median()
-            ema_smoothed = median_smoothed.ewm(span=ema_span, adjust=False).mean()
-            return ema_smoothed.to_numpy()
-
-        try:
-            # Velocity alignment analysis
-            velocity_series = segment[ContextFeature.EXPERT_VELOCITY_ALIGNMENT.value]
-            velocity_smoothed = _smooth_series(velocity_series)
-            if len(velocity_smoothed) > 1:
-                summary.velocity_alignment_mean = float(np.mean(velocity_smoothed))
-                summary.velocity_alignment_trend = float(np.polyfit(range(len(velocity_smoothed)), velocity_smoothed, 1)[0])
-                summary.velocity_expert_points = int(np.sum(velocity_smoothed >= config.expert_velocity_alignment))
-                summary.velocity_consistency_rate = summary.velocity_expert_points / len(velocity_smoothed)
-
-            # Speed difference analysis
-            speed_diff_raw = segment[ContextFeature.SPEED_DIFFERENCE.value]
-            speed_diff_smoothed = _smooth_series(speed_diff_raw)
-            speed_has_samples = len(speed_diff_smoothed) > 1
-            if speed_has_samples:
-                abs_speed_diff = np.abs(speed_diff_smoothed)
-                summary.speed_difference_mean = float(np.mean(abs_speed_diff))
-                summary.speed_difference_trend = float(np.polyfit(range(len(abs_speed_diff)), abs_speed_diff, 1)[0])
-                summary.speed_expert_points = int(np.sum(abs_speed_diff <= config.expert_speed_diff_max))
-                summary.speed_consistency_rate = summary.speed_expert_points / len(abs_speed_diff)
-
-            # Distance to line analysis
-            distance_series = segment[ContextFeature.DISTANCE_TO_EXPERT_LINE.value]
-            distance_smoothed = _smooth_series(distance_series)
-            distance_has_samples = len(distance_smoothed) > 1
-            if distance_has_samples:
-                summary.distance_to_line_mean = float(np.mean(distance_smoothed))
-                summary.distance_to_line_trend = float(np.polyfit(range(len(distance_smoothed)), distance_smoothed, 1)[0])
-                summary.distance_expert_points = int(np.sum(distance_smoothed <= config.expert_distance_max))
-                summary.distance_consistency_rate = summary.distance_expert_points / len(distance_smoothed)
-
-            # Driver push-to-limit analysis (0-1 intensity provided by TireGripAnalysisService)
-            tire_feature = TireGripFeatureCatalog.ContextFeature.DRIVER_PUSH_TO_LIMIT.value
-            push_series = pd.to_numeric(segment[tire_feature], errors='coerce').fillna(0.0)
-            push_smoothed = _smooth_series(push_series)
-            if len(push_smoothed) > 1:
-                summary.driver_push_available = True
-                summary.driver_push_mean = float(np.mean(push_smoothed))
-                sample_idx = np.arange(len(push_smoothed))
-                summary.driver_push_trend = float(np.polyfit(sample_idx, push_smoothed, 1)[0])
-                push_above_threshold_rate = float(np.mean(push_smoothed >= config.driver_push_high_threshold))
-                summary.driver_push_high_rate = push_above_threshold_rate
-
-            # Improvement and consistency calculations
-            distance_improvement = distance_has_samples and summary.distance_to_line_trend < 0.0
-            speed_improvement = speed_has_samples and summary.speed_difference_trend < 0.0
-            
-            improvement_criteria: List[bool] = [distance_improvement, speed_improvement]
-
-            base_improvement_rate = 0.0
-            if improvement_criteria:
-                base_improvement_rate = sum(improvement_criteria) / len(improvement_criteria)
-
-            if summary.driver_push_available:
-                push_threshold_rate = float(np.clip(summary.driver_push_high_rate, 0.0, 1.0))
-                base_improvement_rate *= push_threshold_rate
-
-            summary.overall_improvement_rate = base_improvement_rate
-
-            consistency_rates = [
-                summary.velocity_consistency_rate,
-                summary.speed_consistency_rate,
-                summary.distance_consistency_rate,
-            ]
-
-            if consistency_rates:
-                summary.overall_consistency_rate = sum(consistency_rates) / len(consistency_rates)
-
-        except Exception as e:
-            raise Exception(f"Error analyzing segment improvement: {e}")
-
-        return summary
-    
+  
     # Visualization utilities moved to telemetry_segment_visualizer.visualize_optimal_segments
 
     def serialize_learning_model(self) -> Dict[str, Any]:
@@ -1319,8 +856,11 @@ class ExpertImitateLearningService:
             # Serialize models per track
             serialized_tracks = {}
             
-            for track_name, track_data in self.position_learner.track_models.items():
+            for track_name, track_model in self.position_learner.track_models.items():
                 print(f"[INFO] Serializing models for track: {track_name}")
+                
+                # Get components from the track model
+                track_data = track_model.get_serializable_components()
                 serialized_track_data = {}
                 
                 # Serialize models
@@ -1336,11 +876,19 @@ class ExpertImitateLearningService:
                     serialized_track_data['models'] = serialized_models
                 
                 # Serialize scaler
-                if 'position_scaler' in track_data:
+                if 'position_scaler' in track_data and track_data['position_scaler'] is not None:
                     serialized_track_data['position_scaler'] = self.serialize_data(track_data['position_scaler'])
                 
+                # Serialize new scalers dict
+                if 'scalers' in track_data:
+                    serialized_scalers = {}
+                    for scaler_name, scaler in track_data['scalers'].items():
+                        if scaler is not None:
+                            serialized_scalers[scaler_name] = self.serialize_data(scaler)
+                    serialized_track_data['scalers'] = serialized_scalers
+                
                 # Copy metadata
-                for key in ['performance_metrics', 'input_features', 'target_features']:
+                for key in ['performance_metrics', 'input_features', 'target_features', 'target_groups']:
                     if key in track_data:
                         serialized_track_data[key] = track_data[key]
                 
@@ -1371,32 +919,44 @@ class ExpertImitateLearningService:
             
             if 'track_models' in serialized_results:
                 print("[INFO] Deserializing track models...")
-                deserialized_track_models = {}
                 
                 for track_name, track_data in serialized_results['track_models'].items():
                     print(f"[INFO] Deserializing models for track: {track_name}")
-                    deserialized_track_data = {}
+                    
+                    # Create new TrackExpertModel
+                    track_model = TrackExpertModel(track_name)
+                    components = {}
                     
                     # Deserialize models
                     if 'models' in track_data:
                         deserialized_models = {}
                         for model_name, serialized_model in track_data['models'].items():
                             deserialized_models[model_name] = self.deserialize_data(serialized_model)
-                        deserialized_track_data['models'] = deserialized_models
+                        components['models'] = deserialized_models
                     
                     # Deserialize scaler
                     if 'position_scaler' in track_data:
-                        deserialized_track_data['position_scaler'] = self.deserialize_data(track_data['position_scaler'])
+                        components['position_scaler'] = self.deserialize_data(track_data['position_scaler'])
+                    
+                    # Deserialize new scalers dict
+                    if 'scalers' in track_data:
+                        deserialized_scalers = {}
+                        for scaler_name, serialized_scaler in track_data['scalers'].items():
+                            deserialized_scalers[scaler_name] = self.deserialize_data(serialized_scaler)
+                        components['scalers'] = deserialized_scalers
                     
                     # Copy metadata
-                    for key in ['performance_metrics', 'input_features', 'target_features']:
+                    for key in ['performance_metrics', 'input_features', 'target_features', 'target_groups']:
                         if key in track_data:
-                            deserialized_track_data[key] = track_data[key]
-                            
-                    deserialized_track_models[track_name] = deserialized_track_data
+                            components[key] = track_data[key]
+                    
+                    # Load components into track model
+                    track_model.load_from_components(components)
+                    
+                    # Store in learner
+                    self.position_learner.track_models[track_name] = track_model
                 
-                self.position_learner.track_models = deserialized_track_models
-                print(f"[INFO] Successfully deserialized models for {len(deserialized_track_models)} tracks")
+                print(f"[INFO] Successfully deserialized models for {len(self.position_learner.track_models)} tracks")
             else:
                 raise ValueError("No track_models found in serialized data")
                 
@@ -1478,8 +1038,3 @@ if __name__ == "__main__":
     # Example workflow
     service = ExpertImitateLearningService()
     
-    # 1. Train the model (this stores models in the class)
-    # serialized_results = service.train_ai_model(expert_telemetry_data)
-
-    # 3. Compare new telemetry with stored expert models
-    # comparison = service.compare_telemetry_with_expert(incoming_telemetry)

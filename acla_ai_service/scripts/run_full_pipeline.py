@@ -52,7 +52,7 @@ async def main():
     processed_sessions_cache_key = pipeline_config.processed_session_data_cache_key
     enriched_sessions_cache_key = pipeline_config.enriched_sessions_cache_key
     segments_cache_key = pipeline_config.segments_cache_key
-    max_segment_length = 20 # Default from prepare_training_data
+    max_segment_length = 5 # Default from prepare_training_data
 
     try:
         start_index = steps.index(start_step)

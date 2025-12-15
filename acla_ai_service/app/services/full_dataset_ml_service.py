@@ -1043,7 +1043,7 @@ class Full_dataset_TelemetryMLService:
             # Use filtered_session_df for session_records
             session_records = filtered_session_df.to_dict("records")
 
-            # Split into laps using the processed session
+            # Split into laps using the filtered session
             lap_structs = processor.split_into_laps(filtered_session_df)
             if not lap_structs:
                 return chunk_idx, 0, [], session_records, None, chunk_id
@@ -1051,7 +1051,12 @@ class Full_dataset_TelemetryMLService:
             for i, lap_struct in enumerate(lap_structs):
                 lap_df = lap_struct["dataframe"]
                 lap_time_ms = lap_struct["lap_time_ms"]
-                
+
+                # Check for valid lap (all rows must have Graphics_is_valid_lap == 1)
+                if "Graphics_is_valid_lap" in lap_df.columns:
+                    if not (lap_df["Graphics_is_valid_lap"] == 1).all():
+                        continue
+
                 lap_records = lap_df.to_dict("records") if not lap_df.empty else []
 
                 lap_identifier = (
