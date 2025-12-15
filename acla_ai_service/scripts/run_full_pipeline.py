@@ -52,7 +52,7 @@ async def main():
     processed_sessions_cache_key = pipeline_config.processed_session_data_cache_key
     enriched_sessions_cache_key = pipeline_config.enriched_sessions_cache_key
     segments_cache_key = pipeline_config.segments_cache_key
-    max_segment_length = 5 # Default from prepare_training_data
+    max_segment_length = 20 # Default from prepare_training_data
 
     try:
         start_index = steps.index(start_step)
@@ -67,7 +67,7 @@ async def main():
             print(" Step 1: Prepare Training Data")
             print("="*50)
 
-            result = await service.prepare_training_data(top_laps_count=20)
+            result = await service.prepare_training_data(top_laps_count=30)
             if not result.get("success"):
                 print(f"Error in prepare_training_data: {result.get('error')}")
                 return

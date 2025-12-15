@@ -22,6 +22,7 @@ from pathlib import Path
 from sklearn.model_selection import train_test_split, GroupShuffleSplit
 from sklearn.preprocessing import StandardScaler
 from sklearn.neural_network import MLPRegressor, MLPClassifier
+from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier
 from sklearn.metrics import mean_squared_error, mean_absolute_error, accuracy_score, f1_score
 from sklearn.decomposition import PCA
 
@@ -137,28 +138,50 @@ class TrackExpertModel:
     def __init__(self, track_name: str):
         self.track_name = track_name
         self.models: Dict[str, Any] = {}
-        self.scalers: Dict[str, Any] = {}
-        self.position_scaler: Optional[StandardScaler] = None
         self.performance_metrics: Dict[str, Any] = {}
         self.target_groups: Dict[str, List[str]] = {}
         self.target_features: List[str] = []
         self.feature_cols = ['normalized_position', 'normalized_pos_sin', 'normalized_pos_cos']
+        
+        # Buffers for incremental data loading
+        self.input_buffer: List[pd.DataFrame] = []
+        self.target_buffer: List[pd.DataFrame] = []
 
-    def train(self, input_features: pd.DataFrame, target_features: pd.DataFrame):
+    def add_training_data(self, input_features: pd.DataFrame, target_features: pd.DataFrame):
         """
-        Train models for this track using the provided features.
+        Buffer training data. Actual training happens in fit_model().
         """
-        self.target_features = list(target_features.columns)
+        self.input_buffer.append(input_features)
+        self.target_buffer.append(target_features)
+        
+        # Update target features list if not set
+        if not self.target_features:
+            self.target_features = list(target_features.columns)
+
+    def fit_model(self):
+        """
+        Train models using all buffered data.
+        """
+        if not self.input_buffer:
+            print(f"[WARNING] No data to train for track {self.track_name}")
+            return
+
+        print(f"[INFO] Training models for track: {self.track_name} with {len(self.input_buffer)} chunks")
+        
+        # Combine all data
+        input_features = pd.concat(self.input_buffer, ignore_index=True)
+        target_features = pd.concat(self.target_buffer, ignore_index=True)
+        
+        # Clear buffers to free memory
+        self.input_buffer = []
+        self.target_buffer = []
         
         # Prepare input (normalized position + cyclic features)
         X = input_features[self.feature_cols].values
         
-        # Create and fit scaler for this track
-        self.position_scaler = StandardScaler()
-        X_scaled = self.position_scaler.fit_transform(X)
-        
-        # Use all data for training (no evaluation split)
-        X_train = X_scaled
+        # We use RandomForest which handles unscaled data well, but we can keep scaler if needed.
+        # For simplicity and robustness with RF, we'll skip scaling inputs.
+        X_train = X
         
         EO = ExpertFeatureCatalog.ExpertOptimalFeature
         
@@ -187,46 +210,36 @@ class TrackExpertModel:
 
         # Train Position Regressor (Geometry)
         if position_targets:
-            print(f"[INFO] Training position MLP regressor for {len(position_targets)} targets")
+            print(f"[INFO] Training position Random Forest for {len(position_targets)} targets")
             y_pos = target_features[position_targets].values
             
-            # Scale targets for better convergence
-            pos_target_scaler = StandardScaler()
-            y_pos_train = pos_target_scaler.fit_transform(y_pos)
-            self.scalers['position_targets'] = pos_target_scaler
-            
-            # Position mapping needs to be precise and handle sharp corners
-            pos_model = MLPRegressor(hidden_layer_sizes=(1024, 512, 256), activation='relu', solver='adam', max_iter=2000, random_state=42)
-            pos_model.fit(X_train, y_pos_train)
+            # RandomForestRegressor
+            # n_estimators=100 is a good balance. min_samples_leaf=2 provides slight smoothing.
+            pos_model = RandomForestRegressor(n_estimators=100, min_samples_leaf=2, n_jobs=-1, random_state=42)
+            pos_model.fit(X_train, y_pos)
             
             self.models['position_regression'] = pos_model
             
             for t in position_targets:
                  self.performance_metrics[t] = {
-                    'r2': 1.0, # Placeholder, we use all data for training
-                    'type': 'regression_position'
+                    'r2': 1.0, # Placeholder
+                    'type': 'rf_regression_position'
                  }
 
         # Train Action Regressor (Dynamics)
         if action_targets:
-            print(f"[INFO] Training action MLP regressor for {len(action_targets)} targets")
+            print(f"[INFO] Training action Random Forest for {len(action_targets)} targets")
             y_action = target_features[action_targets].values
             
-            # Scale targets
-            action_target_scaler = StandardScaler()
-            y_action_train = action_target_scaler.fit_transform(y_action)
-            self.scalers['action_targets'] = action_target_scaler
-            
-            # Action mapping
-            action_model = MLPRegressor(hidden_layer_sizes=(200, 150, 100), activation='tanh', solver='adam', max_iter=1000, random_state=42)
-            action_model.fit(X_train, y_action_train)
+            action_model = RandomForestRegressor(n_estimators=100, min_samples_leaf=2, n_jobs=-1, random_state=42)
+            action_model.fit(X_train, y_action)
             
             self.models['action_regression'] = action_model
             
             for t in action_targets:
                  self.performance_metrics[t] = {
                     'r2': 1.0,
-                    'type': 'regression_action'
+                    'type': 'rf_regression_action'
                  }
         
         # Train Gear Classifier (Separate)
@@ -234,15 +247,21 @@ class TrackExpertModel:
             y = target_features[EO.EXPERT_OPTIMAL_GEAR.value].values
             y_train = y
             
-            model = MLPClassifier(hidden_layer_sizes=(100, 50), activation='relu', solver='adam', max_iter=1000, random_state=42)
+            model = RandomForestClassifier(n_estimators=50, n_jobs=-1, random_state=42)
             model.fit(X_train, y_train)
             
             self.models[EO.EXPERT_OPTIMAL_GEAR.value] = model
             self.performance_metrics[EO.EXPERT_OPTIMAL_GEAR.value] = {
                 'accuracy': 1.0,
                 'f1': 1.0,
-                'type': 'classification'
+                'type': 'rf_classification'
             }
+
+    def train(self, input_features: pd.DataFrame, target_features: pd.DataFrame):
+        """
+        Legacy method for compatibility. Buffers data.
+        """
+        self.add_training_data(input_features, target_features)
 
     def predict(self, normalized_positions: Union[float, List[float], np.ndarray]) -> Union[Dict[str, float], List[Dict[str, float]]]:
         """
@@ -262,8 +281,8 @@ class TrackExpertModel:
             cos_pos = np.cos(2 * np.pi * raw_pos)
             positions_array = np.hstack([raw_pos, sin_pos, cos_pos])
         
-        # Scale positions using track-specific scaler
-        positions_scaled = self.position_scaler.transform(positions_array)
+        # No scaling for RF
+        positions_scaled = positions_array
         
         # Make predictions for all models
         predictions = {}
@@ -272,13 +291,8 @@ class TrackExpertModel:
         if 'position_regression' in self.models:
             model = self.models['position_regression']
             targets = self.target_groups.get('position', [])
-            scaler = self.scalers.get('position_targets')
             
-            pred_scaled = model.predict(positions_scaled)
-            if scaler:
-                pred = scaler.inverse_transform(pred_scaled)
-            else:
-                pred = pred_scaled
+            pred = model.predict(positions_scaled)
                 
             for i, t in enumerate(targets):
                 predictions[t] = pred[:, i]
@@ -287,13 +301,8 @@ class TrackExpertModel:
         if 'action_regression' in self.models:
             model = self.models['action_regression']
             targets = self.target_groups.get('action', [])
-            scaler = self.scalers.get('action_targets')
             
-            pred_scaled = model.predict(positions_scaled)
-            if scaler:
-                pred = scaler.inverse_transform(pred_scaled)
-            else:
-                pred = pred_scaled
+            pred = model.predict(positions_scaled)
                 
             for i, t in enumerate(targets):
                 predictions[t] = pred[:, i]
@@ -326,8 +335,6 @@ class TrackExpertModel:
         """Returns components that need to be serialized"""
         return {
             'models': self.models,
-            'position_scaler': self.position_scaler,
-            'scalers': self.scalers,
             'performance_metrics': self.performance_metrics,
             'input_features': self.feature_cols,
             'target_features': self.target_features,
@@ -337,8 +344,6 @@ class TrackExpertModel:
     def load_from_components(self, components: Dict[str, Any]):
         """Loads model state from deserialized components"""
         self.models = components.get('models', {})
-        self.position_scaler = components.get('position_scaler')
-        self.scalers = components.get('scalers', {})
         self.performance_metrics = components.get('performance_metrics', {})
         self.target_features = components.get('target_features', [])
         self.target_groups = components.get('target_groups', {})
@@ -427,15 +432,16 @@ class ExpertPositionLearner:
     
     def learn_expert_position_mapping(self, expert_laps: List[List[Dict[str, Any]]]) -> Dict[str, Any]:
         """
-        Learn expert actions from normalized track position using multiple expert laps, per track.
+        Accumulate expert actions from normalized track position using multiple expert laps, per track.
+        Actual training happens when finalize_models() is called.
         
         Args:
             expert_laps: List of expert driver telemetry laps (each lap is a list of records)
             
         Returns:
-            Dictionary with learned position-based model and insights
+            Dictionary with status (models are not trained yet)
         """
-        print(f"[INFO] Learning expert position mapping from {len(expert_laps)} expert laps")
+        print(f"[INFO] Accumulating expert position data from {len(expert_laps)} expert laps")
         
         all_input_features = []
         all_target_features = []
@@ -457,32 +463,35 @@ class ExpertPositionLearner:
         input_features = pd.concat(all_input_features, ignore_index=True)
         target_features = pd.concat(all_target_features, ignore_index=True)
         
-        print(f"[INFO] Input features shape: {input_features.shape}")
-        print(f"[INFO] Target features shape: {target_features.shape}")
-        
         # Get track name (assume single track as per requirement)
         if 'track' not in input_features.columns or input_features['track'].empty:
              raise ValueError("Track information missing in input features")
              
         track = input_features['track'].iloc[0]
-        print(f"[INFO] Training models for track: {track}")
         
-        # Create and train track model
-        track_model = TrackExpertModel(track)
-        track_model.train(input_features, target_features)
+        # Get or create track model
+        if track not in self.track_models:
+            self.track_models[track] = TrackExpertModel(track)
         
-        self.track_models[track] = track_model
+        track_model = self.track_models[track]
+        
+        # Add data to buffer
+        track_model.add_training_data(input_features, target_features)
         
         return {
-            'modelData': {track: track_model.get_serializable_components()},
-            'metadata': {
-                'performance_metrics': {track: track_model.performance_metrics},
-                'input_features': track_model.feature_cols,
-                'target_features': track_model.target_features,
-                'models_trained': list(self.track_models.keys()),
-                'total_training_samples': len(input_features)
-            }
+            'status': 'buffered',
+            'track': track,
+            'samples': len(input_features)
         }
+    
+    def finalize_models(self):
+        """
+        Train all buffered models.
+        """
+        print(f"[INFO] Finalizing training for {len(self.track_models)} tracks")
+        for track, model in self.track_models.items():
+            model.fit_model()
+
     
     def predict_expert_actions_at_position(self, track_name: str, normalized_positions: Union[float, List[float], np.ndarray]) -> Union[Dict[str, float], List[Dict[str, float]]]:
         """
@@ -542,14 +551,16 @@ class ExpertImitateLearningService:
         for chunk_tuple in chunks_iterator:
             chunk_data, chunk_id = chunk_tuple
             
+            # Check for empty data
             if not chunk_data:
                 continue
 
-            print(f"[INFO] Processing top laps for track: {chunk_id} ({len(chunk_data)} laps)")
-            
             # Learn expert position mapping (this is the only learning model)
             self.position_learner.learn_expert_position_mapping(chunk_data)
             total_samples += sum(len(lap) for lap in chunk_data)
+        
+        # Finalize training (train Random Forests on accumulated data)
+        self.position_learner.finalize_models()
         
         # Construct results
         overall_metrics = {}
@@ -875,18 +886,6 @@ class ExpertImitateLearningService:
                         gc.collect()
                     serialized_track_data['models'] = serialized_models
                 
-                # Serialize scaler
-                if 'position_scaler' in track_data and track_data['position_scaler'] is not None:
-                    serialized_track_data['position_scaler'] = self.serialize_data(track_data['position_scaler'])
-                
-                # Serialize new scalers dict
-                if 'scalers' in track_data:
-                    serialized_scalers = {}
-                    for scaler_name, scaler in track_data['scalers'].items():
-                        if scaler is not None:
-                            serialized_scalers[scaler_name] = self.serialize_data(scaler)
-                    serialized_track_data['scalers'] = serialized_scalers
-                
                 # Copy metadata
                 for key in ['performance_metrics', 'input_features', 'target_features', 'target_groups']:
                     if key in track_data:
@@ -933,17 +932,6 @@ class ExpertImitateLearningService:
                         for model_name, serialized_model in track_data['models'].items():
                             deserialized_models[model_name] = self.deserialize_data(serialized_model)
                         components['models'] = deserialized_models
-                    
-                    # Deserialize scaler
-                    if 'position_scaler' in track_data:
-                        components['position_scaler'] = self.deserialize_data(track_data['position_scaler'])
-                    
-                    # Deserialize new scalers dict
-                    if 'scalers' in track_data:
-                        deserialized_scalers = {}
-                        for scaler_name, serialized_scaler in track_data['scalers'].items():
-                            deserialized_scalers[scaler_name] = self.deserialize_data(serialized_scaler)
-                        components['scalers'] = deserialized_scalers
                     
                     # Copy metadata
                     for key in ['performance_metrics', 'input_features', 'target_features', 'target_groups']:
@@ -1036,5 +1024,5 @@ class ExpertImitateLearningService:
 if __name__ == "__main__":
     
     # Example workflow
-    service = ExpertImitateLearningService()
+    service = ExpertImitateLearningService()        
     
