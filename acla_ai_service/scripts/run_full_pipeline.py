@@ -2,7 +2,9 @@ import asyncio
 import sys
 import subprocess
 from pathlib import Path
-import os
+import argparse
+import logging
+from datetime import datetime
 
 # Add parent directory to path to allow imports
 # parents[0] = scripts
@@ -13,20 +15,52 @@ from app.services.full_dataset_ml_service import Full_dataset_TelemetryMLService
 from app.config.pipeline_config import PipelineConfig
 from app.services.segment_classifier_service import segment_classifier
 
+logger = logging.getLogger("run_full_pipeline")
+
+def setup_logging(log_file: Path) -> None:
+    """Configure logging to write to both the specified file and console."""
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+
+    logger.setLevel(logging.DEBUG)
+    formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+
+    file_handler = logging.FileHandler(log_file)
+    file_handler.setFormatter(formatter)
+
+    console_handler = logging.StreamHandler()
+    console_formatter = logging.Formatter("%(message)s")
+    console_handler.setFormatter(console_formatter)
+
+    logger.handlers.clear()
+    logger.addHandler(file_handler)
+    logger.addHandler(console_handler)
+    logger.propagate = False
+
+def log_message(message: str, level: int = logging.INFO) -> None:
+    """Log a message to configured handlers."""
+    if logger.handlers:
+        logger.log(level, message)
+    else:
+        print(message)
+
 def confirm_step(step_name):
     while True:
         response = input(f"\nDo you want to execute {step_name}? (y/n) [y]: ").strip().lower()
         if response in ["", "y", "yes"]:
+            logger.info("Confirmed execution for %s", step_name)
             return True
         elif response in ["n", "no"]:
+            logger.info("Skipping execution for %s", step_name)
             return False
+        else:
+            log_message("Invalid input. Please enter 'y' or 'n'.", level=logging.WARNING)
 
 async def main():
     steps = ["prepare_data", "annotate", "train_classifier", "process_segments", "train_transformer"]
     
-    print("\nSelect start step:")
+    log_message("\nSelect start step:")
     for i, step in enumerate(steps):
-        print(f"{i + 1}. {step}")
+        log_message(f"{i + 1}. {step}")
     
     while True:
         try:
@@ -40,12 +74,13 @@ async def main():
                 start_step = steps[idx]
                 break
             else:
-                print(f"Please enter a number between 1 and {len(steps)}")
+                log_message(f"Please enter a number between 1 and {len(steps)}", level=logging.WARNING)
         except ValueError:
-            print("Invalid input. Please enter a number.")
+            log_message("Invalid input. Please enter a number.", level=logging.WARNING)
 
-    print(f"Initializing services...")
-    service = Full_dataset_TelemetryMLService()
+    logger.info("Starting pipeline from step: %s", start_step)
+    log_message("Initializing services...")
+    service = Full_dataset_TelemetryMLService(logger=logger)
     pipeline_config = PipelineConfig()
     
     # Default keys
@@ -57,38 +92,38 @@ async def main():
     try:
         start_index = steps.index(start_step)
     except ValueError:
-        print(f"Invalid start step: {start_step}")
+        log_message(f"Invalid start step: {start_step}", level=logging.ERROR)
         return
 
     # Step 1: Prepare Training Data
     if start_index <= 0:
         if confirm_step("Step 1: Prepare Training Data"):
-            print("\n" + "="*50)
-            print(" Step 1: Prepare Training Data")
-            print("="*50)
+            log_message("\n" + "="*50)
+            log_message(" Step 1: Prepare Training Data")
+            log_message("="*50)
 
-            result = await service.prepare_training_data(top_laps_count=30)
+            result = await service.prepare_training_data(top_laps_count=1)
             if not result.get("success"):
-                print(f"Error in prepare_training_data: {result.get('error')}")
+                log_message(f"Error in prepare_training_data: {result.get('error')}", level=logging.ERROR)
                 return
             
             # Update keys from result if available
             if result.get("max_segment_length"):
                 max_segment_length = result.get("max_segment_length")
                 
-            print("Step 1 completed successfully.")
+            log_message("Step 1 completed successfully.")
         else:
-            print("Skipping Step 1.")
+            log_message("Skipping Step 1.")
 
     # Step 2: Run Segment Annotation App
     if start_index <= 1:
         if confirm_step("Step 2: Run Segment Annotation App"):
-            print("\n" + "="*50)
-            print(" Step 2: Run Segment Annotation App")
-            print("="*50)
-            print("Launching Streamlit app for segment annotation...")
-            print("Please perform your annotations in the browser.")
-            print("When finished, close the Streamlit app (Ctrl+C in terminal) to continue to the next step.")
+            log_message("\n" + "="*50)
+            log_message(" Step 2: Run Segment Annotation App")
+            log_message("="*50)
+            log_message("Launching Streamlit app for segment annotation...")
+            log_message("Please perform your annotations in the browser.")
+            log_message("When finished, close the Streamlit app (Ctrl+C in terminal) to continue to the next step.")
             
             # Locate the annotation app script
             # We are in acla_ai_service/scripts/run_full_pipeline.py
@@ -96,7 +131,7 @@ async def main():
             app_path = Path(__file__).resolve().parents[1] / "ui" / "segment_annotation_app.py"
             
             if not app_path.exists():
-                print(f"Error: Could not find segment_annotation_app.py at {app_path}")
+                log_message(f"Error: Could not find segment_annotation_app.py at {app_path}", level=logging.ERROR)
                 return
 
             try:
@@ -106,67 +141,82 @@ async def main():
                     check=True
                 )
             except KeyboardInterrupt:
-                print("\nStreamlit app closed by user. Continuing...")
+                log_message("\nStreamlit app closed by user. Continuing...")
             except subprocess.CalledProcessError as e:
                 # Streamlit might exit with non-zero if killed, but we want to continue if user is done
-                print(f"\nStreamlit app exited with code {e.returncode}. Continuing...")
+                log_message(f"\nStreamlit app exited with code {e.returncode}. Continuing...", level=logging.WARNING)
                 
-            print("Step 2 completed.")
+            log_message("Step 2 completed.")
         else:
-            print("Skipping Step 2.")
+            log_message("Skipping Step 2.")
 
     # Step 3: Train Segment Classifier
     if start_index <= 2:
         if confirm_step("Step 3: Train Segment Classifier"):
-            print("\n" + "="*50)
-            print(" Step 3: Train Segment Classifier")
-            print("="*50)
+            log_message("\n" + "="*50)
+            log_message(" Step 3: Train Segment Classifier")
+            log_message("="*50)
             await segment_classifier.train_model()
-            print("Step 3 completed successfully.")
+            log_message("Step 3 completed successfully.")
         else:
-            print("Skipping Step 3.")
+            log_message("Skipping Step 3.")
 
     # Step 4: Process and Cache Segments
     if start_index <= 3:
         if confirm_step("Step 4: Process and Cache Segments"):
-            print("\n" + "="*50)
-            print(" Step 4: Process and Cache Segments")
-            print("="*50)
+            log_message("\n" + "="*50)
+            log_message(" Step 4: Process and Cache Segments")
+            log_message("="*50)
             
-            print(f"Using enriched sessions key: {enriched_sessions_cache_key}")
-            print(f"Target segments key: {segments_cache_key}")
+            log_message(f"Using enriched sessions key: {enriched_sessions_cache_key}")
+            log_message(f"Target segments key: {segments_cache_key}")
             
             segments_cache_key = await service.process_and_cache_segments(
                 enriched_sessions_cache_key=enriched_sessions_cache_key,
                 segments_cache_key=segments_cache_key,
                 max_segment_length=max_segment_length
             )
-            print(f"Segments cached at: {segments_cache_key}")
-            print("Step 4 completed successfully.")
+            log_message(f"Segments cached at: {segments_cache_key}")
+            log_message("Step 4 completed successfully.")
         else:
-            print("Skipping Step 4.")
+            log_message("Skipping Step 4.")
 
     # Step 5: Run Transformer Guidance Training
     if start_index <= 4:
         if confirm_step("Step 5: Run Transformer Guidance Training"):
-            print("\n" + "="*50)
-            print(" Step 5: Run Transformer Guidance Training")
-            print("="*50)
+            log_message("\n" + "="*50)
+            log_message(" Step 5: Run Transformer Guidance Training")
+            log_message("="*50)
             result = await service.run_transformer_guidance_training(
                 segments_cache_key=segments_cache_key,
                 processed_sessions_cache_key=processed_sessions_cache_key,
                 max_segment_length=max_segment_length
             )
             if not result.get("success"):
-                print(f"Error in run_transformer_guidance_training: {result.get('error')}")
+                log_message(f"Error in run_transformer_guidance_training: {result.get('error')}", level=logging.ERROR)
                 return
-            print("Step 5 completed successfully.")
+            log_message("Step 5 completed successfully.")
         else:
-            print("Skipping Step 5.")
+            log_message("Skipping Step 5.")
         
-    print("\n" + "="*50)
-    print(" Full Pipeline Execution Completed")
-    print("="*50)
+    log_message("\n" + "="*50)
+    log_message(" Full Pipeline Execution Completed")
+    log_message("="*50)
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Run the ACC full telemetry pipeline")
+    parser.add_argument("--log-file", type=str, help="Optional path to a log file. Defaults to logs/full_pipeline_<timestamp>.log")
+    parser.add_argument("--log-dir", type=str, help="Directory to store generated log file when --log-file is not provided")
+    args = parser.parse_args()
+
+    if args.log_file:
+        log_path = Path(args.log_file).expanduser().resolve()
+    else:
+        default_dir = Path(args.log_dir).expanduser().resolve() if args.log_dir else Path(__file__).resolve().parents[1] / "logs"
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        log_path = default_dir / f"full_pipeline_{timestamp}.log"
+
+    setup_logging(log_path)
+    logger.info("Pipeline logs will be written to %s", log_path)
+
     asyncio.run(main())

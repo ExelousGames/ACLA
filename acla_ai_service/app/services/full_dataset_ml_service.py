@@ -7,6 +7,7 @@ using your TelemetryFeatures and FeatureProcessor classes.
 
 import json
 import base64
+import logging
 from dataclasses import dataclass
 import pandas as pd
 import concurrent.futures
@@ -87,7 +88,7 @@ class Full_dataset_TelemetryMLService:
     Machine Learning Service for AC Competizione Telemetry Analysis
     """ 
     
-    def __init__(self, models_directory: Optional[str] = None):
+    def __init__(self, models_directory: Optional[str] = None, logger: Optional[logging.Logger] = None):
         """
         Initialize the ML service
         
@@ -105,6 +106,7 @@ class Full_dataset_TelemetryMLService:
             self.models_directory = Path(__file__).resolve().parents[2] / "models"
 
         self.models_directory.mkdir(exist_ok=True)
+        self.logger = logger or logging.getLogger(f"{__name__}.{self.__class__.__name__}")
         
         self.telemetry_features = TelemetryFeatures()
         self.trained_models = {}
@@ -124,8 +126,10 @@ class Full_dataset_TelemetryMLService:
         
         # Use shared Zarr-backed telemetry store for large datasets
         self.telemetry_store = get_shared_zarr_store()
-        print("[INFO] Using Zarr-based telemetry store for large dataset processing")
-        print(f"[INFO] Store directory: {self.telemetry_store.store_dir}")
+        self.logger.info(
+            "Using Zarr-based telemetry store for large dataset processing (store: %s)",
+            self.telemetry_store.store_dir,
+        )
         
         # Prompt dataset builder and LLM configuration
         self.prompt_builder = TelemetryPromptDatasetBuilder()
@@ -164,24 +168,38 @@ class Full_dataset_TelemetryMLService:
         
         # Clear entire cache to ensure we start fresh with model instances only
         self.model_cache_service.clear()
-        print("[INFO] Cleared entire cache on startup - will cache model instances directly")
+        self.logger.info("Cleared entire cache on startup - will cache model instances directly")
         
         # Log cache configuration on startup
         self._log_cache_configuration()
     
     def _log_cache_configuration(self):
         """Log cache configuration details"""
-        cache_stats = self.model_cache_service.get_stats()
-        print("\n" + "="*60)
-        print("CACHE CONFIGURATION")
-        print("="*60)
-        print(f"Max Cache Size: {self.model_cache_service.max_cache_size} models")
-        print(f"Max Memory: {self.model_cache_service.max_memory_mb}MB ({self.model_cache_service.max_memory_mb/1024:.1f}GB)")
-        print(f"Environment: {self.model_cache_service.environment}")
-        print(f"Default TTL: {self.model_cache_service.default_ttl_seconds}s ({self.model_cache_service.default_ttl_seconds/3600:.1f}h)")
-        print(f"Large Model Priority: {self.model_cache_service.config.get('performance', {}).get('large_model_priority', False)}")
-        print("Caching Strategy: Model instances cached directly")
-        print("="*60 + "\n")
+        _ = self.model_cache_service.get_stats()
+        details = [
+            "",
+            "=" * 60,
+            "CACHE CONFIGURATION",
+            "=" * 60,
+            f"Max Cache Size: {self.model_cache_service.max_cache_size} models",
+            (
+                f"Max Memory: {self.model_cache_service.max_memory_mb}MB"
+                f" ({self.model_cache_service.max_memory_mb/1024:.1f}GB)"
+            ),
+            f"Environment: {self.model_cache_service.environment}",
+            (
+                f"Default TTL: {self.model_cache_service.default_ttl_seconds}s"
+                f" ({self.model_cache_service.default_ttl_seconds/3600:.1f}h)"
+            ),
+            (
+                "Large Model Priority: "
+                f"{self.model_cache_service.config.get('performance', {}).get('large_model_priority', False)}"
+            ),
+            "Caching Strategy: Model instances cached directly",
+            "=" * 60,
+            "",
+        ]
+        self.logger.info("\n".join(details))
 
     # Dataset generation is now handled by TelemetryLLMOrchestrator providers.
 
@@ -516,10 +534,13 @@ class Full_dataset_TelemetryMLService:
                     if tire_features_list:
                         processed_telemetry_dict.update(tire_features_list[0])
             except Exception as enrichment_error:
-                print(f"[WARNING] Tire grip enrichment failed: {enrichment_error}")
+                self.logger.warning(
+                    "Tire grip enrichment failed: %s",
+                    enrichment_error,
+                )
 
             try:
-                expert_service = ExpertImitateLearningService()
+                expert_service = ExpertImitateLearningService(logger=self.logger)
                 expert_service, _ = await self._get_cached_model_or_fetch(
                     model_type="imitation_learning",
                     model_subtype="imitation_model_data",
@@ -531,7 +552,10 @@ class Full_dataset_TelemetryMLService:
                 if expert_state_list:
                     processed_telemetry_dict.update(expert_state_list[0])
             except Exception as enrichment_error:
-                print(f"[WARNING] Imitation learning enrichment failed: {enrichment_error}")
+                self.logger.warning(
+                    "Imitation learning enrichment failed: %s",
+                    enrichment_error,
+                )
 
             context_payload = self._format_context_window(processed_telemetry_dict)
 
@@ -822,6 +846,9 @@ class Full_dataset_TelemetryMLService:
             records = candidate.get("records", [])
             if not records:
                 return
+            print(
+                f"[DEBUG] Evaluating lap {candidate.get('id', 'unknown')} with {len(records)} telemetry records"
+            )
             
             # Get track name from first record
             track_name = records[0].get("Static_track", "unknown_track")
@@ -1203,13 +1230,17 @@ class Full_dataset_TelemetryMLService:
                     chunk_count += 1
             
             if chunk_count > 0:
-                print(f"[INFO] Retrieved {len(all_top_laps)} top laps from {chunk_count} cache chunks")
+                self.logger.info(
+                    "Retrieved %d top laps from %d cache chunks",
+                    len(all_top_laps),
+                    chunk_count,
+                )
                 return all_top_laps
             
             raise ValueError(f"Cached data at {cache_key} has unexpected format or is empty")
             
         except Exception as error:
-            print(f"[ERROR] Failed to retrieve cached top laps: {error}")
+            self.logger.error("Failed to retrieve cached top laps: %s", error)
             raise
 
     async def enriched_contextual_data(
@@ -1235,7 +1266,7 @@ class Full_dataset_TelemetryMLService:
         self._print_section_divider("TRAINING ENRICHMENT MODELS WITH EXPERT DATA")
         
         # Train imitation learning model
-        imitation_learning = ExpertImitateLearningService()
+        imitation_learning = ExpertImitateLearningService(logger=self.logger,debug=True)
         
         # Use cached top laps for imitation learning (per track)
         top_laps_cache_key = self.cache_config.top_laps_cache_key

@@ -12,9 +12,10 @@ import pickle
 import warnings
 import io
 import base64
+import logging
 from dataclasses import dataclass, field, asdict
 from enum import Enum
-from typing import Dict, List, Any, Optional, Tuple, Union
+from typing import Dict, List, Any, Optional, Tuple, Union, Callable
 from datetime import datetime
 from pathlib import Path
 
@@ -124,12 +125,19 @@ class SegmentImprovementSummary:
         return getattr(self, item)
 
 
+def _format_debug_message(message: str, debug_data: Optional[Dict[str, Any]] = None) -> str:
+    if not debug_data:
+        return message
+    kv_pairs = ', '.join(f"{key}={value}" for key, value in debug_data.items())
+    return f"{message} | {kv_pairs}"
+
+
 class TrackExpertModel:
     """
     Encapsulates the expert model for a single track.
     Manages training, prediction, and state for position and action models.
     """
-    def __init__(self, track_name: str):
+    def __init__(self, track_name: str, *, debug: bool = False, debug_logger: Optional[Callable[..., None]] = None, logger: Optional[logging.Logger] = None):
         self.track_name = track_name
         self.models: Dict[str, Any] = {}
         self.performance_metrics: Dict[str, Any] = {}
@@ -140,6 +148,17 @@ class TrackExpertModel:
         # Buffers for incremental data loading
         self.input_buffer: List[pd.DataFrame] = []
         self.target_buffer: List[pd.DataFrame] = []
+        self.debug_enabled = debug
+        self._debug_logger = debug_logger
+        self.logger = logger or logging.getLogger(f"{__name__}.TrackExpertModel")
+
+    def _debug(self, message: str, **debug_data: Any) -> None:
+        if not self.debug_enabled:
+            return
+        if self._debug_logger:
+            self._debug_logger(message, **debug_data)
+        else:
+            self.logger.debug(_format_debug_message(message, debug_data))
 
     def add_training_data(self, input_features: pd.DataFrame, target_features: pd.DataFrame):
         """
@@ -157,14 +176,41 @@ class TrackExpertModel:
         Train models using all buffered data.
         """
         if not self.input_buffer:
-            print(f"[WARNING] No data to train for track {self.track_name}")
+            self.logger.warning("No data to train for track %s", self.track_name)
             return
 
-        print(f"[INFO] Training models for track: {self.track_name} with {len(self.input_buffer)} chunks")
+        self.logger.info(
+            "Training models for track %s with %d chunks",
+            self.track_name,
+            len(self.input_buffer),
+        )
         
         # Combine all data
         input_features = pd.concat(self.input_buffer, ignore_index=True)
         target_features = pd.concat(self.target_buffer, ignore_index=True)
+
+        normalized_positions = input_features['normalized_position']
+        if self.debug_enabled:
+            self._debug(
+                "Input feature summary",
+                track=self.track_name,
+                samples=len(normalized_positions),
+                min_pos=float(normalized_positions.min()),
+                max_pos=float(normalized_positions.max()),
+                nan_positions=int(normalized_positions.isna().sum()),
+                unique_positions=int(normalized_positions.nunique()),
+                duplicate_positions=int(len(normalized_positions) - normalized_positions.nunique())
+            )
+            if 'track' in input_features.columns:
+                unique_tracks = input_features['track'].dropna().unique()
+                self._debug(
+                    "Track label distribution",
+                    track_column_present=True,
+                    unique_track_count=int(len(unique_tracks)),
+                    multiple_tracks=bool(len(unique_tracks) > 1)
+                )
+            else:
+                self._debug("Track column missing from input features")
         
         # Clear buffers to free memory
         self.input_buffer = []
@@ -199,7 +245,10 @@ class TrackExpertModel:
         continuous_targets = position_targets + action_targets
         
         if continuous_targets:
-            print(f"[INFO] Fitting Cubic Spline for {len(continuous_targets)} continuous targets")
+            self.logger.info(
+                "Fitting Cubic Spline for %d continuous targets",
+                len(continuous_targets),
+            )
             
             # Prepare data for Spline: Sort by normalized_position and average duplicates
             # We need 'normalized_position' from input_features
@@ -214,6 +263,16 @@ class TrackExpertModel:
             # Sort and Group
             train_df = train_df.sort_values('x')
             train_df_grouped = train_df.groupby('x').mean()
+
+            if self.debug_enabled:
+                grouped_index = train_df_grouped.index.values
+                self._debug(
+                    "Grouped spline data",
+                    track=self.track_name,
+                    grouped_points=int(len(grouped_index)),
+                    grouped_min=float(grouped_index.min()) if len(grouped_index) else None,
+                    grouped_max=float(grouped_index.max()) if len(grouped_index) else None
+                )
             
             X_spline = train_df_grouped.index.values
             Y_spline = train_df_grouped[continuous_targets].values
@@ -291,6 +350,18 @@ class TrackExpertModel:
             pred = model.predict(positions_array_rf)
             predictions[model_name] = pred
         
+        if self.debug_enabled:
+            input_count = len(x_query)
+            debug_payload: Dict[str, Any] = {
+                'track': self.track_name,
+                'input_count': input_count,
+                'single_position': single_position
+            }
+            if input_count:
+                debug_payload['min_query'] = float(np.min(x_query))
+                debug_payload['max_query'] = float(np.max(x_query))
+            self._debug("Prediction request", **debug_payload)
+
         # Format results
         if single_position:
             # Return single dictionary
@@ -332,8 +403,19 @@ class TrackExpertModel:
 class ExpertPositionLearner:
     """Learn expert actions based on normalized track position from multiple expert laps, per track."""
     
-    def __init__(self):
+    def __init__(self, *, debug: bool = False, debug_logger: Optional[Callable[..., None]] = None, logger: Optional[logging.Logger] = None):
         self.track_models: Dict[str, TrackExpertModel] = {} # Dictionary to store models per track
+        self.debug_enabled = debug
+        self._debug_logger = debug_logger
+        self.logger = logger or logging.getLogger(f"{__name__}.ExpertPositionLearner")
+
+    def _debug(self, message: str, **debug_data: Any) -> None:
+        if not self.debug_enabled:
+            return
+        if self._debug_logger:
+            self._debug_logger(message, **debug_data)
+        else:
+            self.logger.debug(_format_debug_message(message, debug_data))
     
     def extract_position_features(self, df: pd.DataFrame) -> Dict[str, pd.DataFrame]:
         """
@@ -417,7 +499,10 @@ class ExpertPositionLearner:
         Returns:
             Dictionary with status (models are not trained yet)
         """
-        print(f"[INFO] Accumulating expert position data from {len(expert_laps)} expert laps")
+        self.logger.info(
+            "Accumulating expert position data from %d expert laps",
+            len(expert_laps),
+        )
         
         all_input_features = []
         all_target_features = []
@@ -427,6 +512,22 @@ class ExpertPositionLearner:
                 continue
                 
             lap_df = pd.DataFrame(lap_data)
+
+            if self.debug_enabled:
+                normalized_col = 'Graphics_normalized_car_position'
+                norm_series = lap_df.get(normalized_col, pd.Series(dtype=float))
+                self._debug(
+                    "Lap ingestion stats",
+                    lap_index=i,
+                    samples=len(lap_df),
+                    has_normalized_col=normalized_col in lap_df.columns,
+                    min_norm=float(norm_series.min()) if not norm_series.empty else None,
+                    max_norm=float(norm_series.max()) if not norm_series.empty else None,
+                    nan_norm=int(norm_series.isna().sum()) if not norm_series.empty else None
+                )
+                if 'Static_track' in lap_df.columns:
+                    track_counts = lap_df['Static_track'].value_counts().to_dict()
+                    self._debug("Lap track distribution", lap_index=i, track_counts=track_counts)
             
             # Extract position-based features for this lap
             feature_data = self.extract_position_features(lap_df)
@@ -438,6 +539,17 @@ class ExpertPositionLearner:
 
         input_features = pd.concat(all_input_features, ignore_index=True)
         target_features = pd.concat(all_target_features, ignore_index=True)
+
+        if self.debug_enabled:
+            norm_series = input_features['normalized_position']
+            self._debug(
+                "Combined lap stats",
+                samples=len(norm_series),
+                min_norm=float(norm_series.min()),
+                max_norm=float(norm_series.max()),
+                nan_norm=int(norm_series.isna().sum()),
+                unique_tracks=input_features['track'].dropna().unique().tolist()
+            )
         
         # Get track name (assume single track as per requirement)
         if 'track' not in input_features.columns or input_features['track'].empty:
@@ -447,7 +559,12 @@ class ExpertPositionLearner:
         
         # Get or create track model
         if track not in self.track_models:
-            self.track_models[track] = TrackExpertModel(track)
+            self.track_models[track] = TrackExpertModel(
+                track,
+                debug=self.debug_enabled,
+                debug_logger=self._debug,
+                logger=self.logger,
+            )
         
         track_model = self.track_models[track]
         
@@ -464,7 +581,10 @@ class ExpertPositionLearner:
         """
         Train all buffered models.
         """
-        print(f"[INFO] Finalizing training for {len(self.track_models)} tracks")
+        self.logger.info(
+            "Finalizing training for %d tracks",
+            len(self.track_models),
+        )
         for track, model in self.track_models.items():
             model.fit_model()
 
@@ -479,12 +599,33 @@ class ExpertPositionLearner:
         if track_name not in self.track_models:
             raise ValueError(f"No model trained for track: {track_name}")
             
-        return self.track_models[track_name].predict(normalized_positions)
+        predictions = self.track_models[track_name].predict(normalized_positions)
+
+        if self.debug_enabled:
+            if isinstance(normalized_positions, (list, np.ndarray)):
+                pos_array = np.asarray(normalized_positions, dtype=float)
+                min_pos = float(np.min(pos_array)) if pos_array.size else None
+                max_pos = float(np.max(pos_array)) if pos_array.size else None
+                self._debug(
+                    "Predicted expert actions",
+                    track=track_name,
+                    request_count=int(len(pos_array)),
+                    min_norm=min_pos,
+                    max_norm=max_pos
+                )
+            else:
+                self._debug(
+                    "Predicted expert action",
+                    track=track_name,
+                    normalized_position=float(normalized_positions)
+                )
+
+        return predictions
 
 class ExpertImitateLearningService:
     """Main imitation learning service that focuses on trajectory optimization"""
     
-    def __init__(self, models_directory: str = "imitation_models"):
+    def __init__(self, models_directory: str = "imitation_models", *, debug: bool = False, logger: Optional[logging.Logger] = None):
         """
         Initialize the imitation learning service
         
@@ -494,9 +635,18 @@ class ExpertImitateLearningService:
         self.models_directory = Path(models_directory)
         self.models_directory.mkdir(exist_ok=True)
         
-        self.position_learner = ExpertPositionLearner()
+        self.logger = logger or logging.getLogger(f"{__name__}.{self.__class__.__name__}")
+        self.debug_enabled = debug
+        self.position_learner = ExpertPositionLearner(
+            debug=debug,
+            debug_logger=self._debug,
+            logger=self.logger,
+        )
         
-        print(f"[INFO] ImitationLearningService initialized. Models directory: {self.models_directory}")
+        self.logger.info(
+            "ImitationLearningService initialized. Models directory: %s",
+            self.models_directory,
+        )
     
     def get_shared_data_cache(self):
         """Get shared data cache instance"""
@@ -514,7 +664,10 @@ class ExpertImitateLearningService:
             Dictionary with trained models and learning insights, serialized objects and ready for storage
         """
         
-        print(f"[INFO {self.__class__.__name__}] Learning from cached top laps: {top_laps_cache_key}")
+        self.logger.info(
+            "Learning from cached top laps: %s",
+            top_laps_cache_key,
+        )
 
         telemetry_store = self.get_shared_data_cache()
         if not telemetry_store.has_cached_data(top_laps_cache_key):
@@ -530,6 +683,14 @@ class ExpertImitateLearningService:
             # Check for empty data
             if not chunk_data:
                 continue
+
+            if self.debug_enabled:
+                self._debug(
+                    "Processing chunk",
+                    chunk_id=chunk_id,
+                    laps=len(chunk_data),
+                    first_lap_samples=len(chunk_data[0]) if chunk_data else 0
+                )
 
             # Learn expert position mapping (this is the only learning model)
             self.position_learner.learn_expert_position_mapping(chunk_data)
@@ -577,7 +738,7 @@ class ExpertImitateLearningService:
         
         # Check if models exist
         if not self.position_learner.track_models:
-            print("[WARNING] No position models available")
+            self.logger.warning("No position models available")
             return {"error": "No trained models available"}
         
         if processed_df.empty:
@@ -612,6 +773,8 @@ class ExpertImitateLearningService:
                 predictions['optimal_actions'] = {"error": "No normalized track position data available"}
                 
         except Exception as e:
+            if self.debug_enabled:
+                self._debug("Prediction failure", error=str(e))
             raise Exception(f"[WARNING] Could not predict expert actions: {e}")
         
         # If no specific models are available, provide error
@@ -619,6 +782,12 @@ class ExpertImitateLearningService:
             raise Exception("[Error] No valid model available for predictions")
         
         return predictions
+
+    def _debug(self, message: str, **debug_data: Any) -> None:
+        if not self.debug_enabled:
+            return
+        formatted = _format_debug_message(message, debug_data if debug_data else None)
+        self.logger.debug(formatted)
     
     def _generate_learning_summary(self, results: Dict[str, Any]) -> Dict[str, Any]:
         """Generate a summary of learning results"""
@@ -819,7 +988,10 @@ class ExpertImitateLearningService:
             except Exception as e:
                 raise Exception(f"[WARNING] Failed to process batch {batch_start}-{batch_end}: {e}")
 
-        print(f"[INFO] Completed expert state extraction. Extracted features for {len(expert_feature_rows)} records")
+        self.logger.info(
+            "Completed expert state extraction for %d records",
+            len(expert_feature_rows),
+        )
         return expert_feature_rows
   
     # Visualization utilities moved to telemetry_segment_visualizer.visualize_optimal_segments
@@ -834,7 +1006,7 @@ class ExpertImitateLearningService:
         if not self.position_learner.track_models:
             raise ValueError("No trained models available to serialize. Train models first.")
         
-        print("[INFO] Serializing current position models (memory-efficient)...")
+        self.logger.info("Serializing current position models (memory-efficient)")
         
         try:
             # Build result structure directly without deep copying the entire model
@@ -844,7 +1016,7 @@ class ExpertImitateLearningService:
             serialized_tracks = {}
             
             for track_name, track_model in self.position_learner.track_models.items():
-                print(f"[INFO] Serializing models for track: {track_name}")
+                self.logger.info("Serializing models for track: %s", track_name)
                 
                 # Get components from the track model
                 track_data = track_model.get_serializable_components()
@@ -871,7 +1043,7 @@ class ExpertImitateLearningService:
             
             result['track_models'] = serialized_tracks
             
-            print("[INFO] Serialization completed successfully")
+            self.logger.info("Serialization completed successfully")
             return result
             
         except Exception as e:
@@ -890,16 +1062,21 @@ class ExpertImitateLearningService:
             Self (ExpertImitateLearningService): The current instance with loaded models
         """
         try:
-            print("[INFO] Deserializing imitation models...")
+            self.logger.info("Deserializing imitation models")
             
             if 'track_models' in serialized_results:
-                print("[INFO] Deserializing track models...")
+                self.logger.info("Deserializing track models")
                 
                 for track_name, track_data in serialized_results['track_models'].items():
-                    print(f"[INFO] Deserializing models for track: {track_name}")
+                    self.logger.info("Deserializing models for track: %s", track_name)
                     
                     # Create new TrackExpertModel
-                    track_model = TrackExpertModel(track_name)
+                    track_model = TrackExpertModel(
+                        track_name,
+                        debug=self.debug_enabled,
+                        debug_logger=self._debug,
+                        logger=self.logger,
+                    )
                     components = {}
                     
                     # Deserialize models
@@ -920,7 +1097,10 @@ class ExpertImitateLearningService:
                     # Store in learner
                     self.position_learner.track_models[track_name] = track_model
                 
-                print(f"[INFO] Successfully deserialized models for {len(self.position_learner.track_models)} tracks")
+                self.logger.info(
+                    "Successfully deserialized models for %d tracks",
+                    len(self.position_learner.track_models),
+                )
             else:
                 raise ValueError("No track_models found in serialized data")
                 
@@ -964,7 +1144,7 @@ class ExpertImitateLearningService:
             return encoded_data
                 
         except Exception as e:
-            print(f"[ERROR] Failed to serialize models: {e}")
+            self.logger.error("Failed to serialize models: %s", e)
             raise e
     
     def deserialize_data(self, model_data: str) -> Dict[str, Any]:
