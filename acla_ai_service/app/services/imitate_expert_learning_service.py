@@ -189,29 +189,6 @@ class TrackExpertModel:
         input_features = pd.concat(self.input_buffer, ignore_index=True)
         target_features = pd.concat(self.target_buffer, ignore_index=True)
 
-        normalized_positions = input_features['normalized_position']
-        if self.debug_enabled:
-            self._debug(
-                "Input feature summary",
-                track=self.track_name,
-                samples=len(normalized_positions),
-                min_pos=float(normalized_positions.min()),
-                max_pos=float(normalized_positions.max()),
-                nan_positions=int(normalized_positions.isna().sum()),
-                unique_positions=int(normalized_positions.nunique()),
-                duplicate_positions=int(len(normalized_positions) - normalized_positions.nunique())
-            )
-            if 'track' in input_features.columns:
-                unique_tracks = input_features['track'].dropna().unique()
-                self._debug(
-                    "Track label distribution",
-                    track_column_present=True,
-                    unique_track_count=int(len(unique_tracks)),
-                    multiple_tracks=bool(len(unique_tracks) > 1)
-                )
-            else:
-                self._debug("Track column missing from input features")
-        
         # Clear buffers to free memory
         self.input_buffer = []
         self.target_buffer = []
@@ -264,16 +241,6 @@ class TrackExpertModel:
             train_df = train_df.sort_values('x')
             train_df_grouped = train_df.groupby('x').mean()
 
-            if self.debug_enabled:
-                grouped_index = train_df_grouped.index.values
-                self._debug(
-                    "Grouped spline data",
-                    track=self.track_name,
-                    grouped_points=int(len(grouped_index)),
-                    grouped_min=float(grouped_index.min()) if len(grouped_index) else None,
-                    grouped_max=float(grouped_index.max()) if len(grouped_index) else None
-                )
-            
             X_spline = train_df_grouped.index.values
             Y_spline = train_df_grouped[continuous_targets].values
             
@@ -360,7 +327,6 @@ class TrackExpertModel:
             if input_count:
                 debug_payload['min_query'] = float(np.min(x_query))
                 debug_payload['max_query'] = float(np.max(x_query))
-            self._debug("Prediction request", **debug_payload)
 
         # Format results
         if single_position:
@@ -512,22 +478,6 @@ class ExpertPositionLearner:
                 continue
                 
             lap_df = pd.DataFrame(lap_data)
-
-            if self.debug_enabled:
-                normalized_col = 'Graphics_normalized_car_position'
-                norm_series = lap_df.get(normalized_col, pd.Series(dtype=float))
-                self._debug(
-                    "Lap ingestion stats",
-                    lap_index=i,
-                    samples=len(lap_df),
-                    has_normalized_col=normalized_col in lap_df.columns,
-                    min_norm=float(norm_series.min()) if not norm_series.empty else None,
-                    max_norm=float(norm_series.max()) if not norm_series.empty else None,
-                    nan_norm=int(norm_series.isna().sum()) if not norm_series.empty else None
-                )
-                if 'Static_track' in lap_df.columns:
-                    track_counts = lap_df['Static_track'].value_counts().to_dict()
-                    self._debug("Lap track distribution", lap_index=i, track_counts=track_counts)
             
             # Extract position-based features for this lap
             feature_data = self.extract_position_features(lap_df)
@@ -540,17 +490,6 @@ class ExpertPositionLearner:
         input_features = pd.concat(all_input_features, ignore_index=True)
         target_features = pd.concat(all_target_features, ignore_index=True)
 
-        if self.debug_enabled:
-            norm_series = input_features['normalized_position']
-            self._debug(
-                "Combined lap stats",
-                samples=len(norm_series),
-                min_norm=float(norm_series.min()),
-                max_norm=float(norm_series.max()),
-                nan_norm=int(norm_series.isna().sum()),
-                unique_tracks=input_features['track'].dropna().unique().tolist()
-            )
-        
         # Get track name (assume single track as per requirement)
         if 'track' not in input_features.columns or input_features['track'].empty:
              raise ValueError("Track information missing in input features")
@@ -600,25 +539,6 @@ class ExpertPositionLearner:
             raise ValueError(f"No model trained for track: {track_name}")
             
         predictions = self.track_models[track_name].predict(normalized_positions)
-
-        if self.debug_enabled:
-            if isinstance(normalized_positions, (list, np.ndarray)):
-                pos_array = np.asarray(normalized_positions, dtype=float)
-                min_pos = float(np.min(pos_array)) if pos_array.size else None
-                max_pos = float(np.max(pos_array)) if pos_array.size else None
-                self._debug(
-                    "Predicted expert actions",
-                    track=track_name,
-                    request_count=int(len(pos_array)),
-                    min_norm=min_pos,
-                    max_norm=max_pos
-                )
-            else:
-                self._debug(
-                    "Predicted expert action",
-                    track=track_name,
-                    normalized_position=float(normalized_positions)
-                )
 
         return predictions
 
@@ -683,27 +603,7 @@ class ExpertImitateLearningService:
             # Check for empty data
             if not chunk_data:
                 continue
-
-            if self.debug_enabled:
-                self._debug(
-                    "Processing chunk",
-                    chunk_id=chunk_id,
-                    laps=len(chunk_data),
-                    first_lap_lens=len(chunk_data[0]) if chunk_data else 0
-                )
-                if chunk_data and chunk_data[0]:
-                    sample_size = min(4, len(chunk_data[0]))
-                    position_sample = [
-                        chunk_data[0][idx].get("Graphics_normalized_car_position")
-                        for idx in range(sample_size)
-                    ]
-                    self._debug(
-                        "First lap normalized position sample",
-                        chunk_id=chunk_id,
-                        sample_count=sample_size,
-                        positions=position_sample,
-                    )
-
+            
             # Learn expert position mapping (this is the only learning model)
             self.position_learner.learn_expert_position_mapping(chunk_data)
             total_samples += sum(len(lap) for lap in chunk_data)
