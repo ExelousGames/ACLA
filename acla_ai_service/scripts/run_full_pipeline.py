@@ -102,7 +102,7 @@ async def main():
             log_message(" Step 1: Prepare Training Data")
             log_message("="*50)
 
-            result = await service.prepare_training_data(top_laps_count=1)
+            result = await service.prepare_training_data(top_laps_count=5)
             if not result.get("success"):
                 log_message(f"Error in prepare_training_data: {result.get('error')}", level=logging.ERROR)
                 return
