@@ -689,8 +689,20 @@ class ExpertImitateLearningService:
                     "Processing chunk",
                     chunk_id=chunk_id,
                     laps=len(chunk_data),
-                    first_lap_samples=len(chunk_data[0]) if chunk_data else 0
+                    first_lap_lens=len(chunk_data[0]) if chunk_data else 0
                 )
+                if chunk_data and chunk_data[0]:
+                    sample_size = min(4, len(chunk_data[0]))
+                    position_sample = [
+                        chunk_data[0][idx].get("Graphics_normalized_car_position")
+                        for idx in range(sample_size)
+                    ]
+                    self._debug(
+                        "First lap normalized position sample",
+                        chunk_id=chunk_id,
+                        sample_count=sample_size,
+                        positions=position_sample,
+                    )
 
             # Learn expert position mapping (this is the only learning model)
             self.position_learner.learn_expert_position_mapping(chunk_data)

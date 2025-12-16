@@ -854,7 +854,19 @@ class FeatureProcessor:
         # Create grouper based on consecutive lap number changes
         # We use an external Series for grouping to avoid adding a helper column to the DataFrame
         laps = target_df["Graphics_completed_lap"].astype(int)
-        lap_grouper = (laps != laps.shift()).cumsum()
+        lap_change = laps != laps.shift()
+        
+        # Also check for normalized position reset if available to handle cases where lap counter doesn't update
+        if "Graphics_normalized_car_position" in target_df.columns:
+            norm_pos = target_df["Graphics_normalized_car_position"]
+            # Detect reset: current < 0.1 and previous > 0.9
+            # This handles the case where the car crosses the line (0.99 -> 0.00)
+            pos_reset = (norm_pos < 0.1) & (norm_pos.shift(1) > 0.9)
+            split_condition = lap_change | pos_reset
+        else:
+            split_condition = lap_change
+            
+        lap_grouper = split_condition.cumsum()
 
         lap_structs: List[Dict[str, Any]] = []
 
