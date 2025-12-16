@@ -859,6 +859,12 @@ class FeatureProcessor:
         lap_structs: List[Dict[str, Any]] = []
 
         for _, lap_df in target_df.groupby(lap_grouper, sort=False):
+            # Ensure lap has good coverage of the track (0.1 to 0.9)
+            if "Graphics_normalized_car_position" in lap_df.columns:
+                norm_pos = lap_df["Graphics_normalized_car_position"]
+                if not norm_pos.empty and (norm_pos.min() > 0.1 or norm_pos.max() < 0.9):
+                    continue
+
             lap_num = int(lap_df["Graphics_completed_lap"].iloc[-1])
 
             # Get lap time from max current_time
@@ -868,30 +874,6 @@ class FeatureProcessor:
                 max_time = float(np.nanmax(time_values))
                 if np.isfinite(max_time) and max_time > 0:
                     lap_time_ms = max_time
-
-            # Validate lap data integrity using normalized car position
-            if "Graphics_normalized_car_position" in lap_df.columns:
-                # Calculate gaps between consecutive positions
-                pos_values = lap_df["Graphics_normalized_car_position"].to_numpy(dtype=float)
-                gaps = np.diff(pos_values)
-                
-                # Dynamic spike detection using standard deviation
-                # Filter for positive gaps to calculate statistics (ignore minor noise/reversals)
-                valid_gaps = gaps[gaps > 1e-6]
-                
-                if valid_gaps.size > 10:
-                    mean_gap = np.mean(valid_gaps)
-                    std_gap = np.std(valid_gaps)
-                    
-                    # Define spike threshold: Mean + 10 * StdDev
-                    # Use a minimum of 0.01 (1% of track) to avoid false positives on clean data
-                    spike_threshold = max(0.01, mean_gap + 10 * std_gap)
-                    
-                    if np.any(gaps > spike_threshold):
-                        continue
-                elif np.any(gaps > 0.05):
-                    # Fallback for segments with too few points
-                    continue
 
             lap_structs.append({
                 "lap_num": lap_num,
