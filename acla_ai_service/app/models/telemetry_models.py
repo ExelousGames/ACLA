@@ -851,17 +851,14 @@ class FeatureProcessor:
                 "Missing required columns for lap split: " + ", ".join(missing_columns)
             )
 
-        working = target_df.copy()
-        working["Graphics_completed_lap"] = working["Graphics_completed_lap"].astype(int)
-
-        # Group by consecutive lap number changes to preserve order
-        working["__lap_group__"] = (
-            working["Graphics_completed_lap"] != working["Graphics_completed_lap"].shift()
-        ).cumsum()
+        # Create grouper based on consecutive lap number changes
+        # We use an external Series for grouping to avoid adding a helper column to the DataFrame
+        laps = target_df["Graphics_completed_lap"].astype(int)
+        lap_grouper = (laps != laps.shift()).cumsum()
 
         lap_structs: List[Dict[str, Any]] = []
 
-        for _, lap_df in working.groupby("__lap_group__", sort=False):
+        for _, lap_df in target_df.groupby(lap_grouper, sort=False):
             lap_num = int(lap_df["Graphics_completed_lap"].iloc[-1])
 
             # Get lap time from max current_time
@@ -872,13 +869,10 @@ class FeatureProcessor:
                 if np.isfinite(max_time) and max_time > 0:
                     lap_time_ms = max_time
 
-            # Drop helper column, preserve original order
-            lap_output_df = lap_df.drop(columns=["__lap_group__"], errors="ignore")
-
             lap_structs.append({
                 "lap_num": lap_num,
                 "lap_time_ms": lap_time_ms,
-                "dataframe": lap_output_df,
+                "dataframe": lap_df.copy(),
             })
 
         return lap_structs
