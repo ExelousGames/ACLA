@@ -869,6 +869,30 @@ class FeatureProcessor:
                 if np.isfinite(max_time) and max_time > 0:
                     lap_time_ms = max_time
 
+            # Validate lap data integrity using normalized car position
+            if "Graphics_normalized_car_position" in lap_df.columns:
+                # Calculate gaps between consecutive positions
+                pos_values = lap_df["Graphics_normalized_car_position"].to_numpy(dtype=float)
+                gaps = np.diff(pos_values)
+                
+                # Dynamic spike detection using standard deviation
+                # Filter for positive gaps to calculate statistics (ignore minor noise/reversals)
+                valid_gaps = gaps[gaps > 1e-6]
+                
+                if valid_gaps.size > 10:
+                    mean_gap = np.mean(valid_gaps)
+                    std_gap = np.std(valid_gaps)
+                    
+                    # Define spike threshold: Mean + 10 * StdDev
+                    # Use a minimum of 0.01 (1% of track) to avoid false positives on clean data
+                    spike_threshold = max(0.01, mean_gap + 10 * std_gap)
+                    
+                    if np.any(gaps > spike_threshold):
+                        continue
+                elif np.any(gaps > 0.05):
+                    # Fallback for segments with too few points
+                    continue
+
             lap_structs.append({
                 "lap_num": lap_num,
                 "lap_time_ms": lap_time_ms,
