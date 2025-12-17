@@ -24,7 +24,7 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.neural_network import MLPRegressor
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
-from scipy.interpolate import CubicSpline
+from scipy.interpolate import PchipInterpolator
 
 
 warnings.filterwarnings('ignore', category=UserWarning)
@@ -272,7 +272,7 @@ class TrackExpertModel:
         # --- 1. Train Spline for Position (normalized_pos -> position) ---
         if position_targets:
             self.logger.info(
-                "Fitting Cubic Spline for %d position targets",
+                "Fitting PchipInterpolator for %d position targets",
                 len(position_targets),
             )
             
@@ -280,12 +280,12 @@ class TrackExpertModel:
             Y_spline = train_df_grouped[position_targets].values
             
             # Fit Spline
-            self.models['position_spline'] = CubicSpline(X_spline, Y_spline, bc_type='natural' )
+            self.models['position_spline'] = PchipInterpolator(X_spline, Y_spline)
             
             for t in position_targets:
                  self.performance_metrics[t] = {
                     'r2': 1.0,
-                    'type': 'cubic_spline'
+                    'type': 'pchip_interpolator'
                  }
 
         # --- 2. Train Neural Network for other features (position -> others) ---
