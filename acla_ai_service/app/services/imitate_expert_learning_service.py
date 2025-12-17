@@ -181,10 +181,11 @@ class TrackExpertModel:
             self.logger.warning("No data to train for track %s", self.track_name)
             return
 
+        num_laps = len(self.input_buffer)
         self.logger.info(
             "Training models for track %s with %d chunks",
             self.track_name,
-            len(self.input_buffer),
+            num_laps,
         )
         
         # Combine all data
@@ -239,9 +240,35 @@ class TrackExpertModel:
         for t in all_targets:
             train_df[t] = target_features[t]
             
-        # Sort and Group by normalized position
-        train_df = train_df.sort_values('x')
-        train_df_grouped = train_df.groupby('x').mean()
+        # --- Adaptive Quantile Binning Strategy ---
+        # Bin count is based on track characteristics (estimated from single lap),
+        # not the total sample count from all laps
+        n_samples = len(train_df)
+        
+        # Calculate average samples per lap to estimate single-lap density
+        avg_samples_per_lap = n_samples / max(1, num_laps)
+        
+        # Determine bins based on single lap density to maintain consistent track resolution
+        # Target: 1 bin per ~20 samples on average for a single lap
+        num_bins = int(min(500, max(30, avg_samples_per_lap / 50)))
+        
+        self.logger.info(f"Adaptive quantile binning: {n_samples} samples from {num_laps} laps, avg {avg_samples_per_lap:.0f} per lap, using {num_bins} bins")
+
+        # Apply binning using qcut (variable width, equal population)
+        # duplicates='drop' handles cases where many points are identical
+        try:
+            train_df['bin_index'] = pd.qcut(train_df['x'], q=num_bins, labels=False, duplicates='drop')
+        except ValueError as e:
+             # Fallback if qcut fails (e.g. too few unique values)
+             self.logger.warning(f"Quantile binning failed: {e}, falling back to fixed width")
+             train_df['bin_index'] = pd.cut(train_df['x'], bins=num_bins, labels=False, include_lowest=True)
+        
+        # Group by bin_index and take the median of all columns (including 'x')
+        # This averages the normalized_position and targets within each bin
+        train_df_grouped = train_df.groupby('bin_index').median()
+        
+        # Ensure 'x' is strictly increasing (it should be due to binning, but good to be safe)
+        train_df_grouped = train_df_grouped.sort_values('x')
 
         # --- 1. Train Spline for Position (normalized_pos -> position) ---
         if position_targets:
@@ -250,11 +277,11 @@ class TrackExpertModel:
                 len(position_targets),
             )
             
-            X_spline = train_df_grouped.index.values
+            X_spline = train_df_grouped['x'].values
             Y_spline = train_df_grouped[position_targets].values
             
             # Fit Spline
-            self.models['position_spline'] = CubicSpline(X_spline, Y_spline)
+            self.models['position_spline'] = CubicSpline(X_spline, Y_spline, bc_type='natural' )
             
             for t in position_targets:
                  self.performance_metrics[t] = {
@@ -272,7 +299,8 @@ class TrackExpertModel:
             # Input: Position (X, Y, Z) + Normalized Position
             # We combine spatial info (richer representation) with track progress (disambiguates crossovers/figure-8s)
             pos_values = train_df_grouped[position_targets].values
-            norm_pos_values = train_df_grouped.index.values.reshape(-1, 1)
+            # FIX: Use the averaged normalized position ('x')
+            norm_pos_values = train_df_grouped['x'].values.reshape(-1, 1)
             X_nn = np.hstack([pos_values, norm_pos_values])
             
             # Output: Other features
