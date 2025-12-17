@@ -250,7 +250,7 @@ class TrackExpertModel:
         
         # Determine bins based on single lap density to maintain consistent track resolution
         # Target: 1 bin per ~20 samples on average for a single lap
-        num_bins = int(min(500, max(30, avg_samples_per_lap / 50)))
+        num_bins = int(min(500, max(30, avg_samples_per_lap / 20)))
         
         self.logger.info(f"Adaptive quantile binning: {n_samples} samples from {num_laps} laps, avg {avg_samples_per_lap:.0f} per lap, using {num_bins} bins")
 
