@@ -242,7 +242,6 @@ class TrackExpertModel:
             
         # --- Adaptive Quantile Binning Strategy ---
         # Bin count is based on track characteristics (estimated from single lap),
-        # not the total sample count from all laps
         n_samples = len(train_df)
         
         # Calculate average samples per lap to estimate single-lap density
