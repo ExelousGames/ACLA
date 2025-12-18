@@ -24,7 +24,7 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.neural_network import MLPRegressor
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
-from scipy.interpolate import PchipInterpolator
+from scipy.interpolate import CubicSpline
 
 
 warnings.filterwarnings('ignore', category=UserWarning)
@@ -134,6 +134,25 @@ def _format_debug_message(message: str, debug_data: Optional[Dict[str, Any]] = N
     return f"{message} | {kv_pairs}"
 
 
+@dataclass
+class ExpertModelTrainingConfig:
+    """Configuration for expert model training and binning strategy."""
+    
+    # Bin size range (in meters)
+    min_bin_size: float = 20.0 
+    max_bin_size: float = 40.0   
+    
+    # Speed sensitivity slider (exponent)
+    # Controls how quickly the bin size transitions from max (low speed) to min (high speed).
+    # 1.0 = Linear transition
+    # > 1.0 = Stays large longer (less detail in medium speed)
+    # < 1.0 = Shrinks quickly to min size (more detail in medium speed)
+    speed_sensitivity: float = 2  # Controls curve of bin size reduction
+    
+    # Reference max speed for scaling (km/h) - used to normalize the curve
+    reference_max_speed: float = 300.0
+
+
 class TrackExpertModel:
     """
     Encapsulates the expert model for a single track.
@@ -153,6 +172,7 @@ class TrackExpertModel:
         self.debug_enabled = debug
         self._debug_logger = debug_logger
         self.logger = logger or logging.getLogger(f"{__name__}.TrackExpertModel")
+        self.config = ExpertModelTrainingConfig()
 
     def _debug(self, message: str, **debug_data: Any) -> None:
         if not self.debug_enabled:
@@ -240,27 +260,88 @@ class TrackExpertModel:
         for t in all_targets:
             train_df[t] = target_features[t]
             
-        # --- Adaptive Quantile Binning Strategy ---
-        # Bin count is based on track characteristics (estimated from single lap),
+        # --- Adaptive Binning Strategy ---
+        # Speed-based adaptive binning: bin sizes naturally emerge from speed profile
         n_samples = len(train_df)
         
-        # Calculate average samples per lap to estimate single-lap density
-        avg_samples_per_lap = n_samples / max(1, num_laps)
-        
-        # Determine bins based on single lap density to maintain consistent track resolution
-        # Target: 1 bin per ~20 samples on average for a single lap
-        num_bins = int(min(500, max(30, avg_samples_per_lap / 20)))
-        
-        self.logger.info(f"Adaptive quantile binning: {n_samples} samples from {num_laps} laps, avg {avg_samples_per_lap:.0f} per lap, using {num_bins} bins")
+        # Check if speed is available for adaptive binning
+        speed_col = ExpertFeatureCatalog.ExpertOptimalFeature.EXPERT_OPTIMAL_SPEED.value
+        has_speed = speed_col in train_df.columns
 
-        # Apply binning using qcut (variable width, equal population)
-        # duplicates='drop' handles cases where many points are identical
-        try:
-            train_df['bin_index'] = pd.qcut(train_df['x'], q=num_bins, labels=False, duplicates='drop')
-        except ValueError as e:
-             # Fallback if qcut fails (e.g. too few unique values)
-             self.logger.warning(f"Quantile binning failed: {e}, falling back to fixed width")
-             train_df['bin_index'] = pd.cut(train_df['x'], bins=num_bins, labels=False, include_lowest=True)
+        # Apply binning
+        if has_speed:
+            train_df_sorted = train_df.sort_values('x')
+            
+            # Compute dx (normalized distance)
+            dx = train_df_sorted['x'].diff().fillna(0)
+            dx = dx.clip(lower=0) 
+            
+            # Calculate Track Length dynamically from data
+            track_length = 5000.0 # Default fallback
+            
+            pos_cols = [
+                ExpertFeatureCatalog.ExpertOptimalFeature.EXPERT_OPTIMAL_PLAYER_POS_X.value,
+                ExpertFeatureCatalog.ExpertOptimalFeature.EXPERT_OPTIMAL_PLAYER_POS_Y.value,
+                ExpertFeatureCatalog.ExpertOptimalFeature.EXPERT_OPTIMAL_PLAYER_POS_Z.value
+            ]
+            
+            if all(c in train_df_sorted.columns for c in pos_cols):
+                # Estimate track length by measuring the path through averaged bin centers
+                # Using median to be robust against outliers
+                # Using 50 bins to smooth out noise/jitter while retaining general track shape
+                # This avoids the "coastline paradox" where noisy data leads to massive overestimation
+                temp_bins = pd.cut(train_df_sorted['x'], bins=50, labels=False)
+                temp_grouped = train_df_sorted.groupby(temp_bins)[pos_cols].median()
+                
+                coords = temp_grouped.values
+                diffs = np.diff(coords, axis=0)
+                dists = np.sqrt((diffs ** 2).sum(axis=1))
+                track_length = np.sum(dists)
+                
+                self.logger.info(f"Estimated track length: {track_length:.2f} meters")
+            
+            # Get speeds
+            speeds = train_df_sorted[speed_col]
+            
+            # Calculate target bin size for each point based on speed
+            # Power-law interpolation between min_bin_size and max_bin_size
+            
+            # 1. Normalize speed (0..1) based on reference max speed
+            norm_speed = (speeds / self.config.reference_max_speed).clip(0.0, 1.0)
+            
+            # 2. Apply sensitivity curve
+            t = np.power(norm_speed, self.config.speed_sensitivity)
+            
+            # 3. Interpolate target bin size in meters
+            # Slower speed -> Larger bin size, Highest speed -> Normal (min) size
+            target_bin_size_meters = self.config.max_bin_size - (self.config.max_bin_size - self.config.min_bin_size) * t
+            
+            # 4. Convert to density metric (1 / size)
+            # This represents "bins per meter" at each point
+            density = 1.0 / target_bin_size_meters
+            
+            # 5. Integrate density along the track
+            # This cumulative metric naturally represents the bin index
+            # Scale normalized distance (dx) to meters using estimated track length
+            metric = density * (dx * track_length)
+            cumulative_metric = metric.cumsum()
+            
+            # The final cumulative value IS the natural number of bins
+            total_metric = cumulative_metric.iloc[-1] if not cumulative_metric.empty else 1.0
+            num_bins = max(10, int(np.ceil(total_metric)))  # Only enforce minimum for safety
+            
+            try:
+                train_df_sorted['bin_index'] = pd.cut(cumulative_metric, bins=num_bins, labels=False, include_lowest=True)
+                train_df = train_df_sorted
+            except Exception as e:
+                self.logger.warning(f"Speed-weighted binning failed: {e}, falling back to fixed width")
+                # Fallback with reasonable default
+                num_bins = max(50, min(500, n_samples // 10))
+                train_df['bin_index'] = pd.cut(train_df['x'], bins=num_bins, labels=False, include_lowest=True)
+        else:
+             raise ValueError("Speed data is required for adaptive binning strategy")
+             
+        self.logger.info(f"Adaptive binning: {n_samples} samples, {num_laps} laps. Natural bins from speed profile: {num_bins}")
         
         # Group by bin_index and take the median of all columns (including 'x')
         # This averages the normalized_position and targets within each bin
@@ -271,21 +352,17 @@ class TrackExpertModel:
 
         # --- 1. Train Spline for Position (normalized_pos -> position) ---
         if position_targets:
-            self.logger.info(
-                "Fitting PchipInterpolator for %d position targets",
-                len(position_targets),
-            )
             
             X_spline = train_df_grouped['x'].values
             Y_spline = train_df_grouped[position_targets].values
             
-            # Fit Spline
-            self.models['position_spline'] = PchipInterpolator(X_spline, Y_spline)
+            # Fit Cubic Spline
+            self.models['position_spline'] = CubicSpline(X_spline, Y_spline)
             
             for t in position_targets:
                  self.performance_metrics[t] = {
                     'r2': 1.0,
-                    'type': 'pchip_interpolator'
+                    'type': 'cubic_spline'
                  }
 
         # --- 2. Train Neural Network for other features (position -> others) ---
