@@ -71,7 +71,7 @@ class SegmentFeatureCatalog:
         Combines base telemetry, expert optimal, expert context, and tire grip context.
         """
         features = []
-        features.extend(TelemetryFeatures.get_features_for_imitate_expert())
+        features.extend(TelemetryFeatures.get_features_for_learning_expert())
         features.extend([f.value for f in ExpertFeatureCatalog.ExpertFeatures])
         features.extend([f.value for f in TireGripFeatureCatalog.ContextFeature])
 

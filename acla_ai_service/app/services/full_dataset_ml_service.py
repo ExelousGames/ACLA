@@ -114,7 +114,7 @@ class Full_dataset_TelemetryMLService:
         self.label_encoders = {}
         # Cache frequently used feature lists to avoid recreating TelemetryFeatures each prediction
         try:
-            self._imitate_expert_feature_names = self.telemetry_features.get_features_for_imitate_expert()
+            self._imitate_expert_feature_names = self.telemetry_features.get_features_for_learning_expert()
         except Exception:
             self._imitate_expert_feature_names = []
         
@@ -512,7 +512,7 @@ class Full_dataset_TelemetryMLService:
             processed_df = processor.general_cleaning_for_analysis()
             processor.add_time_delta()
             processor.flip_y_z_features()
-            features = self._imitate_expert_feature_names or self.telemetry_features.get_features_for_imitate_expert()
+            features = self._imitate_expert_feature_names or self.telemetry_features.get_features_for_learning_expert()
 
             filtered_df = processor.filter_features_by_list(processed_df, features)
             processed_telemetry_dict = (
@@ -839,7 +839,7 @@ class Full_dataset_TelemetryMLService:
         total_processed = 0
         chunk_idx = 0
 
-        features = self._imitate_expert_feature_names or self.telemetry_features.get_features_for_imitate_expert()
+        features = self._imitate_expert_feature_names or self.telemetry_features.get_features_for_learning_expert()
 
         def update_top_laps(candidate: Dict[str, Any]) -> None:
             """Maintain the fastest laps for expert reference per track."""
@@ -1083,6 +1083,21 @@ class Full_dataset_TelemetryMLService:
                 if "Graphics_is_valid_lap" in lap_df.columns:
                     if not (lap_df["Graphics_is_valid_lap"] == 1).all():
                         continue
+
+                # Check for irregular time gaps
+                if "Graphics_current_time" in lap_df.columns and len(lap_df) > 2:
+                    time_diffs = lap_df["Graphics_current_time"].diff().dropna()
+                    valid_diffs = time_diffs[time_diffs > 0]
+                    
+                    if not valid_diffs.empty:
+                        mean_diff = valid_diffs.mean()
+                        std_diff = valid_diffs.std()
+                        
+                        if std_diff > 0:
+                            # Check if standard deviation is a significant percentage of the mean (e.g. > 50%)
+                            # This indicates irregular gaps far from the majority
+                            if std_diff > (mean_diff * 0.5):
+                                continue
 
                 lap_records = lap_df.to_dict("records") if not lap_df.empty else []
 

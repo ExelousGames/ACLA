@@ -1070,7 +1070,7 @@ class ExpertActionTransformer(nn.Module):
         if self.feature_scaler is not None and self.feature_scaler.is_fitted():
             feature_names = self.feature_scaler.get_feature_names()
         else:
-            feature_names = TelemetryFeatures.get_features_for_imitate_expert()
+            feature_names = TelemetryFeatures.get_features_for_learning_expert()
 
         feature_count = len(feature_names)
         
