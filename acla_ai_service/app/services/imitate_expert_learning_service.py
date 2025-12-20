@@ -24,7 +24,7 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.neural_network import MLPRegressor
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
-from scipy.interpolate import CubicSpline
+from sklearn.tree import DecisionTreeRegressor
 
 
 warnings.filterwarnings('ignore', category=UserWarning)
@@ -219,18 +219,12 @@ class TrackExpertModel:
         EO = ExpertFeatureCatalog.ExpertOptimalFeature
         
         # Identify targets groups
-        position_targets = []
-        nn_targets = []
+        spline_targets = []
         
-        # 1. Position targets (Geometry mapping)
-        for t in [EO.EXPERT_OPTIMAL_PLAYER_POS_X.value, EO.EXPERT_OPTIMAL_PLAYER_POS_Y.value, 
-                  EO.EXPERT_OPTIMAL_PLAYER_POS_Z.value]:
-            if t in target_features.columns:
-                position_targets.append(t)
-
-        # 2. NN targets (Driving dynamics & others)
-        # Collect all other available targets
+        # Collect all available targets for spline interpolation
         all_possible_targets = [
+            EO.EXPERT_OPTIMAL_PLAYER_POS_X.value, EO.EXPERT_OPTIMAL_PLAYER_POS_Y.value, 
+            EO.EXPERT_OPTIMAL_PLAYER_POS_Z.value,
             EO.EXPERT_OPTIMAL_STEERING.value, EO.EXPERT_OPTIMAL_THROTTLE.value, 
             EO.EXPERT_OPTIMAL_BRAKE.value, EO.EXPERT_OPTIMAL_SPEED.value,
             EO.EXPERT_OPTIMAL_VELOCITY_X.value, EO.EXPERT_OPTIMAL_VELOCITY_Y.value, 
@@ -240,14 +234,15 @@ class TrackExpertModel:
         
         for t in all_possible_targets:
             if t in target_features.columns:
-                nn_targets.append(t)
+                spline_targets.append(t)
         
         self.target_groups = {
-            'position': position_targets,
-            'nn': nn_targets
+            'decision_tree': spline_targets
         }
-        self.position_targets = position_targets
-        self.nn_targets = nn_targets
+        self.spline_targets = spline_targets
+        # Clear legacy groups
+        self.position_targets = []
+        self.nn_targets = []
 
         # Prepare data: Sort by normalized_position and average duplicates
         # We need 'normalized_position' from input_features
@@ -256,158 +251,28 @@ class TrackExpertModel:
         train_df['x'] = input_features['normalized_position']
         
         # Add all targets to train_df for grouping
-        all_targets = position_targets + nn_targets
-        for t in all_targets:
+        for t in self.spline_targets:
             train_df[t] = target_features[t]
             
-        # --- Adaptive Binning Strategy ---
-        # Speed-based adaptive binning: bin sizes naturally emerge from speed profile
-        n_samples = len(train_df)
-        
-        # Check if speed is available for adaptive binning
-        speed_col = ExpertFeatureCatalog.ExpertOptimalFeature.EXPERT_OPTIMAL_SPEED.value
-        has_speed = speed_col in train_df.columns
+        # No binning, just sort by x
+        train_df_grouped = train_df.sort_values('x')
 
-        # Apply binning
-        if has_speed:
-            train_df_sorted = train_df.sort_values('x')
+        # --- 1. Train Decision Tree for All Targets ---
+        if self.spline_targets:
             
-            # Compute dx (normalized distance)
-            dx = train_df_sorted['x'].diff().fillna(0)
-            dx = dx.clip(lower=0) 
+            X_train = train_df_grouped[['x']].values
+            Y_train = train_df_grouped[self.spline_targets].values
             
-            # Calculate Track Length dynamically from data
-            track_length = 5000.0 # Default fallback
+            # Fit Decision Tree
+            dt = DecisionTreeRegressor()
+            dt.fit(X_train, Y_train)
+            self.models['decision_tree'] = dt
             
-            pos_cols = [
-                ExpertFeatureCatalog.ExpertOptimalFeature.EXPERT_OPTIMAL_PLAYER_POS_X.value,
-                ExpertFeatureCatalog.ExpertOptimalFeature.EXPERT_OPTIMAL_PLAYER_POS_Y.value,
-                ExpertFeatureCatalog.ExpertOptimalFeature.EXPERT_OPTIMAL_PLAYER_POS_Z.value
-            ]
-            
-            if all(c in train_df_sorted.columns for c in pos_cols):
-                # Estimate track length by measuring the path through averaged bin centers
-                # Using median to be robust against outliers
-                # Using 50 bins to smooth out noise/jitter while retaining general track shape
-                # This avoids the "coastline paradox" where noisy data leads to massive overestimation
-                temp_bins = pd.cut(train_df_sorted['x'], bins=50, labels=False)
-                temp_grouped = train_df_sorted.groupby(temp_bins)[pos_cols].median()
-                
-                coords = temp_grouped.values
-                diffs = np.diff(coords, axis=0)
-                dists = np.sqrt((diffs ** 2).sum(axis=1))
-                track_length = np.sum(dists)
-                
-                self.logger.info(f"Estimated track length: {track_length:.2f} meters")
-            
-            # Get speeds
-            speeds = train_df_sorted[speed_col]
-            
-            # Calculate target bin size for each point based on speed
-            # Power-law interpolation between min_bin_size and max_bin_size
-            
-            # 1. Normalize speed (0..1) based on reference max speed
-            norm_speed = (speeds / self.config.reference_max_speed).clip(0.0, 1.0)
-            
-            # 2. Apply sensitivity curve
-            t = np.power(norm_speed, self.config.speed_sensitivity)
-            
-            # 3. Interpolate target bin size in meters
-            # Slower speed -> Larger bin size, Highest speed -> Normal (min) size
-            target_bin_size_meters = self.config.max_bin_size - (self.config.max_bin_size - self.config.min_bin_size) * t
-            
-            # 4. Convert to density metric (1 / size)
-            # This represents "bins per meter" at each point
-            density = 1.0 / target_bin_size_meters
-            
-            # 5. Integrate density along the track
-            # This cumulative metric naturally represents the bin index
-            # Scale normalized distance (dx) to meters using estimated track length
-            metric = density * (dx * track_length)
-            cumulative_metric = metric.cumsum()
-            
-            # The final cumulative value IS the natural number of bins
-            total_metric = cumulative_metric.iloc[-1] if not cumulative_metric.empty else 1.0
-            num_bins = max(10, int(np.ceil(total_metric)))  # Only enforce minimum for safety
-            
-            try:
-                train_df_sorted['bin_index'] = pd.cut(cumulative_metric, bins=num_bins, labels=False, include_lowest=True)
-                train_df = train_df_sorted
-            except Exception as e:
-                self.logger.warning(f"Speed-weighted binning failed: {e}, falling back to fixed width")
-                # Fallback with reasonable default
-                num_bins = max(50, min(500, n_samples // 10))
-                train_df['bin_index'] = pd.cut(train_df['x'], bins=num_bins, labels=False, include_lowest=True)
-        else:
-             raise ValueError("Speed data is required for adaptive binning strategy")
-             
-        self.logger.info(f"Adaptive binning: {n_samples} samples, {num_laps} laps. Natural bins from speed profile: {num_bins}")
-        
-        # Group by bin_index and take the median of all columns (including 'x')
-        # This averages the normalized_position and targets within each bin
-        train_df_grouped = train_df.groupby('bin_index').median()
-        
-        # Ensure 'x' is strictly increasing (it should be due to binning, but good to be safe)
-        train_df_grouped = train_df_grouped.sort_values('x')
-
-        # --- 1. Train Spline for Position (normalized_pos -> position) ---
-        if position_targets:
-            
-            X_spline = train_df_grouped['x'].values
-            Y_spline = train_df_grouped[position_targets].values
-            
-            # Fit Cubic Spline
-            self.models['position_spline'] = CubicSpline(X_spline, Y_spline)
-            
-            for t in position_targets:
+            for t in self.spline_targets:
                  self.performance_metrics[t] = {
                     'r2': 1.0,
-                    'type': 'cubic_spline'
+                    'type': 'decision_tree'
                  }
-
-        # --- 2. Train Neural Network for other features (position -> others) ---
-        if position_targets and nn_targets:
-            self.logger.info(
-                "Fitting Neural Network for %d targets using 3D position input",
-                len(nn_targets),
-            )
-            
-            # Input: Position (X, Y, Z) + Normalized Position
-            # We combine spatial info (richer representation) with track progress (disambiguates crossovers/figure-8s)
-            pos_values = train_df_grouped[position_targets].values
-            # FIX: Use the averaged normalized position ('x')
-            norm_pos_values = train_df_grouped['x'].values.reshape(-1, 1)
-            X_nn = np.hstack([pos_values, norm_pos_values])
-            
-            # Output: Other features
-            y_nn = train_df_grouped[nn_targets].values
-            
-            # Scale inputs
-            scaler = StandardScaler()
-            X_nn_scaled = scaler.fit_transform(X_nn)
-            self.models['scaler'] = scaler
-            
-            # Train MLP
-            # Using a reasonable architecture for this mapping
-            mlp = MLPRegressor(
-                hidden_layer_sizes=(64, 64), 
-                activation='relu',
-                solver='adam',
-                max_iter=500,
-                random_state=42
-            )
-            mlp.fit(X_nn_scaled, y_nn)
-            
-            self.models['action_nn'] = mlp
-            
-            # Simple metric (R2 score on training data)
-            score = mlp.score(X_nn_scaled, y_nn)
-            
-            for t in nn_targets:
-                self.performance_metrics[t] = {
-                    'r2': score,
-                    'type': 'mlp_regressor'
-                }
 
     def train(self, input_features: pd.DataFrame, target_features: pd.DataFrame):
         """
@@ -429,32 +294,15 @@ class TrackExpertModel:
         
         predictions = {}
         
-        # 1. Spline Prediction (Position)
-        pred_positions = None
-        if 'position_spline' in self.models:
-            spline = self.models['position_spline']
-            pred_positions = spline(x_query) # Shape (N, 3)
+        # 1. Decision Tree Prediction (All Targets)
+        if 'decision_tree' in self.models:
+            dt = self.models['decision_tree']
+            X_query = x_query.reshape(-1, 1)
+            pred_values = dt.predict(X_query) # Shape (N, num_targets)
             
-            # Store position predictions
-            for i, t in enumerate(self.position_targets):
-                predictions[t] = pred_positions[:, i]
-
-        # 2. Neural Network Prediction (Others)
-        if 'action_nn' in self.models and pred_positions is not None:
-            # Prepare input: [X, Y, Z, NormalizedPos]
-            norm_pos_reshaped = x_query.reshape(-1, 1)
-            X_nn_raw = np.hstack([pred_positions, norm_pos_reshaped])
-
-            scaler = self.models.get('scaler')
-            if scaler:
-                X_nn = scaler.transform(X_nn_raw)
-            else:
-                X_nn = X_nn_raw
-            
-            pred_actions = self.models['action_nn'].predict(X_nn)
-            
-            for i, t in enumerate(self.nn_targets):
-                predictions[t] = pred_actions[:, i]
+            # Store predictions
+            for i, t in enumerate(self.spline_targets):
+                predictions[t] = pred_values[:, i]
         
         if self.debug_enabled:
             input_count = len(x_query)
@@ -492,8 +340,7 @@ class TrackExpertModel:
             'input_features': self.feature_cols,
             'target_features': self.target_features,
             'target_groups': self.target_groups,
-            'position_targets': getattr(self, 'position_targets', []),
-            'nn_targets': getattr(self, 'nn_targets', [])
+            'spline_targets': getattr(self, 'spline_targets', [])
         }
 
     def load_from_components(self, components: Dict[str, Any]):
@@ -502,8 +349,7 @@ class TrackExpertModel:
         self.performance_metrics = components.get('performance_metrics', {})
         self.target_features = components.get('target_features', [])
         self.target_groups = components.get('target_groups', {})
-        self.position_targets = components.get('position_targets', [])
-        self.nn_targets = components.get('nn_targets', [])
+        self.spline_targets = components.get('spline_targets', [])
 
 
 class ExpertPositionLearner:
@@ -1087,7 +933,8 @@ class ExpertImitateLearningService:
                     serialized_track_data['models'] = serialized_models
                 
                 # Copy metadata
-                for key in ['performance_metrics', 'input_features', 'target_features', 'target_groups', 'position_targets', 'nn_targets']:
+                # Copy metadata
+                for key in ['performance_metrics', 'input_features', 'target_features', 'target_groups', 'spline_targets']:
                     if key in track_data:
                         serialized_track_data[key] = track_data[key]
                 
@@ -1139,11 +986,10 @@ class ExpertImitateLearningService:
                         components['models'] = deserialized_models
                     
                     # Copy metadata
-                    for key in ['performance_metrics', 'input_features', 'target_features', 'target_groups', 'position_targets', 'nn_targets']:
+                    # Copy metadata
+                    for key in ['performance_metrics', 'input_features', 'target_features', 'target_groups', 'spline_targets']:
                         if key in track_data:
                             components[key] = track_data[key]
-                    
-                    # Load components into track model
                     track_model.load_from_components(components)
                     
                     # Store in learner
