@@ -113,7 +113,7 @@ class SegmentClassifierService:
         """
         annotations = await self.load_annotations()
         if not annotations:
-            raise ValueError("No annotations found.")
+            raise ValueError("No annotations found. Check the annotation cache key you provided.")
 
         # 1. Collect all unique labels (mapped to strings)
         all_labels = set()

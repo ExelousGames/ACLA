@@ -334,6 +334,11 @@ def main():
                         start = getattr(ann, "start_index", None)
                         end = getattr(ann, "end_index", None)
 
+                        # Skip if annotation is completely outside the visualization range
+                        if start is not None and end is not None:
+                            if end <= viz_start_idx or start >= viz_end_idx:
+                                continue
+
                         labels = ann.labels
                         display_labels = get_display_labels(labels)
                         label_str = ", ".join(display_labels)

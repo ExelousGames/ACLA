@@ -21,6 +21,12 @@ LABEL_MAPPING = {
     12: "Mistake - Accelerate too much",
     13: "Expert Speed Adherence",
     14: "Mistake - Release brake not smoothly",
+    15: "Mistake - Entry too wide",
+    16: "Mistake - Entry too narrow",
+    17: "Mistake - Mid-corner too wide",
+    18: "Mistake - Mid-corner too narrow",
+    19: "Mistake - Exit too wide",
+    20: "Mistake - Exit too narrow",
 }
 LABEL_NAME_TO_ID = {v: k for k, v in LABEL_MAPPING.items()}
 

@@ -312,8 +312,8 @@ class ZarrTelemetryStore:
         try:
             group = self._open_group(cache_key, mode="r")
             metadata = self._load_metadata_if_present(group, cache_key)
-            if metadata:
-                return bool(metadata.chunk_count)
+            if metadata and metadata.chunk_count > 0:
+                return True
 
             dataset_name = self._metadata_dataset_name()
             return any(name != dataset_name for name in group.array_keys())

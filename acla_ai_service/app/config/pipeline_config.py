@@ -11,4 +11,5 @@ class PipelineConfig:
     segments_cache_key: str = f"enriched_segments_"
     segment_cleanup: bool = True
     top_laps_cache_key: str = f"top_laps_"
-    annotation_cache_key: str = "manual_segment_annotations"
+    annotation_cache_key: str = "manual_segment_annotations_FirstBatchOfSegmentAnnotation"
+    ""
