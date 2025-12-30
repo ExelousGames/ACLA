@@ -26,20 +26,23 @@ class LSTMModel(nn.Module):
         super(LSTMModel, self).__init__()
         self.hidden_dim = hidden_dim
         self.num_layers = num_layers
-        self.lstm = nn.LSTM(input_dim, hidden_dim, num_layers, batch_first=True, dropout=0.2)
-        self.fc = nn.Linear(hidden_dim, output_dim)
+        # Bidirectional allows the model to see future context for each timestep
+        self.lstm = nn.LSTM(input_dim, hidden_dim, num_layers, batch_first=True, dropout=0.2, bidirectional=True)
+        # Output dim * 2 because of bidirectionality
+        self.fc = nn.Linear(hidden_dim * 2, output_dim)
         self.sigmoid = nn.Sigmoid()
 
     def forward(self, x, hidden=None):
         # x: (batch, seq_len, input_dim)
         # Initialize hidden state with zeros if not provided
         if hidden is None:
-            h0 = torch.zeros(self.num_layers, x.size(0), self.hidden_dim).to(x.device)
-            c0 = torch.zeros(self.num_layers, x.size(0), self.hidden_dim).to(x.device)
+            # num_layers * 2 for bidirectional
+            h0 = torch.zeros(self.num_layers * 2, x.size(0), self.hidden_dim).to(x.device)
+            c0 = torch.zeros(self.num_layers * 2, x.size(0), self.hidden_dim).to(x.device)
             hidden = (h0, c0)
         
         out, hidden = self.lstm(x, hidden)
-        # out: (batch, seq_len, hidden_dim)
+        # out: (batch, seq_len, hidden_dim * 2)
         out = self.fc(out)
         return self.sigmoid(out), hidden
 
@@ -337,6 +340,7 @@ class SegmentClassifierService:
     def scan_telemetry_data(self, dataframe: pd.DataFrame) -> List[PredictedSegment]:
         """
         Scan a dataframe and return found segments with labels.
+        Uses full-sequence inference with Bi-LSTM and smoothing.
         """
         if self.model is None:
             if not self.load_model():
@@ -365,27 +369,25 @@ class SegmentClassifierService:
         # Scale
         X_scaled = self.scaler.transform(numeric_df.values)
         
-        # Inference with chunking to handle long sessions
+        # Inference on full sequence to allow Bi-LSTM to see full context
+        # Note: For extremely long sequences (>10k steps), we might need overlapping windows,
+        # but for typical telemetry sessions, full sequence is better for context.
         self.model.eval()
-        all_probs = []
-        hidden = None
-        chunk_size = self.max_length
+        
+        X_tensor = torch.FloatTensor(X_scaled).unsqueeze(0).to(self.device)
         
         with torch.no_grad():
-            for i in range(0, len(X_scaled), chunk_size):
-                chunk = X_scaled[i : i + chunk_size]
-                X_tensor = torch.FloatTensor(chunk).unsqueeze(0).to(self.device)
-                outputs, hidden = self.model(X_tensor, hidden)
-                all_probs.append(outputs.squeeze(0).cpu().numpy())
-                
-        if not all_probs:
-            return []
-
-        probs = np.concatenate(all_probs, axis=0)
+            outputs, _ = self.model(X_tensor)
+            probs = outputs.squeeze(0).cpu().numpy()
+            
+        # Apply smoothing to probabilities to reduce jitter and enforce segment continuity
+        # Rolling mean with a window of 5 steps
+        probs_df = pd.DataFrame(probs, columns=self.mlb.classes_)
+        probs_smoothed = probs_df.rolling(window=5, center=True, min_periods=1).mean().values
             
         # Threshold and Segment
         threshold = 0.5
-        active_mask = probs > threshold
+        active_mask = probs_smoothed > threshold
         
         found_segments = []
         current_labels = []
@@ -426,6 +428,11 @@ class SegmentClassifierService:
         for meta in found_segments:
             start = meta['start_index']
             end = meta['end_index']
+            
+            # Filter out very short segments (e.g. < 3 steps) as noise
+            if end - start < 3:
+                continue
+
             segment_df = df.iloc[start:end]
             
             # Extract actual data and wrap with metadata
@@ -446,101 +453,17 @@ class SegmentClassifierService:
         Scan a session and find segments matching labels using LSTM.
         Identifies intervals, extracts actual segments, and saves to cache.
         """
-        if self.model is None:
-            if not self.load_model():
-                return []
-
-        if dataframe is not None:
-            df = dataframe
-        else:
-            return []
-        
-        numeric_df = df.select_dtypes(include=['number'])
-        if numeric_df.empty:
-            return []
-
-        # Scale
-        X_scaled = self.scaler.transform(numeric_df.values)
-        
-        # Inference with chunking to handle long sessions
-        self.model.eval()
-        all_probs = []
-        hidden = None
-        chunk_size = self.max_length
-        
-        with torch.no_grad():
-            for i in range(0, len(X_scaled), chunk_size):
-                chunk = X_scaled[i : i + chunk_size]
-                X_tensor = torch.FloatTensor(chunk).unsqueeze(0).to(self.device)
-                outputs, hidden = self.model(X_tensor, hidden)
-                all_probs.append(outputs.squeeze(0).cpu().numpy())
-                
-        if not all_probs:
-            return []
-
-        probs = np.concatenate(all_probs, axis=0)
-            
-        # Threshold and Segment
-        threshold = 0.5
-        active_mask = probs > threshold
-        
-        found_segments = []
-        current_labels = []
-        current_start = 0
-        
-        # Iterate through to find contiguous segments with the same label set
-        for i in range(len(df)):
-            # Get labels that are True for this index
-            row_mask = active_mask[i]
-            labels_indices = np.where(row_mask)[0]
-            labels_at_i = [self.mlb.classes_[idx] for idx in labels_indices]
-            labels_at_i.sort()
-            
-            if i == 0:
-                current_labels = labels_at_i
-                current_start = 0
-            else:
-                if labels_at_i != current_labels:
-                    # Close previous segment if it had labels
-                    if current_labels:
-                        found_segments.append({
-                            "start_index": current_start,
-                            "end_index": i,
-                            "labels": current_labels
-                        })
-                    current_labels = labels_at_i
-                    current_start = i
-        
-        # Close final segment
-        if current_labels:
-            found_segments.append({
-                "start_index": current_start,
-                "end_index": len(df),
-                "labels": current_labels
-            })
+        # Reuse the logic from scan_telemetry_data to ensure consistency
+        found_segments = self.scan_telemetry_data(dataframe)
         
         # Extract and cache segments
         chunk_segments = []
-        for meta in found_segments:
+        for segment in found_segments:
             if target_labels:
-                if not any(label in meta["labels"] for label in target_labels):
+                if not any(label in segment.labels for label in target_labels):
                     continue
 
-            start = meta['start_index']
-            end = meta['end_index']
-            segment_df = df.iloc[start:end]
-            
-            # Extract actual data and wrap with metadata
-            segment_data = segment_df.to_dict('records')
-            
-            predicted_segment = PredictedSegment(
-                labels=meta["labels"],
-                telemetry_data=segment_data,
-                start_index=start,
-                end_index=end
-            )
-            
-            chunk_segments.append(predicted_segment.to_dict())
+            chunk_segments.append(segment.to_dict())
             
         # Cache segments
         from app.config.pipeline_config import PipelineConfig
