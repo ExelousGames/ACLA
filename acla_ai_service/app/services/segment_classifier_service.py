@@ -8,13 +8,13 @@ import pandas as pd
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import Dataset, DataLoader, TensorDataset
+from torch.utils.data import Dataset, DataLoader, TensorDataset, IterableDataset
 from sklearn.preprocessing import MultiLabelBinarizer, StandardScaler
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report
 import joblib
 from pathlib import Path
-from typing import List, Dict, Any, Tuple, Optional
+from typing import List, Dict, Any, Tuple, Optional, Iterator
 import asyncio
 import json
 
@@ -45,6 +45,95 @@ class LSTMModel(nn.Module):
         # out: (batch, seq_len, hidden_dim * 2)
         out = self.fc(out)
         return self.sigmoid(out), hidden
+
+class StreamingSegmentDataset(IterableDataset):
+    def __init__(self, store, cache_key, mlb, scaler, max_length, expected_features, mode='all', val_ratio=0.2, seed=42):
+        self.store = store
+        self.cache_key = cache_key
+        self.mlb = mlb
+        self.scaler = scaler
+        self.max_length = max_length
+        self.expected_features = expected_features
+        self.mode = mode
+        self.val_ratio = val_ratio
+        self.seed = seed
+
+    def __iter__(self):
+        chunks = self.store.get_cached_data_chunks(self.cache_key)
+        import random
+        rng = random.Random(self.seed)
+
+        for chunk in chunks:
+            chunk_data = []
+            if isinstance(chunk, list):
+                chunk_data = chunk
+            elif isinstance(chunk, dict) and "data" in chunk:
+                 chunk_data = chunk["data"]
+            elif isinstance(chunk, dict) and "payload" in chunk:
+                 chunk_data = [chunk["payload"]]
+            else:
+                 chunk_data = [chunk]
+            
+            for d in chunk_data:
+                if not isinstance(d, dict):
+                    continue
+
+                if self.mode != 'all':
+                    is_val = rng.random() < self.val_ratio
+                    if self.mode == 'train' and is_val:
+                        continue
+                    if self.mode == 'val' and not is_val:
+                        continue
+                
+                try:
+                    ann = AnnotatedSegment.from_dict(d)
+                except Exception:
+                    continue
+
+                if not ann.telemetry_data:
+                    continue
+
+                df = pd.DataFrame(ann.telemetry_data)
+                
+                # Fast path if columns match
+                current_cols = df.columns.tolist()
+                if current_cols != self.expected_features:
+                     # Add missing
+                     for f in self.expected_features:
+                         if f not in df.columns:
+                             df[f] = 0
+                     # Drop extra and reorder
+                     df = df[self.expected_features]
+                
+                # Ensure numeric
+                df = df.apply(pd.to_numeric, errors='coerce').fillna(0)
+                
+                if df.empty:
+                    continue
+                
+                seg_X = df.values
+                
+                # Map labels
+                mapped_labels = [LABEL_MAPPING.get(l, str(l)) for l in ann.labels]
+                
+                # Create target
+                label_vec = self.mlb.transform([mapped_labels])[0]
+                seg_y = np.tile(label_vec, (len(seg_X), 1))
+                
+                # Scale
+                scaled_X = self.scaler.transform(seg_X)
+                
+                # Pad
+                pad_len = self.max_length - len(scaled_X)
+                if pad_len > 0:
+                    scaled_X = np.pad(scaled_X, ((0, pad_len), (0, 0)), 'constant')
+                    seg_y = np.pad(seg_y, ((0, pad_len), (0, 0)), 'constant')
+                elif pad_len < 0:
+                    # Truncate
+                    scaled_X = scaled_X[:self.max_length]
+                    seg_y = seg_y[:self.max_length]
+                
+                yield torch.FloatTensor(scaled_X), torch.FloatTensor(seg_y)
 
 class SegmentClassifierService:
     def __init__(self, models_directory: str = "models", max_length: int = 100):
@@ -81,17 +170,21 @@ class SegmentClassifierService:
 
         self.max_length = max_length
 
-    async def load_annotations(self) -> List[AnnotatedSegment]:
-        """Load all annotations from Zarr."""
-        # Import locally to avoid circular dependency
-        from app.config.pipeline_config import PipelineConfig
-        cache_key = PipelineConfig().annotation_cache_key
-        
-        if not self.store.has_cached_data(cache_key):
-            return []
-        
+    async def fit_preprocessors(self, cache_key: str):
+        """
+        Scan data to fit preprocessors (Scaler, MLB) without loading everything.
+        """
+        print("Scanning data to fit preprocessors...")
         chunks = self.store.get_cached_data_chunks(cache_key)
-        annotations = []
+        
+        all_labels = set()
+        self.scaler = StandardScaler()
+        max_seq_len = 0
+        
+        expected_features = SegmentFeatureCatalog.get_all_available_features()
+        
+        has_data = False
+        
         for chunk in chunks:
             chunk_data = []
             if isinstance(chunk, list):
@@ -104,153 +197,99 @@ class SegmentClassifierService:
                  chunk_data = [chunk]
             
             for d in chunk_data:
-                if isinstance(d, dict):
-                    annotations.append(AnnotatedSegment.from_dict(d))
-                    
-        return annotations
+                if not isinstance(d, dict):
+                    continue
+                
+                try:
+                    ann = AnnotatedSegment.from_dict(d)
+                except Exception:
+                    continue
+                
+                # Collect labels
+                mapped_labels = [LABEL_MAPPING.get(l, str(l)) for l in ann.labels]
+                all_labels.update(mapped_labels)
+                
+                if not ann.telemetry_data:
+                    continue
+                
+                df = pd.DataFrame(ann.telemetry_data)
+                
+                # Align features for scaler
+                current_cols = df.columns.tolist()
+                if current_cols != expected_features:
+                     for f in expected_features:
+                         if f not in df.columns:
+                             df[f] = 0
+                     df = df[expected_features]
+                
+                df = df.apply(pd.to_numeric, errors='coerce').fillna(0)
+                
+                if df.empty:
+                    continue
+                
+                vals = df.values
+                self.scaler.partial_fit(vals)
+                max_seq_len = max(max_seq_len, len(vals))
+                has_data = True
 
-    async def prepare_training_data(self) -> Tuple[np.ndarray, np.ndarray]:
-        """
-        Load sessions and create sequences for training.
-        handle variable length segments from annotations.
-        """
-        annotations = await self.load_annotations()
-        if not annotations:
-            raise ValueError("No annotations found. Check the annotation cache key you provided.")
-
-        # 1. Collect all unique labels (mapped to strings)
-        all_labels = set()
-        for ann in annotations:
-            # Map integer labels to string labels
-            mapped_labels = [LABEL_MAPPING.get(l, str(l)) for l in ann.labels]
-            all_labels.update(mapped_labels)
-        
-        if not all_labels:
-            raise ValueError("No labels found in annotations.")
+        if not has_data:
+            raise ValueError("No valid training data found in cache.")
             
         self.mlb = MultiLabelBinarizer()
-        self.mlb.fit([list(all_labels)]) 
+        self.mlb.fit([list(all_labels)])
         
-        # Get expected features for integrity check
-        expected_features = SegmentFeatureCatalog.get_all_available_features()
-
-        raw_segments = [] # List of (X_data, y_data)
-        
-        for ann in annotations:
-            if not ann.telemetry_data:
-                continue
-                
-            df = pd.DataFrame(ann.telemetry_data)
-            
-            # Feature Integrity Check
-            current_features = df.columns.tolist()
-            missing_features = [f for f in expected_features if f not in current_features]
-            extra_features = [f for f in current_features if f not in expected_features]
-
-            if missing_features:
-                print(f"Warning: Segment missing features (filling with 0): {missing_features}")
-                for f in missing_features:
-                    df[f] = 0
-            
-            if extra_features:
-                print(f"Warning: Segment has extra features (removing): {extra_features}")
-                df = df.drop(columns=extra_features)
-            
-            # Check order
-            current_cols = df.columns.tolist()
-            if current_cols != expected_features:
-                print(f"Warning: Feature order mismatch.")
-                for i, (exp, act) in enumerate(zip(expected_features, current_cols)):
-                    if exp != act:
-                        print(f"  First mismatch at index {i}: Expected '{exp}', Got '{act}'")
-                        start_ctx = max(0, i - 2)
-                        end_ctx = min(len(expected_features), i + 3)
-                        print(f"  Expected context: {expected_features[start_ctx:end_ctx]}")
-                        print(f"  Actual context:   {current_cols[start_ctx:end_ctx]}")
-                        break
-                if len(expected_features) != len(current_cols):
-                    print(f"  Length mismatch: Expected {len(expected_features)}, Got {len(current_cols)}")
-                
-                # Reorder if necessary (optional fix, but good for safety)
-                df = df[expected_features]
-            
-            # Ensure numeric
-            df = df.apply(pd.to_numeric, errors='coerce').fillna(0)
-            
-            if df.empty:
-                continue
-                
-            seg_X = df.values
-            
-            # Map labels
-            mapped_labels = [LABEL_MAPPING.get(l, str(l)) for l in ann.labels]
-            
-            # Create target
-            label_vec = self.mlb.transform([mapped_labels])[0]
-            seg_y = np.tile(label_vec, (len(seg_X), 1))
-            
-            raw_segments.append((seg_X, seg_y))
-
-        if not raw_segments:
-             raise ValueError("No valid training data found.")
-
-        # Fit Scaler on all data
-        self.scaler = StandardScaler()
-        all_X = np.vstack([item[0] for item in raw_segments])
-        self.scaler.fit(all_X)
-        
-        # Determine max length from data to avoid chunking
-        max_seq_len = 0
-        for seg_X, _ in raw_segments:
-            max_seq_len = max(max_seq_len, len(seg_X))
-            
         if max_seq_len > self.max_length:
-            print(f"Updating max_length from {self.max_length} to {max_seq_len} to fit longest segment.")
+            print(f"Updating max_length from {self.max_length} to {max_seq_len}")
             self.max_length = max_seq_len
-        
-        X_sequences = []
-        y_sequences = []
-        
-        for seg_X, seg_y in raw_segments:
-            scaled_X = self.scaler.transform(seg_X)
             
-            # Pad to self.max_length
-            pad_len = self.max_length - len(scaled_X)
-            if pad_len > 0:
-                scaled_X = np.pad(scaled_X, ((0, pad_len), (0, 0)), 'constant')
-                seg_y = np.pad(seg_y, ((0, pad_len), (0, 0)), 'constant')
-            
-            X_sequences.append(scaled_X)
-            y_sequences.append(seg_y)
+        print("Preprocessor fitting complete.")
 
-        return np.array(X_sequences), np.array(y_sequences)
+    async def train_model(self, epochs=10, batch_size=32, learning_rate=0.001, val_split=0.2):
+        """Train the LSTM Classifier using streaming data with train/val split."""
+        from app.config.pipeline_config import PipelineConfig
+        cache_key = PipelineConfig().annotation_cache_key
+        
+        await self.fit_preprocessors(cache_key)
+        
+        train_dataset = StreamingSegmentDataset(
+            self.store, 
+            cache_key, 
+            self.mlb, 
+            self.scaler, 
+            self.max_length,
+            SegmentFeatureCatalog.get_all_available_features(),
+            mode='train',
+            val_ratio=val_split
+        )
 
-    async def train_model(self, epochs=10, batch_size=32, learning_rate=0.001):
-        """Train the LSTM Classifier."""
-        print("Preparing training data...")
-        X, y = await self.prepare_training_data()
+        val_dataset = StreamingSegmentDataset(
+            self.store, 
+            cache_key, 
+            self.mlb, 
+            self.scaler, 
+            self.max_length,
+            SegmentFeatureCatalog.get_all_available_features(),
+            mode='val',
+            val_ratio=val_split
+        )
         
-        print(f"Training on {len(X)} sequences of length {X.shape[1]} with {X.shape[2]} features.")
+        # num_workers=0 to avoid multiprocessing issues with Zarr/Pickle
+        train_loader = DataLoader(train_dataset, batch_size=batch_size)
+        val_loader = DataLoader(val_dataset, batch_size=batch_size)
         
-        # Convert to tensors
-        X_tensor = torch.FloatTensor(X)
-        y_tensor = torch.FloatTensor(y)
-        
-        dataset = TensorDataset(X_tensor, y_tensor)
-        dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
-        
-        input_dim = X.shape[2]
-        output_dim = y.shape[2]
+        input_dim = self.scaler.mean_.shape[0]
+        output_dim = len(self.mlb.classes_)
         hidden_dim = 64
         
         self.model = LSTMModel(input_dim, hidden_dim, output_dim).to(self.device)
         criterion = nn.BCELoss()
         optimizer = optim.Adam(self.model.parameters(), lr=learning_rate)
         
-        self.model.train()
         for epoch in range(epochs):
+            self.model.train()
             total_loss = 0
-            for batch_X, batch_y in dataloader:
+            batch_count = 0
+            for batch_X, batch_y in train_loader:
                 batch_X, batch_y = batch_X.to(self.device), batch_y.to(self.device)
                 
                 optimizer.zero_grad()
@@ -260,8 +299,58 @@ class SegmentClassifierService:
                 optimizer.step()
                 
                 total_loss += loss.item()
+                batch_count += 1
             
-            print(f"Epoch {epoch+1}/{epochs}, Loss: {total_loss/len(dataloader):.4f}")
+            avg_loss = total_loss / batch_count if batch_count > 0 else 0
+            
+            # Validation
+            self.model.eval()
+            val_loss = 0
+            val_count = 0
+            with torch.no_grad():
+                for val_X, val_y in val_loader:
+                    val_X, val_y = val_X.to(self.device), val_y.to(self.device)
+                    outputs, _ = self.model(val_X)
+                    loss = criterion(outputs, val_y)
+                    val_loss += loss.item()
+                    val_count += 1
+            
+            avg_val_loss = val_loss / val_count if val_count > 0 else 0
+            
+            print(f"Epoch {epoch+1}/{epochs}, Train Loss: {avg_loss:.4f}, Val Loss: {avg_val_loss:.4f}")
+
+        # Final Evaluation Report
+        print("\nGenerating final evaluation report on validation set...")
+        self.model.eval()
+        all_preds = []
+        all_targets = []
+        
+        with torch.no_grad():
+            for val_X, val_y in val_loader:
+                val_X, val_y = val_X.to(self.device), val_y.to(self.device)
+                outputs, _ = self.model(val_X)
+                
+                # Threshold probabilities
+                preds = (outputs > 0.5).float()
+                
+                all_preds.append(preds.cpu().numpy())
+                all_targets.append(val_y.cpu().numpy())
+        
+        if all_preds:
+            # Concatenate and reshape to (total_samples * seq_len, num_classes)
+            y_pred = np.concatenate(all_preds).reshape(-1, output_dim)
+            y_true = np.concatenate(all_targets).reshape(-1, output_dim)
+            
+            # Generate report
+            # Note: This evaluates every timestep, including padding.
+            report = classification_report(
+                y_true, 
+                y_pred, 
+                target_names=self.mlb.classes_, 
+                zero_division=0
+            )
+            print("Validation Classification Report:")
+            print(report)
 
         # Save model and artifacts
         torch.save(self.model.state_dict(), self.model_path)
