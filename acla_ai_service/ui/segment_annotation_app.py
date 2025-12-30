@@ -4,6 +4,7 @@ Streamlit UI for manually annotating telemetry segments with behavioral labels.
 
 import streamlit as st
 import pandas as pd
+import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 import asyncio
@@ -36,6 +37,7 @@ import importlib
 # Force reload to pick up model changes (e.g. new fields)
 importlib.reload(app.models.segment_models)
 from app.models.segment_models import AnnotatedSegment, LABEL_MAPPING, LABEL_NAME_TO_ID, SegmentFeatureCatalog
+from app.services.segment_updater import SegmentUpdater
 
 def get_display_labels(labels):
     """Convert label IDs or strings to display strings."""
@@ -206,6 +208,45 @@ def main():
                 st.warning("Please enter a dataset name suffix.")
                 selected_annotation_key = None
 
+        # --- Maintenance Section ---
+        if selected_annotation_key:
+            st.markdown("---")
+            st.header("Maintenance")
+            if st.button("Update Features (All Sessions)", help="Re-extract telemetry data for all annotations in this dataset to include new features from the source data."):
+                updater = SegmentUpdater()
+                source_key = pipeline_config.enriched_sessions_cache_key
+                
+                # Get all sessions that have annotations
+                annotated_sessions = get_available_sessions(selected_annotation_key)
+                
+                if not annotated_sessions:
+                    st.warning("No annotated sessions found to update.")
+                else:
+                    progress_bar = st.progress(0)
+                    status_text = st.empty()
+                    
+                    for i, sess_id in enumerate(annotated_sessions):
+                        status_text.text(f"Updating session {sess_id} ({i+1}/{len(annotated_sessions)})...")
+                        
+                        # Load
+                        anns = load_annotations(sess_id, selected_annotation_key)
+                        if anns:
+                            # Update
+                            updated_anns = updater.update_segments(source_key, anns)
+                            # Save directly to avoid UI spam
+                            data_to_save = [a.to_dict() for a in updated_anns]
+                            store.save_chunk(selected_annotation_key, sess_id, data_to_save)
+                        
+                        progress_bar.progress((i + 1) / len(annotated_sessions))
+                    
+                    status_text.text("Update complete!")
+                    st.success(f"Updated features for {len(annotated_sessions)} sessions.")
+                    
+                    # Force reload of current session if it was updated
+                    if "last_session_id" in st.session_state:
+                        del st.session_state.last_session_id 
+                        st.rerun()
+
     st.title("Telemetry Segment Annotation")
 
     if not selected_annotation_key:
@@ -243,12 +284,22 @@ def main():
             status = "✅" if s in annotated_sessions else "⭕"
             return f"{status} {s}"
 
+        # Calculate index to maintain selection across reruns
+        index = 0
+        if "session_selector" in st.session_state:
+            try:
+                if st.session_state.session_selector in available_sessions:
+                    index = available_sessions.index(st.session_state.session_selector)
+            except ValueError:
+                pass
+
         col_sel1, col_sel2 = st.columns([1, 3])
         with col_sel1:
             session_id = st.selectbox(
                 "Select Session", 
                 options=available_sessions,
                 format_func=format_session_option,
+                index=index,
                 key="session_selector"
             )
         
@@ -379,6 +430,13 @@ def main():
             # View controls
             col_ctrl1, col_ctrl2 = st.columns([3, 1])
             with col_ctrl1:
+                # Callback to sync inputs with slider
+                def update_slider_range():
+                    s = st.session_state.get("track_map_start_input", 0)
+                    e = st.session_state.get("track_map_end_input", 0)
+                    if s <= e:
+                        st.session_state.track_map_slider = (s, e)
+
                 # Slider for selecting timestamp range
                 start_idx, end_idx = st.slider(
                     "Select Timestamp for Position View", 
@@ -387,6 +445,13 @@ def main():
                     value=(0, min(len(df)-1, 200)),
                     key="track_map_slider"
                 )
+                
+                # Manual input for range
+                mc1, mc2 = st.columns(2)
+                with mc1:
+                    st.number_input("Start", min_value=0, max_value=len(df)-1, value=start_idx, key="track_map_start_input", on_change=update_slider_range)
+                with mc2:
+                    st.number_input("End", min_value=0, max_value=len(df)-1, value=end_idx, key="track_map_end_input", on_change=update_slider_range)
 
             with col_ctrl2:
                 st.caption("Axis Settings")
@@ -395,7 +460,7 @@ def main():
                 invert_z = st.checkbox("Invert Z", value=False)
             
             # Create windowed dataframe for trajectory plotting
-            map_plot_df = df.iloc[start_idx:end_idx]
+            map_plot_df = df.iloc[start_idx:end_idx+1]
             
             selected_time_idx = end_idx if end_idx < len(df) else len(df) - 1
             current_row = df.iloc[selected_time_idx]
@@ -682,6 +747,70 @@ def main():
                 key=f"form_labels_{selected_option}"
             )
 
+            # Feature Change Calculator
+            with st.expander("Feature Change Calculator"):
+                f_col1, f_col2 = st.columns([1, 2])
+                with f_col1:
+                    # Default to speed or gas if available
+                    default_calc_idx = 0
+                    if "speed_kmh" in numeric_cols:
+                        default_calc_idx = numeric_cols.index("speed_kmh")
+                    
+                    calc_feature = st.selectbox(
+                        "Select Feature", 
+                        numeric_cols, 
+                        index=default_calc_idx,
+                        key=f"calc_feat_{selected_option}"
+                    )
+                
+                with f_col2:
+                    if calc_feature and form_start < form_end and int(form_end) < len(df):
+                        # Calculate changes
+                        calc_slice = df.iloc[int(form_start):int(form_end)+1][calc_feature]
+                        
+                        # Comprehensive Statistical Analysis
+                        min_val = calc_slice.min()
+                        max_val = calc_slice.max()
+                        mean_val = calc_slice.mean()
+                        median_val = calc_slice.median()
+                        std_val = calc_slice.std()
+                        var_val = calc_slice.var()
+                        
+                        # Derivative Stats (Rate of Change)
+                        diffs = calc_slice.diff().dropna()
+                        max_rate = diffs.max() if not diffs.empty else 0
+                        min_rate = diffs.min() if not diffs.empty else 0
+                        avg_abs_rate = diffs.abs().mean() if not diffs.empty else 0
+                        
+                        # Integral (Area under curve approximation)
+                        area = np.trapz(calc_slice.values)
+                        
+                        # Total Change
+                        total_change = calc_slice.iloc[-1] - calc_slice.iloc[0]
+
+                        st.markdown("##### Statistical Analysis")
+                        
+                        # Row 1: Range & Central Tendency
+                        c1, c2, c3, c4 = st.columns(4)
+                        c1.metric("Minimum", f"{min_val:.2f}")
+                        c2.metric("Maximum", f"{max_val:.2f}")
+                        c3.metric("Mean", f"{mean_val:.2f}")
+                        c4.metric("Median", f"{median_val:.2f}")
+
+                        # Row 2: Variability & Dynamics
+                        c5, c6, c7, c8 = st.columns(4)
+                        c5.metric("Std Dev", f"{std_val:.2f}")
+                        c6.metric("Max Rate (Δ)", f"{max_rate:.2f}")
+                        c7.metric("Min Rate (Δ)", f"{min_rate:.2f}")
+                        c8.metric("Avg Volatility", f"{avg_abs_rate:.2f}", help="Average absolute change between consecutive points")
+                        
+                        # Row 3: Cumulative
+                        c9, c10, c11, c12 = st.columns(4)
+                        c9.metric("Integral (Area)", f"{area:.2f}", help="Area under the curve (Trapezoidal rule)")
+                        c10.metric("Sum", f"{calc_slice.sum():.2f}")
+                        c11.metric("Variance", f"{var_val:.2f}")
+                        c12.metric("Total Change", f"{total_change:.2f}", help="Difference between end and start value")
+
             # Actions
             col_actions = st.columns([1, 1, 1, 3])
             
@@ -746,13 +875,28 @@ def main():
                         st.success("Annotation deleted!")
                         st.rerun()
                 elif selected_option == "Create New":
-                    def on_auto_detect():
-                        st.session_state.auto_detect_triggered = True
+                    if st.button("Auto-Detect", help="Detect segments in the specified range matching selected labels"):
+                        st.session_state.show_auto_detect_confirm = True
 
-                    st.button("Auto-Detect", help="Detect segments in the specified range matching selected labels", on_click=on_auto_detect)
+                    if st.session_state.get("show_auto_detect_confirm", False):
+                        st.warning("⚠️ This will remove ALL existing annotations for this session before running detection. Are you sure?")
+                        col_confirm, col_cancel = st.columns(2)
+                        
+                        if col_confirm.button("Yes, Clear & Detect"):
+                             st.session_state.show_auto_detect_confirm = False
+                             st.session_state.run_auto_detect = True
+                             st.rerun()
+                        
+                        if col_cancel.button("Cancel"):
+                            st.session_state.show_auto_detect_confirm = False
+                            st.rerun()
 
-                    if st.session_state.get("auto_detect_triggered", False):
-                        st.session_state.auto_detect_triggered = False
+                    if st.session_state.get("run_auto_detect", False):
+                        st.session_state.run_auto_detect = False
+                        
+                        # Clear annotations first
+                        st.session_state.current_annotations = []
+                        
                         if form_start >= form_end:
                             st.error("Start index must be less than end index.")
                         else:
@@ -798,13 +942,16 @@ def main():
                                         
                                         if new_anns:
                                             st.session_state.current_annotations.extend(new_anns)
-                                            st.success(f"Added {len(new_anns)} segments.")
-                                            save_annotations(session_id, st.session_state.current_annotations, selected_annotation_key)
-                                            st.rerun()
+                                            st.success(f"Replaced annotations with {len(new_anns)} detected segments.")
                                         else:
-                                            st.warning("No segments found matching selected labels.")
+                                            st.warning("No segments found matching selected labels. Annotations cleared.")
                                     else:
-                                        st.info("No segments detected.")
+                                        st.info("No segments detected. Annotations cleared.")
+                                    
+                                    # Always save because we cleared the annotations
+                                    save_annotations(session_id, st.session_state.current_annotations, selected_annotation_key)
+                                    st.rerun()
+
                                 except Exception as e:
                                     st.error(f"Error: {e}")
 

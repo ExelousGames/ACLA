@@ -196,26 +196,29 @@ class SegmentClassifierService:
         all_X = np.vstack([item[0] for item in raw_segments])
         self.scaler.fit(all_X)
         
+        # Determine max length from data to avoid chunking
+        max_seq_len = 0
+        for seg_X, _ in raw_segments:
+            max_seq_len = max(max_seq_len, len(seg_X))
+            
+        if max_seq_len > self.max_length:
+            print(f"Updating max_length from {self.max_length} to {max_seq_len} to fit longest segment.")
+            self.max_length = max_seq_len
+        
         X_sequences = []
         y_sequences = []
         
         for seg_X, seg_y in raw_segments:
             scaled_X = self.scaler.transform(seg_X)
             
-            # Chunk into max_length
-            length = len(scaled_X)
-            for i in range(0, length, self.max_length):
-                chunk_X = scaled_X[i : i + self.max_length]
-                chunk_y = seg_y[i : i + self.max_length]
-                
-                # Pad if necessary
-                if len(chunk_X) < self.max_length:
-                    pad_len = self.max_length - len(chunk_X)
-                    chunk_X = np.pad(chunk_X, ((0, pad_len), (0, 0)), 'constant')
-                    chunk_y = np.pad(chunk_y, ((0, pad_len), (0, 0)), 'constant')
-                
-                X_sequences.append(chunk_X)
-                y_sequences.append(chunk_y)
+            # Pad to self.max_length
+            pad_len = self.max_length - len(scaled_X)
+            if pad_len > 0:
+                scaled_X = np.pad(scaled_X, ((0, pad_len), (0, 0)), 'constant')
+                seg_y = np.pad(seg_y, ((0, pad_len), (0, 0)), 'constant')
+            
+            X_sequences.append(scaled_X)
+            y_sequences.append(seg_y)
 
         return np.array(X_sequences), np.array(y_sequences)
 
@@ -261,6 +264,12 @@ class SegmentClassifierService:
         torch.save(self.model.state_dict(), self.model_path)
         joblib.dump(self.mlb, self.mlb_path)
         joblib.dump(self.scaler, self.scaler_path)
+        
+        # Save config
+        config = {"max_length": self.max_length}
+        with open(self.models_directory / "segment_config.json", "w") as f:
+            json.dump(config, f)
+            
         print(f"Model saved to {self.model_path}")
 
     def load_model(self):
@@ -268,6 +277,13 @@ class SegmentClassifierService:
         if self.model_path.exists() and self.mlb_path.exists() and self.scaler_path.exists():
             self.mlb = joblib.load(self.mlb_path)
             self.scaler = joblib.load(self.scaler_path)
+            
+            # Load config if exists
+            config_path = self.models_directory / "segment_config.json"
+            if config_path.exists():
+                with open(config_path, "r") as f:
+                    config = json.load(f)
+                    self.max_length = config.get("max_length", self.max_length)
             
             input_dim = self.scaler.mean_.shape[0]
             output_dim = len(self.mlb.classes_)

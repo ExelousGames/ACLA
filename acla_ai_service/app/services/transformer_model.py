@@ -416,13 +416,14 @@ class PositionalEncoding(nn.Module):
 
 class ExpertActionTransformer(nn.Module):
     """
-    ExpertActionTransformer - Unified Expert Improvement Learning Model
+    ExpertActionTransformer - Universal Expert Trajectory Prediction Model
     
     WHAT IT ACTUALLY DOES:
-    This model learns how non-expert drivers progressively move closer to expert-level performance.
-    Given the current complete driving state, it predicts the next improved state that moves the
-    driver toward expert-like behavior. Instead of separating context and actions, this model
-    treats all features as a unified state vector and predicts expert improvement progressions.
+    This model learns to predict the optimal expert trajectory from ANY initial state.
+    Whether the driver is on the expert line, off the line, or in the pits, the model
+    predicts the sequence of states that leads towards optimal expert behavior.
+    Instead of separating context and actions, this model treats all features as a 
+    unified state vector and predicts the progression towards the expert ideal.
     
     UNIFIED FEATURE APPROACH:
     - Input: Complete state vector [context_features + action_features] at timestep t
@@ -430,26 +431,29 @@ class ExpertActionTransformer(nn.Module):
     - The attention mechanism learns relationships between ALL features (context and actions)
     
     CORE FUNCTIONALITY:
-    1. EXPERT IMPROVEMENT LEARNING: Predicts next improved state in progression toward expert level
-    2. UNIFIED FEATURES: Context and actions are treated as single feature vector during improvement
-    3. ATTENTION LEARNING: Model learns relationships between context and expert-improving actions
-    4. SEQUENTIAL MODELING: Learns temporal dependencies in expert improvement progressions
+    1. UNIVERSAL TRAJECTORY PREDICTION: Predicts optimal path from any starting condition
+       (e.g., staying on expert line, recovering to line, merging from pits)
+    2. UNIFIED FEATURES: Context and actions are treated as single feature vector
+    3. ATTENTION LEARNING: Model learns relationships between context and optimal actions
+    4. SEQUENTIAL MODELING: Learns temporal dependencies in trajectory progressions
     
     HOW IT WORKS:
     The model takes a unified feature vector containing:
     - Contextual features: gap analysis, track info, tire grip, environmental data
     - Action features: gas, brake, steer_angle, gear
     
-    It predicts the next timestep's complete feature vector during improvement progression:
+    It predicts the next timestep's complete feature vector:
     - Next contextual features: updated gap analysis showing progress toward expert line
-    - Next action features: MORE EXPERT-LIKE gas, brake, steer_angle, gear
+    - Next action features: OPTIMAL gas, brake, steer_angle, gear for the situation
     
     TRAINING PROCESS:
-    The model is trained on sequences of IMPROVING ACTIONS where non-expert drivers
-    progressively move closer to expert-level performance. Each timestep contains
-    the complete state during improvement progression. It learns to predict the next
-    improved state from the current state, allowing the attention mechanism to discover
-    relationships between context and expert-improving actions naturally.
+    The model is trained on a diverse set of driving scenarios including:
+    - Expert line maintenance (staying on line)
+    - Recovery trajectories (moving from off-line to on-line)
+    - Pit exit and merging behaviors
+    Each timestep contains the complete state. It learns to predict the next
+    optimal state from the current state, allowing the attention mechanism to discover
+    relationships between context and optimal actions naturally.
     
     Architecture:
     - Input: Unified state vector [context + actions]
@@ -788,19 +792,19 @@ class ExpertActionTransformer(nn.Module):
         feature_weights: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """
-        MSE loss for unified expert improvement learning with NaN protection
+        MSE loss for unified expert trajectory learning with NaN protection
         
-        Since training segments are filtered to contain only improving action sequences
-        (non-expert → expert-like progressions), this loss learns how to predict the
-        next improved state in the progression toward expert-level performance.
+        This loss learns how to predict the next optimal state in the progression 
+        toward expert-level performance from any initial condition (on-line, off-line, 
+        recovery, etc.).
         
         Args:
             predictions: Model predictions [batch_size, seq_len, total_features]
-            targets: Target improved unified states [batch_size, seq_len, total_features]
-                    These targets represent expert-improving states in filtered segments
+            targets: Target optimal unified states [batch_size, seq_len, total_features]
+                    These targets represent the optimal path/actions
             
         Returns:
-            MSE loss tensor (scalar) - measures accuracy of expert improvement predictions
+            MSE loss tensor (scalar) - measures accuracy of trajectory predictions
         """
         # Ensure loss computation in full precision to avoid dtype issues
         predictions = predictions.float()
@@ -946,15 +950,16 @@ class ExpertActionTransformer(nn.Module):
                               current_telemetry: Dict[str, Any],
                               sequence_length: int = 10) -> Dict[str, Any]:
         """
-        Generate human-readable driving improvement predictions from current telemetry data.
+        Generate human-readable driving advice/predictions from current telemetry data.
         
         This function serves as the main interface for real-time racing coaching, converting
-        raw telemetry data into actionable driving advice that shows how a non-expert driver
-        should improve their actions to move toward expert-level performance.
+        raw telemetry data into actionable driving advice. It predicts the optimal future
+        trajectory from the current state, whether that involves maintaining the expert line,
+        recovering to it, or merging from pits.
         
         INFERENCE APPROACH:
         Unlike training which uses fixed-length sequences, inference uses a single timestep
-        of current telemetry data to predict a sequence of future improved actions through
+        of current telemetry data to predict a sequence of future optimal actions through
         autoregressive generation. This mirrors real-world racing where you make decisions
         based on current state to plan future actions.
         

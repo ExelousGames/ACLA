@@ -24,7 +24,6 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.neural_network import MLPRegressor
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
-from sklearn.tree import DecisionTreeRegressor
 
 
 warnings.filterwarnings('ignore', category=UserWarning)
@@ -49,6 +48,7 @@ class ExpertFeatureCatalog:
         EXPERT_OPTIMAL_VELOCITY_X = 'expert_optimal_velocity_x'
         EXPERT_OPTIMAL_VELOCITY_Y = 'expert_optimal_velocity_y'
         EXPERT_OPTIMAL_VELOCITY_Z = 'expert_optimal_velocity_z'
+        EXPERT_OPTIMAL_CURRENT_TIME = 'expert_optimal_current_time'
 
     class ContextFeature(str, Enum):
         # Velocity direction alignment with expert
@@ -65,6 +65,7 @@ class ExpertFeatureCatalog:
         EXPERT_OPTIMAL_SPEED = 'expert_optimal_speed'
         EXPERT_OPTIMAL_THROTTLE = 'expert_optimal_throttle'
         EXPERT_OPTIMAL_BRAKE = 'expert_optimal_brake'
+        EXPERT_OPTIMAL_CURRENT_TIME = 'expert_optimal_current_time'
         # Context features
         EXPERT_VELOCITY_ALIGNMENT = 'expert_velocity_alignment'
         SPEED_DIFFERENCE = 'speed_difference' 
@@ -229,7 +230,8 @@ class TrackExpertModel:
             EO.EXPERT_OPTIMAL_BRAKE.value, EO.EXPERT_OPTIMAL_SPEED.value,
             EO.EXPERT_OPTIMAL_VELOCITY_X.value, EO.EXPERT_OPTIMAL_VELOCITY_Y.value, 
             EO.EXPERT_OPTIMAL_VELOCITY_Z.value, EO.EXPERT_OPTIMAL_TRACK_POSITION.value,
-            EO.EXPERT_OPTIMAL_GEAR.value
+            EO.EXPERT_OPTIMAL_GEAR.value,
+            EO.EXPERT_OPTIMAL_CURRENT_TIME.value
         ]
         
         for t in all_possible_targets:
@@ -254,24 +256,26 @@ class TrackExpertModel:
         for t in self.spline_targets:
             train_df[t] = target_features[t]
             
-        # No binning, just sort by x
-        train_df_grouped = train_df.sort_values('x')
+        # Group by x and mean to handle duplicates and ensure unique x for interpolation
+        train_df_grouped = train_df.groupby('x', as_index=False).mean()
 
-        # --- 1. Train Decision Tree for All Targets ---
+        # --- 1. Train Interpolation Model (and Decision Tree as fallback) ---
         if self.spline_targets:
             
-            X_train = train_df_grouped[['x']].values
+            X_train = train_df_grouped['x'].values
             Y_train = train_df_grouped[self.spline_targets].values
             
-            # Fit Decision Tree
-            dt = DecisionTreeRegressor()
-            dt.fit(X_train, Y_train)
-            self.models['decision_tree'] = dt
+            # Store data for interpolation
+            self.models['interpolation_data'] = {
+                'x': X_train,
+                'y': Y_train,
+                'targets': self.spline_targets
+            }
             
             for t in self.spline_targets:
                  self.performance_metrics[t] = {
                     'r2': 1.0,
-                    'type': 'decision_tree'
+                    'type': 'interpolation'
                  }
 
     def train(self, input_features: pd.DataFrame, target_features: pd.DataFrame):
@@ -294,15 +298,22 @@ class TrackExpertModel:
         
         predictions = {}
         
-        # 1. Decision Tree Prediction (All Targets)
-        if 'decision_tree' in self.models:
-            dt = self.models['decision_tree']
-            X_query = x_query.reshape(-1, 1)
-            pred_values = dt.predict(X_query) # Shape (N, num_targets)
+        # 1. Interpolation Prediction (Preferred)
+        if 'interpolation_data' in self.models:
+            data = self.models['interpolation_data']
+            x_ref = data['x']
+            y_ref = data['y']
+            targets = data['targets']
             
-            # Store predictions
-            for i, t in enumerate(self.spline_targets):
-                predictions[t] = pred_values[:, i]
+            for i, target in enumerate(targets):
+                # Use interpolation
+                pred_values = np.interp(x_query, x_ref, y_ref[:, i])
+                
+                # Handle categorical targets
+                if target == ExpertFeatureCatalog.ExpertOptimalFeature.EXPERT_OPTIMAL_GEAR.value:
+                    pred_values = np.round(pred_values)
+                
+                predictions[target] = pred_values
         
         if self.debug_enabled:
             input_count = len(x_query)
@@ -369,9 +380,9 @@ class ExpertPositionLearner:
         else:
             self.logger.debug(_format_debug_message(message, debug_data))
     
-    def extract_position_features(self, df: pd.DataFrame) -> Dict[str, pd.DataFrame]:
+    def extract_features(self, df: pd.DataFrame) -> Dict[str, pd.DataFrame]:
         """
-        Extract position-based features for expert learning
+        Extract features for expert learning
         
         Args:
             df: Telemetry DataFrame
@@ -422,11 +433,13 @@ class ExpertPositionLearner:
             target_features[EO.EXPERT_OPTIMAL_VELOCITY_Y.value] = df['Physics_velocity_y']
         if 'Physics_velocity_z' in df.columns:
             target_features[EO.EXPERT_OPTIMAL_VELOCITY_Z.value] = df['Physics_velocity_z']
-            
         # Speed (derived)
         if 'Physics_speed_kmh' in df.columns:
             target_features[EO.EXPERT_OPTIMAL_SPEED.value] = df['Physics_speed_kmh']
             
+        if 'Graphics_current_time' in df.columns:
+            target_features[EO.EXPERT_OPTIMAL_CURRENT_TIME.value] = df['Graphics_current_time']
+
         # Track position (for consistency)
         if 'Graphics_normalized_car_position' in df.columns:
             target_features[EO.EXPERT_OPTIMAL_TRACK_POSITION.value] = df['Graphics_normalized_car_position']
@@ -466,7 +479,7 @@ class ExpertPositionLearner:
             lap_df = pd.DataFrame(lap_data)
             
             # Extract position-based features for this lap
-            feature_data = self.extract_position_features(lap_df)
+            feature_data = self.extract_features(lap_df)
             all_input_features.append(feature_data['input_features'])
             all_target_features.append(feature_data['target_features'])
             
@@ -862,6 +875,9 @@ class ExpertImitateLearningService:
 
                         expert_brake = float(row_predictions.get(ExpertFeatureCatalog.ExpertOptimalFeature.EXPERT_OPTIMAL_BRAKE.value, 0.0))
                         row_features[ExpertFeatures.EXPERT_OPTIMAL_BRAKE.value] = expert_brake
+
+                        expert_current_time = float(row_predictions.get(ExpertFeatureCatalog.ExpertOptimalFeature.EXPERT_OPTIMAL_CURRENT_TIME.value, 0.0))
+                        row_features[ExpertFeatures.EXPERT_OPTIMAL_CURRENT_TIME.value] = expert_current_time
 
                         # Store only velocity alignment feature
                         row_features[ExpertFeatures.EXPERT_VELOCITY_ALIGNMENT.value] = float(velocity_alignment)
