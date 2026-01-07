@@ -170,37 +170,37 @@ class SegmentClassifierService:
 
         self.max_length = max_length
 
-    def _compute_sample_hash(self, sample_dict: Dict) -> str:
-        """Compute deterministic hash for a sample based on its content."""
+    def _compute_segment_hash(self, segment_dict: Dict) -> str:
+        """Compute deterministic hash for a segment based on its content."""
         # Create a stable string representation of key fields
         # Use session_id and timestamp if available, otherwise use telemetry data
         hash_data = ""
-        if "session_id" in sample_dict:
-            hash_data += str(sample_dict["session_id"])
-        if "timestamp" in sample_dict:
-            hash_data += str(sample_dict["timestamp"])
-        if "start_index" in sample_dict:
-            hash_data += str(sample_dict["start_index"])
-        if "end_index" in sample_dict:
-            hash_data += str(sample_dict["end_index"])
+        if "session_id" in segment_dict:
+            hash_data += str(segment_dict["session_id"])
+        if "timestamp" in segment_dict:
+            hash_data += str(segment_dict["timestamp"])
+        if "start_index" in segment_dict:
+            hash_data += str(segment_dict["start_index"])
+        if "end_index" in segment_dict:
+            hash_data += str(segment_dict["end_index"])
             
         # Fallback: use first few telemetry points
-        if not hash_data and "telemetry_data" in sample_dict and sample_dict["telemetry_data"]:
+        if not hash_data and "telemetry_data" in segment_dict and segment_dict["telemetry_data"]:
             try:
-                first_point = sample_dict["telemetry_data"][0]
+                first_point = segment_dict["telemetry_data"][0]
                 hash_data = json.dumps(first_point, sort_keys=True)
             except Exception:
-                hash_data = str(sample_dict)
+                hash_data = str(segment_dict)
         
         if not hash_data:
-            hash_data = json.dumps(sample_dict, sort_keys=True)
+            hash_data = json.dumps(segment_dict, sort_keys=True)
             
         return hashlib.md5(hash_data.encode()).hexdigest()
     
-    def _assign_split(self, sample_hash: str, val_split: float) -> str:
-        """Deterministically assign sample to train or val based on hash."""
+    def _assign_split(self, segment_hash: str, val_split: float) -> str:
+        """Deterministically assign segment to train or val based on hash."""
         # Use first 8 characters of hash to generate a number between 0 and 1
-        hash_int = int(sample_hash[:8], 16)
+        hash_int = int(segment_hash[:8], 16)
         hash_normalized = hash_int / (16**8)
         
         return "val" if hash_normalized < val_split else "train"
@@ -209,7 +209,7 @@ class SegmentClassifierService:
         """
         Splits data from source_cache_key into train and val keys with stratified, deterministic splitting.
         Uses two-pass approach:
-        1. First pass: Collect label statistics per sample
+        1. First pass: Collect label statistics per segment
         2. Second pass: Perform stratified split using deterministic hashing
         """
         print(f"Preparing training data: splitting {source_cache_key} into {train_cache_key} and {val_cache_key}")
@@ -223,7 +223,7 @@ class SegmentClassifierService:
         
         # PASS 1: Collect label statistics
         print("Pass 1: Collecting label statistics...")
-        label_to_samples = defaultdict(list)  # Maps label -> list of (chunk_idx, item_idx, hash)
+        label_to_segments = defaultdict(list)  # Maps label -> list of (chunk_idx, item_idx, hash)
         chunk_index = []  # Store (chunk_data, chunk_idx)
         
         chunks = self.store.get_cached_data_chunks(source_cache_key)
@@ -255,7 +255,7 @@ class SegmentClassifierService:
                 valid_items.append(d)
                 
                 # Compute hash and extract labels
-                sample_hash = self._compute_sample_hash(d)
+                segment_hash = self._compute_segment_hash(d)
                 
                 # Extract labels (handle both 'labels' and mapped labels)
                 labels = d.get("labels", [])
@@ -263,37 +263,37 @@ class SegmentClassifierService:
                     mapped_labels = [LABEL_MAPPING.get(l, str(l)) for l in labels]
                     # Store primary label (first one) for stratification
                     primary_label = mapped_labels[0] if mapped_labels else "unknown"
-                    label_to_samples[primary_label].append((chunk_idx, len(valid_items) - 1, sample_hash))
+                    label_to_segments[primary_label].append((chunk_idx, len(valid_items) - 1, segment_hash))
             
             if valid_items:
                 chunk_index.append((valid_items, chunk_idx))
                 chunk_idx += 1
         
-        print(f"Found {len(chunk_index)} chunks with {sum(len(items) for items, _ in chunk_index)} valid samples")
-        print(f"Label distribution: {[(label, len(samples)) for label, samples in sorted(label_to_samples.items())]}")
+        print(f"Found {len(chunk_index)} chunks with {sum(len(items) for items, _ in chunk_index)} valid segments")
+        print(f"Label distribution: {[(label, len(segments)) for label, segments in sorted(label_to_segments.items())]}")
         
         # PASS 2: Stratified split using deterministic hashing
         print("Pass 2: Performing stratified split...")
         
-        # For each label, split samples deterministically
-        train_samples_set = set()  # Set of (chunk_idx, item_idx)
-        val_samples_set = set()
+        # For each label, split segments deterministically
+        train_segments_set = set()  # Set of (chunk_idx, item_idx)
+        val_segments_set = set()
         
         train_label_counts = defaultdict(int)
         val_label_counts = defaultdict(int)
         
-        for label, samples in label_to_samples.items():
-            for chunk_idx, item_idx, sample_hash in samples:
-                split = self._assign_split(sample_hash, val_split)
+        for label, segments in label_to_segments.items():
+            for chunk_idx, item_idx, segment_hash in segments:
+                split = self._assign_split(segment_hash, val_split)
                 
                 if split == "val":
-                    val_samples_set.add((chunk_idx, item_idx))
+                    val_segments_set.add((chunk_idx, item_idx))
                     val_label_counts[label] += 1
                 else:
-                    train_samples_set.add((chunk_idx, item_idx))
+                    train_segments_set.add((chunk_idx, item_idx))
                     train_label_counts[label] += 1
         
-        print(f"Train samples: {len(train_samples_set)}, Val samples: {len(val_samples_set)}")
+        print(f"Train segments: {len(train_segments_set)}, Val segments: {len(val_segments_set)}")
         print(f"Train label distribution: {dict(train_label_counts)}")
         print(f"Val label distribution: {dict(val_label_counts)}")
         
@@ -306,14 +306,14 @@ class SegmentClassifierService:
         
         for chunk_data, chunk_idx in chunk_index:
             for item_idx, item in enumerate(chunk_data):
-                if (chunk_idx, item_idx) in train_samples_set:
+                if (chunk_idx, item_idx) in train_segments_set:
                     train_buffer.append(item)
                     if len(train_buffer) >= chunk_size:
                         self.store.save_chunk(train_cache_key, train_idx, train_buffer)
                         train_buffer = []
                         train_idx += 1
                         
-                elif (chunk_idx, item_idx) in val_samples_set:
+                elif (chunk_idx, item_idx) in val_segments_set:
                     val_buffer.append(item)
                     if len(val_buffer) >= chunk_size:
                         self.store.save_chunk(val_cache_key, val_idx, val_buffer)
@@ -326,7 +326,7 @@ class SegmentClassifierService:
         if val_buffer:
             self.store.save_chunk(val_cache_key, val_idx, val_buffer)
             
-        print(f"Data preparation complete. Train: {len(train_samples_set)} samples, Val: {len(val_samples_set)} samples")
+        print(f"Data preparation complete. Train: {len(train_segments_set)} segments, Val: {len(val_segments_set)} segments")
 
     async def fit_preprocessors(self, cache_key: str):
         """
@@ -337,7 +337,7 @@ class SegmentClassifierService:
         
         all_labels = set()
         self.label_counts = {}
-        total_samples = 0
+        total_segments = 0
         self.scaler = StandardScaler()
         max_seq_len = 0
         
@@ -370,7 +370,7 @@ class SegmentClassifierService:
                 all_labels.update(mapped_labels)
                 for l in mapped_labels:
                     self.label_counts[l] = self.label_counts.get(l, 0) + 1
-                total_samples += 1
+                total_segments += 1
                 
                 if not ann.telemetry_data:
                     continue
@@ -405,7 +405,7 @@ class SegmentClassifierService:
         pos_weights = []
         for label in self.mlb.classes_:
             pos = self.label_counts.get(label, 0)
-            neg = total_samples - pos
+            neg = total_segments - pos
             if pos > 0:
                 weight = neg / pos
             else:
@@ -596,8 +596,7 @@ class SegmentClassifierService:
             
             trusted_labels = []
             
-            # Minimum samples required during training to be considered trusted
-            min_support = 800
+            min_support = 7000
             min_precision = 0.80
             print("\nPer-class Precision and Support (Validation Set):")
             for label in self.mlb.classes_:
@@ -612,7 +611,7 @@ class SegmentClassifierService:
                     if score >= min_precision and support >= min_support:
                         trusted_labels.append(label)
             
-            print(f"\nTrusted labels (>= {min_precision*100:.0f}% precision, >= {min_support} samples): {trusted_labels}")
+            print(f"\nTrusted labels (>= {min_precision*100:.0f}% precision, >= {min_support} segments): {trusted_labels}")
 
             # Save trusted labels
             with open(self.models_directory / "segment_trusted_labels.json", "w") as f:
