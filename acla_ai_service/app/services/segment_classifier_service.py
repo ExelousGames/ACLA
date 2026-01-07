@@ -457,12 +457,14 @@ class SegmentClassifierService:
         
         input_dim = self.scaler.mean_.shape[0]
         output_dim = len(self.mlb.classes_)
-        hidden_dim = 64
+        # Increased network size for ~85 input features
+        hidden_dim = 256
+        num_layers = 3
         
-        self.model = LSTMModel(input_dim, hidden_dim, output_dim).to(self.device)
+        self.model = LSTMModel(input_dim, hidden_dim, output_dim, num_layers=num_layers).to(self.device)
         criterion = nn.BCEWithLogitsLoss(reduction='none', pos_weight=self.pos_weight)
         optimizer = optim.Adam(self.model.parameters(), lr=learning_rate)
-        
+                
         for epoch in range(epochs):
             self.model.train()
             total_loss = 0
@@ -623,8 +625,12 @@ class SegmentClassifierService:
         if self.pos_weight is not None:
             torch.save(self.pos_weight, self.pos_weight_path)
         
-        # Save config
-        config = {"max_length": self.max_length}
+        # Save config with model architecture
+        config = {
+            "max_length": self.max_length,
+            "hidden_dim": hidden_dim,
+            "num_layers": num_layers
+        }
         with open(self.models_directory / "segment_config.json", "w") as f:
             json.dump(config, f)
             
@@ -647,17 +653,20 @@ class SegmentClassifierService:
                 self.trusted_labels = None
 
             # Load config if exists
+            hidden_dim = 256
+            num_layers = 3
             config_path = self.models_directory / "segment_config.json"
             if config_path.exists():
                 with open(config_path, "r") as f:
                     config = json.load(f)
                     self.max_length = config.get("max_length", self.max_length)
+                    hidden_dim = config.get("hidden_dim", hidden_dim)
+                    num_layers = config.get("num_layers", num_layers)
             
             input_dim = self.scaler.mean_.shape[0]
             output_dim = len(self.mlb.classes_)
-            hidden_dim = 64 
             
-            self.model = LSTMModel(input_dim, hidden_dim, output_dim).to(self.device)
+            self.model = LSTMModel(input_dim, hidden_dim, output_dim, num_layers=num_layers).to(self.device)
             self.model.load_state_dict(torch.load(self.model_path, map_location=self.device))
             self.model.eval()
             return True
