@@ -17,6 +17,8 @@ from pathlib import Path
 from typing import List, Dict, Any, Tuple, Optional, Iterator
 import asyncio
 import json
+import shutil
+import random
 
 from .zarr_telemetry_store import get_shared_zarr_store
 from app.models.segment_models import AnnotatedSegment, LABEL_MAPPING, PredictedSegment, SegmentFeatureCatalog
@@ -30,7 +32,6 @@ class LSTMModel(nn.Module):
         self.lstm = nn.LSTM(input_dim, hidden_dim, num_layers, batch_first=True, dropout=0.2, bidirectional=True)
         # Output dim * 2 because of bidirectionality
         self.fc = nn.Linear(hidden_dim * 2, output_dim)
-        self.sigmoid = nn.Sigmoid()
 
     def forward(self, x, hidden=None):
         # x: (batch, seq_len, input_dim)
@@ -44,24 +45,19 @@ class LSTMModel(nn.Module):
         out, hidden = self.lstm(x, hidden)
         # out: (batch, seq_len, hidden_dim * 2)
         out = self.fc(out)
-        return self.sigmoid(out), hidden
+        return out, hidden
 
 class StreamingSegmentDataset(IterableDataset):
-    def __init__(self, store, cache_key, mlb, scaler, max_length, expected_features, mode='all', val_ratio=0.2, seed=42):
+    def __init__(self, store, cache_key, mlb, scaler, max_length, expected_features):
         self.store = store
         self.cache_key = cache_key
         self.mlb = mlb
         self.scaler = scaler
         self.max_length = max_length
         self.expected_features = expected_features
-        self.mode = mode
-        self.val_ratio = val_ratio
-        self.seed = seed
 
     def __iter__(self):
         chunks = self.store.get_cached_data_chunks(self.cache_key)
-        import random
-        rng = random.Random(self.seed)
 
         for chunk in chunks:
             chunk_data = []
@@ -78,13 +74,6 @@ class StreamingSegmentDataset(IterableDataset):
                 if not isinstance(d, dict):
                     continue
 
-                if self.mode != 'all':
-                    is_val = rng.random() < self.val_ratio
-                    if self.mode == 'train' and is_val:
-                        continue
-                    if self.mode == 'val' and not is_val:
-                        continue
-                
                 try:
                     ann = AnnotatedSegment.from_dict(d)
                 except Exception:
@@ -123,17 +112,22 @@ class StreamingSegmentDataset(IterableDataset):
                 # Scale
                 scaled_X = self.scaler.transform(seg_X)
                 
+                # Create mask
+                mask = np.ones((len(scaled_X), 1))
+                
                 # Pad
                 pad_len = self.max_length - len(scaled_X)
                 if pad_len > 0:
                     scaled_X = np.pad(scaled_X, ((0, pad_len), (0, 0)), 'constant')
                     seg_y = np.pad(seg_y, ((0, pad_len), (0, 0)), 'constant')
+                    mask = np.pad(mask, ((0, pad_len), (0, 0)), 'constant')
                 elif pad_len < 0:
                     # Truncate
                     scaled_X = scaled_X[:self.max_length]
                     seg_y = seg_y[:self.max_length]
+                    mask = mask[:self.max_length]
                 
-                yield torch.FloatTensor(scaled_X), torch.FloatTensor(seg_y)
+                yield torch.FloatTensor(scaled_X), torch.FloatTensor(seg_y), torch.FloatTensor(mask)
 
 class SegmentClassifierService:
     def __init__(self, models_directory: str = "models", max_length: int = 100):
@@ -142,10 +136,14 @@ class SegmentClassifierService:
         self.model_path = self.models_directory / "segment_classifier.pth"
         self.mlb_path = self.models_directory / "segment_labels.joblib"
         self.scaler_path = self.models_directory / "segment_scaler.joblib"
+        self.pos_weight_path = self.models_directory / "segment_pos_weight.pt"
         self.store = get_shared_zarr_store()
         self.model = None
         self.mlb = None 
         self.scaler = None
+        self.pos_weight = None
+        self.trusted_labels = None
+        self.label_counts = {}
         
         # Device selection with explicit AMD/NVIDIA support check
         if torch.cuda.is_available():
@@ -170,6 +168,74 @@ class SegmentClassifierService:
 
         self.max_length = max_length
 
+    async def prepare_training_data(self, source_cache_key: str, train_cache_key: str, val_cache_key: str, val_split: float = 0.2, chunk_size: int = 100):
+        """
+        Splits data from source_cache_key into train and val keys with fixed chunk sizes.
+        """
+        print(f"Preparing training data: splitting {source_cache_key} into {train_cache_key} and {val_cache_key}")
+        
+        # Clear existing keys
+        for key in [train_cache_key, val_cache_key]:
+            group_path = self.store._group_path(key)
+            if group_path.exists():
+                shutil.rmtree(group_path)
+        
+        chunks = self.store.get_cached_data_chunks(source_cache_key)
+        
+        train_buffer = []
+        val_buffer = []
+        train_idx = 1
+        val_idx = 1
+        
+        total_processed = 0
+        
+        for chunk in chunks:
+            chunk_data = []
+            if isinstance(chunk, list):
+                chunk_data = chunk
+            elif isinstance(chunk, dict) and "data" in chunk:
+                 chunk_data = chunk["data"]
+            elif isinstance(chunk, dict) and "payload" in chunk:
+                 chunk_data = [chunk["payload"]]
+            else:
+                 chunk_data = [chunk]
+            
+            for d in chunk_data:
+                if not isinstance(d, dict):
+                    continue
+                
+                # Optional: Validate data here to ensure clean datasets
+                try:
+                    # Just check if it has telemetry data
+                    if "telemetry_data" not in d or not d["telemetry_data"]:
+                        continue
+                except Exception:
+                    continue
+
+                total_processed += 1
+                if random.random() < val_split:
+                    val_buffer.append(d)
+                else:
+                    train_buffer.append(d)
+                
+                if len(train_buffer) >= chunk_size:
+                    self.store.save_chunk(train_cache_key, train_idx, train_buffer)
+                    train_buffer = []
+                    train_idx += 1
+                
+                if len(val_buffer) >= chunk_size:
+                    self.store.save_chunk(val_cache_key, val_idx, val_buffer)
+                    val_buffer = []
+                    val_idx += 1
+        
+        # Flush remainders
+        if train_buffer:
+            self.store.save_chunk(train_cache_key, train_idx, train_buffer)
+        if val_buffer:
+            self.store.save_chunk(val_cache_key, val_idx, val_buffer)
+            
+        print(f"Data preparation complete. Processed {total_processed} items.")
+
     async def fit_preprocessors(self, cache_key: str):
         """
         Scan data to fit preprocessors (Scaler, MLB) without loading everything.
@@ -178,6 +244,8 @@ class SegmentClassifierService:
         chunks = self.store.get_cached_data_chunks(cache_key)
         
         all_labels = set()
+        self.label_counts = {}
+        total_samples = 0
         self.scaler = StandardScaler()
         max_seq_len = 0
         
@@ -208,6 +276,9 @@ class SegmentClassifierService:
                 # Collect labels
                 mapped_labels = [LABEL_MAPPING.get(l, str(l)) for l in ann.labels]
                 all_labels.update(mapped_labels)
+                for l in mapped_labels:
+                    self.label_counts[l] = self.label_counts.get(l, 0) + 1
+                total_samples += 1
                 
                 if not ann.telemetry_data:
                     continue
@@ -238,6 +309,20 @@ class SegmentClassifierService:
         self.mlb = MultiLabelBinarizer()
         self.mlb.fit([list(all_labels)])
         
+        # Calculate pos_weight
+        pos_weights = []
+        for label in self.mlb.classes_:
+            pos = self.label_counts.get(label, 0)
+            neg = total_samples - pos
+            if pos > 0:
+                weight = neg / pos
+            else:
+                weight = 1.0
+            pos_weights.append(weight)
+        
+        self.pos_weight = torch.FloatTensor(pos_weights).to(self.device)
+        print(f"Calculated pos_weights: {self.pos_weight}")
+        
         if max_seq_len > self.max_length:
             print(f"Updating max_length from {self.max_length} to {max_seq_len}")
             self.max_length = max_seq_len
@@ -249,28 +334,29 @@ class SegmentClassifierService:
         from app.config.pipeline_config import PipelineConfig
         cache_key = PipelineConfig().annotation_cache_key
         
-        await self.fit_preprocessors(cache_key)
+        train_key = f"{cache_key}_train"
+        val_key = f"{cache_key}_val"
+        
+        await self.prepare_training_data(cache_key, train_key, val_key, val_split)
+        
+        await self.fit_preprocessors(train_key)
         
         train_dataset = StreamingSegmentDataset(
             self.store, 
-            cache_key, 
+            train_key, 
             self.mlb, 
             self.scaler, 
             self.max_length,
-            SegmentFeatureCatalog.get_all_available_features(),
-            mode='train',
-            val_ratio=val_split
+            SegmentFeatureCatalog.get_all_available_features()
         )
 
         val_dataset = StreamingSegmentDataset(
             self.store, 
-            cache_key, 
+            val_key, 
             self.mlb, 
             self.scaler, 
             self.max_length,
-            SegmentFeatureCatalog.get_all_available_features(),
-            mode='val',
-            val_ratio=val_split
+            SegmentFeatureCatalog.get_all_available_features()
         )
         
         # num_workers=0 to avoid multiprocessing issues with Zarr/Pickle
@@ -282,19 +368,24 @@ class SegmentClassifierService:
         hidden_dim = 64
         
         self.model = LSTMModel(input_dim, hidden_dim, output_dim).to(self.device)
-        criterion = nn.BCELoss()
+        criterion = nn.BCEWithLogitsLoss(reduction='none', pos_weight=self.pos_weight)
         optimizer = optim.Adam(self.model.parameters(), lr=learning_rate)
         
         for epoch in range(epochs):
             self.model.train()
             total_loss = 0
             batch_count = 0
-            for batch_X, batch_y in train_loader:
-                batch_X, batch_y = batch_X.to(self.device), batch_y.to(self.device)
+            for batch_X, batch_y, batch_mask in train_loader:
+                batch_X, batch_y, batch_mask = batch_X.to(self.device), batch_y.to(self.device), batch_mask.to(self.device)
                 
                 optimizer.zero_grad()
                 outputs, _ = self.model(batch_X)
                 loss = criterion(outputs, batch_y)
+                
+                # Apply mask
+                masked_loss = loss * batch_mask
+                loss = masked_loss.sum() / (batch_mask.sum() * output_dim + 1e-8)
+                
                 loss.backward()
                 optimizer.step()
                 
@@ -308,10 +399,14 @@ class SegmentClassifierService:
             val_loss = 0
             val_count = 0
             with torch.no_grad():
-                for val_X, val_y in val_loader:
-                    val_X, val_y = val_X.to(self.device), val_y.to(self.device)
+                for val_X, val_y, val_mask in val_loader:
+                    val_X, val_y, val_mask = val_X.to(self.device), val_y.to(self.device), val_mask.to(self.device)
                     outputs, _ = self.model(val_X)
                     loss = criterion(outputs, val_y)
+                    
+                    masked_loss = loss * val_mask
+                    loss = masked_loss.sum() / (val_mask.sum() * output_dim + 1e-8)
+                    
                     val_loss += loss.item()
                     val_count += 1
             
@@ -325,37 +420,116 @@ class SegmentClassifierService:
         all_preds = []
         all_targets = []
         
+        # Segment-level accumulation
+        all_segment_preds = []
+        all_segment_targets = []
+        
         with torch.no_grad():
-            for val_X, val_y in val_loader:
-                val_X, val_y = val_X.to(self.device), val_y.to(self.device)
+            for val_X, val_y, val_mask in val_loader:
+                val_X, val_y, val_mask = val_X.to(self.device), val_y.to(self.device), val_mask.to(self.device)
                 outputs, _ = self.model(val_X)
                 
-                # Threshold probabilities
-                preds = (outputs > 0.5).float()
+                # --- Per-Timestep Evaluation ---
+                # Threshold logits (sigmoid(0) = 0.5)
+                preds = (outputs > 0).float()
                 
-                all_preds.append(preds.cpu().numpy())
-                all_targets.append(val_y.cpu().numpy())
+                # Filter by mask
+                mask_flat = val_mask.cpu().bool().numpy().flatten()
+                preds_flat = preds.cpu().numpy().reshape(-1, output_dim)
+                targets_flat = val_y.cpu().numpy().reshape(-1, output_dim)
+                
+                if len(mask_flat) > 0:
+                    all_preds.append(preds_flat[mask_flat])
+                    all_targets.append(targets_flat[mask_flat])
+
+                # --- Per-Segment Evaluation ---
+                probs = torch.sigmoid(outputs)
+                batch_size_curr = val_X.size(0)
+                
+                for i in range(batch_size_curr):
+                    # Get actual length from mask
+                    length = int(val_mask[i].sum().item())
+                    if length == 0:
+                        continue
+                        
+                    # Target is the same for the whole segment, just take the first valid one
+                    # val_y shape: (batch, seq_len, num_classes)
+                    seg_target = val_y[i, 0].cpu().numpy()
+                    
+                    # Predictions: Average probability over valid timesteps
+                    seg_probs = probs[i, :length].mean(dim=0)
+                    seg_pred = (seg_probs > 0.5).float().cpu().numpy()
+                    
+                    all_segment_preds.append(seg_pred)
+                    all_segment_targets.append(seg_target)
         
+        if all_segment_preds:
+            y_seg_pred = np.array(all_segment_preds)
+            y_seg_true = np.array(all_segment_targets)
+            
+            print("\n=== Segment-Level Classification Report (Aggregated) ===")
+            seg_report = classification_report(
+                y_seg_true,
+                y_seg_pred,
+                target_names=self.mlb.classes_,
+                zero_division=0
+            )
+            print(seg_report)
+            print("========================================================\n")
+
         if all_preds:
-            # Concatenate and reshape to (total_samples * seq_len, num_classes)
-            y_pred = np.concatenate(all_preds).reshape(-1, output_dim)
-            y_true = np.concatenate(all_targets).reshape(-1, output_dim)
+            # Concatenate
+            y_pred = np.concatenate(all_preds)
+            y_true = np.concatenate(all_targets)
             
             # Generate report
-            # Note: This evaluates every timestep, including padding.
-            report = classification_report(
+            report_dict = classification_report(
+                y_true, 
+                y_pred, 
+                target_names=self.mlb.classes_, 
+                zero_division=0,
+                output_dict=True
+            )
+            
+            print("Validation Classification Report (Per-Timestep):")
+            # Print textual report for logs
+            print(classification_report(
                 y_true, 
                 y_pred, 
                 target_names=self.mlb.classes_, 
                 zero_division=0
-            )
-            print("Validation Classification Report:")
-            print(report)
+            ))
+            
+            trusted_labels = []
+            
+            # Minimum samples required during training to be considered trusted
+            min_support = 30
+            min_precision = 0.80
+            print("\nPer-class Precision and Support (Validation Set):")
+            for label in self.mlb.classes_:
+                if label in report_dict:
+                    metrics = report_dict[label]
+                    # Use precision as the trust metric
+                    score = metrics['precision']
+                    support = metrics['support']
+                    
+                    print(f"{label}: Precision={score:.4f}, Support={support}")
+                    
+                    if score >= min_precision and support >= min_support:
+                        trusted_labels.append(label)
+            
+            print(f"\nTrusted labels (>= {min_precision*100:.0f}% precision, >= {min_support} samples): {trusted_labels}")
+
+            # Save trusted labels
+            with open(self.models_directory / "segment_trusted_labels.json", "w") as f:
+                json.dump(trusted_labels, f)
 
         # Save model and artifacts
         torch.save(self.model.state_dict(), self.model_path)
         joblib.dump(self.mlb, self.mlb_path)
         joblib.dump(self.scaler, self.scaler_path)
+        if self.pos_weight is not None:
+            torch.save(self.pos_weight, self.pos_weight_path)
         
         # Save config
         config = {"max_length": self.max_length}
@@ -369,7 +543,17 @@ class SegmentClassifierService:
         if self.model_path.exists() and self.mlb_path.exists() and self.scaler_path.exists():
             self.mlb = joblib.load(self.mlb_path)
             self.scaler = joblib.load(self.scaler_path)
+            if self.pos_weight_path.exists():
+                self.pos_weight = torch.load(self.pos_weight_path, map_location=self.device)
             
+            # Load trusted labels
+            trusted_labels_path = self.models_directory / "segment_trusted_labels.json"
+            if trusted_labels_path.exists():
+                with open(trusted_labels_path, "r") as f:
+                    self.trusted_labels = set(json.load(f))
+            else:
+                self.trusted_labels = None
+
             # Load config if exists
             config_path = self.models_directory / "segment_config.json"
             if config_path.exists():
@@ -412,17 +596,24 @@ class SegmentClassifierService:
         
         with torch.no_grad():
             outputs, _ = self.model(X_tensor)
+            # Apply sigmoid to get probabilities from logits
+            probs_tensor = torch.sigmoid(outputs)
+            
             # Take max probability over the segment or average?
             # Let's take the average probability across the segment
             # Only consider valid outputs (ignore padding)
-            valid_outputs = outputs[0, :original_len, :]
-            probs = valid_outputs.mean(dim=0).cpu().numpy()
+            valid_probs = probs_tensor[0, :original_len, :]
+            probs = valid_probs.mean(dim=0).cpu().numpy()
             
         threshold = 0.5
         labels = []
         for i, p in enumerate(probs):
+            label = self.mlb.classes_[i]
+            if self.trusted_labels is not None and label not in self.trusted_labels:
+                continue
+                
             if p > threshold:
-                labels.append(self.mlb.classes_[i])
+                labels.append(label)
         
         return labels
 
@@ -467,11 +658,18 @@ class SegmentClassifierService:
         
         with torch.no_grad():
             outputs, _ = self.model(X_tensor)
-            probs = outputs.squeeze(0).cpu().numpy()
+            probs = torch.sigmoid(outputs).squeeze(0).cpu().numpy()
             
         # Apply smoothing to probabilities to reduce jitter and enforce segment continuity
         # Rolling mean with a window of 5 steps
         probs_df = pd.DataFrame(probs, columns=self.mlb.classes_)
+
+        # Filter untrusted labels
+        if self.trusted_labels is not None:
+             untrusted = [l for l in self.mlb.classes_ if l not in self.trusted_labels]
+             if untrusted:
+                probs_df[untrusted] = 0.0
+
         probs_smoothed = probs_df.rolling(window=5, center=True, min_periods=1).mean().values
             
         # Threshold and Segment

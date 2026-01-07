@@ -879,10 +879,10 @@ def main():
                         st.session_state.show_auto_detect_confirm = True
 
                     if st.session_state.get("show_auto_detect_confirm", False):
-                        st.warning("⚠️ This will remove ALL existing annotations for this session before running detection. Are you sure?")
+                        st.warning(f"⚠️ This will remove existing annotations in the range {form_start}-{form_end} before running detection. Are you sure?")
                         col_confirm, col_cancel = st.columns(2)
                         
-                        if col_confirm.button("Yes, Clear & Detect"):
+                        if col_confirm.button("Yes, Clear Range & Detect"):
                              st.session_state.show_auto_detect_confirm = False
                              st.session_state.run_auto_detect = True
                              st.rerun()
@@ -894,8 +894,11 @@ def main():
                     if st.session_state.get("run_auto_detect", False):
                         st.session_state.run_auto_detect = False
                         
-                        # Clear annotations first
-                        st.session_state.current_annotations = []
+                        # Clear annotations in range first
+                        st.session_state.current_annotations = [
+                            a for a in st.session_state.current_annotations
+                            if a.end_index <= form_start or a.start_index >= form_end
+                        ]
                         
                         if form_start >= form_end:
                             st.error("Start index must be less than end index.")
@@ -942,11 +945,11 @@ def main():
                                         
                                         if new_anns:
                                             st.session_state.current_annotations.extend(new_anns)
-                                            st.success(f"Replaced annotations with {len(new_anns)} detected segments.")
+                                            st.success(f"Added {len(new_anns)} detected segments in range {form_start}-{form_end}.")
                                         else:
-                                            st.warning("No segments found matching selected labels. Annotations cleared.")
+                                            st.warning(f"No segments found matching selected labels in range {form_start}-{form_end}.")
                                     else:
-                                        st.info("No segments detected. Annotations cleared.")
+                                        st.info(f"No segments detected in range {form_start}-{form_end}.")
                                     
                                     # Always save because we cleared the annotations
                                     save_annotations(session_id, st.session_state.current_annotations, selected_annotation_key)

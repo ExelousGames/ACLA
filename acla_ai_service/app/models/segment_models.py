@@ -8,31 +8,12 @@ from app.services.tire_grip_analysis_service import TireGripFeatureCatalog
 # Constants
 LABEL_MAPPING = {
     1: "Overtaking",
-    2: "Tire Strategy",
-    3: "Expert Line Adherence",
-    4: "Mistake - Brake too early",
+    2: "Missing data",
+    3: "Expert Adherence",
     5: "Recovery",
-    6: "Mistake - Brake too late",
-    7: "Mistake - Brake too much",
-    8: "Mistake - Brake too little",
-    9: "Mistake - Accelerate too early",
-    10: "Mistake - Accelerate too late",
-    11: "Mistake - Accelerate too little",
-    12: "Mistake - Accelerate too much",
-    13: "Expert Speed Adherence",
-    14: "Mistake - Release brake not smoothly",
-    15: "Mistake - Entry too wide",
-    16: "Mistake - Entry too narrow",
-    17: "Mistake - Mid-corner too wide",
-    18: "Mistake - Mid-corner too narrow",
-    19: "Mistake - Exit too wide",
-    20: "Mistake - Exit too narrow",
-    21: "Mistake - Release brake too early",
-    22: "Mistake - Release brake too late",
     23: "Superior Expert",
-    24: "Mistake - Release gas too early",
-    25: "Mistake - Release gas too late",
-    26: "Mistake - Steering too much",
+    27: "Unexpected driving behavior",
+    28 :"Mistake"
 }
 LABEL_NAME_TO_ID = {v: k for k, v in LABEL_MAPPING.items()}
 
