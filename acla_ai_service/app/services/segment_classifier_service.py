@@ -19,6 +19,8 @@ import asyncio
 import json
 import shutil
 import random
+import hashlib
+from collections import defaultdict
 
 from .zarr_telemetry_store import get_shared_zarr_store
 from app.models.segment_models import AnnotatedSegment, LABEL_MAPPING, PredictedSegment, SegmentFeatureCatalog
@@ -168,11 +170,50 @@ class SegmentClassifierService:
 
         self.max_length = max_length
 
+    def _compute_sample_hash(self, sample_dict: Dict) -> str:
+        """Compute deterministic hash for a sample based on its content."""
+        # Create a stable string representation of key fields
+        # Use session_id and timestamp if available, otherwise use telemetry data
+        hash_data = ""
+        if "session_id" in sample_dict:
+            hash_data += str(sample_dict["session_id"])
+        if "timestamp" in sample_dict:
+            hash_data += str(sample_dict["timestamp"])
+        if "start_index" in sample_dict:
+            hash_data += str(sample_dict["start_index"])
+        if "end_index" in sample_dict:
+            hash_data += str(sample_dict["end_index"])
+            
+        # Fallback: use first few telemetry points
+        if not hash_data and "telemetry_data" in sample_dict and sample_dict["telemetry_data"]:
+            try:
+                first_point = sample_dict["telemetry_data"][0]
+                hash_data = json.dumps(first_point, sort_keys=True)
+            except Exception:
+                hash_data = str(sample_dict)
+        
+        if not hash_data:
+            hash_data = json.dumps(sample_dict, sort_keys=True)
+            
+        return hashlib.md5(hash_data.encode()).hexdigest()
+    
+    def _assign_split(self, sample_hash: str, val_split: float) -> str:
+        """Deterministically assign sample to train or val based on hash."""
+        # Use first 8 characters of hash to generate a number between 0 and 1
+        hash_int = int(sample_hash[:8], 16)
+        hash_normalized = hash_int / (16**8)
+        
+        return "val" if hash_normalized < val_split else "train"
+
     async def prepare_training_data(self, source_cache_key: str, train_cache_key: str, val_cache_key: str, val_split: float = 0.2, chunk_size: int = 100):
         """
-        Splits data from source_cache_key into train and val keys with fixed chunk sizes.
+        Splits data from source_cache_key into train and val keys with stratified, deterministic splitting.
+        Uses two-pass approach:
+        1. First pass: Collect label statistics per sample
+        2. Second pass: Perform stratified split using deterministic hashing
         """
         print(f"Preparing training data: splitting {source_cache_key} into {train_cache_key} and {val_cache_key}")
+        print("Using deterministic stratified splitting for consistent label distribution...")
         
         # Clear existing keys
         for key in [train_cache_key, val_cache_key]:
@@ -180,53 +221,104 @@ class SegmentClassifierService:
             if group_path.exists():
                 shutil.rmtree(group_path)
         
+        # PASS 1: Collect label statistics
+        print("Pass 1: Collecting label statistics...")
+        label_to_samples = defaultdict(list)  # Maps label -> list of (chunk_idx, item_idx, hash)
+        chunk_index = []  # Store (chunk_data, chunk_idx)
+        
         chunks = self.store.get_cached_data_chunks(source_cache_key)
-        
-        train_buffer = []
-        val_buffer = []
-        train_idx = 1
-        val_idx = 1
-        
-        total_processed = 0
+        chunk_idx = 0
         
         for chunk in chunks:
             chunk_data = []
             if isinstance(chunk, list):
                 chunk_data = chunk
             elif isinstance(chunk, dict) and "data" in chunk:
-                 chunk_data = chunk["data"]
+                chunk_data = chunk["data"]
             elif isinstance(chunk, dict) and "payload" in chunk:
-                 chunk_data = [chunk["payload"]]
+                chunk_data = [chunk["payload"]]
             else:
-                 chunk_data = [chunk]
+                chunk_data = [chunk]
             
-            for d in chunk_data:
+            valid_items = []
+            for item_idx, d in enumerate(chunk_data):
                 if not isinstance(d, dict):
                     continue
                 
-                # Optional: Validate data here to ensure clean datasets
+                # Validate
                 try:
-                    # Just check if it has telemetry data
                     if "telemetry_data" not in d or not d["telemetry_data"]:
                         continue
                 except Exception:
                     continue
-
-                total_processed += 1
-                if random.random() < val_split:
-                    val_buffer.append(d)
+                
+                valid_items.append(d)
+                
+                # Compute hash and extract labels
+                sample_hash = self._compute_sample_hash(d)
+                
+                # Extract labels (handle both 'labels' and mapped labels)
+                labels = d.get("labels", [])
+                if labels:
+                    mapped_labels = [LABEL_MAPPING.get(l, str(l)) for l in labels]
+                    # Store primary label (first one) for stratification
+                    primary_label = mapped_labels[0] if mapped_labels else "unknown"
+                    label_to_samples[primary_label].append((chunk_idx, len(valid_items) - 1, sample_hash))
+            
+            if valid_items:
+                chunk_index.append((valid_items, chunk_idx))
+                chunk_idx += 1
+        
+        print(f"Found {len(chunk_index)} chunks with {sum(len(items) for items, _ in chunk_index)} valid samples")
+        print(f"Label distribution: {[(label, len(samples)) for label, samples in sorted(label_to_samples.items())]}")
+        
+        # PASS 2: Stratified split using deterministic hashing
+        print("Pass 2: Performing stratified split...")
+        
+        # For each label, split samples deterministically
+        train_samples_set = set()  # Set of (chunk_idx, item_idx)
+        val_samples_set = set()
+        
+        train_label_counts = defaultdict(int)
+        val_label_counts = defaultdict(int)
+        
+        for label, samples in label_to_samples.items():
+            for chunk_idx, item_idx, sample_hash in samples:
+                split = self._assign_split(sample_hash, val_split)
+                
+                if split == "val":
+                    val_samples_set.add((chunk_idx, item_idx))
+                    val_label_counts[label] += 1
                 else:
-                    train_buffer.append(d)
-                
-                if len(train_buffer) >= chunk_size:
-                    self.store.save_chunk(train_cache_key, train_idx, train_buffer)
-                    train_buffer = []
-                    train_idx += 1
-                
-                if len(val_buffer) >= chunk_size:
-                    self.store.save_chunk(val_cache_key, val_idx, val_buffer)
-                    val_buffer = []
-                    val_idx += 1
+                    train_samples_set.add((chunk_idx, item_idx))
+                    train_label_counts[label] += 1
+        
+        print(f"Train samples: {len(train_samples_set)}, Val samples: {len(val_samples_set)}")
+        print(f"Train label distribution: {dict(train_label_counts)}")
+        print(f"Val label distribution: {dict(val_label_counts)}")
+        
+        # PASS 3: Write splits to storage
+        print("Pass 3: Writing splits to storage...")
+        train_buffer = []
+        val_buffer = []
+        train_idx = 1
+        val_idx = 1
+        
+        for chunk_data, chunk_idx in chunk_index:
+            for item_idx, item in enumerate(chunk_data):
+                if (chunk_idx, item_idx) in train_samples_set:
+                    train_buffer.append(item)
+                    if len(train_buffer) >= chunk_size:
+                        self.store.save_chunk(train_cache_key, train_idx, train_buffer)
+                        train_buffer = []
+                        train_idx += 1
+                        
+                elif (chunk_idx, item_idx) in val_samples_set:
+                    val_buffer.append(item)
+                    if len(val_buffer) >= chunk_size:
+                        self.store.save_chunk(val_cache_key, val_idx, val_buffer)
+                        val_buffer = []
+                        val_idx += 1
         
         # Flush remainders
         if train_buffer:
@@ -234,7 +326,7 @@ class SegmentClassifierService:
         if val_buffer:
             self.store.save_chunk(val_cache_key, val_idx, val_buffer)
             
-        print(f"Data preparation complete. Processed {total_processed} items.")
+        print(f"Data preparation complete. Train: {len(train_samples_set)} samples, Val: {len(val_samples_set)} samples")
 
     async def fit_preprocessors(self, cache_key: str):
         """
@@ -503,7 +595,7 @@ class SegmentClassifierService:
             trusted_labels = []
             
             # Minimum samples required during training to be considered trusted
-            min_support = 30
+            min_support = 800
             min_precision = 0.80
             print("\nPer-class Precision and Support (Validation Set):")
             for label in self.mlb.classes_:
