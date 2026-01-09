@@ -47,6 +47,11 @@ except ImportError as exc:  # pragma: no cover - guarding runtime deps
 
 LOGGER = logging.getLogger(__name__)
 
+# Determine persistent model cache directory
+# app/services/local_llm_service.py -> ../../models/huggingface_cache
+_SERVICE_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_HF_CACHE = str(_SERVICE_ROOT / "models" / "huggingface_cache")
+
 
 # ---------------------------------------------------------------------------
 # Configuration dataclasses
@@ -59,7 +64,7 @@ class LocalLLMConfig:
 
     base_model: str = "mistralai/Mistral-7B-Instruct-v0.2"
     tokenizer_name: Optional[str] = None
-    cache_dir: Optional[str] = None
+    cache_dir: Optional[str] = DEFAULT_HF_CACHE
 
     load_in_8bit: bool = False
     load_in_4bit: bool = False
@@ -86,7 +91,7 @@ class LocalLLMConfig:
         ]
     )
 
-    max_seq_length: int = 1024
+    max_seq_length: int = 131072
     train_batch_size: int = 1
     eval_batch_size: int = 1
     gradient_accumulation_steps: int = 16
