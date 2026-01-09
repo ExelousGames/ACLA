@@ -48,7 +48,6 @@ class ExpertFeatureCatalog:
         EXPERT_OPTIMAL_VELOCITY_X = 'expert_optimal_velocity_x'
         EXPERT_OPTIMAL_VELOCITY_Y = 'expert_optimal_velocity_y'
         EXPERT_OPTIMAL_VELOCITY_Z = 'expert_optimal_velocity_z'
-        EXPERT_OPTIMAL_CURRENT_TIME = 'expert_optimal_current_time'
 
     class ContextFeature(str, Enum):
         # Velocity direction alignment with expert
@@ -65,7 +64,6 @@ class ExpertFeatureCatalog:
         EXPERT_OPTIMAL_SPEED = 'expert_optimal_speed'
         EXPERT_OPTIMAL_THROTTLE = 'expert_optimal_throttle'
         EXPERT_OPTIMAL_BRAKE = 'expert_optimal_brake'
-        EXPERT_OPTIMAL_CURRENT_TIME = 'expert_optimal_current_time'
         # Context features
         EXPERT_VELOCITY_ALIGNMENT = 'expert_velocity_alignment'
         SPEED_DIFFERENCE = 'speed_difference' 
@@ -230,8 +228,7 @@ class TrackExpertModel:
             EO.EXPERT_OPTIMAL_BRAKE.value, EO.EXPERT_OPTIMAL_SPEED.value,
             EO.EXPERT_OPTIMAL_VELOCITY_X.value, EO.EXPERT_OPTIMAL_VELOCITY_Y.value, 
             EO.EXPERT_OPTIMAL_VELOCITY_Z.value, EO.EXPERT_OPTIMAL_TRACK_POSITION.value,
-            EO.EXPERT_OPTIMAL_GEAR.value,
-            EO.EXPERT_OPTIMAL_CURRENT_TIME.value
+            EO.EXPERT_OPTIMAL_GEAR.value
         ]
         
         for t in all_possible_targets:
@@ -436,9 +433,6 @@ class ExpertPositionLearner:
         # Speed (derived)
         if 'Physics_speed_kmh' in df.columns:
             target_features[EO.EXPERT_OPTIMAL_SPEED.value] = df['Physics_speed_kmh']
-            
-        if 'Graphics_current_time' in df.columns:
-            target_features[EO.EXPERT_OPTIMAL_CURRENT_TIME.value] = df['Graphics_current_time']
 
         # Track position (for consistency)
         if 'Graphics_normalized_car_position' in df.columns:
@@ -875,9 +869,6 @@ class ExpertImitateLearningService:
 
                         expert_brake = float(row_predictions.get(ExpertFeatureCatalog.ExpertOptimalFeature.EXPERT_OPTIMAL_BRAKE.value, 0.0))
                         row_features[ExpertFeatures.EXPERT_OPTIMAL_BRAKE.value] = expert_brake
-
-                        expert_current_time = float(row_predictions.get(ExpertFeatureCatalog.ExpertOptimalFeature.EXPERT_OPTIMAL_CURRENT_TIME.value, 0.0))
-                        row_features[ExpertFeatures.EXPERT_OPTIMAL_CURRENT_TIME.value] = expert_current_time
 
                         # Store only velocity alignment feature
                         row_features[ExpertFeatures.EXPERT_VELOCITY_ALIGNMENT.value] = float(velocity_alignment)

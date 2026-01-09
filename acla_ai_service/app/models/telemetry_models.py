@@ -926,10 +926,27 @@ class FeatureProcessor:
                         except (ValueError, TypeError):
                             player_car_id = 0
                         
+                        # Correctly identify player index in the coordinates list
+                        player_index = -1
+                        
+                        # Helper logic: car_coordinates list usually aligns with car_id list
+                        # 1. Try to find player_car_id in the car_ids list
+                        if len(car_ids) > 0:
+                            try:
+                                if player_car_id in car_ids:
+                                    player_index = car_ids.index(player_car_id)
+                            except ValueError:
+                                pass
+                                
+                        # 2. Fallback: use player_car_id as index directly if not found in list or list empty
+                        if player_index == -1:
+                            if 0 <= player_car_id < len(car_coords):
+                                player_index = player_car_id
+                        
                         player_pos = {'x': 0.0, 'y': 0.0, 'z': 0.0}
                         
-                        if 0 <= player_car_id < len(car_coords):
-                            player_coord = car_coords[player_car_id]
+                        if 0 <= player_index < len(car_coords):
+                            player_coord = car_coords[player_index]
                             if isinstance(player_coord, dict):
                                 player_pos['x'] = _safe_float(player_coord.get('x', 0))
                                 player_pos['y'] = _safe_float(player_coord.get('y', 0))
@@ -939,7 +956,7 @@ class FeatureProcessor:
                                 df.loc[idx, 'Graphics_player_pos_y'] = player_pos['y']
                                 df.loc[idx, 'Graphics_player_pos_z'] = player_pos['z']
                         else:
-                            print(f"[DEBUG] Invalid player_car_id {player_car_id} for car_coords length {len(car_coords)}")
+                            # print(f"[DEBUG] Invalid player_index {player_index} (ID: {player_car_id})")
                             # Set default values
                             df.loc[idx, 'Graphics_player_pos_x'] = 0.0
                             df.loc[idx, 'Graphics_player_pos_y'] = 0.0
@@ -948,7 +965,7 @@ class FeatureProcessor:
                         # Calculate distances to other cars
                         opponents = []
                         for i, coord in enumerate(car_coords):
-                            if i == player_car_id:
+                            if i == player_index:
                                 continue
                             
                             if isinstance(coord, dict):

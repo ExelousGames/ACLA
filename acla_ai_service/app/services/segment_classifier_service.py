@@ -596,22 +596,22 @@ class SegmentClassifierService:
             
             trusted_labels = []
             
-            min_support = 7000
+            min_support = 7000  # Minimum number of timesteps (frames)
             min_precision = 0.80
-            print("\nPer-class Precision and Support (Validation Set):")
+            print("\nPer-class Precision and Support (Validation Set - Per Timestep):")
             for label in self.mlb.classes_:
                 if label in report_dict:
                     metrics = report_dict[label]
                     # Use precision as the trust metric
                     score = metrics['precision']
-                    support = metrics['support']
+                    support = metrics['support']  # Number of timesteps, not segments
                     
-                    print(f"{label}: Precision={score:.4f}, Support={support}")
+                    print(f"{label}: Precision={score:.4f}, Support={support} timesteps")
                     
                     if score >= min_precision and support >= min_support:
                         trusted_labels.append(label)
             
-            print(f"\nTrusted labels (>= {min_precision*100:.0f}% precision, >= {min_support} segments): {trusted_labels}")
+            print(f"\nTrusted labels (>= {min_precision*100:.0f}% precision, >= {min_support} timesteps): {trusted_labels}")
 
             # Save trusted labels
             with open(self.models_directory / "segment_trusted_labels.json", "w") as f:
