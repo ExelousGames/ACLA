@@ -127,7 +127,6 @@ export default function LiveAnalysisSessionRecording() {
     const stopReasonRef = useRef<StopReason | null>(null);
     const startInFlightRef = useRef(false);
     const hasReceivedLiveSampleRef = useRef(false);
-    const hasSeenLiveStatusRef = useRef(false);
     const recordingFileInfoRef = useRef<{ folder: string; filename: string } | null>(null);
 
     const sessionCheckingStreamRef = useRef<PythonStreamSession<Record<string, unknown>> | null>(null);
@@ -417,8 +416,10 @@ export default function LiveAnalysisSessionRecording() {
             } as RacingSessionDetailedInfoDto as any);
         }
 
+        // Reset live data to clear stale status
+        analysisContext.setLiveSessionData({});
+
         hasReceivedLiveSampleRef.current = false;
-        hasSeenLiveStatusRef.current = false;
         transition({ type: resumeExisting ? 'recordingResumed' : 'recordingStarted' });
         try {
             const { shellId } = await window.electronAPI.runPythonScript(script, options);
@@ -431,21 +432,12 @@ export default function LiveAnalysisSessionRecording() {
                 }
                 try {
                     const obj = JSON.parse(message);
+                    const status = obj.Graphics?.status;
                     analysisContext.setLiveSessionData(obj);
                     void analysisContext.writeRecordedLiveSessionData(obj).catch(() => undefined);
-                    hasReceivedLiveSampleRef.current = true;
-
-                    const graphics = (obj as any).Graphics ?? {};
-                    const status = toAccStatus(graphics.status);
-
-                    if (status === ACC_STATUS.ACC_LIVE) {
-                        hasSeenLiveStatusRef.current = true;
-                    }
-
-                    if (status === ACC_STATUS.ACC_PAUSE) {
-                        if (hasSeenLiveStatusRef.current) {
-                            void stopRecordingProcess('pause');
-                        }
+                    
+                    if (status !== undefined && status !== null) {
+                        hasReceivedLiveSampleRef.current = true;
                     }
                 } catch { }
             });
@@ -498,7 +490,7 @@ export default function LiveAnalysisSessionRecording() {
 
     useEffect(() => {
         if (state === RecordingState.RECORDING && TelemetryDataLiveStatus === ACC_STATUS.ACC_PAUSE) {
-            if (hasReceivedLiveSampleRef.current && hasSeenLiveStatusRef.current) {
+            if (hasReceivedLiveSampleRef.current) {
                 void stopRecordingProcess('pause');
             }
         }

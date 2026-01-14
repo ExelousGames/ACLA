@@ -10,7 +10,7 @@ LABEL_MAPPING = {
     1: "Overtaking",
     2: "Missing data",
     3: "Expert Adherence",
-    5: "Recovery",
+    5: "Recovery & Merge",
     23: "Superior Expert",
     27: "Unexpected driving behavior",
     28 :"Mistake"

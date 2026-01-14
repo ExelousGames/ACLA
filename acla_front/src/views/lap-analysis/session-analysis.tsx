@@ -361,6 +361,13 @@ const SessionAnalysis = () => {
             return;
         }
 
+        if (Object.keys(liveData).length === 0) {
+            if (TelemetryDataLiveStatus !== null) {
+                setTelemetryDataLiveStatus(null);
+            }
+            return;
+        }
+
         const nextStatus = normalizeAccStatus((liveData as any)?.Graphics_status ?? (liveData as any)?.Graphics?.status);
         if (nextStatus !== null && nextStatus !== TelemetryDataLiveStatus) {
             setTelemetryDataLiveStatus(nextStatus);
