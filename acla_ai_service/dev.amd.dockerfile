@@ -1,26 +1,46 @@
-FROM rocm/dev-ubuntu-22.04:6.2
+FROM rocm/dev-ubuntu-24.04:6.4.4-complete
 
 # Set timezone to avoid interactive prompt
 ENV DEBIAN_FRONTEND=noninteractive \
     TZ=Etc/UTC
 
-# Install Python 3.11
+# Install Python 3.11 from source (Launchpad PPA is down)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     software-properties-common \
-    && add-apt-repository ppa:deadsnakes/ppa \
-    && apt-get install -y --no-install-recommends \
-    python3.11 \
-    python3.11-dev \
-    python3.11-distutils \
-    python3-pip \
-    gcc \
-    g++ \
     git \
-    && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* \
-    && update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1 \
-    && update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1
+    build-essential \
+    wget \
+    libssl-dev \
+    zlib1g-dev \
+    libbz2-dev \
+    libreadline-dev \
+    libsqlite3-dev \
+    libncursesw5-dev \
+    xz-utils \
+    tk-dev \
+    libxml2-dev \
+    libxmlsec1-dev \
+    libffi-dev \
+    liblzma-dev \
+    && wget https://www.python.org/ftp/python/3.11.9/Python-3.11.9.tgz \
+    && tar xzf Python-3.11.9.tgz \
+    && cd Python-3.11.9 \
+    && ./configure --enable-optimizations \
+    && make -j$(nproc) \
+    && make altinstall \
+    && cd .. \
+    && rm -rf Python-3.11.9 Python-3.11.9.tgz \
+    && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+
+# Setup Virtual Environment
+ENV VIRTUAL_ENV=/opt/venv
+RUN python3.11 -m venv $VIRTUAL_ENV
+ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 
 WORKDIR /app
+
+# Upgrade pip inside the virtual environment
+RUN pip install --upgrade pip
 
 # Set all environment variables for optimization
 ENV PYTHONDONTWRITEBYTECODE=1 \

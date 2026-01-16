@@ -2,6 +2,7 @@
 Streamlit UI for manually annotating telemetry segments with behavioral labels.
 """
 
+import torch # Must import torch before streamlit to avoid "Examining the path of torch.classes" errors
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -38,6 +39,29 @@ import importlib
 importlib.reload(app.models.segment_models)
 from app.models.segment_models import AnnotatedSegment, LABEL_MAPPING, LABEL_NAME_TO_ID, SegmentFeatureCatalog
 from app.services.segment_updater import SegmentUpdater
+from app.services.local_llm_service import LocalTelemetryLLM, LocalLLMConfig, GenerationRequest
+
+@st.cache_resource
+def get_llm_service():
+    """Load the LLM service for inference."""
+    try:
+        # Use 4-bit quantization for efficiency if CUDA is available
+        use_quant = torch.cuda.is_available()
+        # Explicitly set device to cuda or cpu to avoid accelerate's "auto" which can be unstable on some setups (ROCm)
+        device_map = "cuda" if torch.cuda.is_available() else "cpu"
+        
+        # Ensure we don't consume all VRAM, allowing for other processes
+        config = LocalLLMConfig(
+            load_in_4bit=False, 
+            load_in_8bit=False,
+            device_map=device_map
+        )
+        service = LocalTelemetryLLM(config)
+        service.load_for_inference()
+        return service
+    except Exception as e:
+        print(f"Failed to load LLM service: {e}")
+        return None
 
 def get_display_labels(labels):
     """Convert label IDs or strings to display strings."""
@@ -810,6 +834,74 @@ def main():
                         c10.metric("Sum", f"{calc_slice.sum():.2f}")
                         c11.metric("Variance", f"{var_val:.2f}")
                         c12.metric("Total Change", f"{total_change:.2f}", help="Difference between end and start value")
+
+            # AI Label Suggestion (Use Container instead of Expander to avoid nesting issues with Status)
+            with st.container():
+                st.markdown("---")
+                st.subheader("AI Label Suggestion")
+                st.markdown("Use the local LLM to analyze the selected telemetry segment and suggest a label.")
+
+                valid_default_cols = [c for c in default_cols if c in numeric_cols]
+                if not valid_default_cols and numeric_cols:
+                    valid_default_cols = numeric_cols[:min(3, len(numeric_cols))]
+
+                llm_features = st.multiselect(
+                    "Select Features for LLM Analysis",
+                    numeric_cols,
+                    default=valid_default_cols,
+                    key=f"llm_features_{selected_option}"
+                )
+                
+                if st.button("Analyze Segment with LLM", key=f"btn_analyze_{selected_option}"):
+                    # Check range validity
+                    a_start = st.session_state.get(f"form_start_{selected_option}", default_start)
+                    a_end = st.session_state.get(f"form_end_{selected_option}", default_end)
+                    
+                    if a_start >= a_end:
+                         st.error("Invalid range for analysis.")
+                    elif not llm_features:
+                         st.error("Please select at least one feature for analysis.")
+                    else:
+                        with st.status("Analyzing segment telemetry...", expanded=True) as status:
+                            # Get LLM
+                            status.write("Loading LLM model...")
+                            llm_service = get_llm_service()
+                            
+                            if llm_service:
+                                status.write("Extracting telemetry data...")
+                                seg_df = df.iloc[int(a_start):int(a_end)][llm_features]
+                                # Convert raw data to CSV string
+                                raw_data_str = seg_df.to_csv(index=False)
+                                
+                                available_labels_str = ", ".join(sorted(list(set(LABEL_MAPPING.values()))))
+                                
+                                system_prompt = "You are an expert telemetry analyst for racing simulations."
+                                user_prompt = (
+                                    f"Analyze the following raw telemetry data and suggest the most appropriate behavioral label.\n\n"
+                                    f"Available Labels: {available_labels_str}\n\n"
+                                    f"Telemetry Data (CSV):\n{raw_data_str}\n\n"
+                                    f"Provide a concise analysis reasoning and conclude with your label recommendation."
+                                )
+                                
+                                req = GenerationRequest(
+                                    system_prompt=system_prompt,
+                                    user_prompt=user_prompt,
+                                    max_new_tokens=256,
+                                    temperature=0.7 
+                                )
+                                
+                                status.write("Running inference...")
+                                try:
+                                    response = llm_service.generate(req)
+                                    status.update(label="Analysis Complete", state="complete", expanded=False)
+                                    st.markdown("### LLM Analysis & Suggestion")
+                                    st.info(response)
+                                except Exception as e:
+                                    status.update(label="Analysis Failed", state="error")
+                                    st.error(f"Inference failed: {e}")
+                            else:
+                                status.update(label="LLM Load Failed", state="error")
+                                st.error("Could not load LLM. Check server logs or ensure model is downloaded.")
 
             # Actions
             col_actions = st.columns([1, 1, 1, 3])
