@@ -39,28 +39,35 @@ import importlib
 importlib.reload(app.models.segment_models)
 from app.models.segment_models import AnnotatedSegment, LABEL_MAPPING, LABEL_NAME_TO_ID, SegmentFeatureCatalog
 from app.services.segment_updater import SegmentUpdater
-from app.services.local_llm_service import LocalTelemetryLLM, LocalLLMConfig, GenerationRequest
+from app.services.local_vlm_service import LocalVLMService, LocalVLMConfig
+
+LABEL_DESCRIPTIONS = {
+    "Overtaking": "The driver is actively passing or attempting to pass another car.",
+    "Missing data": "The telemetry data has gaps or invalid values.",
+    "Expert Adherence": "The driver is closely following the optimal racing line and speed profile as defined by the expert.",
+    "Recovery & Merge": "The driver is recovering and rejoining the expert racing line.",
+    "Superior Expert": "The driver is performing better than the calculated expert baseline (e.g., higher speed in corners, better braking).",
+    "Unexpected driving behavior": "The driver's behavior is erratic or does not match typical racing patterns.",
+    "Mistake": "The driver makes a clear error, such as braking too late, missing an apex, or going off-track."
+}
 
 @st.cache_resource
-def get_llm_service():
-    """Load the LLM service for inference."""
+def get_vlm_service():
+    """Load the VLM service for inference."""
     try:
-        # Use 4-bit quantization for efficiency if CUDA is available
-        use_quant = torch.cuda.is_available()
-        # Explicitly set device to cuda or cpu to avoid accelerate's "auto" which can be unstable on some setups (ROCm)
+        # Explicitly set device to cuda or cpu to avoid accelerate's "auto" which can be unstable on some setups
         device_map = "cuda" if torch.cuda.is_available() else "cpu"
         
-        # Ensure we don't consume all VRAM, allowing for other processes
-        config = LocalLLMConfig(
-            load_in_4bit=False, 
+        # Use 4-bit quantization for efficiency
+        config = LocalVLMConfig(
+            load_in_4bit=True, 
             load_in_8bit=False,
             device_map=device_map
         )
-        service = LocalTelemetryLLM(config)
-        service.load_for_inference()
+        service = LocalVLMService(config)
         return service
     except Exception as e:
-        print(f"Failed to load LLM service: {e}")
+        print(f"Failed to load VLM service: {e}")
         return None
 
 def get_display_labels(labels):
@@ -838,21 +845,23 @@ def main():
             # AI Label Suggestion (Use Container instead of Expander to avoid nesting issues with Status)
             with st.container():
                 st.markdown("---")
-                st.subheader("AI Label Suggestion")
-                st.markdown("Use the local LLM to analyze the selected telemetry segment and suggest a label.")
+                st.subheader("AI Label Suggestion (VLM)")
+                st.markdown("Use the local VLM to visually analyze the selected telemetry segment and suggest a label.")
 
                 valid_default_cols = [c for c in default_cols if c in numeric_cols]
                 if not valid_default_cols and numeric_cols:
                     valid_default_cols = numeric_cols[:min(3, len(numeric_cols))]
 
                 llm_features = st.multiselect(
-                    "Select Features for LLM Analysis",
+                    "Select Features for VLM Analysis",
                     numeric_cols,
                     default=valid_default_cols,
                     key=f"llm_features_{selected_option}"
                 )
+
+                include_traj = st.checkbox("Include 2D Trajectory in Analysis", value=True, key=f"include_traj_{selected_option}")
                 
-                if st.button("Analyze Segment with LLM", key=f"btn_analyze_{selected_option}"):
+                if st.button("Analyze Segment with VLM", key=f"btn_analyze_{selected_option}"):
                     # Check range validity
                     a_start = st.session_state.get(f"form_start_{selected_option}", default_start)
                     a_end = st.session_state.get(f"form_end_{selected_option}", default_end)
@@ -863,41 +872,69 @@ def main():
                          st.error("Please select at least one feature for analysis.")
                     else:
                         with st.status("Analyzing segment telemetry...", expanded=True) as status:
-                            # Get LLM
-                            status.write("Loading LLM model...")
-                            llm_service = get_llm_service()
+                            # Get VLM
+                            status.write("Loading VLM model...")
+                            vlm_service = get_vlm_service()
                             
-                            if llm_service:
+                            if vlm_service:
                                 status.write("Extracting telemetry data...")
-                                seg_df = df.iloc[int(a_start):int(a_end)][llm_features]
-                                # Convert raw data to CSV string
-                                raw_data_str = seg_df.to_csv(index=False)
+                                seg_slice = df.iloc[int(a_start):int(a_end)]
                                 
-                                available_labels_str = ", ".join(sorted(list(set(LABEL_MAPPING.values()))))
+                                # Telemetry Data
+                                telemetry_csv_str = seg_slice[llm_features].to_csv(index=False)
                                 
-                                system_prompt = "You are an expert telemetry analyst for racing simulations."
-                                user_prompt = (
-                                    f"Analyze the following raw telemetry data and suggest the most appropriate behavioral label.\n\n"
-                                    f"Available Labels: {available_labels_str}\n\n"
-                                    f"Telemetry Data (CSV):\n{raw_data_str}\n\n"
-                                    f"Provide a concise analysis reasoning and conclude with your label recommendation."
+                                # Trajectory Data
+                                trajectory_csv_str = None
+                                if include_traj:
+                                    traj_cols = [
+                                        'Graphics_player_pos_x', 'Graphics_player_pos_y', 'Graphics_player_pos_z',
+                                        'expert_optimal_player_pos_x', 'expert_optimal_player_pos_y', 'expert_optimal_player_pos_z'
+                                    ]
+                                    available_traj_cols = [c for c in traj_cols if c in seg_slice.columns]
+                                    if available_traj_cols:
+                                        trajectory_csv_str = seg_slice[available_traj_cols].to_csv(index=False)
+                                
+                                # Build detailed label descriptions
+                                label_desc_list = []
+                                for name in sorted(list(set(LABEL_MAPPING.values()))):
+                                    desc = LABEL_DESCRIPTIONS.get(name, "No description available.")
+                                    label_desc_list.append(f"- {name}: {desc}")
+                                available_labels_str = "\n".join(label_desc_list)
+                                
+                                prompt = (
+                                    f"The graphs show telemetry data from a racing car session. The graphs contain a comparison between the driver and an expert reference.\n"
+                                    f"Based on the trends in the data, suggest the most appropriate behavioral label from the following list:\n{available_labels_str}\n\n"
+                                    f"Respond in English. Be concise and professional. Explain your reasoning based on the visual patterns in the graphs."
                                 )
                                 
-                                req = GenerationRequest(
-                                    system_prompt=system_prompt,
-                                    user_prompt=user_prompt,
-                                    max_new_tokens=256,
-                                    temperature=0.7 
-                                )
+                                status.write("Starting VLM analysis...")
                                 
-                                status.write("Running inference...")
+                                # Use a mutable reference to hold the placeholder for streaming output
+                                stream_ph_ref = [None]
+                                
+                                def status_callback_handler(msg):
+                                    if msg.startswith("Generating:"):
+                                        text_content = msg[len("Generating: "):]
+                                        if stream_ph_ref[0] is None:
+                                            stream_ph_ref[0] = status.empty()
+                                        stream_ph_ref[0].markdown(f"**Generating:**\n\n{text_content}")
+                                    else:
+                                        status.write(msg)
+
                                 try:
-                                    response = llm_service.generate(req)
+                                    response, img = vlm_service.analyze_data(
+                                        telemetry_csv_str, 
+                                        prompt, 
+                                        trajectory_csv_data=trajectory_csv_str,
+                                        status_callback=status_callback_handler
+                                    )
                                     status.update(label="Analysis Complete", state="complete", expanded=False)
-                                    st.markdown("### LLM Analysis & Suggestion")
+                                    st.markdown("### VLM Analysis & Suggestion")
+                                    st.image(img, caption="VLM Visualization (Combined)", use_column_width=True)
                                     st.info(response)
                                 except Exception as e:
                                     status.update(label="Analysis Failed", state="error")
+                                    st.error(f"Error during VLM analysis: {e}")
                                     st.error(f"Inference failed: {e}")
                             else:
                                 status.update(label="LLM Load Failed", state="error")
