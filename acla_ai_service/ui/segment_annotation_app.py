@@ -940,6 +940,172 @@ def main():
                                 status.update(label="LLM Load Failed", state="error")
                                 st.error("Could not load LLM. Check server logs or ensure model is downloaded.")
 
+            # Auto-Segmentation (Agent Mode)
+            with st.expander("Auto-Segment Range (Agent Mode)", expanded=False):
+                st.markdown("Iteratively analyze the specified range to find and extract sequential segments.")
+                
+                as_col1, as_col2 = st.columns(2)
+                with as_col1:
+                    auto_start_idx = st.number_input("Start Index", min_value=0, max_value=len(df)-1, value=viz_start_idx, key="as_start")
+                with as_col2:
+                    auto_end_idx = st.number_input("End Index", min_value=0, max_value=len(df), value=viz_end_idx, key="as_end")
+                
+                # Check for cols defined in previous block, else re-derive
+                as_default_cols = numeric_cols[:min(3, len(numeric_cols))]
+                if "valid_default_cols" in locals():
+                    as_default_cols = valid_default_cols
+
+                as_features = st.multiselect(
+                    "Features for Auto-Segmentation",
+                    numeric_cols,
+                    default=as_default_cols,
+                    key="as_features"
+                )
+                
+                if st.button("Start Auto-Segmentation Agent", type="primary"):
+                    if auto_start_idx >= auto_end_idx:
+                        st.error("Invalid range.")
+                    else:
+                        vlm_service = get_vlm_service()
+                        if not vlm_service:
+                            st.error("VLM Service not available.")
+                        else:
+                            current_cursor = int(auto_start_idx)
+                            limit_cursor = int(auto_end_idx)
+                            
+                            status_container = st.status("Running Auto-Segmentation Agent...", expanded=True)
+                            results_container = st.container()
+                            
+                            full_labels_str = ", ".join(sorted(list(set(LABEL_MAPPING.values()))))
+                            
+                            found_count = 0
+                            
+                            import re
+                            import json
+                            
+                            while current_cursor < limit_cursor:
+                                chunk_len = limit_cursor - current_cursor
+                                # Minimum chunk size to analyze
+                                if chunk_len < 10: 
+                                    status_container.write("Remaining chunk too small. Stopping.")
+                                    break
+                                
+                                status_container.write(f"Analyzing window: {current_cursor} to {limit_cursor} (Len: {chunk_len})")
+                                
+                                # Prepare data
+                                current_slice = df.iloc[current_cursor:limit_cursor]
+                                slice_csv = current_slice[as_features].to_csv(index=False)
+                                
+                                # Construct Prompt
+                                analysis_prompt = (
+                                    f"Analyze the telemetry graph (left to right) representing a driving session.\n"
+                                    f"Identify the **first/left-most** distinct driving behavior segment that matches one of these labels: [{full_labels_str}].\n"
+                                    f"Ignore any 'Missing data' or unclear regions at the very beginning if they differ from the first clear segment.\n"
+                                    f"Return the result ONLY as a JSON object with this format:\n"
+                                    f'{{\n  "found": true,\n  "label": "LabelName",\n  "start_percentage": <float 0.0-1.0 representing start of segment in this window>,\n  "end_percentage": <float 0.0-1.0 representing end of segment in this window>,\n  "confidence": <float 0.0-1.0>\n}}\n'
+                                    f"If no distinct segment is found or the data is just noise/empty, return {{ \"found\": false }}.\n"
+                                    f"Focus on finding the START and END of the FIRST valid segment."
+                                )
+                                
+                                try:
+                                    # Call VLM - we can reuse the status callback for partial updates if we want, 
+                                    # but inside a loop it might be noisy. We'll skip detailed streaming for the loop.
+                                    vlm_resp, vlm_img = vlm_service.analyze_data(slice_csv, analysis_prompt)
+                                    
+                                    # Parse JSON
+                                    json_match = re.search(r'\{.*\}', vlm_resp, re.DOTALL)
+                                    segment_info = None
+                                    if json_match:
+                                        try:
+                                            segment_info = json.loads(json_match.group(0))
+                                        except:
+                                            pass
+                                    
+                                    if segment_info and segment_info.get("found"):
+                                        lbl = segment_info.get("label")
+                                        start_pct = segment_info.get("start_percentage", 0.0)
+                                        end_pct = segment_info.get("end_percentage", 0.1)
+                                        
+                                        # Clamp
+                                        start_pct = max(0.0, min(1.0, start_pct))
+                                        end_pct = max(0.0, min(1.0, end_pct))
+                                        
+                                        if end_pct <= start_pct:
+                                             # Fallback if VLM gives bad range, advance by small amount
+                                             end_pct = start_pct + 0.1
+                                        
+                                        # Convert to absolute indices
+                                        seg_start_abs = int(current_cursor + (start_pct * chunk_len))
+                                        seg_end_abs = int(current_cursor + (end_pct * chunk_len))
+                                        
+                                        # Ensure progress: If VLM says start is 0 and end is very small, or start > end
+                                        # We force a move to avoid infinite loop
+                                        if seg_end_abs <= current_cursor + 5:
+                                            seg_end_abs = current_cursor + max(20, int(chunk_len * 0.1))
+                                            
+                                        # Map Label
+                                        label_id = -1
+                                        best_match_name = "Unknown"
+                                        for lid, name in LABEL_MAPPING.items():
+                                            if name.lower() == lbl.lower():
+                                                label_id = lid
+                                                best_match_name = name
+                                                break
+                                        
+                                        if label_id == -1:
+                                            # Try finding closest match
+                                            for lid, name in LABEL_MAPPING.items():
+                                                if name.lower() in lbl.lower() or lbl.lower() in name.lower():
+                                                    label_id = lid
+                                                    best_match_name = name
+                                                    break
+                                            
+                                            if label_id == -1:
+                                                status_container.write(f"Warning: Unknown label '{lbl}', defaulting to 'Unexpected driving behavior'.")
+                                                best_match_name = "Unexpected driving behavior"
+                                                label_id = LABEL_NAME_TO_ID.get("Unexpected driving behavior", 0)
+
+                                        # Create Annotation
+                                        seg_length = seg_end_abs - seg_start_abs
+                                        
+                                        # Extract segment specific data for storage
+                                        seg_data_slice = df.iloc[seg_start_abs:seg_end_abs]
+                                        telemetry_data_dict = seg_data_slice.to_dict(orient="records")
+                                        
+                                        new_ann = AnnotatedSegment(
+                                            labels=[label_id],
+                                            segment_length=seg_length,
+                                            start_index=seg_start_abs,
+                                            end_index=seg_end_abs,
+                                            chunk_index=session_id,
+                                            telemetry_data=telemetry_data_dict,
+                                            notes=f"Auto-generated (Conf: {segment_info.get('confidence', 'NA')})"
+                                        )
+                                        
+                                        st.session_state.current_annotations.append(new_ann)
+                                        found_count += 1
+                                        
+                                        results_container.success(f"Found: **{best_match_name}** ({seg_start_abs} - {seg_end_abs})")
+                                        
+                                        # Advance cursor to the END of the found segment to continue searching after it
+                                        current_cursor = seg_end_abs
+                                        
+                                    else:
+                                        status_container.warning("No segment returned by VLM or JSON parse failed. Stopping.")
+                                        if not segment_info:
+                                            status_container.text(f"Raw VLM Response: {vlm_resp}")
+                                        break
+                                        
+                                except Exception as e:
+                                    status_container.error(f"Error in loop: {e}")
+                                    break
+                            
+                            status_container.update(label=f"Auto-Segmentation Complete. Found {found_count} segments.", state="complete")
+                            if found_count > 0:
+                                save_annotations(session_id, st.session_state.current_annotations, selected_annotation_key)
+                                time.sleep(1)
+                                st.rerun()
+
             # Actions
             col_actions = st.columns([1, 1, 1, 3])
             
