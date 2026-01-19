@@ -39,7 +39,7 @@ import importlib
 importlib.reload(app.models.segment_models)
 from app.models.segment_models import AnnotatedSegment, LABEL_MAPPING, LABEL_NAME_TO_ID, SegmentFeatureCatalog
 from app.services.segment_updater import SegmentUpdater
-from app.services.local_vlm_service import LocalVLMService, LocalVLMConfig
+from app.services.local_vlm_service import LocalVLMService, LocalVLMConfig, VLMProcessManager
 
 LABEL_DESCRIPTIONS = {
     "Overtaking": "The driver is actively passing or attempting to pass another car.",
@@ -64,7 +64,7 @@ def get_vlm_service():
             load_in_8bit=False,
             device_map=device_map
         )
-        service = LocalVLMService(config)
+        service = VLMProcessManager(config)
         return service
     except Exception as e:
         print(f"Failed to load VLM service: {e}")

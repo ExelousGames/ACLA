@@ -9,6 +9,9 @@ from __future__ import annotations
 import io
 import logging
 import threading
+import multiprocessing
+import queue
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Optional, Union, Any, Callable
@@ -454,3 +457,151 @@ class LocalVLMService:
             )
 
         return generated_text, final_image
+
+def _vlm_worker_loop(input_queue: multiprocessing.Queue, output_queue: multiprocessing.Queue, config: LocalVLMConfig):
+    """Worker function to run VLM service in a separate process."""
+    try:
+        # Initialize service in this process
+        service = LocalVLMService(config)
+        
+        while True:
+            try:
+                task = input_queue.get()
+                if task is None: # Sentinel to exit
+                    break
+                
+                # Check task type
+                if task.get("type") == "analyze":
+                    csv_data = task["csv_data"]
+                    prompt = task["prompt"]
+                    trajectory_csv_data = task.get("trajectory_csv_data")
+                    
+                    # Callback wrapper to send status back to parent
+                    def status_callback(msg):
+                        output_queue.put({"type": "status", "content": msg})
+                    
+                    try:
+                        response, img = service.analyze_data(
+                            csv_data, 
+                            prompt, 
+                            trajectory_csv_data=trajectory_csv_data,
+                            status_callback=status_callback
+                        )
+                        output_queue.put({"type": "result", "text": response, "image": img})
+                    except Exception as e:
+                        LOGGER.error("Error in VLM worker analysis: %s", e)
+                        output_queue.put({"type": "error", "error": str(e)})
+                        
+            except Exception as e:
+                LOGGER.error("Error in VLM worker loop: %s", e)
+                # Don't break loop on task error, but report it
+                if "output_queue" in locals():
+                    output_queue.put({"type": "error", "error": f"Worker loop error: {str(e)}"})
+
+    except Exception as e:
+        LOGGER.critical("VLM worker process failed to start: %s", e)
+        if "output_queue" in locals():
+            output_queue.put({"type": "error", "error": f"Worker init error: {str(e)}"})
+
+
+class VLMProcessManager:
+    """Manages a separate process for the VLM service."""
+    
+    _instance = None
+    _lock = threading.Lock()
+
+    def __new__(cls, *args, **kwargs):
+        if cls._instance is None:
+            with cls._lock:
+                if cls._instance is None:
+                    cls._instance = super(VLMProcessManager, cls).__new__(cls)
+                    cls._instance._initialized = False
+        return cls._instance
+
+    def __init__(self, config: Optional[LocalVLMConfig] = None) -> None:
+        if getattr(self, "_initialized", False):
+            return
+            
+        self.config = config or LocalVLMConfig()
+        self.input_queue: Optional[multiprocessing.Queue] = None
+        self.output_queue: Optional[multiprocessing.Queue] = None
+        self.worker_process: Optional[multiprocessing.Process] = None
+        self._initialized = True
+        
+    def start(self):
+        """Start the worker process if not running."""
+        with self._lock:
+            if self.worker_process is None or not self.worker_process.is_alive():
+                LOGGER.info("Starting VLM worker process...")
+                self.input_queue = multiprocessing.Queue()
+                self.output_queue = multiprocessing.Queue()
+                
+                # Use spawn context for better compatibility with PyTorch/CUDA
+                ctx = multiprocessing.get_context('spawn')
+                
+                self.worker_process = ctx.Process(
+                    target=_vlm_worker_loop,
+                    args=(self.input_queue, self.output_queue, self.config),
+                    daemon=True # Daemonize so it dies with parent
+                )
+                self.worker_process.start()
+                LOGGER.info("VLM worker process started with PID %s", self.worker_process.pid)
+
+    def stop(self):
+        """Stop the worker process."""
+        with self._lock:
+            if self.worker_process and self.worker_process.is_alive():
+                LOGGER.info("Stopping VLM worker process...")
+                if self.input_queue:
+                    self.input_queue.put(None) # Send sentinel
+                
+                self.worker_process.join(timeout=5)
+                if self.worker_process.is_alive():
+                    self.worker_process.terminate()
+                
+                self.worker_process = None
+                self.input_queue = None
+                self.output_queue = None
+
+    def analyze_data(
+        self, 
+        csv_data: str, 
+        prompt: str, 
+        trajectory_csv_data: Optional[str] = None,
+        status_callback: Optional[Callable[[str], None]] = None
+    ) -> tuple[str, Image.Image]:
+        """Proxy method to run analysis in the worker process."""
+        self.start() # Ensure running
+        
+        task = {
+            "type": "analyze",
+            "csv_data": csv_data,
+            "prompt": prompt,
+            "trajectory_csv_data": trajectory_csv_data
+        }
+        
+        self.input_queue.put(task)
+        
+        # Wait for results
+        while True:
+            try:
+                # Poll with timeout to allow interruption
+                msg = self.output_queue.get(block=True, timeout=0.1)
+                
+                msg_type = msg.get("type")
+                
+                if msg_type == "status":
+                    if status_callback:
+                        status_callback(msg["content"])
+                
+                elif msg_type == "result":
+                    return msg["text"], msg["image"]
+                
+                elif msg_type == "error":
+                    raise RuntimeError(msg.get("error", "Unknown worker error"))
+                    
+            except queue.Empty:
+                # Check if worker died
+                if not self.worker_process.is_alive():
+                     raise RuntimeError("VLM worker process died unexpectedly")
+                continue # Wait more
