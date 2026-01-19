@@ -980,6 +980,9 @@ def main():
                             
                             found_count = 0
                             
+                            # Reset proposed annotations
+                            st.session_state.proposed_auto_annotations = []
+                            
                             import re
                             import json
                             
@@ -1082,10 +1085,13 @@ def main():
                                             notes=f"Auto-generated (Conf: {segment_info.get('confidence', 'NA')})"
                                         )
                                         
-                                        st.session_state.current_annotations.append(new_ann)
+                                        if "proposed_auto_annotations" not in st.session_state:
+                                            st.session_state.proposed_auto_annotations = []
+
+                                        st.session_state.proposed_auto_annotations.append(new_ann)
                                         found_count += 1
                                         
-                                        results_container.success(f"Found: **{best_match_name}** ({seg_start_abs} - {seg_end_abs})")
+                                        results_container.success(f"Proposed: **{best_match_name}** ({seg_start_abs} - {seg_end_abs})")
                                         
                                         # Advance cursor to the END of the found segment to continue searching after it
                                         current_cursor = seg_end_abs
@@ -1102,13 +1108,51 @@ def main():
                             
                             status_container.update(label=f"Auto-Segmentation Complete. Found {found_count} segments.", state="complete")
                             if found_count > 0:
-                                save_annotations(session_id, st.session_state.current_annotations, selected_annotation_key)
-                                time.sleep(1)
+                                st.session_state.review_auto_segments = True
                                 st.rerun()
 
             # Actions
-            col_actions = st.columns([1, 1, 1, 3])
+            # --- Auto-Segmentation Review Block ---
+            if st.session_state.get("review_auto_segments", False) and st.session_state.get("proposed_auto_annotations"):
+                st.divider()
+                st.subheader("Creation Review")
+                st.info(f"The Auto-Segmentation Agent proposed {len(st.session_state.proposed_auto_annotations)} segments. Please review them below.")
+                
+                # Convert to dataframe for display
+                prop_data = []
+                for i, ann in enumerate(st.session_state.proposed_auto_annotations):
+                    d = ann.to_dict()
+                    d["labels"] = ", ".join(get_display_labels(ann.labels))
+                    # Remove bulk data for display
+                    if "telemetry_data" in d: del d["telemetry_data"]
+                    d["_temp_id"] = i
+                    prop_data.append(d)
+                
+                st.dataframe(pd.DataFrame(prop_data), use_container_width=True)
+                
+                r_col1, r_col2 = st.columns([1, 5])
+                with r_col1:
+                    if st.button("✅ Accept All", type="primary"):
+                        st.session_state.current_annotations.extend(st.session_state.proposed_auto_annotations)
+                        save_annotations(session_id, st.session_state.current_annotations, selected_annotation_key)
+                        # Cleanup
+                        st.session_state.proposed_auto_annotations = []
+                        st.session_state.review_auto_segments = False
+                        st.success("All segments added!")
+                        time.sleep(1)
+                        st.rerun()
+                
+                with r_col2:
+                    if st.button("❌ Discard Results"):
+                        st.session_state.proposed_auto_annotations = []
+                        st.session_state.review_auto_segments = False
+                        st.warning("Proposed segments discarded.")
+                        st.rerun()
             
+            st.divider()
+
+            # Actions
+            col_actions = st.columns([1, 1, 1, 3])
             def handle_submit():
                 # Access values from session state
                 s_start = st.session_state[f"form_start_{selected_option}"]
