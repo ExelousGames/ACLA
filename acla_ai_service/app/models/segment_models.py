@@ -25,6 +25,7 @@ class AnnotatedSegment:
     end_index: Optional[int] = None
     chunk_index: Optional[int] = None
     telemetry_data: List[Dict[str, Any]] = field(default_factory=list)
+    notes: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -37,7 +38,8 @@ class AnnotatedSegment:
             start_index=data.get("start_index"),
             end_index=data.get("end_index"),
             chunk_index=data.get("chunk_index"),
-            telemetry_data=data.get("telemetry_data", [])
+            telemetry_data=data.get("telemetry_data", []),
+            notes=data.get("notes")
         )
 
 @dataclass

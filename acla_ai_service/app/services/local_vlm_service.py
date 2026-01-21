@@ -14,7 +14,7 @@ import queue
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Optional, Union, Any, Callable
+from typing import Dict, Optional, Union, Any, Callable, List
 
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -127,7 +127,7 @@ class LocalVLMConfig:
     """Configuration options for loading the local VLM."""
 
     # Default to InternVL3-14B
-    base_model: str = "OpenGVLab/InternVL3_5-30B-A3B-Flash"
+    base_model: str = "OpenGVLab/InternVL3_5-38B-Flash"
     cache_dir: Optional[str] = DEFAULT_HF_CACHE
 
     # Quantization settings for memory efficiency
@@ -343,15 +343,15 @@ class LocalVLMService:
 
     def analyze_data(
         self, 
-        csv_data: str, 
+        csv_data: Union[str, List[str]], 
         prompt: str, 
         trajectory_csv_data: Optional[str] = None,
         status_callback: Optional[Callable[[str], None]] = None
     ) -> tuple[str, Image.Image]:
-        """Generates a graph from CSV data and runs VLM inference on it.
+        """Generates graph(s) from CSV data and runs VLM inference on it.
 
         Args:
-            csv_data: String content of the CSV file for telemetry traces.
+            csv_data: String content of the CSV file for telemetry traces, or a list of such strings for multiple graphs.
             prompt: User question or prompt about the data.
             trajectory_csv_data: Optional string content of CSV for trajectory data.
             status_callback: Optional callback to report progress.
@@ -359,7 +359,7 @@ class LocalVLMService:
         Returns:
             A tuple containing:
             - The model's textual analysis of the graph and data.
-            - The generated graph image (combined if trajectory is included).
+            - The generated graph image (combined if trajectory/multiple graphs are used).
         """
         if status_callback:
             status_callback("Checking model status...")
@@ -368,49 +368,81 @@ class LocalVLMService:
         if not prompt:
             prompt = "Describe the trends in this data."
 
-        # 1. Generate visualization(s)
-        if status_callback:
-            status_callback("Generating telemetry visualization...")
-        image_telem = self.create_graph_from_csv(csv_data)
+        # Support multiple CSVs for multiple graphs
+        csv_list = [csv_data] if isinstance(csv_data, str) else csv_data
         
+        # 1. Generate visualization(s)
+        telemetry_images = []
+        for idx, csv_str in enumerate(csv_list):
+            if status_callback:
+                status_callback(f"Generating telemetry visualization {idx+1}/{len(csv_list)}...")
+            img = self.create_graph_from_csv(csv_str)
+            telemetry_images.append(img)
+            
+        if not telemetry_images:
+            raise ValueError("No telemetry data provided")
+
         # Prepare inputs
         if status_callback:
-            status_callback("Preprocessing telemetry image...")
-        pixel_values1 = load_image(image_telem, max_num=12).to(torch.bfloat16)
-        if torch.cuda.is_available():
-            pixel_values1 = pixel_values1.cuda()
+            status_callback("Preprocessing telemetry images...")
             
-        final_image = image_telem
-        pixel_values = pixel_values1
-        num_patches_list = [pixel_values1.size(0)]
+        pixel_values_list = []
+        for img in telemetry_images:
+            pv = load_image(img, max_num=12).to(torch.bfloat16)
+            if torch.cuda.is_available():
+                pv = pv.cuda()
+            pixel_values_list.append(pv)
+            
+        pixel_values = torch.cat(pixel_values_list, dim=0)
+        num_patches_list = [pv.size(0) for pv in pixel_values_list]
         
-        question = f'<image>\n{prompt}'
+        # Build question string with <image> tokens
+        image_refs = []
+        for i in range(len(telemetry_images)):
+            image_refs.append(f"Image-{i+1}: <image>")
+            
+        final_image_list = telemetry_images[:]
 
         if trajectory_csv_data:
             if status_callback:
-                status_callback("Generating and preprocessing trajectory visualization...")
+                status_callback("Generating trajectory visualization...")
             image_traj = self.create_trajectory_graph_from_csv(trajectory_csv_data)
             
-            # Prepare second image inputs
             pixel_values2 = load_image(image_traj, max_num=12).to(torch.bfloat16)
             if torch.cuda.is_available():
                 pixel_values2 = pixel_values2.cuda()
             
-            # Concatenate pixel values for multi-image input
-            pixel_values = torch.cat((pixel_values1, pixel_values2), dim=0)
-            num_patches_list = [pixel_values1.size(0), pixel_values2.size(0)]
+            pixel_values = torch.cat((pixel_values, pixel_values2), dim=0)
+            num_patches_list.append(pixel_values2.size(0))
+            final_image_list.append(image_traj)
             
-            # Update prompt to reference both images
-            question = f'Image-1: <image>\nImage-2: <image>\nImage-1 shows the telemetry data traces. Image-2 shows the 2D trajectory of the vehicle (Top-down view).\n{prompt}'
-            w_t, h_t = image_telem.size
-            w_tr, h_tr = image_traj.size
-            max_w = max(w_t, w_tr)
-            total_h = h_t + h_tr
+            # Update question
+            traj_idx = len(telemetry_images) + 1
+            image_refs.append(f"Image-{traj_idx}: <image>")
             
-            combined = Image.new('RGB', (max_w, total_h), (255, 255, 255))
-            combined.paste(image_telem, ((max_w - w_t) // 2, 0))
-            combined.paste(image_traj, ((max_w - w_tr) // 2, h_t))
-            final_image = combined
+            question_context = f"Images 1-{len(telemetry_images)} show telemetry traces. Image-{traj_idx} shows the 2D trajectory of the vehicle (Top-down view)."
+        else:
+            question_context = "Images show telemetry traces." if len(telemetry_images) > 1 else ""
+
+        if len(final_image_list) == 1:
+            question = f'<image>\n{prompt}'
+            final_image = final_image_list[0]
+        else:
+            refs_str = "\n".join(image_refs)
+            question = f"{refs_str}\n{question_context}\n{prompt}"
+            
+            # Combine final image for return (Stack vertically)
+            widths = [img.size[0] for img in final_image_list]
+            heights = [img.size[1] for img in final_image_list]
+            max_w = max(widths)
+            total_h = sum(heights)
+            
+            final_image = Image.new('RGB', (max_w, total_h), (255, 255, 255))
+            current_h = 0
+            for img in final_image_list:
+                x_offset = (max_w - img.size[0]) // 2
+                final_image.paste(img, (x_offset, current_h))
+                current_h += img.size[1]
 
         generation_config = dict(
             max_new_tokens=self.config.max_new_tokens,
@@ -418,7 +450,6 @@ class LocalVLMService:
             temperature=self.config.temperature,
             pad_token_id=self.tokenizer.pad_token_id,
             eos_token_id=self.tokenizer.eos_token_id,
-            repetition_penalty=1.2,
         )
 
         # 4. Generate response using chat method with streaming if callback provided
@@ -533,11 +564,11 @@ class VLMProcessManager:
         with self._lock:
             if self.worker_process is None or not self.worker_process.is_alive():
                 LOGGER.info("Starting VLM worker process...")
-                self.input_queue = multiprocessing.Queue()
-                self.output_queue = multiprocessing.Queue()
-                
                 # Use spawn context for better compatibility with PyTorch/CUDA
                 ctx = multiprocessing.get_context('spawn')
+
+                self.input_queue = ctx.Queue()
+                self.output_queue = ctx.Queue()
                 
                 self.worker_process = ctx.Process(
                     target=_vlm_worker_loop,
@@ -565,7 +596,7 @@ class VLMProcessManager:
 
     def analyze_data(
         self, 
-        csv_data: str, 
+        csv_data: Union[str, List[str]], 
         prompt: str, 
         trajectory_csv_data: Optional[str] = None,
         status_callback: Optional[Callable[[str], None]] = None
