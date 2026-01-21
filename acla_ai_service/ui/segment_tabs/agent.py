@@ -219,19 +219,7 @@ def render_agent_mode(selected_annotation_key, selected_session_key, available_s
                                 trajectory_csv_str = current_slice[available_traj_cols].to_csv(index=False)
 
                         # Dynamic prompt header based on number of graphs
-                        prompt_intro = "Analyze the telemetry graph (left to right) representing a driving session."
-                        feature_desc = ""
-
-                        if isinstance(slice_csv_input, list):
-                            prompt_intro = "Analyze the set of synchronized telemetry graphs (stacked vertically). They all share the same time axis (x-axis)."
-                            # Add descriptions for each graph to help VLM distinguish them
-                            desc_lines = []
-                            for idx, feats in enumerate(valid_feature_sets):
-                                desc_lines.append(f"- Graph {idx+1}: {', '.join(feats)}")
-                            feature_desc = "The graphs display the following signals (from top to bottom):\n" + "\n".join(desc_lines)
-                        elif valid_feature_sets:
-                            # Single graph case
-                            feature_desc = f"The graph displays: {', '.join(valid_feature_sets[0])}"
+                        prompt_intro = "Analyze the telemetry and 2D trajectory graphs representing a driving session and find first segment with fitting label."
 
                         # Label Definitions
                         label_context = "Definitions:\n"
@@ -241,11 +229,11 @@ def render_agent_mode(selected_annotation_key, selected_session_key, available_s
 
                         analysis_prompt = (
                             f"{prompt_intro}\n"
-                            f"{feature_desc}\n"
                             f"{label_context}\n"
                             f"Identify the **first/left-most** distinct driving behavior segment that matches one of these labels: [{full_labels_str}].\n"
-                            f"Return the result ONLY as a JSON object (no markdown, no explanation) with this format:\n"
-                            f'{{\n  "found": true,\n  "label": "LabelName",\n  "start_percentage": <float 0.0-1.0 representing start of segment in this window>,\n  "end_percentage": <float 0.0-1.0 representing end of segment in this window>,\n  "confidence": <float 0.0-1.0>\n}}\n'
+                            f"First, analyze the visible patterns in the graphs step-by-step. Describe what you see in the signals (throttle, brake, speed, trajectory) and how they relate to the label definitions.\n"
+                            f"Then, return the result as a JSON object (wrapped in ```json ... ```) with this format:\n"
+                            f'{{\n  "found": true,\n  "label": "LabelName",\n  "start_percentage": <float 0.0-1.0 representing start of segment in this window>,\n  "end_percentage": <float 0.0-1.0 representing end of segment in this window>\n}}\n'
                             f"If no distinct segment is found or the data is just noise/empty, return {{ \"found\": false }}.\n"
                             f"Focus on finding the START and END of the FIRST valid segment."
                         )

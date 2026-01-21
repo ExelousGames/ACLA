@@ -46,11 +46,11 @@ except ImportError:
 LABEL_DESCRIPTIONS = {
     "Overtaking": "On the 2D Trajectory plot, the driver deviates from the expert line. Physics_brake occurs later or deeper than expert_optimal_brake. Physics_gas is applied more aggressively than expert_optimal_throttle.",
     "Missing data": "Plots show gaps or empty sections. Physics_gas and Physics_brake flatline or drop unexpectedly. speed_difference is discontinuous.",
-    "Expert Adherence": "On the 2D Trajectory plot, the driver hugs the expert line. speed_difference is close to 10.",
-    "Recovery & Merge": "On the 2D Trajectory plot, the driver line angles back to join the expert line. speed_difference gradually smaller.",
-    "Superior Expert": "speed_difference is positive (faster than expert). Physics_brake starts later (deeper) than expert_optimal_brake. Physics_gas is applied earlier or smoother than expert_optimal_throttle.",
+    "Expert Adherence": "segment where distance_to_expert_line is low and speed_difference is floating between -10 and 10, indicating the driver is closely following the expert's trajectory and speed.",
+    "Recovery & Merge": "segment where speed_difference or distance_to_expert_line starts high (> 10) and DECREASES over time, indicating correction. The driver is merging BACK to the expert trajectory.",
+    "Superior Expert": "speed_difference is negative (faster than expert). Physics_brake starts later (deeper) than expert_optimal_brake. Physics_gas is applied earlier or smoother than expert_optimal_throttle.",
     "Unexpected driving behavior": "Erratic patterns. Physics_gas oscillates or Physics_brake is applied unexpectedly. speed_difference is unstable.",
-    "Mistake": "Physics_gas and Physics_brake timing significantly deviates from expert_optimal_throttle and expert_optimal_brake. This mismatch leads to a spike or upward trend in speed_difference (often exceeding 10), indicating the driver is slower than the expert due to the error."
+    "Mistake": "segment where speed_difference or distance_to_expert_line INCREASES (trends upward) significantly (> 10). The driver is deviating AWAY from the expert. Do not confuse with Recovery (where values decrease)."
 }
 
 @st.cache_resource
