@@ -44,13 +44,13 @@ except ImportError:
     pass
 
 LABEL_DESCRIPTIONS = {
-    "Overtaking": "On the 2D Trajectory plot, the driver deviates from the expert line. Physics_brake occurs later or deeper than expert_optimal_brake. Physics_gas is applied more aggressively than expert_optimal_throttle.",
-    "Missing data": "Plots show gaps or empty sections. Physics_gas and Physics_brake flatline or drop unexpectedly. speed_difference is discontinuous.",
-    "Expert Adherence": "segment where distance_to_expert_line is low and speed_difference is floating between -10 and 10, indicating the driver is closely following the expert's trajectory and speed.",
-    "Recovery & Merge": "segment where speed_difference or distance_to_expert_line starts high (> 10) and DECREASES over time, indicating correction. The driver is merging BACK to the expert trajectory.",
-    "Superior Expert": "speed_difference is negative (faster than expert). Physics_brake starts later (deeper) than expert_optimal_brake. Physics_gas is applied earlier or smoother than expert_optimal_throttle.",
-    "Unexpected driving behavior": "Erratic patterns. Physics_gas oscillates or Physics_brake is applied unexpectedly. speed_difference is unstable.",
-    "Mistake": "segment where speed_difference or distance_to_expert_line INCREASES (trends upward) significantly (> 10). The driver is deviating AWAY from the expert. Do not confuse with Recovery (where values decrease)."
+    "Overtaking": "On the 2D Trajectory plot, the driver deviates from the expert line. Physics_brake occurs later or deeper than expert_optimal_brake. Physics_gas is applied more aggressively than expert_optimal_throttle. Ends when the driver realigns with the racing line.",
+    "Missing data": "Plots show gaps or empty sections. Physics_gas and Physics_brake flatline or drop unexpectedly. speed_difference is discontinuous. Ends when valid telemetry signal returns.",
+    "Expert Adherence": "segment where distance_to_expert_line is low and speed_difference is floating between -10 and 10, indicating the driver is closely following the expert's trajectory and speed. Ends when deviation exceeds these bounds.",
+    "Recovery & Merge": "segment where speed_difference or distance_to_expert_line starts high (> 10) and DECREASES over time, indicating correction. The driver is merging BACK to the expert trajectory. Ends when the values stabilize near 0.",
+    "Superior Expert": "speed_difference is negative (faster than expert). Physics_brake starts later (deeper) than expert_optimal_brake. Physics_gas is applied earlier or smoother than expert_optimal_throttle. Ends when the performance advantage is lost or neutralizes.",
+    "Unexpected driving behavior": "Erratic patterns. Physics_gas oscillates or Physics_brake is applied unexpectedly. speed_difference is unstable. Ends when stable driving resumes.",
+    "Mistake": "segment where speed_difference or distance_to_expert_line INCREASES (trends upward) significantly (> 10). The driver is deviating AWAY from the expert. Segment ENDS when the value PEAKS or stops increasing, before it starts to decrease (which would be Recovery)."
 }
 
 @st.cache_resource
