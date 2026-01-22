@@ -808,6 +808,26 @@ def render_manual_annotation(selected_annotation_key, selected_session_key, avai
                 del d["telemetry_data"]
             display_data.append(d)
         st.dataframe(pd.DataFrame(display_data), use_container_width=True)
+
+        if st.button("Delete All Segments for Session", type="primary", key="btn_del_all_seg"):
+             st.session_state.show_delete_all_confirm = True
+        
+        if st.session_state.get("show_delete_all_confirm", False):
+             st.warning(f"⚠️ Are you sure you want to DELETE ALL {len(st.session_state.current_annotations)} segments for session '{session_id}'? This cannot be undone.")
+             col_confirm_del, col_cancel_del = st.columns(2)
+             
+             with col_confirm_del:
+                 if st.button("Yes, Delete All", key="confirm_del_all"):
+                     st.session_state.current_annotations = []
+                     save_annotations(session_id, st.session_state.current_annotations, selected_annotation_key)
+                     st.session_state.show_delete_all_confirm = False
+                     st.success(f"All annotations for session {session_id} have been deleted.")
+                     st.rerun()
+            
+             with col_cancel_del:
+                 if st.button("Cancel", key="cancel_del_all"):
+                     st.session_state.show_delete_all_confirm = False
+                     st.rerun()
     else:
         st.info("No annotations added yet.")
         

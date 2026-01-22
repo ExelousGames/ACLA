@@ -47,10 +47,15 @@ LABEL_DESCRIPTIONS = {
     "Overtaking": "On the 2D Trajectory plot, the driver deviates from the expert line. Physics_brake occurs later or deeper than expert_optimal_brake. Physics_gas is applied more aggressively than expert_optimal_throttle. Ends when the driver realigns with the racing line.",
     "Missing data": "Plots show gaps or empty sections. Physics_gas and Physics_brake flatline or drop unexpectedly. speed_difference is discontinuous. Ends when valid telemetry signal returns.",
     "Expert Adherence": "segment where distance_to_expert_line is low and speed_difference is floating between -10 and 10, indicating the driver is closely following the expert's trajectory and speed. Ends when deviation exceeds these bounds.",
-    "Recovery & Merge": "segment where speed_difference or distance_to_expert_line starts high (> 10) and DECREASES over time, indicating correction. The driver is merging BACK to the expert trajectory. Ends when the values stabilize near 0.",
+    "Recovery & Merge": "Correction phase where speed_difference or distance_to_expert_line starts at a significant peak (> 10) and DECREASES over few indices towards 0. Represents the driver merging BACK to the expert trajectory.",
     "Superior Expert": "speed_difference is negative (faster than expert). Physics_brake starts later (deeper) than expert_optimal_brake. Physics_gas is applied earlier or smoother than expert_optimal_throttle. Ends when the performance advantage is lost or neutralizes.",
     "Unexpected driving behavior": "Erratic patterns. Physics_gas oscillates or Physics_brake is applied unexpectedly. speed_difference is unstable. Ends when stable driving resumes.",
-    "Mistake": "segment where speed_difference or distance_to_expert_line INCREASES (trends upward) significantly (> 10). The driver is deviating AWAY from the expert. Segment ENDS when the value PEAKS or stops increasing, before it starts to decrease (which would be Recovery)."
+    "Mistake": "Deviation phase where speed_difference INCREASES (trends upward) significantly (> 10). Ends EXACTLY when the value PEAKS or stops increasing."
+}
+
+FEATURE_DESCRIPTIONS = {
+    "speed_difference": "Difference in speed between driver and expert (Expert - Driver). Positive values indicate the driver is slower than the expert, negative values indicate faster.",
+    "distance_to_expert_line": "Lateral distance from the driver's position to the expert's optimal racing line. Higher values indicate greater deviation from the ideal path."
 }
 
 @st.cache_resource
@@ -238,4 +243,113 @@ def extract_json_from_response(response_text: str) -> Optional[dict]:
                     # We continue the outer loop to try next '{'
                     break
                     
+    # 5. Heuristic fallback for malformed JSON
+    return _heuristic_json_extraction(clean_text)
+
+def _extract_string_field(text: str, field_name: str) -> Optional[str]:
+    """
+    Helper to extract a string field value, handling unclosed quotes or missing comma separators.
+    """
+    # Regex to find the start of the field: "key":\s*"
+    pattern = f'"{field_name}"\s*:\s*"'
+    match = re.search(pattern, text)
+    if not match:
+        return None
+    
+    start_idx = match.end()
+    remainder = text[start_idx:]
+    
+    # 1. Try to find a valid closing quote first (standard case)
+    in_escape = False
+    valid_close_found = False
+    end_idx = -1
+    
+    for i, char in enumerate(remainder):
+        if in_escape:
+            in_escape = False
+        elif char == '\\':
+            in_escape = True
+        elif char == '"':
+            # Check if this could be a closing quote
+            # It's valid if followed by comma, or }, or whitespace then comma/}
+            suffix = remainder[i+1:].lstrip()
+            if not suffix or suffix.startswith(',') or suffix.startswith('}'):
+                end_idx = i
+                valid_close_found = True
+                break
+    
+    if valid_close_found:
+        return remainder[:end_idx].replace(r'\"', '"')
+
+    # 2. Fallback: Not properly closed
+    # Stop at the next likely JSON key or the end of the block
+    
+    known_keys = ["found", "label", "start_percentage", "end_percentage", "reasoning"]
+    
+    # Create pattern for next keys
+    other_keys = [k for k in known_keys if k != field_name]
+    if not other_keys:
+        next_key_match = None
+    else:
+        next_key_pattern = r'"(?:' + '|'.join(other_keys) + r')"\s*:'
+        next_key_match = re.search(next_key_pattern, remainder)
+
+    limit_idx = len(remainder)
+    
+    if next_key_match:
+        limit_idx = next_key_match.start()
+    else:
+        # If no next key found, maybe we hit the end of the object '}'
+        close_brace_idx = remainder.rfind('}')
+        if close_brace_idx != -1:
+             limit_idx = close_brace_idx
+             
+    raw_content = remainder[:limit_idx]
+    # Clean up trailing content (commas, newlines from the "cut" point)
+    return raw_content.rstrip(', \t\n\r').replace(r'\"', '"')
+
+def _heuristic_json_extraction(text: str) -> Optional[dict]:
+    """
+    Attempt to extract JSON fields using regex when standard parsing fails.
+    Handles common LLM errors like missing quotes, extra strings, etc.
+    """
+    data = {}
+    
+    # Extract 'found'
+    found_match = re.search(r'"found"\s*:\s*(true|false)', text, re.IGNORECASE)
+    if found_match:
+        data["found"] = found_match.group(1).lower() == "true"
+        
+    # Extract 'label'
+    label_val = _extract_string_field(text, "label")
+    if label_val is not None:
+        data["label"] = label_val
+        
+    # Extract percentages
+    for field in ["start_percentage", "end_percentage"]:
+        # Try unquoted number first
+        match = re.search(f'"{field}"\s*:\s*([0-9.]+)', text)
+        if match:
+            try:
+                data[field] = float(match.group(1))
+                continue
+            except ValueError:
+                pass
+        
+        # Try quoted (potentially unclosed) via string extraction
+        val_str = _extract_string_field(text, field)
+        if val_str:
+             try:
+                data[field] = float(val_str)
+             except ValueError:
+                pass
+
+    # Extract 'reasoning'
+    reasoning_val = _extract_string_field(text, "reasoning")
+    if reasoning_val is not None:
+        data["reasoning"] = reasoning_val
+
+    # If we found at least one logical field, return it
+    if data:
+        return data
     return None

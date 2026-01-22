@@ -6,7 +6,7 @@ from .shared import (
     get_vlm_service, extract_json_from_response, 
     get_display_labels, get_available_sessions,
     LABEL_MAPPING, LABEL_NAME_TO_ID, AnnotatedSegment,
-    LABEL_DESCRIPTIONS
+    LABEL_DESCRIPTIONS, FEATURE_DESCRIPTIONS
 )
 
 def render_agent_mode(selected_annotation_key, selected_session_key, available_sessions):
@@ -69,7 +69,12 @@ def render_agent_mode(selected_annotation_key, selected_session_key, available_s
 
     else:
         # Batch Mode
-        as_sess_ids = st.multiselect("Select Sessions", available_sessions, key="as_sess_multi")
+        as_sess_ids = st.multiselect(
+            "Select Sessions", 
+            available_sessions, 
+            format_func=format_session_option,
+            key="as_sess_multi"
+        )
         
         c1, c2, c3 = st.columns(3)
         with c1:
@@ -96,30 +101,12 @@ def render_agent_mode(selected_annotation_key, selected_session_key, available_s
     # Feature Selection
     as_feature_sets = []
     if not cols_ref_df.empty:
-        as_numeric = cols_ref_df.select_dtypes(include=['number']).columns.tolist()
-        
-        # Default config per user request
-        default_graph_config = {
-            0: ["speed_difference"],
-            1: ["expert_optimal_throttle", "Physics_gas"],
-            2: ["expert_optimal_brake", "Physics_brake"]
-        }
-        
-        num_graphs = st.number_input("Number of Graphs (Feature Sets)", min_value=1, max_value=5, value=3, step=1, key="num_graphs_agent")
-        
-        for i in range(num_graphs):
-            # Determine defaults for this graph
-            target_defaults = default_graph_config.get(i, [])
-            # Filter to what is actually available in the data
-            defaults = [c for c in target_defaults if c in as_numeric]
-            
-            # Fallback for Graph 1 if configured defaults are missing: try standard basic columns
-            if i == 0 and not defaults:
-                defaults = [c for c in ["speed_kmh", "gas", "brake", "steer_angle"] if c in as_numeric]
-            
-            cols = st.multiselect(f"Features for Graph {i+1}", as_numeric, default=defaults, key=f"as_feat_sel_{i}")
-            if cols:
-                as_feature_sets.append(cols)
+        available_cols = cols_ref_df.columns.tolist()
+        for feat in FEATURE_DESCRIPTIONS.keys():
+            if feat in available_cols:
+                as_feature_sets.append([feat])
+            else:
+                st.warning(f"Feature '{feat}' missing in session data.")
         
         as_include_traj = st.checkbox("Include 2D Trajectory in Analysis", value=True, key="as_include_traj")
 
@@ -146,6 +133,21 @@ def render_agent_mode(selected_annotation_key, selected_session_key, available_s
             
             try:
                 full_labels_str = ", ".join(sorted(list(set(LABEL_MAPPING.values()))))
+
+                # Shared Prompt Components (ensure identical prompt for Single and Batch modes)
+                prompt_intro = (
+                    "The graphs show telemetry data from a racing car session. The graphs contain a comparison between the driver and an expert reference.\n"
+                    "Analyze the telemetry and 2D trajectory graphs to identify driving behaviors."
+                )
+                
+                feature_context = "Feature Definitions:\n"
+                for fname, fdesc in FEATURE_DESCRIPTIONS.items():
+                    feature_context += f"- {fname}: {fdesc}\n"
+
+                label_context = "Definitions:\n"
+                for lname in sorted(list(set(LABEL_MAPPING.values()))):
+                    if lname in LABEL_DESCRIPTIONS:
+                        label_context += f"- {lname}: {LABEL_DESCRIPTIONS[lname]}\n"
                 
                 for task in sessions_to_process:
                     sess_id = task["id"]
@@ -218,24 +220,23 @@ def render_agent_mode(selected_annotation_key, selected_session_key, available_s
                             if available_traj_cols:
                                 trajectory_csv_str = current_slice[available_traj_cols].to_csv(index=False)
 
-                        # Dynamic prompt header based on number of graphs
-                        prompt_intro = "Analyze the telemetry and 2D trajectory graphs representing a driving session and find first segment with fitting label."
-
-                        # Label Definitions
-                        label_context = "Definitions:\n"
-                        for lname in sorted(list(set(LABEL_MAPPING.values()))):
-                            if lname in LABEL_DESCRIPTIONS:
-                                label_context += f"- {lname}: {LABEL_DESCRIPTIONS[lname]}\n"
-
                         analysis_prompt = (
                             f"{prompt_intro}\n"
-                            f"{label_context}\n"
-                            f"Identify the **first/left-most** distinct driving behavior segment that matches one of these labels: [{full_labels_str}].\n"
-                            f"First, analyze the visible patterns in the graphs step-by-step. Describe what you see in the signals (throttle, brake, speed, trajectory) and how they relate to the label definitions.\n"
-                            f"Then, return the result as a JSON object (wrapped in ```json ... ```) with this format:\n"
-                            f'{{\n  "found": true,\n  "label": "LabelName",\n  "start_percentage": <float 0.0-1.0 representing start of segment in this window>,\n  "end_percentage": <float 0.0-1.0 representing end of segment in this window>\n}}\n'
+                            f"{feature_context}\n"
+                            f"The graphs contain a comparison between the driver and an expert reference. Your task is to identify the **first** distinct driving behavior segment by strictly analyzing the **trends AND the specific values** in the data.\n\n"
+                            f"**1. Visual Analysis & Reasoning:**\n"
+                            f"Respond in English. Be concise and professional. Explain your reasoning based on the visual patterns and numerical values in the data. "
+                            f"**Crucial:** Do not ignore the Y-axis magnitudes. Verify if values meet the thresholds defined in the labels. "
+                            f"\n"
+                            f"**2. Segment Identification:**\n"
+                            f"Identify the start and end of this behavior. Strictly adhere to the start/end definitions. \n"
+                            f"Select the best fitting label from this list:\n{label_context}\n"
+                            f"Explain the reason why you selected the start and end percentage of the segment based on the label descriptions.\n"
+                            f"\n"
+                            f"**3. Output:**\n"
+                             f"Return the result as a JSON object (wrapped in ```json ... ```) with this format:\n"
+                            f'{{\n  "found": true,\n  "label": "LabelName",\n  "start_percentage": <float 0.0000-1.0000 representing start of segment in this window>,\n  "end_percentage": <float 0.0000-1.0000 representing end of segment in this window>,\n  "reasoning": "Summary of your reasoning from step 1."\n}}\n'
                             f"If no distinct segment is found or the data is just noise/empty, return {{ \"found\": false }}.\n"
-                            f"Focus on finding the START and END of the FIRST valid segment."
                         )
                         
                         try:
@@ -254,13 +255,13 @@ def render_agent_mode(selected_annotation_key, selected_session_key, available_s
                                 # Clamp
                                 start_pct = max(0.0, min(1.0, start_pct))
                                 end_pct = max(0.0, min(1.0, end_pct))
-                                if end_pct <= start_pct: end_pct = start_pct + 0.1
                                 
                                 seg_start_abs = int(current_cursor + (start_pct * chunk_len))
                                 seg_end_abs = int(current_cursor + (end_pct * chunk_len))
                                 
-                                if seg_end_abs <= current_cursor + 5:
-                                    seg_end_abs = current_cursor + max(20, int(chunk_len * 0.1))
+                                # Ensure minimal validity (start < end)
+                                if seg_end_abs <= seg_start_abs:
+                                    seg_end_abs = seg_start_abs + 1
                                 
                                 # Label Match
                                 label_id = -1

@@ -138,7 +138,7 @@ class LocalVLMConfig:
     low_cpu_mem_usage: bool = True
 
     # Generation defaults
-    max_new_tokens: int = 4096
+    max_new_tokens: int = 8192
     temperature: float = 0.4
     do_sample: bool = True
 
