@@ -46,11 +46,11 @@ except ImportError:
 LABEL_DESCRIPTIONS = {
     "Overtaking": "On the 2D Trajectory plot, the driver deviates from the expert line. Physics_brake occurs later or deeper than expert_optimal_brake. Physics_gas is applied more aggressively than expert_optimal_throttle. Ends when the driver realigns with the racing line.",
     "Missing data": "Plots show gaps or empty sections. Physics_gas and Physics_brake flatline or drop unexpectedly. speed_difference is discontinuous. Ends when valid telemetry signal returns.",
-    "Expert Adherence": "segment where distance_to_expert_line is between 0 and 5, and speed_difference is floating between -10 and 10, indicating the driver is closely following the expert's trajectory and speed. Ends when deviation exceeds these bounds.",
-    "Recovery & Merge": "Correction phase where speed_difference or distance_to_expert_line starts at a significant peak (> 10) and DECREASES over few indices towards 0. Represents the driver merging BACK to the expert trajectory.",
+    "Expert Adherence": "segment where distance_to_expert_line is between 0 and 5, and speed_difference is between -10 and 10, indicating the driver is closely following the expert's trajectory and speed. Ends when deviation exceeds these bounds.",
+    "Recovery & Merge": "speed_difference or distance_to_expert_line starts at a peak (> 10) and DECREASES towards 0. Represents the driver merging BACK to the expert trajectory.",
     "Superior Expert": "speed_difference is negative (faster than expert). Physics_brake starts later (deeper) than expert_optimal_brake. Physics_gas is applied earlier or smoother than expert_optimal_throttle. Ends when the performance advantage is lost or neutralizes.",
     "Unexpected driving behavior": "Erratic patterns. Physics_gas oscillates or Physics_brake is applied unexpectedly. speed_difference is unstable. Ends when stable driving resumes.",
-    "Mistake": "Deviation phase where speed_difference INCREASES (trends upward) significantly (> 10). Ends EXACTLY when the upward trend stops increasing."
+    "Mistake": "speed_difference increase over 10. Ends exactly when the upward trend stops."
 }
 
 FEATURE_DESCRIPTIONS = {
