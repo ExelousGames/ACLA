@@ -222,20 +222,20 @@ def render_agent_mode(selected_annotation_key, selected_session_key, available_s
 
                         analysis_prompt = (
                             f"{prompt_intro}\n"
+                            f"The descriptions of the graphs are\n"
                             f"{feature_context}\n"
-                            f"The graphs contain a comparison between the driver and an expert reference. Your task is to identify the **first** distinct driving behavior segment by strictly analyzing the **trends AND the specific values** in the data.\n\n"
-                            f"**1. Visual Analysis & Reasoning:**\n"
-                            f"Respond in English. Be concise and professional. Explain your reasoning based on the visual patterns and numerical values in the data. "
-                            f"**Crucial:** Do not ignore the Y-axis magnitudes. Verify if values meet the thresholds defined in the labels. "
-                            f"\n"
-                            f"**2. Segment Identification:**\n"
+                            f"Your task is to give me your thought and identify the **first** distinct driving behavior segment by strictly analyzing the graph\n\n"
+                            f"**1.Data Analysis:**\n"
+                            f"Observe the trends and scale in the provided graphs.be aware of the max and min values for each feature.\n"
+                            f"**2.Segment Identification:**\n"
+                            f"pay attention to the scale and trends of the data. Look for significant changes, peaks, or patterns that align with the behavior definitions.\n"
                             f"Identify the start and end of this behavior. Strictly adhere to the start/end definitions. \n"
                             f"Select the best fitting label from this list:\n{label_context}\n"
                             f"Explain the reason why you selected the start and end percentage of the segment based on the label descriptions.\n"
                             f"\n"
-                            f"**3. Output:**\n"
+                            f"**3. Final Answer:**\n"
                              f"Return the result as a JSON object (wrapped in ```json ... ```) with this format:\n"
-                            f'{{\n  "found": true,\n  "label": "LabelName",\n  "start_percentage": <float 0.0000-1.0000 representing start of segment in this window>,\n  "end_percentage": <float 0.0000-1.0000 representing end of segment in this window>,\n  "reasoning": "Summary of your reasoning from step 1."\n}}\n'
+                            f'{{\n  "found": true,\n  "label": "LabelName",\n  "start_percentage": <float 0.0000-1.0000 representing start of segment in this window>,\n  "end_percentage": <float 0.0000-1.0000 representing end of segment in this window>,\n  "reasoning": "reasoning why you pick this segment."\n}}\n'
                             f"If no distinct segment is found or the data is just noise/empty, return {{ \"found\": false }}.\n"
                         )
                         

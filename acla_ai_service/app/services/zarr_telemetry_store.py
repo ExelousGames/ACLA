@@ -248,6 +248,30 @@ class ZarrTelemetryStore:
         
         return True
 
+    def delete_chunk(self, cache_key: str, chunk_index: Union[int, str]) -> bool:
+        """Delete a specific chunk if it exists."""
+        group_path = self._group_path(cache_key)
+        if not group_path.exists():
+            return False
+
+        group = self._open_group(cache_key, mode="a")
+        dataset_name = self._format_chunk_name(chunk_index)
+        metadata = self._load_or_initialise_metadata(group, cache_key)
+
+        deleted = False
+        if dataset_name in group:
+            del group[dataset_name]
+            deleted = True
+            
+        if isinstance(chunk_index, int):
+             metadata.update_chunk(chunk_index, 0)
+        else:
+             metadata.updated_at = datetime.now().isoformat()
+        
+        self._persist_metadata(group, metadata)
+        
+        return deleted
+
     def get_cached_data_chunks(self, cache_key: str, include_ids: bool = False) -> Iterator[Any]:
         """Yield cached chunks exactly as they were stored."""
 
