@@ -110,6 +110,18 @@ def render_agent_mode(selected_annotation_key, selected_session_key, available_s
         
         as_include_traj = st.checkbox("Include 2D Trajectory in Analysis", value=True, key="as_include_traj")
 
+        # --- Label Selection ---
+        unique_labels = sorted(list(set(LABEL_MAPPING.values())))
+        target_label_options = unique_labels
+        
+        target_label = st.selectbox(
+            "Target Label", 
+            target_label_options, 
+            index=0, 
+            key="agent_target_label",
+            help="Select a specific label to focus the analysis on."
+        )
+
         def start_agent_callback():
             st.session_state.run_auto_segment = True
             st.session_state.proposed_auto_annotations = []
@@ -132,12 +144,14 @@ def render_agent_mode(selected_annotation_key, selected_session_key, available_s
             status_container = st.status("Running Agent...", expanded=True)
             
             try:
-                full_labels_str = ", ".join(sorted(list(set(LABEL_MAPPING.values()))))
+                # Determine target labels
+                focus_labels = [target_label]
+                task_descriptor = f"segment of type '{target_label}'"
 
                 # Shared Prompt Components (ensure identical prompt for Single and Batch modes)
                 prompt_intro = (
                     "The graphs show telemetry data from a racing car session. The graphs contain a comparison between the driver and an expert reference.\n"
-                    "Analyze the telemetry and 2D trajectory graphs to identify driving behaviors."
+                    f"Analyze the telemetry and 2D trajectory graphs to identify {task_descriptor}."
                 )
                 
                 feature_context = "Feature Definitions:\n"
@@ -145,7 +159,7 @@ def render_agent_mode(selected_annotation_key, selected_session_key, available_s
                     feature_context += f"- {fname}: {fdesc}\n"
 
                 label_context = "Definitions:\n"
-                for lname in sorted(list(set(LABEL_MAPPING.values()))):
+                for lname in focus_labels:
                     if lname in LABEL_DESCRIPTIONS:
                         label_context += f"- {lname}: {LABEL_DESCRIPTIONS[lname]}\n"
                 
@@ -224,7 +238,7 @@ def render_agent_mode(selected_annotation_key, selected_session_key, available_s
                             f"{prompt_intro}\n"
                             f"The descriptions of the graphs are\n"
                             f"{feature_context}\n"
-                            f"Your task is to give me your thought and identify the **first** distinct driving behavior segment by strictly analyzing the graph\n\n"
+                            f"Your task is to give me your thought and identify the **first** distinct {task_descriptor} by strictly analyzing the graph\n\n"
                             f"**1.Data Analysis:**\n"
                             f"Observe the trends and scale in the provided graphs.be aware of the max and min values for each feature.\n"
                             f"**2.Segment Identification:**\n"
