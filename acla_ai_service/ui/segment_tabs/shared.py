@@ -46,17 +46,41 @@ except ImportError:
 LABEL_DESCRIPTIONS = {
     "Overtaking": "On the 2D Trajectory plot, the driver deviates from the expert line. Physics_brake occurs later or deeper than expert_optimal_brake. Physics_gas is applied more aggressively than expert_optimal_throttle. Ends when the driver realigns with the racing line.",
     "Missing data": "Plots show gaps or empty sections. Physics_gas and Physics_brake flatline or drop unexpectedly. speed_difference is discontinuous. Ends when valid telemetry signal returns.",
-    "Expert Adherence": "segment where distance_to_expert_line is between 0 and 5, and speed_difference is between -10 and 10, indicating the driver is closely following the expert's trajectory and speed. Ends when deviation exceeds these bounds.",
-    "Recovery & Merge": "speed_difference or distance_to_expert_line starts at a peak (> 10) and DECREASES towards 0. Represents the driver merging BACK to the expert trajectory.",
+    "Expert Adherence": "Entire 'distance_to_expert_line' line must stays below the 'Distance Limit' dashed line, and entire 'speed_difference' line must stays between the 'Speed Min' and 'Speed Max' dashed lines, then it indicates the driver is closely following the expert.",
+    "Recovery & Merge": "'speed_difference' line starts above the 'Speed Max' dashed lines and DECREASE towards 'Speed Max' dashed lines, or 'distance_to_expert_line' line starts above the 'Distance Limit' dashed line and DECREASES towards 'Distance Limit' dashed line. Represents the driver merging BACK to the expert trajectory.",
     "Superior Expert": "speed_difference is negative (faster than expert). Physics_brake starts later (deeper) than expert_optimal_brake. Physics_gas is applied earlier or smoother than expert_optimal_throttle. Ends when the performance advantage is lost or neutralizes.",
     "Unexpected driving behavior": "Erratic patterns. Physics_gas oscillates or Physics_brake is applied unexpectedly. speed_difference is unstable. Ends when stable driving resumes.",
-    "Mistake": "speed_difference increase over 10. Ends exactly when the upward trend stops."
-}
+    "Mistake": "Values rapidly increase and cross ABOVE the 'Speed Max' dashed line (if speed) or 'Distance Limit' dashed line (if distance). Ends when the upward trend stops."
+} 
 
-FEATURE_DESCRIPTIONS = {
-    "speed_difference": "Difference in speed between driver and expert (Expert - Driver). Positive values indicate the driver is slower than the expert, negative values indicate faster.",
-    "distance_to_expert_line": "Lateral distance from the driver's position to the expert's optimal racing line. Higher values indicate greater deviation from the ideal path."
-}
+@dataclass
+class GraphConfig:
+    """Configuration for a single telemetry graph analysis."""
+    description: str
+    features: List[str] = field(default_factory=list)
+    reference_lines: List[Dict[str, Any]] = field(default_factory=list)
+
+GRAPH_CONFIGS = [
+    GraphConfig(
+        description="Difference in speed between driver and expert (Expert - Driver). Positive values indicate the driver is slower than the expert, negative values indicate faster.",
+        features=[
+            "speed_difference"
+        ],
+        reference_lines=[
+            {"name": "Zero", "value": 0.0, "color": "gray"},
+            {"name": "Speed Max", "value": 10.0, "color": "red"},
+            {"name": "Speed Min", "value": -10.0, "color": "green"},
+        ]
+    ),
+    GraphConfig(
+        description="Lateral distance from the driver's position to the expert's optimal racing line. Higher values indicate greater deviation from the ideal path.",
+        features=["distance_to_expert_line"],
+        reference_lines=[
+            {"name": "Zero", "value": 0.0, "color": "gray"},
+            {"name": "Distance Limit", "value": 5.0, "color": "red"}
+        ]
+    )
+]
 
 @st.cache_resource
 def get_vlm_service():

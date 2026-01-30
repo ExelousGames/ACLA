@@ -6,7 +6,7 @@ from .shared import (
     get_vlm_service, extract_json_from_response, 
     get_display_labels, get_available_sessions,
     LABEL_MAPPING, LABEL_NAME_TO_ID, AnnotatedSegment,
-    LABEL_DESCRIPTIONS, FEATURE_DESCRIPTIONS
+    LABEL_DESCRIPTIONS, GRAPH_CONFIGS
 )
 
 def render_agent_mode(selected_annotation_key, selected_session_key, available_sessions):
@@ -99,16 +99,14 @@ def render_agent_mode(selected_annotation_key, selected_session_key, available_s
                 })
     
     # Feature Selection
-    as_feature_sets = []
+    as_graph_configs = []
     if not cols_ref_df.empty:
         available_cols = cols_ref_df.columns.tolist()
-        for feat in FEATURE_DESCRIPTIONS.keys():
-            if feat in available_cols:
-                as_feature_sets.append([feat])
-            else:
-                st.warning(f"Feature '{feat}' missing in session data.")
+        for cfg in GRAPH_CONFIGS:
+            as_graph_configs.append(cfg)
         
         as_include_traj = st.checkbox("Include 2D Trajectory in Analysis", value=True, key="as_include_traj")
+        as_debug_mode = st.checkbox("Debug Mode (Show Graph & Inference)", value=False, key="as_debug_mode")
 
         # --- Label Selection ---
         unique_labels = sorted(list(set(LABEL_MAPPING.values())))
@@ -126,22 +124,26 @@ def render_agent_mode(selected_annotation_key, selected_session_key, available_s
             st.session_state.run_auto_segment = True
             st.session_state.proposed_auto_annotations = []
             st.session_state.review_auto_segments = False
+            st.session_state.agent_resume_state = None
+            st.session_state.agent_found_total = 0
 
         st.button("Start Auto-Segmentation Agent", type="primary", disabled=not sessions_to_process, on_click=start_agent_callback)
     
     # --- Execution ---
     if st.session_state.get("run_auto_segment", False):
-        # Immediate safety shutoff - prevents infinite loops
-        st.session_state.run_auto_segment = False
         
         vlm_service = get_vlm_service()
         if not vlm_service:
             st.error("VLM Service not available.")
+            st.session_state.run_auto_segment = False
         else:
-            st.session_state.proposed_auto_annotations = []
-            found_total = 0
+            if "proposed_auto_annotations" not in st.session_state:
+                st.session_state.proposed_auto_annotations = []
+                
+            found_total = st.session_state.get("agent_found_total", 0)
             
             status_container = st.status("Running Agent...", expanded=True)
+            live_graph_placeholder = status_container.empty()
             
             try:
                 # Determine target labels
@@ -151,19 +153,20 @@ def render_agent_mode(selected_annotation_key, selected_session_key, available_s
                 # Shared Prompt Components (ensure identical prompt for Single and Batch modes)
                 prompt_intro = (
                     "The graphs show telemetry data from a racing car session. The graphs contain a comparison between the driver and an expert reference.\n"
-                    f"Analyze the telemetry and 2D trajectory graphs to identify {task_descriptor}."
                 )
                 
-                feature_context = "Feature Definitions:\n"
-                for fname, fdesc in FEATURE_DESCRIPTIONS.items():
-                    feature_context += f"- {fname}: {fdesc}\n"
-
                 label_context = "Definitions:\n"
                 for lname in focus_labels:
                     if lname in LABEL_DESCRIPTIONS:
                         label_context += f"- {lname}: {LABEL_DESCRIPTIONS[lname]}\n"
                 
-                for task in sessions_to_process:
+                resume_state = st.session_state.get("agent_resume_state")
+
+                for sess_idx, task in enumerate(sessions_to_process):
+                    # Resume Support
+                    if resume_state and sess_idx < resume_state.get("sess_idx", 0):
+                        continue
+
                     sess_id = task["id"]
                     status_container.write(f"**Processing Session: {sess_id}**")
                     
@@ -187,12 +190,19 @@ def render_agent_mode(selected_annotation_key, selected_session_key, available_s
 
                     current_cursor = int(t_start)
                     limit_cursor = int(t_end)
+
+                    # Resume Cursor within session
+                    if resume_state and sess_idx == resume_state.get("sess_idx", -1):
+                        current_cursor = resume_state.get("cursor", current_cursor)
                     
                     # Log start
                     print(f"--- Starting Analysis for {sess_id} from {current_cursor} to {limit_cursor} ---")
                     
                     # Existing Agent Loop Logic adapted for multi-session
                     while current_cursor < limit_cursor:
+                        # Capture start for debug re-runs
+                        window_start_cursor = current_cursor
+
                         # Define window
                         active_limit = min(current_cursor + t_win, limit_cursor)
                         chunk_len = active_limit - current_cursor
@@ -208,13 +218,20 @@ def render_agent_mode(selected_annotation_key, selected_session_key, available_s
                         
                         # Generate CSV(s) for the feature sets
                         slice_csv_input = []
-                        valid_feature_sets = [fs for fs in as_feature_sets if fs]
-                        if not valid_feature_sets and not as_feature_sets:
+                        valid_configs = as_graph_configs
+                        if not valid_configs:
                             # Fallback if somehow nothing selected, though UI shouldn't allow start
                             slice_csv_input = ""
                         else:
-                            for feats in valid_feature_sets:
-                                slice_csv_input.append(current_slice[feats].to_csv(index=False))
+                            for cfg in valid_configs:
+                                # Filter features if specified in config
+                                cols_to_include = current_slice.columns
+                                if cfg.features:
+                                    available_feats = [c for c in cfg.features if c in current_slice.columns]
+                                    if available_feats:
+                                        cols_to_include = available_feats
+                                
+                                slice_csv_input.append(current_slice[cols_to_include].to_csv(index=False))
                         
                         # If single graph, pass as string for backward compat or simplicity
                         if isinstance(slice_csv_input, list) and len(slice_csv_input) == 1:
@@ -223,6 +240,11 @@ def render_agent_mode(selected_annotation_key, selected_session_key, available_s
                              slice_csv_input = ""
                         # If multiple, slice_csv_input remains a List[str]
                         
+                        # Map images to features
+                        graph_descriptions = "Graph Content:\n"
+                        for i, cfg in enumerate(valid_configs):
+                            graph_descriptions += f"- **Image-{i+1}**: {cfg.description}\n"
+
                         # Trajectory Data
                         trajectory_csv_str = None
                         if as_include_traj:
@@ -233,29 +255,62 @@ def render_agent_mode(selected_annotation_key, selected_session_key, available_s
                             available_traj_cols = [c for c in traj_cols if c in current_slice.columns]
                             if available_traj_cols:
                                 trajectory_csv_str = current_slice[available_traj_cols].to_csv(index=False)
+                                traj_idx = len(valid_configs) + 1
+                                graph_descriptions += f"- **Image-{traj_idx}**: 2D Trajectory\n"
+                        
+                        # Collect support lines from selected configurations
+                        current_support_lines = []
+                        for cfg in valid_configs:
+                            current_support_lines.append(cfg.reference_lines)
 
                         analysis_prompt = (
-                            f"{prompt_intro}\n"
-                            f"The descriptions of the graphs are\n"
-                            f"{feature_context}\n"
-                            f"Your task is to give me your thought and identify the **first** distinct {task_descriptor} by strictly analyzing the graph\n\n"
-                            f"**1.Data Analysis:**\n"
-                            f"Observe the trends and scale in the provided graphs.be aware of the max and min values for each feature.\n"
-                            f"**2.Segment Identification:**\n"
-                            f"pay attention to the scale and trends of the data. Look for significant changes, peaks, or patterns that align with the behavior definitions.\n"
-                            f"Identify the start and end of this behavior. Strictly adhere to the start/end definitions. \n"
-                            f"Select the best fitting label from this list:\n{label_context}\n"
-                            f"Explain the reason why you selected the start and end percentage of the segment based on the label descriptions.\n"
-                            f"\n"
-                            f"**3. Final Answer:**\n"
-                             f"Return the result as a JSON object (wrapped in ```json ... ```) with this format:\n"
-                            f'{{\n  "found": true,\n  "label": "LabelName",\n  "start_percentage": <float 0.0000-1.0000 representing start of segment in this window>,\n  "end_percentage": <float 0.0000-1.0000 representing end of segment in this window>,\n  "reasoning": "reasoning why you pick this segment."\n}}\n'
-                            f"If no distinct segment is found or the data is just noise/empty, return {{ \"found\": false }}.\n"
+                            f"Analyze the telemetry graphs.\n"
+                            f"{graph_descriptions}\n"
+                            f"Check if there is a segment that strictly matches the following definition:\n"
+                            f"{label_context}\n"
+                            f"Task:\n"
+                            f"1. If the graph behavior does NOT match the definition, explain the reasion and return {{ \"found\": false ,\n \"reasoning\": \"explanation why no clear match was found\"}}.\n"
+                            f"2. Only if there is a match, expalin the reasion and return the segment as JSON:\n"
+                            f'{{\n  "found": true,\n  "label": "{target_label}",\n  "start_percentage": <0.0-1.0>,\n  "end_percentage": <0.0-1.0>,\n  "reasoning": "brief explanation"\n}}\n'
                         )
-                        
+
                         try:
-                            vlm_resp, _ = vlm_service.analyze_data(slice_csv_input, analysis_prompt, trajectory_csv_data=trajectory_csv_str)
+                            # Caching logic to prevent re-inference during debug chat
+                            cache_key = f"agent_cache_{sess_id}_{window_start_cursor}"
+                            vlm_resp = None
+                            generated_img = None
                             
+                            use_cache = False
+                            if as_debug_mode:
+                                cached_data = st.session_state.get("agent_window_cache", {})
+                                if cached_data.get("id") == cache_key:
+                                    vlm_resp = cached_data.get("resp")
+                                    generated_img = cached_data.get("img")
+                                    use_cache = True
+                                    print(f"[{sess_id} {window_start_cursor}] Using cached inference result.")
+
+                            if not use_cache:
+                                vlm_resp, generated_img = vlm_service.analyze_data(
+                                    slice_csv_input, 
+                                    analysis_prompt, 
+                                    trajectory_csv_data=trajectory_csv_str,
+                                    support_lines=current_support_lines
+                                )
+                                
+                                if as_debug_mode:
+                                     st.session_state.agent_window_cache = {
+                                        "id": cache_key,
+                                        "resp": vlm_resp,
+                                        "img": generated_img
+                                     }
+                            
+                            if as_debug_mode:
+                                with live_graph_placeholder.container():
+                                    if generated_img:
+                                        st.image(generated_img, caption=f"Analysis Window: {current_cursor}-{active_limit}", use_column_width=True)
+                                    st.markdown("**Inference Output:**")
+                                    st.text(vlm_resp)
+
                             # Optimization: Log to console instead of UI to prevent lag
                             print(f"[{sess_id} {current_cursor}] Inference output: {vlm_resp}")
 
@@ -307,8 +362,19 @@ def render_agent_mode(selected_annotation_key, selected_session_key, available_s
                                 
                                 if "proposed_auto_annotations" not in st.session_state:
                                     st.session_state.proposed_auto_annotations = []
-                                st.session_state.proposed_auto_annotations.append(new_ann)
-                                found_total += 1
+                                
+                                # Duplicate check for debug re-runs
+                                is_duplicate = False
+                                for existing in st.session_state.proposed_auto_annotations:
+                                    if existing.chunk_index == sess_id and existing.start_index == seg_start_abs:
+                                        is_duplicate = True
+                                        break
+                                
+                                if not is_duplicate:
+                                    st.session_state.proposed_auto_annotations.append(new_ann)
+                                
+                                # Update total based on actual list length to be safe
+                                found_total = len(st.session_state.proposed_auto_annotations)
                                 
                                 # Optimization: Log found segment to console instead of UI stacking
                                 print(f"Found [{match_name}] in {sess_id}: {seg_start_abs}-{seg_end_abs}")
@@ -319,6 +385,33 @@ def render_agent_mode(selected_annotation_key, selected_session_key, available_s
                                 # Not found or parsing failed, move window forward
                                 if active_limit == limit_cursor: break
                                 current_cursor += t_win
+
+                            if as_debug_mode:
+                                st.divider()
+                                st.markdown("### Debug Chat")
+                                debug_question = st.text_input("Ask a question about this window:", key=f"q_{sess_idx}_{window_start_cursor}")
+                                if debug_question:
+                                    st.write(f"**Q:** {debug_question}")
+                                    debug_resp, _ = vlm_service.analyze_data(
+                                        slice_csv_input,
+                                        debug_question,
+                                        trajectory_csv_data=trajectory_csv_str,
+                                        support_lines=current_support_lines
+                                    )
+                                    st.markdown("**A:**")
+                                    st.info(debug_resp)
+                                
+                                def continue_callback(s_idx, c_cursor, f_total):
+                                    st.session_state.agent_resume_state = {"sess_idx": s_idx, "cursor": c_cursor}
+                                    st.session_state.agent_found_total = f_total
+
+                                st.button(
+                                    f"Continue ▶️ (Next Cursor: {current_cursor})", 
+                                    key=f"cont_{sess_idx}_{window_start_cursor}",
+                                    on_click=continue_callback,
+                                    args=(sess_idx, int(current_cursor), found_total)
+                                )
+                                st.stop()
                                 
                         except Exception as e:
                             print(f"Error in VLM loop: {e}")
@@ -335,6 +428,8 @@ def render_agent_mode(selected_annotation_key, selected_session_key, available_s
             
             # Store completion flag to prevent loop
             st.session_state.agent_run_completed = True
+            st.session_state.run_auto_segment = False
+            st.session_state.agent_resume_state = None
             
             if found_total > 0:
                 st.session_state.review_auto_segments = True

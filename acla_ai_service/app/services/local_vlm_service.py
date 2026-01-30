@@ -17,6 +17,8 @@ from pathlib import Path
 from typing import Dict, Optional, Union, Any, Callable, List
 
 import matplotlib.pyplot as plt
+from matplotlib.figure import Figure
+from matplotlib.backends.backend_agg import FigureCanvasAgg
 import pandas as pd
 import torch
 import torchvision.transforms as T
@@ -234,20 +236,19 @@ class LocalVLMService:
             LOGGER.error("Failed to load VLM model: %s", e)
             raise RuntimeError(f"Could not load VLM model {self.config.base_model}") from e
 
-    def create_graph_from_csv(self, csv_data: str) -> Image.Image:
+    def create_graph_from_csv(self, csv_data: str, support_lines: Optional[List[Union[float, Dict[str, Any]]]] = None) -> Image.Image:
         """Converts CSV string data to a matplotlib plot image."""
         try:
-            # Use non-interactive backend to avoid GUI issues
-            plt.switch_backend("Agg")
-
             # Parse CSV data
             df = pd.read_csv(io.StringIO(csv_data))
 
             if df.empty:
                 raise ValueError("CSV data is empty")
 
-            # Create plot
-            plt.figure(figsize=(10, 6))
+            # Create figure using OO API to avoid global state issues
+            fig = Figure(figsize=(10, 6))
+            FigureCanvasAgg(fig)
+            ax = fig.add_subplot(111)
 
             # Identify numeric columns to plot
             numeric_cols = df.select_dtypes(include=["number"]).columns
@@ -266,25 +267,48 @@ class LocalVLMService:
                 # Plot other numeric columns against x_col
                 for col in numeric_cols:
                     if col != x_col:
-                        plt.plot(df[x_col], df[col], label=col)
-                plt.xlabel(x_col)
+                        ax.plot(df[x_col], df[col], label=col)
+                ax.set_xlabel(x_col)
             else:
                 # Fallback: plot against index
                 for col in numeric_cols:
-                    plt.plot(df.index, df[col], label=col)
-                plt.xlabel("Index")
+                    ax.plot(df.index, df[col], label=col)
+                ax.set_xlabel("Index")
+            
+            # --- Support Lines ---
+            if support_lines:
+                # Get x-axis limits to position text
+                x_min, x_max = ax.get_xlim()
+                for line_def in support_lines:
+                    # Handle both simple float values and dictionary definitions
+                    if isinstance(line_def, dict):
+                        y_val = line_def.get("value")
+                        color = line_def.get("color", "red")
+                        name = line_def.get("name", str(y_val))
+                    else:
+                        y_val = line_def
+                        color = "red"
+                        name = str(y_val)
+                    
+                    if y_val is None:
+                        continue
 
-            plt.legend()
-            plt.title("Telemetry Data Visualization")
-            plt.grid(True, linestyle="--", alpha=0.7)
-            plt.tight_layout()
+                    # Make line thicker and fully opaque
+                    ax.axhline(y=y_val, color=color, linestyle='--', linewidth=2.5, alpha=1.0, label=f'Ref Line: {name}')
+                    # Add high-contrast text label with background to ensure it stands out against grid/data
+                    ax.text(x_min, y_val, f' {name}', color=color, fontweight='bold', va='bottom', 
+                            bbox=dict(facecolor='white', alpha=0.9, edgecolor=color, boxstyle='round,pad=0.2'))
+
+            ax.legend()
+            ax.set_title("Telemetry Data Visualization")
+            ax.grid(True, linestyle="--", alpha=0.7)
+            fig.tight_layout()
 
             # Save plot to in-memory buffer
             buf = io.BytesIO()
-            plt.savefig(buf, format="png")
+            fig.savefig(buf, format="png")
             buf.seek(0)
-            plt.close()
-
+            
             # Convert to PIL Image
             return Image.open(buf).convert("RGB")
 
@@ -295,16 +319,15 @@ class LocalVLMService:
     def create_trajectory_graph_from_csv(self, csv_data: str) -> Image.Image:
         """Converts CSV string data to a 2D trajectory plot image."""
         try:
-            # Use non-interactive backend
-            plt.switch_backend("Agg")
-
             df = pd.read_csv(io.StringIO(csv_data))
             if df.empty:
                  # If empty, return a blank white image or raise
                  # Returning a small blank image is safer for optional components
                  return Image.new('RGB', (100, 100), color='white')
 
-            fig = plt.figure(figsize=(10, 6))
+            # Create figure using OO API
+            fig = Figure(figsize=(10, 6))
+            FigureCanvasAgg(fig)
             ax = fig.add_subplot(111)
 
             # Player
@@ -332,9 +355,9 @@ class LocalVLMService:
             ax.axis('equal')
 
             buf = io.BytesIO()
-            plt.savefig(buf, format="png")
+            fig.savefig(buf, format="png")
             buf.seek(0)
-            plt.close()
+            
             return Image.open(buf).convert("RGB")
         except Exception as e:
             LOGGER.error("Error generating trajectory graph: %s", e)
@@ -346,7 +369,8 @@ class LocalVLMService:
         csv_data: Union[str, List[str]], 
         prompt: str, 
         trajectory_csv_data: Optional[str] = None,
-        status_callback: Optional[Callable[[str], None]] = None
+        status_callback: Optional[Callable[[str], None]] = None,
+        support_lines: Optional[Union[List[Union[float, Dict[str, Any]]], List[List[Union[float, Dict[str, Any]]]]]] = None
     ) -> tuple[str, Image.Image]:
         """Generates graph(s) from CSV data and runs VLM inference on it.
 
@@ -355,6 +379,7 @@ class LocalVLMService:
             prompt: User question or prompt about the data.
             trajectory_csv_data: Optional string content of CSV for trajectory data.
             status_callback: Optional callback to report progress.
+            support_lines: Optional list of Y-values to draw horizontal support lines on the graph.
 
         Returns:
             A tuple containing:
@@ -376,7 +401,23 @@ class LocalVLMService:
         for idx, csv_str in enumerate(csv_list):
             if status_callback:
                 status_callback(f"Generating telemetry visualization {idx+1}/{len(csv_list)}...")
-            img = self.create_graph_from_csv(csv_str)
+            
+            # Determine support lines for this specific graph
+            current_graph_lines = None
+            if support_lines:
+                # Check if support_lines is a list of lists corresponding to graphs
+                # Heuristic: if csv_data was a list AND support_lines is a list of lists where the first element is a list
+                # Then we match by index.
+                is_nested = isinstance(support_lines, list) and len(support_lines) > 0 and isinstance(support_lines[0], list)
+                
+                if isinstance(csv_data, list) and is_nested:
+                    if idx < len(support_lines):
+                        current_graph_lines = support_lines[idx]
+                else:
+                    # Fallback: support_lines applies to all graphs (or it's a single graph case)
+                    current_graph_lines = support_lines
+
+            img = self.create_graph_from_csv(csv_str, support_lines=current_graph_lines)
             telemetry_images.append(img)
             
         if not telemetry_images:
@@ -506,6 +547,7 @@ def _vlm_worker_loop(input_queue: multiprocessing.Queue, output_queue: multiproc
                     csv_data = task["csv_data"]
                     prompt = task["prompt"]
                     trajectory_csv_data = task.get("trajectory_csv_data")
+                    support_lines = task.get("support_lines")
                     
                     # Callback wrapper to send status back to parent
                     def status_callback(msg):
@@ -516,7 +558,8 @@ def _vlm_worker_loop(input_queue: multiprocessing.Queue, output_queue: multiproc
                             csv_data, 
                             prompt, 
                             trajectory_csv_data=trajectory_csv_data,
-                            status_callback=status_callback
+                            status_callback=status_callback,
+                            support_lines=support_lines
                         )
                         output_queue.put({"type": "result", "text": response, "image": img})
                     except Exception as e:
@@ -599,7 +642,8 @@ class VLMProcessManager:
         csv_data: Union[str, List[str]], 
         prompt: str, 
         trajectory_csv_data: Optional[str] = None,
-        status_callback: Optional[Callable[[str], None]] = None
+        status_callback: Optional[Callable[[str], None]] = None,
+        support_lines: Optional[Union[List[Union[float, Dict[str, Any]]], List[List[Union[float, Dict[str, Any]]]]]] = None
     ) -> tuple[str, Image.Image]:
         """Proxy method to run analysis in the worker process."""
         self.start() # Ensure running
@@ -608,7 +652,8 @@ class VLMProcessManager:
             "type": "analyze",
             "csv_data": csv_data,
             "prompt": prompt,
-            "trajectory_csv_data": trajectory_csv_data
+            "trajectory_csv_data": trajectory_csv_data,
+            "support_lines": support_lines
         }
         
         self.input_queue.put(task)

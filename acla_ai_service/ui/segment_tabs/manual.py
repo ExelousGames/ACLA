@@ -72,13 +72,32 @@ def render_manual_annotation(selected_annotation_key, selected_session_key, avai
     numeric_cols = df.select_dtypes(include=['number']).columns.tolist()
     default_cols = ["speed_kmh", "gas", "brake", "steer_angle"]
     # Global visualization range control
-    viz_start_idx, viz_end_idx = st.slider(
-        "Global Visualization Range",
-        min_value=0,
-        max_value=len(df),
-        value=(0, min(len(df), 5000)),
-        key="global_viz_range"
-    )
+    st.caption("Visualization Range (Graphs & Track Map)")
+    
+    # Callback to sync inputs with slider
+    def update_global_slider_range():
+        s = st.session_state.get("global_viz_start_input", 0)
+        e = st.session_state.get("global_viz_end_input", 0)
+        if s <= e:
+            st.session_state.global_viz_range = (s, e)
+
+    col_global_slider, col_global_inputs = st.columns([3, 1])
+    with col_global_slider:
+        viz_start_idx, viz_end_idx = st.slider(
+            "Select Range",
+            min_value=0,
+            max_value=len(df),
+            value=(0, min(len(df), 5000)),
+            key="global_viz_range",
+            label_visibility="collapsed"
+        )
+    
+    with col_global_inputs:
+         c_input1, c_input2 = st.columns(2)
+         with c_input1:
+             st.number_input("Start", min_value=0, max_value=len(df), value=viz_start_idx, key="global_viz_start_input", on_change=update_global_slider_range)
+         with c_input2:
+             st.number_input("End", min_value=0, max_value=len(df), value=viz_end_idx, key="global_viz_end_input", on_change=update_global_slider_range)
 
     # Feature selection for visualization
     if "graph_ids" not in st.session_state:
@@ -174,41 +193,27 @@ def render_manual_annotation(selected_annotation_key, selected_session_key, avai
     
     if has_player_pos or has_opponent_pos or has_expert_pos:
         # View controls
-        col_ctrl1, col_ctrl2 = st.columns([3, 1])
+        st.caption("Axis Settings")
+        col_ctrl1, col_ctrl2, col_ctrl3 = st.columns(3)
         with col_ctrl1:
-            # Callback to sync inputs with slider
-            def update_slider_range():
-                s = st.session_state.get("track_map_start_input", 0)
-                e = st.session_state.get("track_map_end_input", 0)
-                if s <= e:
-                    st.session_state.track_map_slider = (s, e)
-
-            # Slider for selecting timestamp range
-            start_idx, end_idx = st.slider(
-                "Select Timestamp for Position View", 
-                min_value=0, 
-                max_value=len(df)-1, 
-                value=(0, min(len(df)-1, 200)),
-                key="track_map_slider"
-            )
-            
-            # Manual input for range
-            mc1, mc2 = st.columns(2)
-            with mc1:
-                st.number_input("Start", min_value=0, max_value=len(df)-1, value=start_idx, key="track_map_start_input", on_change=update_slider_range)
-            with mc2:
-                st.number_input("End", min_value=0, max_value=len(df)-1, value=end_idx, key="track_map_end_input", on_change=update_slider_range)
-
-        with col_ctrl2:
-            st.caption("Axis Settings")
             invert_x = st.checkbox("Invert X", value=False)
+        with col_ctrl2:
             invert_y = st.checkbox("Invert Y", value=False)
+        with col_ctrl3:
             invert_z = st.checkbox("Invert Z", value=False)
         
-        # Create windowed dataframe for trajectory plotting
-        map_plot_df = df.iloc[start_idx:end_idx+1]
+        # Create windowed dataframe for trajectory plotting using Global Range
+        start_idx = min(viz_start_idx, len(df) - 1)
         
-        selected_time_idx = end_idx if end_idx < len(df) else len(df) - 1
+        # Ensure indices are within bounds
+        safe_end_idx = min(viz_end_idx, len(df))
+        if safe_end_idx <= start_idx:
+             # Handle empty range selection gracefully
+             map_plot_df = pd.DataFrame(columns=df.columns)
+             selected_time_idx = start_idx
+        else:
+             map_plot_df = df.iloc[start_idx:safe_end_idx]
+             selected_time_idx = safe_end_idx - 1
         current_row = df.iloc[selected_time_idx]
         start_row = df.iloc[start_idx]
         map_data = []
@@ -489,6 +494,40 @@ def render_manual_annotation(selected_annotation_key, selected_session_key, avai
         key=f"form_labels_{selected_option}"
     )
 
+    # Classifier Probability Check (Only for New Annotations)
+    if not is_edit:
+        with st.expander("Classifier Probabilities (AI Check)"):
+            if form_start < form_end and int(form_end) < len(df):
+                if st.button("Check Probabilities for Range"):
+                    with st.spinner("Analyzing segment with Classifier..."):
+                        try:
+                            # Import here to avoid circular dependencies during initial load
+                            from app.services.segment_classifier_service import segment_classifier
+                            
+                            # Extract segment
+                            snippet = df.iloc[int(form_start):int(form_end)]
+                            probs = segment_classifier.predict_segment_probabilities(snippet)
+                            
+                            st.write("Confidence per Label:")
+                            # Filter and display
+                            has_results = False
+                            for label, score in probs.items():
+                                if score > 0.01:
+                                    has_results = True
+                                    c_lab, c_prog = st.columns([1, 2])
+                                    with c_lab:
+                                        st.caption(f"{label} ({score:.1%})")
+                                    with c_prog:
+                                        st.progress(score)
+                            
+                            if not has_results:
+                                st.info("No labels detected with significant probability (>1%)")
+                                
+                        except Exception as e:
+                            st.error(f"Error calling classifier: {str(e)}")
+            else:
+                st.info("Select a valid range (min length 1) to check probabilities.")
+
     # Feature Change Calculator
     with st.expander("Feature Change Calculator"):
         f_col1, f_col2 = st.columns([1, 2])
@@ -553,103 +592,7 @@ def render_manual_annotation(selected_annotation_key, selected_session_key, avai
                 c11.metric("Variance", f"{var_val:.2f}")
                 c12.metric("Total Change", f"{total_change:.2f}", help="Difference between end and start value")
 
-    # AI Label Suggestion (Use Container instead of Expander to avoid nesting issues with Status)
-    with st.container():
-        st.markdown("---")
-        st.subheader("AI Label Suggestion (VLM)")
-        st.markdown("Use the local VLM to visually analyze the selected telemetry segment and suggest a label.")
-
-        valid_default_cols = [c for c in default_cols if c in numeric_cols]
-        if not valid_default_cols and numeric_cols:
-            valid_default_cols = numeric_cols[:min(3, len(numeric_cols))]
-
-        llm_features = st.multiselect(
-            "Select Features for VLM Analysis",
-            numeric_cols,
-            default=valid_default_cols,
-            key=f"llm_features_{selected_option}"
-        )
-
-        include_traj = st.checkbox("Include 2D Trajectory in Analysis", value=True, key=f"include_traj_{selected_option}")
-        
-        if st.button("Analyze Segment with VLM", key=f"btn_analyze_{selected_option}"):
-            # Check range validity
-            a_start = st.session_state.get(f"form_start_{selected_option}", default_start)
-            a_end = st.session_state.get(f"form_end_{selected_option}", default_end)
-            
-            if a_start >= a_end:
-                    st.error("Invalid range for analysis.")
-            elif not llm_features:
-                    st.error("Please select at least one feature for analysis.")
-            else:
-                with st.status("Analyzing segment telemetry...", expanded=True) as status:
-                    # Get VLM
-                    status.write("Loading VLM model...")
-                    vlm_service = get_vlm_service()
-                    
-                    if vlm_service:
-                        status.write("Extracting telemetry data...")
-                        seg_slice = df.iloc[int(a_start):int(a_end)]
-                        
-                        # Telemetry Data
-                        telemetry_csv_str = seg_slice[llm_features].to_csv(index=False)
-                        
-                        # Trajectory Data
-                        trajectory_csv_str = None
-                        if include_traj:
-                            traj_cols = [
-                                'Graphics_player_pos_x', 'Graphics_player_pos_y', 'Graphics_player_pos_z',
-                                'expert_optimal_player_pos_x', 'expert_optimal_player_pos_y', 'expert_optimal_player_pos_z'
-                            ]
-                            available_traj_cols = [c for c in traj_cols if c in seg_slice.columns]
-                            if available_traj_cols:
-                                trajectory_csv_str = seg_slice[available_traj_cols].to_csv(index=False)
-                        
-                        # Build detailed label descriptions
-                        label_desc_list = []
-                        for name in sorted(list(set(LABEL_MAPPING.values()))):
-                            desc = LABEL_DESCRIPTIONS.get(name, "No description available.")
-                            label_desc_list.append(f"- {name}: {desc}")
-                        available_labels_str = "\n".join(label_desc_list)
-                        
-                        prompt = (
-                            f"The graphs show telemetry data from a racing car session. The graphs contain a comparison between the driver and an expert reference.\n"
-                            f"Based on the trends in the data, suggest the most appropriate behavioral label from the following list:\n{available_labels_str}\n\n"
-                            f"Respond in English. Be concise and professional. Explain your reasoning based on the visual patterns in the graphs."
-                        )
-                        
-                        status.write("Starting VLM analysis...")
-                        
-                        # Use a mutable reference to hold the placeholder for streaming output
-                        stream_ph_ref = [None]
-                        
-                        def status_callback_handler(msg):
-                            if msg.startswith("Generating:"):
-                                text_content = msg[len("Generating: "):]
-                                if stream_ph_ref[0] is None:
-                                    stream_ph_ref[0] = status.empty()
-                                stream_ph_ref[0].markdown(f"**Generating:**\n\n{text_content}")
-                            else:
-                                status.write(msg)
-
-                        try:
-                            response, img = vlm_service.analyze_data(
-                                telemetry_csv_str, 
-                                prompt, 
-                                trajectory_csv_data=trajectory_csv_str,
-                                status_callback=status_callback_handler
-                            )
-                            status.update(label="Analysis Complete", state="complete", expanded=False)
-                            st.markdown("### VLM Analysis & Suggestion")
-                            st.image(img, caption="VLM Visualization (Combined)", use_column_width=True)
-                            st.info(response)
-                        except Exception as e:
-                            status.update(label="Analysis Failed", state="error")
-                            st.error(f"Error during VLM analysis: {e}")
-                            st.error(f"Inference failed: {e}")
-                    else:
-                        status.update(label="LLM Load Failed", state="error")
-                        st.error("Could not load LLM. Check server logs or ensure model is downloaded.")
+    # Form Actions
 
     # Form Actions
     col_actions = st.columns([1, 1, 1, 3])

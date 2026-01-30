@@ -717,6 +717,57 @@ class SegmentClassifierService:
         
         return labels
 
+    def predict_segment_probabilities(self, segment_df: pd.DataFrame) -> Dict[str, float]:
+        """Predict probabilities for all labels for a single segment DataFrame."""
+        if self.model is None:
+            if not self.load_model():
+                return {}
+
+        df = segment_df.copy()
+        
+        # Align features with training data
+        expected_features = SegmentFeatureCatalog.get_all_available_features()
+        
+        # 1. Ensure all expected features exist
+        for feature in expected_features:
+            if feature not in df.columns:
+                df[feature] = 0
+                
+        # 2. Select only expected features in correct order
+        df = df[expected_features]
+        
+        # 3. Ensure numeric
+        df = df.apply(pd.to_numeric, errors='coerce').fillna(0)
+        
+        if df.empty:
+            return {}
+
+        X_scaled = self.scaler.transform(df.values)
+        
+        # Handle max_length and padding
+        original_len = len(X_scaled)
+        if original_len > self.max_length:
+             X_scaled = X_scaled[:self.max_length]
+             original_len = self.max_length
+        elif original_len < self.max_length:
+             pad_len = self.max_length - original_len
+             X_scaled = np.pad(X_scaled, ((0, pad_len), (0, 0)), 'constant')
+
+        X_tensor = torch.FloatTensor(X_scaled).unsqueeze(0).to(self.device)
+        
+        with torch.no_grad():
+            outputs, _ = self.model(X_tensor)
+            probs_tensor = torch.sigmoid(outputs)
+            valid_probs = probs_tensor[0, :original_len, :]
+            probs = valid_probs.mean(dim=0).cpu().numpy()
+            
+        result = {}
+        for i, p in enumerate(probs):
+            label = self.mlb.classes_[i]
+            result[label] = float(p)
+            
+        return dict(sorted(result.items(), key=lambda item: item[1], reverse=True))
+
     def scan_telemetry_data(self, dataframe: pd.DataFrame) -> List[PredictedSegment]:
         """
         Scan a dataframe and return found segments with labels.
