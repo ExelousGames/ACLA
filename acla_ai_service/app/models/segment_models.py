@@ -14,7 +14,7 @@ LABEL_MAPPING = {
     5: "Recovery & Merge",
     23: "Superior Expert",
     27: "Unexpected driving behavior",
-    28 :"Mistake",
+    28 :"Poor racing segment caused by mistake",
     29: "Mistake caused by brake too late",
     30: "Mistake caused by turn in too late",
     31: "Mistake caused by apex too late",
