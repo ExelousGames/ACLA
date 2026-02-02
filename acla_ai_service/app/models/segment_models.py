@@ -14,7 +14,15 @@ LABEL_MAPPING = {
     5: "Recovery & Merge",
     23: "Superior Expert",
     27: "Unexpected driving behavior",
-    28 :"Mistake"
+    28 :"Mistake",
+    29: "Mistake caused by brake too late",
+    30: "Mistake caused by turn in too late",
+    31: "Mistake caused by apex too late",
+    32: "Mistake caused by exit out too early",
+    33: "Mistake caused by brake too early",
+    34: "Mistake caused by turn in too early",
+    35: "Mistake caused by apex too early",
+    36: "Mistake caused by exit out too late",
 }
 LABEL_NAME_TO_ID = {v: k for k, v in LABEL_MAPPING.items()}
 
