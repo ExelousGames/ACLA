@@ -30,7 +30,7 @@ from segment_tabs.shared import (
     load_annotations, save_annotations, SegmentUpdater
 )
 from segment_tabs.manual import render_manual_annotation
-from segment_tabs.agent import render_agent_mode
+from segment_tabs.detailed import render_detailed_labeling
 
 def main():
     st.set_page_config(page_title="Segment Annotation App", layout="wide")
@@ -151,13 +151,13 @@ def main():
              return
 
         # --- Top Level Tabs ---
-        tab_annot, tab_agent = st.tabs(["Telemetry Segment Annotation", "Auto-Segment Range (Agent Mode)"])
+        tab_annot, tab_detailed = st.tabs(["Telemetry Segment Annotation", "Detailed Labeling"])
 
         with tab_annot:
             render_manual_annotation(selected_annotation_key, selected_session_key, available_sessions)
 
-        with tab_agent:
-            render_agent_mode(selected_annotation_key, selected_session_key, available_sessions)
+        with tab_detailed:
+            render_detailed_labeling(selected_annotation_key, selected_session_key, available_sessions)
 
 if __name__ == "__main__":
     main()

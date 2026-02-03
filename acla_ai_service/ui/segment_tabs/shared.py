@@ -36,7 +36,7 @@ try:
     import app.models.segment_models
     # Force reload to pick up model changes (e.g. new fields)
     importlib.reload(app.models.segment_models)
-    from app.models.segment_models import AnnotatedSegment, LABEL_MAPPING, LABEL_NAME_TO_ID, SegmentFeatureCatalog
+    from app.models.segment_models import AnnotatedSegment, LABEL_MAPPING, LABEL_NAME_TO_ID, LABEL_CATEGORIES, SegmentFeatureCatalog
     from app.services.segment_updater import SegmentUpdater
     from app.services.local_vlm_service import LocalVLMService, LocalVLMConfig, VLMProcessManager
 except ImportError:

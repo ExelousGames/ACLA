@@ -29,6 +29,11 @@ LABEL_MAPPING = {
 }
 LABEL_NAME_TO_ID = {v: k for k, v in LABEL_MAPPING.items()}
 
+LABEL_CATEGORIES = {
+    "Main Labels": [1, 2,3,4,5,23,27,28],
+    28:[29,30,31,32,33,34,35,36,37,38,39],
+}
+
 @dataclass
 class AnnotatedSegment:
     labels: List[int]
