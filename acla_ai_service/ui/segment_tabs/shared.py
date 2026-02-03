@@ -73,11 +73,19 @@ GRAPH_CONFIGS = [
         ]
     ),
     GraphConfig(
-        description="Lateral distance from the driver's position to the expert's optimal racing line. Higher values indicate greater deviation from the ideal path.",
-        features=["distance_to_expert_line"],
+        description="Comparison of throttle input (0-1) between Driver (Physics_gas) and Expert (expert_optimal_throttle).",
+        features=["expert_optimal_throttle", "Physics_gas"],
         reference_lines=[
-            {"name": "Zero", "value": 0.0, "color": "gray"},
-            {"name": "Distance Limit", "value": 5.0, "color": "red"}
+             {"name": "Full Throttle", "value": 1.0, "color": "gray"},
+             {"name": "Idle", "value": 0.0, "color": "gray"}
+        ]
+    ),
+    GraphConfig(
+        description="Comparison of brake input (0-1) between Driver (Physics_brake) and Expert (expert_optimal_brake).",
+        features=["expert_optimal_brake", "Physics_brake"],
+        reference_lines=[
+             {"name": "Max Brake", "value": 1.0, "color": "gray"},
+             {"name": "No Brake", "value": 0.0, "color": "gray"}
         ]
     )
 ]

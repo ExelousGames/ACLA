@@ -514,7 +514,8 @@ class LocalVLMService:
             generated_text = ""
             for new_text in streamer:
                 generated_text += new_text
-                status_callback(f"Generating: {generated_text}")
+                # Use a specific prefix to distinguish streaming tokens from status updates
+                status_callback(f"__STREAM__{new_text}")
                 
             thread.join()
         else:
