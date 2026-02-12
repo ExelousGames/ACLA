@@ -116,10 +116,11 @@ def get_display_labels(labels):
     
     display_labels = []
     for l in labels:
-        if isinstance(l, int):
-            display_labels.append(LABEL_MAPPING.get(l, f"Unknown({l})"))
+        key = str(l)
+        if key in LABEL_MAPPING:
+            display_labels.append(LABEL_MAPPING[key])
         else:
-            display_labels.append(str(l))
+            display_labels.append(key)
     return display_labels
 
 def _run_async(func, *args, **kwargs):

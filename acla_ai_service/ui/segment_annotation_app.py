@@ -19,6 +19,13 @@ def _ensure_app_module_on_path() -> None:
             path_str = candidate.as_posix()
             if path_str not in sys.path:
                 sys.path.insert(0, path_str)
+            
+            # Also add scripts folder to path to allow importing migration scripts
+            scripts_path = (candidate / "scripts")
+            if scripts_path.exists():
+                scripts_path_str = scripts_path.as_posix()
+                if scripts_path_str not in sys.path:
+                    sys.path.insert(0, scripts_path_str)
             return
         candidate = candidate.parent
 
@@ -91,7 +98,29 @@ def main():
         if selected_annotation_key:
             st.markdown("---")
             st.header("Maintenance")
-            if st.button("Update Features (All Sessions)", help="Re-extract telemetry data for all annotations in this dataset to include new features from the source data."):
+            
+            m_col1, m_col2 = st.columns(2)
+            with m_col1:
+                run_update_features = st.button("Update Features (All Sessions)", help="Re-extract telemetry data for all annotations in this dataset to include new features from the source data.")
+            with m_col2:
+                run_update_labels = st.button("Migrate Legacy Labels", help="Update legacy labels (e.g. 28 -> MS) to new schema.")
+            
+            if run_update_labels:
+                try:
+                    import migrate_labels
+                    with st.spinner("Migrating legacy labels..."):
+                        stats = migrate_labels.update_legacy_labels(selected_annotation_key)
+                    
+                    st.success(f"Migration Complete! Updated {stats['labels_replaced']} labels in {stats['sessions_updated']} sessions.")
+                    if stats['labels_replaced'] > 0:
+                        time.sleep(2)
+                        st.rerun()
+                except ImportError:
+                    st.error("Could not import migration script. Please check configuration.")
+                except Exception as e:
+                    st.error(f"Migration failed: {e}")
+
+            if run_update_features:
                 updater = SegmentUpdater()
                 source_key = pipeline_config.enriched_sessions_cache_key
                 

@@ -8,42 +8,42 @@ from app.services.tire_grip_analysis_service import TireGripFeatureCatalog
 # Constants
 LABEL_MAPPING = {
     ################### Main Labels ###################
-    1: "Overtaking",
-    2: "Missing data",
-    3: "Expert Adherence",
-    4: "Pit Stop",
-    5: "Recovery & Merge",
-    28 :"Mistake segment",
+    "1": "Overtaking",
+    "2": "Missing data",
+    "3": "Expert Adherence",
+    "4": "Pit Stop",
+    "5": "Recovery & Merge",
+    "MS" :"Mistake segment",
     ################### Detailed Expert Adherence Labels (for label 3) ###################
-    3001: "",
-    ################### Detailed mistake labels (for label 28) ###################
-    28001: "Brake too late",
-    28002: "Turn in too late",
-    28003: "Apex too late",
-    28004: "Exit out too early",
-    28005: "Brake too early",
-    28006: "Turn in too early",
-    28007: "Apex too early",
-    28008: "Exit out too late",
-    28009: "Entry not wide enough",
-    28010: "Apex not tight enough",
-    28011: "Exit not wide enough",
+    "3001": "",
+    ################### Detailed mistake labels (for label MS) ###################
+    "MS1": "Brake too late",
+    "MS2": "Turn in too late",
+    "MS3": "Apex too late",
+    "MS4": "Exit out too early",
+    "MS5": "Brake too early",
+    "MS6": "Turn in too early",
+    "MS7": "Apex too early",
+    "MS8": "Exit out too late",
+    "MS9": "Entry not wide enough",
+    "MS10": "Apex not tight enough",
+    "MS11": "Exit not wide enough",
 }
 LABEL_NAME_TO_ID = {v: k for k, v in LABEL_MAPPING.items()}
 
 LABEL_CATEGORIES = {
-    "Main Labels": [1, 2,3,4,5,28],
-    1:[],
-    2:[],
-    3:[],
-    4:[],
-    5:[],
-    28:[28001,28002,28003,28004,28005,28006,28007,28008,28009,28010,28011],
+    "Main Labels": ["1", "2","3","4","5","MS"],
+    "1":[],
+    "2":[],
+    "3":[],
+    "4":[],
+    "5":[],
+    "MS":["MS1","MS2","MS3","MS4","MS5","MS6","MS7","MS8","MS9","MS10","MS11"],
 }
 
 @dataclass
 class AnnotatedSegment:
-    labels: List[int]
+    labels: List[str]
     segment_length: int
     start_index: Optional[int] = None
     end_index: Optional[int] = None
@@ -68,7 +68,7 @@ class AnnotatedSegment:
 
 @dataclass
 class PredictedSegment:
-    labels: List[int]
+    labels: List[str]
     telemetry_data: List[Dict[str, Any]] = field(default_factory=list)
     start_index: Optional[int] = None
     end_index: Optional[int] = None

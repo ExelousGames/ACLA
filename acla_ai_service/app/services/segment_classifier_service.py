@@ -277,7 +277,7 @@ class SegmentClassifierService:
                 # Extract labels (handle both 'labels' and mapped labels)
                 labels = d.get("labels", [])
                 if labels:
-                    mapped_labels = [LABEL_MAPPING.get(l, str(l)) for l in labels]
+                    mapped_labels = [LABEL_MAPPING.get(str(l), str(l)) for l in labels]
                     # Store primary label (first one) for stratification
                     primary_label = mapped_labels[0] if mapped_labels else "unknown"
                     label_to_segments[primary_label].append((chunk_idx, len(valid_items) - 1, segment_hash))
@@ -613,7 +613,7 @@ class SegmentClassifierService:
             
             print("\n=== Segment-Level Classification Report (Aggregated) ===")
             # Use mappings for display
-            target_names = [LABEL_MAPPING.get(l, str(l)) for l in self.mlb.classes_]
+            target_names = [LABEL_MAPPING.get(str(l), str(l)) for l in self.mlb.classes_]
             
             seg_report = classification_report(
                 y_seg_true,
@@ -728,7 +728,7 @@ class SegmentClassifierService:
             return True
         return False
 
-    def predict_segment(self, segment_df: pd.DataFrame) -> List[int]:
+    def predict_segment(self, segment_df: pd.DataFrame) -> List[str]:
         """Predict labels for a single segment DataFrame."""
         if self.model is None:
             if not self.load_model():
@@ -777,7 +777,7 @@ class SegmentClassifierService:
         
         return labels
 
-    def predict_segment_probabilities(self, segment_df: pd.DataFrame) -> Dict[int, float]:
+    def predict_segment_probabilities(self, segment_df: pd.DataFrame) -> Dict[str, float]:
         """Predict probabilities for all labels for a single segment DataFrame."""
         if self.model is None:
             if not self.load_model():
