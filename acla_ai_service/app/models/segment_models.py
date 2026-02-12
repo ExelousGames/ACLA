@@ -12,11 +12,14 @@ LABEL_MAPPING = {
     "2": "Missing data",
     "EA": "Expert Adherence",
     "4": "Pit Stop",
-    "5": "Recovery & Merge",
+    "RM": "Recovery & Merge",
     "MS" :"Mistake segment",
     ################### Detailed Expert Adherence Labels (for label EA) ###################
     "EA1": "",
    
+    ################### Detailed Recovery & Merge Labels (for label RM) ###################
+    "RM1": "Recover to track",
+    "RM2": "Exit pit lane",
     ################### Detailed mistake labels (for label MS) ###################
     "MS1": "Brake too late",
     "MS2": "Turn in too late",
@@ -30,6 +33,7 @@ LABEL_MAPPING = {
     "MS10": "Apex not tight enough",
     "MS11": "Exit not wide enough",
      ################### Corner name ###################
+    "brands_hatch":"Brands Hatch",
     "brands_hatch1":"Brabham Straight",
     "brands_hatch2":"Paddock Hill Bend",
     "brands_hatch3":"Druids",
@@ -50,12 +54,12 @@ LABEL_MAPPING = {
 LABEL_NAME_TO_ID = {v: k for k, v in LABEL_MAPPING.items()}
 
 LABEL_CATEGORIES = {
-    "Main Labels": ["1", "2","EA","4","5","MS"],
+    "Main Labels": ["1", "2","EA","4","RM","MS","brands_hatch"],
     "1":[],
     "2":[],
     "EA":[],
     "4":[],
-    "5":[],
+    "RM":[],
     "brands_hatch":["brands_hatch1","brands_hatch2","brands_hatch3","brands_hatch4","brands_hatch5","brands_hatch6","brands_hatch7","brands_hatch8","brands_hatch9","brands_hatch10","brands_hatch11","brands_hatch12","brands_hatch13","brands_hatch14","brands_hatch15","brands_hatch16"],
     "MS":["MS1","MS2","MS3","MS4","MS5","MS6","MS7","MS8","MS9","MS10","MS11"],
 }

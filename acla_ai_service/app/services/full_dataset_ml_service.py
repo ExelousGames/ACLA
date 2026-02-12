@@ -33,7 +33,7 @@ from typing import Dict, List, Any, Optional, Tuple, Union, Iterator, AsyncItera
 from datetime import datetime
 from pathlib import Path
 from app.models import AiModelDto, ActiveModelData
-from app.models.segment_models import PredictedSegment
+from app.models.segment_models import PredictedSegment, AnnotatedSegment
 
 # Scikit-learn imports
 from sklearn.model_selection import train_test_split, cross_val_score, GridSearchCV, StratifiedKFold
@@ -721,7 +721,7 @@ class Full_dataset_TelemetryMLService:
         
     async def run_transformer_guidance_training(
         self,
-        segments_cache_key: str,
+        annotation_cache_key: str,
         processed_sessions_cache_key: str,
         max_segment_length: int = 20,
         *,
@@ -733,6 +733,41 @@ class Full_dataset_TelemetryMLService:
         generated_datasets = []
     
         try:
+            print(f"[INFO] Filtering annotations from {annotation_cache_key}...")
+            filtered_segments = []
+            
+            # The store returns chunks which are lists of segments (dicts)
+            chunk_iterator = self.telemetry_store.get_cached_data_chunks(annotation_cache_key)
+            
+            total_segments_checked = 0
+            
+            for chunk in chunk_iterator:
+                # Iterate over segments in the chunk
+                if isinstance(chunk, list):
+                    for seg_dict in chunk:
+                        total_segments_checked += 1
+                        labels = seg_dict.get("labels", [])
+                        # Check for "EA" or "RM"
+                        if any(l in ["EA", "RM"] for l in labels):
+                            filtered_segments.append(seg_dict)
+                elif isinstance(chunk, dict):
+                     total_segments_checked += 1
+                     labels = chunk.get("labels", [])
+                     if any(l in ["EA", "RM"] for l in labels):
+                            filtered_segments.append(chunk)
+
+            print(f"[INFO] Found {len(filtered_segments)} annotated segments with EA/RM labels (scanned {total_segments_checked}).")
+
+            if not filtered_segments:
+                raise RuntimeError(f"No segments found with EA or RM labels in {annotation_cache_key}")
+
+            # Use a temporary key for the filtered training dataset
+            segments_cache_key = f"temp_training_segments_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+            
+            # Save the filtered segments as one chunk
+            await self.telemetry_store.cache_chunks_streaming(segments_cache_key, [filtered_segments])
+            print(f"[INFO] Cached filtered segments to {segments_cache_key}")
+
             # Train and save transformer model
             transformer_training = await prepare_and_train_coach_transformer_model(
                 data_cache=self.telemetry_store,
@@ -1464,7 +1499,7 @@ class Full_dataset_TelemetryMLService:
         coverage_sample_count = 0
         
         segments_to_visualize = []
-        max_viz_segments = 5
+        max_viz_segments = 5;
         
         # Stream back the cached segments
         cached_segments_iterator = self.telemetry_store.get_cached_data_chunks(segments_cache_key)

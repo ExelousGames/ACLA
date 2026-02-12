@@ -56,7 +56,7 @@ def confirm_step(step_name):
             log_message("Invalid input. Please enter 'y' or 'n'.", level=logging.WARNING)
 
 async def main():
-    steps = ["prepare_data", "annotate", "train_classifier", "process_segments", "train_transformer"]
+    steps = ["prepare_data", "annotate", "train_classifier", "train_transformer"]
     
     log_message("\nSelect start step:")
     for i, step in enumerate(steps):
@@ -86,7 +86,7 @@ async def main():
     # Default keys
     processed_sessions_cache_key = pipeline_config.processed_session_data_cache_key
     enriched_sessions_cache_key = pipeline_config.enriched_sessions_cache_key
-    segments_cache_key = pipeline_config.segments_cache_key
+    annotation_cache_key = pipeline_config.annotation_cache_key
     max_segment_length = 20 # Default from prepare_training_data
 
     try:
@@ -161,43 +161,26 @@ async def main():
         else:
             log_message("Skipping Step 3.")
 
-    # Step 4: Process and Cache Segments
+    # Step 4: Run Transformer Guidance Training
     if start_index <= 3:
-        if confirm_step("Step 4: Process and Cache Segments"):
+        if confirm_step("Step 4: Run Transformer Guidance Training"):
             log_message("\n" + "="*50)
-            log_message(" Step 4: Process and Cache Segments")
+            log_message(" Step 4: Run Transformer Guidance Training")
             log_message("="*50)
             
-            log_message(f"Using enriched sessions key: {enriched_sessions_cache_key}")
-            log_message(f"Target segments key: {segments_cache_key}")
+            log_message(f"Using annotated data from: {annotation_cache_key}")
             
-            segments_cache_key = await service.process_and_cache_segments(
-                enriched_sessions_cache_key=enriched_sessions_cache_key,
-                segments_cache_key=segments_cache_key,
-                max_segment_length=max_segment_length
-            )
-            log_message(f"Segments cached at: {segments_cache_key}")
-            log_message("Step 4 completed successfully.")
-        else:
-            log_message("Skipping Step 4.")
-
-    # Step 5: Run Transformer Guidance Training
-    if start_index <= 4:
-        if confirm_step("Step 5: Run Transformer Guidance Training"):
-            log_message("\n" + "="*50)
-            log_message(" Step 5: Run Transformer Guidance Training")
-            log_message("="*50)
             result = await service.run_transformer_guidance_training(
-                segments_cache_key=segments_cache_key,
+                annotation_cache_key=annotation_cache_key,
                 processed_sessions_cache_key=processed_sessions_cache_key,
                 max_segment_length=max_segment_length
             )
             if not result.get("success"):
                 log_message(f"Error in run_transformer_guidance_training: {result.get('error')}", level=logging.ERROR)
                 return
-            log_message("Step 5 completed successfully.")
+            log_message("Step 4 completed successfully.")
         else:
-            log_message("Skipping Step 5.")
+            log_message("Skipping Step 4.")
         
     log_message("\n" + "="*50)
     log_message(" Full Pipeline Execution Completed")
