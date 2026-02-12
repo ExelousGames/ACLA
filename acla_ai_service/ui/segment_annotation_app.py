@@ -150,13 +150,18 @@ def main():
              st.warning("Selected session key has no data.")
              return
 
-        # --- Top Level Tabs ---
-        tab_annot, tab_detailed = st.tabs(["Telemetry Segment Annotation", "Detailed Labeling"])
+        # --- Top Level Tabs (Implemented as Radio to avoid double rendering) ---
+        # Using radio button as tabs to prevent loading both heavy views simultaneously
+        selected_view = st.radio(
+            "Select View", 
+            ["Telemetry Segment Annotation", "Detailed Labeling"], 
+            horizontal=True,
+            label_visibility="collapsed"
+        )
 
-        with tab_annot:
+        if selected_view == "Telemetry Segment Annotation":
             render_manual_annotation(selected_annotation_key, selected_session_key, available_sessions)
-
-        with tab_detailed:
+        else:
             render_detailed_labeling(selected_annotation_key, selected_session_key, available_sessions)
 
 if __name__ == "__main__":

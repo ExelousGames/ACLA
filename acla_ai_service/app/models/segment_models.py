@@ -7,31 +7,38 @@ from app.services.tire_grip_analysis_service import TireGripFeatureCatalog
 
 # Constants
 LABEL_MAPPING = {
+    ################### Main Labels ###################
     1: "Overtaking",
     2: "Missing data",
     3: "Expert Adherence",
     4: "Pit Stop",
     5: "Recovery & Merge",
-    23: "Superior Expert",
-    27: "Unexpected driving behavior",
     28 :"Mistake segment",
-    29: "Brake too late",
-    30: "Turn in too late",
-    31: "Apex too late",
-    32: "Exit out too early",
-    33: "Brake too early",
-    34: "Turn in too early",
-    35: "Apex too early",
-    36: "Exit out too late",
-    37: "Entry not wide enough",
-    38: "Apex not tight enough",
-    39: "Exit not wide enough",
+    ################### Detailed Expert Adherence Labels (for label 3) ###################
+    3001: "",
+    ################### Detailed mistake labels (for label 28) ###################
+    28001: "Brake too late",
+    28002: "Turn in too late",
+    28003: "Apex too late",
+    28004: "Exit out too early",
+    28005: "Brake too early",
+    28006: "Turn in too early",
+    28007: "Apex too early",
+    28008: "Exit out too late",
+    28009: "Entry not wide enough",
+    28010: "Apex not tight enough",
+    28011: "Exit not wide enough",
 }
 LABEL_NAME_TO_ID = {v: k for k, v in LABEL_MAPPING.items()}
 
 LABEL_CATEGORIES = {
-    "Main Labels": [1, 2,3,4,5,23,27,28],
-    28:[29,30,31,32,33,34,35,36,37,38,39],
+    "Main Labels": [1, 2,3,4,5,28],
+    1:[],
+    2:[],
+    3:[],
+    4:[],
+    5:[],
+    28:[28001,28002,28003,28004,28005,28006,28007,28008,28009,28010,28011],
 }
 
 @dataclass
@@ -61,7 +68,7 @@ class AnnotatedSegment:
 
 @dataclass
 class PredictedSegment:
-    labels: List[str]
+    labels: List[int]
     telemetry_data: List[Dict[str, Any]] = field(default_factory=list)
     start_index: Optional[int] = None
     end_index: Optional[int] = None

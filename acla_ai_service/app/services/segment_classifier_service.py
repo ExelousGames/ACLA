@@ -20,10 +20,24 @@ import json
 import shutil
 import random
 import hashlib
+import copy
 from collections import defaultdict
 
 from .zarr_telemetry_store import get_shared_zarr_store
 from app.models.segment_models import AnnotatedSegment, LABEL_MAPPING, PredictedSegment, SegmentFeatureCatalog
+
+def compute_derived_features(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Computes derived features for telemetry data.
+    Adds first-order differences (deltas) for all columns.
+    """
+    # Calculate difference
+    # We use fillna(0) for the first element
+    df_diff = df.diff().fillna(0).add_suffix('_diff')
+    
+    # Concatenate
+    df_combined = pd.concat([df, df_diff], axis=1)
+    return df_combined
 
 class LSTMModel(nn.Module):
     def __init__(self, input_dim, hidden_dim, output_dim, num_layers=2):
@@ -99,13 +113,16 @@ class StreamingSegmentDataset(IterableDataset):
                 # Ensure numeric
                 df = df.apply(pd.to_numeric, errors='coerce').fillna(0)
                 
+                # Compute derived features (deltas)
+                df = compute_derived_features(df)
+
                 if df.empty:
                     continue
                 
                 seg_X = df.values
                 
-                # Map labels
-                mapped_labels = [LABEL_MAPPING.get(l, str(l)) for l in ann.labels]
+                # Use labels directly (IDs)
+                mapped_labels = ann.labels
                 
                 # Create target
                 label_vec = self.mlb.transform([mapped_labels])[0]
@@ -366,7 +383,7 @@ class SegmentClassifierService:
                     continue
                 
                 # Collect labels
-                mapped_labels = [LABEL_MAPPING.get(l, str(l)) for l in ann.labels]
+                mapped_labels = ann.labels
                 all_labels.update(mapped_labels)
                 for l in mapped_labels:
                     self.label_counts[l] = self.label_counts.get(l, 0) + 1
@@ -387,6 +404,9 @@ class SegmentClassifierService:
                 
                 df = df.apply(pd.to_numeric, errors='coerce').fillna(0)
                 
+                # Compute derived features (deltas) to match dataset structure
+                df = compute_derived_features(df)
+
                 if df.empty:
                     continue
                 
@@ -407,13 +427,15 @@ class SegmentClassifierService:
             pos = self.label_counts.get(label, 0)
             neg = total_segments - pos
             if pos > 0:
-                weight = neg / pos
+                # Use sqrt dampening to prevent precision collapse on rare classes
+                # Original linear weighting (neg/pos) can result in weights > 100, causing massive false positives
+                weight = (neg / pos) ** 0.5
             else:
                 weight = 1.0
             pos_weights.append(weight)
         
         self.pos_weight = torch.FloatTensor(pos_weights).to(self.device)
-        print(f"Calculated pos_weights: {self.pos_weight}")
+        print(f"Calculated pos_weights (dampened): {self.pos_weight}")
         
         if max_seq_len > self.max_length:
             print(f"Updating max_length from {self.max_length} to {max_seq_len}")
@@ -457,14 +479,22 @@ class SegmentClassifierService:
         
         input_dim = self.scaler.mean_.shape[0]
         output_dim = len(self.mlb.classes_)
-        # Increased network size for ~85 input features
-        hidden_dim = 256
-        num_layers = 3
+        # Reduced network size to prevent overfitting on smaller datasets
+        hidden_dim = 64
+        num_layers = 2
         
         self.model = LSTMModel(input_dim, hidden_dim, output_dim, num_layers=num_layers).to(self.device)
         criterion = nn.BCEWithLogitsLoss(reduction='none', pos_weight=self.pos_weight)
-        optimizer = optim.Adam(self.model.parameters(), lr=learning_rate)
+        # Added weight_decay for regularization
+        optimizer = optim.Adam(self.model.parameters(), lr=learning_rate, weight_decay=1e-4)
+        # Scheduler to reduce LR when validation metric plateaus
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=2, verbose=True)
                 
+        best_val_loss = float('inf')
+        best_model_state = None
+        patience_limit = 3  # Early stopping patience
+        patience_counter = 0
+
         for epoch in range(epochs):
             self.model.train()
             total_loss = 0
@@ -507,6 +537,26 @@ class SegmentClassifierService:
             avg_val_loss = val_loss / val_count if val_count > 0 else 0
             
             print(f"Epoch {epoch+1}/{epochs}, Train Loss: {avg_loss:.4f}, Val Loss: {avg_val_loss:.4f}")
+
+            # Scheduler Step
+            scheduler.step(avg_val_loss)
+
+            # Checkpointing and Early Stopping
+            if avg_val_loss < best_val_loss:
+                best_val_loss = avg_val_loss
+                best_model_state = copy.deepcopy(self.model.state_dict())
+                patience_counter = 0
+                print(f"  New best model found! (Val Loss: {best_val_loss:.4f})")
+            else:
+                patience_counter += 1
+                if patience_counter >= patience_limit:
+                    print(f"  Early stopping triggered after {patience_limit} epochs without improvement.")
+                    break
+        
+        # Restore best model
+        if best_model_state is not None:
+             print(f"Restoring best model state (Val Loss: {best_val_loss:.4f})...")
+             self.model.load_state_dict(best_model_state)
 
         # Final Evaluation Report
         print("\nGenerating final evaluation report on validation set...")
@@ -562,10 +612,13 @@ class SegmentClassifierService:
             y_seg_true = np.array(all_segment_targets)
             
             print("\n=== Segment-Level Classification Report (Aggregated) ===")
+            # Use mappings for display
+            target_names = [LABEL_MAPPING.get(l, str(l)) for l in self.mlb.classes_]
+            
             seg_report = classification_report(
                 y_seg_true,
                 y_seg_pred,
-                target_names=self.mlb.classes_,
+                target_names=target_names,
                 zero_division=0
             )
             print(seg_report)
@@ -580,7 +633,6 @@ class SegmentClassifierService:
             report_dict = classification_report(
                 y_true, 
                 y_pred, 
-                target_names=self.mlb.classes_, 
                 zero_division=0,
                 output_dict=True
             )
@@ -590,23 +642,26 @@ class SegmentClassifierService:
             print(classification_report(
                 y_true, 
                 y_pred, 
-                target_names=self.mlb.classes_, 
+                target_names=target_names, 
                 zero_division=0
             ))
             
             trusted_labels = []
             
-            min_support = 7000  # Minimum number of timesteps (frames)
+            min_support = 500  # Minimum number of timesteps (frames)
             min_precision = 0.80
             print("\nPer-class Precision and Support (Validation Set - Per Timestep):")
-            for label in self.mlb.classes_:
-                if label in report_dict:
-                    metrics = report_dict[label]
+            for i, label in enumerate(self.mlb.classes_):
+                label_key = str(i)
+
+                if label_key in report_dict:
+                    metrics = report_dict[label_key]
                     # Use precision as the trust metric
                     score = metrics['precision']
                     support = metrics['support']  # Number of timesteps, not segments
                     
-                    print(f"{label}: Precision={score:.4f}, Support={support} timesteps")
+                    label_name = LABEL_MAPPING.get(label, str(label))
+                    print(f"{label_name}: Precision={score:.4f}, Support={support} timesteps")
                     
                     if score >= min_precision and support >= min_support:
                         trusted_labels.append(label)
@@ -615,7 +670,9 @@ class SegmentClassifierService:
 
             # Save trusted labels
             with open(self.models_directory / "segment_trusted_labels.json", "w") as f:
-                json.dump(trusted_labels, f)
+                # Convert numpy types to python native types
+                serializable_labels = [l.item() if hasattr(l, 'item') else l for l in trusted_labels]
+                json.dump(serializable_labels, f)
 
         # Save model and artifacts
         torch.save(self.model.state_dict(), self.model_path)
@@ -671,13 +728,16 @@ class SegmentClassifierService:
             return True
         return False
 
-    def predict_segment(self, segment_df: pd.DataFrame) -> List[str]:
+    def predict_segment(self, segment_df: pd.DataFrame) -> List[int]:
         """Predict labels for a single segment DataFrame."""
         if self.model is None:
             if not self.load_model():
                 raise ValueError("Model not trained or found.")
 
         numeric_df = segment_df.select_dtypes(include=['number'])
+        # Feature engineering
+        numeric_df = compute_derived_features(numeric_df)
+
         if numeric_df.empty:
             return []
 
@@ -717,7 +777,7 @@ class SegmentClassifierService:
         
         return labels
 
-    def predict_segment_probabilities(self, segment_df: pd.DataFrame) -> Dict[str, float]:
+    def predict_segment_probabilities(self, segment_df: pd.DataFrame) -> Dict[int, float]:
         """Predict probabilities for all labels for a single segment DataFrame."""
         if self.model is None:
             if not self.load_model():
@@ -739,6 +799,9 @@ class SegmentClassifierService:
         # 3. Ensure numeric
         df = df.apply(pd.to_numeric, errors='coerce').fillna(0)
         
+        # 4. Feature engineering
+        df = compute_derived_features(df)
+
         if df.empty:
             return {}
 
@@ -793,9 +856,11 @@ class SegmentClassifierService:
         # 3. Ensure numeric
         df = df.apply(pd.to_numeric, errors='coerce').fillna(0)
         
-        numeric_df = df
-        if numeric_df.empty:
+        if df.empty:
             return []
+            
+        # Feature engineering
+        numeric_df = compute_derived_features(df)
 
         # Scale
         X_scaled = self.scaler.transform(numeric_df.values)
@@ -886,7 +951,7 @@ class SegmentClassifierService:
             
         return results
 
-    async def scan_session(self, dataframe: Optional[pd.DataFrame] = None, target_labels: Optional[List[str]] = None, **kwargs) -> None:
+    async def scan_session(self, dataframe: Optional[pd.DataFrame] = None, target_labels: Optional[List[int]] = None, **kwargs) -> None:
         """
         Scan a session and find segments matching labels using LSTM.
         Identifies intervals, extracts actual segments, and saves to cache.

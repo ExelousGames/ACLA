@@ -48,12 +48,14 @@ class ExpertFeatureCatalog:
         EXPERT_OPTIMAL_VELOCITY_X = 'expert_optimal_velocity_x'
         EXPERT_OPTIMAL_VELOCITY_Y = 'expert_optimal_velocity_y'
         EXPERT_OPTIMAL_VELOCITY_Z = 'expert_optimal_velocity_z'
+        EXPERT_OPTIMAL_TIME = 'expert_optimal_time'
 
     class ContextFeature(str, Enum):
         # Velocity direction alignment with expert
         EXPERT_VELOCITY_ALIGNMENT = 'expert_velocity_alignment' # 1.0 if moving in the expert velocity direction, 0.0 opposite direction
         SPEED_DIFFERENCE = 'speed_difference' # Difference between current speed and expert optimal speed (km/h)
         DISTANCE_TO_EXPERT_LINE = 'distance_to_expert_line' # distance between current position and expert optimal racing line (meters)
+        EXPERT_TIME_DIFFERENCE = 'expert_time_difference' # Difference between current time and expert time at this position (seconds/ms)
 
 
     class ExpertFeatures (str, Enum):
@@ -64,10 +66,13 @@ class ExpertFeatureCatalog:
         EXPERT_OPTIMAL_SPEED = 'expert_optimal_speed'
         EXPERT_OPTIMAL_THROTTLE = 'expert_optimal_throttle'
         EXPERT_OPTIMAL_BRAKE = 'expert_optimal_brake'
+        EXPERT_OPTIMAL_GEAR = 'expert_optimal_gear'
+        EXPERT_OPTIMAL_TIME = 'expert_optimal_time'
         # Context features
         EXPERT_VELOCITY_ALIGNMENT = 'expert_velocity_alignment'
         SPEED_DIFFERENCE = 'speed_difference' 
         DISTANCE_TO_EXPERT_LINE = 'distance_to_expert_line'
+        EXPERT_TIME_DIFFERENCE = 'expert_time_difference'
 
     # Flat list for convenience (now only expert optimal + derived)
     CONTEXT_FEATURES: List[str] = [f.value for f in ContextFeature]
@@ -107,6 +112,10 @@ class SegmentImprovementSummary:
     distance_to_line_trend: float = 0.0
     distance_consistency_rate: float = 0.0
     distance_expert_points: int = 0
+
+    time_difference_mean: float = 0.0
+    time_difference_trend: float = 0.0
+    time_gain_loss: float = 0.0 # Total time gained (negative) or lost (positive) in segment
 
     driver_push_available: bool = False
     driver_push_mean: float = 0.0
@@ -228,7 +237,7 @@ class TrackExpertModel:
             EO.EXPERT_OPTIMAL_BRAKE.value, EO.EXPERT_OPTIMAL_SPEED.value,
             EO.EXPERT_OPTIMAL_VELOCITY_X.value, EO.EXPERT_OPTIMAL_VELOCITY_Y.value, 
             EO.EXPERT_OPTIMAL_VELOCITY_Z.value, EO.EXPERT_OPTIMAL_TRACK_POSITION.value,
-            EO.EXPERT_OPTIMAL_GEAR.value
+            EO.EXPERT_OPTIMAL_GEAR.value, EO.EXPERT_OPTIMAL_TIME.value
         ]
         
         for t in all_possible_targets:
@@ -433,6 +442,10 @@ class ExpertPositionLearner:
         # Speed (derived)
         if 'Physics_speed_kmh' in df.columns:
             target_features[EO.EXPERT_OPTIMAL_SPEED.value] = df['Physics_speed_kmh']
+
+        # Time (lap time at position)
+        if 'Graphics_current_time' in df.columns:
+             target_features[EO.EXPERT_OPTIMAL_TIME.value] = df['Graphics_current_time']
 
         # Track position (for consistency)
         if 'Graphics_normalized_car_position' in df.columns:
@@ -850,6 +863,8 @@ class ExpertImitateLearningService:
                         current_pos_y = float(current_row.get('Graphics_player_pos_y', 0.0))
                         current_pos_z = float(current_row.get('Graphics_player_pos_z', 0.0))
                         current_speed = float(current_row.get('Physics_speed_kmh', curr_velocity_magnitude))
+                        # Current time from telemetry (usually ms)
+                        current_time = float(current_row.get('Graphics_current_time', 0.0))
 
                         # Store expert optimal predictions for visualization with safe fallbacks
                         expert_pos_x = float(row_predictions.get(ExpertFeatureCatalog.ExpertOptimalFeature.EXPERT_OPTIMAL_PLAYER_POS_X.value, current_pos_x))
@@ -863,6 +878,10 @@ class ExpertImitateLearningService:
                         expert_speed = float(row_predictions.get(ExpertFeatureCatalog.ExpertOptimalFeature.EXPERT_OPTIMAL_SPEED.value, exp_velocity_magnitude))
                         row_features[ExpertFeatures.EXPERT_OPTIMAL_SPEED.value] = expert_speed
 
+                        # Expert time
+                        expert_time = float(row_predictions.get(ExpertFeatureCatalog.ExpertOptimalFeature.EXPERT_OPTIMAL_TIME.value, current_time))
+                        row_features[ExpertFeatures.EXPERT_OPTIMAL_TIME.value] = expert_time
+
                         # Add expert throttle and brake predictions
                         expert_throttle = float(row_predictions.get(ExpertFeatureCatalog.ExpertOptimalFeature.EXPERT_OPTIMAL_THROTTLE.value, 0.0))
                         row_features[ExpertFeatures.EXPERT_OPTIMAL_THROTTLE.value] = expert_throttle
@@ -870,12 +889,26 @@ class ExpertImitateLearningService:
                         expert_brake = float(row_predictions.get(ExpertFeatureCatalog.ExpertOptimalFeature.EXPERT_OPTIMAL_BRAKE.value, 0.0))
                         row_features[ExpertFeatures.EXPERT_OPTIMAL_BRAKE.value] = expert_brake
 
+                        expert_gear = float(row_predictions.get(ExpertFeatureCatalog.ExpertOptimalFeature.EXPERT_OPTIMAL_GEAR.value, 0.0))
+                        row_features[ExpertFeatures.EXPERT_OPTIMAL_GEAR.value] = expert_gear
+
                         # Store only velocity alignment feature
                         row_features[ExpertFeatures.EXPERT_VELOCITY_ALIGNMENT.value] = float(velocity_alignment)
 
                         # Calculate speed difference
                         speed_difference = expert_speed - current_speed
                         row_features[ExpertFeatures.SPEED_DIFFERENCE.value] = float(speed_difference)
+
+                        # Calculate time difference
+                        # If expert_time is greater (player is faster? no, normalized position is same)
+                        # Time at position P:
+                        # If Player Time < Expert Time -> Player reached P faster -> Good for player
+                        # If Player Time > Expert Time -> Player reached P slower -> Bad for player
+                        # Difference = Player Time - Expert Time
+                        # Negative diff = Player ahead
+                        # Positive diff = Player behind
+                        time_difference = current_time - expert_time
+                        row_features[ExpertFeatures.EXPERT_TIME_DIFFERENCE.value] = float(time_difference)
 
                         # Calculate distance to expert line (negative if off to left, positive if off to right)
                         distance_to_expert_line = np.sqrt(

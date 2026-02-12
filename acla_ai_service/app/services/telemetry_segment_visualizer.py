@@ -73,6 +73,7 @@ def visualize_optimal_segments(
         context.EXPERT_VELOCITY_ALIGNMENT.value,
         context.SPEED_DIFFERENCE.value,
         context.DISTANCE_TO_EXPERT_LINE.value,
+        context.EXPERT_TIME_DIFFERENCE.value,
     ]
     tire_context_features = [
         tire_context.DRIVER_PUSH_TO_LIMIT.value,
@@ -223,25 +224,48 @@ def visualize_optimal_segments(
 
         # Derive sample deltas from telemetry timestamps since explicit deltas are no longer provided.
         telemetry_times_ms = segment_df["Graphics_current_time"].astype(float).to_numpy()
-        time_delta_series = np.diff(telemetry_times_ms, prepend=telemetry_times_ms[0]) / 1000.0
-        push_to_limit_series = segment_df[
-            tire_context.DRIVER_PUSH_TO_LIMIT.value
-        ].to_numpy(dtype=float)
-        gas_series = segment_df["Physics_gas"].to_numpy(dtype=float)
-        brake_series = segment_df["Physics_brake"].to_numpy(dtype=float)
-        steer_series = segment_df["Physics_steer_angle"].to_numpy(dtype=float)
-        ax_time_delta.plot(
-            segment_times_seconds,
-            time_delta_series,
-            color="#2ca02c",
-            linewidth=2,
-        )
-        ax_time_delta.set_title("Time delta between samples")
+        
+        # Check if we have expert time difference
+        if context.EXPERT_TIME_DIFFERENCE.value in segment_df:
+            # Time difference is in ms (from calculation), convert to seconds
+            time_diff_series = segment_df[context.EXPERT_TIME_DIFFERENCE.value].to_numpy(dtype=float) / 1000.0
+            
+            ax_time_delta.plot(
+                segment_times_seconds,
+                time_diff_series,
+                color="#e377c2", # Pink/Magenta
+                linewidth=2,
+                label="Time Delta to Expert",
+            )
+            ax_time_delta.set_ylabel("Delta to Expert (s)")
+            ax_time_delta.axhline(y=0, color='gray', linestyle='--', alpha=0.5)
+            # Add legend
+            ax_time_delta.legend(loc="upper right")
+            
+        else:
+            # Fallback: Time delta between samples (sampling rate)
+            time_delta_series = np.diff(telemetry_times_ms, prepend=telemetry_times_ms[0]) / 1000.0
+            ax_time_delta.plot(
+                segment_times_seconds,
+                time_delta_series,
+                color="#2ca02c",
+                linewidth=2,
+            )
+            ax_time_delta.set_ylabel("Sample Delta t (seconds)")
+            
+        ax_time_delta.set_title("Time Analysis")
         ax_time_delta.set_xlabel("")
-        ax_time_delta.set_ylabel("Delta t (seconds)")
         ax_time_delta.grid(True, linestyle="--", alpha=0.3)
         ax_speed.tick_params(labelbottom=True)
         ax_time_delta.tick_params(labelbottom=False)
+
+        push_to_limit_series = segment_df[
+            tire_context.DRIVER_PUSH_TO_LIMIT.value
+        ].to_numpy(dtype=float)
+
+        gas_series = segment_df["Physics_gas"].to_numpy(dtype=float)
+        brake_series = segment_df["Physics_brake"].to_numpy(dtype=float)
+        steer_series = segment_df["Physics_steer_angle"].to_numpy(dtype=float)
 
         ax_push_index.plot(
             segment_times_seconds,
