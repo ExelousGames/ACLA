@@ -10,12 +10,13 @@ LABEL_MAPPING = {
     ################### Main Labels ###################
     "1": "Overtaking",
     "2": "Missing data",
-    "3": "Expert Adherence",
+    "EA": "Expert Adherence",
     "4": "Pit Stop",
     "5": "Recovery & Merge",
     "MS" :"Mistake segment",
-    ################### Detailed Expert Adherence Labels (for label 3) ###################
-    "3001": "",
+    ################### Detailed Expert Adherence Labels (for label EA) ###################
+    "EA1": "",
+   
     ################### Detailed mistake labels (for label MS) ###################
     "MS1": "Brake too late",
     "MS2": "Turn in too late",
@@ -28,16 +29,34 @@ LABEL_MAPPING = {
     "MS9": "Entry not wide enough",
     "MS10": "Apex not tight enough",
     "MS11": "Exit not wide enough",
+     ################### Corner name ###################
+    "brands_hatch1":"Brabham Straight",
+    "brands_hatch2":"Paddock Hill Bend",
+    "brands_hatch3":"Druids",
+    "brands_hatch4":"Graham Hill Bend",
+    "brands_hatch5":"Cooper Straight",
+    "brands_hatch6":"Surtees",
+    "brands_hatch7":"Pilgrim's Drop",
+    "brands_hatch8":"Hawthorn Hill",     
+    "brands_hatch9":"Hawthorn Bend",
+    "brands_hatch10":"Derek Minter Straight",
+    "brands_hatch11":"Westfield Bend",
+    "brands_hatch12":"Dingle Dell",
+    "brands_hatch13":"Sheene Curve",
+    "brands_hatch14":"Stirling's Bend",
+    "brands_hatch15":"Clearways",
+    "brands_hatch16":"Clark Curve",  
 }
 LABEL_NAME_TO_ID = {v: k for k, v in LABEL_MAPPING.items()}
 
 LABEL_CATEGORIES = {
-    "Main Labels": ["1", "2","3","4","5","MS"],
+    "Main Labels": ["1", "2","EA","4","5","MS"],
     "1":[],
     "2":[],
-    "3":[],
+    "EA":[],
     "4":[],
     "5":[],
+    "brands_hatch":["brands_hatch1","brands_hatch2","brands_hatch3","brands_hatch4","brands_hatch5","brands_hatch6","brands_hatch7","brands_hatch8","brands_hatch9","brands_hatch10","brands_hatch11","brands_hatch12","brands_hatch13","brands_hatch14","brands_hatch15","brands_hatch16"],
     "MS":["MS1","MS2","MS3","MS4","MS5","MS6","MS7","MS8","MS9","MS10","MS11"],
 }
 

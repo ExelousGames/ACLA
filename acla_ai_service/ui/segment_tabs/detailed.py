@@ -64,6 +64,11 @@ def render_detailed_labeling(selected_annotation_key, selected_session_key, avai
     metadata = store.get_cache_metadata(selected_session_key)
     chunk_count = metadata.chunk_count if metadata else len(available_sessions)
     st.write(f"Loaded {len(df)} records from session {session_id} (Total sessions: {chunk_count}).")
+
+    # Display Track Name if available
+    if "Static_track" in df.columns:
+         track_name = df["Static_track"].iloc[0]
+         st.markdown(f"**Track:** {track_name}")
     
     # --- Common Definitions ---
     numeric_cols = df.select_dtypes(include=['number']).columns.tolist()
@@ -183,9 +188,9 @@ def render_detailed_labeling(selected_annotation_key, selected_session_key, avai
         categories_to_show = []
         
         for cat, ids in LABEL_CATEGORIES.items():
-            # If category is an INT key, it is a sub-label group (e.g. 28 -> [29, 30...])
+            # If category is an ID key, it is a sub-label group (e.g. 28 -> [29, 30...])
             # Show this group ONLY if the parent ID (cat) is in current labels
-            if isinstance(cat, int) and cat in current_ids:
+            if cat in current_ids:
                  categories_to_show.append((cat, ids))
 
         # Render selectors
@@ -217,7 +222,7 @@ def render_detailed_labeling(selected_annotation_key, selected_session_key, avai
         # Create New Mode - Show all categories
         for category, category_ids in LABEL_CATEGORIES.items():
             display_name = category
-            if isinstance(category, int) and category in LABEL_MAPPING:
+            if category in LABEL_MAPPING:
                 display_name = LABEL_MAPPING[category]
 
             cat_label_names = [LABEL_MAPPING[lid] for lid in category_ids if lid in LABEL_MAPPING]

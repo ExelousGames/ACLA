@@ -12,7 +12,7 @@ import time
 # Configuration for legacy label mapping
 # Add your mappings here: "OLD_LABEL": "NEW_LABEL"
 LEGACY_LABEL_MAP = {
-    "28": "MS",
+    28: "MS",
     # Mappings for legacy integer labels to strings
     1: "1",
     2: "2",

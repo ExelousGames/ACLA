@@ -692,6 +692,23 @@ def main() -> None:
 		return
 
 	config = selected_entry.get("config", {})
+
+	# Display Track Name
+	track_name = None
+	# Try finding track in segment
+	seg_check = selected_entry.get("segment", [])
+	if not seg_check:
+		win_check = selected_entry.get("window", {})
+		if isinstance(win_check, dict):
+			seg_check = win_check.get("context", [])
+	
+	if seg_check and isinstance(seg_check, list) and len(seg_check) > 0:
+		p0 = seg_check[0]
+		if isinstance(p0, dict) and "Static_track" in p0:
+			track_name = p0["Static_track"]
+			
+	if track_name:
+		st.info(f"📍 **Track:** {track_name}")
 	
 	# Try to get features from config first, then extract from segment data
 	feature_options = config.get("telemetry_features", [])
