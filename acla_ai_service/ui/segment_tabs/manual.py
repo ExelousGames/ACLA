@@ -374,11 +374,18 @@ def render_manual_annotation(selected_annotation_key, selected_session_key, avai
                     )
                     fig_map.update_traces(marker=dict(size=5))
                     
-                    scene_dict = dict(aspectmode='data')
+                    scene_dict = dict(
+                        aspectmode='data',
+                        # dragmode='turntable', # Optional: explicit rotation mode
+                        camera=dict(
+                            projection=dict(type='orthographic'),
+                            up=dict(x=0, y=0, z=1)  # Fix Z-axis as up for easier yaw rotation
+                        )
+                    )
                     if invert_x: scene_dict['xaxis'] = dict(autorange="reversed")
                     if invert_y: scene_dict['yaxis'] = dict(autorange="reversed")
                     if invert_z: scene_dict['zaxis'] = dict(autorange="reversed")
-                    fig_map.update_layout(scene=scene_dict)
+                    fig_map.update_layout(scene=scene_dict, dragmode='turntable')
                 else:
                     fig_map = px.scatter(
                         map_df, 
@@ -478,7 +485,7 @@ def render_manual_annotation(selected_annotation_key, selected_session_key, avai
                 if not use_3d:
                     fig_map.update_yaxes(scaleanchor="x", scaleratio=1)
                 
-                fig_map.update_layout(uirevision=session_id)
+                fig_map.update_layout(uirevision=session_id, height=800)
                 st.plotly_chart(fig_map, use_container_width=True)
             else:
                 st.info("No active cars found at this timestamp.")

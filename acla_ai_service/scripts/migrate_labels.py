@@ -14,6 +14,8 @@ import time
 LEGACY_LABEL_MAP = {
     "3": "EA",
     "5": "RM",
+    3: "EA",
+    5: "RM"
     # Future mappings example:
     # "OLD_CODE": "NEW_CODE"
 }

@@ -15,11 +15,13 @@ LABEL_MAPPING = {
     "RM": "Recovery & Merge",
     "MS" :"Mistake segment",
     ################### Detailed Expert Adherence Labels (for label EA) ###################
-    "EA1": "",
-   
+
     ################### Detailed Recovery & Merge Labels (for label RM) ###################
-    "RM1": "Recover to track",
+    "RM1": "Recover from off-track",
     "RM2": "Exit pit lane",
+    "RM5": "Recover from large speed gap",
+    "RM6": "Recover from small speed gap",
+    "RM7": "Merge back to expert line",
     ################### Detailed mistake labels (for label MS) ###################
     "MS1": "Brake too late",
     "MS2": "Turn in too late",
@@ -32,6 +34,18 @@ LABEL_MAPPING = {
     "MS9": "Entry not wide enough",
     "MS10": "Apex not tight enough",
     "MS11": "Exit not wide enough",
+    "MS12": "Missing Apex",
+    "MS13": "Brake not firm enough",
+    "MS14" : "Brake not smooth enough",
+    "MS15" : "Throttle not smooth enough",
+    "MS16" : "Exit too wide",
+    "MS17": "Release brake not smooth enough",
+    "MS18": "Release brake not firm enough",
+    "MS19": "Throttle not firm enough",
+    "MS20":"Throttle too early",
+    "MS21":"Throttle too late",
+    "MS22":"Brake too much",
+    "MS23":"Realse throttle not smooth enough",
      ################### Corner name ###################
     "brands_hatch":"Brands Hatch",
     "brands_hatch1":"Brabham Straight",
@@ -50,6 +64,12 @@ LABEL_MAPPING = {
     "brands_hatch14":"Stirling's Bend",
     "brands_hatch15":"Clearways",
     "brands_hatch16":"Clark Curve",  
+
+    ################### Other Labels ###################
+    "Other1": "In the corner",
+    "Other2": "On the straight",
+    "Other3": "Approach to corner",
+    "Other4": "Exit corner",
 }
 LABEL_NAME_TO_ID = {v: k for k, v in LABEL_MAPPING.items()}
 
@@ -59,9 +79,10 @@ LABEL_CATEGORIES = {
     "2":[],
     "EA":[],
     "4":[],
-    "RM":[],
+    "RM":["RM1", "RM2", "RM5","RM6","RM7"],
     "brands_hatch":["brands_hatch1","brands_hatch2","brands_hatch3","brands_hatch4","brands_hatch5","brands_hatch6","brands_hatch7","brands_hatch8","brands_hatch9","brands_hatch10","brands_hatch11","brands_hatch12","brands_hatch13","brands_hatch14","brands_hatch15","brands_hatch16"],
-    "MS":["MS1","MS2","MS3","MS4","MS5","MS6","MS7","MS8","MS9","MS10","MS11"],
+    "MS":["MS1","MS2","MS3","MS4","MS5","MS6","MS7","MS8","MS9","MS10","MS11","MS12","MS13","MS14","MS15","MS16","MS17","MS18","MS19","MS20","MS21","MS22","MS23"],
+    "Other Labels": ["Other1", "Other2", "Other3", "Other4"]
 }
 
 @dataclass

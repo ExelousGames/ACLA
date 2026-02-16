@@ -4,6 +4,14 @@ Refactored to use components.
 """
 
 import torch 
+
+# Hack to fix Streamlit's file watcher crashing on torch.classes
+try:
+    if not hasattr(torch.classes, '__path__'):
+        torch.classes.__path__ = [] 
+except Exception:
+    pass
+
 import streamlit as st
 import pandas as pd
 import time

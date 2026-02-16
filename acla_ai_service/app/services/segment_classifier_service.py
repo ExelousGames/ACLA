@@ -278,9 +278,11 @@ class SegmentClassifierService:
                 labels = d.get("labels", [])
                 if labels:
                     mapped_labels = [LABEL_MAPPING.get(str(l), str(l)) for l in labels]
-                    # Store primary label (first one) for stratification
-                    primary_label = mapped_labels[0] if mapped_labels else "unknown"
-                    label_to_segments[primary_label].append((chunk_idx, len(valid_items) - 1, segment_hash))
+                    
+                    # Store segment for each label it has
+                    # Use unique labels to avoid double counting
+                    for lbl in set(mapped_labels):
+                        label_to_segments[lbl].append((chunk_idx, len(valid_items) - 1, segment_hash))
             
             if valid_items:
                 chunk_index.append((valid_items, chunk_idx))
@@ -479,9 +481,9 @@ class SegmentClassifierService:
         
         input_dim = self.scaler.mean_.shape[0]
         output_dim = len(self.mlb.classes_)
-        # Reduced network size to prevent overfitting on smaller datasets
-        hidden_dim = 64
-        num_layers = 2
+        # Increased network size to handle larger label set (~50+ labels)
+        hidden_dim = 256
+        num_layers = 3
         
         self.model = LSTMModel(input_dim, hidden_dim, output_dim, num_layers=num_layers).to(self.device)
         criterion = nn.BCEWithLogitsLoss(reduction='none', pos_weight=self.pos_weight)

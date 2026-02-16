@@ -2,6 +2,13 @@
 Shared utilities for Segment Annotation App.
 """
 import torch
+
+try:
+    if not hasattr(torch.classes, '__path__'):
+        torch.classes.__path__ = [] 
+except Exception:
+    pass
+
 import streamlit as st
 import pandas as pd
 import numpy as np
