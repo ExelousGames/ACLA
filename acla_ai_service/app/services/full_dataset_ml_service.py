@@ -70,14 +70,8 @@ from .zarr_telemetry_store import get_shared_zarr_store
 from app.config.pipeline_config import PipelineConfig
 
 # Prompt dataset builder and local LLM integration
-from .telemetry_prompt_dataset_builder import TelemetryPromptDatasetBuilder, PromptBuilderConfig
 from .local_llm_service import LocalTelemetryLLM, LocalLLMConfig, GenerationRequest
 from .llm.telemetry_llm_orchestrator import TelemetryLLMOrchestrator
-from .llm.providers import (
-    LLMTrainingContext,
-    SegmentExplanationTrainingProvider,
-    TransformerDirectiveTrainingProvider,
-)
 
 # Suppress sklearn warnings
 warnings.filterwarnings('ignore', category=UserWarning)
@@ -131,9 +125,7 @@ class Full_dataset_TelemetryMLService:
             self.telemetry_store.store_dir,
         )
         
-        # Prompt dataset builder and LLM configuration
-        self.prompt_builder = TelemetryPromptDatasetBuilder()
-        self.prompt_builder_config = self.prompt_builder.config
+        # LLM configuration
         self.llm_config = LocalLLMConfig(
                                         offload_folder=self.models_directory / "llm_offload",
                                         offload_state_dict=True,
@@ -143,20 +135,16 @@ class Full_dataset_TelemetryMLService:
                                         max_memory={0: "8GiB", "cpu": "12GiB"},
                                         load_in_4bit= True,       
                                        )
-
+        
         self.llm_adapter_directory = self.models_directory / "llm_adapters"
         self.llm_adapter_directory.mkdir(parents=True, exist_ok=True)
         self.llm_dataset_directory = self.models_directory / "llm_datasets"
         self.llm_dataset_directory.mkdir(parents=True, exist_ok=True)
 
         self.llm_orchestrator = TelemetryLLMOrchestrator(
-            prompt_builder=self.prompt_builder,
             llm_config=self.llm_config,
             adapter_directory=self.llm_adapter_directory,
             dataset_directory=self.llm_dataset_directory,
-            providers=[
-                SegmentExplanationTrainingProvider(self.prompt_builder),
-            ],
         )
 
         # Centralize cache key usage for coordinated cleanup
@@ -206,7 +194,7 @@ class Full_dataset_TelemetryMLService:
     def _format_context_window(self, telemetry_record: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Construct and format a context window for inference from a single telemetry record."""
 
-        context_steps = self.prompt_builder_config.context_steps
+        context_steps = 40  # Default context window size
         repeated_window = [dict(telemetry_record) for _ in range(max(1, context_steps))]
         return repeated_window
 
@@ -593,7 +581,7 @@ class Full_dataset_TelemetryMLService:
                 future_timesteps=future_payload,
                 segment_metadata=segment_metadata,
             )
-            system_prompt = self.prompt_builder_config.system_prompt
+            system_prompt = "You are a professional racing coach. Analyze the telemetry data provided and offer concise, actionable advice to improve lap times."
 
             generation_request = GenerationRequest(
                 system_prompt=system_prompt,

@@ -107,8 +107,9 @@ def render_manual_annotation(selected_annotation_key, selected_session_key, avai
 
     # Feature selection for visualization
     if "graph_ids" not in st.session_state:
-        st.session_state.graph_ids = [0]
-        st.session_state.next_graph_id = 1
+        # Initialize with all configured graphs by default
+        st.session_state.graph_ids = list(range(len(GRAPH_CONFIGS)))
+        st.session_state.next_graph_id = len(GRAPH_CONFIGS) + 1
 
     if st.button("Add Graph", key="manual_add_graph_btn"):
         st.session_state.graph_ids.append(st.session_state.next_graph_id)
@@ -119,14 +120,25 @@ def render_manual_annotation(selected_annotation_key, selected_session_key, avai
     for graph_id in st.session_state.graph_ids:
         col_viz, col_btn = st.columns([6, 1])
         
+        # Determine configuration for this graph
+        config = GRAPH_CONFIGS[graph_id] if graph_id < len(GRAPH_CONFIGS) else None
+
         with col_viz:
-            # Default selection logic for the first graph (id 0)
+            # Default selection logic
             current_default = []
-            if graph_id == 0:
-                current_default = [c for c in default_cols if c in numeric_cols]
-                if not current_default:
-                    current_default = numeric_cols[:3]
+            if config:
+                current_default = [c for c in config.features if c in numeric_cols]
             
+            # Fallback for manually added graphs (or if config features missing)
+            if not current_default and graph_id >= len(GRAPH_CONFIGS):
+                 # Classic default (Speed, Gas, Brake) only for new custom graphs
+                 default_cols_ref = ["speed_kmh", "gas", "brake", "steer_angle"]
+                 current_default = [c for c in default_cols_ref if c in numeric_cols]
+            
+            # Show description if available
+            if config and config.description:
+                st.caption(config.description)
+
             viz_cols = st.multiselect(
                 f"Features to Visualize (Graph {graph_id})", 
                 numeric_cols, 
@@ -145,6 +157,17 @@ def render_manual_annotation(selected_annotation_key, selected_session_key, avai
 
             # Plot without downsampling
             fig = px.line(sliced_df, x=sliced_df.index, y=viz_cols, title=f"Telemetry Data - Graph {graph_id}")
+
+            # Add reference lines if configured
+            if config and config.reference_lines:
+                for ref in config.reference_lines:
+                    fig.add_hline(
+                        y=ref["value"], 
+                        line_dash="dash", 
+                        line_color=ref.get("color", "gray"),
+                        annotation_text=ref.get("name", ""),
+                        annotation_position="bottom right"
+                    )
 
             # Visualize existing annotations
             if "current_annotations" in st.session_state and st.session_state.current_annotations:

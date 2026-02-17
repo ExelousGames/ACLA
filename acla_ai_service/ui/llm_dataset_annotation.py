@@ -122,14 +122,90 @@ def main():
             st.session_state.segments = load_annotated_segments(store, selected_key)
             st.session_state.current_key = selected_key
             st.session_state.current_index = 0
+            # Force rerun so sidebar can update with new segment labels
+            st.rerun()
             
     segments = st.session_state.segments
     
-    if not segments:
-        st.warning(f"No annotated segments found in {selected_key}.")
-        return
+    # --- Filter Configuration (After loading segments) ---
+    with st.sidebar:
+        st.header("Filter Settings")
         
-    total_segments = len(segments)
+        all_segment_labels = set()
+        label_counts = {}
+        
+        if segments:
+            for seg in segments:
+                for l in seg.get("labels", []):
+                     l_str = str(l)
+                     all_segment_labels.add(l_str)
+                     label_counts[l_str] = label_counts.get(l_str, 0) + 1
+            
+            # Create options list with counts
+            filter_options = ["All"]
+            # Sort by count desc
+            sorted_label_ids = sorted(list(all_segment_labels), key=lambda x: label_counts[x], reverse=True)
+            
+            # Create mapping for the selectbox logic
+            option_to_id = {"All": None}
+            
+            for l_id in sorted_label_ids:
+                name = LABEL_MAPPING.get(l_id, l_id)
+                count = label_counts[l_id]
+                option_str = f"{name} ({count})"
+                filter_options.append(option_str)
+                option_to_id[option_str] = l_id
+                
+            selected_filter_options = st.multiselect("Filter by Labels", options=filter_options[1:])
+            target_label_ids = [option_to_id[opt] for opt in selected_filter_options if opt in option_to_id]
+        else:
+            target_label_ids = []
+            st.info("No labels found to filter.")
+
+    
+    # Apply Filter using the target_label_ids determined above
+    filtered_segments = []
+    if target_label_ids:
+        # Filter: Keep segment if it has ALL of the selected labels (AND)
+        filtered_segments = []
+        for s in segments:
+            segment_labels = [str(l) for l in s.get("labels", [])]
+            # Check if all selected labels are present in the segment
+            if all(t_id in segment_labels for t_id in target_label_ids):
+                filtered_segments.append(s)
+    else:
+        filtered_segments = segments
+    
+    if not filtered_segments:
+        if segments:
+             # If filter is active but no results (shouldn't happen with valid logic but good for safety)
+            st.warning(f"No segments match the filter.")
+        else:
+            st.warning(f"No annotated segments found in {selected_key}.")
+        # Determine if we should return or show something else. 
+        # If no segments at all, return.
+        if not segments:
+            return
+    
+    # Check if filter changed to reset index
+    # We use target_label_ids as the tracker
+    if "last_filter_ids" not in st.session_state:
+        st.session_state.last_filter_ids = target_label_ids
+        
+    # Check if list changed (by value)
+    if st.session_state.last_filter_ids != target_label_ids:
+        st.session_state.current_index = 0
+        st.session_state.last_filter_ids = target_label_ids
+        
+    total_segments = len(filtered_segments)
+    
+    if total_segments == 0:
+        st.warning("No segments match the current filter.")
+        return
+
+    # Ensure index is in bounds regarding the filtered list
+    if st.session_state.current_index >= total_segments:
+        st.session_state.current_index = 0
     
     # Navigation
     col_nav1, col_nav2, col_nav3 = st.columns([1, 2, 1])
@@ -141,10 +217,10 @@ def main():
             st.session_state.current_index = min(total_segments - 1, st.session_state.current_index + 1)
             
     with col_nav2:
-        st.markdown(f"**Segment {st.session_state.current_index + 1} of {total_segments}**")
+        st.markdown(f"**Segment {st.session_state.current_index + 1} of {total_segments}** (Filtered from {len(segments)})")
         
     # Current Segment Data
-    current_segment = segments[st.session_state.current_index]
+    current_segment = filtered_segments[st.session_state.current_index]
     labels = current_segment.get("labels", [])
     
     # Display Labels

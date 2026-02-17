@@ -825,6 +825,53 @@ def render_detailed_labeling(selected_annotation_key, selected_session_key, avai
         start_row = df.iloc[start_idx]
         map_data = []
         
+        # Helper for Apex Calculation
+        def get_geometric_apex(df_in, x_col, y_col, z_col=None, speed_col=None, label_type="Player"):
+            if df_in.empty or len(df_in) <= 5:
+                return None
+            try:
+                xs = df_in[x_col].values
+                ys = df_in[y_col].values
+                
+                dx = np.gradient(xs)
+                dy = np.gradient(ys)
+                ddx = np.gradient(dx)
+                ddy = np.gradient(dy)
+                
+                # Curvature k = |x'y'' - y'x''| / (x'^2 + y'^2)^(3/2)
+                numerator = np.abs(dx * ddy - dy * ddx)
+                denominator = np.power(dx**2 + dy**2, 1.5)
+                
+                with np.errstate(divide='ignore', invalid='ignore'):
+                    curvature = np.where(denominator > 1e-6, numerator / denominator, 0)
+                
+                curvature = np.nan_to_num(curvature)
+
+                # Ignore low speed noise
+                if speed_col and speed_col in df_in.columns:
+                    s_vals = df_in[speed_col].values
+                    curvature[s_vals < 10] = 0.0
+
+                max_k_idx_local = np.argmax(curvature)
+                
+                if curvature[max_k_idx_local] > 0.0001: 
+                    geo_apex_idx = df_in.index[max_k_idx_local]
+                    geo_row = df_in.loc[geo_apex_idx]
+                    
+                    p_geo = {
+                        "x": geo_row[x_col],
+                        "y": geo_row[y_col],
+                        "Type": label_type,
+                        "ID": f"{label_type} Apex (Geometric / Max Curve)",
+                        "Marker": "Apex"
+                    }
+                    if z_col and z_col in df_in.columns:
+                        p_geo["z"] = geo_row[z_col]
+                    return p_geo
+            except Exception:
+                pass
+            return None
+
         # Add Player Position
         if has_player_pos:
             # End Position
@@ -851,6 +898,18 @@ def render_detailed_labeling(selected_annotation_key, selected_session_key, avai
                 p_start["z"] = start_row["Graphics_player_pos_z"]
             map_data.append(p_start)
 
+            # Apex Position (Geometric / Max Curvature)
+            apex_data = get_geometric_apex(
+                map_plot_df, 
+                "Graphics_player_pos_x", 
+                "Graphics_player_pos_y", 
+                "Graphics_player_pos_z" if has_player_pos_z else None,
+                "Physics_speed_kmh",
+                "Player"
+            )
+            if apex_data:
+                map_data.append(apex_data)
+
         # Add Expert Position
         if has_expert_pos:
             # End Position
@@ -876,6 +935,21 @@ def render_detailed_labeling(selected_annotation_key, selected_session_key, avai
             if has_expert_pos_z:
                 e_start["z"] = start_row["expert_optimal_player_pos_z"]
             map_data.append(e_start)
+
+            # Expert Apex Position (Geometric / Max Curvature)
+            # Find expert speed name
+            expert_speed_col = next((c for c in map_plot_df.columns if "expert" in c and "speed" in c), None)
+            
+            e_apex_data = get_geometric_apex(
+                map_plot_df,
+                "expert_optimal_player_pos_x",
+                "expert_optimal_player_pos_y",
+                "expert_optimal_player_pos_z" if has_expert_pos_z else None,
+                expert_speed_col,
+                "Expert"
+            )
+            if e_apex_data:
+                map_data.append(e_apex_data)
         
         # Add Opponent Positions
         for i in range(1, 6):
@@ -914,7 +988,7 @@ def render_detailed_labeling(selected_annotation_key, selected_session_key, avai
                     hover_data=["ID"],
                     title=f"Positions (Start: {start_idx}, End: {selected_time_idx}) (3D)",
                     color_discrete_map={"Player": "green", "Opponent": "red", "Expert": "blue"},
-                    symbol_map={"Start": "diamond", "End": "circle"}
+                    symbol_map={"Start": "diamond", "End": "circle", "Apex": "x"}
                 )
                 fig_map.update_traces(marker=dict(size=5))
                 
@@ -940,7 +1014,7 @@ def render_detailed_labeling(selected_annotation_key, selected_session_key, avai
                     hover_data=["ID"],
                     title=f"Positions (Start: {start_idx}, End: {selected_time_idx})",
                     color_discrete_map={"Player": "green", "Opponent": "red", "Expert": "blue"},
-                    symbol_map={"Start": "x", "End": "circle"}
+                    symbol_map={"Start": "x", "End": "circle", "Apex": "star"}
                 )
                 if invert_x: fig_map.update_xaxes(autorange="reversed")
                 if invert_y: fig_map.update_yaxes(autorange="reversed")

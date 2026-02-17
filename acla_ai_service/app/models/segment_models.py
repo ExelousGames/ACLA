@@ -46,6 +46,7 @@ LABEL_MAPPING = {
     "MS21":"Throttle too late",
     "MS22":"Brake too much",
     "MS23":"Realse throttle not smooth enough",
+    "MS24": "Realse break too quickly",
      ################### Corner name ###################
     "brands_hatch":"Brands Hatch",
     "brands_hatch1":"Brabham Straight",
@@ -81,7 +82,7 @@ LABEL_CATEGORIES = {
     "4":[],
     "RM":["RM1", "RM2", "RM5","RM6","RM7"],
     "brands_hatch":["brands_hatch1","brands_hatch2","brands_hatch3","brands_hatch4","brands_hatch5","brands_hatch6","brands_hatch7","brands_hatch8","brands_hatch9","brands_hatch10","brands_hatch11","brands_hatch12","brands_hatch13","brands_hatch14","brands_hatch15","brands_hatch16"],
-    "MS":["MS1","MS2","MS3","MS4","MS5","MS6","MS7","MS8","MS9","MS10","MS11","MS12","MS13","MS14","MS15","MS16","MS17","MS18","MS19","MS20","MS21","MS22","MS23"],
+    "MS":["MS1","MS2","MS3","MS4","MS5","MS6","MS7","MS8","MS9","MS10","MS11","MS12","MS13","MS14","MS15","MS16","MS17","MS18","MS19","MS20","MS21","MS22","MS23","MS24"],
     "Other Labels": ["Other1", "Other2", "Other3", "Other4"]
 }
 

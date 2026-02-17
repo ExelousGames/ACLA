@@ -22,28 +22,19 @@ from ..backend_service import backend_service
 from ..local_llm_service import LocalLLMConfig, LocalTelemetryLLM
 from ..hf_cloud_llm_service import HuggingFaceCloudLLM
 from ..model_cache_service import model_cache_service
-from ..telemetry_prompt_dataset_builder import TelemetryPromptDatasetBuilder
 from ..zarr_telemetry_store import get_shared_zarr_store
-from .providers import (
-	BaseLLMTrainingProvider,
-	LLMTrainingContext,
-	LLMTrainingContribution,
-)
 
 
 class TelemetryLLMOrchestrator:
-	"""Coordinates dataset assembly, fine-tuning, and inference for the telemetry LLM."""
+	"""Coordinates fine-tuning and inference for the telemetry LLM."""
 
 	def __init__(
 		self,
 		*,
-		prompt_builder: TelemetryPromptDatasetBuilder,
 		llm_config: Optional[LocalLLMConfig] = None,
 		adapter_directory: Path,
 		dataset_directory: Path,
-		providers: Optional[Iterable[BaseLLMTrainingProvider]] = None,
 	) -> None:
-		self.prompt_builder = prompt_builder
 		self.llm_config = llm_config or LocalLLMConfig()
 		self.adapter_directory = Path(adapter_directory)
 		self.dataset_directory = Path(dataset_directory)
@@ -54,109 +45,8 @@ class TelemetryLLMOrchestrator:
 		self.adapter_directory.mkdir(parents=True, exist_ok=True)
 		self.dataset_directory.mkdir(parents=True, exist_ok=True)
 
-		self._providers: "OrderedDict[str, BaseLLMTrainingProvider]" = OrderedDict()
-		if providers:
-			for provider in providers:
-				self.register_provider(provider)
-
 		self._model_fetch_locks: Dict[str, asyncio.Event] = {}
 		self._lock_creation_lock = asyncio.Lock()
-
-	# ------------------------------------------------------------------
-	# Provider registration & dataset assembly
-	# ------------------------------------------------------------------
-	def register_provider(self, provider: BaseLLMTrainingProvider) -> None:
-		"""Register a provider that can contribute training samples."""
-
-		self._providers[provider.name] = provider
-
-	async def produce_datasets(
-		self,
-		context: LLMTrainingContext,
-		*,
-		cleanup_dataset_file: bool = True,
-	) -> Dict[str, Any]:
-		"""Execute multi-provider dataset construction and fine-tune the LLM."""
-
-		dataset_root = context.output_root or self.dataset_directory
-		dataset_root.mkdir(parents=True, exist_ok=True)
-
-		contributions: List[LLMTrainingContribution] = []
-		for provider in self._providers.values():
-			try:
-				# Produce dataset contribution from provider, provider produce training pairs
-				contribution = await provider.produce(context)
-			except Exception as provider_error:  # pragma: no cover - safety guard
-				print(f"[WARNING] Provider '{provider.name}' failed: {provider_error}")
-				continue
-
-			if contribution is None:
-				continue
-
-			contributions.append(contribution)
-
-		if not contributions:
-			raise RuntimeError("No dataset contributions were produced for LLM training")
-
-		print("[INFO] Dataset generation complete. Datasets produced:")
-		generated_datasets = []
-		for contribution in contributions:
-			print(f"[INFO] - Provider: {contribution.provider_name}")
-			print(f"[INFO]   Path: {contribution.dataset_path}")
-			print(f"[INFO]   Stats: {contribution.stats}")
-			generated_datasets.append({
-				"provider": contribution.provider_name,
-				"path": str(contribution.dataset_path),
-				"stats": contribution.stats
-			})
-
-		return {
-			"success": True,
-			"datasets": generated_datasets,
-			"contributions": [contribution.stats for contribution in contributions],
-		}
-
-	def _merge_contributions(
-		self,
-		destination: Path,
-		contributions: List[LLMTrainingContribution],
-	) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-		"""Concatenate provider datasets into a single JSONL file using streaming."""
-
-		destination.parent.mkdir(parents=True, exist_ok=True)
-		contribution_totals: Dict[str, int] = {}
-		dataset_summary = self._initialize_dataset_summary(destination)
-
-		with destination.open("w", encoding="utf-8") as merged_file:
-			for contribution in contributions:
-				if not contribution.dataset_path.exists():
-					continue
-
-				count_for_provider = 0
-				with contribution.dataset_path.open("r", encoding="utf-8") as source_file:
-					for raw_line in source_file:
-						line = raw_line.strip()
-						if not line:
-							continue
-
-						self._update_summary_from_line(line, dataset_summary)
-						if raw_line.endswith("\n"):
-							merged_file.write(raw_line)
-						else:
-							merged_file.write(raw_line + "\n")
-						count_for_provider += 1
-
-				contribution_totals[contribution.provider_name] = count_for_provider
-
-		self._finalize_summary(dataset_summary)
-
-		aggregate = {
-			"total_examples": dataset_summary["total_examples"],
-			"per_provider": contribution_totals,
-			"output_path": str(destination),
-		}
-
-		return aggregate, dataset_summary
 
 	def _initialize_dataset_summary(self, dataset_path: Path) -> Dict[str, Any]:
 		return {
@@ -211,12 +101,12 @@ class TelemetryLLMOrchestrator:
 	# ------------------------------------------------------------------
 	# Training helpers
 	# ------------------------------------------------------------------
-	async def _train_and_persist(
+	async def train_from_dataset(
 		self,
 		*,
 		dataset_path: Path,
 		dataset_stats: Optional[Dict[str, Any]] = None,
-		cleanup_dataset_file: bool = True,
+		cleanup_dataset_file: bool = False,
 	) -> Dict[str, Any]:
 		dataset_path = Path(dataset_path)
 		dataset_stats = dataset_stats or self._summarize_dataset(dataset_path)
