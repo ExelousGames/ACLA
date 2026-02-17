@@ -611,8 +611,8 @@ def render_detailed_labeling(selected_annotation_key, selected_session_key, avai
 
     # Feature selection for visualization
     if "graph_ids" not in st.session_state:
-        st.session_state.graph_ids = [0]
-        st.session_state.next_graph_id = 1
+        st.session_state.graph_ids = [0, 1, 2, 3]
+        st.session_state.next_graph_id = 4
 
     if st.button("Add Graph", key="detailed_add_graph_btn"):
         st.session_state.graph_ids.append(st.session_state.next_graph_id)
@@ -624,9 +624,21 @@ def render_detailed_labeling(selected_annotation_key, selected_session_key, avai
         col_viz, col_btn = st.columns([6, 1])
         
         with col_viz:
-            # Default selection logic for the first graph (id 0)
+            # Default selection logic
             current_default = []
-            if graph_id == 0:
+            
+            # Define requested defaults
+            defaults_map = {
+                0: ["expert_optimal_throttle", "Physics_gas"],
+                1: ["expert_optimal_brake", "Physics_brake"],
+                2: ["expert_time_difference"],
+                3: ["speed_difference"]
+            }
+            
+            # Use specific defaults if available for this graph_id
+            if graph_id in defaults_map:
+                current_default = [c for c in defaults_map[graph_id] if c in numeric_cols]
+            elif graph_id == 0: # Fallback for legacy or if graph 0 not in map (though it is)
                 current_default = [c for c in default_cols if c in numeric_cols]
                 if not current_default:
                     current_default = numeric_cols[:3]
