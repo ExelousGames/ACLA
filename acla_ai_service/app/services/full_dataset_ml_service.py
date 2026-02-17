@@ -790,38 +790,6 @@ class Full_dataset_TelemetryMLService:
             )
             print("[INFO] ✓ Transformer model trained and saved")
             
-            dataset_identifier = f"llm_guidance_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-            training_context = LLMTrainingContext(
-                dataset_id=dataset_identifier,
-                segments_cache_key=segments_cache_key,
-                output_root=self.llm_dataset_directory / dataset_identifier,
-                data_caching_service=self.telemetry_store,
-                shuffle=shuffle_dataset,
-                metadata={
-                    "processed_sessions_cache_key": processed_sessions_cache_key,
-                    "segments_cache_key": segments_cache_key,
-                    "annotation_sample_size": 50,
-                },
-            )
-
-            llm_training = await self.llm_orchestrator.produce_datasets(
-                training_context,
-                cleanup_dataset_file=False, # Do not cleanup, we need it for annotation
-            )
-
-            if not llm_training.get("success"):
-                error_msg = llm_training.get("error") or "LLM dataset generation failed"
-                print(f"[ERROR] LLM dataset generation failed: {error_msg}")
-                raise RuntimeError(error_msg)
-
-            generated_datasets = llm_training.get("datasets", [])
-            
-            print(f"[INFO] Generated {len(generated_datasets)} datasets:")
-            for ds in generated_datasets:
-                print(f"[INFO] - {ds['provider']}: {ds['path']}")
-            
-            print("[INFO] Ready for annotation. Launch the annotation UI with one of the dataset paths above.")
-            
         except RuntimeError as runtime_error:
             print(f"[ERROR] Pipeline error: {runtime_error}")
             return {

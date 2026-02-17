@@ -31,11 +31,12 @@ except ImportError as e:
     st.error(f"Failed to import required modules: {e}")
     st.stop()
 
-def save_training_pair(labels: List[str], sentence: str, output_path: str):
+def save_training_pair(prompt: str, completion: str, labels: List[str], output_path: str):
     """Append a training pair to the JSONL file."""
     record = {
+        "prompt": prompt,
+        "completion": completion,
         "labels": labels,
-        "sentence": sentence,
         "timestamp": time.time()
     }
     with open(output_path, "a") as f:
@@ -151,34 +152,55 @@ def main():
     
     # Lookup full names
     full_labels = []
+    human_readable_labels = []
     for l in labels:
         full_name = LABEL_MAPPING.get(str(l), l)
         full_labels.append(f"{full_name} ({l})")
+        human_readable_labels.append(full_name)
         
     st.write(full_labels)
     
-    # Description Generation/Editing
-    st.subheader("Description")
+    # --- Training Data Generation ---
+    st.subheader("Training Data Pair")
     
-    # Key for the text area to reset when index changes
-    text_key = f"desc_{st.session_state.current_index}"
+    # Key for the text areas to reset when index changes
+    prompt_key = f"prompt_{st.session_state.current_index}"
+    desc_key = f"desc_{st.session_state.current_index}"
     
-    if text_key not in st.session_state:
-        st.session_state[text_key] = ""
-        
+    # Default prompt construction
+    # Use full_labels if you want IDs, or just human_readable_labels
+    default_prompt = f"Describe the driving behavior that corresponds to the following tags: {', '.join(human_readable_labels)}."
+    
+    # Initialize the widget state if not present (this handles navigation to new items)
+    # Note: Streamlit widgets use their 'key' in session_state. 
+    # We use a separate key variable just to check if we've initialized this index before.
+    # Actually, let's just use the widget key directly for initialization check
+    prompt_widget_key = f"input_{prompt_key}"
+    desc_widget_key = f"input_{desc_key}"
+    
+    if prompt_widget_key not in st.session_state:
+        st.session_state[prompt_widget_key] = default_prompt
+
+    if desc_widget_key not in st.session_state:
+        st.session_state[desc_widget_key] = ""
+
+    prompt_text = st.text_area(
+        "Input Prompt (Instruction):",
+        value=st.session_state[prompt_widget_key],
+        height=100,
+        key=prompt_widget_key
+    )
+
     description = st.text_area(
-        "Edit the natural language description:", 
-        value=st.session_state[text_key],
+        "Target Output (Description):", 
+        value=st.session_state[desc_widget_key],
         height=150,
-        key=f"input_{text_key}" # Unique key for widget
+        key=desc_widget_key
     )
     
     # Save Button
     if st.button("Save Pair", type="primary"):
-        # internal labels -> human readable labels
-        # Ensure we lookup using string keys as LABEL_MAPPING keys are strings
-        human_readable_labels = [LABEL_MAPPING.get(str(l), l) for l in labels]
-        save_training_pair(human_readable_labels, description, str(output_path))
+        save_training_pair(prompt_text, description, human_readable_labels, str(output_path))
         st.success("Saved!")
         time.sleep(0.5)
         # Advance to next
