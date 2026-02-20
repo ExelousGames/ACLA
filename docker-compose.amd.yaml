@@ -17,3 +17,4 @@ services:
     environment:
       - HSA_OVERRIDE_GFX_VERSION=11.0.0
       - ROCM_PATH=/opt/rocm
+      - GEMINI_API_KEY=${GEMINI_API_KEY}

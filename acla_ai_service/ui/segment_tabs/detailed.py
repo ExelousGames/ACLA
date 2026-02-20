@@ -4,12 +4,23 @@ import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 import time
+import os
 from .shared import (
     load_session_data, load_annotations, save_annotations,
     get_display_labels, get_available_sessions,
     LABEL_MAPPING, LABEL_NAME_TO_ID, AnnotatedSegment,
     LABEL_CATEGORIES
 )
+
+try:
+    from ..gemini_analyzer import GeminiAnalyzer
+except ImportError:
+    # Fallback if relative import fails structure
+    try:
+        from ui.gemini_analyzer import GeminiAnalyzer
+    except ImportError:
+        GeminiAnalyzer = None
+
 
 def render_detailed_labeling(selected_annotation_key, selected_session_key, available_sessions):
     """
@@ -315,6 +326,107 @@ def render_detailed_labeling(selected_annotation_key, selected_session_key, avai
             else:
                 st.info("Select a valid range (min length 1) to check probabilities.")
 
+    # Gemini AI Analysis
+    with st.expander("Advanced AI Analysis (Gemini)"):
+        # API Key management
+        gemini_api_key = os.environ.get("GEMINI_API_KEY")
+        if not gemini_api_key:
+            gemini_api_key = st.text_input("Enter Gemini API Key", type="password", key="gemini_api_key_input")
+        
+        if gemini_api_key:
+            if st.button("Identify Sub-Labels with Gemini", key="gemini_identify_btn"):
+                if form_start >= form_end:
+                    st.error("Invalid range selected.")
+                else:
+                    with st.spinner("Preparing graphs and asking Gemini..."):
+                        if GeminiAnalyzer is None:
+                             st.error("GeminiAnalyzer module could not be imported.")
+                        else:
+                            try:
+                                analyzer = GeminiAnalyzer(gemini_api_key)
+                                
+                                # 1. Prepare Data
+                                analysis_df = df.iloc[int(form_start):int(form_end)]
+                                
+                                # 2. Gather Feature Graphs
+                                graph_configs = {}
+                                # Check session state for graph configs or use defaults if not yet rendered
+                                chart_ids = st.session_state.get("detailed_graph_ids", [0, 1, 2, 3, 4, 5])
+                                
+                                # Default mappings from line 630
+                                defaults_map = {
+                                    0: ["expert_optimal_throttle", "Physics_gas"],
+                                    1: ["expert_optimal_brake", "Physics_brake"],
+                                    2: ["expert_time_difference"],
+                                    3: ["speed_difference"],
+                                    4: ["expert_optimal_speed", "Physics_speed_kmh"],
+                                    5: ["driver_push_to_limit"]
+                                }
+                                default_cols = ["speed_kmh", "gas", "brake", "steer_angle"]
+
+                                for gid in chart_ids:
+                                    key = f"detailed_viz_cols_{gid}"
+                                    # If in session state, use it
+                                    if key in st.session_state and st.session_state[key]:
+                                        graph_configs[gid] = st.session_state[key]
+                                    elif gid in defaults_map:
+                                        # Use defaults if not in session state (first load)
+                                        # Filter for valid columns
+                                        available = [c for c in defaults_map[gid] if c in df.columns]
+                                        if available:
+                                            graph_configs[gid] = available
+                                    elif gid == 0:
+                                        # Fallback for graph 0
+                                        available = [c for c in default_cols if c in df.columns]
+                                        if available:
+                                            graph_configs[gid] = available
+
+                                
+                                # 3. Track Config
+                                track_config = {
+                                    "player_x": "Graphics_player_pos_x",
+                                    "player_y": "Graphics_player_pos_y",
+                                    "expert_x": "expert_optimal_player_pos_x",
+                                    "expert_y": "expert_optimal_player_pos_y"
+                                }
+                                
+                                # 4. Current Labels
+                                current_labels_display = form_labels
+                                
+                                # 5. Contextual Sub-labels (e.g. MS -> MS1..MS30)
+                                sub_label_context = []
+                                for lname in current_labels_display:
+                                    lid = LABEL_NAME_TO_ID.get(lname)
+                                    # If the selected label is a parent category (e.g. 'MS', 'RM')
+                                    if lid and lid in LABEL_CATEGORIES:
+                                        child_ids = LABEL_CATEGORIES[lid]
+                                        if child_ids:
+                                            # Format list of children
+                                            child_docs = []
+                                            for child_id in child_ids:
+                                                child_name = LABEL_MAPPING.get(child_id, child_id)
+                                                child_docs.append(f"- {child_id}: {child_name}")
+                                            
+                                            block = f"Sub-labels for '{lname}' ({lid}):\n" + "\n".join(child_docs)
+                                            sub_label_context.append(block)
+
+                                # Analyze
+                                result = analyzer.analyze_segment(
+                                    analysis_df, 
+                                    graph_configs, 
+                                    track_config, 
+                                    current_labels_display,
+                                    available_sub_labels_context=sub_label_context
+                                )
+                                
+                                st.markdown("### Gemini Analysis Results")
+                                st.markdown(result)
+                                
+                            except Exception as e:
+                                st.error(f"Error during analysis: {str(e)}")
+                                import traceback
+                                st.error(traceback.format_exc())
+
     # Feature Change Calculator
     with st.expander("Feature Change Calculator"):
         f_col1, f_col2 = st.columns([1, 2])
@@ -610,17 +722,17 @@ def render_detailed_labeling(selected_annotation_key, selected_session_key, avai
              st.number_input("End", min_value=0, max_value=len(df), value=viz_end_idx, key="detailed_global_viz_end_input", on_change=update_global_slider_range)
 
     # Feature selection for visualization
-    if "graph_ids" not in st.session_state:
-        st.session_state.graph_ids = [0, 1, 2, 3]
-        st.session_state.next_graph_id = 4
+    if "detailed_graph_ids" not in st.session_state:
+        st.session_state.detailed_graph_ids = [0, 1, 2, 3, 4, 5]
+        st.session_state.detailed_next_graph_id = 6
 
     if st.button("Add Graph", key="detailed_add_graph_btn"):
-        st.session_state.graph_ids.append(st.session_state.next_graph_id)
-        st.session_state.next_graph_id += 1
+        st.session_state.detailed_graph_ids.append(st.session_state.detailed_next_graph_id)
+        st.session_state.detailed_next_graph_id += 1
 
     graphs_to_remove = []
 
-    for graph_id in st.session_state.graph_ids:
+    for graph_id in st.session_state.detailed_graph_ids:
         col_viz, col_btn = st.columns([6, 1])
         
         with col_viz:
@@ -632,7 +744,9 @@ def render_detailed_labeling(selected_annotation_key, selected_session_key, avai
                 0: ["expert_optimal_throttle", "Physics_gas"],
                 1: ["expert_optimal_brake", "Physics_brake"],
                 2: ["expert_time_difference"],
-                3: ["speed_difference"]
+                3: ["speed_difference"],
+                4: ["expert_optimal_speed", "Physics_speed_kmh"],
+                5: ["driver_push_to_limit"]
             }
             
             # Use specific defaults if available for this graph_id
@@ -771,8 +885,8 @@ def render_detailed_labeling(selected_annotation_key, selected_session_key, avai
     
     if graphs_to_remove:
         for gid in graphs_to_remove:
-            if gid in st.session_state.graph_ids:
-                st.session_state.graph_ids.remove(gid)
+            if gid in st.session_state.detailed_graph_ids:
+                st.session_state.detailed_graph_ids.remove(gid)
         st.rerun()
 
     # --- Track Map Visualization ---
@@ -825,8 +939,8 @@ def render_detailed_labeling(selected_annotation_key, selected_session_key, avai
         start_row = df.iloc[start_idx]
         map_data = []
         
-        # Helper for Apex Calculation
-        def get_geometric_apex(df_in, x_col, y_col, z_col=None, speed_col=None, label_type="Player"):
+        # Helper for Max Curvature Calculation
+        def get_max_curvature_point(df_in, x_col, y_col, z_col=None, speed_col=None, label_type="Player"):
             if df_in.empty or len(df_in) <= 5:
                 return None
             try:
@@ -852,21 +966,33 @@ def render_detailed_labeling(selected_annotation_key, selected_session_key, avai
                     s_vals = df_in[speed_col].values
                     curvature[s_vals < 10] = 0.0
 
-                max_k_idx_local = np.argmax(curvature)
+                max_k = np.max(curvature)
                 
-                if curvature[max_k_idx_local] > 0.0001: 
-                    geo_apex_idx = df_in.index[max_k_idx_local]
-                    geo_row = df_in.loc[geo_apex_idx]
+                # If we detect a corner (significant curvature)
+                if max_k > 0.002: # Threshold for corner detection
+                    # Find point with minimum speed
+                    if speed_col and speed_col in df_in.columns:
+                        min_speed_idx_local = np.argmin(df_in[speed_col].values)
+                        target_idx = df_in.index[min_speed_idx_local]
+                        target_row = df_in.loc[target_idx]
+                        marker_label = "Corner Apex (Min Speed)"
+                    else:
+                        # Fallback to max curvature if no speed
+                        max_k_idx_local = np.argmax(curvature)
+                        target_idx = df_in.index[max_k_idx_local]
+                        target_row = df_in.loc[target_idx]
+                        marker_label = "Max Curvature"
                     
                     p_geo = {
-                        "x": geo_row[x_col],
-                        "y": geo_row[y_col],
+                        "x": target_row[x_col],
+                        "y": target_row[y_col],
                         "Type": label_type,
-                        "ID": f"{label_type} Apex (Geometric / Max Curve)",
-                        "Marker": "Apex"
+                        "ID": f"{label_type} {marker_label}",
+                        "Marker": marker_label,
+                        "Speed": target_row[speed_col] if speed_col and speed_col in df_in.columns else None
                     }
                     if z_col and z_col in df_in.columns:
-                        p_geo["z"] = geo_row[z_col]
+                        p_geo["z"] = target_row[z_col]
                     return p_geo
             except Exception:
                 pass
@@ -898,8 +1024,8 @@ def render_detailed_labeling(selected_annotation_key, selected_session_key, avai
                 p_start["z"] = start_row["Graphics_player_pos_z"]
             map_data.append(p_start)
 
-            # Apex Position (Geometric / Max Curvature)
-            apex_data = get_geometric_apex(
+            # Max Curvature Point
+            max_curvature_data = get_max_curvature_point(
                 map_plot_df, 
                 "Graphics_player_pos_x", 
                 "Graphics_player_pos_y", 
@@ -907,8 +1033,8 @@ def render_detailed_labeling(selected_annotation_key, selected_session_key, avai
                 "Physics_speed_kmh",
                 "Player"
             )
-            if apex_data:
-                map_data.append(apex_data)
+            if max_curvature_data:
+                map_data.append(max_curvature_data)
 
         # Add Expert Position
         if has_expert_pos:
@@ -936,20 +1062,17 @@ def render_detailed_labeling(selected_annotation_key, selected_session_key, avai
                 e_start["z"] = start_row["expert_optimal_player_pos_z"]
             map_data.append(e_start)
 
-            # Expert Apex Position (Geometric / Max Curvature)
-            # Find expert speed name
-            expert_speed_col = next((c for c in map_plot_df.columns if "expert" in c and "speed" in c), None)
-            
-            e_apex_data = get_geometric_apex(
+            # Expert Max Curvature Point
+            e_max_curvature_data = get_max_curvature_point(
                 map_plot_df,
                 "expert_optimal_player_pos_x",
                 "expert_optimal_player_pos_y",
                 "expert_optimal_player_pos_z" if has_expert_pos_z else None,
-                expert_speed_col,
+                "expert_optimal_speed",  # Use dedicated column
                 "Expert"
             )
-            if e_apex_data:
-                map_data.append(e_apex_data)
+            if e_max_curvature_data:
+                map_data.append(e_max_curvature_data)
         
         # Add Opponent Positions
         for i in range(1, 6):
@@ -988,7 +1111,7 @@ def render_detailed_labeling(selected_annotation_key, selected_session_key, avai
                     hover_data=["ID"],
                     title=f"Positions (Start: {start_idx}, End: {selected_time_idx}) (3D)",
                     color_discrete_map={"Player": "green", "Opponent": "red", "Expert": "blue"},
-                    symbol_map={"Start": "diamond", "End": "circle", "Apex": "x"}
+                    symbol_map={"Start": "diamond", "End": "circle", "Max Curvature": "x"}
                 )
                 fig_map.update_traces(marker=dict(size=5))
                 
@@ -1014,7 +1137,7 @@ def render_detailed_labeling(selected_annotation_key, selected_session_key, avai
                     hover_data=["ID"],
                     title=f"Positions (Start: {start_idx}, End: {selected_time_idx})",
                     color_discrete_map={"Player": "green", "Opponent": "red", "Expert": "blue"},
-                    symbol_map={"Start": "x", "End": "circle", "Apex": "star"}
+                    symbol_map={"Start": "x", "End": "circle", "Max Curvature": "star"}
                 )
                 if invert_x: fig_map.update_xaxes(autorange="reversed")
                 if invert_y: fig_map.update_yaxes(autorange="reversed")

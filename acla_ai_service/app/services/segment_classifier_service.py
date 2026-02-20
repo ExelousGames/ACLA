@@ -445,7 +445,7 @@ class SegmentClassifierService:
             
         print("Preprocessor fitting complete.")
 
-    async def train_model(self, epochs=10, batch_size=32, learning_rate=0.001, val_split=0.2):
+    async def train_model(self, epochs=10, batch_size=32, learning_rate=0.001, val_split=0.1):
         """Train the LSTM Classifier using streaming data with train/val split."""
         from app.config.pipeline_config import PipelineConfig
         cache_key = PipelineConfig().annotation_cache_key
