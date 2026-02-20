@@ -93,35 +93,65 @@ class GeminiAnalyzer:
                         graph_configs: Dict[int, List[str]], 
                         track_config: Dict[str, str],
                         current_labels: List[str] = None,
-                        available_sub_labels_context: List[str] = None) -> str:
-        
+                        available_sub_labels_context: List[str] = None) -> Dict[str, Any]:
+        """
+        Analyzes the segment and returns a dictionary with:
+        - 'response': The text response from Gemini
+        - 'images': List of PIL Images generated and sent
+        - 'prompt': The text prompt sent
+        """
         images = []
-        prompts = ["Analyze the following telemetry data graphs for a racing simulation segment."]
+        plot_descriptions = [] # Descriptions of plots for the prompt
         
         # 1. Feature Graphs
         for graph_id, cols in graph_configs.items():
-            img = self.create_feature_plot(df, cols, f"Graph {graph_id} Features")
-            if img:
-                images.append(img)
-                prompts.append(f"Image {len(images)}: Line chart showing features: {', '.join(cols)}.")
+            # Use columns present in df
+            valid_cols = [c for c in cols if c in df.columns]
+            if valid_cols:
+                img = self.create_feature_plot(df, valid_cols, f"Features: {', '.join(valid_cols)}")
+                if img:
+                    images.append(img)
+                    plot_descriptions.append(f"Image {len(images)}: Line chart showing features: {', '.join(valid_cols)}.")
 
         # 2. Trajectory
-        traj_img = self.create_trajectory_plot(df, track_config)
-        if traj_img:
-            images.append(traj_img)
-            prompts.append(f"Image {len(images)}: Top-down trajectory map of the segment.")
+        # Create a simple config for trajectory if not fully provided but columns exist
+        if "player_x" not in track_config and "Graphics_player_pos_x" in df.columns:
+             tc = {
+                 "player_x": "Graphics_player_pos_x",
+                 "player_y": "Graphics_player_pos_y"
+             }
+             if "expert_optimal_player_pos_x" in df.columns:
+                 tc["expert_x"] = "expert_optimal_player_pos_x"
+                 tc["expert_y"] = "expert_optimal_player_pos_y"
+             track_config = tc
+
+        if "player_x" in track_config:
+            traj_img = self.create_trajectory_plot(df, track_config)
+            if traj_img:
+                images.append(traj_img)
+                plot_descriptions.append(f"Image {len(images)}: Top-down trajectory map of the segment.")
 
         if not images:
-            return "No valid graphs could be generated from the data."
+            return {
+                "response": "No valid graphs could be generated from the data.",
+                "images": [],
+                "prompt": "N/A"
+            }
 
         # Construct the detailed prompt
         labels_context = f"Current identified labels: {', '.join(current_labels)}" if current_labels else "No labels identified yet."
         
         sub_labels_list = ""
         if available_sub_labels_context:
-            sub_labels_list = "\n\nAvailable specific sub-labels based on current selection:\n" + "\n".join(available_sub_labels_context)
+            sub_labels_list = "\\n\\nAvailable specific sub-labels based on current selection:\\n" + "\\n".join(available_sub_labels_context)
+
+        prompt_intro = "Analyze the following telemetry data graphs for a racing simulation segment."
+        descriptions_text = "\n".join(plot_descriptions)
 
         prompt_text = f"""
+        {prompt_intro}
+        {descriptions_text}
+
         {labels_context}
         {sub_labels_list}
         
@@ -135,10 +165,20 @@ class GeminiAnalyzer:
         5. Provide your output as a concise list of suggestions with brief reasoning.
         """
         
+        # Prepare content for Gemini (interleaved text and images as supported by library, or list)
+        # The python library supports list of [text, img1, img2...]
         full_content = [prompt_text] + images
         
         try:
             response = self.model.generate_content(full_content)
-            return response.text
+            return {
+                "response": response.text,
+                "images": images,
+                "prompt": prompt_text
+            }
         except Exception as e:
-            return f"Error communicating with Gemini AI: {str(e)}"
+            return {
+                "response": f"Error communicating with Gemini AI: {str(e)}",
+                "images": images,
+                "prompt": prompt_text
+            }

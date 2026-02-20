@@ -350,36 +350,15 @@ def render_detailed_labeling(selected_annotation_key, selected_session_key, avai
                                 
                                 # 2. Gather Feature Graphs
                                 graph_configs = {}
-                                # Check session state for graph configs or use defaults if not yet rendered
-                                chart_ids = st.session_state.get("detailed_graph_ids", [0, 1, 2, 3, 4, 5])
+                                # Check session state for graph configs
+                                chart_ids = st.session_state.get("detailed_graph_ids", [])
                                 
-                                # Default mappings from line 630
-                                defaults_map = {
-                                    0: ["expert_optimal_throttle", "Physics_gas"],
-                                    1: ["expert_optimal_brake", "Physics_brake"],
-                                    2: ["expert_time_difference"],
-                                    3: ["speed_difference"],
-                                    4: ["expert_optimal_speed", "Physics_speed_kmh"],
-                                    5: ["driver_push_to_limit"]
-                                }
-                                default_cols = ["speed_kmh", "gas", "brake", "steer_angle"]
-
                                 for gid in chart_ids:
                                     key = f"detailed_viz_cols_{gid}"
                                     # If in session state, use it
                                     if key in st.session_state and st.session_state[key]:
                                         graph_configs[gid] = st.session_state[key]
-                                    elif gid in defaults_map:
-                                        # Use defaults if not in session state (first load)
-                                        # Filter for valid columns
-                                        available = [c for c in defaults_map[gid] if c in df.columns]
-                                        if available:
-                                            graph_configs[gid] = available
-                                    elif gid == 0:
-                                        # Fallback for graph 0
-                                        available = [c for c in default_cols if c in df.columns]
-                                        if available:
-                                            graph_configs[gid] = available
+
 
                                 
                                 # 3. Track Config
@@ -419,8 +398,24 @@ def render_detailed_labeling(selected_annotation_key, selected_session_key, avai
                                     available_sub_labels_context=sub_label_context
                                 )
                                 
-                                st.markdown("### Gemini Analysis Results")
-                                st.markdown(result)
+                                if isinstance(result, dict):
+                                    st.markdown("### Gemini Analysis Results")
+                                    st.markdown(result.get("response", "No response text found."))
+                                    
+                                    with st.expander("Analysis Details (Images & Prompt)"):
+                                        st.subheader("Generated Prompt")
+                                        st.code(result.get("prompt", "No prompt found"), language="text")
+                                        
+                                        st.subheader("Analyzed Images")
+                                        images = result.get("images", [])
+                                        if images:
+                                            for idx, img in enumerate(images):
+                                                st.image(img, caption=f"Graph {idx+1}", use_container_width=True)
+                                        else:
+                                            st.info("No images were generated for this analysis.")
+                                else:
+                                     st.markdown("### Gemini Analysis Results")
+                                     st.markdown(result)
                                 
                             except Exception as e:
                                 st.error(f"Error during analysis: {str(e)}")
