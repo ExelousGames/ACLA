@@ -10,6 +10,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import google.generativeai as genai
 from PIL import Image
+import streamlit as st
 
 class GeminiAnalyzer:
     def __init__(self, api_key: str):
@@ -18,6 +19,16 @@ class GeminiAnalyzer:
             raise ValueError("API Key is required")
         genai.configure(api_key=self.api_key)
         self.model = genai.GenerativeModel('gemini-3.1-pro-preview')
+
+    @staticmethod
+    def get_api_key() -> Optional[str]:
+        """
+        Retrieves the Gemini API key from environment variables or prompts the user via Streamlit input.
+        """
+        api_key = os.environ.get("GEMINI_API_KEY")
+        if not api_key:
+            api_key = st.text_input("Enter Gemini API Key", type="password", key="gemini_api_key_input")
+        return api_key
 
     def _plot_to_image(self, fig) -> Image.Image:
         """Converts a matplotlib figure to a PIL Image."""

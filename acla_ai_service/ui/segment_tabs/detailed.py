@@ -328,20 +328,16 @@ def render_detailed_labeling(selected_annotation_key, selected_session_key, avai
 
     # Gemini AI Analysis
     with st.expander("Advanced AI Analysis (Gemini)"):
-        # API Key management
-        gemini_api_key = os.environ.get("GEMINI_API_KEY")
-        if not gemini_api_key:
-            gemini_api_key = st.text_input("Enter Gemini API Key", type="password", key="gemini_api_key_input")
-        
-        if gemini_api_key:
-            if st.button("Identify Sub-Labels with Gemini", key="gemini_identify_btn"):
-                if form_start >= form_end:
-                    st.error("Invalid range selected.")
-                else:
-                    with st.spinner("Preparing graphs and asking Gemini..."):
-                        if GeminiAnalyzer is None:
-                             st.error("GeminiAnalyzer module could not be imported.")
-                        else:
+        if GeminiAnalyzer:
+            # API Key management handled by GeminiAnalyzer
+            gemini_api_key = GeminiAnalyzer.get_api_key()
+            
+            if gemini_api_key:
+                if st.button("Identify Sub-Labels with Gemini", key="gemini_identify_btn"):
+                    if form_start >= form_end:
+                        st.error("Invalid range selected.")
+                    else:
+                        with st.spinner("Preparing graphs and asking Gemini..."):
                             try:
                                 analyzer = GeminiAnalyzer(gemini_api_key)
                                 
