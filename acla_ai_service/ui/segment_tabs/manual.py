@@ -6,8 +6,8 @@ import plotly.graph_objects as go
 import time
 from .shared import (
     load_session_data, load_annotations, save_annotations,
-    get_vlm_service, get_display_labels, get_available_sessions,
-    LABEL_MAPPING, LABEL_NAME_TO_ID, AnnotatedSegment, LABEL_DESCRIPTIONS,
+    get_display_labels, get_available_sessions,
+    LABEL_MAPPING, LABEL_NAME_TO_ID, AnnotatedSegment,
     GRAPH_CONFIGS, LABEL_CATEGORIES
 )
 
@@ -743,104 +743,7 @@ def render_manual_annotation(selected_annotation_key, selected_session_key, avai
         else:
             st.info("Select a valid range (min length 1) to check probabilities.")
 
-    # VLM Analysis Section
-    with st.expander("AI Label Analysis"):
-        st.markdown("Use VLM to analyze why the selected labels fit this segment.")
-        analyze_vlm = st.button("Analyze Reason with VLM")
 
-    if analyze_vlm:
-        if form_start >= form_end:
-             st.error("Invalid range selected.")
-        elif not form_labels:
-             st.error("Please select labels to analyze.")
-        else:
-             service = get_vlm_service()
-             if not service:
-                 st.error("VLM Service not available.")
-             else:
-                 # Prepare data
-                 segment_df = df.iloc[int(form_start):int(form_end)+1]
-                 
-                 with st.status("Initializing VLM Analysis...", expanded=True) as status:
-                     # Prepare CSVs based on GRAPH_CONFIGS
-                     csv_inputs = []
-                     support_lines_list = []
-                     
-                     st.write("Preparing Input Data...")
-                     
-                     graph_descriptions = []
-                     for g_conf in GRAPH_CONFIGS:
-                         # Filter columns
-                         cols = [c for c in g_conf.features if c in segment_df.columns]
-                         if cols:
-                             # Create sub-df with these columns
-                             sub_df = segment_df[cols].copy()
-                             csv_inputs.append(sub_df.to_csv(index=False))
-                             support_lines_list.append(g_conf.reference_lines)
-                             graph_descriptions.append(g_conf.description)
-                     
-                     if not csv_inputs:
-                         # Fallback if specific features not found
-                         st.warning("No specific graph configurations matched. Using all numeric data.")
-                         sub_df = segment_df.select_dtypes(include=['number'])
-                         csv_inputs.append(sub_df.to_csv(index=False))
-                         support_lines_list.append([])
-
-                     # Trajectory
-                     traj_cols = ['Graphics_player_pos_x', 'Graphics_player_pos_y', 
-                                  'expert_optimal_player_pos_x', 'expert_optimal_player_pos_y']
-                     traj_cols = [c for c in traj_cols if c in segment_df.columns]
-                     traj_csv = None
-                     if len(traj_cols) >= 2:
-                         traj_csv = segment_df[traj_cols].to_csv(index=False)
-
-                     # Prompt
-                     selected_labels_str = ", ".join(form_labels)
-                     descriptions_str = ""
-                     for l in form_labels:
-                         if l in LABEL_DESCRIPTIONS:
-                             descriptions_str += f"- {l}: {LABEL_DESCRIPTIONS[l]}\n"
-                     
-                     graph_context_str = "\n".join([f"- Graph {i+1}: {desc}" for i, desc in enumerate(graph_descriptions)])
-                     
-                     prompt = (
-                         f"I have labeled this telemetry segment as: {selected_labels_str}.\n"
-                         f"Here are the descriptions for these labels:\n{descriptions_str}\n"
-                         f"Here are the descriptions of the telemetry graphs provided:\n{graph_context_str}\n"
-                         "Based on the telemetry data and vehicle trajectory graphs, explain why these labels are appropriate for this segment.  "
-                     )
-                     
-                     st.markdown("### VLM Reasoning")
-                     response_placeholder = st.empty()
-                     current_response_text = ""
-
-                     def update_progress(msg):
-                         nonlocal current_response_text
-                         if msg.startswith("__STREAM__"):
-                             token = msg.replace("__STREAM__", "", 1)
-                             current_response_text += token
-                             response_placeholder.markdown(current_response_text)
-                         else:
-                             status.update(label=f"VLM Analysis: {msg}")
-
-                     try:
-                         status.update(label="Running VLM Inference...")
-                         response, img = service.analyze_data(
-                             csv_data=csv_inputs,
-                             prompt=prompt,
-                             trajectory_csv_data=traj_csv,
-                             support_lines=support_lines_list,
-                             status_callback=update_progress
-                         )
-                         
-                         status.update(label="Analysis Complete!", state="complete", expanded=False)
-                         
-                         # Overwrite with final response to ensure consistency
-                         response_placeholder.markdown(response)
-                         
-                     except Exception as e:
-                         status.update(label="Analysis Failed", state="error")
-                         st.error(f"Analysis failed: {str(e)}")
 
     # Form Actions
     col_actions = st.columns([1, 1, 1, 3])

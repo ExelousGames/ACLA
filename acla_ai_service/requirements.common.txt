@@ -38,4 +38,4 @@ aiohttp==3.9.1
 streamlit==1.28.0
 einops
 timm
-google-generativeai
+google-genai

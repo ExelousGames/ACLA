@@ -13,6 +13,7 @@ except Exception:
     pass
 
 import streamlit as st
+st.set_page_config(page_title="Segment Annotation App", layout="wide")
 import pandas as pd
 import time
 import os
@@ -48,9 +49,9 @@ from segment_tabs.manual import render_manual_annotation
 from segment_tabs.detailed import render_detailed_labeling
 
 def main():
-    st.set_page_config(page_title="Segment Annotation App", layout="wide")
     
     store = get_store()
+
     pipeline_config = PipelineConfig()
 
     # Add sidebar controls
