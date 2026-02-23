@@ -169,21 +169,48 @@ class GeminiAnalyzer:
         
         return self._plot_to_image(fig)
 
-    def create_trajectory_plot(self, df: pd.DataFrame, track_config: Dict[str, str], context_df: Optional[pd.DataFrame] = None) -> Optional[Image.Image]:
-        """Creates a 2D trajectory plot (top-down view)."""
+    def create_context_trajectory_plot(self, df: pd.DataFrame, track_config: Dict[str, str], context_df: Optional[pd.DataFrame] = None) -> Optional[Image.Image]:
+        """
+        Creates a 'Big Picture' trajectory plot showing the segment's location on the track.
+        """
+        if df.empty or context_df is None or context_df.empty:
+            return None
+            
+        fig, ax = plt.subplots(figsize=(8, 8))
+
+        # 0. Context (Background Track)
+        if "player_x" in track_config and "player_y" in track_config:
+            cpx = track_config["player_x"]
+            cpy = track_config["player_y"]
+            if cpx in context_df.columns and cpy in context_df.columns:
+                 ax.plot(context_df[cpx], context_df[cpy], label="Full Track", color="lightgray", linewidth=1.5, linestyle="-")
+        
+        # Player Segment
+        if "player_x" in track_config and "player_y" in track_config:
+            px = track_config["player_x"]
+            py = track_config["player_y"]
+            if px in df.columns and py in df.columns:
+                ax.plot(df[px], df[py], label="Segment", color="green", linewidth=3)
+                # Mark start and end
+                ax.scatter(df[px].iloc[0], df[py].iloc[0], marker='x', color='black', label='Start')
+                ax.scatter(df[px].iloc[-1], df[py].iloc[-1], marker='o', color='black', label='End')
+
+        ax.set_title("Track Location Context")
+        ax.legend()
+        ax.set_aspect('equal', 'box')
+        ax.axis('off') # Cleaner look for map
+        
+        return self._plot_to_image(fig)
+
+    def create_detailed_trajectory_plot(self, df: pd.DataFrame, track_config: Dict[str, str]) -> Optional[Image.Image]:
+        """
+        Creates a detailed trajectory plot focusing on the segment and apex/min-speed points.
+        """
         if df.empty:
             return None
             
         fig, ax = plt.subplots(figsize=(8, 8))
 
-        # 0. Context (Background)
-        if context_df is not None and not context_df.empty:
-            if "player_x" in track_config and "player_y" in track_config:
-                cpx = track_config["player_x"]
-                cpy = track_config["player_y"]
-                if cpx in context_df.columns and cpy in context_df.columns:
-                     ax.plot(context_df[cpx], context_df[cpy], label="Context", color="lightgray", linewidth=1.5, linestyle=":")
-        
         # Player
         if "player_x" in track_config and "player_y" in track_config:
             px = track_config["player_x"]
@@ -194,57 +221,41 @@ class GeminiAnalyzer:
                 ax.scatter(df[px].iloc[0], df[py].iloc[0], marker='x', color='green', label='Start')
                 ax.scatter(df[px].iloc[-1], df[py].iloc[-1], marker='o', color='green', label='End')
 
-                # Calculate Apex/Curve point
+                # Calculate Apex/Curve point (Min Speed)
                 apex_data = self.get_max_curvature_point(
                     df, 
                     px, 
                     py, 
-                    speed_col="Physics_speed_kmh", # Assume standard column name
+                    speed_col="Physics_speed_kmh", 
                     label_type="Player"
                 )
                 if apex_data:
-                    ax.scatter(apex_data["x"], apex_data["y"], marker='*', s=150, color='purple', label='Player Apex', zorder=5)
+                    ax.scatter(apex_data["x"], apex_data["y"], marker='*', s=200, color='purple', label='Min Speed Apex', zorder=5)
                     # Annotate speed if available
                     if "Speed" in apex_data and apex_data["Speed"] is not None:
-                        ax.annotate(f"P: {apex_data['Speed']:.1f}", (apex_data["x"], apex_data["y"]), xytext=(5, 5), textcoords='offset points', fontsize=8, color='purple', fontweight='bold')
+                        ax.annotate(f"Min: {apex_data['Speed']:.1f}", (apex_data["x"], apex_data["y"]), xytext=(10, 10), textcoords='offset points', fontsize=10, color='purple', fontweight='bold')
 
-        # Expert
+        # Expert (Reference)
         if "expert_x" in track_config and "expert_y" in track_config:
             ex = track_config["expert_x"]
             ey = track_config["expert_y"]
             if ex in df.columns and ey in df.columns:
-                 ax.plot(df[ex], df[ey], label="Expert", color="blue", linestyle="--", alpha=0.7)
+                 ax.plot(df[ex], df[ey], label="Expert Line", color="blue", linestyle="--", alpha=0.6)
 
-                 # Calculate Apex/Curve point for Expert
-                 expert_apex_data = self.get_max_curvature_point(
-                    df, 
-                    ex, 
-                    ey, 
-                    speed_col="expert_optimal_speed", 
-                    label_type="Expert"
-                )
-                 if expert_apex_data:
-                    ax.scatter(expert_apex_data["x"], expert_apex_data["y"], marker='*', s=150, color='cyan', label='Expert Apex', zorder=4)
-                    # Annotate speed if available
-                    if "Speed" in expert_apex_data and expert_apex_data["Speed"] is not None:
-                        ax.annotate(f"E: {expert_apex_data['Speed']:.1f}", (expert_apex_data["x"], expert_apex_data["y"]), xytext=(5, -15), textcoords='offset points', fontsize=8, color='blue', fontweight='bold')
-
-        # Opponents
+        # Opponents (Optional, kept for completeness but low alpha)
         for i in range(1, 6):
             ox = f"Opponent_{i}_pos_x"
             oy = f"Opponent_{i}_pos_y"
             if ox in df.columns and oy in df.columns:
-                 # Check if active (not 0,0)
                  if df[ox].abs().max() > 0.1 or df[oy].abs().max() > 0.1:
-                    ax.plot(df[ox], df[oy], label=f"Opponent {i}", color="red", alpha=0.5)
+                    ax.plot(df[ox], df[oy], label=f"Opponent {i}", color="red", alpha=0.3)
 
-        ax.set_title("Trajectory / Track Map")
+        ax.set_title("Detailed Segment Trajectory")
         ax.legend()
         ax.set_aspect('equal', 'box')
         ax.grid(True)
 
         return self._plot_to_image(fig)
-
 
     def _prepare_visual_content(self, df: pd.DataFrame, graph_definitions: List[Dict[str, Any]], track_config: Dict[str, str] = {}, context_df: pd.DataFrame = None) -> tuple[List[Image.Image], List[str]]:
         """Helper to generate images and descriptions shared between analysis methods."""
@@ -258,7 +269,10 @@ class GeminiAnalyzer:
             title = graph_def.get("title", f"Graph {graph_def.get('id')}")
             description = graph_def.get("description", "")
             
+            valid_cols = [c for c in columns if c in df.columns] if 'columns' in locals() else [c for c in cols if c in df.columns] # Fix for variable check
+            # Correct logic:
             valid_cols = [c for c in cols if c in df.columns]
+
             if valid_cols:
                 img = self.create_feature_plot(df, valid_cols, title)
                 if img:
@@ -280,10 +294,18 @@ class GeminiAnalyzer:
              track_config = tc
 
         if "player_x" in track_config:
-            traj_img = self.create_trajectory_plot(df, track_config, context_df=context_df)
+            # 1. Big Picture Context
+            if context_df is not None and not context_df.empty:
+                ctx_img = self.create_context_trajectory_plot(df, track_config, context_df=context_df)
+                if ctx_img:
+                    images.append(ctx_img)
+                    plot_descriptions.append(f"Image {len(images)}: Track Map Overview. Shows where the segment (green) is located on the full track (grey).")
+
+            # 2. Detailed Trajectory
+            traj_img = self.create_detailed_trajectory_plot(df, track_config)
             if traj_img:
                 images.append(traj_img)
-                plot_descriptions.append(f"Image {len(images)}: Top-down trajectory map of the segment.")
+                plot_descriptions.append(f"Image {len(images)}: Detailed Trajectory. Close-up of path, showing corner apex and minimum speed points.")
         
         return images, plot_descriptions
 

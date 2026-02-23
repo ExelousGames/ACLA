@@ -560,6 +560,19 @@ def render_detailed_labeling(selected_annotation_key, selected_session_key, avai
                                 
                                 # 5. Contextual Sub-labels (e.g. MS -> MS1..MS30)
                                 sub_label_context = []
+                                
+                                # Always include "Other Labels" context 
+                                if "Other Labels" in LABEL_CATEGORIES:
+                                    other_ids = LABEL_CATEGORIES["Other Labels"]
+                                    if other_ids:
+                                        other_docs = []
+                                        for child_id in other_ids:
+                                            child_name = LABEL_MAPPING.get(child_id, child_id)
+                                            other_docs.append(f"- {child_id}: {child_name}")
+                                        
+                                        block = f"Available 'Other Labels' (General Context):\n" + "\n".join(other_docs)
+                                        sub_label_context.append(block)
+
                                 for lname in current_labels_display:
                                     lid = LABEL_NAME_TO_ID.get(lname)
                                     

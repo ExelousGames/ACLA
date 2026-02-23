@@ -294,6 +294,16 @@ class BatchAnnotationService:
     def _build_sub_context(self, current_labels, label_name_to_id, main_guidelines, label_categories, label_mapping):
         """Helper to build context strings for sub-labels."""
         context_list = []
+
+        # Always include "Other Labels" context
+        if "Other Labels" in label_categories:
+            other_ids = label_categories["Other Labels"]
+            if other_ids:
+                context_list.append("Available 'Other Labels' (General Context):")
+                for sub_id in other_ids:
+                    full_name = label_mapping.get(sub_id, sub_id)
+                    context_list.append(f"  - {full_name}")
+
         for lname in current_labels:
             lid = label_name_to_id.get(lname)
             if lid:
