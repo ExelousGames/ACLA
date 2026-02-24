@@ -190,7 +190,7 @@ def load_annotations(session_id: str, annotation_key: str) -> List[AnnotatedSegm
             s.chunk_index = session_id
     return segments
 
-def save_annotations(session_id: str, annotations: List[AnnotatedSegment], annotation_key: str):
+def save_annotations(session_id: str, annotations: List[AnnotatedSegment], annotation_key: str, silent: bool = False):
     """Save annotations to Zarr store."""
     store = get_store()
     
@@ -201,13 +201,16 @@ def save_annotations(session_id: str, annotations: List[AnnotatedSegment], annot
         # If empty, delete the chunk so it doesn't show up as an annotated session
         if hasattr(store, "delete_chunk"):
             store.delete_chunk(annotation_key, session_id)
-            st.success(f"All annotations deleted for session {session_id}.")
+            if not silent:
+                st.success(f"All annotations deleted for session {session_id}.")
         else:
             # Fallback
             store.save_chunk(annotation_key, session_id, data_to_save)
-            st.success(f"Saved 0 annotations to {annotation_key} (session {session_id})")
+            if not silent:
+                st.success(f"Saved 0 annotations to {annotation_key} (session {session_id})")
     else:
         store.save_chunk(annotation_key, session_id, data_to_save)
-        st.success(f"Saved {len(annotations)} annotations to {annotation_key} (session {session_id})")
+        if not silent:
+            st.success(f"Saved {len(annotations)} annotations to {annotation_key} (session {session_id})")
 
 

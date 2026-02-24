@@ -47,6 +47,7 @@ from segment_tabs.shared import (
 )
 from segment_tabs.manual import render_manual_annotation
 from segment_tabs.detailed import render_detailed_labeling
+from segment_tabs.batch import render_batch_view
 
 def main():
     
@@ -192,15 +193,17 @@ def main():
         # Using radio button as tabs to prevent loading both heavy views simultaneously
         selected_view = st.radio(
             "Select View", 
-            ["Telemetry Segment Annotation", "Detailed Labeling"], 
+            ["Telemetry Segment Annotation", "Detailed Labeling", "Batch Auto-Annotation (Gemini/Service)"], 
             horizontal=True,
             label_visibility="collapsed"
         )
 
         if selected_view == "Telemetry Segment Annotation":
             render_manual_annotation(selected_annotation_key, selected_session_key, available_sessions)
-        else:
+        elif selected_view == "Detailed Labeling":
             render_detailed_labeling(selected_annotation_key, selected_session_key, available_sessions)
+        elif selected_view == "Batch Auto-Annotation (Gemini/Service)":
+            render_batch_view(selected_annotation_key, selected_session_key, available_sessions)
 
 if __name__ == "__main__":
     main()

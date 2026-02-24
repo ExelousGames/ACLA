@@ -24,11 +24,11 @@ LABEL_MAPPING = {
     "RM7": "Merge back to expert line",
     ################### Detailed mistake labels (for label MS) ###################
     "MS1": "Brake too late",
-    "MS2": "Turn in too late",
+    "MS2": "Entry too late",
     "MS3": "Apex too late",
     "MS4": "Exit out too early",
     "MS5": "Brake too early",
-    "MS6": "Turn in too early",
+    "MS6": "Entry too early",
     "MS7": "Apex too early",
     "MS8": "Exit out too late",
     "MS9": "Entry too tight",
@@ -83,11 +83,11 @@ LABEL_NAME_TO_ID = {v: k for k, v in LABEL_MAPPING.items()}
 MAIN_LABEL_GUIDELINES = {
     "1": "Overtaking: Analyze the driver's attempt to pass an opponent. Look for late braking, line deviation to find a gap, and speed differentials. Assess if the move was successful and safe.",
     "2": "Missing Data: This segment contains gaps or corrupted telemetry. Identify if the sensor data drops to zero or becomes inconsistent unexpectedly.",
-    "EA": "Expert Adherence: The driver is following the optimal racing line and speed profile closely. Compare the driver's trajectory, brake points, and throttle application with the expert's. Small deviations are acceptable, but the overall pattern should match.",
+    "EA": "Expert Adherence: The driver is following the optimal racing line and speed profile closely. nothing needs to be labeled right now.",
     "4": "Pit Stop: The driver is entering, waiting in, or exiting the pit lane. Look for significant speed reduction and distinct trajectory deviation into the pit area.",
-    "RM": "Recovery & Merge: The driver is recovering from an incident (e.g., off-track excursions, spins) and rejoining the track. Focus on how the driver stabilizes the car, controls the speed, and safely merges back onto the racing line without impeding others.",
+    "RM": "Recovery & Merge: The driver is recovering from mistake such as slower speed. identify if driver is recovery from low speed, off-track, or merge back to expert line.",
     "MS": "Mistake Segment: The driver has committed a driving error resulting in time loss or instability. \n   - Step 1: Analyze the 'Time Difference' graph to pinpoint where the driver starts losing time compared to the expert.\n   - Step 2: Examine the 'Throttle', 'Brake', and 'Speed' traces at that specific moment.\n   - Step 3: Check the 'Trajectory' map for deviations from the optimal line.\n   - Step 4: Identify the *root cause* (e.g., braking too late, turning in too early, throttle applied too quickly) vs. consequential errors.",
-    "brands_hatch": "Circuit Feature (Brands Hatch): Identify specific named corners or straight sections of the Brands Hatch circuit based on the trajectory shape and position."
+    "brands_hatch": "Circuit Feature (Brands Hatch): Identify specific named corners or straight sections of the Brands Hatch circuit based on the trajectory shape and position. Also, identify the shape of the segment using labels other1-4 (e.g. in the corner, on the straight, approach to corner, exit corner)."
 }
 
 LABEL_CATEGORIES = {
