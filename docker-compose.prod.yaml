@@ -53,11 +53,16 @@ services:
     gpus: all
     env_file:
       - .prod.env
+      - .env.secrets
     environment:
       - BACKEND_URL=http://acla_backend_c:7001
       # Enable NVIDIA runtime features if GPUs are available on the host
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - GOOGLE_APPLICATION_CREDENTIALS=${GOOGLE_APPLICATION_CREDENTIALS}
+      - GEMINI_BATCH_GCS_BUCKET=${GEMINI_BATCH_GCS_BUCKET}
+    volumes:
+      - ./acla_ai_service/service_src:/app/service_src:ro
     ports:
       - '8000:8000'
     networks:

@@ -256,7 +256,7 @@ def render_manual_annotation(selected_annotation_key, selected_session_key, avai
                             annotation_position="top left"
                         )
 
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
     
     if graphs_to_remove:
         for gid in graphs_to_remove:
@@ -509,7 +509,7 @@ def render_manual_annotation(selected_annotation_key, selected_session_key, avai
                     fig_map.update_yaxes(scaleanchor="x", scaleratio=1)
                 
                 fig_map.update_layout(uirevision=session_id, height=800)
-                st.plotly_chart(fig_map, use_container_width=True)
+                st.plotly_chart(fig_map, width='stretch')
             else:
                 st.info("No active cars found at this timestamp.")
         else:
@@ -707,7 +707,7 @@ def render_manual_annotation(selected_annotation_key, selected_session_key, avai
                         labels={'x': 'Index', 'y': 'Change'}, 
                         title=f"Rate of Change (Δ) - {calc_feature} (Window: {smooth_window})"
                     )
-                    st.plotly_chart(fig_roc, use_container_width=True)
+                    st.plotly_chart(fig_roc, width='stretch')
 
     # Classifier Probability Check
     with st.expander("Classifier Probabilities (AI Check)"):
@@ -902,7 +902,7 @@ def render_manual_annotation(selected_annotation_key, selected_session_key, avai
                 if "telemetry_data" in d:
                     del d["telemetry_data"]
                 display_data.append(d)
-            st.dataframe(pd.DataFrame(display_data), use_container_width=True)
+            st.dataframe(pd.DataFrame(display_data), width='stretch')
 
             if st.button("Delete All Segments for Session", type="primary", key="manual_btn_del_all_seg"):
                 st.session_state.manual_show_delete_all_confirm = True

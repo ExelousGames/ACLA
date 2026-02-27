@@ -15,7 +15,6 @@ elif [ "$1" = "basic-reload" ]; then
     echo "Starting with basic hot reload (excluding cache directories)..."
     exec uvicorn main:app --host 0.0.0.0 --port 8000 --reload \
         --reload-exclude "*/__pycache__/*" \
-        --reload-exclude "*/telemetry_data_cache/*" \
         --reload-exclude "*/models/*" \
         --reload-exclude "*/scripts/debug_output/*"
 else

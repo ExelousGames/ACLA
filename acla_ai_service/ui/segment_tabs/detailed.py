@@ -275,8 +275,8 @@ def render_detailed_labeling(selected_annotation_key, selected_session_key, avai
             if category == main_cat:
                 continue
             
-            # Only show if the category (which is a parent ID) is selected in Main Labels, or if it is the "Other Labels" group
-            if category == "Other Labels" or category in selected_main_ids:
+            # Only show if the category (which is a parent ID) is selected in Main Labels, or if it is the "Track Section" group
+            if category == "Track Section" or category in selected_main_ids:
                 display_name = category
                 if category in LABEL_MAPPING:
                     display_name = LABEL_MAPPING[category]
@@ -352,6 +352,15 @@ def render_detailed_labeling(selected_annotation_key, selected_session_key, avai
             gemini_api_key = GeminiAnalyzer.get_api_key()
             
             if gemini_api_key:
+                context_padding_val = st.number_input(
+                    "Context Padding (surrounding data points)", 
+                    min_value=50, 
+                    max_value=10000, 
+                    value=2000, 
+                    step=100,
+                    help="Controls how much track data around the segment is included in the context map."
+                )
+
                 if st.button("Identify Sub-Labels with Gemini", key="gemini_identify_btn"):
                     if form_start >= form_end:
                         st.error("Invalid range selected.")
@@ -367,9 +376,8 @@ def render_detailed_labeling(selected_annotation_key, selected_session_key, avai
                                 # Use the predefined GRAPH_DEFINITIONS for consistent analysis
                                 graph_definitions = GRAPH_DEFINITIONS
                                 
-                                # Prepare context dataframe (dynamic padding)
-                                segment_len = int(form_end) - int(form_start)
-                                padding = max(50, int(segment_len * 0.5))
+                                # Prepare context dataframe (user controlled padding)
+                                padding = context_padding_val
                                 start_idx_ctx = max(0, int(form_start) - padding)
                                 end_idx_ctx = min(len(df), int(form_end) + padding)
                                 context_df = df.iloc[start_idx_ctx:end_idx_ctx]
@@ -382,22 +390,32 @@ def render_detailed_labeling(selected_annotation_key, selected_session_key, avai
                                     "expert_y": "expert_optimal_player_pos_y"
                                 }
                                 
+                                # Add track name from Static_track for reference image loading
+                                if "Static_track" in df.columns:
+                                    track_name = df["Static_track"].iloc[0] if not df.empty else None
+                                    if track_name:
+                                        track_config["track_name"] = track_name
+                                
                                 # 4. Current Labels
                                 current_labels_display = form_labels
                                 
                                 # 5. Contextual Sub-labels (e.g. MS -> MS1..MS30)
                                 sub_label_context = []
                                 
-                                # Always include "Other Labels" context 
-                                if "Other Labels" in LABEL_CATEGORIES:
-                                    other_ids = LABEL_CATEGORIES["Other Labels"]
+                                # Always include "Track Section" context 
+                                if "Track Section" in LABEL_CATEGORIES:
+                                    other_ids = LABEL_CATEGORIES["Track Section"]
                                     if other_ids:
+                                        # Add the main guideline for Track Section if available
+                                        if "Track Section" in MAIN_LABEL_GUIDELINES:
+                                            sub_label_context.append(f"Guideline for 'Track Section': {MAIN_LABEL_GUIDELINES['Track Section']}")
+
                                         other_docs = []
                                         for child_id in other_ids:
                                             child_name = LABEL_MAPPING.get(child_id, child_id)
                                             other_docs.append(f"- {child_id}: {child_name}")
                                         
-                                        block = f"Available 'Other Labels' (General Context):\n" + "\n".join(other_docs)
+                                        block = f"Available 'Track Section' Labels:\n" + "\n".join(other_docs)
                                         sub_label_context.append(block)
 
                                 for lname in current_labels_display:
@@ -428,7 +446,8 @@ def render_detailed_labeling(selected_annotation_key, selected_session_key, avai
                                     track_config=track_config, 
                                     current_labels=current_labels_display,
                                     available_sub_labels_context=sub_label_context,
-                                    context_df=context_df
+                                    context_df=context_df,
+                                    context_padding=context_padding_val
                                 )
                                 
                                 if isinstance(result, dict):
@@ -445,7 +464,7 @@ def render_detailed_labeling(selected_annotation_key, selected_session_key, avai
                                     images = result.get("images", [])
                                     if images:
                                         for idx, img in enumerate(images):
-                                            st.image(img, caption=f"Graph {idx+1}", use_column_width=True)
+                                            st.image(img, caption=f"Graph {idx+1}", width="stretch")
                                     else:
                                         st.info("No images were generated for this analysis.")
                                 else:
@@ -544,7 +563,7 @@ def render_detailed_labeling(selected_annotation_key, selected_session_key, avai
                         labels={'x': 'Index', 'y': f'Change'}, 
                         title=f"Rate of Change (Δ) - {calc_feature} (Window: {smooth_window})"
                     )
-                    st.plotly_chart(fig_roc, use_container_width=True)
+                    st.plotly_chart(fig_roc, width='stretch')
 
 
 
@@ -911,7 +930,7 @@ def render_detailed_labeling(selected_annotation_key, selected_session_key, avai
                             annotation_position="top left"
                         )
 
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
     
     if graphs_to_remove:
         for gid in graphs_to_remove:
@@ -1335,7 +1354,7 @@ def render_detailed_labeling(selected_annotation_key, selected_session_key, avai
                 fig_map.update_yaxes(scaleanchor="x", scaleratio=1)
             
             fig_map.update_layout(uirevision=session_id, height=800)
-            st.plotly_chart(fig_map, use_container_width=True)
+            st.plotly_chart(fig_map, width='stretch')
         else:
             st.info("No active cars found at this timestamp.")
     else:
@@ -1367,7 +1386,7 @@ def render_detailed_labeling(selected_annotation_key, selected_session_key, avai
                 display_data.append(d)
             
             if display_data:
-                st.dataframe(pd.DataFrame(display_data).set_index("Annotation ID"), use_container_width=True)
+                st.dataframe(pd.DataFrame(display_data).set_index("Annotation ID"), width='stretch')
             else:
                 st.info("No segments found inside the selected annotation.")
 

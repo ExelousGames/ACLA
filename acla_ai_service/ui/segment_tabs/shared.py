@@ -37,7 +37,7 @@ try:
     import app.models.segment_models
     # Force reload to pick up model changes (e.g. new fields)
     importlib.reload(app.models.segment_models)
-    from app.models.segment_models import AnnotatedSegment, LABEL_MAPPING, LABEL_NAME_TO_ID, LABEL_CATEGORIES, MAIN_LABEL_GUIDELINES, SegmentFeatureCatalog
+    from app.models.segment_models import AnnotatedSegment, LABEL_MAPPING, LABEL_NAME_TO_ID, LABEL_CATEGORIES, MAIN_LABEL_GUIDELINES, LABEL_IMAGE_MAP, SegmentFeatureCatalog
     from app.services.segment_updater import SegmentUpdater
 
 except ImportError:

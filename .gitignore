@@ -43,6 +43,10 @@ lerna-debug.log*
 .env.local
 .env.secrets
 
+# GCP Service Account credentials
+**/gcp-service-account.json
+**/service_src/*.json
+
 # temp directory
 .temp
 .tmp

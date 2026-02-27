@@ -20,6 +20,54 @@ This document explains how to securely manage sensitive environment variables li
    git status  # .env.secrets should not appear in the list
    ```
 
+## Google Cloud Platform (GCP) Setup
+
+For Gemini Batch API functionality, you need to configure GCP credentials:
+
+### 1. Service Account Setup
+
+1. **Place your GCP service account JSON file at:**
+   ```
+   acla_ai_service/service_src/gcp-service-account.json
+   ```
+
+2. **Required IAM permissions for the service account:**
+   - `storage.objects.create` (to upload batch input files)
+   - `storage.objects.get` (to read batch results)
+   - `storage.buckets.get` (to access bucket metadata)
+
+### 2. Environment Variables
+
+Add these to your `.env.secrets` file:
+
+```bash
+# GCS bucket name (without gs:// prefix)
+GEMINI_BATCH_GCS_BUCKET=your-bucket-name
+
+# Path to GCP service account file (inside container)
+GOOGLE_APPLICATION_CREDENTIALS=/app/service_src/gcp-service-account.json
+
+# Gemini API key (for non-batch API calls)
+GEMINI_API_KEY=your_gemini_api_key
+```
+
+### 3. Docker Integration
+
+The `docker-compose.dev.yaml` automatically:
+- Mounts the `acla_ai_service` directory to `/app` (includes `service_src/`)
+- Reads `GOOGLE_APPLICATION_CREDENTIALS` from `.env.secrets`
+- Passes `GEMINI_BATCH_GCS_BUCKET` to the container
+
+### 4. Troubleshooting GCS Authentication
+
+If you see "File gcp-service-account.json was not found":
+1. Verify the file exists at `acla_ai_service/service_src/gcp-service-account.json`
+2. Restart Docker containers: `docker-compose -f docker-compose.dev.yaml up -d ai_service`
+
+If you see "Permission denied" errors:
+1. Verify the service account has the required IAM roles
+2. Check the bucket name is correct in `.env.secrets`
+
 ## Security Best Practices
 
 ### ✅ DO:

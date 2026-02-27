@@ -23,11 +23,11 @@ LABEL_MAPPING = {
     "RM6": "Recover from small speed gap",
     "RM7": "Merge back to expert line",
     ################### Detailed mistake labels (for label MS) ###################
-    "MS1": "Brake too late",
+    "MS1": "Initiate brake too late",
     "MS2": "Entry too late",
     "MS3": "Apex too late",
     "MS4": "Exit out too early",
-    "MS5": "Brake too early",
+    "MS5": "Initiate brake too early",
     "MS6": "Entry too early",
     "MS7": "Apex too early",
     "MS8": "Exit out too late",
@@ -35,24 +35,27 @@ LABEL_MAPPING = {
     "MS10": "Apex too wide",
     "MS11": "Exit too narrow",
     "MS12": "Missing Apex",
-    "MS13": "Brake not enough",
+    "MS13": "Highest Brake pressure too low",
     "MS14" : "Brake applied too quickly",
     "MS15" : "Throttle applied too quickly",
     "MS16" : "Exit too wide",
     "MS17": "Release brake too quickly",
     "MS18": "Release brake too slowly",
-    "MS19": "Throttle not enough",
-    "MS20":"Throttle too early",
-    "MS21":"Throttle too late",
-    "MS22":"Brake too much",
+    "MS19": "Highest throttle pressure too low",
+    "MS20":"Initiate throttle too early",
+    "MS21":"Initiate throttle too late",
+    "MS22":"Highest Brake pressure too high",
     "MS23":"Release throttle too quickly",
     "MS24": "Brake applied too slowly",
     "MS25": "Throttle applied too slowly",
-    "MS26": "Throttle too much",
+    "MS26": "Highest throttle pressure too high",
     "MS27": "Release brake too late",
     "MS28": "Release brake too early",
     "MS29": "Release throttle too late",
     "MS30": "Release throttle too early",
+    "MS31": "Hold Brake too short",
+    "MS32": "Hold Brake too long",
+    "MS33":"Entry too wide",
      ################### Corner name ###################
     "brands_hatch":"Brands Hatch",
     "brands_hatch1":"Brabham Straight",
@@ -63,20 +66,47 @@ LABEL_MAPPING = {
     "brands_hatch6":"Surtees",
     "brands_hatch7":"Pilgrim's Drop",
     "brands_hatch8":"Hawthorn Hill",     
-    "brands_hatch9":"Hawthorn Bend",
+    "brands_hatch9":"Hawthorns",
     "brands_hatch10":"Derek Minter Straight",
     "brands_hatch11":"Westfield Bend",
     "brands_hatch12":"Dingle Dell",
     "brands_hatch13":"Sheene Curve",
-    "brands_hatch14":"Stirling's Bend",
+    "brands_hatch14":"Stirlings",
     "brands_hatch15":"Clearways",
     "brands_hatch16":"Clark Curve",  
+    "brands_hatch17":"Pit",
+    "brands_hatch18":"Graham Hill",
 
-    ################### Other Labels ###################
-    "Other1": "In the corner",
-    "Other2": "On the straight",
-    "Other3": "Approach to corner",
-    "Other4": "Exit corner",
+    "silverstone":"Silverstone",
+    "silverstone1":"Woodcote",
+    "silverstone2":"Copse",
+    "silverstone3":"Maggotts",
+    "silverstone4":"Becketts",
+    "silverstone5":"Chapel",
+    "silverstone6":"Hangar Straight",
+    "silverstone7":"Stowe",
+    "silverstone8":"Vale",
+    "silverstone9":"Club",
+    "silverstone10":"Hamilton Straight",
+    "silverstone11":"Abbey",
+    "silverstone12":"Farm Curve",
+    "silverstone13":"Village",
+    "silverstone14":"The Loop",
+    "silverstone15":"Aintree",
+    "silverstone16":"Wellington Straight",
+    "silverstone17":"Brooklands",
+    "silverstone18":"Luffield",
+    "silverstone19":"Pit",
+    "silverstone20":"Vale first 90 shape turn",
+    "silverstone21":"Vale second over 90 rounded turn",
+
+    ################### Track Section ###################
+    "TS1": "In the corner",
+    "TS2": "On the straight",
+    "TS3": "Approach to corner",
+    "TS4": "Exit corner leading to straight",
+    "TS5": "Between consecutive corners",
+    "TS6": "Consecutive corners with no straight in between",
 }
 LABEL_NAME_TO_ID = {v: k for k, v in LABEL_MAPPING.items()}
 
@@ -87,19 +117,27 @@ MAIN_LABEL_GUIDELINES = {
     "4": "Pit Stop: The driver is entering, waiting in, or exiting the pit lane. Look for significant speed reduction and distinct trajectory deviation into the pit area.",
     "RM": "Recovery & Merge: The driver is recovering from mistake such as slower speed. identify if driver is recovery from low speed, off-track, or merge back to expert line.",
     "MS": "Mistake Segment: The driver has committed a driving error resulting in time loss or instability. \n   - Step 1: Analyze the 'Time Difference' graph to pinpoint where the driver starts losing time compared to the expert.\n   - Step 2: Examine the 'Throttle', 'Brake', and 'Speed' traces at that specific moment.\n   - Step 3: Check the 'Trajectory' map for deviations from the optimal line.\n   - Step 4: Identify the *root cause* (e.g., braking too late, turning in too early, throttle applied too quickly) vs. consequential errors.",
-    "brands_hatch": "Circuit Feature (Brands Hatch): Identify specific named corners or straight sections of the Brands Hatch circuit based on the trajectory shape and position. Also, identify the shape of the segment using labels other1-4 (e.g. in the corner, on the straight, approach to corner, exit corner)."
+    "brands_hatch": "Circuit Feature (Brands Hatch):Compare Reference Guide for Brands Hatch and Identify specific named corners or straight sections of the Brands Hatch circuit based on the trajectory shape and position. Also, identify the shape of the segment using labels TS1-5 ",
+    "silverstone": "Circuit Feature (Silverstone): Compare Reference Guide for Silverstone and Identify specific named corners or straight sections of the Silverstone circuit based on the trajectory shape and position. Also, identify the shape of the segment using labels TS1-5.",
+    "Track Section": "Track Section: if the segment contains a corner, label the shape as in the corner. if the segment is on the straight, label as on the straight. if the segment is approaching a corner but not yet in it, label as approach to corner. if the segment is exiting a corner, label as exit corner. if the segment is between corners and hasnt be name yet, label as between corners."
+}
+
+LABEL_IMAGE_MAP = {
+    "brands_hatch": "Brands_Hatch_2003.jpg",
+    "silverstone": "Silverstone_Circuit_2020.jpg"
 }
 
 LABEL_CATEGORIES = {
-    "Main Labels": ["1", "2","EA","4","RM","MS","brands_hatch"],
+    "Main Labels": ["1", "2","EA","4","RM","MS","brands_hatch","silverstone"],
     "1":[],
     "2":[],
     "EA":[],
     "4":[],
     "RM":["RM1", "RM2", "RM5","RM6","RM7"],
-    "brands_hatch":["brands_hatch1","brands_hatch2","brands_hatch3","brands_hatch4","brands_hatch5","brands_hatch6","brands_hatch7","brands_hatch8","brands_hatch9","brands_hatch10","brands_hatch11","brands_hatch12","brands_hatch13","brands_hatch14","brands_hatch15","brands_hatch16"],
-    "MS":["MS1","MS2","MS3","MS4","MS5","MS6","MS7","MS8","MS9","MS10","MS11","MS12","MS13","MS14","MS15","MS16","MS17","MS18","MS19","MS20","MS21","MS22","MS23","MS24","MS25","MS26","MS27","MS28","MS29","MS30"],
-    "Other Labels": ["Other1", "Other2", "Other3", "Other4"]
+    "brands_hatch":["brands_hatch1","brands_hatch2","brands_hatch3","brands_hatch4","brands_hatch5","brands_hatch6","brands_hatch7","brands_hatch8","brands_hatch9","brands_hatch10","brands_hatch11","brands_hatch12","brands_hatch13","brands_hatch14","brands_hatch15","brands_hatch16","brands_hatch17","brands_hatch18"],
+    "silverstone":["silverstone1","silverstone2","silverstone3","silverstone4","silverstone5","silverstone6","silverstone7","silverstone8","silverstone9","silverstone10","silverstone11","silverstone12","silverstone13","silverstone14","silverstone15","silverstone16","silverstone17","silverstone18","silverstone20","silverstone21","silverstone19"],
+    "MS":["MS1","MS2","MS3","MS4","MS5","MS6","MS7","MS8","MS9","MS10","MS11","MS12","MS13","MS14","MS15","MS16","MS17","MS18","MS19","MS20","MS21","MS22","MS23","MS24","MS25","MS26","MS27","MS28","MS29","MS30","MS31","MS32","MS33"],
+    "Track Section": ["TS1", "TS2", "TS3", "TS4", "TS5", "TS6"]
 }
 
 @dataclass
