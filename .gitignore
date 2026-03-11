@@ -104,3 +104,4 @@ report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 /acla_ai_service/models
 /acla_ai_service/scripts/telemetry_zarr_store
 /acla_ai_service/ui/segment_tabs/__pycache__
+/acla_ai_service/ui/segment_tabs/components/__pycache__
