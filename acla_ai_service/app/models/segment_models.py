@@ -19,26 +19,26 @@ LABEL_MAPPING = {
     ################### Detailed Recovery & Merge Labels (for label RM) ###################
     "RM1": "Recover from off-track",
     "RM2": "Exit pit lane",
-    "RM5": "Recover from large speed gap",
-    "RM6": "Recover from small speed gap",
+    "RM5": "Recover from speed gap over 20",
+    "RM6": "Recover from small speed gap under 20",
     "RM7": "Merge back to expert line",
     ################### Detailed mistake labels (for label MS) ###################
     "MS1": "Initiate brake too late",
-    "MS2": "Entry too late",
-    "MS3": "Apex too late",
-    "MS4": "Exit out too early",
+    "MS2": "Initiate the turn too late",
+    "MS3": "Too late compared to expert Apex",
+    "MS4": "time to exit too early",
     "MS5": "Initiate brake too early",
-    "MS6": "Entry too early",
-    "MS7": "Apex too early",
-    "MS8": "Exit out too late",
-    "MS9": "Entry too tight",
+    "MS6": "Initiate the turn too early",
+    "MS7": "Too early compared to expert Apex",
+    "MS8": "time to exit too late",
+    "MS9": "Entry trajectory too tight",
     "MS10": "Apex too wide",
-    "MS11": "Exit too narrow",
-    "MS12": "Missing Apex",
+    "MS11": "Exit trajectory too narrow",
+    "MS12": "Cornering far away from expert line",
     "MS13": "Highest Brake pressure too low",
     "MS14" : "Brake applied too quickly",
     "MS15" : "Throttle applied too quickly",
-    "MS16" : "Exit too wide",
+    "MS16" : "Exit trajectory too wide",
     "MS17": "Release brake too quickly",
     "MS18": "Release brake too slowly",
     "MS19": "Highest throttle pressure too low",
@@ -49,13 +49,23 @@ LABEL_MAPPING = {
     "MS24": "Brake applied too slowly",
     "MS25": "Throttle applied too slowly",
     "MS26": "Highest throttle pressure too high",
-    "MS27": "Release brake too late",
-    "MS28": "Release brake too early",
-    "MS29": "Release throttle too late",
-    "MS30": "Release throttle too early",
-    "MS31": "Hold Brake too short",
-    "MS32": "Hold Brake too long",
-    "MS33":"Entry too wide",
+    "MS27": "Initiate brake release too late",
+    "MS28": "Initiate brake release too early",
+    "MS29": "Initiate throttle release too late",
+    "MS30": "Initiate throttle release too early",
+    "MS31": "Highest Brake length too short",
+    "MS32": "Highest Brake length too long",
+    "MS33":"Entry trajectory too wide",
+    "MS34":"Throttle and brake applied at the same time for too long",
+    "MS35": "Shift up too early",
+    "MS36": "Shift up too late",
+    "MS37": "Shift down too early",
+    "MS38": "Shift down too late",
+    "MS39": "Understeer",
+    "MS40": "Oversteer",
+    "MS41": "Cutting the line",
+    "MS42": "Inefficient grip utilization at entry",
+    "MS43": "Inefficient grip utilization at exit",
      ################### Corner name ###################
     "brands_hatch":"Brands Hatch",
     "brands_hatch1":"Brabham Straight",
@@ -76,6 +86,7 @@ LABEL_MAPPING = {
     "brands_hatch16":"Clark Curve",  
     "brands_hatch17":"Pit",
     "brands_hatch18":"Graham Hill",
+    "brands_hatch19":"Hailwoods Hill",
 
     "silverstone":"Silverstone",
     "silverstone1":"Woodcote",
@@ -100,13 +111,13 @@ LABEL_MAPPING = {
     "silverstone20":"Vale first 90 shape turn",
     "silverstone21":"Vale second over 90 rounded turn",
 
-    ################### Track Section ###################
-    "TS1": "In the corner",
-    "TS2": "On the straight",
-    "TS3": "Approach to corner",
-    "TS4": "Exit corner leading to straight",
-    "TS5": "Between consecutive corners",
-    "TS6": "Consecutive corners with no straight in between",
+    ################### Segment Type ###################
+    "ST1": "In the corner",
+    "ST2": "On the straight",
+    "ST3": "Approach to corner",
+    "ST4": "Exit corner leading to straight",
+    "ST5": "Between consecutive corners",
+    "ST6": "Consecutive corners with no straight in between",
 }
 LABEL_NAME_TO_ID = {v: k for k, v in LABEL_MAPPING.items()}
 
@@ -116,10 +127,10 @@ MAIN_LABEL_GUIDELINES = {
     "EA": "Expert Adherence: The driver is following the optimal racing line and speed profile closely. nothing needs to be labeled right now.",
     "4": "Pit Stop: The driver is entering, waiting in, or exiting the pit lane. Look for significant speed reduction and distinct trajectory deviation into the pit area.",
     "RM": "Recovery & Merge: The driver is recovering from mistake such as slower speed. identify if driver is recovery from low speed, off-track, or merge back to expert line.",
-    "MS": "Mistake Segment: The driver has committed a driving error resulting in time loss or instability. \n   - Step 1: Analyze the 'Time Difference' graph to pinpoint where the driver starts losing time compared to the expert.\n   - Step 2: Examine the 'Throttle', 'Brake', and 'Speed' traces at that specific moment.\n   - Step 3: Check the 'Trajectory' map for deviations from the optimal line.\n   - Step 4: Identify the *root cause* (e.g., braking too late, turning in too early, throttle applied too quickly) vs. consequential errors.",
-    "brands_hatch": "Circuit Feature (Brands Hatch):Compare Reference Guide for Brands Hatch and Identify specific named corners or straight sections of the Brands Hatch circuit based on the trajectory shape and position. Also, identify the shape of the segment using labels TS1-5 ",
-    "silverstone": "Circuit Feature (Silverstone): Compare Reference Guide for Silverstone and Identify specific named corners or straight sections of the Silverstone circuit based on the trajectory shape and position. Also, identify the shape of the segment using labels TS1-5.",
-    "Track Section": "Track Section: if the segment contains a corner, label the shape as in the corner. if the segment is on the straight, label as on the straight. if the segment is approaching a corner but not yet in it, label as approach to corner. if the segment is exiting a corner, label as exit corner. if the segment is between corners and hasnt be name yet, label as between corners."
+    "MS": "Mistake Segment: The driver has committed a driving error resulting in time loss or instability. \n   - Step 1: Analyze the 'Time Difference to Expert' graph; a mistake normally causes this time gap to increase continuously without decreasing shortly after.\n   - Step 2: Examine the differences in 'throttle' and 'brake' between the player and the expert to find out why the player is slower.\n   - Step 3: Examine the 'push_limit' graph to find understeer or oversteer, which could lead to lower speed.\n   - Step 4: Check the 'Trajectory' map for mistakes caused by deviations from the optimal line.\n   - Step 5: Find the labels that describe the *root cause*.",
+    "brands_hatch": "Circuit Feature (Brands Hatch):Look at the Trajectories Overlay and Identify specific named corners or straight sections of the Brands Hatch circuit. Also, identify the shape of the segment using labels ST1-6 ",
+    "silverstone": "Circuit Feature (Silverstone): Look at the Trajectories Overlay and Identify specific named corners or straight sections of the Silverstone circuit. Also, identify the shape of the segment using labels ST1-6.",
+    "Segment Type": "Segment Type: if the segment contains a corner, label the shape as in the corner. if the segment is on the straight, label as on the straight. if the segment is approaching a corner but not yet in it, label as approach to corner. if the segment is exiting a corner, label as exit corner. if the segment is between corners and hasnt be name yet, label as between corners."
 }
 
 LABEL_IMAGE_MAP = {
@@ -134,10 +145,10 @@ LABEL_CATEGORIES = {
     "EA":[],
     "4":[],
     "RM":["RM1", "RM2", "RM5","RM6","RM7"],
-    "brands_hatch":["brands_hatch1","brands_hatch2","brands_hatch3","brands_hatch4","brands_hatch5","brands_hatch6","brands_hatch7","brands_hatch8","brands_hatch9","brands_hatch10","brands_hatch11","brands_hatch12","brands_hatch13","brands_hatch14","brands_hatch15","brands_hatch16","brands_hatch17","brands_hatch18"],
+    "brands_hatch":["brands_hatch1","brands_hatch2","brands_hatch3","brands_hatch4","brands_hatch5","brands_hatch6","brands_hatch7","brands_hatch8","brands_hatch9","brands_hatch10","brands_hatch11","brands_hatch12","brands_hatch13","brands_hatch14","brands_hatch15","brands_hatch16","brands_hatch17","brands_hatch18","brands_hatch19"],
     "silverstone":["silverstone1","silverstone2","silverstone3","silverstone4","silverstone5","silverstone6","silverstone7","silverstone8","silverstone9","silverstone10","silverstone11","silverstone12","silverstone13","silverstone14","silverstone15","silverstone16","silverstone17","silverstone18","silverstone20","silverstone21","silverstone19"],
-    "MS":["MS1","MS2","MS3","MS4","MS5","MS6","MS7","MS8","MS9","MS10","MS11","MS12","MS13","MS14","MS15","MS16","MS17","MS18","MS19","MS20","MS21","MS22","MS23","MS24","MS25","MS26","MS27","MS28","MS29","MS30","MS31","MS32","MS33"],
-    "Track Section": ["TS1", "TS2", "TS3", "TS4", "TS5", "TS6"]
+    "MS":["MS1","MS2","MS3","MS4","MS5","MS6","MS7","MS8","MS9","MS10","MS11","MS12","MS13","MS14","MS15","MS16","MS17","MS18","MS19","MS20","MS21","MS22","MS23","MS24","MS25","MS26","MS27","MS28","MS29","MS30","MS31","MS32","MS33","MS34","MS35","MS36","MS37","MS38","MS39","MS40","MS41","MS42","MS43"],
+    "Segment Type": ["ST1", "ST2", "ST3", "ST4", "ST5", "ST6"]
 }
 
 @dataclass

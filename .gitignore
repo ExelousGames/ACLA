@@ -91,7 +91,6 @@ report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 /acla_ai_service/__pycache__
 /acla_ai_service/app/api/__pycache__
 
-/acla_ai_service/telemetry_data_cache
 /acla_ai_service/app/scripts/debug_output
 /acla_front/src/py-scripts/__pycache__
 
@@ -104,3 +103,4 @@ report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 /acla_ai_service/models/llm_adapters
 /acla_ai_service/models
 /acla_ai_service/scripts/telemetry_zarr_store
+/acla_ai_service/ui/segment_tabs/__pycache__

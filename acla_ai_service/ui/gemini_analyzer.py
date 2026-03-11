@@ -43,7 +43,7 @@ GRAPH_DEFINITIONS = [
         "id": "time_delta",
         "title": "Time Difference to Expert",
         "columns": ["expert_time_difference"],
-        "description": "Instantaneous time delta compared to the expert. Positive values mean the driver is slower/behind the expert at that specific point."
+        "description": "Instantaneous time delta compared to the expert. a positve trend indicates the driver made a mistake or was slower than the expert, while a negative trend indicates the driver was faster. Look for spikes that indicate significant mistakes or gains."
     },
     {
         "id": "speed_delta",
@@ -64,12 +64,6 @@ GRAPH_DEFINITIONS = [
         "description": "Metric indicating how close the driver is pushing to the vehicle limit. Over 1 means the driver is pushing beyond the estimated limit, which could indicate tire slip. Less than 1 means the driver is not fully utilizing the potential grip."
     },
     {
-        "id": "trajectory_context",
-        "title": "Track Map Overview",
-        "columns": [], 
-        "description": "Shows where the segment (green) is located on the full track (grey). Combine with track reference map to identify specific corners or sections."
-    },
-    {
         "id": "trajectory_detailed",
         "title": "Detailed Trajectory",
         "columns": [],
@@ -77,9 +71,9 @@ GRAPH_DEFINITIONS = [
     },
     {
         "id": "track_map",
-        "title": "Track Map",
+        "title": "Track Map and Trajectories Overlay",
         "columns": [],
-        "description": "track reference map image for context. Compare the segment's trajectory to the track layout to identify specific corners or sections."
+        "description": "Official track layout reference image with player trajectories overlaid. The names are displayed beside the corners and straight. Use them to identify specific corners or track sections names."
     }
 ]
 
@@ -89,7 +83,7 @@ class GeminiAnalyzer:
         if not api_key:
             raise ValueError("API Key is required")
         self.client = genai.Client(api_key=self.api_key)
-        self.model_name = 'gemini-3-pro-preview'  # or the latest available Gemini model
+        self.model_name = 'gemini-3.1-pro-preview'  # or the latest available Gemini model
 
     @staticmethod
     def get_api_key() -> Optional[str]:
@@ -246,6 +240,174 @@ class GeminiAnalyzer:
         
         return self._plot_to_image(fig)
 
+    def create_trajectory_overlay(self, df: pd.DataFrame, track_config: Dict[str, str], context_df: Optional[pd.DataFrame] = None, 
+                                  track_map_path: Optional[str] = None, overlay_config: Optional[Dict[str, float]] = None) -> Optional[Image.Image]:
+        """
+        Creates an overlay of trajectory context on top of a track reference map.
+        
+        Args:
+            df: Segment dataframe
+            track_config: Configuration with position column names
+            context_df: Full track context dataframe
+            track_map_path: Path to the track reference image
+            overlay_config: Dictionary with overlay parameters:
+                - offset_x: Horizontal offset (default: 0)
+                - offset_y: Vertical offset (default: 0)
+                - rotation: Rotation angle in degrees (default: 0)
+                - scale_x: Horizontal scale factor (default: 1.0)
+                - scale_y: Vertical scale factor (default: 1.0)
+                - alpha: Trajectory opacity (default: 0.7)
+        
+        Returns:
+            PIL Image with overlay, or None if track map not found
+        """
+        if not track_map_path or not os.path.exists(track_map_path):
+            return None
+        
+        # Default overlay configuration
+        default_config = {
+            "offset_x": 0.0,
+            "offset_y": 0.0,
+            "rotation": 0.0,
+            "scale_x": 1.0,
+            "scale_y": 1.0,
+            "alpha": 0.7
+        }
+        
+        if overlay_config:
+            default_config.update(overlay_config)
+        
+        config = default_config
+        
+        try:
+            # Load track reference map
+            track_img = Image.open(track_map_path).convert('RGBA')
+            
+            # Create figure with track image as background
+            fig, ax = plt.subplots(figsize=(12, 12))
+            
+            # Display track map
+            ax.imshow(track_img, extent=[0, track_img.width, 0, track_img.height], aspect='auto', alpha=1.0)
+            
+            # Get trajectory data
+            if context_df is not None and not context_df.empty:
+                plot_df = context_df
+            else:
+                plot_df = df
+            
+            if "player_x" in track_config and "player_y" in track_config:
+                px = track_config["player_x"]
+                py = track_config["player_y"]
+                
+                if px in plot_df.columns and py in plot_df.columns:
+                    # Extract coordinates
+                    x_coords = plot_df[px].values.copy()
+                    y_coords = plot_df[py].values.copy()
+                    
+                    # Apply transformations
+                    # 1. Rotation (around origin)
+                    if config["rotation"] != 0:
+                        angle_rad = np.deg2rad(config["rotation"])
+                        cos_a = np.cos(angle_rad)
+                        sin_a = np.sin(angle_rad)
+                        
+                        x_rot = x_coords * cos_a - y_coords * sin_a
+                        y_rot = x_coords * sin_a + y_coords * cos_a
+                        
+                        x_coords = x_rot
+                        y_coords = y_rot
+                    
+                    # 2. Normalize to [0, 1]
+                    x_min, x_max = x_coords.min(), x_coords.max()
+                    y_min, y_max = y_coords.min(), y_coords.max()
+                    
+                    if x_max - x_min > 0:
+                        x_norm = (x_coords - x_min) / (x_max - x_min)
+                    else:
+                        x_norm = np.zeros_like(x_coords) + 0.5
+                    
+                    if y_max - y_min > 0:
+                        y_norm = (y_coords - y_min) / (y_max - y_min)
+                    else:
+                        y_norm = np.zeros_like(y_coords) + 0.5
+                    
+                    # 3. Center around 0.5, apply scale, then map to image coordinates
+                    # Center the normalized coordinates
+                    x_centered = x_norm - 0.5
+                    y_centered = y_norm - 0.5
+                    
+                    # Apply scale from center (independent X and Y scaling)
+                    x_scaled = x_centered * config["scale_x"] + 0.5
+                    y_scaled = y_centered * config["scale_y"] + 0.5
+                    
+                    # Map to image size with offset (flip y-axis)
+                    x_img = x_scaled * track_img.width + config["offset_x"]
+                    y_img = (1 - y_scaled) * track_img.height + config["offset_y"]
+                    
+                    # Plot context trajectory (if available)
+                    if context_df is not None and not context_df.empty:
+                        ax.plot(x_img, y_img, color="lightgray", linewidth=2, alpha=0.5, label="Full Track Context")
+                    
+                    # Plot segment trajectory
+                    if not df.empty and px in df.columns and py in df.columns:
+                        seg_x = df[px].values.copy()
+                        seg_y = df[py].values.copy()
+                        
+                        # Apply same transformations to segment
+                        # 1. Rotation
+                        if config["rotation"] != 0:
+                            angle_rad = np.deg2rad(config["rotation"])
+                            cos_a = np.cos(angle_rad)
+                            sin_a = np.sin(angle_rad)
+                            
+                            seg_x_rot = seg_x * cos_a - seg_y * sin_a
+                            seg_y_rot = seg_x * sin_a + seg_y * cos_a
+                            
+                            seg_x = seg_x_rot
+                            seg_y = seg_y_rot
+                        
+                        # 2. Normalize using same bounds as context
+                        if x_max - x_min > 0:
+                            seg_x_norm = (seg_x - x_min) / (x_max - x_min)
+                        else:
+                            seg_x_norm = np.zeros_like(seg_x) + 0.5
+                        
+                        if y_max - y_min > 0:
+                            seg_y_norm = (seg_y - y_min) / (y_max - y_min)
+                        else:
+                            seg_y_norm = np.zeros_like(seg_y) + 0.5
+                        
+                        # 3. Center around 0.5, apply scale, then map to image
+                        seg_x_centered = seg_x_norm - 0.5
+                        seg_y_centered = seg_y_norm - 0.5
+                        
+                        seg_x_scaled = seg_x_centered * config["scale_x"] + 0.5
+                        seg_y_scaled = seg_y_centered * config["scale_y"] + 0.5
+                        
+                        seg_x_img = seg_x_scaled * track_img.width + config["offset_x"]
+                        seg_y_img = (1 - seg_y_scaled) * track_img.height + config["offset_y"]
+                        
+                        ax.plot(seg_x_img, seg_y_img, color="green", linewidth=4, alpha=config["alpha"], label="Segment", zorder=10)
+                        
+                        # Mark start and end
+                        ax.scatter(seg_x_img[0], seg_y_img[0], marker='x', s=200, color='lime', label='Start', zorder=11)
+                        ax.scatter(seg_x_img[-1], seg_y_img[-1], marker='o', s=200, color='red', label='End', zorder=11)
+            
+            ax.set_xlim(0, track_img.width)
+            ax.set_ylim(0, track_img.height)
+            ax.set_aspect('equal')
+            ax.axis('off')
+            ax.legend(loc='upper right')
+            ax.set_title("Track Map with Trajectory Overlay")
+            
+            return self._plot_to_image(fig)
+            
+        except Exception as e:
+            print(f"Error creating trajectory overlay: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+
     def create_detailed_trajectory_plot(self, df: pd.DataFrame, track_config: Dict[str, str]) -> Optional[Image.Image]:
         """
         Creates a detailed trajectory plot focusing on the segment and apex/min-speed points.
@@ -345,14 +507,8 @@ class GeminiAnalyzer:
         # Map filename -> trigger info (for tracking what triggered the image load)
         filename_to_info = {}
 
-        # 1. Check track_name from track_config (direct comparison with LABEL_IMAGE_MAP keys)
-        if track_config and "track_name" in track_config:
-            track_name = track_config["track_name"]
-            if track_name in LABEL_IMAGE_MAP:
-                filename = LABEL_IMAGE_MAP[track_name]
-                if filename not in filename_to_info:
-                    filename_to_info[filename] = {"is_track_map": True, "trigger": track_name}
-        
+        # 1. (Removed) Track map is now included with trajectory overlay
+
         # 2. Check current_labels for any label-specific images
         if current_labels:
             for label in current_labels:
@@ -409,8 +565,15 @@ class GeminiAnalyzer:
 
         return images, descriptions
 
-    def _prepare_visual_content(self, df: pd.DataFrame, graph_definitions: List[Dict[str, Any]] = None, track_config: Dict[str, str] = {}, context_df: pd.DataFrame = None, context_padding: int = 2000) -> tuple[List[Image.Image], List[str]]:
-        """Helper to generate images and descriptions shared between analysis methods."""
+    def _prepare_visual_content(self, df: pd.DataFrame, graph_definitions: List[Dict[str, Any]] = None, track_config: Dict[str, str] = {}, context_df: pd.DataFrame = None, context_padding: int = 2000, overlay_config: Optional[Dict[str, Any]] = None) -> tuple[List[Image.Image], List[str]]:
+        """Helper to generate images and descriptions shared between analysis methods.
+        
+        Args:
+            overlay_config: If provided, should include:
+                - enabled: bool - whether to use overlay mode
+                - track_map_path: str - path to track reference image
+                - offset_x, offset_y, rotation, scale, alpha: overlay parameters
+        """
         images = []
         plot_descriptions = []
         
@@ -449,15 +612,25 @@ class GeminiAnalyzer:
                         return g.get("description", "")
                 return ""
 
-            # 1. Big Picture Context
-            ctx_description = get_desc("trajectory_context")
-            if ctx_description and context_df is not None and not context_df.empty:
-                ctx_img = self.create_context_trajectory_plot(df, track_config, context_df=context_df, context_padding=context_padding)
-                if ctx_img:
-                    images.append(ctx_img)
-                    plot_descriptions.append(f"Image {len(images)}: {ctx_description}")
+            # Check if overlay mode is enabled
+            use_overlay = overlay_config and overlay_config.get("enabled", False) and overlay_config.get("track_map_path")
+            
+            if use_overlay:
+                # Create combined overlay image
+                overlay_img = self.create_trajectory_overlay(
+                    df, 
+                    track_config, 
+                    context_df=context_df,
+                    track_map_path=overlay_config["track_map_path"],
+                    overlay_config=overlay_config
+                )
+                if overlay_img:
+                    images.append(overlay_img)
+                    plot_descriptions.append(f"Image {len(images)}: Combined track map with trajectory overlay showing segment location and path. This combines the track layout reference with the actual driving trajectory, allowing precise identification of which corner or section is being analyzed.")
+            else:
+                pass
 
-            # 2. Detailed Trajectory
+            # 2. Detailed Trajectory (always include)
             traj_description = get_desc("trajectory_detailed")
             if traj_description:
                 traj_img = self.create_detailed_trajectory_plot(df, track_config)
@@ -474,12 +647,13 @@ class GeminiAnalyzer:
                         current_labels: List[str] = None,
                         available_sub_labels_context: List[str] = None,
                         context_df: pd.DataFrame = None,
-                        context_padding: int = 200) -> Dict[str, Any]:
+                        context_padding: int = 200,
+                        overlay_config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
         Analyzes the segment and returns a JSON structured response.
         Useful for batch processing / auto-annotation.
         """
-        images, plot_descriptions = self._prepare_visual_content(df, graph_definitions, track_config, context_df, context_padding=context_padding)
+        images, plot_descriptions = self._prepare_visual_content(df, graph_definitions, track_config, context_df, context_padding=context_padding, overlay_config=overlay_config)
 
         # Add Map Images if relevant labels are present
         map_imgs, map_descs = self._load_label_map_images(current_labels, graph_definitions, track_config=track_config, start_index=len(images) + 1)
@@ -493,19 +667,6 @@ class GeminiAnalyzer:
         # Construct Prompt
         labels_context = f"Current identified labels: {', '.join(current_labels)}" if current_labels else "No labels identified yet."
         
-        guidelines_text = ""
-        if current_labels:
-            guidelines = []
-            for label in current_labels:
-                if label in MAIN_LABEL_GUIDELINES:
-                    guidelines.append(f"- Label '{label}': {MAIN_LABEL_GUIDELINES[label]}")
-                elif label in LABEL_NAME_TO_ID:
-                    lid = LABEL_NAME_TO_ID[label]
-                    if lid in MAIN_LABEL_GUIDELINES:
-                        guidelines.append(f"- Label '{label}' ({lid}): {MAIN_LABEL_GUIDELINES[lid]}")
-            if guidelines:
-                guidelines_text = "Main Label Guidelines:\n" + "\n".join(guidelines)
-        
         context_block = ""
         if available_sub_labels_context:
             content = "\n".join(available_sub_labels_context) if isinstance(available_sub_labels_context, list) else str(available_sub_labels_context)
@@ -518,7 +679,6 @@ Analyze the provided telemetry data graphs for a racing simulation segment.
 {descriptions_text}
 
 {labels_context}
-{guidelines_text}
 
 {context_block}
 
@@ -613,14 +773,15 @@ JSON Schema:
                         current_labels: List[str] = None,
                         available_sub_labels_context: List[str] = None,
                         context_df: pd.DataFrame = None,
-                        context_padding: int = 200) -> Dict[str, Any]:
+                        context_padding: int = 200,
+                        overlay_config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
         Analyzes the segment and returns a dictionary with:
         - 'response': The text response from Gemini
         - 'images': List of PIL Images generated and sent
         - 'prompt': The text prompt sent
         """
-        images, plot_descriptions = self._prepare_visual_content(df, graph_definitions, track_config, context_df, context_padding=context_padding)
+        images, plot_descriptions = self._prepare_visual_content(df, graph_definitions, track_config, context_df, context_padding=context_padding, overlay_config=overlay_config)
 
         # Add Map Images if relevant labels are present
         map_imgs, map_descs = self._load_label_map_images(current_labels, graph_definitions, track_config=track_config, start_index=len(images) + 1)
@@ -638,21 +799,6 @@ JSON Schema:
         # Construct the detailed prompt
         labels_context = f"Current identified labels: {', '.join(current_labels)}" if current_labels else "No labels identified yet."
         
-        guidelines_text = ""
-        if current_labels:
-            guidelines = []
-            for label in current_labels:
-                # Try direct key
-                if label in MAIN_LABEL_GUIDELINES:
-                    guidelines.append(f"- Label '{label}': {MAIN_LABEL_GUIDELINES[label]}")
-                # Try finding ID from name
-                elif label in LABEL_NAME_TO_ID:
-                    lid = LABEL_NAME_TO_ID[label]
-                    if lid in MAIN_LABEL_GUIDELINES:
-                        guidelines.append(f"- Label '{label}' ({lid}): {MAIN_LABEL_GUIDELINES[lid]}")
-            
-            if guidelines:
-                guidelines_text = "Main Label Guidelines:\n" + "\n".join(guidelines)
         context_block = ""
         if available_sub_labels_context:
             # Assume available_sub_labels_context is a list of strings or single string
@@ -667,7 +813,6 @@ JSON Schema:
 {descriptions_text}
 
 {labels_context}
-{guidelines_text}
 
 {context_block}
 
@@ -675,7 +820,7 @@ Task:
 1. Examine the provided telemetry graphs and trajectory map.
 2. Identify any specific driving maneuvers, incidents, or patterns.
 3. Explain WHY you suggest these labels based on the visual evidence in the graphs.
-4. Based on the 'Main Label Guidelines' provided above, identify the most appropriate sub-labels from the 'Available specific sub-labels' list.
+4. Based on the label guidelines provided, identify the most appropriate sub-labels from the 'Available specific sub-labels' list.
    Prioritise selecting from the listed sub-labels if they match the data and the guidelines.
 5. Provide your output as a concise list of suggestions with brief reasoning.
 """
@@ -725,7 +870,8 @@ Task:
         available_sub_labels_context: List[str] = None,
         context_df: pd.DataFrame = None,
         include_graphs: bool = True,
-        context_padding: int = 2000
+        context_padding: int = 2000,
+        overlay_config: Optional[Dict[str, Any]] = None
     ) -> Optional[Dict[str, Any]]:
         """
         Prepares a single batch request for file-based batch job.
@@ -734,6 +880,7 @@ Task:
         Args:
             segment_index: Index of the segment (used as key identifier)
             include_graphs: If False, skips graph generation and sends text-only request.
+            overlay_config: Optional dict with track map overlay configuration.
             
         Returns:
             Dict with format: {"key": "segment-{idx}", "request": {...}}
@@ -742,7 +889,7 @@ Task:
         plot_descriptions = []
         
         if include_graphs:
-            images, plot_descriptions = self._prepare_visual_content(df, graph_definitions, track_config, context_df, context_padding=context_padding)
+            images, plot_descriptions = self._prepare_visual_content(df, graph_definitions, track_config, context_df, context_padding=context_padding, overlay_config=overlay_config)
 
             # Add Map Images if relevant labels are present
             map_imgs, map_descs = self._load_label_map_images(current_labels, graph_definitions, track_config=track_config, start_index=len(images) + 1)
@@ -752,19 +899,6 @@ Task:
 
         # Construct Prompt (same as analyze_segment_json)
         labels_context = f"Current identified labels: {', '.join(current_labels)}" if current_labels else "No labels identified yet."
-        
-        guidelines_text = ""
-        if current_labels:
-            guidelines = []
-            for label in current_labels:
-                if label in MAIN_LABEL_GUIDELINES:
-                    guidelines.append(f"- Label '{label}': {MAIN_LABEL_GUIDELINES[label]}")
-                elif label in LABEL_NAME_TO_ID:
-                    lid = LABEL_NAME_TO_ID[label]
-                    if lid in MAIN_LABEL_GUIDELINES:
-                        guidelines.append(f"- Label '{label}' ({lid}): {MAIN_LABEL_GUIDELINES[lid]}")
-            if guidelines:
-                guidelines_text = "Main Label Guidelines:\n" + "\n".join(guidelines)
         
         context_block = ""
         if available_sub_labels_context:
@@ -793,7 +927,6 @@ Task:
 {descriptions_text}
 
 {labels_context}
-{guidelines_text}
 
 {context_block}
 

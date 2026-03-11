@@ -58,28 +58,15 @@ GRAPH_CONFIGS = [
         description="Difference in speed between driver and expert (Expert - Driver). Positive values indicate the driver is slower than the expert, negative values indicate faster.",
         features=[
             "speed_difference"
-        ],
-        reference_lines=[
-            {"name": "Zero", "value": 0.0, "color": "gray"},
-            {"name": "Speed Max", "value": 10.0, "color": "red"},
-            {"name": "Speed Min", "value": -10.0, "color": "green"},
         ]
     ),
     GraphConfig(
         description="Comparison of throttle input (0-1) between Driver (Physics_gas) and Expert (expert_optimal_throttle).",
-        features=["expert_optimal_throttle", "Physics_gas"],
-        reference_lines=[
-             {"name": "Full Throttle", "value": 1.0, "color": "gray"},
-             {"name": "Idle", "value": 0.0, "color": "gray"}
-        ]
+        features=["expert_optimal_throttle", "Physics_gas"]
     ),
     GraphConfig(
         description="Comparison of brake input (0-1) between Driver (Physics_brake) and Expert (expert_optimal_brake).",
-        features=["expert_optimal_brake", "Physics_brake"],
-        reference_lines=[
-             {"name": "Max Brake", "value": 1.0, "color": "gray"},
-             {"name": "No Brake", "value": 0.0, "color": "gray"}
-        ]
+        features=["expert_optimal_brake", "Physics_brake"]
     )
 ]
 

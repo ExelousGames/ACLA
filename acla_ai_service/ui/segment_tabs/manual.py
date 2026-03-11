@@ -87,6 +87,11 @@ def render_manual_annotation(selected_annotation_key, selected_session_key, avai
         if s <= e:
             st.session_state.manual_global_viz_range = (s, e)
 
+    def update_global_inputs_from_slider():
+        val = st.session_state.get("manual_global_viz_range", (0, 0))
+        st.session_state.manual_global_viz_start_input = val[0]
+        st.session_state.manual_global_viz_end_input = val[1]
+
     col_global_slider, col_global_inputs = st.columns([3, 1])
     with col_global_slider:
         viz_start_idx, viz_end_idx = st.slider(
@@ -95,7 +100,8 @@ def render_manual_annotation(selected_annotation_key, selected_session_key, avai
             max_value=len(df),
             value=(0, min(len(df), 5000)),
             key="manual_global_viz_range",
-            label_visibility="collapsed"
+            label_visibility="collapsed",
+            on_change=update_global_inputs_from_slider
         )
     
     with col_global_inputs:
@@ -152,8 +158,8 @@ def render_manual_annotation(selected_annotation_key, selected_session_key, avai
                 graphs_to_remove.append(graph_id)
 
         if viz_cols:
-            # Apply global range filter
-            sliced_df = df.iloc[viz_start_idx:viz_end_idx]
+            # Apply global range filter (include end index)
+            sliced_df = df.iloc[viz_start_idx:min(viz_end_idx + 1, len(df))]
 
             # Plot without downsampling
             fig = px.line(sliced_df, x=sliced_df.index, y=viz_cols, title=f"Telemetry Data - Graph {graph_id}")
@@ -617,16 +623,11 @@ def render_manual_annotation(selected_annotation_key, selected_session_key, avai
         with f_col1:
             # Ensure the persisted selection is valid for the current dataset
             current_selection = st.session_state.get("manual_calc_feature_global")
-            if current_selection and current_selection not in numeric_cols:
-                # Reset if invalid
-                if "speed_kmh" in numeric_cols:
-                    st.session_state["manual_calc_feature_global"] = "speed_kmh"
-                elif numeric_cols:
-                    st.session_state["manual_calc_feature_global"] = numeric_cols[0]
-
-            # Default to speed or gas if available
+            
             default_calc_idx = 0
-            if "speed_kmh" in numeric_cols:
+            if current_selection and current_selection in numeric_cols:
+                default_calc_idx = numeric_cols.index(current_selection)
+            elif "speed_kmh" in numeric_cols:
                 default_calc_idx = numeric_cols.index("speed_kmh")
             
             calc_feature = st.selectbox(

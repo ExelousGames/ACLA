@@ -650,25 +650,24 @@ class SegmentClassifierService:
             
             trusted_labels = []
             
-            min_support = 500  # Minimum number of timesteps (frames)
-            min_precision = 0.80
-            print("\nPer-class Precision and Support (Validation Set - Per Timestep):")
+            min_accuracy = 0.80
+            print("\nPer-class Accuracy (Validation Set - Per Timestep):")
             for i, label in enumerate(self.mlb.classes_):
                 label_key = str(i)
 
                 if label_key in report_dict:
                     metrics = report_dict[label_key]
-                    # Use precision as the trust metric
+                    # Use precision as the accuracy trust metric
                     score = metrics['precision']
                     support = metrics['support']  # Number of timesteps, not segments
                     
                     label_name = LABEL_MAPPING.get(label, str(label))
-                    print(f"{label_name}: Precision={score:.4f}, Support={support} timesteps")
+                    print(f"{label_name}: Accuracy={score:.4f}, Support={support} timesteps")
                     
-                    if score >= min_precision and support >= min_support:
+                    if score >= min_accuracy:
                         trusted_labels.append(label)
             
-            print(f"\nTrusted labels (>= {min_precision*100:.0f}% precision, >= {min_support} timesteps): {trusted_labels}")
+            print(f"\nTrusted labels (>= {min_accuracy*100:.0f}% accuracy): {trusted_labels}")
 
             # Save trusted labels
             with open(self.models_directory / "segment_trusted_labels.json", "w") as f:
@@ -700,7 +699,7 @@ class SegmentClassifierService:
             self.mlb = joblib.load(self.mlb_path)
             self.scaler = joblib.load(self.scaler_path)
             if self.pos_weight_path.exists():
-                self.pos_weight = torch.load(self.pos_weight_path, map_location=self.device)
+                self.pos_weight = torch.load(self.pos_weight_path, map_location=self.device, weights_only=True)
             
             # Load trusted labels
             trusted_labels_path = self.models_directory / "segment_trusted_labels.json"
@@ -725,7 +724,7 @@ class SegmentClassifierService:
             output_dim = len(self.mlb.classes_)
             
             self.model = LSTMModel(input_dim, hidden_dim, output_dim, num_layers=num_layers).to(self.device)
-            self.model.load_state_dict(torch.load(self.model_path, map_location=self.device))
+            self.model.load_state_dict(torch.load(self.model_path, map_location=self.device, weights_only=True))
             self.model.eval()
             return True
         return False

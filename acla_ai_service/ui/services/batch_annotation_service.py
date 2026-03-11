@@ -161,7 +161,7 @@ class BatchAnnotationService:
             except queue.Empty:
                 break
 
-    def _worker_process(self, result_callback, label_name_to_id, label_mapping, total_items, context_padding=200):
+    def _worker_process(self, result_callback, label_name_to_id, label_mapping, total_items, context_padding=200, overlay_config=None):
         """Worker thread function to process analysis requests from the queue."""
         add_script_run_ctx(threading.current_thread())
         thread_name = threading.current_thread().name
@@ -203,7 +203,8 @@ class BatchAnnotationService:
                         track_config=track_config,
                         current_labels=current_labels_display,
                         available_sub_labels_context=context_sub_labels,
-                        context_padding=context_padding
+                        context_padding=context_padding,
+                        overlay_config=overlay_config
                     )
                     
                     self.observer.on_log(f"    [Seg #{idx}] Gemini Analyzer returned on {thread_info}.")
@@ -278,7 +279,8 @@ class BatchAnnotationService:
         main_guidelines: Dict,
         label_categories: Dict,
         result_callback: Callable[[int, List[str], str], None], # Callback to save results (idx, labels, notes)
-        context_padding: int = 200
+        context_padding: int = 200,
+        overlay_config: Optional[Dict[str, Any]] = None
     ):
         self._stop_event.clear()
         self.is_running = True
@@ -292,7 +294,7 @@ class BatchAnnotationService:
         # Start Worker Thread
         worker_thread = threading.Thread(
             target=self._worker_process, 
-            args=(result_callback, label_name_to_id, label_mapping, total, context_padding),
+            args=(result_callback, label_name_to_id, label_mapping, total, context_padding, overlay_config),
             name="GeminiWorkerThread",
             daemon=True
         )
@@ -359,14 +361,14 @@ class BatchAnnotationService:
         """Helper to build context strings for sub-labels."""
         context_list = []
 
-        # Always include "Track Section" context
-        if "Track Section" in label_categories:
-            other_ids = label_categories["Track Section"]
+        # Always include "Segment Type" context
+        if "Segment Type" in label_categories:
+            other_ids = label_categories["Segment Type"]
             if other_ids:
-                if "Track Section" in main_guidelines:
-                    context_list.append(f"Guideline for 'Track Section': {main_guidelines['Track Section']}")
+                if "Segment Type" in main_guidelines:
+                    context_list.append(f"Guideline for 'Segment Type': {main_guidelines['Segment Type']}")
 
-                context_list.append("Available 'Track Section' Labels:")
+                context_list.append("Available 'Segment Type' Labels:")
                 for sub_id in other_ids:
                     full_name = label_mapping.get(sub_id, sub_id)
                     context_list.append(f"  - {full_name}")
@@ -440,7 +442,8 @@ class BatchFileJobManager:
         main_guidelines: Dict,
         label_categories: Dict,
         include_graphs: bool = True,
-        context_padding: int = 200
+        context_padding: int = 200,
+        overlay_config: Optional[Dict[str, Any]] = None
     ) -> bool:
         """
         Prepares batch requests and submits them as a file-based job.
@@ -503,7 +506,8 @@ class BatchFileJobManager:
                     available_sub_labels_context=context_sub_labels,
                     include_graphs=include_graphs,
                     context_df=context_df,
-                    context_padding=context_padding
+                    context_padding=context_padding,
+                    overlay_config=overlay_config
                 )
                 
                 if request:
@@ -654,14 +658,14 @@ class BatchFileJobManager:
         """Helper to build context strings for sub-labels. (Same as BatchAnnotationService)"""
         context_list = []
 
-        # Always include "Track Section" context
-        if "Track Section" in label_categories:
-            other_ids = label_categories["Track Section"]
+        # Always include "Segment Type" context
+        if "Segment Type" in label_categories:
+            other_ids = label_categories["Segment Type"]
             if other_ids:
-                if "Track Section" in main_guidelines:
-                    context_list.append(f"Guideline for 'Track Section': {main_guidelines['Track Section']}")
+                if "Segment Type" in main_guidelines:
+                    context_list.append(f"Guideline for 'Segment Type': {main_guidelines['Segment Type']}")
 
-                context_list.append("Available 'Track Section' Labels:")
+                context_list.append("Available 'Segment Type' Labels:")
                 for sub_id in other_ids:
                     full_name = label_mapping.get(sub_id, sub_id)
                     context_list.append(f"  - {full_name}")

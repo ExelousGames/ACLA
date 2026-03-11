@@ -82,13 +82,16 @@ class Full_dataset_TelemetryMLService:
     Machine Learning Service for AC Competizione Telemetry Analysis
     """ 
     
-    def __init__(self, models_directory: Optional[str] = None, logger: Optional[logging.Logger] = None):
+    def __init__(self, models_directory: Optional[str] = None, logger: Optional[logging.Logger] = None, pipeline_config: Optional[PipelineConfig] = None):
         """
         Initialize the ML service
         
         Args:
             models_directory: Directory to save/load trained models.
                             If None, defaults to 'models' in the project root.
+            logger: Optional logger instance
+            pipeline_config: Optional PipelineConfig instance to share cache keys across components.
+                           If None, creates a new instance with default (empty) pipeline_id.
         """
         # Resolve to an absolute path so downstream tooling operates on a single location
         if models_directory:
@@ -148,7 +151,7 @@ class Full_dataset_TelemetryMLService:
         )
 
         # Centralize cache key usage for coordinated cleanup
-        self.cache_config = PipelineConfig()
+        self.cache_config = pipeline_config if pipeline_config is not None else PipelineConfig()
 
         # Add a simple lock mechanism to prevent concurrent fetches of the same model
         self._model_fetch_locks = {}
@@ -661,19 +664,15 @@ class Full_dataset_TelemetryMLService:
         top_laps_cache_key = cache_config.top_laps_cache_key
         top_laps_available = False
         
-        if self.telemetry_store.has_cached_data(top_laps_cache_key) and self.telemetry_store.has_cached_data(processed_sessions_cache_key):
-            if cache_config.processed_session_cleanup:
+        # Manual cleanup control for top laps
+        if cache_config.top_laps_cleanup:
+            if self.telemetry_store.has_cached_data(top_laps_cache_key):
                 print(f"[INFO] Cleaning up existing top laps cache: {top_laps_cache_key}")
                 self.telemetry_store.clear_cache(top_laps_cache_key)
-                print(f"[INFO] Cleaning up processed sessions cache: {processed_sessions_cache_key}")
-                self.telemetry_store.clear_cache(processed_sessions_cache_key)
-                print(f"[INFO] Cleaning up enriched sessions cache: {enriched_sessions_cache_key}")
-                self.telemetry_store.clear_cache(enriched_sessions_cache_key)
-                # Force regeneration after cleanup
-                top_laps_available = False
-            else:
-                top_laps_available = True
-                print(f"[INFO] Using existing top laps from cache: {top_laps_cache_key}")
+            top_laps_available = False
+        elif self.telemetry_store.has_cached_data(top_laps_cache_key) and self.telemetry_store.has_cached_data(processed_sessions_cache_key):
+            top_laps_available = True
+            print(f"[INFO] Using existing top laps from cache: {top_laps_cache_key}")
         
         # Process sessions if top laps not available from cache
         if not top_laps_available:
@@ -749,10 +748,10 @@ class Full_dataset_TelemetryMLService:
             if not filtered_segments:
                 raise RuntimeError(f"No segments found with EA or RM labels in {annotation_cache_key}")
 
-            # Use a temporary key for the filtered training dataset
-            segments_cache_key = f"temp_training_segments_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+            # Use the configured key for the filtered training dataset (will overwrite if exists)
+            segments_cache_key = self.cache_config.training_segments_cache_key
             
-            # Save the filtered segments as one chunk
+            # Save the filtered segments as one chunk (overwrites existing data)
             await self.telemetry_store.cache_chunks_streaming(segments_cache_key, [filtered_segments])
             print(f"[INFO] Cached filtered segments to {segments_cache_key}")
 

@@ -116,6 +116,8 @@ def render_detailed_labeling(selected_annotation_key, selected_session_key, avai
     annotation_options = ["Create New"]
     if st.session_state.current_annotations:
         annotation_options.extend(range(len(st.session_state.current_annotations)))
+    
+
 
     def format_func(option):
         if option == "Create New":
@@ -125,10 +127,16 @@ def render_detailed_labeling(selected_annotation_key, selected_session_key, avai
             labels = ", ".join(get_display_labels(ann.labels))
             return f"#{option}: {labels} (Start: {ann.start_index}, End: {ann.end_index})"
 
+    # Determine the default index for the selectbox
+    default_index = 0  # Default to "Create New"
+    if "last_detailed_selection" in st.session_state and st.session_state.last_detailed_selection in annotation_options:
+        default_index = annotation_options.index(st.session_state.last_detailed_selection)
+    
     selected_option = st.selectbox(
         "Select Action / Annotation",
         options=annotation_options,
         format_func=format_func,
+        index=default_index,
         key="detailed_annotation_selector"
     )
     
@@ -138,15 +146,27 @@ def render_detailed_labeling(selected_annotation_key, selected_session_key, avai
     
     if selected_option != st.session_state.last_detailed_selection:
         st.session_state.last_detailed_selection = selected_option
-        # If switching to an edit, auto-set the visualization range components to show the segment
+        
+        # Clear form inputs to force refresh of values
+        keys_to_clear = [k for k in st.session_state.keys() if k.startswith("detailed_form_")]
+        for k in keys_to_clear:
+            del st.session_state[k]
+
+        # Auto-set the visualization range to show the segment
         if selected_option != "Create New":
              ann_sel = st.session_state.current_annotations[selected_option]
              st.session_state.detailed_global_viz_start_input = ann_sel.start_index
              st.session_state.detailed_global_viz_end_input = ann_sel.end_index
              st.session_state.detailed_global_viz_range = (ann_sel.start_index, ann_sel.end_index)
+        else:
+            # Reset to default range when switching to "Create New"
+            default_start = 0
+            default_end = min(100, len(df)-1)
+            st.session_state.detailed_global_viz_start_input = default_start
+            st.session_state.detailed_global_viz_end_input = default_end
+            st.session_state.detailed_global_viz_range = (default_start, default_end)
 
     # Manual Annotation Logic
-    is_sub_segment = False
     input_min = 0
     input_max = len(df)-1
 
@@ -158,30 +178,14 @@ def render_detailed_labeling(selected_annotation_key, selected_session_key, avai
         submit_label = "Add Annotation"
         is_edit = False
     else:
-        # Existing Annotation Selected
+        # Existing Annotation Selected - Edit Mode
         ann = st.session_state.current_annotations[selected_option]
-        
-        # Mode Selection
-        mode = st.radio("Action Mode", ["Edit Segment", "Add Detail (Sub-segment)"], key=f"detailed_mode_{selected_option}")
-        
-        if mode == "Edit Segment":
-            form_title = f"Edit Annotation #{selected_option}"
-            default_start = ann.start_index
-            default_end = ann.end_index
-            default_labels = [l for l in get_display_labels(ann.labels) if l in LABEL_MAPPING.values()]
-            submit_label = "Update Annotation"
-            is_edit = True
-        else:
-            # Add Detail Mode
-            form_title = f"Add Detail to Segment #{selected_option}"
-            input_min = ann.start_index
-            input_max = ann.end_index
-            default_start = ann.start_index
-            default_end = ann.end_index
-            default_labels = []
-            submit_label = "Add Detailed Segment"
-            is_edit = False
-            is_sub_segment = True
+        form_title = f"Edit Annotation #{selected_option}"
+        default_start = ann.start_index
+        default_end = ann.end_index
+        default_labels = [l for l in get_display_labels(ann.labels) if l in LABEL_MAPPING.values()]
+        submit_label = "Update Annotation"
+        is_edit = True
 
     st.markdown(f"**{form_title}**")
     
@@ -208,105 +212,62 @@ def render_detailed_labeling(selected_annotation_key, selected_session_key, avai
     st.markdown("##### Labels")
     selected_labels_all = []
     
-    if is_sub_segment:
-        # Restricted Workflow: Only allow selecting sub-labels for existing Main Labels
-        current_ann = st.session_state.current_annotations[selected_option]
-        current_ids = current_ann.labels
-        
-        # Identify "parent" categories present in the annotation
-        exposed_label_names = set()
-        categories_to_show = []
-        
-        for cat, ids in LABEL_CATEGORIES.items():
-            # If category is an ID key, it is a sub-label group (e.g. 28 -> [29, 30...])
-            # Show this group ONLY if the parent ID (cat) is in current labels
-            if cat in current_ids:
-                 categories_to_show.append((cat, ids))
+    # 1. Main Labels
+    main_cat = "Main Labels"
+    main_ids = LABEL_CATEGORIES.get(main_cat, [])
+    main_names = [LABEL_MAPPING[lid] for lid in main_ids if lid in LABEL_MAPPING]
+    
+    # Determine defaults
+    main_defaults = [l for l in default_labels if l in main_names]
+    
+    main_selected = st.multiselect(
+        main_cat,
+        main_names,
+        default=main_defaults,
+        key=f"detailed_form_labels_{selected_option}_{main_cat}"
+    )
+    selected_labels_all.extend(main_selected)
+    
+    # Determine which sub-categories to show based on Main Labels selection
+    selected_main_ids = {LABEL_NAME_TO_ID.get(name) for name in main_selected if name in LABEL_NAME_TO_ID}
 
-        # Render selectors
-        for cat, ids in categories_to_show:
-             display_name = LABEL_MAPPING.get(cat, str(cat))
-             cat_names = [LABEL_MAPPING[lid] for lid in ids if lid in LABEL_MAPPING]
-             exposed_label_names.update(cat_names)
-             
-             # Pre-select existing sub-labels
-             cat_defaults = [l for l in default_labels if l in cat_names]
-             
-             cat_selected = st.multiselect(
-                f"{display_name} Specifics",
-                cat_names,
-                default=cat_defaults,
-                key=f"detailed_form_labels_{selected_option}_{cat}"
-            )
-             selected_labels_all.extend(cat_selected)
+    # 2. Sub-categories
+    for category, category_ids in LABEL_CATEGORIES.items():
+        if category == main_cat:
+            continue
+        
+        # Only show if the category (which is a parent ID) is selected in Main Labels, or if it is the "Segment Type" group
+        if category == "Segment Type" or category in selected_main_ids:
+            display_name = category
+            if category in LABEL_MAPPING:
+                display_name = LABEL_MAPPING[category]
 
-        # Preserve any labels that were NOT exposed in the selectors (e.g. Main Labels or other categories)
-        for d_l in default_labels:
-            if d_l not in exposed_label_names:
-                 selected_labels_all.append(d_l)
-                 
-        if not categories_to_show:
-            st.info("No sub-labels available for the assigned main labels.")
-            
-    else:
-        # Create New or Edit Mode
-        
-        # 1. Main Labels
-        main_cat = "Main Labels"
-        main_ids = LABEL_CATEGORIES.get(main_cat, [])
-        main_names = [LABEL_MAPPING[lid] for lid in main_ids if lid in LABEL_MAPPING]
-        
-        # Determine defaults
-        main_defaults = [l for l in default_labels if l in main_names]
-        
-        main_selected = st.multiselect(
-            main_cat,
-            main_names,
-            default=main_defaults,
-            key=f"detailed_form_labels_{selected_option}_{main_cat}"
-        )
-        selected_labels_all.extend(main_selected)
-        
-        # Determine which sub-categories to show based on Main Labels selection
-        selected_main_ids = {LABEL_NAME_TO_ID.get(name) for name in main_selected if name in LABEL_NAME_TO_ID}
-
-        # 2. Sub-categories
-        for category, category_ids in LABEL_CATEGORIES.items():
-            if category == main_cat:
-                continue
-            
-            # Only show if the category (which is a parent ID) is selected in Main Labels, or if it is the "Track Section" group
-            if category == "Track Section" or category in selected_main_ids:
-                display_name = category
-                if category in LABEL_MAPPING:
-                    display_name = LABEL_MAPPING[category]
-
-                cat_label_names = [LABEL_MAPPING[lid] for lid in category_ids if lid in LABEL_MAPPING]
-                if cat_label_names:
-                    cat_defaults = [l for l in default_labels if l in cat_label_names]
-                    
-                    cat_selected = st.multiselect(
-                        f"{display_name}",
-                        cat_label_names,
-                        default=cat_defaults,
-                        key=f"detailed_form_labels_{selected_option}_{category}"
-                    )
-                    selected_labels_all.extend(cat_selected)
-        
-        # Also handle uncategorized labels for Create Mode
-        all_cat_ids = [lid for ids in LABEL_CATEGORIES.values() for lid in ids]
-        uncategorized_ids = [lid for lid in LABEL_MAPPING.keys() if lid not in all_cat_ids]
-        if uncategorized_ids:
-            uncat_names = [LABEL_MAPPING[lid] for lid in uncategorized_ids if lid in LABEL_MAPPING]
-            if uncat_names:
-                uncat_defaults = [l for l in default_labels if l in uncat_names]
-                uncat_selected = st.multiselect(
-                    "Other",
-                    uncat_names,
-                    default=uncat_defaults,
-                    key=f"detailed_form_labels_{selected_option}_other"
+            cat_label_names = [LABEL_MAPPING[lid] for lid in category_ids if lid in LABEL_MAPPING]
+            if cat_label_names:
+                cat_defaults = [l for l in default_labels if l in cat_label_names]
+                
+                cat_selected = st.multiselect(
+                    f"{display_name}",
+                    cat_label_names,
+                    default=cat_defaults,
+                    key=f"detailed_form_labels_{selected_option}_{category}"
                 )
-                selected_labels_all.extend(uncat_selected)
+                selected_labels_all.extend(cat_selected)
+    
+    # Also handle uncategorized labels for Create Mode
+    all_cat_ids = [lid for ids in LABEL_CATEGORIES.values() for lid in ids]
+    uncategorized_ids = [lid for lid in LABEL_MAPPING.keys() if lid not in all_cat_ids]
+    if uncategorized_ids:
+        uncat_names = [LABEL_MAPPING[lid] for lid in uncategorized_ids if lid in LABEL_MAPPING]
+        if uncat_names:
+            uncat_defaults = [l for l in default_labels if l in uncat_names]
+            uncat_selected = st.multiselect(
+                "Other",
+                uncat_names,
+                default=uncat_defaults,
+                key=f"detailed_form_labels_{selected_option}_other"
+            )
+            selected_labels_all.extend(uncat_selected)
             
     form_labels = selected_labels_all
 
@@ -361,6 +322,187 @@ def render_detailed_labeling(selected_annotation_key, selected_session_key, avai
                     help="Controls how much track data around the segment is included in the context map."
                 )
 
+                # Trajectory Overlay Controls
+                st.markdown("##### Track Map Overlay Settings")
+                
+                overlay_config = None
+                
+                # Get track name to find reference image
+                track_name = None
+                if "Static_track" in df.columns and not df.empty:
+                    track_name = df["Static_track"].iloc[0]
+                
+                if track_name:
+                    # Try to find track map path
+                    try:
+                        from app.models.segment_models import LABEL_IMAGE_MAP
+                        
+                        track_map_filename = LABEL_IMAGE_MAP.get(track_name)
+                        if track_map_filename:
+                            # Search for the file
+                            import os
+                            possible_paths = [
+                                os.path.join(os.getcwd(), "acla_ai_service/ui/source"),
+                                os.path.join(os.getcwd(), "ui/source"),
+                                os.path.join(os.path.dirname(__file__), "../source"),
+                                "ui/source",
+                                "source"
+                            ]
+                            
+                            track_map_path = None
+                            for base_path in possible_paths:
+                                full_path = os.path.join(base_path, track_map_filename)
+                                if os.path.exists(full_path):
+                                    track_map_path = full_path
+                                    break
+                            
+                            if track_map_path:
+                                st.success(f"Found track map: {track_name}")
+                                
+                                # Overlay adjustment controls
+                                col_ov1, col_ov2 = st.columns(2)
+                                
+                                with col_ov1:
+                                    offset_x = st.slider(
+                                        "Horizontal Offset", 
+                                        min_value=-500, 
+                                        max_value=500, 
+                                        value=0,
+                                        step=1,
+                                        key="gemini_overlay_x"
+                                    )
+                                    
+                                    rotation = st.slider(
+                                        "Rotation (degrees)", 
+                                        min_value=-180, 
+                                        max_value=180, 
+                                        value=0,
+                                        step=1,
+                                        key="gemini_overlay_rotation"
+                                    )
+                                    
+                                    alpha = st.slider(
+                                        "Trajectory Opacity", 
+                                        min_value=0.1, 
+                                        max_value=1.0, 
+                                        value=0.8,
+                                        step=0.1,
+                                        key="gemini_overlay_alpha"
+                                    )
+                                
+                                with col_ov2:
+                                    offset_y = st.slider(
+                                        "Vertical Offset", 
+                                        min_value=-500, 
+                                        max_value=500, 
+                                        value=0,
+                                        step=1,
+                                        key="gemini_overlay_y"
+                                    )
+                                    
+                                    scale_x = st.slider(
+                                        "Scale X", 
+                                        min_value=0.01, 
+                                        max_value=3.0, 
+                                        value=1.0,
+                                        step=0.01,
+                                        key="gemini_overlay_scale_x"
+                                    )
+                                    
+                                    scale_y = st.slider(
+                                        "Scale Y", 
+                                        min_value=0.01, 
+                                        max_value=3.0, 
+                                        value=1.0,
+                                        step=0.01,
+                                        key="gemini_overlay_scale_y"
+                                    )
+                                
+                                overlay_config = {
+                                    "enabled": True,
+                                    "track_map_path": track_map_path,
+                                    "offset_x": offset_x,
+                                    "offset_y": offset_y,
+                                    "rotation": rotation,
+                                    "scale_x": scale_x,
+                                    "scale_y": scale_y,
+                                    "alpha": alpha
+                                }
+                                
+                                # Preview Section
+                                st.markdown("---")
+                                st.markdown("##### Preview Overlay")
+                                
+                                preview_col1, preview_col2 = st.columns([3, 1])
+                                
+                                with preview_col2:
+                                    preview_auto = st.checkbox(
+                                        "Auto-update preview",
+                                        value=True,
+                                        key="gemini_overlay_auto_preview",
+                                        help="Automatically update preview when sliders change"
+                                    )
+                                    
+                                    import time
+                                    if not preview_auto:
+                                        if st.button("Update Preview", key="gemini_overlay_preview_btn"):
+                                            st.session_state.gemini_preview_trigger = time.time()
+                                
+                                # Generate preview
+                                should_preview = preview_auto or st.session_state.get("gemini_preview_trigger", 0) > 0
+                                
+                                if should_preview:
+                                    with st.spinner("Generating overlay preview..."):
+                                        try:
+                                            import traceback
+                                            # Prepare data for preview
+                                            analysis_df = df.iloc[int(form_start):int(form_end)]
+                                            
+                                            # Prepare context dataframe
+                                            padding = context_padding_val
+                                            start_idx_ctx = max(0, int(form_start) - padding)
+                                            end_idx_ctx = min(len(df), int(form_end) + padding)
+                                            preview_context_df = df.iloc[start_idx_ctx:end_idx_ctx]
+                                            
+                                            # Track config
+                                            preview_track_config = {
+                                                "player_x": "Graphics_player_pos_x",
+                                                "player_y": "Graphics_player_pos_y",
+                                                "expert_x": "expert_optimal_player_pos_x",
+                                                "expert_y": "expert_optimal_player_pos_y"
+                                            }
+                                            
+                                            # Create analyzer instance just for preview
+                                            preview_analyzer = GeminiAnalyzer(gemini_api_key)
+                                            
+                                            # Generate overlay image
+                                            overlay_img = preview_analyzer.create_trajectory_overlay(
+                                                analysis_df,
+                                                preview_track_config,
+                                                context_df=preview_context_df,
+                                                track_map_path=track_map_path,
+                                                overlay_config=overlay_config
+                                            )
+                                            
+                                            if overlay_img:
+                                                with preview_col1:
+                                                    st.image(overlay_img, caption="Trajectory Overlay Preview", width='stretch')
+                                                    st.caption("💡 Adjust sliders to align trajectory with track layout")
+                                            else:
+                                                st.error("Failed to generate overlay preview")
+                                                
+                                        except Exception as e:
+                                            st.error(f"Preview error: {str(e)}")
+                                            st.code(traceback.format_exc())
+                            else:
+                                st.warning(f"Track map file '{track_map_filename}' not found in source directories.")
+                        else:
+                            st.info(f"No track map configured for '{track_name}'. Track map overlay is always needed for best analysis.")
+                    except ImportError:
+                        st.warning("Could not import LABEL_IMAGE_MAP")
+                else:
+                    st.info("Track name not found in session data. Track map overlay is disabled.")
+
                 if st.button("Identify Sub-Labels with Gemini", key="gemini_identify_btn"):
                     if form_start >= form_end:
                         st.error("Invalid range selected.")
@@ -402,20 +544,20 @@ def render_detailed_labeling(selected_annotation_key, selected_session_key, avai
                                 # 5. Contextual Sub-labels (e.g. MS -> MS1..MS30)
                                 sub_label_context = []
                                 
-                                # Always include "Track Section" context 
-                                if "Track Section" in LABEL_CATEGORIES:
-                                    other_ids = LABEL_CATEGORIES["Track Section"]
+                                # Always include "Segment Type" context 
+                                if "Segment Type" in LABEL_CATEGORIES:
+                                    other_ids = LABEL_CATEGORIES["Segment Type"]
                                     if other_ids:
-                                        # Add the main guideline for Track Section if available
-                                        if "Track Section" in MAIN_LABEL_GUIDELINES:
-                                            sub_label_context.append(f"Guideline for 'Track Section': {MAIN_LABEL_GUIDELINES['Track Section']}")
+                                        # Add the main guideline for Segment Type if available
+                                        if "Segment Type" in MAIN_LABEL_GUIDELINES:
+                                            sub_label_context.append(f"Guideline for 'Segment Type': {MAIN_LABEL_GUIDELINES['Segment Type']}")
 
                                         other_docs = []
                                         for child_id in other_ids:
                                             child_name = LABEL_MAPPING.get(child_id, child_id)
                                             other_docs.append(f"- {child_id}: {child_name}")
                                         
-                                        block = f"Available 'Track Section' Labels:\n" + "\n".join(other_docs)
+                                        block = f"Available 'Segment Type' Labels:\n" + "\n".join(other_docs)
                                         sub_label_context.append(block)
 
                                 for lname in current_labels_display:
@@ -447,7 +589,8 @@ def render_detailed_labeling(selected_annotation_key, selected_session_key, avai
                                     current_labels=current_labels_display,
                                     available_sub_labels_context=sub_label_context,
                                     context_df=context_df,
-                                    context_padding=context_padding_val
+                                    context_padding=context_padding_val,
+                                    overlay_config=overlay_config
                                 )
                                 
                                 if isinstance(result, dict):
@@ -569,6 +712,26 @@ def render_detailed_labeling(selected_annotation_key, selected_session_key, avai
 
     # Form Actions
     col_actions = st.columns([1, 1, 1, 3])
+    def update_selection_state(next_selection_key):
+        st.session_state.last_detailed_selection = next_selection_key
+        st.session_state.detailed_annotation_selector = next_selection_key
+        
+        keys_to_clear = [k for k in st.session_state.keys() if k.startswith("detailed_form_")]
+        for k in keys_to_clear:
+            del st.session_state[k]
+            
+        if next_selection_key != "Create New" and isinstance(next_selection_key, int) and next_selection_key < len(st.session_state.current_annotations):
+            ann_sel = st.session_state.current_annotations[next_selection_key]
+            st.session_state.detailed_global_viz_start_input = ann_sel.start_index
+            st.session_state.detailed_global_viz_end_input = ann_sel.end_index
+            st.session_state.detailed_global_viz_range = (ann_sel.start_index, ann_sel.end_index)
+        else:
+             default_start = 0
+             default_end = min(100, len(df)-1)
+             st.session_state.detailed_global_viz_start_input = default_start
+             st.session_state.detailed_global_viz_end_input = default_end
+             st.session_state.detailed_global_viz_range = (default_start, default_end)
+
     def handle_submit(go_next=False):
         # Access values from session state
         s_start = st.session_state[f"detailed_form_start_{selected_option}"]
@@ -599,10 +762,11 @@ def render_detailed_labeling(selected_annotation_key, selected_session_key, avai
 
             if go_next:
                 if isinstance(selected_option, int) and selected_option + 1 < len(st.session_state.current_annotations):
-                    st.session_state.detailed_annotation_selector = selected_option + 1
                     st.session_state.temp_success = f"Updated #{selected_option}. Moving to #{selected_option + 1}."
+                    update_selection_state(selected_option + 1)
                 else:
                     st.session_state.temp_success = "Updated annotation. (End of list)"
+                    update_selection_state("Create New")
             else:
                 st.session_state.temp_success = "Annotation updated!"
         else:
@@ -619,14 +783,39 @@ def render_detailed_labeling(selected_annotation_key, selected_session_key, avai
 
             if go_next and isinstance(selected_option, int):
                 if selected_option + 1 < len(st.session_state.current_annotations) - 1:
-                    st.session_state.detailed_annotation_selector = selected_option + 1
                     st.session_state.temp_success = f"Added Detail. Moving to #{selected_option + 1}."
+                    update_selection_state(selected_option + 1)
                 else:
                     st.session_state.temp_success = "Added Detail. (End of list)"
+                    update_selection_state("Create New")
             else:
                 st.session_state.temp_success = "Annotation added!"
         
         save_annotations(session_id, st.session_state.current_annotations, selected_annotation_key)
+
+    def handle_delete():
+        """Delete the currently selected annotation and move to the next one."""
+        if isinstance(selected_option, int) and selected_option < len(st.session_state.current_annotations):
+            # Remove the annotation
+            deleted_ann = st.session_state.current_annotations.pop(selected_option)
+            labels = ", ".join(get_display_labels(deleted_ann.labels))
+            
+            # Determine next selection
+            if len(st.session_state.current_annotations) == 0:
+                # No annotations left, go to Create New
+                update_selection_state("Create New")
+                st.session_state.temp_success = f"Deleted annotation ({labels}). No annotations remaining."
+            elif selected_option >= len(st.session_state.current_annotations):
+                # Was last item, go to new last item
+                update_selection_state(len(st.session_state.current_annotations) - 1)
+                st.session_state.temp_success = f"Deleted annotation ({labels}). Moved to previous annotation."
+            else:
+                # Move to next (which is now at same index)
+                update_selection_state(selected_option)
+                st.session_state.temp_success = f"Deleted annotation ({labels}). Moved to next annotation."
+            
+            # Save changes
+            save_annotations(session_id, st.session_state.current_annotations, selected_annotation_key)
 
     if is_edit:
         with col_actions[0]:
@@ -634,13 +823,9 @@ def render_detailed_labeling(selected_annotation_key, selected_session_key, avai
         
         with col_actions[1]:
             st.button(submit_label, type="secondary", key=f"detailed_submit_{selected_option}", on_click=handle_submit, args=(False,))
-
+        
         with col_actions[2]:
-            if st.button("Delete", type="secondary", key=f"detailed_delete_{selected_option}"):
-                st.session_state.current_annotations.pop(selected_option)
-                save_annotations(session_id, st.session_state.current_annotations, selected_annotation_key)
-                st.success("Annotation deleted!")
-                st.rerun()
+            st.button("🗑️ Delete", type="secondary", key=f"detailed_delete_{selected_option}", on_click=handle_delete, help="Delete this annotation")
     else:
         with col_actions[0]:
             st.button(submit_label, type="primary", key=f"detailed_submit_{selected_option}", on_click=handle_submit, args=(False,))
@@ -737,13 +922,17 @@ def render_detailed_labeling(selected_annotation_key, selected_session_key, avai
                         except Exception as e:
                             st.error(f"Error: {e}")
 
-    if not is_edit and isinstance(selected_option, int):
-        with col_actions[1]:
-             st.button("Add & Next ⏭️", type="secondary", key=f"detailed_submit_next_sub_{selected_option}", on_click=handle_submit, args=(True,))
-
     # --- Visualization Range & Graphs (MOVED DOWN) ---
     st.markdown("---")
     st.caption("Visualization Range (Graphs & Track Map)")
+    
+    # Initialize visualization range state if not set
+    if "detailed_global_viz_range" not in st.session_state:
+        default_viz_start = 0
+        default_viz_end = min(100, len(df)-1)
+        st.session_state.detailed_global_viz_range = (default_viz_start, default_viz_end)
+        st.session_state.detailed_global_viz_start_input = default_viz_start
+        st.session_state.detailed_global_viz_end_input = default_viz_end
     
     # Callback to sync inputs with slider
     def update_global_slider_range():
@@ -758,7 +947,6 @@ def render_detailed_labeling(selected_annotation_key, selected_session_key, avai
             "Select Range",
             min_value=0,
             max_value=len(df),
-            value=(0, min(len(df), 5000)),
             key="detailed_global_viz_range",
             label_visibility="collapsed"
         )
@@ -823,15 +1011,15 @@ def render_detailed_labeling(selected_annotation_key, selected_session_key, avai
             plot_start = viz_start_idx
             plot_end = viz_end_idx
 
-            # Apply range filter
-            sliced_df = df.iloc[plot_start:plot_end]
+            # Apply range filter (include end index)
+            sliced_df = df.iloc[plot_start:min(plot_end + 1, len(df))]
 
             # Plot without downsampling
             fig = px.line(sliced_df, x=sliced_df.index, y=viz_cols, title=f"Telemetry Data - Graph {graph_id}")
 
             # Enhance hover with detailed stats (Index & Delta) for all points to match Manual UI capabilities
             if viz_cols and not sliced_df.empty:
-                full_deltas = df[viz_cols].diff().iloc[plot_start:plot_end]
+                full_deltas = df[viz_cols].diff().iloc[plot_start:min(plot_end + 1, len(df))]
                 hover_texts = []
                 for idx_val, row in sliced_df.iterrows():
                     lines = [f"<b>Index: {idx_val}</b>"]
@@ -861,8 +1049,35 @@ def render_detailed_labeling(selected_annotation_key, selected_session_key, avai
                             continue
 
                     labels = ann.labels
-                    display_labels = get_display_labels(labels)
-                    label_str = ", ".join(display_labels)
+                    
+                    # Group labels by Main Labels
+                    main_labels_present = [l for l in labels if l in LABEL_CATEGORIES.get("Main Labels", [])]
+                    segment_types_present = [l for l in labels if l in LABEL_CATEGORIES.get("Segment Type", [])]
+                    
+                    grouped_labels = []
+                    for ml in main_labels_present:
+                        sub_labels = [l for l in labels if l in LABEL_CATEGORIES.get(ml, [])]
+                        ml_name = LABEL_MAPPING.get(ml, str(ml))
+                        if sub_labels:
+                            sub_names = [LABEL_MAPPING.get(sl, str(sl)) for sl in sub_labels]
+                            grouped_labels.append(f"{ml_name}: {', '.join(sub_names)}")
+                        else:
+                            grouped_labels.append(ml_name)
+                            
+                    if segment_types_present:
+                        st_names = [LABEL_MAPPING.get(st, str(st)) for st in segment_types_present]
+                        grouped_labels.append(f"Segment Type: {', '.join(st_names)}")
+                        
+                    accounted_for = set(main_labels_present + segment_types_present)
+                    for ml in main_labels_present:
+                        accounted_for.update(LABEL_CATEGORIES.get(ml, []))
+                    
+                    other_labels = [l for l in labels if l not in accounted_for]
+                    if other_labels:
+                        other_names = [LABEL_MAPPING.get(l, str(l)) for l in other_labels]
+                        grouped_labels.append(f"Other: {', '.join(other_names)}")
+                        
+                    label_str = "<br>".join(grouped_labels) if grouped_labels else "No Labels"
                     
                     if start is not None and end is not None:
                         # Add hoverable invisible marker for segment stats
@@ -927,7 +1142,8 @@ def render_detailed_labeling(selected_annotation_key, selected_session_key, avai
                             layer="below", 
                             line_width=0,
                             annotation_text=label_str,
-                            annotation_position="top left"
+                            annotation_position="top left",
+                            annotation_align="left"
                         )
 
             st.plotly_chart(fig, width='stretch')
@@ -953,19 +1169,27 @@ def render_detailed_labeling(selected_annotation_key, selected_session_key, avai
     if has_player_pos or has_opponent_pos or has_expert_pos:
         # View controls
         st.caption("Axis Settings")
-        col_ctrl1, col_ctrl2, col_ctrl3 = st.columns(3)
+        col_ctrl1, col_ctrl2, col_ctrl3, col_ctrl4 = st.columns(4)
         with col_ctrl1:
             invert_x = st.checkbox("Invert X", value=False, key="detailed_invert_x")
         with col_ctrl2:
             invert_y = st.checkbox("Invert Y", value=False, key="detailed_invert_y")
         with col_ctrl3:
             invert_z = st.checkbox("Invert Z", value=False, key="detailed_invert_z")
+        with col_ctrl4:
+            traj_color_mode = st.selectbox(
+                "Trajectory Color", 
+                ["Gas/Brake", "Balance (Oversteer/Understeer)", "Solid Green"], 
+                index=0, 
+                key="detailed_traj_color_mode",
+                help="Gas/Brake: Green = Gas, Red = Brake.\n\nBalance: Red = Oversteer, Blue = Understeer."
+            )
         
         # Create windowed dataframe for trajectory plotting using Global Range
         start_idx = min(viz_start_idx, len(df) - 1)
         
-        # Ensure indices are within bounds
-        safe_end_idx = min(viz_end_idx, len(df))
+        # Ensure indices are within bounds (include end index in slice)
+        safe_end_idx = min(viz_end_idx + 1, len(df))
         
         context_plot_df = pd.DataFrame(columns=df.columns)
 
@@ -975,7 +1199,7 @@ def render_detailed_labeling(selected_annotation_key, selected_session_key, avai
              selected_time_idx = start_idx
         else:
              map_plot_df = df.iloc[start_idx:safe_end_idx]
-             selected_time_idx = safe_end_idx - 1
+             selected_time_idx = min(viz_end_idx, len(df) - 1)
              
              # Calculate extended range for context
              segment_len = safe_end_idx - start_idx
@@ -1147,145 +1371,111 @@ def render_detailed_labeling(selected_annotation_key, selected_session_key, avai
         
         if map_data:
             map_df = pd.DataFrame(map_data)
-            use_3d = "z" in map_df.columns
             
-            if use_3d:
-                fig_map = px.scatter_3d(
-                    map_df, 
-                    x="x", 
-                    y="y", 
-                    z="z",
-                    color="Type", 
-                    symbol="Marker",
-                    hover_data=["ID"],
-                    title=f"Positions (Start: {start_idx}, End: {selected_time_idx}) (3D)",
-                    color_discrete_map={"Player": "green", "Opponent": "red", "Expert": "blue"},
-                    symbol_map={"Start": "diamond", "End": "circle", "Max Curvature": "x"}
+            fig_map = px.scatter_3d(
+                map_df, 
+                x="x", 
+                y="y", 
+                z="z",
+                color="Type", 
+                symbol="Marker",
+                hover_data=["ID"],
+                title=f"Positions (Start: {start_idx}, End: {selected_time_idx}) (3D)",
+                color_discrete_map={"Player": "green", "Opponent": "red", "Expert": "blue"},
+                symbol_map={"Start": "diamond", "End": "circle", "Max Curvature": "x"}
+            )
+            fig_map.update_traces(marker=dict(size=5))
+            
+            scene_dict = dict(
+                aspectmode='data',
+                # dragmode='turntable',
+                camera=dict(
+                    projection=dict(type='orthographic'),
+                    up=dict(x=0, y=0, z=1)  # Fix Z-axis as up for easier yaw rotation
                 )
-                fig_map.update_traces(marker=dict(size=5))
-                
-                scene_dict = dict(
-                    aspectmode='data',
-                    # dragmode='turntable',
-                    camera=dict(
-                        projection=dict(type='orthographic'),
-                        up=dict(x=0, y=0, z=1)  # Fix Z-axis as up for easier yaw rotation
-                    )
-                )
-                if invert_x: scene_dict['xaxis'] = dict(autorange="reversed")
-                if invert_y: scene_dict['yaxis'] = dict(autorange="reversed")
-                if invert_z: scene_dict['zaxis'] = dict(autorange="reversed")
-                fig_map.update_layout(scene=scene_dict, dragmode='turntable')
-            else:
-                fig_map = px.scatter(
-                    map_df, 
-                    x="x", 
-                    y="y", 
-                    color="Type", 
-                    symbol="Marker",
-                    hover_data=["ID"],
-                    title=f"Positions (Start: {start_idx}, End: {selected_time_idx})",
-                    color_discrete_map={"Player": "green", "Opponent": "red", "Expert": "blue"},
-                    symbol_map={"Start": "x", "End": "circle", "Max Curvature": "star"}
-                )
-                if invert_x: fig_map.update_xaxes(autorange="reversed")
-                if invert_y: fig_map.update_yaxes(autorange="reversed")
+            )
+            if invert_x: scene_dict['xaxis'] = dict(autorange="reversed")
+            if invert_y: scene_dict['yaxis'] = dict(autorange="reversed")
+            if invert_z: scene_dict['zaxis'] = dict(autorange="reversed")
+            fig_map.update_layout(scene=scene_dict, dragmode='turntable')
 
             # Add Trajectories
             # Player
             if has_player_pos:
+                if traj_color_mode == "Gas/Brake":
+                    player_ctx_color = (context_plot_df["Physics_gas"] - context_plot_df["Physics_brake"]) if "Physics_gas" in context_plot_df.columns and "Physics_brake" in context_plot_df.columns else "green"
+                    player_seg_color = (map_plot_df["Physics_gas"] - map_plot_df["Physics_brake"]) if "Physics_gas" in map_plot_df.columns and "Physics_brake" in map_plot_df.columns else "green"
+                    p_cmin, p_cmax, p_cscale = -1, 1, "RdYlGn"
+                elif traj_color_mode == "Balance (Oversteer/Understeer)":
+                    if "Physics_slip_angle_rear_left" in context_plot_df.columns and "Physics_slip_angle_front_left" in context_plot_df.columns:
+                        player_ctx_color = ((context_plot_df["Physics_slip_angle_rear_left"].abs() + context_plot_df["Physics_slip_angle_rear_right"].abs()) / 2) - ((context_plot_df["Physics_slip_angle_front_left"].abs() + context_plot_df["Physics_slip_angle_front_right"].abs()) / 2)
+                    else:
+                        player_ctx_color = "green"
+                    if "Physics_slip_angle_rear_left" in map_plot_df.columns and "Physics_slip_angle_front_left" in map_plot_df.columns:
+                        player_seg_color = ((map_plot_df["Physics_slip_angle_rear_left"].abs() + map_plot_df["Physics_slip_angle_rear_right"].abs()) / 2) - ((map_plot_df["Physics_slip_angle_front_left"].abs() + map_plot_df["Physics_slip_angle_front_right"].abs()) / 2)
+                    else:
+                        player_seg_color = "green"
+                    p_cmin, p_cmax, p_cscale = -0.1, 0.1, "RdBu_r"
+                else:
+                    player_ctx_color, player_seg_color = "green", "green"
+                    p_cmin, p_cmax, p_cscale = -1, 1, "RdYlGn"
+
                 # Add Context (Extended Trajectory) first so it renders below
                 if not context_plot_df.empty:
-                    if use_3d and has_player_pos_z:
+                    if has_player_pos_z:
                         fig_map.add_trace(go.Scatter3d(
                             x=context_plot_df["Graphics_player_pos_x"], 
                             y=context_plot_df["Graphics_player_pos_y"],
                             z=context_plot_df["Graphics_player_pos_z"],
                             mode="lines",
-                            name="Player (Context)",
-                            line=dict(color="magenta", width=3),
-                            opacity=0.3,
-                            showlegend=True
-                        ))
-                    else:
-                        fig_map.add_trace(go.Scatter(
-                            x=context_plot_df["Graphics_player_pos_x"], 
-                            y=context_plot_df["Graphics_player_pos_y"],
-                            mode="lines",
-                            name="Player (Context)",
-                            line=dict(color="magenta", width=2),
+                            name=f"Player (Context) [{traj_color_mode}]",
+                            line=dict(color=player_ctx_color, colorscale=p_cscale, cmin=p_cmin, cmax=p_cmax, width=3),
                             opacity=0.3,
                             showlegend=True
                         ))
 
                 # Add Current Segment Trajectory
-                if use_3d and has_player_pos_z:
+                if has_player_pos_z:
                     fig_map.add_trace(go.Scatter3d(
                         x=map_plot_df["Graphics_player_pos_x"], 
                         y=map_plot_df["Graphics_player_pos_y"],
                         z=map_plot_df["Graphics_player_pos_z"],
                         mode="lines",
-                        name="Player Trajectory",
-                        line=dict(color="green", width=5),
-                        opacity=1.0,
-                        showlegend=True
-                    ))
-                else:
-                    fig_map.add_trace(go.Scatter(
-                        x=map_plot_df["Graphics_player_pos_x"], 
-                        y=map_plot_df["Graphics_player_pos_y"],
-                        mode="lines",
-                        name="Player Trajectory",
-                        line=dict(color="green", width=3),
+                        name=f"Player Trajectory [{traj_color_mode}]",
+                        line=dict(color=player_seg_color, colorscale=p_cscale, cmin=p_cmin, cmax=p_cmax, width=5),
                         opacity=1.0,
                         showlegend=True
                     ))
 
             # Expert
             if has_expert_pos:
+                show_gas_brake_exp = traj_color_mode == "Gas/Brake"
+                expert_ctx_color = (context_plot_df["expert_optimal_throttle"] - context_plot_df["expert_optimal_brake"]) if show_gas_brake_exp and "expert_optimal_throttle" in context_plot_df.columns and "expert_optimal_brake" in context_plot_df.columns else "blue"
+                expert_seg_color = (map_plot_df["expert_optimal_throttle"] - map_plot_df["expert_optimal_brake"]) if show_gas_brake_exp and "expert_optimal_throttle" in map_plot_df.columns and "expert_optimal_brake" in map_plot_df.columns else "blue"
+
                 # Context
                 if not context_plot_df.empty:
-                    if use_3d and has_expert_pos_z:
+                    if has_expert_pos_z:
                         fig_map.add_trace(go.Scatter3d(
                             x=context_plot_df["expert_optimal_player_pos_x"], 
                             y=context_plot_df["expert_optimal_player_pos_y"],
                             z=context_plot_df["expert_optimal_player_pos_z"],
                             mode="lines",
                             name="Expert (Context)",
-                            line=dict(color="orange", width=3),
-                            opacity=0.3,
-                            showlegend=True
-                        ))
-                    else:
-                        fig_map.add_trace(go.Scatter(
-                            x=context_plot_df["expert_optimal_player_pos_x"], 
-                            y=context_plot_df["expert_optimal_player_pos_y"],
-                            mode="lines",
-                            name="Expert (Context)",
-                            line=dict(color="orange", width=2),
+                            line=dict(color=expert_ctx_color, colorscale="RdYlGn", cmin=-1, cmax=1, width=3),
                             opacity=0.3,
                             showlegend=True
                         ))
 
                 # Segment
-                if use_3d and has_expert_pos_z:
+                if has_expert_pos_z:
                     fig_map.add_trace(go.Scatter3d(
                         x=map_plot_df["expert_optimal_player_pos_x"], 
                         y=map_plot_df["expert_optimal_player_pos_y"],
                         z=map_plot_df["expert_optimal_player_pos_z"],
                         mode="lines",
                         name="Expert Trajectory",
-                        line=dict(color="blue", width=5),
-                        opacity=1.0,
-                        showlegend=True
-                    ))
-                else:
-                    fig_map.add_trace(go.Scatter(
-                        x=map_plot_df["expert_optimal_player_pos_x"], 
-                        y=map_plot_df["expert_optimal_player_pos_y"],
-                        mode="lines",
-                        name="Expert Trajectory",
-                        line=dict(color="blue", width=3),
+                        line=dict(color=expert_seg_color, colorscale="RdYlGn", cmin=-1, cmax=1, width=5),
                         opacity=1.0,
                         showlegend=True
                     ))
@@ -1303,7 +1493,7 @@ def render_detailed_labeling(selected_annotation_key, selected_session_key, avai
                     if not context_plot_df.empty:
                         opp_ctx = context_plot_df[(context_plot_df[opp_x_col] != 0) | (context_plot_df[opp_y_col] != 0)]
                         if not opp_ctx.empty:
-                            if use_3d and opp_z_col in df.columns:
+                            if opp_z_col in df.columns:
                                 fig_map.add_trace(go.Scatter3d(
                                     x=opp_ctx[opp_x_col], 
                                     y=opp_ctx[opp_y_col],
@@ -1314,21 +1504,11 @@ def render_detailed_labeling(selected_annotation_key, selected_session_key, avai
                                     opacity=0.3,
                                     showlegend=True
                                 ))
-                            else:
-                                fig_map.add_trace(go.Scatter(
-                                    x=opp_ctx[opp_x_col], 
-                                    y=opp_ctx[opp_y_col],
-                                    mode="lines",
-                                    name=f"Opponent {i} (Context)",
-                                    line=dict(color="aqua", width=2),
-                                    opacity=0.3,
-                                    showlegend=True
-                                ))
 
                     # Segment
                     opp_df = map_plot_df[(map_plot_df[opp_x_col] != 0) | (map_plot_df[opp_y_col] != 0)]
                     if not opp_df.empty:
-                        if use_3d and opp_z_col in df.columns:
+                        if opp_z_col in df.columns:
                             fig_map.add_trace(go.Scatter3d(
                                 x=opp_df[opp_x_col], 
                                 y=opp_df[opp_y_col],
@@ -1339,19 +1519,6 @@ def render_detailed_labeling(selected_annotation_key, selected_session_key, avai
                                 opacity=1.0,
                                 showlegend=True
                             ))
-                        else:
-                            fig_map.add_trace(go.Scatter(
-                                x=opp_df[opp_x_col], 
-                                y=opp_df[opp_y_col],
-                                mode="lines",
-                                name=f"Opponent {i} Trajectory",
-                                line=dict(color="red", width=3),
-                                opacity=1.0,
-                                showlegend=True
-                            ))
-
-            if not use_3d:
-                fig_map.update_yaxes(scaleanchor="x", scaleratio=1)
             
             fig_map.update_layout(uirevision=session_id, height=800)
             st.plotly_chart(fig_map, width='stretch')
@@ -1389,26 +1556,6 @@ def render_detailed_labeling(selected_annotation_key, selected_session_key, avai
                 st.dataframe(pd.DataFrame(display_data).set_index("Annotation ID"), width='stretch')
             else:
                 st.info("No segments found inside the selected annotation.")
-
-            if st.button("Delete All Segments for Session", type="primary", key="detailed_btn_del_all_seg"):
-                st.session_state.detailed_show_delete_all_confirm = True
-            
-            if st.session_state.get("detailed_show_delete_all_confirm", False):
-                st.warning(f"⚠️ Are you sure you want to DELETE ALL {len(st.session_state.current_annotations)} segments for session '{session_id}'? This cannot be undone.")
-                col_confirm_del, col_cancel_del = st.columns(2)
-                
-                with col_confirm_del:
-                    if st.button("Yes, Delete All", key="detailed_confirm_del_all"):
-                        st.session_state.current_annotations = []
-                        save_annotations(session_id, st.session_state.current_annotations, selected_annotation_key)
-                        st.session_state.detailed_show_delete_all_confirm = False
-                        st.success(f"All annotations for session {session_id} have been deleted.")
-                        st.rerun()
-                
-                with col_cancel_del:
-                    if st.button("Cancel", key="detailed_cancel_del_all"):
-                        st.session_state.detailed_show_delete_all_confirm = False
-                        st.rerun()
         else:
             st.info("No annotations added yet.")
         

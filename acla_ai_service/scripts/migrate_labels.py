@@ -16,11 +16,11 @@ LEGACY_LABEL_MAP = {
     "5": "RM",
     3: "EA",
     5: "RM",
-    "Other1": "TS1",
-    "Other2": "TS2",
-    "Other3": "TS3",
-    "Other4": "TS4",
-    "Other5": "TS5",
+    "TS1": "ST1",
+    "TS2": "ST2",
+    "TS3": "ST3",
+    "TS4": "ST4",
+    "TS5": "ST5",
     # Future mappings example:
     # "OLD_CODE": "NEW_CODE"
 }

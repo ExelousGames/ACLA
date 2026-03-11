@@ -22,10 +22,6 @@ coverage.xml
 .pytest_cache
 .hypothesis
 
-# Ignore large data cache (but keep structure)
-telemetry_data_cache/hdf5_storage/*
-!telemetry_data_cache/hdf5_storage/.gitkeep
-
 # Ignore model files if they're large
 models/*/*
 !models/*/.gitkeep

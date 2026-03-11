@@ -212,7 +212,7 @@ def render_rule_based_annotation(df, selected_annotation_key):
             st.info(f"No segments matched the value '{target_value_str}' for feature '{selected_feature}'.")
 
 
-def render_batch_api_file_job_ui(df, selected_annotation_key, process_indices, context_padding=200):
+def render_batch_api_file_job_ui(df, selected_annotation_key, process_indices, context_padding=200, overlay_config=None):
     """
     Renders the UI for Batch API File Job mode.
     - Prepares all requests with base64-encoded images in JSONL format
@@ -318,7 +318,8 @@ def render_batch_api_file_job_ui(df, selected_annotation_key, process_indices, c
                     main_guidelines=MAIN_LABEL_GUIDELINES,
                     label_categories=LABEL_CATEGORIES,
                     include_graphs=include_graphs,
-                    context_padding=context_padding
+                    context_padding=context_padding,
+                    overlay_config=overlay_config
                 )
                 
                 if success:
@@ -407,11 +408,8 @@ def render_batch_api_file_job_ui(df, selected_annotation_key, process_indices, c
                             summary = result.get("summary", "")
                             if summary:
                                 timestamp = time.strftime("%H:%M:%S")
-                                new_note = f"\n\n[Batch API {timestamp}]:\n{summary}"
-                                if hasattr(ann, 'notes') and ann.notes:
-                                    ann.notes += new_note
-                                else:
-                                    ann.notes = new_note.strip()
+                                new_note = f"[Batch API {timestamp}]:\n{summary}"
+                                ann.notes = new_note.strip()
                             
                             observer.on_log(f"✅ Segment #{seg_idx}: Applied {len(new_label_ids)} labels")
                             success_count += 1
@@ -496,6 +494,185 @@ def render_batch_auto_annotation(df, selected_annotation_key):
             help="Controls how much track data around the segment is included in the context analysis."
         )
 
+        # Track Map Overlay Controls
+        st.markdown("##### Track Map Overlay Settings")
+        st.info("💡 These settings will be applied consistently to all segments in the batch job.")
+        
+        overlay_config = None
+        
+        # Get track name to find reference image
+        track_name = None
+        if "Static_track" in df.columns and not df.empty:
+            track_name = df["Static_track"].iloc[0]
+        
+        if track_name:
+            # Try to find track map path
+            try:
+                from app.models.segment_models import LABEL_IMAGE_MAP
+                
+                track_map_filename = LABEL_IMAGE_MAP.get(track_name)
+                if track_map_filename:
+                    # Search for the file
+                    import os
+                    possible_paths = [
+                        os.path.join(os.getcwd(), "acla_ai_service/ui/source"),
+                        os.path.join(os.getcwd(), "ui/source"),
+                        os.path.join(os.path.dirname(__file__), "../source"),
+                        "ui/source",
+                        "source"
+                    ]
+                    
+                    track_map_path = None
+                    for base_path in possible_paths:
+                        full_path = os.path.join(base_path, track_map_filename)
+                        if os.path.exists(full_path):
+                            track_map_path = full_path
+                            break
+                    
+                    if track_map_path:
+                        st.success(f"Found track map: {track_name}")
+                        
+                        # Overlay adjustment controls
+                        col_ov1, col_ov2 = st.columns(2)
+                        
+                        with col_ov1:
+                            offset_x = st.slider(
+                                "Horizontal Offset", 
+                                min_value=-500, 
+                                max_value=500, 
+                                value=0,
+                                step=1,
+                                key="batch_overlay_x"
+                            )
+                            
+                            rotation = st.slider(
+                                "Rotation (degrees)", 
+                                min_value=-180, 
+                                max_value=180, 
+                                value=0,
+                                step=1,
+                                key="batch_overlay_rotation"
+                            )
+                        
+                        with col_ov2:
+                            offset_y = st.slider(
+                                "Vertical Offset", 
+                                min_value=-500, 
+                                max_value=500, 
+                                value=0,
+                                step=1,
+                                key="batch_overlay_y"
+                            )
+                            
+                            scale_x = st.slider(
+                                "Scale X", 
+                                min_value=0.01, 
+                                max_value=3.0, 
+                                value=1.0,
+                                step=0.01,
+                                key="batch_overlay_scale_x"
+                            )
+                            
+                            scale_y = st.slider(
+                                "Scale Y", 
+                                min_value=0.01, 
+                                max_value=3.0, 
+                                value=1.0,
+                                step=0.01,
+                                key="batch_overlay_scale_y"
+                            )
+                        
+                        overlay_config = {
+                            "enabled": True,
+                            "track_map_path": track_map_path,
+                            "offset_x": offset_x,
+                            "offset_y": offset_y,
+                            "rotation": rotation,
+                            "scale_x": scale_x,
+                            "scale_y": scale_y,
+                            "alpha": 0.8
+                        }
+                        
+                        st.caption("✅ Overlay configured. These settings will be used for all segments in the batch.")
+                        
+                        # Preview Section
+                        st.markdown("---")
+                        st.markdown("##### Preview Overlay")
+                        
+                        preview_col1, preview_col2 = st.columns([3, 1])
+                        
+                        with preview_col2:
+                            preview_auto = st.checkbox(
+                                "Auto-update preview",
+                                value=True,
+                                key="batch_overlay_auto_preview",
+                                help="Automatically update preview when sliders change"
+                            )
+                            
+                            import time
+                            if not preview_auto:
+                                if st.button("Update Preview", key="batch_overlay_preview_btn"):
+                                    st.session_state.batch_preview_trigger = time.time()
+                        
+                        # Generate preview
+                        should_preview = preview_auto or st.session_state.get("batch_preview_trigger", 0) > 0
+                        
+                        if should_preview:
+                            with st.spinner("Generating overlay preview..."):
+                                try:
+                                    import traceback
+                                    # Prepare data for preview
+                                    # Just use context padding amount of data from the beginning of the track
+                                    end_idx = min(len(df), int(context_padding_val))
+                                    analysis_df = df.iloc[0:end_idx]
+                                    preview_context_df = analysis_df # Uses same data for context
+                                    
+                                    # Track config
+                                    preview_track_config = {
+                                        "player_x": "Graphics_player_pos_x",
+                                        "player_y": "Graphics_player_pos_y",
+                                        "expert_x": "expert_optimal_player_pos_x",
+                                        "expert_y": "expert_optimal_player_pos_y"
+                                    }
+                                    
+                                    # Create analyzer instance just for preview
+                                    api_key = GeminiAnalyzer.get_api_key()
+                                    if not api_key:
+                                        st.warning("Please configure Gemini API key to see preview.")
+                                    else:
+                                        preview_analyzer = GeminiAnalyzer(api_key)
+                                        
+                                        # Generate overlay image
+                                        overlay_img = preview_analyzer.create_trajectory_overlay(
+                                            analysis_df,
+                                            preview_track_config,
+                                            context_df=preview_context_df,
+                                            track_map_path=track_map_path,
+                                            overlay_config=overlay_config
+                                        )
+                                        
+                                        if overlay_img:
+                                            with preview_col1:
+                                                st.image(overlay_img, caption="Trajectory Overlay Preview", width='stretch')
+                                                st.caption("💡 Adjust sliders to align trajectory with track layout")
+                                        else:
+                                            st.error("Failed to generate overlay preview")
+                                            
+                                except Exception as e:
+                                    st.error(f"Preview error: {str(e)}")
+                                    st.code(traceback.format_exc())
+                        
+                        st.markdown("---")
+                        
+                    else:
+                        st.warning(f"Track map file '{track_map_filename}' not found in source directories.")
+                else:
+                    st.info(f"No track map configured for '{track_name}'. Track map overlay is always needed for best analysis.")
+            except ImportError:
+                st.warning("Could not import LABEL_IMAGE_MAP")
+        else:
+            st.info("Track name not found in session data. Track map overlay is disabled.")
+
         # Mode Selection: Sequential vs Batch API
         st.markdown("---")
         batch_mode = st.radio(
@@ -518,7 +695,7 @@ def render_batch_auto_annotation(df, selected_annotation_key):
         
         if batch_mode == "Batch API File Job (50% cheaper)":
             # Render Batch API File Job UI
-            render_batch_api_file_job_ui(df, selected_annotation_key, process_indices, context_padding=context_padding_val)
+            render_batch_api_file_job_ui(df, selected_annotation_key, process_indices, context_padding=context_padding_val, overlay_config=overlay_config)
         else:
             # Render Sequential API UI (existing fragment-based approach)
             # Use fragment for progress monitoring to avoid full script reruns
@@ -667,14 +844,11 @@ def render_batch_auto_annotation(df, selected_annotation_key):
                                     ann.labels = updated_labels
                                     print(f"[Batch] Updating segment {idx} with labels: {updated_labels}")
                                     
-                                    # Update Notes (Append)
+                                    # Update Notes (Overwrite)
                                     timestamp = time.strftime("%H:%M:%S")
-                                    new_note = f"\\n\\n[Auto-Analysis {timestamp}]:\\n{response_text}"
+                                    new_note = f"[Auto-Analysis {timestamp}]:\n{response_text}"
                                     
-                                    if hasattr(ann, 'notes') and ann.notes:
-                                        ann.notes += new_note
-                                    else:
-                                        ann.notes = new_note.strip()
+                                    ann.notes = new_note.strip()
                                     
                                     # Save directly to store
                                     if "last_session_id" in st.session_state and "last_annotation_key" in st.session_state:
@@ -701,7 +875,8 @@ def render_batch_auto_annotation(df, selected_annotation_key):
                                     MAIN_LABEL_GUIDELINES,
                                     LABEL_CATEGORIES,
                                     persistence_callback,
-                                    context_padding_val
+                                    context_padding_val,
+                                    overlay_config
                                 )
                             )
                             # Attach script context so st.* calls in service (if any) or observer work
@@ -779,6 +954,111 @@ def render_bulk_label_utils(selected_annotation_key):
             st.info(f"Label '{selected_label_name}' was not found in any segment.")
 
 
+def render_classifier_auto_annotation(df, selected_annotation_key):
+    """
+    Renders the Segment Classifier Auto-Annotation section.
+    Allows user to scan a range of telemetry data using the trained LSTM model.
+    """
+    st.header("Classifier Auto-Annotation")
+    st.write("Automatically identify segments and apply main labels using trained LSTM Classifier.")
+    st.warning("⚠️ Warning: Any existing segments within the selected range will be removed and replaced by the newly identified segments.")
+
+    try:
+        from app.services.segment_classifier_service import segment_classifier
+    except ImportError:
+        try:
+            from acla_ai_service.app.services.segment_classifier_service import segment_classifier
+        except ImportError:
+            segment_classifier = None
+
+    if not segment_classifier:
+        st.error("SegmentClassifierService could not be imported.")
+        return
+
+    total_rows = len(df)
+    if total_rows > 1:
+        range_slider = st.slider(
+            "Select Data Range to Scan (Row Indices)", 
+            0, total_rows-1, (0, total_rows-1), step=1, 
+            key="classifier_range_slider"
+        )
+    else:
+        st.write("Not enough data to scan.")
+        return
+
+    if st.button("Identify Segments with Classifier", type="primary", key="classifier_scan_btn"):
+        with st.spinner("Loading model and scanning telemetry data..."):
+            try:
+                if not segment_classifier.load_model():
+                    st.error("Could not load trained model. Ensure it is trained first.")
+                    return
+                
+                scan_df = df.iloc[range_slider[0]:range_slider[1] + 1].copy()
+                found_segments = segment_classifier.scan_telemetry_data(scan_df)
+                
+                main_labels_set = set(LABEL_CATEGORIES.get("Main Labels", []))
+                
+                new_annotations = []
+                count_added = 0
+                for seg in found_segments:
+                    start_idx = seg.start_index + range_slider[0]
+                    end_idx = seg.end_index + range_slider[0]
+                    
+                    filtered_labels = [lbl for lbl in seg.labels if str(lbl) in main_labels_set]
+                    
+                    if filtered_labels:
+                        from app.models.segment_models import AnnotatedSegment
+                        
+                        new_ann = AnnotatedSegment(
+                            labels=filtered_labels,
+                            segment_length=end_idx - start_idx + 1,
+                            start_index=start_idx,
+                            end_index=end_idx,
+                            notes="Auto-identified by Segment Classifier"
+                        )
+                        new_annotations.append(new_ann)
+                        count_added += 1
+                
+                if count_added > 0:
+                    if "current_annotations" not in st.session_state or st.session_state.current_annotations is None:
+                        st.session_state.current_annotations = []
+                    else:
+                        filtered_annotations = []
+                        removed_count = 0
+                        for ann in st.session_state.current_annotations:
+                            start = ann.start_index if ann.start_index is not None else 0
+                            end = ann.end_index if ann.end_index is not None else len(df) - 1
+                            
+                            if start <= range_slider[1] and end >= range_slider[0]:
+                                removed_count += 1
+                            else:
+                                filtered_annotations.append(ann)
+                                
+                        st.session_state.current_annotations = filtered_annotations
+                        if removed_count > 0:
+                            st.info(f"Removed {removed_count} existing segments in the selected range.")
+                        
+                    st.session_state.current_annotations.extend(new_annotations)
+                    st.session_state.current_annotations.sort(key=lambda x: (x.start_index if x.start_index is not None else 0))
+                    
+                    st.success(f"Successfully identified and added {count_added} segments with main labels.")
+                    
+                    if "last_session_id" in st.session_state and "last_annotation_key" in st.session_state:
+                         save_annotations(
+                             st.session_state.last_session_id,
+                             st.session_state.current_annotations,
+                             st.session_state.last_annotation_key,
+                             silent=False
+                         )
+                         time.sleep(1)
+                         st.rerun()
+                else:
+                    st.info("No new segments with main labels were identified in the selected range.")
+                    
+            except Exception as e:
+                st.error(f"Error classifying segments: {str(e)}")
+
+
 def render_batch_view(selected_annotation_key, selected_session_key, available_sessions):
     """
     Renders the Batch Annotation Tab View (including session selection).
@@ -850,4 +1130,5 @@ def render_batch_view(selected_annotation_key, selected_session_key, available_s
 
     render_bulk_label_utils(selected_annotation_key)
     render_rule_based_annotation(df, selected_annotation_key)
+    render_classifier_auto_annotation(df, selected_annotation_key)
     render_batch_auto_annotation(df, selected_annotation_key)

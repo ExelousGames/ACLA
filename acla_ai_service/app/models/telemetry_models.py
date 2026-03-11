@@ -708,6 +708,26 @@ class TelemetryFeatures:
             "Opponent_5_pos_x", "Opponent_5_pos_y", "Opponent_5_pos_z", "Opponent_5_distance", "Opponent_5_car_id",
         ]
         
+    @classmethod
+    def get_features_not_for_averaging(cls) -> List[str]:
+        """
+        Features that should not be averaged during downsampling (discrete, categorical, or string).
+        """
+        return [
+            "Graphics_normalized_car_position",
+            "Graphics_completed_lap",
+            "Physics_gear",
+            "Graphics_track_grip_status",
+            "Graphics_current_tyre_set",
+            "Graphics_is_valid_lap",
+            "Static_car_model",
+            "Static_track",
+            "Opponent_1_car_id",
+            "Opponent_2_car_id",
+            "Opponent_3_car_id",
+            "Opponent_4_car_id",
+            "Opponent_5_car_id"
+        ]
         
     @classmethod
     def get_features_for_model_type(cls, model_type: str) -> List[str]:
@@ -1191,24 +1211,43 @@ class FeatureProcessor:
         if time_values.size == 0:
             return df.iloc[0:0].copy()
 
-        keep_mask = np.zeros(len(working), dtype=bool)
+        # Create sequential groups maintaining chronological order & handling lap resets
+        group_ids = np.zeros(len(time_values), dtype=int)
+        current_group_id = 0
         last_selected = None
 
         for idx, current_time in enumerate(time_values):
             if last_selected is None or current_time < last_selected:
-                keep_mask[idx] = True
+                current_group_id += 1
+                group_ids[idx] = current_group_id
                 last_selected = current_time
+            elif (current_time - last_selected) >= gap_between:
+                current_group_id += 1
+                group_ids[idx] = current_group_id
+                last_selected = current_time
+            else:
+                group_ids[idx] = current_group_id
+
+        working['__temp_group_id'] = group_ids
+
+        features_not_for_avg = TelemetryFeatures.get_features_not_for_averaging()
+
+        aggs = {}
+        for col in working.columns:
+            if col == '__temp_group_id':
                 continue
+            elif col == 'Graphics_current_time':
+                aggs[col] = 'last'
+            elif col in features_not_for_avg:
+                aggs[col] = 'last'
+            elif pd.api.types.is_string_dtype(working[col]) or pd.api.types.is_object_dtype(working[col]):
+                aggs[col] = 'last'
+            else:
+                aggs[col] = 'mean'
 
-            if (current_time - last_selected) >= gap_between:
-                keep_mask[idx] = True
-                last_selected = current_time
-
-        if not keep_mask.any():
-            return df.iloc[0:0].copy()
-
-        stripped = working.iloc[keep_mask].copy()
-        return stripped.reset_index(drop=True)
+        # Group by the sequential group IDs to preserve order
+        stripped = working.groupby('__temp_group_id', sort=False).agg(aggs).reset_index(drop=True)
+        return stripped
 
     def flip_y_z_features(self) -> pd.DataFrame:
         """Swap values across *_y and *_z telemetry columns to align axis conventions."""

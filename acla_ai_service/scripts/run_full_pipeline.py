@@ -80,8 +80,11 @@ async def main():
 
     logger.info("Starting pipeline from step: %s", start_step)
     log_message("Initializing services...")
-    service = Full_dataset_TelemetryMLService(logger=logger)
+    
     pipeline_config = PipelineConfig()
+    
+    # Pass pipeline_config to service so they share the same cache keys
+    service = Full_dataset_TelemetryMLService(logger=logger, pipeline_config=pipeline_config)
     
     # Default keys
     processed_sessions_cache_key = pipeline_config.processed_session_data_cache_key
