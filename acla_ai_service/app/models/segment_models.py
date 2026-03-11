@@ -1,3 +1,4 @@
+import uuid
 from dataclasses import dataclass, field, asdict
 from typing import List, Dict, Any, Optional
 
@@ -155,11 +156,13 @@ LABEL_CATEGORIES = {
 class AnnotatedSegment:
     labels: List[str]
     segment_length: int
+    id: str = field(default_factory=lambda: str(uuid.uuid4()))
     start_index: Optional[int] = None
     end_index: Optional[int] = None
     chunk_index: Optional[int] = None
     telemetry_data: List[Dict[str, Any]] = field(default_factory=list)
     notes: Optional[str] = None
+    parent_id: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -167,18 +170,21 @@ class AnnotatedSegment:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'AnnotatedSegment':
         return cls(
+            id=data.get("id", str(uuid.uuid4())),
             labels=data.get("labels", []),
             segment_length=data.get("segment_length", 0),
             start_index=data.get("start_index"),
             end_index=data.get("end_index"),
             chunk_index=data.get("chunk_index"),
             telemetry_data=data.get("telemetry_data", []),
-            notes=data.get("notes")
+            notes=data.get("notes"),
+            parent_id=data.get("parent_id")
         )
 
 @dataclass
 class PredictedSegment:
     labels: List[str]
+    id: str = field(default_factory=lambda: str(uuid.uuid4()))
     telemetry_data: List[Dict[str, Any]] = field(default_factory=list)
     start_index: Optional[int] = None
     end_index: Optional[int] = None

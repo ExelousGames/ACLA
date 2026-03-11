@@ -676,6 +676,10 @@ class Full_dataset_TelemetryMLService:
         
         # Process sessions if top laps not available from cache
         if not top_laps_available:
+            if cache_config.processed_session_cleanup and self.telemetry_store.has_cached_data(processed_sessions_cache_key):
+                print(f"[INFO] Cleaning up existing processed sessions cache: {processed_sessions_cache_key}")
+                self.telemetry_store.clear_cache(processed_sessions_cache_key)
+
             await self.process_lap_sessions_efficiently(
                 session_data_cache_key=dataset_cache_key,
                 telemetry_time_gap_ms=500,
@@ -688,6 +692,13 @@ class Full_dataset_TelemetryMLService:
 
         try:
             # Only run enrichment if segments not cached or cleanup requested
+            if cache_config.segment_cleanup:
+                if self.telemetry_store.has_cached_data(enriched_sessions_cache_key):
+                    print(f"[INFO] Cleaning up existing enriched sessions cache: {enriched_sessions_cache_key}")
+                    self.telemetry_store.clear_cache(enriched_sessions_cache_key)
+                if self.telemetry_store.has_cached_data(segments_cache_key):
+                    print(f"[INFO] Cleaning up existing segments cache: {segments_cache_key}")
+                    self.telemetry_store.clear_cache(segments_cache_key)
 
             print("[INFO] Enriching telemetry sessions with segment data...")
             enriched_sessions_cache_key = await self.enriched_contextual_data(

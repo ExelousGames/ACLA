@@ -109,11 +109,13 @@ def main():
             st.markdown("---")
             st.header("Maintenance")
             
-            m_col1, m_col2 = st.columns(2)
+            m_col1, m_col2, m_col3 = st.columns(3)
             with m_col1:
                 run_update_features = st.button("Update Features (All Sessions)", help="Re-extract telemetry data for all annotations in this dataset to include new features from the source data.")
             with m_col2:
                 run_update_labels = st.button("Migrate Legacy Labels", help="Update legacy labels (e.g. 28 -> MS) to new schema.")
+            with m_col3:
+                run_add_ids = st.button("Add missing IDs to segments", help="Add unique identifiers to segments that lack one.")
             
             if run_update_labels:
                 try:
@@ -129,6 +131,20 @@ def main():
                     st.error("Could not import migration script. Please check configuration.")
                 except Exception as e:
                     st.error(f"Migration failed: {e}")
+
+            if run_add_ids:
+                try:
+                    import migrate_add_id_to_segments
+                    with st.spinner("Adding missing IDs..."):
+                        stats = migrate_add_id_to_segments.update_segments_add_ids(selected_annotation_key)
+                    
+                    st.success(f"ID Migration Complete! Updated {stats['segments_updated']} sessions.")
+                    time.sleep(2)
+                    st.rerun()
+                except ImportError:
+                    st.error("Could not import ID migration script. Please check configuration.")
+                except Exception as e:
+                    st.error(f"ID Migration failed: {e}")
 
             if run_update_features:
                 updater = SegmentUpdater()

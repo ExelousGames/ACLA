@@ -14,24 +14,23 @@ def render_annotation_manager(df, session_id, selected_annotation_key, numeric_c
         # Ensure annotations list exists
         if "current_annotations" not in st.session_state:
             st.session_state.current_annotations = []
-    
+            
+        if not st.session_state.current_annotations:
+            st.warning("No segments found in this session.")
+            return
+            
         # 1. Select Mode/Annotation
-        annotation_options = ["Create New"]
-        if st.session_state.current_annotations:
-            annotation_options.extend(range(len(st.session_state.current_annotations)))
+        annotation_options = list(range(len(st.session_state.current_annotations)))
         
     
     
         def format_func(option):
-            if option == "Create New":
-                return "➕ Create New Annotation"
-            else:
-                ann = st.session_state.current_annotations[option]
-                labels = ", ".join(get_display_labels(ann.labels))
-                return f"#{option}: {labels} (Start: {ann.start_index}, End: {ann.end_index})"
+            ann = st.session_state.current_annotations[option]
+            labels = ", ".join(get_display_labels(ann.labels))
+            return f"#{option}: {labels} (Start: {ann.start_index}, End: {ann.end_index})"
     
         # Determine the default index for the selectbox
-        default_index = 0  # Default to "Create New"
+        default_index = 0
         if "last_detailed_selection" in st.session_state and st.session_state.last_detailed_selection in annotation_options:
             default_index = annotation_options.index(st.session_state.last_detailed_selection)
         
@@ -56,39 +55,23 @@ def render_annotation_manager(df, session_id, selected_annotation_key, numeric_c
                 del st.session_state[k]
     
             # Auto-set the visualization range to show the segment
-            if selected_option != "Create New":
-                 ann_sel = st.session_state.current_annotations[selected_option]
-                 st.session_state.detailed_global_viz_start_input = ann_sel.start_index
-                 st.session_state.detailed_global_viz_end_input = ann_sel.end_index
-                 st.session_state.detailed_global_viz_range = (ann_sel.start_index, ann_sel.end_index)
-            else:
-                # Reset to default range when switching to "Create New"
-                default_start = 0
-                default_end = min(100, len(df)-1)
-                st.session_state.detailed_global_viz_start_input = default_start
-                st.session_state.detailed_global_viz_end_input = default_end
-                st.session_state.detailed_global_viz_range = (default_start, default_end)
-    
+            ann_sel = st.session_state.current_annotations[selected_option]
+            st.session_state.detailed_global_viz_start_input = ann_sel.start_index
+            st.session_state.detailed_global_viz_end_input = ann_sel.end_index
+            st.session_state.detailed_global_viz_range = (ann_sel.start_index, ann_sel.end_index)
+            
         # Manual Annotation Logic
         input_min = 0
         input_max = len(df)-1
     
-        if selected_option == "Create New":
-            form_title = "Add New Annotation"
-            default_start = 0
-            default_end = min(100, len(df)-1)
-            default_labels = []
-            submit_label = "Add Annotation"
-            is_edit = False
-        else:
-            # Existing Annotation Selected - Edit Mode
-            ann = st.session_state.current_annotations[selected_option]
-            form_title = f"Edit Annotation #{selected_option}"
-            default_start = ann.start_index
-            default_end = ann.end_index
-            default_labels = [l for l in get_display_labels(ann.labels) if l in LABEL_MAPPING.values()]
-            submit_label = "Update Annotation"
-            is_edit = True
+        # Existing Annotation Selected - Edit Mode
+        ann = st.session_state.current_annotations[selected_option]
+        form_title = f"Edit Annotation #{selected_option}"
+        default_start = ann.start_index
+        default_end = ann.end_index
+        default_labels = [l for l in get_display_labels(ann.labels) if l in LABEL_MAPPING.values()]
+        submit_label = "Update Annotation"
+        is_edit = True
     
         st.markdown(f"**{form_title}**")
         
@@ -192,7 +175,7 @@ def render_annotation_manager(df, session_id, selected_annotation_key, numeric_c
             for k in keys_to_clear:
                 del st.session_state[k]
                 
-            if next_selection_key != "Create New" and isinstance(next_selection_key, int) and next_selection_key < len(st.session_state.current_annotations):
+            if isinstance(next_selection_key, int) and next_selection_key < len(st.session_state.current_annotations):
                 ann_sel = st.session_state.current_annotations[next_selection_key]
                 st.session_state.detailed_global_viz_start_input = ann_sel.start_index
                 st.session_state.detailed_global_viz_end_input = ann_sel.end_index
@@ -223,45 +206,22 @@ def render_annotation_manager(df, session_id, selected_annotation_key, numeric_c
             segment_df = df.iloc[int(s_start):int(s_end)]
             telemetry_data = segment_df.to_dict(orient="records")
     
-            if is_edit:
-                # Update existing
-                ann = st.session_state.current_annotations[selected_option]
-                ann.start_index = int(s_start)
-                ann.end_index = int(s_end)
-                ann.segment_length = int(s_end - s_start)
-                ann.labels = label_ids
-                ann.telemetry_data = telemetry_data
-    
-                if go_next:
-                    if isinstance(selected_option, int) and selected_option + 1 < len(st.session_state.current_annotations):
-                        st.session_state.temp_success = f"Updated #{selected_option}. Moving to #{selected_option + 1}."
-                        update_selection_state(selected_option + 1)
-                    else:
-                        st.session_state.temp_success = "Updated annotation. (End of list)"
-                        update_selection_state("Create New")
+            # Update existing
+            ann = st.session_state.current_annotations[selected_option]
+            ann.start_index = int(s_start)
+            ann.end_index = int(s_end)
+            ann.segment_length = int(s_end - s_start)
+            ann.labels = label_ids
+            ann.telemetry_data = telemetry_data
+
+            if go_next:
+                if isinstance(selected_option, int) and selected_option + 1 < len(st.session_state.current_annotations):
+                    st.session_state.temp_success = f"Updated #{selected_option}. Moving to #{selected_option + 1}."
+                    update_selection_state(selected_option + 1)
                 else:
-                    st.session_state.temp_success = "Annotation updated!"
+                    st.session_state.temp_success = "Updated annotation. (End of list)"
             else:
-                # Create new
-                annotation = AnnotatedSegment(
-                    labels=label_ids,
-                    segment_length=int(s_end - s_start),
-                    start_index=int(s_start),
-                    end_index=int(s_end),
-                    chunk_index=session_id,
-                    telemetry_data=telemetry_data
-                )
-                st.session_state.current_annotations.append(annotation)
-    
-                if go_next and isinstance(selected_option, int):
-                    if selected_option + 1 < len(st.session_state.current_annotations) - 1:
-                        st.session_state.temp_success = f"Added Detail. Moving to #{selected_option + 1}."
-                        update_selection_state(selected_option + 1)
-                    else:
-                        st.session_state.temp_success = "Added Detail. (End of list)"
-                        update_selection_state("Create New")
-                else:
-                    st.session_state.temp_success = "Annotation added!"
+                st.session_state.temp_success = "Annotation updated!"
             
             save_annotations(session_id, st.session_state.current_annotations, selected_annotation_key)
     
@@ -274,8 +234,8 @@ def render_annotation_manager(df, session_id, selected_annotation_key, numeric_c
                 
                 # Determine next selection
                 if len(st.session_state.current_annotations) == 0:
-                    # No annotations left, go to Create New
-                    update_selection_state("Create New")
+                    # No annotations left
+                    update_selection_state(0)
                     st.session_state.temp_success = f"Deleted annotation ({labels}). No annotations remaining."
                 elif selected_option >= len(st.session_state.current_annotations):
                     # Was last item, go to new last item
@@ -289,18 +249,14 @@ def render_annotation_manager(df, session_id, selected_annotation_key, numeric_c
                 # Save changes
                 save_annotations(session_id, st.session_state.current_annotations, selected_annotation_key)
     
-        if is_edit:
-            with col_actions[0]:
-                 st.button("Update & Next ⏭️", type="primary", key=f"detailed_submit_next_{selected_option}", on_click=handle_submit, args=(True,))
-            
-            with col_actions[1]:
-                st.button(submit_label, type="secondary", key=f"detailed_submit_{selected_option}", on_click=handle_submit, args=(False,))
-            
-            with col_actions[2]:
-                st.button("🗑️ Delete", type="secondary", key=f"detailed_delete_{selected_option}", on_click=handle_delete, help="Delete this annotation")
-        else:
-            with col_actions[0]:
-                st.button(submit_label, type="primary", key=f"detailed_submit_{selected_option}", on_click=handle_submit, args=(False,))
+        with col_actions[0]:
+             st.button("Update & Next ⏭️", type="primary", key=f"detailed_submit_next_{selected_option}", on_click=handle_submit, args=(True,))
+        
+        with col_actions[1]:
+            st.button(submit_label, type="secondary", key=f"detailed_submit_{selected_option}", on_click=handle_submit, args=(False,))
+        
+        with col_actions[2]:
+            st.button("🗑️ Delete", type="secondary", key=f"detailed_delete_{selected_option}", on_click=handle_delete, help="Delete this annotation")
         
         if "temp_error" in st.session_state:
             st.error(st.session_state.temp_error)
@@ -308,89 +264,4 @@ def render_annotation_manager(df, session_id, selected_annotation_key, numeric_c
         if "temp_success" in st.session_state:
             st.success(st.session_state.temp_success)
             del st.session_state.temp_success
-    
-        if selected_option == "Create New":
-            with col_actions[1]:
-                if st.button("Auto-Detect", help="Detect segments in the specified range matching selected labels", key="detailed_auto_detect"):
-                    st.session_state.show_auto_detect_confirm = True
-    
-                if st.session_state.get("show_auto_detect_confirm", False):
-                    st.warning(f"⚠️ This will remove existing annotations in the range {form_start}-{form_end} before running detection. Are you sure?")
-                    col_confirm, col_cancel = st.columns(2)
-                    
-                    if col_confirm.button("Yes, Clear Range & Detect"):
-                            st.session_state.show_auto_detect_confirm = False
-                            st.session_state.run_auto_detect = True
-                            st.rerun()
-                    
-                    if col_cancel.button("Cancel"):
-                        st.session_state.show_auto_detect_confirm = False
-                        st.rerun()
-    
-                if st.session_state.get("run_auto_detect", False):
-                    st.session_state.run_auto_detect = False
-                    
-                    # Clear annotations in range first
-                    st.session_state.current_annotations = [
-                        a for a in st.session_state.current_annotations
-                        if a.end_index <= form_start or a.start_index >= form_end
-                    ]
-                    
-                    if form_start >= form_end:
-                        st.error("Start index must be less than end index.")
-                    else:
-                        with st.spinner("Running classifier..."):
-                            from app.services.segment_classifier_service import segment_classifier
-                            try:
-                                # Slice the dataframe
-                                scan_df = df.iloc[int(form_start):int(form_end)]
-                                detected = segment_classifier.scan_telemetry_data(scan_df)
-                                
-                                new_anns = []
-                                if detected:
-                                    for d in detected:
-                                        # Filter by selected labels if any are selected
-                                        relevant_labels = []
-                                        if form_labels:
-                                            relevant_labels = [l for l in d.labels if l in form_labels]
-                                        else:
-                                            relevant_labels = d.labels
-    
-                                        if relevant_labels:
-                                            # Convert to IDs
-                                            label_ids = []
-                                            for name in relevant_labels:
-                                                if name in LABEL_NAME_TO_ID:
-                                                    label_ids.append(LABEL_NAME_TO_ID[name])
-                                            
-                                            if label_ids:
-                                                # Calculate absolute indices within the session
-                                                # d.start_index and d.end_index are relative to scan_df
-                                                abs_start = int(form_start) + (d.start_index if d.start_index is not None else 0)
-                                                abs_end = int(form_start) + (d.end_index if d.end_index is not None else len(d.telemetry_data))
-    
-                                                ann = AnnotatedSegment(
-                                                    labels=label_ids,
-                                                    segment_length=len(d.telemetry_data),
-                                                    telemetry_data=d.telemetry_data,
-                                                    chunk_index=session_id,
-                                                    start_index=abs_start,
-                                                    end_index=abs_end
-                                                )
-                                                new_anns.append(ann)
-                                    
-                                    if new_anns:
-                                        st.session_state.current_annotations.extend(new_anns)
-                                        st.success(f"Added {len(new_anns)} detected segments in range {form_start}-{form_end}.")
-                                    else:
-                                        st.warning(f"No segments found matching selected labels in range {form_start}-{form_end}.")
-                                else:
-                                    st.info(f"No segments detected in range {form_start}-{form_end}.")
-                                
-                                # Always save because we cleared the annotations
-                                save_annotations(session_id, st.session_state.current_annotations, selected_annotation_key)
-                                st.rerun()
-    
-                            except Exception as e:
-                                st.error(f"Error: {e}")
     

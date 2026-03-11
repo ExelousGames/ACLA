@@ -92,8 +92,8 @@ def render_detailed_labeling(selected_annotation_key, selected_session_key, avai
     from .shared import get_store
     store = get_store()
     metadata = store.get_cache_metadata(selected_session_key)
-    chunk_count = metadata.chunk_count if metadata else len(available_sessions)
-    st.write(f"Loaded {len(df)} records from session {session_id} (Total sessions: {chunk_count}).")
+    session_count = len(available_sessions)
+    st.write(f"Loaded {len(df)} records from session {session_id} (Total sessions: {session_count}).")
 
     # Display Track Name if available
     if "Static_track" in df.columns:
@@ -106,6 +106,10 @@ def render_detailed_labeling(selected_annotation_key, selected_session_key, avai
 
     from .components.detailed_annotation_manager import render_annotation_manager
     render_annotation_manager(df, session_id, selected_annotation_key, numeric_cols)
+
+    # --- Sub-Segment Manager ---
+    from .components.detailed_subsegment_manager import render_subsegment_manager
+    render_subsegment_manager(df, session_id, selected_annotation_key)
 
     # --- Visualization Range & Graphs (MOVED DOWN) ---
     st.markdown("---")

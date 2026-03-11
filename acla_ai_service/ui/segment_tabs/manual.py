@@ -69,8 +69,8 @@ def render_manual_annotation(selected_annotation_key, selected_session_key, avai
     from .shared import get_store
     store = get_store()
     metadata = store.get_cache_metadata(selected_session_key)
-    chunk_count = metadata.chunk_count if metadata else len(available_sessions)
-    st.write(f"Loaded {len(df)} records from session {session_id} (Total sessions: {chunk_count}).")
+    session_count = len(available_sessions)
+    st.write(f"Loaded {len(df)} records from session {session_id} (Total sessions: {session_count}).")
 
     # Display Track Name if available
     if "Static_track" in df.columns:
