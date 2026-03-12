@@ -52,7 +52,8 @@ def render_manual_track_map(df, viz_start_idx, viz_end_idx, session_id):
                     "y": current_row["Graphics_player_pos_y"],
                     "Type": "Player",
                     "ID": "Player End",
-                    "Marker": "End"
+                    "Marker": "End",
+                    "Index": selected_time_idx
                 }
                 if has_player_pos_z:
                     p_data["z"] = current_row["Graphics_player_pos_z"]
@@ -64,7 +65,8 @@ def render_manual_track_map(df, viz_start_idx, viz_end_idx, session_id):
                     "y": start_row["Graphics_player_pos_y"],
                     "Type": "Player",
                     "ID": "Player Start",
-                    "Marker": "Start"
+                    "Marker": "Start",
+                    "Index": start_idx
                 }
                 if has_player_pos_z:
                     p_start["z"] = start_row["Graphics_player_pos_z"]
@@ -78,23 +80,25 @@ def render_manual_track_map(df, viz_start_idx, viz_end_idx, session_id):
                     "y": current_row["expert_optimal_player_pos_y"],
                     "Type": "Expert",
                     "ID": "Expert End",
-                    "Marker": "End"
+                    "Marker": "End",
+                    "Index": selected_time_idx
                 }
                 if has_expert_pos_z:
                     e_data["z"] = current_row["expert_optimal_player_pos_z"]
                 map_data.append(e_data)
 
-            # Start Position
-            e_start = {
-                "x": start_row["expert_optimal_player_pos_x"],
-                "y": start_row["expert_optimal_player_pos_y"],
-                "Type": "Expert",
-                "ID": "Expert Start",
-                "Marker": "Start"
-            }
-            if has_expert_pos_z:
-                e_start["z"] = start_row["expert_optimal_player_pos_z"]
-            map_data.append(e_start)
+                # Start Position
+                e_start = {
+                    "x": start_row["expert_optimal_player_pos_x"],
+                    "y": start_row["expert_optimal_player_pos_y"],
+                    "Type": "Expert",
+                    "ID": "Expert Start",
+                    "Marker": "Start",
+                    "Index": start_idx
+                }
+                if has_expert_pos_z:
+                    e_start["z"] = start_row["expert_optimal_player_pos_z"]
+                map_data.append(e_start)
             
             # Add Opponent Positions
             for i in range(1, 6):
@@ -112,7 +116,8 @@ def render_manual_track_map(df, viz_start_idx, viz_end_idx, session_id):
                             "y": current_row[opp_y_col],
                             "Type": "Opponent",
                             "ID": str(opp_id),
-                            "Marker": "End"
+                            "Marker": "End",
+                            "Index": selected_time_idx
                         }
                         if opp_z_col in df.columns:
                             o_data["z"] = current_row[opp_z_col]
@@ -130,7 +135,7 @@ def render_manual_track_map(df, viz_start_idx, viz_end_idx, session_id):
                         z="z",
                         color="Type", 
                         symbol="Marker",
-                        hover_data=["ID"],
+                        hover_data=["ID", "Index"],
                         title=f"Positions (Start: {start_idx}, End: {selected_time_idx}) (3D)",
                         color_discrete_map={"Player": "green", "Opponent": "red", "Expert": "blue"},
                         symbol_map={"Start": "diamond", "End": "circle"}
@@ -156,7 +161,7 @@ def render_manual_track_map(df, viz_start_idx, viz_end_idx, session_id):
                         y="y", 
                         color="Type", 
                         symbol="Marker",
-                        hover_data=["ID"],
+                        hover_data=["ID", "Index"],
                         title=f"Positions (Start: {start_idx}, End: {selected_time_idx})",
                         color_discrete_map={"Player": "green", "Opponent": "red", "Expert": "blue"},
                         symbol_map={"Start": "x", "End": "circle"}
@@ -174,6 +179,8 @@ def render_manual_track_map(df, viz_start_idx, viz_end_idx, session_id):
                             z=map_plot_df["Graphics_player_pos_z"],
                             mode="lines",
                             name="Player Trajectory",
+                            customdata=map_plot_df.index,
+                            hovertemplate='x: %{x}<br>y: %{y}<br>z: %{z}<br>Index: %{customdata}<extra></extra>',
                             line=dict(color="green", width=2),
                             opacity=0.5,
                             showlegend=True
@@ -184,6 +191,8 @@ def render_manual_track_map(df, viz_start_idx, viz_end_idx, session_id):
                             y=map_plot_df["Graphics_player_pos_y"],
                             mode="lines",
                             name="Player Trajectory",
+                            customdata=map_plot_df.index,
+                            hovertemplate='x: %{x}<br>y: %{y}<br>Index: %{customdata}<extra></extra>',
                             line=dict(color="green", width=1, dash="dot"),
                             opacity=0.5,
                             showlegend=True
@@ -198,6 +207,8 @@ def render_manual_track_map(df, viz_start_idx, viz_end_idx, session_id):
                             z=map_plot_df["expert_optimal_player_pos_z"],
                             mode="lines",
                             name="Expert Trajectory",
+                            customdata=map_plot_df.index,
+                            hovertemplate='x: %{x}<br>y: %{y}<br>z: %{z}<br>Index: %{customdata}<extra></extra>',
                             line=dict(color="blue", width=2),
                             opacity=0.5,
                             showlegend=True
@@ -208,6 +219,8 @@ def render_manual_track_map(df, viz_start_idx, viz_end_idx, session_id):
                             y=map_plot_df["expert_optimal_player_pos_y"],
                             mode="lines",
                             name="Expert Trajectory",
+                            customdata=map_plot_df.index,
+                            hovertemplate='x: %{x}<br>y: %{y}<br>Index: %{customdata}<extra></extra>',
                             line=dict(color="blue", width=1, dash="dot"),
                             opacity=0.5,
                             showlegend=True
@@ -230,6 +243,8 @@ def render_manual_track_map(df, viz_start_idx, viz_end_idx, session_id):
                                     z=opp_df[opp_z_col],
                                     mode="lines",
                                     name=f"Opponent {i} Trajectory",
+                                    customdata=opp_df.index,
+                                    hovertemplate='x: %{x}<br>y: %{y}<br>z: %{z}<br>Index: %{customdata}<extra></extra>',
                                     line=dict(color="red", width=2),
                                     opacity=0.3,
                                     showlegend=True
@@ -240,6 +255,8 @@ def render_manual_track_map(df, viz_start_idx, viz_end_idx, session_id):
                                     y=opp_df[opp_y_col],
                                     mode="lines",
                                     name=f"Opponent {i} Trajectory",
+                                    customdata=opp_df.index,
+                                    hovertemplate='x: %{x}<br>y: %{y}<br>Index: %{customdata}<extra></extra>',
                                     line=dict(color="red", width=1, dash="dot"),
                                     opacity=0.3,
                                     showlegend=True

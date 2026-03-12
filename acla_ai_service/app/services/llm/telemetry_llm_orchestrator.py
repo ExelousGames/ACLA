@@ -323,7 +323,7 @@ class TelemetryLLMOrchestrator:
 		model_subtype: str = "llm_adapter_data",
 		provider: str = "local",
 		model_id: Optional[str] = None,
-	) -> Tuple[Optional[Union[LocalTelemetryLLM, HuggingFaceCloudLLM]], Optional[Dict[str, Any]]]:
+	) -> Tuple[Optional[HuggingFaceCloudLLM], Optional[Dict[str, Any]]]:
 		if provider == "cloud":
 			try:
 				llm = HuggingFaceCloudLLM(config=self.llm_config)
