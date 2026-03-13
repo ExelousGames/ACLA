@@ -16,11 +16,9 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 import traceback
 
 from app.models import ActiveModelData
-from app.core.config import settings
 
 from ..backend_service import backend_service
-from ..local_llm_service import LocalLLMConfig, LocalTelemetryLLM
-from ..hf_cloud_llm_service import HuggingFaceCloudLLM
+from .local_llm_service import LocalLLMConfig, LocalTelemetryLLM
 from ..model_cache_service import model_cache_service
 from ..zarr_telemetry_store import get_shared_zarr_store
 
@@ -113,14 +111,6 @@ class TelemetryLLMOrchestrator:
 
 		training_artifacts = await self._train_llm(dataset_path=dataset_path)
 
-		if "cloud_training_info" in training_artifacts:
-			return await self._handle_cloud_training_result(
-				training_artifacts,
-				dataset_path,
-				dataset_stats,
-				cleanup_dataset_file
-			)
-
 		serialized_adapter = training_artifacts["serialized_adapter"]
 		adapter_dir: Path = training_artifacts["adapter_dir"]
 		metrics = training_artifacts["metrics"]
@@ -159,86 +149,8 @@ class TelemetryLLMOrchestrator:
 			"serialized_adapter": serialized_adapter,
 		}
 
-	async def _handle_cloud_training_result(
-		self,
-		artifacts: Dict[str, Any],
-		dataset_path: Path,
-		dataset_stats: Dict[str, Any],
-		cleanup_dataset_file: bool,
-	) -> Dict[str, Any]:
-		cloud_info = artifacts["cloud_training_info"]
-		
-		metadata_payload = {
-			"training_mode": "cloud_hf",
-			"cloud_info": cloud_info,
-			"dataset_stats": dataset_stats,
-			"training_timestamp": datetime.now().isoformat(),
-		}
-
-		print(f"[INFO] Cloud training initiated. Saving reference locally.")
-
-		# Save reference to dedicated folder
-		references_dir = self.adapter_directory.parent / "llm_cloud_references"
-		references_dir.mkdir(parents=True, exist_ok=True)
-		
-		timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-		reference_file = references_dir / f"cloud_ref_{timestamp}.json"
-		
-		save_payload = {
-			"model_type": "llm_guidance_v1",
-			"cloud_reference": cloud_info,
-			"metadata": metadata_payload,
-			"is_active": False
-		}
-
-		try:
-			with reference_file.open("w", encoding="utf-8") as f:
-				json.dump(save_payload, f, indent=2, default=str)
-			print(f"[INFO] Cloud reference saved to: {reference_file}")
-		except Exception as e:
-			print(f"[ERROR] Failed to save cloud reference: {e}")
-
-		# We save a placeholder model record so the UI knows training was requested/started
-		# await self.backend_service.save_ai_model(
-		# 	model_type="llm_guidance_v1",
-		# 	model_data={"cloud_reference": cloud_info},
-		# 	metadata=metadata_payload,
-		# 	is_active=False,
-		# )
-		# print("[WARN] Cloud model reference saving temporarily disabled by user request.")
-
-		if cleanup_dataset_file:
-			try:
-				dataset_path.unlink(missing_ok=True)
-			except Exception as cleanup_error:
-				print(f"[WARNING] Failed to cleanup dataset file: {cleanup_error}")
-
-		return {
-			"success": True,
-			"cloud_info": cloud_info,
-			"local_reference_file": str(reference_file),
-			"message": "Cloud training initiated. Reference saved locally."
-		}
-
 	async def _train_llm(self, dataset_path: Path) -> Dict[str, Any]:
-		if settings.hf_training_enabled:
-			return await asyncio.to_thread(self._train_hf_cloud_sync, Path(dataset_path))
 		return await asyncio.to_thread(self._train_local_llm_sync, Path(dataset_path))
-
-	def _train_hf_cloud_sync(self, dataset_path: Path) -> Dict[str, Any]:
-		print(f"[INFO] Initializing HuggingFaceCloudLLM for training...")
-		try:
-			llm = HuggingFaceCloudLLM(config=self.llm_config)
-			metrics = llm.upload_dataset_for_training(
-				dataset_path=dataset_path,
-				output_dir=self.adapter_directory, # Not used for cloud but required by interface
-			)
-			print(f"[INFO] Cloud training preparation completed successfully")
-			return metrics
-		except Exception as e:
-			print(f"[ERROR] Cloud training failed: {e}")
-			traceback.print_exc()
-			raise
 
 	def _train_local_llm_sync(self, dataset_path: Path) -> Dict[str, Any]:
 		timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -323,14 +235,7 @@ class TelemetryLLMOrchestrator:
 		model_subtype: str = "llm_adapter_data",
 		provider: str = "local",
 		model_id: Optional[str] = None,
-	) -> Tuple[Optional[HuggingFaceCloudLLM], Optional[Dict[str, Any]]]:
-		if provider == "cloud":
-			try:
-				llm = HuggingFaceCloudLLM(config=self.llm_config)
-				return llm, {"provider": "cloud", "model": self.llm_config.base_model}
-			except Exception as e:
-				return None, {"error": f"Failed to initialize cloud LLM: {e}"}
-
+	) -> Tuple[Optional[LocalTelemetryLLM], Optional[Dict[str, Any]]]:
 		if provider == "hf_local":
 			if not model_id:
 				return None, {"error": "Model ID is required for Hugging Face Local provider"}
@@ -345,7 +250,7 @@ class TelemetryLLMOrchestrator:
 					return cached_result[0], cached_result[1]
 
 				# Load model locally
-				print(f"[INFO] Loading HF model locally: {model_id}")
+				print(f"[INFO] Loading HF model locally: {model_id}"); print(f"config: {self.llm_config}")
 				config = replace(self.llm_config, base_model=model_id)
 				llm = LocalTelemetryLLM(config=config)
 				
@@ -602,6 +507,129 @@ class TelemetryLLMOrchestrator:
 				"cleared_locks": cleared_locks,
 				"cleared_count": len(cleared_locks),
 				"timestamp": datetime.now().isoformat(),
+			}
+
+	# ------------------------------------------------------------------
+	# AI Operations Extensions
+	# ------------------------------------------------------------------
+	async def initialize_and_persist_model(
+		self,
+		provider: str,
+		model_id: str
+	) -> Dict[str, Any]:
+		"""Explicitly load a model and persist it in cache for inference."""
+		llm, metadata = await self.get_llm_for_inference(
+			force_refresh=True,
+			model_subtype=model_id,
+			provider=provider,
+			model_id=model_id
+		)
+		if llm is None:
+			return {
+				"status": "error",
+				"message": metadata.get("error", "Unknown initialization error") if metadata else "Unknown initialization error",
+			}
+		return {
+			"status": "success",
+			"message": f"{provider} model {model_id} loaded.",
+			"metadata": metadata,
+		}
+
+	async def generate_inference(
+		self,
+		provider: str,
+		model_id: str,
+		request_data: Any
+	) -> Dict[str, Any]:
+		"""Perform inference using the currently cached model."""
+		llm, metadata = await self.get_llm_for_inference(
+			force_refresh=False,
+			model_subtype=model_id,
+			provider=provider,
+			model_id=model_id
+		)
+		if llm is None:
+			return {
+				"status": "error",
+				"message": metadata.get("error", "Model not found or failed to load") if metadata else "Model not found",
+			}
+		
+		try:
+			if hasattr(llm, "generate"):
+				# Convert to native generation request if the LocalLLM expects it
+				if provider == "hf_local":
+					from .local_llm_service import GenerationRequest
+					if isinstance(request_data, dict):
+						req = GenerationRequest(**request_data)
+					else:
+						req = request_data
+					result = await asyncio.to_thread(llm.generate, req)
+				else:
+					result = await asyncio.to_thread(llm.generate, request_data)
+				return {"status": "success", "result": result}
+			else:
+				return {
+					"status": "error",
+					"message": f"Generate method missing on {provider} LLM."
+				}
+		except Exception as e:
+			traceback.print_exc()
+			return {"status": "error", "message": str(e)}
+
+	async def terminate_llm(
+		self,
+		provider: str,
+		model_id: str
+	) -> Dict[str, Any]:
+		"""Remove a model from cache and free related resources (e.g., VRAM)."""
+		actual_type = provider if provider == "hf_local" else "llm_guidance_v1"
+		
+		cached_result = self.model_cache.get(model_type=actual_type, model_subtype=model_id)
+		
+		if cached_result:
+			llm, _ = cached_result
+			if hasattr(llm, "cleanup"):
+				llm.cleanup()
+		
+		self.model_cache.invalidate(model_type=actual_type, model_subtype=model_id)
+		
+		if provider == "hf_local":
+			import gc
+			try:
+				import torch
+				gc.collect()
+				if torch.cuda.is_available():
+					torch.cuda.empty_cache()
+			except ImportError:
+				pass
+				
+		return {
+			"status": "success",
+			"message": f"Terminated {provider} model: {model_id}"
+		}
+
+	async def check_progress(
+		self,
+		provider: str,
+		model_id: str
+	) -> Dict[str, Any]:
+		"""Check status of the specified model."""
+		actual_type = provider if provider == "hf_local" else "llm_guidance_v1"
+		cached_result = self.model_cache.get(model_type=actual_type, model_subtype=model_id)
+		
+		if cached_result:
+			return {
+				"status": "ready",
+				"provider": provider,
+				"model_id": model_id,
+				"message": "Model is loaded and ready for inference."
+			}
+		else:
+			return {
+				"status": "not_loaded",
+				"provider": provider,
+				"model_id": model_id,
+				"message": "Model is not currently loaded in cache."
 			}
 
 

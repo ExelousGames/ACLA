@@ -14,7 +14,7 @@ LABEL_MAPPING = {
     "EA": "Expert Adherence",
     "4": "Pit Stop",
     "RM": "Recovery & Merge",
-    "MS" :"Mistake segment",
+    "MS" :"Mistake",
     ################### Detailed Expert Adherence Labels (for label EA) ###################
 
     ################### Detailed Recovery & Merge Labels (for label RM) ###################

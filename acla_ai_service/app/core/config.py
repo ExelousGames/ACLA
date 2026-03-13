@@ -33,7 +33,6 @@ class Settings(BaseSettings):
     # Hugging Face Configuration
     hf_api_token: Optional[str] = None
     hf_username: Optional[str] = None
-    hf_training_enabled: bool = False
     
     # CORS Configuration
     allowed_origins: List[str] = ["*"]

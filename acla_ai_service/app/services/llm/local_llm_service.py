@@ -52,8 +52,8 @@ except ImportError as exc:  # pragma: no cover - guarding runtime deps
 LOGGER = logging.getLogger(__name__)
 
 # Determine persistent model cache directory
-# app/services/local_llm_service.py -> ../../models/huggingface_cache
-_SERVICE_ROOT = Path(__file__).resolve().parents[2]
+# app/services/llm/local_llm_service.py -> ../../../models/huggingface_cache
+_SERVICE_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_HF_CACHE = str(_SERVICE_ROOT / "models" / "huggingface_cache")
 
 
@@ -69,6 +69,7 @@ class LocalLLMConfig:
     base_model: str = "mistralai/Ministral-3-14B-Base-2512"
     tokenizer_name: Optional[str] = None
     cache_dir: Optional[str] = DEFAULT_HF_CACHE
+    gguf_file: Optional[str] = None
 
     load_in_8bit: bool = False
     load_in_4bit: bool = False
@@ -335,14 +336,15 @@ class LocalTelemetryLLM:
     # Model loading helpers
     # ------------------------------------------------------------------
     def _raise_missing_local_resource(self, resource_name: str, cause: Exception) -> None:
-        """Raise a helpful error when required local files are missing."""
-
+        """Raise a helpful error when required local files are missing or download fails."""
+        
         hint = (
-            f"Missing local files for '{resource_name}'. Ensure the model and tokenizer "
-            "artifacts are downloaded manually into the configured cache or path before "
-            "running the service."
+            f"Failed to load or automatic download failed for '{resource_name}'. "
+            f"Original error: {cause}"
         )
-        raise FileNotFoundError(hint) from cause
+        # We don't want to enforce manual downloads, transformers can do it
+        # Try adjusting your model ID, HF_API_TOKEN or connection
+        raise RuntimeError(hint) from cause
 
     def _ensure_tokenizer(self) -> None:
         if self.tokenizer is not None:
@@ -351,13 +353,19 @@ class LocalTelemetryLLM:
         tokenizer_name = self.config.tokenizer_name or self.config.base_model
         LOGGER.info("Loading tokenizer %s", tokenizer_name)
 
+        tokenizer_kwargs = {
+            "cache_dir": self.config.cache_dir,
+            "token": settings.hf_api_token,
+            "trust_remote_code": True,
+        }
+        if self.config.gguf_file:
+            tokenizer_kwargs["gguf_file"] = self.config.gguf_file
+
         # Try loading AutoProcessor first (recommended for multimodal models like Mistral 3)
         try:
             self.processor = AutoProcessor.from_pretrained(
                 tokenizer_name,
-                cache_dir=self.config.cache_dir,
-                token=settings.hf_api_token,
-                trust_remote_code=True,
+                **tokenizer_kwargs,
             )
             if hasattr(self.processor, "tokenizer"):
                 self.tokenizer = self.processor.tokenizer
@@ -378,10 +386,8 @@ class LocalTelemetryLLM:
         try:
             self.tokenizer = AutoTokenizer.from_pretrained(
                 tokenizer_name,
-                cache_dir=self.config.cache_dir,
                 use_fast=True,
-                token=settings.hf_api_token,
-                trust_remote_code=True,
+                **tokenizer_kwargs,
             )
         except OSError as os_error:
             self._raise_missing_local_resource(tokenizer_name, os_error)
@@ -399,10 +405,8 @@ class LocalTelemetryLLM:
             )
             
             fallback_kwargs = {
-                "cache_dir": self.config.cache_dir,
                 "use_fast": False,
-                "token": settings.hf_api_token,
-                "trust_remote_code": True,
+                **tokenizer_kwargs,
             }
 
             try:
@@ -436,6 +440,8 @@ class LocalTelemetryLLM:
             "token": settings.hf_api_token,
             "trust_remote_code": True,
         }
+        if self.config.gguf_file:
+            load_kwargs["gguf_file"] = self.config.gguf_file
 
         if self.config.load_in_8bit or self.config.load_in_4bit:
             LOGGER.info("Configuring quantization: 8bit=%s, 4bit=%s", self.config.load_in_8bit, self.config.load_in_4bit)
@@ -975,6 +981,7 @@ class LocalTelemetryLLM:
 
         generation_kwargs = {
             "max_new_tokens": request.max_new_tokens or self.config.generation_max_new_tokens,
+            "max_length": None,
             "temperature": request.temperature or self.config.generation_temperature,
             "top_p": request.top_p or self.config.generation_top_p,
             "do_sample": request.do_sample if request.do_sample is not None else self.config.generation_do_sample,
