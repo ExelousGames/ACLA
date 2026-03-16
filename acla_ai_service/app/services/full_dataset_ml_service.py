@@ -312,7 +312,7 @@ class Full_dataset_TelemetryMLService:
     ) -> Tuple[Any, Dict[str, Any]]:
         """Get model from cache or fetch from backend with thread-safe locking."""
 
-        cache_key = self.model_cache_service.build_cache_key(
+        cache_key = self.model_cache_service._generate_cache_key(
             model_type=model_type,
             model_subtype=model_subtype,
         )
