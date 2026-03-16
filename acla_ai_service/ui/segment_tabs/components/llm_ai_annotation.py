@@ -40,7 +40,6 @@ def render_ai_assisted_annotation_tab(
                 )
 
                 req = GenerationRequest(
-                    system_prompt="You are an expert racing telemetry analyst.",
                     user_prompt=current_prompt,
                     max_new_tokens=256,
                     temperature=0.7

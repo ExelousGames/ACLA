@@ -103,13 +103,14 @@ class TelemetryLLMOrchestrator:
 		self,
 		*,
 		dataset_path: Path,
+		eval_dataset_path: Optional[Path] = None,
 		dataset_stats: Optional[Dict[str, Any]] = None,
 		cleanup_dataset_file: bool = False,
 	) -> Dict[str, Any]:
 		dataset_path = Path(dataset_path)
 		dataset_stats = dataset_stats or self._summarize_dataset(dataset_path)
 
-		training_artifacts = await self._train_llm(dataset_path=dataset_path)
+		training_artifacts = await self._train_llm(dataset_path=dataset_path, eval_dataset_path=eval_dataset_path)
 
 		serialized_adapter = training_artifacts["serialized_adapter"]
 		adapter_dir: Path = training_artifacts["adapter_dir"]
@@ -149,10 +150,10 @@ class TelemetryLLMOrchestrator:
 			"serialized_adapter": serialized_adapter,
 		}
 
-	async def _train_llm(self, dataset_path: Path) -> Dict[str, Any]:
-		return await asyncio.to_thread(self._train_local_llm_sync, Path(dataset_path))
+	async def _train_llm(self, dataset_path: Path, eval_dataset_path: Optional[Path] = None) -> Dict[str, Any]:
+		return await asyncio.to_thread(self._train_local_llm_sync, Path(dataset_path), eval_dataset_path)
 
-	def _train_local_llm_sync(self, dataset_path: Path) -> Dict[str, Any]:
+	def _train_local_llm_sync(self, dataset_path: Path, eval_dataset_path: Optional[Path] = None) -> Dict[str, Any]:
 		timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 		dataset_identifier = (dataset_path.stem or "telemetry").replace(" ", "_")
 		adapter_dir = self.adapter_directory / f"{dataset_identifier}_{timestamp}"
@@ -168,7 +169,7 @@ class TelemetryLLMOrchestrator:
 			metrics = llm.train(
 				dataset_path=dataset_path,
 				output_dir=adapter_dir,
-				eval_dataset_path=None,
+				eval_dataset_path=eval_dataset_path,
 			)
 			print(f"[INFO] Training completed successfully")
 		except ValueError as ve:
@@ -560,6 +561,7 @@ class TelemetryLLMOrchestrator:
 				if provider == "hf_local":
 					from .local_llm_service import GenerationRequest
 					if isinstance(request_data, dict):
+						request_data.pop("system_prompt", None)
 						req = GenerationRequest(**request_data)
 					else:
 						req = request_data

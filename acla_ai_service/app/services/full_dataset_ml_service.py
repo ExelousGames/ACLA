@@ -579,15 +579,18 @@ class Full_dataset_TelemetryMLService:
             if llm_model is None:
                 raise RuntimeError("LLM guidance model is not available")
 
-            user_prompt = self._build_llm_user_prompt(
-                context_timesteps=context_payload,
-                future_timesteps=future_payload,
-                segment_metadata=segment_metadata,
-            )
-            system_prompt = "You are a professional racing coach. Analyze the telemetry data provided and offer concise, actionable advice to improve lap times."
+            # Predict segment labels using classifier
+            from .segment_classifier_service import segment_classifier
+            from .llm.classifier_prompt_generation import generate_llm_prompt_from_labels
+            
+            # Extract features expected by the classifier if possible, but the classifier handles dataframe directly
+            # using compute_derived_features. We pass the telemetry data to the classifier.
+            predicted_labels = segment_classifier.predict_segment(pd.DataFrame([processed_telemetry_dict]))
+            
+            # Generate user prompt using the labels
+            user_prompt = generate_llm_prompt_from_labels(predicted_labels)
 
             generation_request = GenerationRequest(
-                system_prompt=system_prompt,
                 user_prompt=user_prompt,
                 max_new_tokens=self.llm_config.generation_max_new_tokens,
                 temperature=self.llm_config.generation_temperature,
@@ -604,6 +607,7 @@ class Full_dataset_TelemetryMLService:
                 "user_request": driver_request,
                 "sequence_predictions": [],
                 "preprocessed_telemetry": processed_telemetry_dict,
+                "predicted_labels": predicted_labels,
                 "context_window": context_payload,
                 "future_window": future_payload,
                 "segment_metadata": segment_metadata,
@@ -618,7 +622,6 @@ class Full_dataset_TelemetryMLService:
                     "commentary": commentary_payload,
                 },
                 "prompt": {
-                    "system": system_prompt,
                     "user": user_prompt,
                 },
             }

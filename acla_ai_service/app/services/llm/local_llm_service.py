@@ -131,7 +131,6 @@ class LocalLLMConfig:
 class GenerationRequest:
     """Payload for inference requests."""
 
-    system_prompt: str
     user_prompt: str
     max_new_tokens: Optional[int] = None
     temperature: Optional[float] = None
@@ -155,7 +154,7 @@ def _extract_messages(record: Dict[str, Any]) -> Optional[Tuple[str, str, str]]:
         return None
 
     prompt_text = record.get("prompt")
-    response_text = record.get("response")
+    response_text = record.get("response") or record.get("completion")
     if not isinstance(prompt_text, str):
         return None
     if not isinstance(response_text, str):
@@ -574,7 +573,7 @@ class LocalTelemetryLLM:
             max_steps=self.config.max_steps or -1,
             logging_steps=self.config.logging_steps,
             save_steps=self.config.save_steps,
-            evaluation_strategy="steps" if eval_dataset is not None else "no",
+            eval_strategy="steps" if eval_dataset is not None else "no",
             eval_steps=self.config.eval_steps,
             save_total_limit=self.config.save_total_limit,
             fp16=self.config.fp16,
@@ -968,7 +967,6 @@ class LocalTelemetryLLM:
         self._ensure_tokenizer()
 
         prompt = self._format_generation_prompt(
-            system_prompt=request.system_prompt,
             user_prompt=request.user_prompt,
         )
         inputs = self.tokenizer(
@@ -1000,11 +998,10 @@ class LocalTelemetryLLM:
         return text.strip()
 
     @staticmethod
-    def _format_generation_prompt(system_prompt: str, user_prompt: str) -> str:
-        system_block = f"[SYSTEM]\n{system_prompt}\n[/SYSTEM]\n\n" if system_prompt else ""
+    def _format_generation_prompt(user_prompt: str) -> str:
         user_block = f"[USER]\n{user_prompt}\n[/USER]\n\n"
         assistant_prefix = "[ASSISTANT]\n"
-        return f"{system_block}{user_block}{assistant_prefix}"
+        return f"{user_block}{assistant_prefix}"
 
 
 __all__ = [

@@ -35,22 +35,14 @@ def main():
         sys.exit(1)
 
     print("\n=== Step 2: Training a Telemetry LLM ===")
-    # Look for the latest dataset created during annotation
-    dataset_dir = project_root / "models" / "llm_datasets"
     
-    if not dataset_dir.exists():
-        print(f"No dataset directory found at {dataset_dir}. Ensure you saved annotations.")
+    dataset_path = project_root / "models" / "llm_datasets" / "telemetry_descriptions_v1.jsonl"
+    
+    if not dataset_path.exists():
+        print(f"Dataset not found at {dataset_path}. Ensure you saved annotations.")
         sys.exit(0)
         
-    # Get the latest dataset (jsonl)
-    list_of_files = glob.glob(str(dataset_dir / "*.jsonl"))
-    if not list_of_files:
-        print(f"No JSONL datasets found in {dataset_dir}. Skipping training.")
-        sys.exit(0)
-        
-    latest_dataset = max(list_of_files, key=os.path.getctime)
-    
-    print(f"Found recently annotated dataset: {latest_dataset}")
+    print(f"Found dataset: {dataset_path}")
     print("We will use it to fine-tune a small LLM fit for generating 100-word concise answers.")
     
     # Qwen2.5-1.5B-Instruct is highly recommended as a small yet powerful instruct model 
@@ -61,11 +53,11 @@ def main():
     # Trigger the training script (which handles TelemetryLLMOrchestrator config with LoRA)
     train_script = script_dir / "train_telemetry_llm.py"
     if train_script.exists():
-        print(f"Starting training with model {small_model_choice} on dataset {latest_dataset}...")
+        print(f"Starting training with model {small_model_choice} on dataset {dataset_path}...")
         try:
             # Reusing the underlying script using subprocess
             subprocess.run(
-                [sys.executable, str(train_script), "--dataset", latest_dataset, "--model", small_model_choice], 
+                [sys.executable, str(train_script), "--dataset", str(dataset_path), "--model", small_model_choice], 
                 cwd=project_root, 
                 check=True
             )

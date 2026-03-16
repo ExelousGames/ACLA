@@ -39,8 +39,32 @@ async def main():
         sys.exit(1)
 
     print(f"Initializing orchestrator with model: {args.model}")
+
+    # Split the dataset for training and evaluation
+    import json
+    import random
+    with open(dataset_path, "r", encoding="utf-8") as f:
+        lines = [line.strip() for line in f if line.strip()]
+
+    random.seed(42)
+    random.shuffle(lines)
     
-    # Configure the LocalLLMConfig for a small model fit for this task
+    split_idx = max(1, int(len(lines) * 0.8)) # 80/20 split
+    train_lines = lines[:split_idx]
+    eval_lines = lines[split_idx:]
+    
+    train_dataset_path = dataset_path.with_name(dataset_path.stem + "_train.jsonl")
+    eval_dataset_path = dataset_path.with_name(dataset_path.stem + "_eval.jsonl")
+    
+    with open(train_dataset_path, "w", encoding="utf-8") as f:
+        for line in train_lines:
+            f.write(line + "\n")
+            
+    with open(eval_dataset_path, "w", encoding="utf-8") as f:
+        for line in eval_lines:
+            f.write(line + "\n")
+            
+    print(f"Split dataset: {len(train_lines)} train, {len(eval_lines)} eval")
     llm_config = LocalLLMConfig()
     llm_config.base_model = args.model
     llm_config.tokenizer_name = args.model
@@ -59,13 +83,44 @@ async def main():
     print("Starting training process...")
     
     result = await orchestrator.train_from_dataset(
-        dataset_path=dataset_path,
+        dataset_path=train_dataset_path,
+        eval_dataset_path=eval_dataset_path,
         cleanup_dataset_file=False
     )
     
     if result.get("success"):
         print("\n=== Training Completed Successfully! ===")
         print(f"Adapter Output Directory: {result.get('adapter_directory')}")
+        print("\n=== Running Final Evaluation ===")
+        try:
+            from app.services.llm.local_llm_service import GenerationRequest
+            
+            print(f"Loading adapter {result.get('adapter_directory')} for evaluation...")
+            # Note: For evaluation, simply evaluate on up to 3 eval examples
+            eval_samples = [json.loads(line) for line in eval_lines[:3]]
+            eval_payload = {
+                "adapter_directory_name": result.get('adapter_directory'),
+                "adapter_zip_base64": result.get('serialized_adapter', {}).get("adapter_zip_base64")
+            }
+            llm = orchestrator._deserialize_llm_model(eval_payload)
+            
+            for i, sample in enumerate(eval_samples):
+                sys_prompt = sample.get("system_prompt", "You are an AI assistant.")
+                user_prompt = sample.get("prompt", "")
+                expected = sample.get("response", sample.get("completion", ""))
+                
+                req = GenerationRequest(
+                    user_prompt=user_prompt,
+                    max_new_tokens=100
+                )
+                output = llm.generate(req)
+                print(f"\n--- Eval Sample {i+1} ---")
+                print(f"[User]: {user_prompt[:100]}...")
+                print(f"[Expected]: {expected[:100]}...")
+                print(f"[Generated]: {output[:200]}")
+        except Exception as e:
+            print(f"Failed to run final evaluation: {e}")
+
         print("\nTo reuse this model for inference later, the orchestrator will automatically")
         print("deserialize the saved adapter when you call `await orchestrator.get_llm_for_inference(...)`")
     else:

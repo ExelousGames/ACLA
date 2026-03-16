@@ -100,7 +100,6 @@ def render_batch_ai_annotation_tab(
                     current_prompt = generate_training_prompt(labels, 0)
                     
                     req = GenerationRequest(
-                        system_prompt="You are an expert racing telemetry analyst.",
                         user_prompt=current_prompt,
                         max_new_tokens=256,
                         temperature=0.7
