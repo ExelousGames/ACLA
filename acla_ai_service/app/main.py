@@ -33,6 +33,26 @@ async def lifespan(app: FastAPI):
     print("🔌 Establishing backend connection...")
     if await backend_service.establish_connection():
         print("✅ Backend connection established successfully")
+        
+        # Initialize model cache downloading all models
+        from app.services.model_cache_service import model_cache_service
+        try:
+            print("📦 Initializing model cache...")
+            
+            await model_cache_service.initialize_models()
+            print("✅ Model cache initialization started")
+        except Exception as e:
+            print(f"⚠️  Failed to start model cache initialization: {e}")
+        
+        # Initialize model cache downloading all models
+        from app.services.model_cache_service import model_cache_service
+        try:
+            print("📦 Initializing model cache...")
+            
+            await model_cache_service.initialize_models()
+            print("✅ Model cache initialization started")
+        except Exception as e:
+            print(f"⚠️  Failed to start model cache initialization: {e}")
     else:
         print("⚠️  Backend connection failed - some features may not work")
         print("   Check your backend credentials in environment variables:")

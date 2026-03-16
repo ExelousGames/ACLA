@@ -16,6 +16,9 @@ CACHE_CONFIG = {
     # Interval for automatic cleanup of expired models in seconds
     "cleanup_interval_seconds": 300,  # 5 minutes
     
+    # Max instances for model pooling to support concurrent requests
+    "max_instances_per_model": 3,
+    
     # Model-specific TTL settings
     "model_specific_ttl": {
         "imitation_learning": 7200,    # 2 hours for large models

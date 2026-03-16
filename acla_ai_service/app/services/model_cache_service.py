@@ -9,11 +9,12 @@ import os
 import threading
 import time
 from collections import OrderedDict
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Optional, Tuple, List
 from datetime import datetime, timedelta
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import hashlib
 import logging
+import copy
 
 # Import cache configuration
 try:
@@ -25,7 +26,8 @@ except ImportError:
             "max_cache_size": 100,
             "max_memory_mb": 500,
             "default_ttl_seconds": 3600,
-            "cleanup_interval_seconds": 300
+            "cleanup_interval_seconds": 300,
+            "max_instances_per_model": 3
         }
     
     def get_model_ttl(model_type, environment="development"):
@@ -42,13 +44,25 @@ logger = logging.getLogger(__name__)
 class CacheEntry:
     """Data structure for cache entries"""
     key: str
-    data: Any
     metadata: Dict[str, Any]
     created_at: datetime
     last_accessed: datetime
     access_count: int
     size_bytes: int
     ttl_seconds: Optional[int] = None
+    
+    # Model pooling to support concurrent requests
+    instances: List[Any] = field(default_factory=list)
+    current_idx: int = 0
+    max_instances: int = 1
+    
+    def get_instance(self) -> Any:
+        """Returns a model instance utilizing round-robin to distribute concurrent load"""
+        if not self.instances:
+            return None
+        inst = self.instances[self.current_idx]
+        self.current_idx = (self.current_idx + 1) % len(self.instances)
+        return inst
     
     def is_expired(self) -> bool:
         """Check if the cache entry has expired"""
@@ -100,6 +114,7 @@ class ModelCacheService:
         self.max_memory_mb = max_memory_mb or config["max_memory_mb"]
         self.default_ttl_seconds = default_ttl_seconds or config["default_ttl_seconds"]
         self.cleanup_interval_seconds = cleanup_interval_seconds or config["cleanup_interval_seconds"]
+        self.max_instances_per_model = config.get("max_instances_per_model", 3)
         
         # Store full config for advanced features
         self.config = config
@@ -263,7 +278,8 @@ class ModelCacheService:
             self._stats['hits'] += 1
             logger.debug(f"Cache hit: {cache_key} (access count: {entry.access_count})")
             
-            return entry.data, entry.metadata
+            # Fetch from pool sequentially to handle concurrent requests
+            return entry.get_instance(), entry.metadata
     
     def get_by_key(self, cache_key: str) -> Optional[Tuple[Any, Dict[str, Any]]]:
         """
@@ -295,7 +311,7 @@ class ModelCacheService:
             
             self._stats['hits'] += 1
             
-            return entry.data, entry.metadata
+            return entry.get_instance(), entry.metadata
     
     def invalidate(self, 
                    model_type: str,
@@ -504,13 +520,14 @@ class ModelCacheService:
             
             entry = CacheEntry(
                 key=cache_key,
-                data=data,
                 metadata=metadata or {},
                 created_at=datetime.now(),
                 last_accessed=datetime.now(),
                 access_count=0,
                 size_bytes=data_size,
-                ttl_seconds=model_ttl
+                ttl_seconds=model_ttl,
+                instances=[data],
+                max_instances=self.max_instances_per_model
             )
             
             # Add to cache
@@ -519,8 +536,36 @@ class ModelCacheService:
             
             logger.info(f"Cached model: {cache_key} ({size_mb:.1f}MB, TTL: {model_ttl}s)")
             
+        # Start background job to populate multiple copies for concurrency
+        if self.max_instances_per_model > 1:
+            threading.Thread(
+                target=self._populate_pool, 
+                args=(cache_key, data, self.max_instances_per_model), 
+                daemon=True
+            ).start()
+            
         return cache_key
     
+    def _populate_pool(self, cache_key: str, template_data: Any, target_instances: int):
+        """Background worker to create additional instances for the pool"""
+        import copy
+        for i in range(1, target_instances):
+            try:
+                # Deep copy template data to create fresh instance
+                new_instance = copy.deepcopy(template_data)
+                
+                with self._lock:
+                    if cache_key in self._cache:
+                        entry = self._cache[cache_key]
+                        entry.instances.append(new_instance)
+                        # Optionally update size (we aren't tracking full replica size to avoid aggressive eviction)
+                    else:
+                        break # was evicted
+                logger.info(f"Background pool populated instance {i+1}/{target_instances} for {cache_key}")
+            except Exception as e:
+                logger.debug(f"Failed to create background instance for pool: {e}")
+                break
+                
     def _cleanup_worker(self):
         """Background worker for periodic cleanup"""
         while self._running:

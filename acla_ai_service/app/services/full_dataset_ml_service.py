@@ -151,10 +151,6 @@ class Full_dataset_TelemetryMLService:
         # Centralize cache key usage for coordinated cleanup
         self.cache_config = pipeline_config if pipeline_config is not None else PipelineConfig()
 
-        # Add a simple lock mechanism to prevent concurrent fetches of the same model
-        self._model_fetch_locks = {}
-        self._lock_creation_lock = asyncio.Lock()
-        
         # Clear entire cache to ensure we start fresh with model instances only
         self.model_cache_service.clear()
         self.logger.info("Cleared entire cache on startup - will cache model instances directly")
@@ -276,115 +272,7 @@ class Full_dataset_TelemetryMLService:
             model_id=model_id,
         )
 
-    def _cleanup_fetch_lock(self, cache_key: str):
-        """Clean up fetch lock for a specific cache key"""
-        if cache_key in self._model_fetch_locks:
-            try:
-                self._model_fetch_locks[cache_key].set()
-                del self._model_fetch_locks[cache_key]
-                print(f"[DEBUG] Released fetch lock for {cache_key}")
-            except Exception as cleanup_error:
-                print(f"[WARNING] Error cleaning up fetch lock: {str(cleanup_error)}")
 
-    # Dataset generation is now handled by TelemetryLLMOrchestrator providers.
-    
-    def _emergency_cleanup_fetch_lock(self, cache_key: str):
-        """
-        Emergency cleanup of fetch lock with additional safety checks
-        
-        Args:
-            cache_key: The cache key used for locking
-        """
-        if hasattr(self, '_model_fetch_locks') and cache_key in self._model_fetch_locks:
-            try:
-                self._model_fetch_locks[cache_key].set()  # Signal any waiting threads
-                del self._model_fetch_locks[cache_key]
-                print(f"[INFO] Emergency cleanup of fetch lock for {cache_key}")
-            except Exception as cleanup_error:
-                print(f"[WARNING] Error during emergency lock cleanup: {str(cleanup_error)}")
-    
-    async def _get_cached_model_or_fetch(
-        self,
-        model_type: str,
-        *,
-        model_subtype: str = "complete_model_data",
-        deserializer_func=None,
-    ) -> Tuple[Any, Dict[str, Any]]:
-        """Get model from cache or fetch from backend with thread-safe locking."""
-
-        cache_key = self.model_cache_service._generate_cache_key(
-            model_type=model_type,
-            model_subtype=model_subtype,
-        )
-
-        model_instance: Optional[Any] = None
-        metadata: Dict[str, Any] = {}
-        is_fetching_thread = False
-        fetch_event: Optional[asyncio.Event] = None
-
-        try:
-            cached_result = self.model_cache_service.get(
-                model_type=model_type,
-                model_subtype=model_subtype,
-            )
-            if cached_result:
-                model_instance, metadata = cached_result
-                if model_instance is not None:
-                    return model_instance, metadata
-
-            async with self._lock_creation_lock:
-                cached_result = self.model_cache_service.get(
-                    model_type=model_type,
-                    model_subtype=model_subtype,
-                )
-                if cached_result:
-                    model_instance, metadata = cached_result
-                    if model_instance is not None:
-                        return model_instance, metadata
-
-                if cache_key not in self._model_fetch_locks:
-                    self._model_fetch_locks[cache_key] = asyncio.Event()
-                    is_fetching_thread = True
-                else:
-                    fetch_event = self._model_fetch_locks[cache_key]
-
-            if not is_fetching_thread and fetch_event is not None:
-                try:
-                    await fetch_event.wait()
-                    cached_result = self.model_cache_service.get(
-                        model_type=model_type,
-                        model_subtype=model_subtype,
-                    )
-                    if cached_result:
-                        model_instance, metadata = cached_result
-                        if model_instance is not None:
-                            return model_instance, metadata
-
-                    print(f"[WARNING] Expected cached model not found after waiting for {cache_key}")
-                    is_fetching_thread = True
-                except Exception as wait_error:
-                    print(f"[WARNING] Error while waiting for {cache_key}: {wait_error}")
-                    is_fetching_thread = True
-
-            if is_fetching_thread:
-                model_instance, metadata = await self._fetch_and_cache_model(
-                    model_type=model_type,
-                    model_subtype=model_subtype,
-                    deserializer_func=deserializer_func,
-                )
-
-            if model_instance is None:
-                raise RuntimeError(f"Failed to obtain model instance for {cache_key}")
-
-            return model_instance, metadata
-
-        except Exception as error:
-            if is_fetching_thread:
-                self._emergency_cleanup_fetch_lock(cache_key)
-            raise error
-        finally:
-            if is_fetching_thread:
-                self._cleanup_fetch_lock(cache_key)
 
     def _print_section_divider(self, title: str, width: int = 80):
         """Print a large console divider to visually separate log sections."""
@@ -397,7 +285,7 @@ class Full_dataset_TelemetryMLService:
         """Get comprehensive cache debugging information."""
 
         cache_stats = self.model_cache_service.get_stats()
-        lock_status = self.get_fetch_locks_status()
+        lock_status = {"lock_count": len(getattr(self.model_cache_service, "_model_fetch_locks", {})), "active_locks": list(getattr(self.model_cache_service, "_model_fetch_locks", {}).keys())}
         llm_cache = self.llm_orchestrator.get_cache_debug_info()
 
         return {
@@ -439,48 +327,6 @@ class Full_dataset_TelemetryMLService:
         print("=" * 60 + "\n")
         self.llm_orchestrator.print_cache_debug_info()
     
-    async def clear_stuck_fetch_locks(self, max_age_minutes: int = 10) -> Dict[str, Any]:
-        """
-        Clear fetch locks that might be stuck (emergency cleanup)
-        
-        Args:
-            max_age_minutes: Age threshold for considering locks as stuck
-            
-        Returns:
-            Dictionary with cleanup results
-        """
-        cleared_locks = []
-        
-        llm_result = await self.llm_orchestrator.clear_stuck_fetch_locks(max_age_minutes=max_age_minutes)
-
-        try:
-            async with self._lock_creation_lock:
-                for cache_key in list(self._model_fetch_locks.keys()):
-                    try:
-                        self._model_fetch_locks[cache_key].set()
-                        del self._model_fetch_locks[cache_key]
-                        cleared_locks.append(cache_key)
-                    except Exception:
-                        pass
-
-            return {
-                "success": True,
-                "cleared_locks": cleared_locks,
-                "cleared_count": len(cleared_locks),
-                "timestamp": datetime.now().isoformat(),
-                "llm": llm_result,
-            }
-
-        except Exception as error:
-            return {
-                "success": False,
-                "error": str(error),
-                "cleared_locks": cleared_locks,
-                "cleared_count": len(cleared_locks),
-                "timestamp": datetime.now().isoformat(),
-                "llm": llm_result,
-            }
-
     async def predict_expert_actions(
         self,
         telemetry_dict: Dict[str, Any],
@@ -509,7 +355,7 @@ class Full_dataset_TelemetryMLService:
 
             try:
                 tire_grip_service = TireGripAnalysisService()
-                tire_grip_service, _ = await self._get_cached_model_or_fetch(
+                tire_grip_service, _ = await self.model_cache_service.get_or_fetch_model(
                     model_type="tire_grip_analysis",
                     model_subtype="tire_grip_model_data",
                     deserializer_func=tire_grip_service.deserialize_tire_grip_model,
@@ -526,7 +372,7 @@ class Full_dataset_TelemetryMLService:
 
             try:
                 expert_service = ExpertImitateLearningService(logger=self.logger)
-                expert_service, _ = await self._get_cached_model_or_fetch(
+                expert_service, _ = await self.model_cache_service.get_or_fetch_model(
                     model_type="imitation_learning",
                     model_subtype="imitation_model_data",
                     deserializer_func=expert_service.deserialize_imitation_model,
