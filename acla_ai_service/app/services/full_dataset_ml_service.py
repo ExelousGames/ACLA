@@ -12,8 +12,6 @@ from dataclasses import dataclass
 import pandas as pd
 import concurrent.futures
 from concurrent.futures import ProcessPoolExecutor
-
-from .corner_identification_unsupervised_service import CornerIdentificationUnsupervisedService
 from .tire_grip_analysis_service import TireGripAnalysisService
 from .imitate_expert_learning_service import ExpertImitateLearningService
 from .segment_classifier_service import segment_classifier
@@ -498,10 +496,9 @@ class Full_dataset_TelemetryMLService:
             driver_request = (user_request or "").strip()
 
             telemetry_df = pd.DataFrame([telemetry_dict])
-
             processor = FeatureProcessor(telemetry_df)
             processed_df = processor.general_cleaning_for_analysis()
-            processor.add_time_delta()
+
             processor.flip_y_z_features()
             features = self._imitate_expert_feature_names or self.telemetry_features.get_features_for_learning_expert()
 
@@ -525,10 +522,7 @@ class Full_dataset_TelemetryMLService:
                     if tire_features_list:
                         processed_telemetry_dict.update(tire_features_list[0])
             except Exception as enrichment_error:
-                self.logger.warning(
-                    "Tire grip enrichment failed: %s",
-                    enrichment_error,
-                )
+                raise RuntimeError(f"Tire grip enrichment failed: {enrichment_error}") from enrichment_error
 
             try:
                 expert_service = ExpertImitateLearningService(logger=self.logger)
@@ -543,12 +537,7 @@ class Full_dataset_TelemetryMLService:
                 if expert_state_list:
                     processed_telemetry_dict.update(expert_state_list[0])
             except Exception as enrichment_error:
-                self.logger.warning(
-                    "Imitation learning enrichment failed: %s",
-                    enrichment_error,
-                )
-
-            context_payload = self._format_context_window(processed_telemetry_dict)
+                raise RuntimeError(f"Imitation learning enrichment failed: {enrichment_error}") from enrichment_error
 
             future_payload: List[Dict[str, Any]] = []
             segment_metadata: Dict[str, Any] = {
@@ -584,9 +573,12 @@ class Full_dataset_TelemetryMLService:
             from .llm.classifier_prompt_generation import generate_llm_prompt_from_labels
             
             # Extract features expected by the classifier if possible, but the classifier handles dataframe directly
-            # using compute_derived_features. We pass the telemetry data to the classifier.
-            predicted_labels = segment_classifier.predict_segment(pd.DataFrame([processed_telemetry_dict]))
-            
+            try:
+                predicted_labels = segment_classifier.predict_segment(pd.DataFrame([processed_telemetry_dict]))
+            except ValueError as e:
+                # If the segment classifier model isn't trained yet, assume no labels
+                raise RuntimeError(f"Segment classifier prediction failed: {e}")
+  
             # Generate user prompt using the labels
             user_prompt = generate_llm_prompt_from_labels(predicted_labels)
 
@@ -604,14 +596,9 @@ class Full_dataset_TelemetryMLService:
             return {
                 "status": "success",
                 "timestamp": datetime.now().isoformat(),
-                "user_request": driver_request,
                 "sequence_predictions": [],
-                "preprocessed_telemetry": processed_telemetry_dict,
                 "predicted_labels": predicted_labels,
-                "context_window": context_payload,
                 "future_window": future_payload,
-                "segment_metadata": segment_metadata,
-                "commentary": commentary_payload,
                 "transformer": {
                     "metadata": None,
                     "prediction": None,
@@ -1303,31 +1290,12 @@ class Full_dataset_TelemetryMLService:
         )
         print("[INFO] ✓ Imitation learning model trained and saved")
         
-        # Train corner identification model
-        from .corner_identification_unsupervised_service import CornerIdentificationUnsupervisedService
-        corner_service = CornerIdentificationUnsupervisedService()
-        
         # Retrieve top laps for corner identification
         print(f"[INFO] Retrieving top laps for corner identification from {top_laps_cache_key}")
         top_laps_list = await self.get_cached_all_top_laps_in_one_list(top_laps_cache_key=top_laps_cache_key)
         
-        corner_model = await corner_service.learn_track_corner_patterns(top_laps_list)
-        corner_serialized = corner_service.serialize_corner_identification_model()
-        
         # Free memory
         del top_laps_list
-        
-        await self.backend_service.save_ai_model(
-            model_type="corner_identification",
-            model_data=corner_serialized,
-            metadata={
-                "total_corners": corner_serialized.get("total_corners"),
-                "clusters": len(corner_serialized.get("corner_clusters", [])),
-                "serialization_timestamp": corner_serialized.get("serialized_timestamp")
-            },
-            is_active=True
-        )
-        print("[INFO] ✓ Corner identification model trained and saved")
         
         # Train tire grip analysis model using full sessions (streaming)
         from .tire_grip_analysis_service import TireGripAnalysisService

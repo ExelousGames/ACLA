@@ -760,9 +760,6 @@ class SegmentClassifierService:
             # Apply sigmoid to get probabilities from logits
             probs_tensor = torch.sigmoid(outputs)
             
-            # Take max probability over the segment or average?
-            # Let's take the average probability across the segment
-            # Only consider valid outputs (ignore padding)
             valid_probs = probs_tensor[0, :original_len, :]
             probs = valid_probs.mean(dim=0).cpu().numpy()
             

@@ -73,6 +73,7 @@ class LocalLLMConfig:
 
     load_in_8bit: bool = False
     load_in_4bit: bool = False
+    trust_remote_code: bool = False
     use_gradient_checkpointing: bool = True
     use_lora: bool = True
     device_map: Union[str, Dict[str, Union[int, str]]] = "auto"
@@ -355,7 +356,7 @@ class LocalTelemetryLLM:
         tokenizer_kwargs = {
             "cache_dir": self.config.cache_dir,
             "token": settings.hf_api_token,
-            "trust_remote_code": True,
+            "trust_remote_code": self.config.trust_remote_code,
         }
         if self.config.gguf_file:
             tokenizer_kwargs["gguf_file"] = self.config.gguf_file
@@ -437,7 +438,7 @@ class LocalTelemetryLLM:
             "dtype": None if (self.config.load_in_8bit or self.config.load_in_4bit) else torch_dtype,
             "device_map": self.config.device_map,
             "token": settings.hf_api_token,
-            "trust_remote_code": True,
+            "trust_remote_code": self.config.trust_remote_code,
         }
         if self.config.gguf_file:
             load_kwargs["gguf_file"] = self.config.gguf_file
@@ -466,15 +467,15 @@ class LocalTelemetryLLM:
             load_kwargs["low_cpu_mem_usage"] = self.config.low_cpu_mem_usage
 
         try:
-            LOGGER.info("Attempting to load model with AutoModelForImageTextToText (Mistral 3 style)")
-            model = AutoModelForImageTextToText.from_pretrained(
+            LOGGER.info("Attempting to load model with AutoModelForCausalLM")
+            model = AutoModelForCausalLM.from_pretrained(
                 self.config.base_model,
                 **load_kwargs,
             )
         except (OSError, ValueError, RuntimeError) as e:
-            LOGGER.info("AutoModelForImageTextToText failed (%s), falling back to AutoModelForCausalLM", str(e))
+            LOGGER.info("AutoModelForCausalLM failed (%s), falling back to AutoModelForImageTextToText", str(e))
             try:
-                model = AutoModelForCausalLM.from_pretrained(
+                model = AutoModelForImageTextToText.from_pretrained(
                     self.config.base_model,
                     **load_kwargs,
                 )

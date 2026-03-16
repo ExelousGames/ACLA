@@ -49,4 +49,4 @@ RUN chmod +x /app/start-dev.sh
 EXPOSE 8000
 
 # Command to run the application in development mode with memory-efficient options
-CMD ["/app/start-dev.sh", "no-reload"]
+CMD ["/app/start-dev.sh"]

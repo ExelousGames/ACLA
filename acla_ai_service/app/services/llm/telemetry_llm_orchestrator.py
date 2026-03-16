@@ -274,20 +274,43 @@ class TelemetryLLMOrchestrator:
 		if force_refresh:
 			try:
 				self.model_cache.invalidate(
-					model_type="llm_guidance_v1",
+					model_type=provider,
 					model_subtype=model_subtype,
 				)
 			except Exception as invalidate_error:
 				print(f"[WARNING] Failed to invalidate LLM cache entry: {invalidate_error}")
 
 		try:
-			return await self._get_cached_model_or_fetch(
-				model_type="llm_guidance_v1",
+			cached_result = self.model_cache.get(
+				model_type=provider,
 				model_subtype=model_subtype,
-				deserializer_func=self._deserialize_llm_model,
 			)
+			if cached_result and not force_refresh:
+				return cached_result[0], cached_result[1]
+			
+			adapter_name = "telemetry_descriptions_v1_train_20260314_001617"
+			if model_id and (self.adapter_directory / model_id).exists():
+				adapter_name = model_id
+				
+			target_dir = self.adapter_directory / adapter_name
+			
+			if not target_dir.exists():
+				return None, {"error": f"Adapter directory {target_dir} not found"}
+				
+			print(f"[INFO] Loading local adapter model for inference: {target_dir}")
+			llm = LocalTelemetryLLM(config=self.llm_config)
+			await asyncio.to_thread(llm.load_for_inference, adapter_path=target_dir)
+			
+			metadata = {"provider": provider, "model_subtype": model_subtype, "adapter": adapter_name}
+			self.model_cache.put(
+				model_type=provider,
+				data=llm,
+				metadata=metadata,
+				model_subtype=model_subtype,
+			)
+			return llm, metadata
 		except Exception as fetch_error:
-			print(f"[WARNING] No active LLM guidance model available: {fetch_error}")
+			print(f"[WARNING] No active {provider} model available: {fetch_error}")
 			return None, {"error": str(fetch_error)}
 
 	async def _fetch_and_cache_model(
@@ -440,8 +463,8 @@ class TelemetryLLMOrchestrator:
 	# ------------------------------------------------------------------
 	# Operational helpers
 	# ------------------------------------------------------------------
-	def clear_llm_cache(self) -> None:
-		self.model_cache.invalidate(model_type="llm_guidance_v1")
+	def clear_llm_cache(self, provider: str = "local") -> None:
+		self.model_cache.invalidate(model_type=provider)
 
 	def get_fetch_locks_status(self) -> Dict[str, Any]:
 		return {
@@ -584,7 +607,7 @@ class TelemetryLLMOrchestrator:
 		model_id: str
 	) -> Dict[str, Any]:
 		"""Remove a model from cache and free related resources (e.g., VRAM)."""
-		actual_type = provider if provider == "hf_local" else "llm_guidance_v1"
+		actual_type = provider
 		
 		cached_result = self.model_cache.get(model_type=actual_type, model_subtype=model_id)
 		
@@ -616,7 +639,7 @@ class TelemetryLLMOrchestrator:
 		model_id: str
 	) -> Dict[str, Any]:
 		"""Check status of the specified model."""
-		actual_type = provider if provider == "hf_local" else "llm_guidance_v1"
+		actual_type = provider
 		cached_result = self.model_cache.get(model_type=actual_type, model_subtype=model_id)
 		
 		if cached_result:
