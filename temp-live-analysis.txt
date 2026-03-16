@@ -1,4 +1,4 @@
-import { Card, Flex, Box, IconButton, Heading, Grid, Text, Slider, Spinner, AlertDialog, Button } from '@radix-ui/themes';
+﻿import { Card, Flex, Box, IconButton, Heading, Grid, Text, Slider, Spinner, AlertDialog, Button } from '@radix-ui/themes';
 import { useContext, useEffect, useRef, useState, useMemo, useCallback, JSX } from 'react';
 import { AnalysisContext } from './analysis-context';
 import { UploadReacingSessionInitDto, UploadRacingSessionInitReturnDto, RacingSessionDetailedInfoDto } from 'data/live-analysis/live-analysis-type';
@@ -426,9 +426,6 @@ export default function LiveAnalysisSessionRecording() {
             recordingShellIdRef.current = shellId;
             stopReasonRef.current = null;
 
-            let lastValidObj: any = null;
-            let wasUnavailable = false;
-
             const messageCleanup = window.electronAPI.onPythonMessage((incomingId: number, message: string) => {
                 if (incomingId !== shellId) {
                     return;
@@ -437,36 +434,8 @@ export default function LiveAnalysisSessionRecording() {
                     const obj = JSON.parse(message);
                     const status = obj.Graphics?.status;
                     analysisContext.setLiveSessionData(obj);
-
-                    if (obj.available === false) {
-                        wasUnavailable = true;
-                    } else if (Object.keys(obj).length > 2) {
-                        if (wasUnavailable && lastValidObj) {
-                            const condition1 = obj.Physics_packed_id > lastValidObj.Physics_packed_id;
-                            const condition2 = obj.Static_car_model === lastValidObj.Static_car_model;
-                            const condition3 = obj.Static_track === lastValidObj.Static_track;
-                            const condition4 = obj.Graphics_completed_lap >= lastValidObj.Graphics_completed_lap;
-                              const condition5 = obj.Graphics_completed_lap === lastValidObj.Graphics_completed_lap 
-                                  ? obj.Graphics_current_time >= lastValidObj.Graphics_current_time 
-                                  : true;
-
-                              if (!condition1 || !condition2 || !condition3 || !condition4 || !condition5) {
-                                  console.warn('Telemetry data validation failed after unavailability', {
-                                      cond1: condition1,
-                                      cond2: condition2,
-                                      cond3: condition3,
-                                      cond4: condition4,
-                                      cond5: condition5
-                                });
-                                void stopRecordingProcess('complete');
-                                return;
-                            }
-                        }
-                        wasUnavailable = false;
-                        lastValidObj = obj;
-                        void analysisContext.writeRecordedLiveSessionData(obj).catch(() => undefined);
-                    }
-
+                    void analysisContext.writeRecordedLiveSessionData(obj).catch(() => undefined);
+                    
                     if (status !== undefined && status !== null) {
                         hasReceivedLiveSampleRef.current = true;
                     }
@@ -497,7 +466,7 @@ export default function LiveAnalysisSessionRecording() {
         } finally {
             startInFlightRef.current = false;
         }
-    }, [analysisContext, applyStopOutcome, canRecord, transition, uploadDialogOpen, determineStopReason, stopRecordingProcess]);
+    }, [analysisContext, applyStopOutcome, canRecord, transition, uploadDialogOpen, determineStopReason]);
 
     useEffect(() => {
         if (state !== RecordingState.HOLDING) {
@@ -645,7 +614,7 @@ export default function LiveAnalysisSessionRecording() {
                     <Button radius="full" variant="outline" color="gray" disabled>
                         <Flex align="center" gap="2">
                             <Spinner size="1" />
-                            <span>Looking for live session…</span>
+                            <span>Looking for live sessionâ€¦</span>
                         </Flex>
                     </Button>
                 );

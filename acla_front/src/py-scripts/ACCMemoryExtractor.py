@@ -2,6 +2,7 @@ from pyaccsharedmemory import accSharedMemory
 import sched, time
 import csv
 from typing import List, Any, Dict
+import json
 import os
 from util.json_utils import DataclassJSONUtility
 from util.clean_encode import cleanEncoding
@@ -18,26 +19,17 @@ class ACCRecording:
         return
 
     def startRecording(self,full_path):
-        sm = self.asm.read_shared_memory()
-        if  (sm is not None):
-            #record once to clean or create the file
-            #self.write_object_to_csv(sm,full_path)
-            #start to record the session
-            my_scheduler = sched.scheduler(time.time, time.sleep)
-            # 60 FPS = 1/60 seconds delay between calls
-
-            my_scheduler.enter(self._frame_delay, 1, self.recordOnce, (my_scheduler,full_path))
-            my_scheduler.run()
-            
-        else:
-            self.asm.close()
+        my_scheduler = sched.scheduler(time.time, time.sleep)
+        # 60 FPS = 1/60 seconds delay between calls
+        my_scheduler.enter(self._frame_delay, 1, self.recordOnce, (my_scheduler,full_path))
+        my_scheduler.run()
 
     def recordOnce(self,scheduler,full_path): 
+        # schedule the next call first
+        scheduler.enter(self._frame_delay, 1, self.recordOnce, (scheduler,full_path))
+
         sm = self.asm.read_shared_memory()
         if  (sm is not None):
-            # schedule the next call first
-            scheduler.enter(self._frame_delay, 1, self.recordOnce, (scheduler,full_path))
-
             flattened = self.flatten_object(sm)
             
             #self.append_object_to_csv(flattened,full_path)
@@ -46,9 +38,7 @@ class ACCRecording:
             # emit compact JSON so the renderer receives a single line per sample
             print(DataclassJSONUtility.to_json(flattened).rstrip(), flush=True)
         else:
-            self.asm.close()
-
-            return
+            print(json.dumps({"available": False}).rstrip(), flush=True)
             
 
     def flatten_object(self, obj: Any, prefix: str = '') -> Dict[str, Any]:
