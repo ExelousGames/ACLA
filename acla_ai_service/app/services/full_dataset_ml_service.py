@@ -154,125 +154,13 @@ class Full_dataset_TelemetryMLService:
         # Clear entire cache to ensure we start fresh with model instances only
         self.model_cache_service.clear()
         self.logger.info("Cleared entire cache on startup - will cache model instances directly")
-        
-        # Log cache configuration on startup
-        self._log_cache_configuration()
     
-    def _log_cache_configuration(self):
-        """Log cache configuration details"""
-        _ = self.model_cache_service.get_stats()
-        details = [
-            "",
-            "=" * 60,
-            "CACHE CONFIGURATION",
-            "=" * 60,
-            f"Max Cache Size: {self.model_cache_service.max_cache_size} models",
-            (
-                f"Max Memory: {self.model_cache_service.max_memory_mb}MB"
-                f" ({self.model_cache_service.max_memory_mb/1024:.1f}GB)"
-            ),
-            f"Environment: {self.model_cache_service.environment}",
-            (
-                f"Default TTL: {self.model_cache_service.default_ttl_seconds}s"
-                f" ({self.model_cache_service.default_ttl_seconds/3600:.1f}h)"
-            ),
-            (
-                "Large Model Priority: "
-                f"{self.model_cache_service.config.get('performance', {}).get('large_model_priority', False)}"
-            ),
-            "Caching Strategy: Model instances cached directly",
-            "=" * 60,
-            "",
-        ]
-        self.logger.info("\n".join(details))
-
-    # Dataset generation is now handled by TelemetryLLMOrchestrator providers.
-
     def _format_context_window(self, telemetry_record: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Construct and format a context window for inference from a single telemetry record."""
 
         context_steps = 40  # Default context window size
         repeated_window = [dict(telemetry_record) for _ in range(max(1, context_steps))]
         return repeated_window
-
-    def _build_llm_user_prompt(
-        self,
-        *,
-        context_timesteps: List[Dict[str, Any]],
-        future_timesteps: Optional[List[Dict[str, Any]]] = None,
-        segment_metadata: Optional[Dict[str, Any]] = None,
-    ) -> str:
-        """Create a segment-purpose prompt for the LLM."""
-
-        context_json = json.dumps(context_timesteps or [], indent=2, ensure_ascii=False)
-        future_json = json.dumps(future_timesteps or [], indent=2, ensure_ascii=False)
-
-        metadata_section = ""
-        if segment_metadata:
-            metadata_json = json.dumps(segment_metadata, indent=2, ensure_ascii=False)
-            metadata_section = f"Segment metadata:\n{metadata_json}\n\n"
-
-        return (
-            "Task: Provide a concise coaching explanation that captures the purpose of this telemetry segment.\n"
-            f"{metadata_section}"
-            "Telemetry context (ordered timesteps):\n"
-            f"{context_json}\n\n"
-            "Continuation of the segment (if available):\n"
-            f"{future_json}\n\n"
-            "Respond with a JSON object containing:\n"
-            "- `coaching_summary`: 2-3 sentences describing the segment focus or key coaching insight.\n"
-            "- Optional `key_focus`: list of short bullet strings for the most important adjustments or observations."
-        )
-
-    def _parse_llm_output(self, generated_text: str) -> Dict[str, Any]:
-        """Parse LLM commentary output, falling back to plain text when needed."""
-
-        text = (generated_text or "").strip()
-        if not text:
-            return {"coaching_summary": ""}
-
-        candidate = text
-
-        first_brace = candidate.find("{")
-        last_brace = candidate.rfind("}")
-        if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
-            candidate = candidate[first_brace : last_brace + 1]
-
-        try:
-            parsed = json.loads(candidate)
-            if isinstance(parsed, dict):
-                if "coaching_summary" not in parsed and "commentary" in parsed:
-                    parsed["coaching_summary"] = parsed.pop("commentary")
-                return parsed
-        except json.JSONDecodeError:
-            pass
-
-        return {"coaching_summary": text}
-
-    def clear_all_cache(self):
-        """Clear cached LLM, imitation, corner, and tire model instances."""
-        self.model_cache_service.clear()
-        self.llm_orchestrator.clear_llm_cache()
-        print("[INFO] All cached model_cache entries cleared (corner & tire services are on-demand so no persistent cache to clear)")
-    
-    async def get_llm_guidance_model(
-        self,
-        *,
-        force_refresh: bool = False,
-        model_subtype: str = "llm_adapter_data",
-        provider: str = "local",
-        model_id: Optional[str] = None,
-    ) -> Tuple[Optional[Any], Optional[Dict[str, Any]]]:
-        """Retrieve the active LLM guidance model if one has been saved."""
-
-        return await self.llm_orchestrator.get_llm_for_inference(
-            force_refresh=force_refresh,
-            model_subtype=model_subtype,
-            provider=provider,
-            model_id=model_id,
-        )
-
-
 
     def _print_section_divider(self, title: str, width: int = 80):
         """Print a large console divider to visually separate log sections."""
@@ -281,52 +169,35 @@ class Full_dataset_TelemetryMLService:
         divider = "=" * normalized_width
         print(f"\n{divider}\n{title.center(normalized_width)}\n{divider}")
 
-    def get_cache_debug_info(self) -> Dict[str, Any]:
-        """Get comprehensive cache debugging information."""
+    async def _get_cached_model_or_fetch(
+        self,
+        model_type: str,
+        model_subtype: str,
+        service_instance: Any,
+        deserializer_func: callable,
+    ) -> Tuple[Any, Dict[str, Any]]:
+        """Fetch model from cache or backend if missing"""
+        cached = self.model_cache_service.get(model_type=model_type, model_subtype=model_subtype)
+        if cached:
+            return cached[0], cached[1]
 
-        cache_stats = self.model_cache_service.get_stats()
-        lock_status = {"lock_count": len(getattr(self.model_cache_service, "_model_fetch_locks", {})), "active_locks": list(getattr(self.model_cache_service, "_model_fetch_locks", {}).keys())}
-        llm_cache = self.llm_orchestrator.get_cache_debug_info()
+        try:
+            model_data = await self.backend_service.getCompleteActiveModelData(modelType=model_type)
+            if model_data and hasattr(model_data, 'modelData'):
+                deserializer_func(model_data.modelData)
+                metadata = getattr(model_data, 'metrics', {})
+                self.model_cache_service.put(
+                    model_type=model_type,
+                    model_subtype=model_subtype,
+                    data=service_instance,
+                    metadata=metadata
+                )
+                return service_instance, metadata
+        except Exception as e:
+            self.logger.warning(f"Failed to fetch model {model_type} from backend: {e}")
 
-        return {
-            "cache_stats": cache_stats,
-            "fetch_locks": lock_status,
-            "llm_cache": llm_cache,
-            "timestamp": datetime.now().isoformat(),
-        }
+        return service_instance, {}
 
-    def print_cache_debug_info(self):
-        """Print cache debugging information to console."""
-
-        debug_info = self.get_cache_debug_info()
-
-        print("\n" + "=" * 60)
-        print("CACHE DEBUG INFORMATION")
-        print("=" * 60)
-
-        cache_stats = debug_info["cache_stats"]
-        print(f"Cache Size: {cache_stats['cache_size']}/{cache_stats['max_cache_size']}")
-        print(f"Memory Usage: {cache_stats['memory_usage_mb']:.2f}/{cache_stats['max_memory_mb']} MB")
-        print(f"Hit Rate: {cache_stats['hit_rate']:.2%}")
-        print(f"Hits: {cache_stats['hits']}, Misses: {cache_stats['misses']}")
-        print(f"Evictions: {cache_stats['evictions']}, Cleanups: {cache_stats['cleanups']}")
-
-        print(f"\nActive Fetch Locks: {debug_info['fetch_locks']['lock_count']}")
-        for lock_key in debug_info['fetch_locks']['active_locks']:
-            print(f"  - {lock_key}")
-
-        print("\nCached Models:")
-        for entry in cache_stats.get("entries", []):
-            print(
-                f"  - {entry['key']} ({entry['size_mb']:.2f} MB, accessed {entry['access_count']} times)"
-            )
-            ttl_remaining = entry.get("ttl_remaining_seconds")
-            if ttl_remaining:
-                print(f"    TTL remaining: {ttl_remaining:.0f}s")
-
-        print("=" * 60 + "\n")
-        self.llm_orchestrator.print_cache_debug_info()
-    
     async def predict_expert_actions(
         self,
         telemetry_dict: Dict[str, Any],
@@ -355,9 +226,10 @@ class Full_dataset_TelemetryMLService:
 
             try:
                 tire_grip_service = TireGripAnalysisService()
-                tire_grip_service, _ = await self.model_cache_service.get_or_fetch_model(
+                tire_grip_service, _ = await self._get_cached_model_or_fetch(
                     model_type="tire_grip_analysis",
                     model_subtype="tire_grip_model_data",
+                    service_instance=tire_grip_service,
                     deserializer_func=tire_grip_service.deserialize_tire_grip_model,
                 )
 
@@ -372,9 +244,10 @@ class Full_dataset_TelemetryMLService:
 
             try:
                 expert_service = ExpertImitateLearningService(logger=self.logger)
-                expert_service, _ = await self.model_cache_service.get_or_fetch_model(
+                expert_service, _ = await self._get_cached_model_or_fetch(
                     model_type="imitation_learning",
                     model_subtype="imitation_model_data",
+                    service_instance=expert_service,
                     deserializer_func=expert_service.deserialize_imitation_model,
                 )
                 expert_state_list = expert_service.extract_expert_state_for_telemetry(
@@ -437,7 +310,6 @@ class Full_dataset_TelemetryMLService:
             )
 
             output_text = llm_model.generate(generation_request)
-            commentary_payload = self._parse_llm_output(output_text)
 
             return {
                 "status": "success",
@@ -452,7 +324,6 @@ class Full_dataset_TelemetryMLService:
                 "llm": {
                     "metadata": llm_metadata,
                     "raw_output": output_text,
-                    "commentary": commentary_payload,
                 },
                 "prompt": {
                     "user": user_prompt,

@@ -687,6 +687,38 @@ class ModelCacheService:
         self.clear()
         logger.info("ModelCacheService shutdown completed")
 
+    async def initialize_models(self):
+        """
+        Initialize and preload necessary models into the cache.
+        This provides a warm start for the application and reduces latency on first requests.
+        """
+        logger.info("Preloading models into cache...")
+        try:
+            # Import services here to avoid circular imports
+            from app.services.segment_classifier_service import segment_classifier
+            
+            # Preload the segment classifier
+            if hasattr(segment_classifier, 'load_model'):
+                segment_classifier.load_model()
+                logger.info("✅ Preloaded segment classifier model")
+                
+            # Full dataset ML service initialization - if it exists in future
+            # from app.services.full_dataset_ml_service import ...
+            
+            # Preload LLMs if configured to do so
+            try:
+                from app.services.llm.telemetry_llm_orchestrator import get_orchestrator
+                # Use standard get_orchestrator to ensure it's loaded 
+                orchestrator = get_orchestrator()
+                # If there is a specific model init we can call it here:
+                # await orchestrator.initialize_and_persist_model()
+            except ImportError:
+                pass
+                
+        except Exception as e:
+            logger.error(f"⚠️ Error preloading models: {e}")
+            pass # Keep going if some models don't preload
+
 
 # Global cache instance with environment detection
 def _detect_environment() -> str:
