@@ -280,6 +280,36 @@ class ModelCacheService:
             
             # Fetch from pool sequentially to handle concurrent requests
             return entry.get_instance(), entry.metadata
+            
+    async def get_model_or_fetch(
+        self,
+        model_type: str,
+        model_subtype: str,
+        service_instance: Any,
+        deserializer_func: callable,
+    ) -> Tuple[Any, Dict[str, Any]]:
+        """Fetch model from cache or backend if missing"""
+        cached = self.get(model_type=model_type, model_subtype=model_subtype)
+        if cached:
+            return cached[0], cached[1]
+
+        try:
+            from .backend_service import backend_service
+            model_data = await backend_service.getCompleteActiveModelData(modelType=model_type)
+            if model_data and hasattr(model_data, 'modelData'):
+                deserializer_func(model_data.modelData)
+                metadata = getattr(model_data, 'metrics', {})
+                self.put(
+                    model_type=model_type,
+                    model_subtype=model_subtype,
+                    data=service_instance,
+                    metadata=metadata
+                )
+                return service_instance, metadata
+        except Exception as e:
+            logger.warning(f"Failed to fetch model {model_type} from backend: {e}")
+
+        return service_instance, {}
     
     def get_by_key(self, cache_key: str) -> Optional[Tuple[Any, Dict[str, Any]]]:
         """
@@ -686,39 +716,6 @@ class ModelCacheService:
             self._cleanup_thread.join(timeout=5)
         self.clear()
         logger.info("ModelCacheService shutdown completed")
-
-    async def initialize_models(self):
-        """
-        Initialize and preload necessary models into the cache.
-        This provides a warm start for the application and reduces latency on first requests.
-        """
-        logger.info("Preloading models into cache...")
-        try:
-            # Import services here to avoid circular imports
-            from app.services.segment_classifier_service import segment_classifier
-            
-            # Preload the segment classifier
-            if hasattr(segment_classifier, 'load_model'):
-                segment_classifier.load_model()
-                logger.info("✅ Preloaded segment classifier model")
-                
-            # Full dataset ML service initialization - if it exists in future
-            # from app.services.full_dataset_ml_service import ...
-            
-            # Preload LLMs if configured to do so
-            try:
-                from app.services.llm.telemetry_llm_orchestrator import get_orchestrator
-                # Use standard get_orchestrator to ensure it's loaded 
-                orchestrator = get_orchestrator()
-                # If there is a specific model init we can call it here:
-                # await orchestrator.initialize_and_persist_model()
-            except ImportError:
-                pass
-                
-        except Exception as e:
-            logger.error(f"⚠️ Error preloading models: {e}")
-            pass # Keep going if some models don't preload
-
 
 # Global cache instance with environment detection
 def _detect_environment() -> str:

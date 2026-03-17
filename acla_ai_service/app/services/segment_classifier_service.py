@@ -735,7 +735,22 @@ class SegmentClassifierService:
             if not self.load_model():
                 raise ValueError("Model not trained or found.")
 
-        numeric_df = segment_df.select_dtypes(include=['number'])
+        df = segment_df.copy()
+        
+        # Align features with training data
+        expected_features = SegmentFeatureCatalog.get_all_available_features()
+        
+        # 1. Ensure all expected features exist
+        for feature in expected_features:
+            if feature not in df.columns:
+                df[feature] = 0
+                
+        # 2. Select only expected features in correct order
+        df = df[expected_features]
+        
+        # 3. Ensure numeric
+        numeric_df = df.apply(pd.to_numeric, errors='coerce').fillna(0)
+
         # Feature engineering
         numeric_df = compute_derived_features(numeric_df)
 

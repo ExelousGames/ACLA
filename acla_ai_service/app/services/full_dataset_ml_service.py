@@ -128,13 +128,12 @@ class Full_dataset_TelemetryMLService:
         
         # LLM configuration
         self.llm_config = LocalLLMConfig(
-                                        offload_folder=self.models_directory / "llm_offload",
-                                        offload_state_dict=True,
-                                        base_model=self.models_directory / "Mistral-7B-Instruct-v0.2",
-                                        tokenizer_name=self.models_directory / "Mistral-7B-Instruct-v0.2",
-                                        max_seq_length=32000,    
-                                        max_memory={0: "8GiB", "cpu": "12GiB"},
-                                        load_in_4bit= True,       
+                                        base_model="Qwen/Qwen2.5-1.5B-Instruct",
+                                        tokenizer_name="Qwen/Qwen2.5-1.5B-Instruct",
+                                        max_seq_length=8192,
+                                        device_map="auto",
+                                        load_in_4bit=False,
+                                        load_in_8bit=False,
                                        )
         
         self.llm_adapter_directory = self.models_directory / "llm_adapters"
@@ -150,6 +149,10 @@ class Full_dataset_TelemetryMLService:
 
         # Centralize cache key usage for coordinated cleanup
         self.cache_config = pipeline_config if pipeline_config is not None else PipelineConfig()
+
+        # Reusable service instances
+        self._expert_service = ExpertImitateLearningService(logger=self.logger)
+        self._tire_grip_service = TireGripAnalysisService()
 
         # Clear entire cache to ensure we start fresh with model instances only
         self.model_cache_service.clear()
@@ -169,35 +172,6 @@ class Full_dataset_TelemetryMLService:
         divider = "=" * normalized_width
         print(f"\n{divider}\n{title.center(normalized_width)}\n{divider}")
 
-    async def _get_cached_model_or_fetch(
-        self,
-        model_type: str,
-        model_subtype: str,
-        service_instance: Any,
-        deserializer_func: callable,
-    ) -> Tuple[Any, Dict[str, Any]]:
-        """Fetch model from cache or backend if missing"""
-        cached = self.model_cache_service.get(model_type=model_type, model_subtype=model_subtype)
-        if cached:
-            return cached[0], cached[1]
-
-        try:
-            model_data = await self.backend_service.getCompleteActiveModelData(modelType=model_type)
-            if model_data and hasattr(model_data, 'modelData'):
-                deserializer_func(model_data.modelData)
-                metadata = getattr(model_data, 'metrics', {})
-                self.model_cache_service.put(
-                    model_type=model_type,
-                    model_subtype=model_subtype,
-                    data=service_instance,
-                    metadata=metadata
-                )
-                return service_instance, metadata
-        except Exception as e:
-            self.logger.warning(f"Failed to fetch model {model_type} from backend: {e}")
-
-        return service_instance, {}
-
     async def predict_expert_actions(
         self,
         telemetry_dict: Dict[str, Any],
@@ -206,10 +180,14 @@ class Full_dataset_TelemetryMLService:
         user_request: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Generate segment-purpose guidance using the LLM without requiring the transformer."""
+        import time
+        start_time = time.time()
 
         try:
             import pandas as pd
-
+            from .segment_classifier_service import segment_classifier
+            from .llm.classifier_prompt_generation import generate_llm_prompt_from_labels
+            
             driver_request = (user_request or "").strip()
 
             telemetry_df = pd.DataFrame([telemetry_dict])
@@ -224,39 +202,36 @@ class Full_dataset_TelemetryMLService:
                 filtered_df.iloc[0].to_dict() if not filtered_df.empty else telemetry_dict
             )
 
+            chunk_imitation_features = []
             try:
-                tire_grip_service = TireGripAnalysisService()
-                tire_grip_service, _ = await self._get_cached_model_or_fetch(
-                    model_type="tire_grip_analysis",
-                    model_subtype="tire_grip_model_data",
-                    service_instance=tire_grip_service,
-                    deserializer_func=tire_grip_service.deserialize_tire_grip_model,
-                )
-
-                if getattr(tire_grip_service, "_trained", False):
-                    tire_features_list = await tire_grip_service.extract_tire_grip_features(
-                        [processed_telemetry_dict]
-                    )
-                    if tire_features_list:
-                        processed_telemetry_dict.update(tire_features_list[0])
-            except Exception as enrichment_error:
-                raise RuntimeError(f"Tire grip enrichment failed: {enrichment_error}") from enrichment_error
-
-            try:
-                expert_service = ExpertImitateLearningService(logger=self.logger)
-                expert_service, _ = await self._get_cached_model_or_fetch(
+                expert_service, _ = await self.model_cache_service.get_model_or_fetch(
                     model_type="imitation_learning",
                     model_subtype="imitation_model_data",
-                    service_instance=expert_service,
-                    deserializer_func=expert_service.deserialize_imitation_model,
+                    service_instance=self._expert_service,
+                    deserializer_func=self._expert_service.deserialize_imitation_model,
                 )
-                expert_state_list = expert_service.extract_expert_state_for_telemetry(
+                chunk_imitation_features = expert_service.extract_expert_state_for_telemetry(
                     [processed_telemetry_dict]
                 )
-                if expert_state_list:
-                    processed_telemetry_dict.update(expert_state_list[0])
-            except Exception as enrichment_error:
-                raise RuntimeError(f"Imitation learning enrichment failed: {enrichment_error}") from enrichment_error
+            except Exception as e:
+                raise RuntimeError(f"Failed to extract imitation features: {str(e)}")
+
+            chunk_grip_features = []
+            tire_grip_service, _ = await self.model_cache_service.get_model_or_fetch(
+                model_type="tire_grip_analysis",
+                model_subtype="tire_grip_model_data",
+                service_instance=self._tire_grip_service,
+                deserializer_func=self._tire_grip_service.deserialize_tire_grip_model,
+            )
+            chunk_grip_features = await tire_grip_service.extract_tire_grip_features(
+                [processed_telemetry_dict]
+            )
+
+            if len(chunk_imitation_features) > 0:
+                processed_telemetry_dict.update(chunk_imitation_features[0])
+            
+            if len(chunk_grip_features) > 0:
+                processed_telemetry_dict.update(chunk_grip_features[0])
 
             future_payload: List[Dict[str, Any]] = []
             segment_metadata: Dict[str, Any] = {
@@ -265,42 +240,24 @@ class Full_dataset_TelemetryMLService:
             if driver_request:
                 segment_metadata["user_request"] = driver_request
 
-            telemetry_highlights = (
-                "Physics_speed_kmh",
-                "Physics_rpm",
-                "Physics_gear",
-                "Physics_brake",
-                "Physics_gas",
-                "Physics_steer_angle",
-                "Graphics_delta_lap_time",
-            )
-            for feature in telemetry_highlights:
-                value = processed_telemetry_dict.get(feature)
-                if value is None:
-                    continue
-                try:
-                    segment_metadata[feature] = _safe_float(value)
-                except Exception:
-                    segment_metadata[feature] = value
-
-            llm_model, llm_metadata = await self.llm_orchestrator.get_llm_for_inference()
-            if llm_model is None:
-                raise RuntimeError("LLM guidance model is not available")
-
-            # Predict segment labels using classifier
-            from .segment_classifier_service import segment_classifier
-            from .llm.classifier_prompt_generation import generate_llm_prompt_from_labels
-            
             # Extract features expected by the classifier if possible, but the classifier handles dataframe directly
             try:
                 predicted_labels = segment_classifier.predict_segment(pd.DataFrame([processed_telemetry_dict]))
             except ValueError as e:
                 # If the segment classifier model isn't trained yet, assume no labels
                 raise RuntimeError(f"Segment classifier prediction failed: {e}")
+            
+            print(f"[DEBUG] Generating LLM prompt from predicted labels...")
+            llm_model, llm_metadata = await self.llm_orchestrator.get_llm_for_inference()
+            if llm_model is None:
+                raise RuntimeError("LLM guidance model is not available")
   
-            # Generate user prompt using the labels
-            user_prompt = generate_llm_prompt_from_labels(predicted_labels)
-
+            try:
+                # Generate user prompt using the labels
+                user_prompt = generate_llm_prompt_from_labels(predicted_labels)
+            except Exception as e:
+                raise RuntimeError(f"Failed to generate LLM prompt from labels: {str(e)}")
+             
             generation_request = GenerationRequest(
                 user_prompt=user_prompt,
                 max_new_tokens=self.llm_config.generation_max_new_tokens,
@@ -309,11 +266,18 @@ class Full_dataset_TelemetryMLService:
                 do_sample=self.llm_config.generation_do_sample,
             )
 
-            output_text = llm_model.generate(generation_request)
+            try:    
+                output_text = llm_model.generate(generation_request)
+            except Exception as e:
+                raise RuntimeError(f"LLM generation failed: {str(e)}")
+            
+            end_time = time.time()
+            response_time_ms = int((end_time - start_time) * 1000)
 
             return {
                 "status": "success",
                 "timestamp": datetime.now().isoformat(),
+                "response_time_ms": response_time_ms,
                 "sequence_predictions": [],
                 "predicted_labels": predicted_labels,
                 "future_window": future_payload,
@@ -333,10 +297,15 @@ class Full_dataset_TelemetryMLService:
         except Exception as error:
             error_msg = f"Failed to generate expert guidance: {error}"
             print(f"[ERROR] {error_msg}")
+            
+            end_time = time.time()
+            response_time_ms = int((end_time - start_time) * 1000)
+
             return {
                 "status": "error",
                 "error_message": error_msg,
                 "error_type": type(error).__name__,
+                "response_time_ms": response_time_ms,
             }
 
     async def prepare_training_data(
@@ -547,7 +516,7 @@ class Full_dataset_TelemetryMLService:
         total_processed = 0
         chunk_idx = 0
 
-        features = self._imitate_expert_feature_names or self.telemetry_features.get_features_for_learning_expert()
+        features = self._imitate_expert_feature_names
 
         def update_top_laps(candidate: Dict[str, Any]) -> None:
             """Maintain the fastest laps for expert reference per track."""

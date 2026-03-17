@@ -61,6 +61,7 @@ RUN pip install --no-cache-dir -r requirements.amd.txt
 
 # Install other dependencies
 RUN pip install --no-cache-dir -r requirements.common.txt
+RUN CMAKE_ARGS="-DGGML_HIP=ON -DAMDGPU_TARGETS=gfx1100" CC=/opt/rocm/llvm/bin/clang CXX=/opt/rocm/llvm/bin/clang++ pip install --no-cache-dir llama-cpp-python
 
 # Copy the rest of the application
 COPY . .

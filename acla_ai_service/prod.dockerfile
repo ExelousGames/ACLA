@@ -38,6 +38,7 @@ COPY requirements.nvidia.txt .
 
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.nvidia.txt
+RUN CMAKE_ARGS="-DGGML_CUDA=on" pip install --no-cache-dir llama-cpp-python
 
 # Copy application code and set ownership
 COPY . .
