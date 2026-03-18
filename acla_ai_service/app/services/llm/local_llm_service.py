@@ -464,7 +464,7 @@ class LocalTelemetryLLM:
                 model_path=self.config.model.gguf_file,
                 n_ctx=self.config.training.max_seq_length,
                 n_gpu_layers=n_gpu_layers,
-                verbose=False
+                verbose=True
             )
             return model
 
@@ -1023,12 +1023,12 @@ class LocalTelemetryLLM:
             # or the user accepts the current state due to Singleton constraint.
             # In a full implementation, we would check if the adapter is attached.
             LOGGER.info("Model already loaded. Skipping reload.")
-            if hasattr(self.model, "eval"):
+            if hasattr(self.model, "eval") and self.config.model.provider != "llama_cpp":
                 self.model.eval()
             return
 
         self.model = self._load_model(for_training=False, adapter_path=adapter_path)
-        if hasattr(self.model, "eval"):
+        if hasattr(self.model, "eval") and self.config.model.provider != "llama_cpp":
             self.model.eval()
 
     def generate(self, request: GenerationRequest) -> str:

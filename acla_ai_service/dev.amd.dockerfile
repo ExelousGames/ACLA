@@ -48,8 +48,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PYTHONOPTIMIZE=1 \
-    OMP_NUM_THREADS=2 \
-    MKL_NUM_THREADS=2
+    HSA_OVERRIDE_GFX_VERSION=11.0.0
 
 # Copy requirements first for better caching
 COPY requirements.amd.txt .
@@ -60,7 +59,7 @@ RUN pip install --no-cache-dir -r requirements.amd.txt
 
 # Install other dependencies
 RUN pip install --no-cache-dir -r requirements.common.txt
-RUN CMAKE_ARGS="-DGGML_HIP=ON -DAMDGPU_TARGETS=gfx1151" CC=/opt/rocm/llvm/bin/clang CXX=/opt/rocm/llvm/bin/clang++ pip install --no-cache-dir llama-cpp-python
+RUN CMAKE_ARGS='-DGGML_HIP=ON -DAMDGPU_TARGETS=gfx1100;gfx1151' CC=/opt/rocm/llvm/bin/clang CXX=/opt/rocm/llvm/bin/clang++ pip install --no-cache-dir llama-cpp-python
 
 # Copy the rest of the application
 COPY . .
