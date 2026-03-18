@@ -40,7 +40,7 @@ except ImportError as exc:  # pragma: no cover - guarding runtime deps
 
 try:
     from peft import (
-        LoraConfig,
+        LoraConfig as PeftLoraConfig,
         PeftConfig,
         PeftModel,
         get_peft_model,
@@ -63,9 +63,7 @@ DEFAULT_HF_CACHE = str(_SERVICE_ROOT / "models" / "huggingface_cache")
 
 
 @dataclass
-class LocalLLMConfig:
-    """Configuration options for loading and training the local LLM."""
-
+class ModelConfig:
     base_model: str = "mistralai/Ministral-3-14B-Base-2512"
     tokenizer_name: Optional[str] = None
     cache_dir: Optional[str] = DEFAULT_HF_CACHE
@@ -76,14 +74,17 @@ class LocalLLMConfig:
     load_in_8bit: bool = False
     load_in_4bit: bool = False
     trust_remote_code: bool = False
-    use_gradient_checkpointing: bool = True
-    use_lora: bool = True
     device_map: Union[str, Dict[str, Union[int, str]]] = "auto"
     max_memory: Optional[Dict[str, Union[int, str]]] = None
     offload_folder: Optional[str] = None
     offload_state_dict: bool = False
     low_cpu_mem_usage: bool = True
+    bf16: bool = field(default_factory=lambda: torch.cuda.is_available())
+    fp16: bool = False
 
+@dataclass
+class LoraConfig:
+    use_lora: bool = True
     lora_r: int = 16
     lora_alpha: int = 32
     lora_dropout: float = 0.05
@@ -99,6 +100,10 @@ class LocalLLMConfig:
         ]
     )
 
+@dataclass
+class TrainingConfig:
+    use_gradient_checkpointing: bool = True
+    gradient_checkpointing_kwargs: Optional[Dict[str, Any]] = field(default_factory=dict)
     max_seq_length: int = 2353642
     train_batch_size: int = 1
     eval_batch_size: int = 1
@@ -108,26 +113,29 @@ class LocalLLMConfig:
     weight_decay: float = 0.01
     num_train_epochs: int = 3
     max_steps: Optional[int] = None
-
     logging_steps: int = 20
     save_steps: int = 200
     eval_steps: Optional[int] = None
     save_total_limit: int = 3
-
-    bf16: bool = torch.cuda.is_available()
-    fp16: bool = False
     dataloader_num_workers: int = 2
-    gradient_checkpointing_kwargs: Optional[Dict[str, Any]] = field(default_factory=dict)
-
     use_hf_datasets: bool = True
     hf_streaming: bool = False
     hf_num_proc: Optional[int] = None
 
-    # Generation defaults
-    generation_max_new_tokens: int = 256
-    generation_temperature: float = 0.9
-    generation_top_p: float = 0.95
-    generation_do_sample: bool = True
+@dataclass
+class GenerationConfig:
+    max_new_tokens: int = 256
+    temperature: float = 0.9
+    top_p: float = 0.95
+    do_sample: bool = True
+
+@dataclass
+class LocalLLMConfig:
+    """Configuration options for loading and training the local LLM."""
+    model: ModelConfig = field(default_factory=ModelConfig)
+    lora: LoraConfig = field(default_factory=LoraConfig)
+    training: TrainingConfig = field(default_factory=TrainingConfig)
+    generation: GenerationConfig = field(default_factory=GenerationConfig)
 
 
 @dataclass
@@ -352,16 +360,16 @@ class LocalTelemetryLLM:
         if self.tokenizer is not None:
             return
 
-        tokenizer_name = self.config.tokenizer_name or self.config.base_model
+        tokenizer_name = self.config.model.tokenizer_name or self.config.model.base_model
         LOGGER.info("Loading tokenizer %s", tokenizer_name)
 
         tokenizer_kwargs = {
-            "cache_dir": self.config.cache_dir,
+            "cache_dir": self.config.model.cache_dir,
             "token": settings.hf_api_token,
-            "trust_remote_code": self.config.trust_remote_code,
+            "trust_remote_code": self.config.model.trust_remote_code,
         }
-        if self.config.gguf_file:
-            tokenizer_kwargs["gguf_file"] = self.config.gguf_file
+        if self.config.model.gguf_file:
+            tokenizer_kwargs["gguf_file"] = self.config.model.gguf_file
 
         # Try loading AutoProcessor first (recommended for multimodal models like Mistral 3)
         try:
@@ -430,62 +438,62 @@ class LocalTelemetryLLM:
     def _load_model(self, for_training: bool, adapter_path: Optional[Path] = None) -> torch.nn.Module:
         self._ensure_tokenizer()
 
-        torch_dtype = torch.bfloat16 if self.config.bf16 else (
-            torch.float16 if self.config.fp16 else torch.float32
+        torch_dtype = torch.bfloat16 if self.config.model.bf16 else (
+            torch.float16 if self.config.model.fp16 else torch.float32
         )
 
-        LOGGER.info("Loading base model %s", self.config.base_model)
+        LOGGER.info("Loading base model %s", self.config.model.base_model)
         load_kwargs: Dict[str, Any] = {
-            "cache_dir": self.config.cache_dir,
-            "dtype": None if (self.config.load_in_8bit or self.config.load_in_4bit) else torch_dtype,
-            "device_map": self.config.device_map,
+            "cache_dir": self.config.model.cache_dir,
+            "dtype": None if (self.config.model.load_in_8bit or self.config.model.load_in_4bit) else torch_dtype,
+            "device_map": self.config.model.device_map,
             "token": settings.hf_api_token,
-            "trust_remote_code": self.config.trust_remote_code,
+            "trust_remote_code": self.config.model.trust_remote_code,
         }
-        if self.config.gguf_file:
-            load_kwargs["gguf_file"] = self.config.gguf_file
+        if self.config.model.gguf_file:
+            load_kwargs["gguf_file"] = self.config.model.gguf_file
 
-        if self.config.load_in_8bit or self.config.load_in_4bit:
-            LOGGER.info("Configuring quantization: 8bit=%s, 4bit=%s", self.config.load_in_8bit, self.config.load_in_4bit)
+        if self.config.model.load_in_8bit or self.config.model.load_in_4bit:
+            LOGGER.info("Configuring quantization: 8bit=%s, 4bit=%s", self.config.model.load_in_8bit, self.config.model.load_in_4bit)
             quantization_config = BitsAndBytesConfig(
-                load_in_8bit=self.config.load_in_8bit,
-                load_in_4bit=self.config.load_in_4bit,
-                bnb_4bit_compute_dtype=torch_dtype if self.config.load_in_4bit else None
+                load_in_8bit=self.config.model.load_in_8bit,
+                load_in_4bit=self.config.model.load_in_4bit,
+                bnb_4bit_compute_dtype=torch_dtype if self.config.model.load_in_4bit else None
             )
             load_kwargs["quantization_config"] = quantization_config
 
-        if self.config.max_memory:
-            load_kwargs["max_memory"] = self.config.max_memory
+        if self.config.model.max_memory:
+            load_kwargs["max_memory"] = self.config.model.max_memory
 
-        if self.config.offload_folder:
-            offload_path = Path(self.config.offload_folder)
+        if self.config.model.offload_folder:
+            offload_path = Path(self.config.model.offload_folder)
             offload_path.mkdir(parents=True, exist_ok=True)
             load_kwargs["offload_folder"] = str(offload_path)
 
-        if self.config.offload_state_dict:
+        if self.config.model.offload_state_dict:
             load_kwargs["offload_state_dict"] = True
 
-        if self.config.low_cpu_mem_usage is not None:
-            load_kwargs["low_cpu_mem_usage"] = self.config.low_cpu_mem_usage
+        if self.config.model.low_cpu_mem_usage is not None:
+            load_kwargs["low_cpu_mem_usage"] = self.config.model.low_cpu_mem_usage
 
         try:
             LOGGER.info("Attempting to load model with AutoModelForCausalLM")
             model = AutoModelForCausalLM.from_pretrained(
-                self.config.base_model,
+                self.config.model.base_model,
                 **load_kwargs,
             )
         except (OSError, ValueError, RuntimeError) as e:
             LOGGER.info("AutoModelForCausalLM failed (%s), falling back to AutoModelForImageTextToText", str(e))
             try:
                 model = AutoModelForImageTextToText.from_pretrained(
-                    self.config.base_model,
+                    self.config.model.base_model,
                     **load_kwargs,
                 )
             except OSError as load_error:
-                self._raise_missing_local_resource(self.config.base_model, load_error)
+                self._raise_missing_local_resource(self.config.model.base_model, load_error)
 
-        if self.config.use_gradient_checkpointing and hasattr(model, "gradient_checkpointing_enable"):
-            model.gradient_checkpointing_enable(**(self.config.gradient_checkpointing_kwargs or {}))
+        if self.config.training.use_gradient_checkpointing and hasattr(model, "gradient_checkpointing_enable"):
+            model.gradient_checkpointing_enable(**(self.config.training.gradient_checkpointing_kwargs or {}))
 
         if adapter_path:
             adapter_path = Path(adapter_path)
@@ -493,16 +501,16 @@ class LocalTelemetryLLM:
             model = PeftModel.from_pretrained(model, adapter_path)
             return model
 
-        if for_training and self.config.use_lora:
-            LOGGER.info("Wrapping model with LoRA (r=%s, alpha=%s)", self.config.lora_r, self.config.lora_alpha)
-            if self.config.load_in_8bit or self.config.load_in_4bit:
+        if for_training and self.config.lora.use_lora:
+            LOGGER.info("Wrapping model with LoRA (r=%s, alpha=%s)", self.config.lora.lora_r, self.config.lora.lora_alpha)
+            if self.config.model.load_in_8bit or self.config.model.load_in_4bit:
                 model = prepare_model_for_kbit_training(model)
 
-            target_modules = self.config.lora_target_modules
-            lora_config = LoraConfig(
-                r=self.config.lora_r,
-                lora_alpha=self.config.lora_alpha,
-                lora_dropout=self.config.lora_dropout,
+            target_modules = self.config.lora.lora_target_modules
+            lora_config = PeftLoraConfig(
+                r=self.config.lora.lora_r,
+                lora_alpha=self.config.lora.lora_alpha,
+                lora_dropout=self.config.lora.lora_dropout,
                 bias="none",
                 task_type="CAUSAL_LM",
                 target_modules=target_modules,
@@ -527,10 +535,10 @@ class LocalTelemetryLLM:
         self.model = self._load_model(for_training=True)
         self.model.train()
 
-        use_hf_datasets = self.config.use_hf_datasets
-        streaming_mode = use_hf_datasets and self.config.hf_streaming
+        use_hf_datasets = self.config.training.use_hf_datasets
+        streaming_mode = use_hf_datasets and self.config.training.hf_streaming
 
-        if streaming_mode and not self.config.max_steps:
+        if streaming_mode and not self.config.training.max_steps:
             raise ValueError(
                 "Streaming Hugging Face datasets require 'max_steps' to be set in LocalLLMConfig."
             )
@@ -538,13 +546,13 @@ class LocalTelemetryLLM:
         if use_hf_datasets:
             dataset = self._prepare_hf_prompt_dataset(
                 dataset_path=dataset_path,
-                streaming=self.config.hf_streaming,
+                streaming=self.config.training.hf_streaming,
             )
         else:
             dataset = TelemetryPromptDataset(
                 jsonl_path=dataset_path,
                 tokenizer=self.tokenizer,
-                max_seq_length=self.config.max_seq_length,
+                max_seq_length=self.config.training.max_seq_length,
             )
 
         eval_dataset: Optional[Any] = None
@@ -558,7 +566,7 @@ class LocalTelemetryLLM:
                 eval_dataset = TelemetryPromptDataset(
                     jsonl_path=eval_dataset_path,
                     tokenizer=self.tokenizer,
-                    max_seq_length=self.config.max_seq_length,
+                    max_seq_length=self.config.training.max_seq_length,
                 )
 
         output_dir = Path(output_dir)
@@ -566,22 +574,22 @@ class LocalTelemetryLLM:
 
         training_args = TrainingArguments(
             output_dir=str(output_dir),
-            per_device_train_batch_size=self.config.train_batch_size,
-            per_device_eval_batch_size=self.config.eval_batch_size,
-            gradient_accumulation_steps=self.config.gradient_accumulation_steps,
-            learning_rate=self.config.learning_rate,
-            warmup_steps=self.config.warmup_steps,
-            weight_decay=self.config.weight_decay,
-            num_train_epochs=self.config.num_train_epochs,
-            max_steps=self.config.max_steps or -1,
-            logging_steps=self.config.logging_steps,
-            save_steps=self.config.save_steps,
+            per_device_train_batch_size=self.config.training.train_batch_size,
+            per_device_eval_batch_size=self.config.training.eval_batch_size,
+            gradient_accumulation_steps=self.config.training.gradient_accumulation_steps,
+            learning_rate=self.config.training.learning_rate,
+            warmup_steps=self.config.training.warmup_steps,
+            weight_decay=self.config.training.weight_decay,
+            num_train_epochs=self.config.training.num_train_epochs,
+            max_steps=self.config.training.max_steps or -1,
+            logging_steps=self.config.training.logging_steps,
+            save_steps=self.config.training.save_steps,
             eval_strategy="steps" if eval_dataset is not None else "no",
-            eval_steps=self.config.eval_steps,
-            save_total_limit=self.config.save_total_limit,
-            fp16=self.config.fp16,
-            bf16=self.config.bf16,
-            dataloader_num_workers=self.config.dataloader_num_workers,
+            eval_steps=self.config.training.eval_steps,
+            save_total_limit=self.config.training.save_total_limit,
+            fp16=self.config.model.fp16,
+            bf16=self.config.model.bf16,
+            dataloader_num_workers=self.config.training.dataloader_num_workers,
             remove_unused_columns=False,
             report_to=["tensorboard"],
         )
@@ -649,8 +657,8 @@ class LocalTelemetryLLM:
         LOGGER.info("="*60)
         LOGGER.info("Starting LLM fine-tuning")
         LOGGER.info(f"Training samples: {dataset_size}")
-        LOGGER.info(f"Epochs: {self.config.num_train_epochs}")
-        LOGGER.info(f"Max steps: {self.config.max_steps or 'auto'}")
+        LOGGER.info(f"Epochs: {self.config.training.num_train_epochs}")
+        LOGGER.info(f"Max steps: {self.config.training.max_steps or 'auto'}")
         LOGGER.info("="*60)
 
         try:
@@ -770,7 +778,7 @@ class LocalTelemetryLLM:
                     self.tokenizer,
                     prompt_text,
                     response_text,
-                    self.config.max_seq_length,
+                    self.config.training.max_seq_length,
                 )
 
                 if sample is None:
@@ -805,7 +813,7 @@ class LocalTelemetryLLM:
         print(f"[DEBUG] Starting tokenization map operation...")
         print(f"[DEBUG] Columns to remove: {columns_to_remove}")
         print(f"[DEBUG] Streaming mode: {streaming}")
-        print(f"[DEBUG] Num proc: {None if (streaming or self.config.hf_num_proc is None) else self.config.hf_num_proc}")
+        print(f"[DEBUG] Num proc: {None if (streaming or self.config.training.hf_num_proc is None) else self.config.training.hf_num_proc}")
         print(f"[DEBUG] Dataset type: {type(dataset)}")
         sys.stdout.flush()
         
@@ -915,7 +923,7 @@ class LocalTelemetryLLM:
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        if self.config.use_lora:
+        if self.config.lora.use_lora:
             LOGGER.info("Saving LoRA adapter to %s", output_dir)
             if isinstance(self.model, PeftModel):
                 self.model.save_pretrained(output_dir)
@@ -959,16 +967,16 @@ class LocalTelemetryLLM:
             prompt,
             return_tensors="pt",
             truncation=True,
-            max_length=self.config.max_seq_length,
+            max_length=self.config.training.max_seq_length,
         )
         inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
 
         generation_kwargs = {
-            "max_new_tokens": request.max_new_tokens or self.config.generation_max_new_tokens,
+            "max_new_tokens": request.max_new_tokens or self.config.generation.max_new_tokens,
             "max_length": None,
-            "temperature": request.temperature or self.config.generation_temperature,
-            "top_p": request.top_p or self.config.generation_top_p,
-            "do_sample": request.do_sample if request.do_sample is not None else self.config.generation_do_sample,
+            "temperature": request.temperature or self.config.generation.temperature,
+            "top_p": request.top_p or self.config.generation.top_p,
+            "do_sample": request.do_sample if request.do_sample is not None else self.config.generation.do_sample,
             "pad_token_id": self.tokenizer.pad_token_id,
             "eos_token_id": self.tokenizer.eos_token_id,
         }
@@ -992,6 +1000,10 @@ class LocalTelemetryLLM:
 
 __all__ = [
     "LocalLLMConfig",
+    "ModelConfig",
+    "LoraConfig",
+    "TrainingConfig",
+    "GenerationConfig",
     "GenerationRequest",
     "TelemetryPromptDataset",
     "LocalTelemetryLLM",

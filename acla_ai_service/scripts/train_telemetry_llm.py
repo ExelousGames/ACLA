@@ -66,12 +66,12 @@ async def main():
             
     print(f"Split dataset: {len(train_lines)} train, {len(eval_lines)} eval")
     llm_config = LocalLLMConfig()
-    llm_config.base_model = args.model
-    llm_config.tokenizer_name = args.model
+    llm_config.model.base_model = args.model
+    llm_config.model.tokenizer_name = args.model
     # Recommended optimizations for fine-tuning on consumer hardware:
-    llm_config.load_in_4bit = True   # Quantize to fit in memory
-    llm_config.use_lora = True       # Crucial for reusing and saving just the adapter
-    llm_config.use_gradient_checkpointing = True 
+    llm_config.model.load_in_4bit = True   # Quantize to fit in memory
+    llm_config.lora.use_lora = True       # Crucial for reusing and saving just the adapter
+    llm_config.training.use_gradient_checkpointing = True 
 
     orchestrator = TelemetryLLMOrchestrator(
         llm_config=llm_config,

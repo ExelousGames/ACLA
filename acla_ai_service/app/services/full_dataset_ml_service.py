@@ -127,15 +127,21 @@ class Full_dataset_TelemetryMLService:
         )
         
         # LLM configuration
+        from .llm.local_llm_service import ModelConfig, TrainingConfig
+        
         self.llm_config = LocalLLMConfig(
-                                        base_model="Qwen/Qwen2.5-1.5B-Instruct",
-                                        tokenizer_name="Qwen/Qwen2.5-1.5B-Instruct",
-                                        max_seq_length=8192,
-                                        device_map="auto",
-                                        load_in_4bit=False,
-                                        load_in_8bit=False,
-                                        default_adapter="telemetry_descriptions_v1_train_20260318_013111"
-                                       )
+            model=ModelConfig(
+                base_model="Qwen/Qwen2.5-1.5B-Instruct",
+                tokenizer_name="Qwen/Qwen2.5-1.5B-Instruct",
+                device_map="auto",
+                load_in_4bit=False,
+                load_in_8bit=False,
+                default_adapter="telemetry_descriptions_v1_train_20260318_013111"
+            ),
+            training=TrainingConfig(
+                max_seq_length=8192
+            )
+        )
         
         self.llm_adapter_directory = self.models_directory / "llm_adapters"
         self.llm_adapter_directory.mkdir(parents=True, exist_ok=True)
@@ -261,10 +267,10 @@ class Full_dataset_TelemetryMLService:
              
             generation_request = GenerationRequest(
                 user_prompt=user_prompt,
-                max_new_tokens=self.llm_config.generation_max_new_tokens,
-                temperature=self.llm_config.generation_temperature,
-                top_p=self.llm_config.generation_top_p,
-                do_sample=self.llm_config.generation_do_sample,
+                max_new_tokens=self.llm_config.generation.max_new_tokens,
+                temperature=self.llm_config.generation.temperature,
+                top_p=self.llm_config.generation.top_p,
+                do_sample=self.llm_config.generation.do_sample,
             )
 
             try:    
