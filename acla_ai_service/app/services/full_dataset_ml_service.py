@@ -136,7 +136,9 @@ class Full_dataset_TelemetryMLService:
                 device_map="auto",
                 load_in_4bit=False,
                 load_in_8bit=False,
-                default_adapter="telemetry_descriptions_v1_train_20260318_013111"
+                provider="llama_cpp",
+                adapter="telemetry_descriptions_v1_train_20260318_171012",
+                gguf_file=str(self.models_directory / "llm_adapters" / "telemetry_descriptions_v1_train_20260318_171012" / "telemetry_descriptions_v1_train_20260318_171012.gguf")
             ),
             training=TrainingConfig(
                 max_seq_length=8192

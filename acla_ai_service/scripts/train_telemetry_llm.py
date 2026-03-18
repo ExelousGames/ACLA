@@ -69,7 +69,7 @@ async def main():
     llm_config.model.base_model = args.model
     llm_config.model.tokenizer_name = args.model
     # Recommended optimizations for fine-tuning on consumer hardware:
-    llm_config.model.load_in_4bit = True   # Quantize to fit in memory
+    llm_config.model.load_in_4bit = False   # Quantize to fit in memory
     llm_config.lora.use_lora = True       # Crucial for reusing and saving just the adapter
     llm_config.training.use_gradient_checkpointing = True 
 

@@ -23,6 +23,11 @@ import torch
 from torch.utils.data import Dataset
 
 try:
+    from llama_cpp import Llama
+except ImportError:
+    Llama = None
+
+try:
     from transformers import (
         AutoModelForCausalLM,
         AutoModelForImageTextToText,
@@ -68,8 +73,13 @@ class ModelConfig:
     tokenizer_name: Optional[str] = None
     cache_dir: Optional[str] = DEFAULT_HF_CACHE
     gguf_file: Optional[str] = None
-    default_adapter: Optional[str] = None
-    provider: str = "transformers"  # 'transformers', 'llama_cpp'
+
+    #specify the name or directory path of a specific fine-tuned LoRA
+    adapter: Optional[str] = None
+
+    # transformers: The default provider. required for fine-tuning the model with LoRA
+    # llama_cpp:  This provider is strictly for inference and is heavily optimized to run fast and use less memory, making it ideal for CPU-only inference or limited hardware.
+    provider: str = "transformers"  
 
     load_in_8bit: bool = False
     load_in_4bit: bool = False
@@ -435,7 +445,29 @@ class LocalTelemetryLLM:
         if self.tokenizer.padding_side != "right":
             self.tokenizer.padding_side = "right"
 
-    def _load_model(self, for_training: bool, adapter_path: Optional[Path] = None) -> torch.nn.Module:
+    def _load_model(self, for_training: bool, adapter_path: Optional[Path] = None) -> Union[torch.nn.Module, Any]:
+        if self.config.model.provider == "llama_cpp":
+            if for_training:
+                raise ValueError("The 'llama_cpp' provider cannot be used for training. Use 'transformers'.")
+            if Llama is None:
+                raise ImportError("llama-cpp-python is not installed. Please install it to use the llama_cpp provider.")
+            if not self.config.model.gguf_file:
+                raise ValueError("gguf_file must be specified when using llama_cpp provider.")
+            
+            LOGGER.info("Loading model with llama_cpp from %s", self.config.model.gguf_file)
+            
+            n_gpu_layers = 0
+            if torch.cuda.is_available():
+                n_gpu_layers = -1
+                
+            model = Llama(
+                model_path=self.config.model.gguf_file,
+                n_ctx=self.config.training.max_seq_length,
+                n_gpu_layers=n_gpu_layers,
+                verbose=False
+            )
+            return model
+
         self._ensure_tokenizer()
 
         torch_dtype = torch.bfloat16 if self.config.model.bf16 else (
@@ -927,12 +959,57 @@ class LocalTelemetryLLM:
             LOGGER.info("Saving LoRA adapter to %s", output_dir)
             if isinstance(self.model, PeftModel):
                 self.model.save_pretrained(output_dir)
+                
+                if self.config.model.load_in_4bit or self.config.model.load_in_8bit:
+                    LOGGER.warning("Skipping LoRA merge and GGUF export for quantized models (4-bit/8-bit). Only adapter saved.")
+                else:
+                    # Merge LoRA adapter into base model for GGUF export
+                    LOGGER.info("Merging LoRA weights with base model for GGUF export...")
+                    merged_model = self.model.merge_and_unload()
+                    # Save the merged model to a temporary path inside output_dir
+                    merged_path = output_dir / "merged"
+                    merged_path.mkdir(parents=True, exist_ok=True)
+                    merged_model.save_pretrained(merged_path)
+                    self.tokenizer.save_pretrained(merged_path)
+                    
+                    # Call conversion script
+                    gguf_output = output_dir / f"{output_dir.name}.gguf"
+                    LOGGER.info("Converting merged model to GGUF format at %s...", gguf_output)
+                    try:
+                        import subprocess
+                        subprocess.run(
+                            ["python3", "/opt/venv/lib/python3.11/site-packages/bin/convert_hf_to_gguf.py", str(merged_path), "--outfile", str(gguf_output), "--outtype", "q8_0"],
+                            check=True
+                        )
+                        LOGGER.info("Successfully exported GGUF file to %s", gguf_output)
+                    except Exception as e:
+                        LOGGER.error("Failed to convert to GGUF using llama.cpp script: %s", e)
+                    finally:
+                        # Clean up merged directory to save space
+                        import shutil
+                        if merged_path.exists():
+                            shutil.rmtree(merged_path)
+
+
             else:
                 raise RuntimeError("Model is expected to be a PeftModel when use_lora=True")
         else:
             LOGGER.info("Saving full model to %s", output_dir)
             self.model.save_pretrained(output_dir)
-        self.tokenizer.save_pretrained(output_dir)
+            self.tokenizer.save_pretrained(output_dir)
+            
+            # Call conversion script directly on the saved full model
+            gguf_output = output_dir / f"{output_dir.name}.gguf"
+            LOGGER.info("Converting model to GGUF format at %s...", gguf_output)
+            try:
+                import subprocess
+                subprocess.run(
+                    ["python3", "/opt/venv/lib/python3.11/site-packages/bin/convert_hf_to_gguf.py", str(output_dir), "--outfile", str(gguf_output), "--outtype", "q8_0"],
+                    check=True
+                )
+                LOGGER.info("Successfully exported GGUF file to %s", gguf_output)
+            except Exception as e:
+                LOGGER.error("Failed to convert to GGUF using llama.cpp script: %s", e)
 
     # ------------------------------------------------------------------
     # Inference
@@ -946,11 +1023,13 @@ class LocalTelemetryLLM:
             # or the user accepts the current state due to Singleton constraint.
             # In a full implementation, we would check if the adapter is attached.
             LOGGER.info("Model already loaded. Skipping reload.")
-            self.model.eval()
+            if hasattr(self.model, "eval"):
+                self.model.eval()
             return
 
         self.model = self._load_model(for_training=False, adapter_path=adapter_path)
-        self.model.eval()
+        if hasattr(self.model, "eval"):
+            self.model.eval()
 
     def generate(self, request: GenerationRequest) -> str:
         """Generate telemetry narrative using the fine-tuned model."""
@@ -958,11 +1037,25 @@ class LocalTelemetryLLM:
         if self.model is None:
             raise RuntimeError("Model not loaded. Call load_for_inference() first.")
 
-        self._ensure_tokenizer()
-
         prompt = self._format_generation_prompt(
             user_prompt=request.user_prompt,
         )
+
+        if self.config.model.provider == "llama_cpp":
+            generation_kwargs = {
+                "max_tokens": request.max_new_tokens or self.config.generation.max_new_tokens,
+                "temperature": request.temperature or self.config.generation.temperature,
+                "top_p": request.top_p or self.config.generation.top_p,
+            }
+            
+            output = self.model(
+                prompt,
+                **generation_kwargs,
+            )
+            return output["choices"][0]["text"].strip()
+
+        self._ensure_tokenizer()
+
         inputs = self.tokenizer(
             prompt,
             return_tensors="pt",
