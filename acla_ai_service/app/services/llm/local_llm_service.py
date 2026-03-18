@@ -70,6 +70,8 @@ class LocalLLMConfig:
     tokenizer_name: Optional[str] = None
     cache_dir: Optional[str] = DEFAULT_HF_CACHE
     gguf_file: Optional[str] = None
+    default_adapter: Optional[str] = None
+    provider: str = "transformers"  # 'transformers', 'llama_cpp'
 
     load_in_8bit: bool = False
     load_in_4bit: bool = False
@@ -827,23 +829,6 @@ class LocalTelemetryLLM:
         print("[DEBUG] About to call dataset.map()...")
         sys.stdout.flush()
         
-        # TODO: Performance Optimization - Re-enable dataset.map() with multiprocessing
-        # WORKAROUND: Manual iteration instead of dataset.map() due to hanging issues
-        # 
-        # Current issue: dataset.map() hangs silently due to:
-        # - Arrow/PyArrow serialization issues with complex tokenized outputs
-        # - Multiprocessing deadlocks in Docker with GPU/CUDA state
-        # - Memory mapping issues with /dev/shm limitations in containers
-        # 
-        # Future improvements to enable fast parallel processing:
-        # 1. Increase Docker shared memory: docker run --shm-size=2g
-        # 2. Use batched=True in map() for better Arrow compatibility
-        # 3. Implement custom collate function that's Arrow-serializable
-        # 4. Pre-serialize tokenizer output to simple types (lists of ints)
-        # 5. Set HF_DATASETS_CACHE to dedicated volume with more space
-        # 6. Use num_proc=4 or num_proc=8 for parallel tokenization
-        # 7. Consider using datasets.IterableDataset for very large datasets
-        # 
         # Performance target: Process 1000+ examples in <30 seconds with multiprocessing
         print("[DEBUG] Using manual iteration instead of dataset.map() to avoid hanging...")
         sys.stdout.flush()

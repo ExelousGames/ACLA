@@ -134,6 +134,7 @@ class Full_dataset_TelemetryMLService:
                                         device_map="auto",
                                         load_in_4bit=False,
                                         load_in_8bit=False,
+                                        default_adapter="telemetry_descriptions_v1_train_20260318_013111"
                                        )
         
         self.llm_adapter_directory = self.models_directory / "llm_adapters"

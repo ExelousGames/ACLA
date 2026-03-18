@@ -288,7 +288,7 @@ class TelemetryLLMOrchestrator:
 			if cached_result and not force_refresh:
 				return cached_result[0], cached_result[1]
 			
-			adapter_name = "telemetry_descriptions_v1_train_20260314_001617"
+			adapter_name = self.llm_config.default_adapter or "telemetry_descriptions_v1_train_20260314_001617"
 			if model_id and (self.adapter_directory / model_id).exists():
 				adapter_name = model_id
 				
