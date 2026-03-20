@@ -4,8 +4,9 @@ import { PaperPlaneIcon, ChatBubbleIcon, PersonIcon } from '@radix-ui/react-icon
 import apiService from 'services/api.service';
 import './ai-chat.css';
 import { AnalysisContext } from 'views/lap-analysis/analysis-context';
-import { visualizationController } from 'views/lap-analysis/visualization';
+import { visualizationController } from 'views/lap-analysis/visualization/VisualizationRegistry';
 import { detectEnvironment } from 'utils/environment';
+import { createAiCommandRegistry, VISUALIZATION_COMMAND_FUNCTIONS } from './ai-command-registry';
 
 // Type declarations for Web Speech API
 declare global {
@@ -181,6 +182,14 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
     const currentUtteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
 
     const analysisContext = useContext(AnalysisContext);
+
+    const buildVisualizationAssistantContext = () => {
+        const visualizationContext = visualizationController.getVisualizationAssistantContext();
+        return {
+            ...visualizationContext,
+            commandFunctions: VISUALIZATION_COMMAND_FUNCTIONS
+        };
+    };
 
     // Utility function to generate unique message IDs
     const generateUniqueId = (prefix: string = 'msg') => {
@@ -992,6 +1001,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
                 context: {
                     session_id: sessionId || '',
                     trackname: analysisContext?.recordedSessioStaticsData?.track || '',
+                    visualization_assistant: buildVisualizationAssistantContext()
                 },
             });
 
@@ -1142,147 +1152,19 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
 
     // Define available functions that can be called
     const findAndExecuteFunction = async (functionName: string, args: Record<string, any>, responseData: any): Promise<any> => {
-        // Add session context to function arguments if available and not already provided
-        const sessionIdToUse = args.session_id ||
-            sessionId ||
-            analysisContext?.sessionSelected?.SessionId;
+        const registry = createAiCommandRegistry({
+            sessionId,
+            analysisContext,
+            startTrackGuide,
+            setTrackGuideEnabled
+        });
 
-        switch (functionName) {
-            case 'get_session_analysis':
-                return await apiService.post('/racing-session/detailed-info', {
-                    id: sessionIdToUse
-                });
-
-            case 'get_telemetry_data':
-                return await apiService.post('/racing-session/telemetry', {
-                    session_id: sessionIdToUse,
-                    data_types: args.data_types || ['speed', 'acceleration']
-                });
-
-            case 'compare_lap_times':
-                return await apiService.post('/racing-session/compare', {
-                    session_ids: args.session_ids,
-                    metrics: args.metrics || ['lap_times']
-                });
-
-            case 'get_performance_insights':
-                return await apiService.post('/ai/performance-analysis', {
-                    session_id: sessionIdToUse,
-                    analysis_type: args.analysis_type || 'comprehensive'
-                });
-
-            case 'follow_expert_line':
-                return await apiService.post('/ai/expert-line-guidance', {
-                    session_id: sessionIdToUse,
-                    data_types: args.data_types || ['speed', 'acceleration', 'braking', 'steering']
-                });
-
-            case 'track_detail_for_guide':
-                // Enable the continuous imitation learning guidance
-                startTrackGuide(responseData);
-
-                return {
-                    status: 'Imitation learning guidance enabled - now continuously monitoring telemetry data and displaying AI guidance chart',
-                    enabled: true,
-                    chartAdded: true
-                };
-
-            case 'disable_guide_user_racing':
-                // Disable the continuous imitation learning guidance
-                setTrackGuideEnabled(false);
-
-                return {
-                    status: 'Imitation learning guidance disabled - no longer monitoring telemetry data and guidance chart removed',
-                    enabled: false,
-                    chartRemoved: true
-                };
-
-            case 'disable_ui_component':
-                // Handle UI updates locally
-                if (args.component === 'chart' && analysisContext) {
-                    // Trigger chart update through context
-                    console.log('Updating UI component:', args);
-                    return { success: true, message: 'UI updated successfully' };
-                }
-                return { success: false, message: 'UI component not found or not supported' };
-
-            case 'add_imitation_guidance_chart':
-                // Manually add imitation guidance chart
-                const chartAdded = visualizationController.executeCommand({
-                    action: 'add',
-                    type: 'imitation-guidance-chart',
-                    data: {
-                        sessionId: sessionIdToUse,
-                        manuallyAdded: true
-                    },
-                    config: {
-                        title: args.title || 'AI Driving Guidance',
-                        autoUpdate: args.autoUpdate !== false
-                    }
-                });
-
-                return {
-                    success: chartAdded,
-                    message: chartAdded
-                        ? 'Imitation guidance chart added successfully'
-                        : 'Failed to add imitation guidance chart',
-                    chartType: 'imitation-guidance-chart'
-                };
-
-            case 'remove_imitation_guidance_chart':
-                // Remove specific imitation guidance chart or all of them
-                const charts = visualizationController.getCurrentInstances();
-                const imitationCharts = charts.filter(chart => chart.type === 'imitation-guidance-chart');
-
-                let removedCount = 0;
-                if (args.chartId) {
-                    // Remove specific chart
-                    const removed = visualizationController.executeCommand({
-                        action: 'remove',
-                        id: args.chartId
-                    });
-                    if (removed) removedCount = 1;
-                } else {
-                    // Remove all imitation guidance charts
-                    imitationCharts.forEach(chart => {
-                        const removed = visualizationController.executeCommand({
-                            action: 'remove',
-                            id: chart.id
-                        });
-                        if (removed) removedCount++;
-                    });
-                }
-
-                return {
-                    success: removedCount > 0,
-                    message: `Removed ${removedCount} imitation guidance chart(s)`,
-                    removedCount
-                };
-
-            case 'get_available_functions':
-                // Return list of available functions
-                return {
-                    functions: [
-                        'get_session_analysis',
-                        'get_telemetry_data',
-                        'compare_lap_times',
-                        'get_performance_insights',
-                        'follow_expert_line',
-                        'enable_guide_user_racing',
-                        'disable_guide_user_racing',
-                        'add_imitation_guidance_chart',
-                        'remove_imitation_guidance_chart',
-                        'get_imitation_learning_guidance',
-                        'update_ui_component'
-                    ],
-                    session_context: !!sessionId,
-                    analysis_context: !!analysisContext,
-                    current_session: sessionIdToUse
-                };
-
-            default:
-                throw new Error(`Unknown function: ${functionName}`);
+        const handler = registry[functionName];
+        if (!handler) {
+            throw new Error(`Unknown function: ${functionName}`);
         }
+
+        return await handler(args, responseData);
     };
 
     const startTrackGuide = (responseData: any) => {
@@ -1290,16 +1172,9 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
 
         // Add imitation guidance chart with the track data
 
-        visualizationController.executeCommand({
-            action: 'add',
-            type: 'imitation-guidance-chart',
-            data: {
-
-            },
-            config: {
-                title: 'AI Track Guidance',
-                autoUpdate: true
-            }
+        visualizationController.openVisualization('imitation-guidance-chart', {}, {
+            title: 'AI Track Guidance',
+            autoUpdate: true
         });
 
 

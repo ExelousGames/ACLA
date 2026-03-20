@@ -2,6 +2,7 @@ import React, { useContext, useState, useEffect, useCallback, useMemo, useRef } 
 import { Card, Text, Box, Grid, Badge, Separator, Flex, Button } from '@radix-ui/themes';
 import { AnalysisContext } from '../../analysis-context';
 import { VisualizationProps } from '../VisualizationRegistry';
+import { visualizationController } from '../VisualizationController';
 import apiService from 'services/api.service';
 import styles from './ImitationGuidanceChart.module.css';
 
@@ -134,16 +135,6 @@ const normalizePedalInput = (value?: number | null): number => {
     return clamp01(value);
 };
 
-const deriveAction = (throttle: number, brake: number, steering: number): string => {
-    if (brake > 0.75) return 'Brake hard';
-    if (brake > 0.35) return 'Start braking';
-    if (throttle > 0.8 && brake < 0.1) return 'Full throttle';
-    if (throttle > 0.45 && brake < 0.2) return 'Accelerate';
-    if (Math.abs(steering) > 0.6) return steering > 0 ? 'Steer right' : 'Steer left';
-    if (Math.abs(steering) > 0.3) return steering > 0 ? 'Turn right' : 'Turn left';
-    return 'Hold steady';
-};
-
 const toGear = (value?: number): number | undefined => {
     if (value == null || Number.isNaN(value)) return undefined;
     const rounded = Math.round(value);
@@ -203,7 +194,7 @@ const keyframeFromPrediction = (prediction: SequencePrediction, timelineTime = 0
     const predictedAction = typeof predictedActionCandidate === 'string' ? predictedActionCandidate : undefined;
     const action = predictedAction && predictedAction.trim().length > 0
         ? predictedAction
-        : deriveAction(throttle, brake, steering);
+        : undefined;
 
     return {
         t: Number.isFinite(timelineTime) && timelineTime >= 0 ? timelineTime : 0,
@@ -232,9 +223,8 @@ const keyframeFromTelemetry = (telemetry?: TelemetryData | null): Keyframe | nul
         telemetry.Physics_speed_kmh ?? telemetry.speed ?? telemetry.speed_kmh ?? telemetry.speed_mph
     );
     const normalizedPosition = getNormalizedPositionFromRecord(telemetry as unknown as Record<string, unknown>);
-    const action = deriveAction(throttle, brake, steering);
 
-    return { t: 0, throttle, brake, steering, gear, target_speed: targetSpeed, normalized_position: normalizedPosition, action };
+    return { t: 0, throttle, brake, steering, gear, target_speed: targetSpeed, normalized_position: normalizedPosition };
 };
 
 const buildKeyframesFromPredictions = (predictions: SequencePrediction[]): Keyframe[] => {
@@ -305,7 +295,7 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
 
         if (frames.length === 0) {
             const currentFrame = keyframeFromTelemetry(liveData);
-            return currentFrame ? [{ ...currentFrame, t: 0, action: 'Current' }] : [];
+            return currentFrame ? [{ ...currentFrame, t: 0 }] : [];
         }
 
         return frames;
@@ -454,8 +444,8 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
             const shouldPlay = autoMode || (!autoMode && frames.length > 0);
             setIsPlaying(shouldPlay);
 
-            if (result.sequence_predictions && result.sequence_predictions.length > 0) {
-                const guidanceText = formatGuidanceForChat(result);
+            const guidanceText = extractGuidanceText(raw, result);
+            if (guidanceText) {
                 analysisContext.sendGuidanceToChat(guidanceText);
             }
         } catch (err: any) {
@@ -474,26 +464,20 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
         }
     }, [analysisContext]);
 
-    // Format guidance data for AI chat
-    const formatGuidanceForChat = (guidanceResult: GuidanceResponse): string => {
-        if (!guidanceResult || !guidanceResult.sequence_predictions) return 'AI guidance received';
+    // Keep human-readable copy fully backend-driven.
+    const extractGuidanceText = (raw: GuidanceData, guidanceResult: GuidanceResponse): string | null => {
+        const topLevelMessage = typeof raw.message === 'string' ? raw.message.trim() : '';
+        if (topLevelMessage) {
+            return topLevelMessage;
+        }
 
-        const { current_situation, sequence_predictions, contextual_info } = guidanceResult;
-        const predictionsCount = sequence_predictions.length;
-        const firstPrediction = sequence_predictions[0];
-        const firstAction = firstPrediction ? keyframeFromPrediction(firstPrediction, 0).action : undefined;
+        const resultRecord = guidanceResult as Record<string, unknown>;
+        const resultMessage = typeof resultRecord.message === 'string' ? resultRecord.message.trim() : '';
+        if (resultMessage) {
+            return resultMessage;
+        }
 
-        let base = `AI Guidance: ${predictionsCount} predictions`;
-        if (current_situation?.racing_line) {
-            base += ` (racing line: ${current_situation.racing_line})`;
-        }
-        if (firstAction) {
-            base += `. First: ${firstAction}`;
-        }
-        if (contextual_info?.track_sector) {
-            base += ` at ${contextual_info.track_sector}`;
-        }
-        return base;
+        return null;
     };
 
     // Toggle auto-update mode
@@ -508,6 +492,55 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
             return next;
         });
     }, []);
+
+    const setAutoUpdateMode = useCallback((enabled: boolean) => {
+        setAutoUpdate(enabled);
+        if (enabled) {
+            setIsPlaying(true);
+            const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+            playbackStartRef.current = now - (progressRef.current ?? 0) * 1000;
+        } else {
+            setIsPlaying(false);
+        }
+    }, []);
+
+    useEffect(() => {
+        visualizationController.registerInstanceControls(
+            props.id,
+            'imitation-guidance-chart',
+            [
+                {
+                    name: 'refresh_once',
+                    description: 'Refresh the imitation guidance data once'
+                },
+                {
+                    name: 'set_auto_update',
+                    description: 'Toggle automatic updating of imitation guidance data',
+                    params: { enabled: 'boolean' }
+                }
+            ],
+            {
+                refresh_once: async () => {
+                    await fetchGuidance();
+                    return {
+                        autoUpdate,
+                        status: 'guidance refreshed'
+                    };
+                },
+                set_auto_update: ({ enabled } = {}) => {
+                    const nextEnabled = typeof enabled === 'boolean' ? enabled : true;
+                    setAutoUpdateMode(nextEnabled);
+                    return {
+                        autoUpdate: nextEnabled
+                    };
+                }
+            }
+        );
+
+        return () => {
+            visualizationController.unregisterInstanceControls(props.id);
+        };
+    }, [props.id, fetchGuidance, autoUpdate, setAutoUpdateMode]);
 
     useEffect(() => {
         if (autoUpdate && !guidanceData && !requestInFlightRef.current) {

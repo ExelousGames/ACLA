@@ -19,11 +19,12 @@
     background: var(--gray-2);
     border-radius: 6px;
     padding: 6px;
-    overflow: visible;
+    overflow: auto;
     flex: 1;
     min-height: 0;
-    resize: both;
-    position: relative;
+    display: grid;
+    gap: 12px;
+    align-content: start;
 }
 
 .visualization-container {
@@ -31,17 +32,32 @@
     border-radius: 6px;
     border: 1px solid var(--gray-6);
     box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-    transition: all 0.3s ease-in-out;
+    transition: box-shadow 0.2s ease-in-out, transform 0.2s ease-in-out;
     overflow: hidden;
-    min-width: 200px;
-    min-height: 120px;
-    will-change: transform, left, top, width, height;
+    min-height: 220px;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    position: relative;
+}
+
+.visualization-container.is-dragging {
+    opacity: 0.5;
+    box-shadow: 0 8px 14px rgba(0, 0, 0, 0.2);
+}
+
+.visualization-container.is-drop-target {
+    outline: 2px solid var(--accent-8);
+    outline-offset: -2px;
+}
+
+.visualization-container.is-resizing {
+    user-select: none;
 }
 
 .visualization-container:hover {
     box-shadow: 0 4px 8px rgba(0, 0, 0, 0.15);
     transform: translateY(-1px);
-    z-index: 2;
 }
 
 .visualization-header {
@@ -52,6 +68,8 @@
     background: var(--gray-3);
     border-bottom: 1px solid var(--gray-6);
     cursor: move;
+    user-select: none;
+    touch-action: none;
 }
 
 .drag-handle {
@@ -61,6 +79,24 @@
 
 .drag-handle:active {
     cursor: grabbing;
+}
+
+.visualization-resize-handle {
+    position: absolute;
+    right: 6px;
+    bottom: 6px;
+    width: 14px;
+    height: 14px;
+    border-right: 2px solid var(--gray-8);
+    border-bottom: 2px solid var(--gray-8);
+    opacity: 0.6;
+    cursor: nwse-resize;
+    border-bottom-right-radius: 2px;
+    touch-action: none;
+}
+
+.visualization-resize-handle:hover {
+    opacity: 1;
 }
 
 .empty-state {
@@ -86,20 +122,11 @@
 
     .visualizations-container {
         padding: 4px;
+        gap: 8px;
+        grid-template-columns: 1fr !important;
     }
 
     .visualization-container {
-        position: relative !important;
-        left: 0 !important;
-        top: 0 !important;
-        width: 100% !important;
-        margin-bottom: 12px;
-        height: 200px !important;
-    }
-
-    .visualizations-container {
-        display: flex;
-        flex-direction: column;
-        gap: 12px;
+        min-height: 200px;
     }
 }

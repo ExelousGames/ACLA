@@ -3,7 +3,7 @@ import { Box, Flex, Card, Separator } from '@radix-ui/themes';
 import AiChat from '../ai-chat/ai-chat';
 import { AnalysisContext } from '../analysis-context';
 import DynamicVisualizationManager from '../visualization/DynamicVisualizationManager';
-import '../visualization'; // Initialize visualizations
+import '../visualization/VisualizationRegistry'; // Initialize visualizations
 import './session-analysis-split.css';
 
 const SessionAnalysisSplit: React.FC = () => {
