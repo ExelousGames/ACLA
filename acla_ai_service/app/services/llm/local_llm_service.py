@@ -23,11 +23,6 @@ import torch
 from torch.utils.data import Dataset
 
 try:
-    from llama_cpp import Llama
-except ImportError:
-    Llama = None
-
-try:
     from transformers import (
         AutoModelForCausalLM,
         AutoModelForImageTextToText,
@@ -169,7 +164,6 @@ class GenerationRequest:
 def _extract_messages(record: Dict[str, Any]) -> Optional[Tuple[str, str, str]]:
     """Extract system/user/assistant text from a normalized prompt/response record."""
     if isinstance(record, Mapping):
-        print("record is Mapping:")
         record = dict(record)
     if not isinstance(record, dict):
         return None
@@ -366,6 +360,48 @@ class LocalTelemetryLLM:
         # Try adjusting your model ID, HF_API_TOKEN or connection
         raise RuntimeError(hint) from cause
 
+    def _resolve_llama_cpp_model_path(self, adapter_path: Optional[Path] = None) -> Path:
+        """Resolve the GGUF file to load for llama.cpp inference."""
+
+        configured_gguf = self.config.model.gguf_file
+        if configured_gguf:
+            configured_path = Path(configured_gguf)
+            if configured_path.exists() and configured_path.is_file():
+                resolved_path = configured_path.resolve()
+                self.config.model.gguf_file = str(resolved_path)
+                return resolved_path
+
+            raise FileNotFoundError(
+                "Configured GGUF file for llama_cpp inference does not exist: "
+                f"{configured_path}"
+            )
+
+        candidate_paths: List[Path] = []
+
+        if adapter_path is not None:
+            adapter_path = Path(adapter_path)
+            if adapter_path.is_file():
+                candidate_paths.append(adapter_path)
+            elif adapter_path.is_dir():
+                matching_files = sorted(adapter_path.glob("*.gguf"))
+                candidate_paths.extend(matching_files)
+
+                adapter_named_gguf = adapter_path / f"{adapter_path.name}.gguf"
+                if adapter_named_gguf.exists():
+                    candidate_paths.insert(0, adapter_named_gguf)
+
+        for candidate_path in candidate_paths:
+            if candidate_path.exists() and candidate_path.is_file():
+                resolved_path = candidate_path.resolve()
+                self.config.model.gguf_file = str(resolved_path)
+                return resolved_path
+
+        searched_locations = [str(path) for path in candidate_paths] or ["<none>"]
+        raise FileNotFoundError(
+            "Unable to locate a GGUF file for llama_cpp inference. "
+            f"Searched: {searched_locations}"
+        )
+
     def _ensure_tokenizer(self) -> None:
         if self.tokenizer is not None:
             return
@@ -449,24 +485,57 @@ class LocalTelemetryLLM:
         if self.config.model.provider == "llama_cpp":
             if for_training:
                 raise ValueError("The 'llama_cpp' provider cannot be used for training. Use 'transformers'.")
-            if Llama is None:
-                raise ImportError("llama-cpp-python is not installed. Please install it to use the llama_cpp provider.")
-            if not self.config.model.gguf_file:
-                raise ValueError("gguf_file must be specified when using llama_cpp provider.")
+            gguf_path = self._resolve_llama_cpp_model_path(adapter_path)
             
-            LOGGER.info("Loading model with llama_cpp from %s", self.config.model.gguf_file)
+            LOGGER.info("Starting native llama-server from %s", gguf_path)
             
-            n_gpu_layers = 0
-            if torch.cuda.is_available():
-                n_gpu_layers = -1
+            import subprocess
+            import socket
+            import time
+            import requests
+
+            # Find an available port
+            sock = socket.socket()
+            sock.bind(('', 0))
+            port = sock.getsockname()[1]
+            sock.close()
+            
+            n_gpu_layers = "-1" if torch.cuda.is_available() else "0"
                 
-            model = Llama(
-                model_path=self.config.model.gguf_file,
-                n_ctx=self.config.training.max_seq_length,
-                n_gpu_layers=n_gpu_layers,
-                verbose=True
-            )
-            return model
+            cmd = [
+                "llama-server",
+                "-m", str(gguf_path),
+                "-c", str(self.config.training.max_seq_length),
+                "--port", str(port),
+                "-ngl", n_gpu_layers,
+                "--host", "127.0.0.1",
+            ]
+            
+            import sys
+            process = subprocess.Popen(cmd, stdout=sys.stdout, stderr=sys.stderr)
+            
+            # Save these so generate() can use it
+            self.llama_url = f"http://127.0.0.1:{port}"
+            self.llama_process = process
+            
+            # Wait for the server to be ready
+            url = f"{self.llama_url}/health"
+            ready = False
+            for _ in range(60):
+                try:
+                    r = requests.get(url, timeout=1)
+                    if r.status_code == 200:
+                        ready = True
+                        break
+                except requests.RequestException:
+                    pass
+                time.sleep(1)
+                
+            if not ready:
+                process.terminate()
+                raise RuntimeError("Failed to start native llama-server. Check logs or local test.")
+                
+            return process
 
         self._ensure_tokenizer()
 
@@ -876,14 +945,10 @@ class LocalTelemetryLLM:
         try:
             tokenized_examples = []
             for idx, example in enumerate(dataset):
-                print(f"[DEBUG] Tokenizing example {idx + 1}...")
                 sys.stdout.flush()
                 result = tokenize_example(example)
                 if not result.get("skip", False):
                     tokenized_examples.append(result)
-                    print(f"[DEBUG] Example {idx + 1} tokenized successfully (not skipped)")
-                else:
-                    print(f"[DEBUG] Example {idx + 1} skipped")
                 sys.stdout.flush()
             
             print(f"[DEBUG] Manual tokenization complete: {len(tokenized_examples)} examples kept")
@@ -977,8 +1042,15 @@ class LocalTelemetryLLM:
                     LOGGER.info("Converting merged model to GGUF format at %s...", gguf_output)
                     try:
                         import subprocess
+                        import os
+                        
+                        convert_script = "/opt/llama.cpp/convert_hf_to_gguf.py"
+                        if not os.path.exists(convert_script):
+                            # Fallback if standard pip install of llama-cpp package provides it
+                            convert_script = "convert_hf_to_gguf.py"
+                            
                         subprocess.run(
-                            ["python3", "/opt/venv/lib/python3.11/site-packages/bin/convert_hf_to_gguf.py", str(merged_path), "--outfile", str(gguf_output), "--outtype", "q8_0"],
+                            ["python3", convert_script, str(merged_path), "--outfile", str(gguf_output), "--outtype", "q8_0"],
                             check=True
                         )
                         LOGGER.info("Successfully exported GGUF file to %s", gguf_output)
@@ -1003,8 +1075,14 @@ class LocalTelemetryLLM:
             LOGGER.info("Converting model to GGUF format at %s...", gguf_output)
             try:
                 import subprocess
+                import os
+                
+                convert_script = "/opt/llama.cpp/convert_hf_to_gguf.py"
+                if not os.path.exists(convert_script):
+                    convert_script = "convert_hf_to_gguf.py"
+                    
                 subprocess.run(
-                    ["python3", "/opt/venv/lib/python3.11/site-packages/bin/convert_hf_to_gguf.py", str(output_dir), "--outfile", str(gguf_output), "--outtype", "q8_0"],
+                    ["python3", convert_script, str(output_dir), "--outfile", str(gguf_output), "--outtype", "q8_0"],
                     check=True
                 )
                 LOGGER.info("Successfully exported GGUF file to %s", gguf_output)
@@ -1042,17 +1120,25 @@ class LocalTelemetryLLM:
         )
 
         if self.config.model.provider == "llama_cpp":
+            import requests
             generation_kwargs = {
-                "max_tokens": request.max_new_tokens or self.config.generation.max_new_tokens,
+                "prompt": prompt,
+                "n_predict": request.max_new_tokens or self.config.generation.max_new_tokens,
                 "temperature": request.temperature or self.config.generation.temperature,
                 "top_p": request.top_p or self.config.generation.top_p,
             }
             
-            output = self.model(
-                prompt,
-                **generation_kwargs,
-            )
-            return output["choices"][0]["text"].strip()
+            try:
+                response = requests.post(
+                    f"{self.llama_url}/completion",
+                    json=generation_kwargs,
+                    timeout=120
+                )
+                response.raise_for_status()
+                data = response.json()
+                return data.get("content", "").strip()
+            except requests.RequestException as e:
+                raise RuntimeError(f"Native llama-server generation failed: {e}")
 
         self._ensure_tokenizer()
 

@@ -52,8 +52,10 @@ def render_subsegment_manager(df, session_id, selected_annotation_key):
         default_start = p_start if is_new else (selected_sub_seg.start_index if getattr(selected_sub_seg, 'start_index', None) is not None else p_start)
         default_end = min(p_start + 10, p_end) if is_new else (selected_sub_seg.end_index if getattr(selected_sub_seg, 'end_index', None) is not None else p_end)
         
-        sub_start = st.number_input("Sub-Segment Start", min_value=p_start, max_value=p_end, value=default_start, key="sub_start")
-        sub_end = st.number_input("Sub-Segment End", min_value=p_start, max_value=p_end, value=default_end, key="sub_end")
+        input_key_suffix = selected_sub_seg.id if not is_new else "new"
+        
+        sub_start = st.number_input("Sub-Segment Start", min_value=p_start, max_value=p_end, value=default_start, key=f"sub_start_{input_key_suffix}")
+        sub_end = st.number_input("Sub-Segment End", min_value=p_start, max_value=p_end, value=default_end, key=f"sub_end_{input_key_suffix}")
         
     with col2:
         default_labels = [] if is_new else selected_sub_seg.labels
@@ -62,17 +64,17 @@ def render_subsegment_manager(df, session_id, selected_annotation_key):
             options=list(LABEL_MAPPING.keys()),
             default=default_labels,
             format_func=lambda x: LABEL_MAPPING.get(str(x), str(x)),
-            key="sub_labels"
+            key=f"sub_labels_{input_key_suffix}"
         )
         
         default_notes = "" if is_new else getattr(selected_sub_seg, 'notes', "")
-        sub_notes = st.text_area("Sub-Segment Notes (Optional)", value=default_notes, key="sub_notes")
+        sub_notes = st.text_area("Sub-Segment Notes (Optional)", value=default_notes, key=f"sub_notes_{input_key_suffix}")
         
         def save_sub_segment_callback():
-            s_start = st.session_state.sub_start
-            s_end = st.session_state.sub_end
-            s_labels = st.session_state.sub_labels
-            s_notes = st.session_state.sub_notes
+            s_start = st.session_state[f"sub_start_{input_key_suffix}"]
+            s_end = st.session_state[f"sub_end_{input_key_suffix}"]
+            s_labels = st.session_state[f"sub_labels_{input_key_suffix}"]
+            s_notes = st.session_state[f"sub_notes_{input_key_suffix}"]
             if s_start >= s_end:
                 st.toast("Error: Start index must be less than end index.", icon="❌")
                 return

@@ -1,65 +1,42 @@
-FROM rocm/dev-ubuntu-24.04:6.4.4-complete
+FROM rocm/pytorch:rocm7.2_ubuntu22.04_py3.11_pytorch_release_2.10.0
 
 # Set timezone to avoid interactive prompt
 ENV DEBIAN_FRONTEND=noninteractive \
     TZ=Etc/UTC
 
-# Install Python 3.11 from source (Launchpad PPA is down)
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    software-properties-common \
-    git \
-    build-essential \
-    wget \
-    libssl-dev \
-    zlib1g-dev \
-    libbz2-dev \
-    libreadline-dev \
-    libsqlite3-dev \
-    libncursesw5-dev \
-    xz-utils \
-    tk-dev \
-    libxml2-dev \
-    libxmlsec1-dev \
-    libffi-dev \
-    liblzma-dev \
-    && wget https://www.python.org/ftp/python/3.11.9/Python-3.11.9.tgz \
-    && tar xzf Python-3.11.9.tgz \
-    && cd Python-3.11.9 \
-    && ./configure --enable-optimizations \
-    && make -j$(nproc) \
-    && make altinstall \
-    && cd .. \
-    && rm -rf Python-3.11.9 Python-3.11.9.tgz \
-    && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
-
-# Setup Virtual Environment
-ENV VIRTUAL_ENV=/opt/venv
-RUN python3.11 -m venv $VIRTUAL_ENV
-ENV PATH="$VIRTUAL_ENV/bin:$PATH"
-
 WORKDIR /app
-
-# Upgrade pip inside the virtual environment
-RUN pip install --upgrade pip
 
 # Set all environment variables for optimization
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    PYTHONOPTIMIZE=1 \
-    HSA_OVERRIDE_GFX_VERSION=11.0.0
+    PYTHONOPTIMIZE=1
 
 # Copy requirements first for better caching
 COPY requirements.amd.txt .
 COPY requirements.common.txt .
 
-# Install PyTorch with ROCm support first
-RUN pip install --no-cache-dir -r requirements.amd.txt
+# Install Python dependencies. The base image already provides Python 3.11,
+# ROCm 7.2, and the matching PyTorch 2.10 stack.
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir -r requirements.common.txt \
+    && pip install --no-cache-dir -r requirements.amd.txt
 
-# Install other dependencies
-RUN pip install --no-cache-dir -r requirements.common.txt
-RUN CMAKE_ARGS='-DGGML_HIP=ON -DAMDGPU_TARGETS=gfx1100;gfx1151' CC=/opt/rocm/llvm/bin/clang CXX=/opt/rocm/llvm/bin/clang++ pip install --no-cache-dir llama-cpp-python
+# Install native llama.cpp with ROCm support
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    cmake \
+    libcurl4-openssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+RUN git clone https://github.com/ROCm/llama.cpp /opt/llama.cpp \
+    && cd /opt/llama.cpp \
+    && HIPCXX="$(hipconfig -l)/clang" HIP_PATH="$(hipconfig -R)" \
+       cmake -S . -B build -DGGML_HIP=ON -DAMDGPU_TARGETS='gfx1151' \
+       -DCMAKE_BUILD_TYPE=Release -DLLAMA_CURL=ON \
+    && cmake --build build --config Release -j$(nproc) \
+    && ln -s /opt/llama.cpp/build/bin/llama-server /usr/local/bin/llama-server \
+    && ln -s /opt/llama.cpp/build/bin/llama-cli /usr/local/bin/llama-cli
 
 # Copy the rest of the application
 COPY . .

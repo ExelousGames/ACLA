@@ -19,7 +19,7 @@ def render_track_map(df, viz_start_idx, viz_end_idx, session_id):
     if has_player_pos or has_opponent_pos or has_expert_pos:
         # View controls
         st.caption("Axis Settings")
-        col_ctrl1, col_ctrl2, col_ctrl3, col_ctrl4 = st.columns(4)
+        col_ctrl1, col_ctrl2, col_ctrl3, col_ctrl4, col_ctrl5 = st.columns(5)
         with col_ctrl1:
             invert_x = st.checkbox("Invert X", value=False, key="detailed_invert_x")
         with col_ctrl2:
@@ -27,6 +27,8 @@ def render_track_map(df, viz_start_idx, viz_end_idx, session_id):
         with col_ctrl3:
             invert_z = st.checkbox("Invert Z", value=False, key="detailed_invert_z")
         with col_ctrl4:
+            only_player = st.checkbox("Only Player", value=False, key="detailed_only_player")
+        with col_ctrl5:
             traj_color_mode = st.selectbox(
                 "Trajectory Color", 
                 ["Gas/Brake", "Balance (Oversteer/Understeer)", "Solid Green"], 
@@ -163,7 +165,7 @@ def render_track_map(df, viz_start_idx, viz_end_idx, session_id):
                 map_data.append(max_curvature_data)
 
         # Add Expert Position
-        if has_expert_pos:
+        if has_expert_pos and not only_player:
             # End Position
             e_data = {
                 "x": current_row["expert_optimal_player_pos_x"],
@@ -203,27 +205,28 @@ def render_track_map(df, viz_start_idx, viz_end_idx, session_id):
                 map_data.append(e_max_curvature_data)
         
         # Add Opponent Positions
-        for i in range(1, 6):
-            opp_x_col = f"Opponent_{i}_pos_x"
-            opp_y_col = f"Opponent_{i}_pos_y"
-            opp_z_col = f"Opponent_{i}_pos_z"
-            opp_id_col = f"Opponent_{i}_car_id"
-            
-            if opp_x_col in df.columns and opp_y_col in df.columns:
-                # Filter out inactive opponents (usually 0,0 coordinates)
-                if current_row[opp_x_col] != 0 or current_row[opp_y_col] != 0:
-                    opp_id = current_row[opp_id_col] if opp_id_col in df.columns else f"Opponent {i}"
-                    o_data = {
-                        "x": current_row[opp_x_col],
-                        "y": current_row[opp_y_col],
-                        "Type": "Opponent",
-                        "ID": str(opp_id),
-                        "Marker": "End",
-                        "Index": selected_time_idx
-                    }
-                    if opp_z_col in df.columns:
-                        o_data["z"] = current_row[opp_z_col]
-                    map_data.append(o_data)
+        if not only_player:
+            for i in range(1, 6):
+                opp_x_col = f"Opponent_{i}_pos_x"
+                opp_y_col = f"Opponent_{i}_pos_y"
+                opp_z_col = f"Opponent_{i}_pos_z"
+                opp_id_col = f"Opponent_{i}_car_id"
+                
+                if opp_x_col in df.columns and opp_y_col in df.columns:
+                    # Filter out inactive opponents (usually 0,0 coordinates)
+                    if current_row[opp_x_col] != 0 or current_row[opp_y_col] != 0:
+                        opp_id = current_row[opp_id_col] if opp_id_col in df.columns else f"Opponent {i}"
+                        o_data = {
+                            "x": current_row[opp_x_col],
+                            "y": current_row[opp_y_col],
+                            "Type": "Opponent",
+                            "ID": str(opp_id),
+                            "Marker": "End",
+                            "Index": selected_time_idx
+                        }
+                        if opp_z_col in df.columns:
+                            o_data["z"] = current_row[opp_z_col]
+                        map_data.append(o_data)
         
         if map_data:
             map_df = pd.DataFrame(map_data)
@@ -263,12 +266,15 @@ def render_track_map(df, viz_start_idx, viz_end_idx, session_id):
                     player_seg_color = (map_plot_df["Physics_gas"] - map_plot_df["Physics_brake"]) if "Physics_gas" in map_plot_df.columns and "Physics_brake" in map_plot_df.columns else "green"
                     p_cmin, p_cmax, p_cscale = -1, 1, "RdYlGn"
                 elif traj_color_mode == "Balance (Oversteer/Understeer)":
+                    understeer_amplifier = 3.0
                     if "Physics_slip_angle_rear_left" in context_plot_df.columns and "Physics_slip_angle_front_left" in context_plot_df.columns:
-                        player_ctx_color = ((context_plot_df["Physics_slip_angle_rear_left"].abs() + context_plot_df["Physics_slip_angle_rear_right"].abs()) / 2) - ((context_plot_df["Physics_slip_angle_front_left"].abs() + context_plot_df["Physics_slip_angle_front_right"].abs()) / 2)
+                        ctx_bal = ((context_plot_df["Physics_slip_angle_rear_left"].abs() + context_plot_df["Physics_slip_angle_rear_right"].abs()) / 2) - ((context_plot_df["Physics_slip_angle_front_left"].abs() + context_plot_df["Physics_slip_angle_front_right"].abs()) / 2)
+                        player_ctx_color = np.where(ctx_bal < 0, ctx_bal * understeer_amplifier, ctx_bal)
                     else:
                         player_ctx_color = "green"
                     if "Physics_slip_angle_rear_left" in map_plot_df.columns and "Physics_slip_angle_front_left" in map_plot_df.columns:
-                        player_seg_color = ((map_plot_df["Physics_slip_angle_rear_left"].abs() + map_plot_df["Physics_slip_angle_rear_right"].abs()) / 2) - ((map_plot_df["Physics_slip_angle_front_left"].abs() + map_plot_df["Physics_slip_angle_front_right"].abs()) / 2)
+                        seg_bal = ((map_plot_df["Physics_slip_angle_rear_left"].abs() + map_plot_df["Physics_slip_angle_rear_right"].abs()) / 2) - ((map_plot_df["Physics_slip_angle_front_left"].abs() + map_plot_df["Physics_slip_angle_front_right"].abs()) / 2)
+                        player_seg_color = np.where(seg_bal < 0, seg_bal * understeer_amplifier, seg_bal)
                     else:
                         player_seg_color = "green"
                     p_cmin, p_cmax, p_cscale = -0.1, 0.1, "RdBu_r"
@@ -308,7 +314,7 @@ def render_track_map(df, viz_start_idx, viz_end_idx, session_id):
                     ))
 
             # Expert
-            if has_expert_pos:
+            if has_expert_pos and not only_player:
                 show_gas_brake_exp = traj_color_mode == "Gas/Brake"
                 expert_ctx_color = (context_plot_df["expert_optimal_throttle"] - context_plot_df["expert_optimal_brake"]) if show_gas_brake_exp and "expert_optimal_throttle" in context_plot_df.columns and "expert_optimal_brake" in context_plot_df.columns else "blue"
                 expert_seg_color = (map_plot_df["expert_optimal_throttle"] - map_plot_df["expert_optimal_brake"]) if show_gas_brake_exp and "expert_optimal_throttle" in map_plot_df.columns and "expert_optimal_brake" in map_plot_df.columns else "blue"
@@ -345,48 +351,49 @@ def render_track_map(df, viz_start_idx, viz_end_idx, session_id):
                     ))
             
             # Opponents
-            for i in range(1, 6):
-                opp_x_col = f"Opponent_{i}_pos_x"
-                opp_y_col = f"Opponent_{i}_pos_y"
-                opp_z_col = f"Opponent_{i}_pos_z"
-                
-                if opp_x_col in df.columns and opp_y_col in df.columns:
-                    # Filter out inactive (0,0) points for cleaner trajectories
+            if not only_player:
+                for i in range(1, 6):
+                    opp_x_col = f"Opponent_{i}_pos_x"
+                    opp_y_col = f"Opponent_{i}_pos_y"
+                    opp_z_col = f"Opponent_{i}_pos_z"
                     
-                    # Context
-                    if not context_plot_df.empty:
-                        opp_ctx = context_plot_df[(context_plot_df[opp_x_col] != 0) | (context_plot_df[opp_y_col] != 0)]
-                        if not opp_ctx.empty:
+                    if opp_x_col in df.columns and opp_y_col in df.columns:
+                        # Filter out inactive (0,0) points for cleaner trajectories
+                        
+                        # Context
+                        if not context_plot_df.empty:
+                            opp_ctx = context_plot_df[(context_plot_df[opp_x_col] != 0) | (context_plot_df[opp_y_col] != 0)]
+                            if not opp_ctx.empty:
+                                if opp_z_col in df.columns:
+                                    fig_map.add_trace(go.Scatter3d(
+                                        x=opp_ctx[opp_x_col], 
+                                        y=opp_ctx[opp_y_col],
+                                        z=opp_ctx[opp_z_col],
+                                        customdata=opp_ctx.index,
+                                        hovertemplate="Index: %{customdata}<br>x: %{x}<br>y: %{y}<br>z: %{z}<extra></extra>",
+                                        mode="lines",
+                                        name=f"Opponent {i} (Context)",
+                                        line=dict(color="aqua", width=3),
+                                        opacity=0.3,
+                                        showlegend=True
+                                    ))
+
+                        # Segment
+                        opp_df = map_plot_df[(map_plot_df[opp_x_col] != 0) | (map_plot_df[opp_y_col] != 0)]
+                        if not opp_df.empty:
                             if opp_z_col in df.columns:
                                 fig_map.add_trace(go.Scatter3d(
-                                    x=opp_ctx[opp_x_col], 
-                                    y=opp_ctx[opp_y_col],
-                                    z=opp_ctx[opp_z_col],
-                                    customdata=opp_ctx.index,
+                                    x=opp_df[opp_x_col], 
+                                    y=opp_df[opp_y_col],
+                                    z=opp_df[opp_z_col],
+                                    customdata=opp_df.index,
                                     hovertemplate="Index: %{customdata}<br>x: %{x}<br>y: %{y}<br>z: %{z}<extra></extra>",
                                     mode="lines",
-                                    name=f"Opponent {i} (Context)",
-                                    line=dict(color="aqua", width=3),
-                                    opacity=0.3,
+                                    name=f"Opponent {i} Trajectory",
+                                    line=dict(color="red", width=5),
+                                    opacity=1.0,
                                     showlegend=True
                                 ))
-
-                    # Segment
-                    opp_df = map_plot_df[(map_plot_df[opp_x_col] != 0) | (map_plot_df[opp_y_col] != 0)]
-                    if not opp_df.empty:
-                        if opp_z_col in df.columns:
-                            fig_map.add_trace(go.Scatter3d(
-                                x=opp_df[opp_x_col], 
-                                y=opp_df[opp_y_col],
-                                z=opp_df[opp_z_col],
-                                customdata=opp_df.index,
-                                hovertemplate="Index: %{customdata}<br>x: %{x}<br>y: %{y}<br>z: %{z}<extra></extra>",
-                                mode="lines",
-                                name=f"Opponent {i} Trajectory",
-                                line=dict(color="red", width=5),
-                                opacity=1.0,
-                                showlegend=True
-                            ))
             
             fig_map.update_layout(uirevision=session_id, height=800)
             st.plotly_chart(fig_map, width='stretch')

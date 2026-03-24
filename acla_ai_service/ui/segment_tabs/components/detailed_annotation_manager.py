@@ -20,7 +20,15 @@ def render_annotation_manager(df, session_id, selected_annotation_key, numeric_c
             return
             
         # 1. Select Mode/Annotation
-        annotation_options = list(range(len(st.session_state.current_annotations)))
+        existing_ids = {getattr(a, 'id', None) for a in st.session_state.current_annotations if getattr(a, 'id', None)}
+        annotation_options = [
+            i for i, ann in enumerate(st.session_state.current_annotations) 
+            if not getattr(ann, 'parent_id', None) or getattr(ann, 'parent_id', None) not in existing_ids
+        ]
+        
+        if not annotation_options:
+            st.warning("No root segments found in this session.")
+            return
         
     
     
@@ -215,36 +223,51 @@ def render_annotation_manager(df, session_id, selected_annotation_key, numeric_c
             ann.telemetry_data = telemetry_data
 
             if go_next:
-                if isinstance(selected_option, int) and selected_option + 1 < len(st.session_state.current_annotations):
-                    st.session_state.temp_success = f"Updated #{selected_option}. Moving to #{selected_option + 1}."
-                    update_selection_state(selected_option + 1)
-                else:
-                    st.session_state.temp_success = "Updated annotation. (End of list)"
+                root_options = [i for i, a in enumerate(st.session_state.current_annotations) if not getattr(a, 'parent_id', None)]
+                try:
+                    curr_idx = root_options.index(selected_option)
+                    if curr_idx + 1 < len(root_options):
+                        next_option = root_options[curr_idx + 1]
+                        st.session_state.temp_success = f"Updated #{selected_option}. Moving to #{next_option}."
+                        update_selection_state(next_option)
+                    else:
+                        st.session_state.temp_success = "Updated annotation. (End of list)"
+                except ValueError:
+                    st.session_state.temp_success = "Updated annotation."
             else:
                 st.session_state.temp_success = "Annotation updated!"
             
             save_annotations(session_id, st.session_state.current_annotations, selected_annotation_key)
     
         def handle_delete():
-            """Delete the currently selected annotation and move to the next one."""
+            """Delete the currently selected annotation, its children, and move to the next one."""
             if isinstance(selected_option, int) and selected_option < len(st.session_state.current_annotations):
                 # Remove the annotation
                 deleted_ann = st.session_state.current_annotations.pop(selected_option)
                 labels = ", ".join(get_display_labels(deleted_ann.labels))
                 
+                # Remove any child segments
+                original_len = len(st.session_state.current_annotations)
+                st.session_state.current_annotations = [
+                    ann for ann in st.session_state.current_annotations
+                    if not (hasattr(ann, "parent_id") and getattr(ann, "parent_id") == deleted_ann.id)
+                ]
+                children_deleted = original_len - len(st.session_state.current_annotations)
+                child_msg = f" and {children_deleted} child segment(s)" if children_deleted > 0 else ""
+                
                 # Determine next selection
-                if len(st.session_state.current_annotations) == 0:
+                # We need to recalculate annotation_options because indexes might have changed
+                root_options = [i for i, ann in enumerate(st.session_state.current_annotations) if not getattr(ann, 'parent_id', None)]
+
+                if len(root_options) == 0:
                     # No annotations left
                     update_selection_state(0)
-                    st.session_state.temp_success = f"Deleted annotation ({labels}). No annotations remaining."
-                elif selected_option >= len(st.session_state.current_annotations):
-                    # Was last item, go to new last item
-                    update_selection_state(len(st.session_state.current_annotations) - 1)
-                    st.session_state.temp_success = f"Deleted annotation ({labels}). Moved to previous annotation."
+                    st.session_state.temp_success = f"Deleted annotation ({labels}){child_msg}. No annotations remaining."
                 else:
-                    # Move to next (which is now at same index)
-                    update_selection_state(selected_option)
-                    st.session_state.temp_success = f"Deleted annotation ({labels}). Moved to next annotation."
+                    # Try to select the same index, or the last available if we were at the end
+                    next_idx = root_options[min(selected_option, len(root_options) - 1)]
+                    update_selection_state(next_idx)
+                    st.session_state.temp_success = f"Deleted annotation ({labels}){child_msg}. Moved to next annotation."
                 
                 # Save changes
                 save_annotations(session_id, st.session_state.current_annotations, selected_annotation_key)

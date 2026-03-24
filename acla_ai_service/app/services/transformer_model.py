@@ -1928,7 +1928,7 @@ class ExpertActionTrainer:
         
         # Learning rate scheduler
         self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            self.optimizer, mode='min', factor=0.5, patience=10, verbose=True
+            self.optimizer, mode='min', factor=0.5, patience=10
         )
         
         # Loss function - will be contextual weighted loss if context available

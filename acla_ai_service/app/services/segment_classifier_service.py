@@ -490,7 +490,7 @@ class SegmentClassifierService:
         # Added weight_decay for regularization
         optimizer = optim.Adam(self.model.parameters(), lr=learning_rate, weight_decay=1e-4)
         # Scheduler to reduce LR when validation metric plateaus
-        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=2, verbose=True)
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=2)
                 
         best_val_loss = float('inf')
         best_model_state = None

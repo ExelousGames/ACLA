@@ -1,7 +1,2 @@
--r requirements.common.txt
---index-url https://download.pytorch.org/whl/rocm6.2
---extra-index-url https://pypi.org/simple
-torch==2.5.1
-torchvision==0.20.1
-torchaudio==2.5.1
+# PyTorch is provided by the rocm/pytorch base image.
 bitsandbytes

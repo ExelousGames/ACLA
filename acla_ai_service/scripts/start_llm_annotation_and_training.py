@@ -44,6 +44,11 @@ def main():
         
     print(f"Found dataset: {dataset_path}")
     print("We will use it to fine-tune a small LLM fit for generating 100-word concise answers.")
+
+    confirmation = input("Start training now? [y/N]: ").strip().lower()
+    if confirmation not in {"y", "yes"}:
+        print("Training canceled.")
+        sys.exit(0)
     
     # Qwen2.5-1.5B-Instruct is highly recommended as a small yet powerful instruct model 
     # well-suited for short reasoning and 100-word responses without excessive verbosity.

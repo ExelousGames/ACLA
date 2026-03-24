@@ -137,8 +137,8 @@ class Full_dataset_TelemetryMLService:
                 load_in_4bit=False,
                 load_in_8bit=False,
                 provider="llama_cpp",
-                adapter="telemetry_descriptions_v1_train_20260318_171012",
-                gguf_file=str(self.models_directory / "llm_adapters" / "telemetry_descriptions_v1_train_20260318_171012" / "telemetry_descriptions_v1_train_20260318_171012.gguf")
+                adapter="telemetry_descriptions_v1_train_20260320_142311",
+                gguf_file=str(self.models_directory / "llm_adapters" / "telemetry_descriptions_v1_train_20260320_142311" / "telemetry_descriptions_v1_train_20260320_142311.gguf")
             ),
             training=TrainingConfig(
                 max_seq_length=8192
@@ -287,20 +287,10 @@ class Full_dataset_TelemetryMLService:
                 "status": "success",
                 "timestamp": datetime.now().isoformat(),
                 "response_time_ms": response_time_ms,
-                "sequence_predictions": [],
-                "predicted_labels": predicted_labels,
-                "future_window": future_payload,
-                "transformer": {
-                    "metadata": None,
-                    "prediction": None,
-                },
                 "llm": {
-                    "metadata": llm_metadata,
-                    "raw_output": output_text,
-                },
-                "prompt": {
                     "user": user_prompt,
-                },
+                    "raw_output": output_text,
+                }
             }
 
         except Exception as error:

@@ -5,6 +5,9 @@ from pathlib import Path
 import argparse
 import logging
 from datetime import datetime
+import faulthandler
+
+faulthandler.enable()
 
 # Add parent directory to path to allow imports
 # parents[0] = scripts
