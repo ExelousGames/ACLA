@@ -833,7 +833,7 @@ class FeatureProcessor:
 
         # Handle missing values
         numeric_columns = processed_df.select_dtypes(include=['number']).columns
-        processed_df[numeric_columns] = processed_df[numeric_columns].fillna(0)
+        processed_df[numeric_columns] = processed_df[numeric_columns].fillna(0).infer_objects(copy=False)
 
         # Convert string boolean values to actual booleans
         boolean_features = [col for col in processed_df.columns if
@@ -845,7 +845,7 @@ class FeatureProcessor:
                     processed_df[col] = processed_df[col].map({
                         'True': True, 'False': False, 'true': True, 'false': False,
                         '1': True, '0': False, 1: True, 0: False
-                    }).fillna(False)
+                    }).fillna(False).infer_objects(copy=False)
 
         # Round float columns to six decimal places
         float_columns = processed_df.select_dtypes(include=['float']).columns

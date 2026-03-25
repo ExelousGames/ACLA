@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader, TensorDataset, IterableDataset
 from sklearn.preprocessing import MultiLabelBinarizer, StandardScaler
@@ -39,29 +40,58 @@ def compute_derived_features(df: pd.DataFrame) -> pd.DataFrame:
     df_combined = pd.concat([df, df_diff], axis=1)
     return df_combined
 
-class LSTMModel(nn.Module):
-    def __init__(self, input_dim, hidden_dim, output_dim, num_layers=2):
-        super(LSTMModel, self).__init__()
-        self.hidden_dim = hidden_dim
-        self.num_layers = num_layers
-        # Bidirectional allows the model to see future context for each timestep
-        self.lstm = nn.LSTM(input_dim, hidden_dim, num_layers, batch_first=True, dropout=0.2, bidirectional=True)
-        # Output dim * 2 because of bidirectionality
-        self.fc = nn.Linear(hidden_dim * 2, output_dim)
+class FocalLoss(nn.Module):
+    def __init__(self, alpha=1.0, gamma=2.0, reduction='none', pos_weight=None):
+        super(FocalLoss, self).__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+        self.reduction = reduction
+        self.pos_weight = pos_weight
+
+    def forward(self, inputs, targets):
+        bce_loss = F.binary_cross_entropy_with_logits(
+            inputs, targets, reduction='none', pos_weight=self.pos_weight
+        )
+        pt = torch.exp(-bce_loss)
+        focal_loss = self.alpha * (1 - pt) ** self.gamma * bce_loss
+
+        if self.reduction == 'mean':
+            return focal_loss.mean()
+        elif self.reduction == 'sum':
+            return focal_loss.sum()
+        else:
+            return focal_loss
+
+class CNN1DModel(nn.Module):
+    def __init__(self, input_dim, hidden_dim, output_dim, num_layers=3):
+        super(CNN1DModel, self).__init__()
+        
+        layers = []
+        in_channels = input_dim
+        
+        # Using padding='same' to keep sequence length equal
+        for _ in range(num_layers):
+            layers.append(nn.Conv1d(in_channels, hidden_dim, kernel_size=3, padding='same'))
+            layers.append(nn.BatchNorm1d(hidden_dim))
+            layers.append(nn.ReLU())
+            layers.append(nn.Dropout(0.2))
+            in_channels = hidden_dim
+            
+        self.features = nn.Sequential(*layers)
+        self.fc = nn.Linear(hidden_dim, output_dim)
 
     def forward(self, x, hidden=None):
         # x: (batch, seq_len, input_dim)
-        # Initialize hidden state with zeros if not provided
-        if hidden is None:
-            # num_layers * 2 for bidirectional
-            h0 = torch.zeros(self.num_layers * 2, x.size(0), self.hidden_dim).to(x.device)
-            c0 = torch.zeros(self.num_layers * 2, x.size(0), self.hidden_dim).to(x.device)
-            hidden = (h0, c0)
+        # Conv1d expects (batch, channels, seq_len)
+        x = x.transpose(1, 2)
         
-        out, hidden = self.lstm(x, hidden)
-        # out: (batch, seq_len, hidden_dim * 2)
+        out = self.features(x)
+        
+        # out: (batch, channels, seq_len) -> (batch, seq_len, channels)
+        out = out.transpose(1, 2)
         out = self.fc(out)
-        return out, hidden
+        
+        return out, None
 
 class StreamingSegmentDataset(IterableDataset):
     def __init__(self, store, cache_key, mlb, scaler, max_length, expected_features):
@@ -484,8 +514,8 @@ class SegmentClassifierService:
         hidden_dim = 256
         num_layers = 3
         
-        self.model = LSTMModel(input_dim, hidden_dim, output_dim, num_layers=num_layers).to(self.device)
-        criterion = nn.BCEWithLogitsLoss(reduction='none', pos_weight=self.pos_weight)
+        self.model = CNN1DModel(input_dim, hidden_dim, output_dim, num_layers=num_layers).to(self.device)
+        criterion = FocalLoss(reduction='none', pos_weight=self.pos_weight)
         # Added weight_decay for regularization
         optimizer = optim.Adam(self.model.parameters(), lr=learning_rate, weight_decay=1e-4)
         # Scheduler to reduce LR when validation metric plateaus
@@ -646,6 +676,18 @@ class SegmentClassifierService:
                 target_names=target_names, 
                 zero_division=0
             ))
+            
+            print("\nPer-class Metrics (Validation Set - Per Timestep):")
+            for i, label in enumerate(self.mlb.classes_):
+                label_key = str(i)
+
+                if label_key in report_dict:
+                    metrics = report_dict[label_key]
+                    score = metrics['precision']
+                    support = metrics['support']  # Number of timesteps, not segments
+                    
+                    label_name = LABEL_MAPPING.get(label, str(label))
+                    print(f"{label_name}: Precision={score:.4f}, Support={support} timesteps")
 
         # Save model and artifacts
         torch.save(self.model.state_dict(), self.model_path)
@@ -687,7 +729,7 @@ class SegmentClassifierService:
             input_dim = self.scaler.mean_.shape[0]
             output_dim = len(self.mlb.classes_)
             
-            self.model = LSTMModel(input_dim, hidden_dim, output_dim, num_layers=num_layers).to(self.device)
+            self.model = CNN1DModel(input_dim, hidden_dim, output_dim, num_layers=num_layers).to(self.device)
             self.model.load_state_dict(torch.load(self.model_path, map_location=self.device, weights_only=True))
             self.model.eval()
             return True

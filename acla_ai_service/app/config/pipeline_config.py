@@ -19,7 +19,7 @@ class PipelineConfig:
     _training_segments_prefix: str = "training_segments_"
     
     # Cleanup flags
-    session_cleanup: bool = False
+    session_cleanup: bool = True
     processed_session_cleanup: bool = True
     segment_cleanup: bool = True
     top_laps_cleanup: bool = True

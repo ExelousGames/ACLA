@@ -75,6 +75,9 @@ LABEL_MAPPING = {
     "MS47": "Understeering when accelerating",
     "MS48": "Gear Too low when accelerating",
     "MS49": "Gear Too high when accelerating",
+    "MS50": "Off track at entry",
+    "MS51": "Off track at exit",
+    "MS52": "Off track in the straight",
               ################### Corner name ###################
     "brands_hatch":"Brands Hatch",
     "brands_hatch1":"Brabham Straight",
@@ -155,7 +158,7 @@ LABEL_CATEGORIES = {
     "RM":["RM1", "RM2", "RM5","RM6","RM7","RM8","RM9","RM10","RM11"],
     "brands_hatch":["brands_hatch1","brands_hatch2","brands_hatch3","brands_hatch4","brands_hatch5","brands_hatch6","brands_hatch7","brands_hatch8","brands_hatch9","brands_hatch10","brands_hatch11","brands_hatch12","brands_hatch13","brands_hatch14","brands_hatch15","brands_hatch16","brands_hatch17","brands_hatch18","brands_hatch19"],
     "silverstone":["silverstone1","silverstone2","silverstone3","silverstone4","silverstone5","silverstone6","silverstone7","silverstone8","silverstone9","silverstone10","silverstone11","silverstone12","silverstone13","silverstone14","silverstone15","silverstone16","silverstone17","silverstone18","silverstone20","silverstone21","silverstone19"],
-    "MS":["MS1","MS2","MS3","MS4","MS5","MS6","MS7","MS8","MS9","MS10","MS11","MS12","MS13","MS14","MS15","MS16","MS17","MS18","MS19","MS20","MS21","MS22","MS23","MS24","MS25","MS26","MS27","MS28","MS29","MS30","MS31","MS32","MS33","MS34","MS35","MS36","MS37","MS38","MS39","MS40","MS41","MS42","MS43","MS44","MS45","MS46","MS47","MS48","MS49"],
+    "MS":["MS1","MS2","MS3","MS4","MS5","MS6","MS7","MS8","MS9","MS10","MS11","MS12","MS13","MS14","MS15","MS16","MS17","MS18","MS19","MS20","MS21","MS22","MS23","MS24","MS25","MS26","MS27","MS28","MS29","MS30","MS31","MS32","MS33","MS34","MS35","MS36","MS37","MS38","MS39","MS40","MS41","MS42","MS43","MS44","MS45","MS46","MS47","MS48","MS49","MS50","MS51","MS52"],
     "Segment Type": ["ST1", "ST2", "ST3", "ST4", "ST5", "ST6"]
 }
 
