@@ -161,7 +161,6 @@ class SegmentClassifierService:
         self.mlb = None 
         self.scaler = None
         self.pos_weight = None
-        self.trusted_labels = None
         self.label_counts = {}
         
         # Device selection with explicit AMD/NVIDIA support check
@@ -647,33 +646,6 @@ class SegmentClassifierService:
                 target_names=target_names, 
                 zero_division=0
             ))
-            
-            trusted_labels = []
-            
-            min_accuracy = 0.80
-            print("\nPer-class Accuracy (Validation Set - Per Timestep):")
-            for i, label in enumerate(self.mlb.classes_):
-                label_key = str(i)
-
-                if label_key in report_dict:
-                    metrics = report_dict[label_key]
-                    # Use precision as the accuracy trust metric
-                    score = metrics['precision']
-                    support = metrics['support']  # Number of timesteps, not segments
-                    
-                    label_name = LABEL_MAPPING.get(label, str(label))
-                    print(f"{label_name}: Accuracy={score:.4f}, Support={support} timesteps")
-                    
-                    if score >= min_accuracy:
-                        trusted_labels.append(label)
-            
-            print(f"\nTrusted labels (>= {min_accuracy*100:.0f}% accuracy): {trusted_labels}")
-
-            # Save trusted labels
-            with open(self.models_directory / "segment_trusted_labels.json", "w") as f:
-                # Convert numpy types to python native types
-                serializable_labels = [l.item() if hasattr(l, 'item') else l for l in trusted_labels]
-                json.dump(serializable_labels, f)
 
         # Save model and artifacts
         torch.save(self.model.state_dict(), self.model_path)
@@ -700,14 +672,6 @@ class SegmentClassifierService:
             self.scaler = joblib.load(self.scaler_path)
             if self.pos_weight_path.exists():
                 self.pos_weight = torch.load(self.pos_weight_path, map_location=self.device, weights_only=True)
-            
-            # Load trusted labels
-            trusted_labels_path = self.models_directory / "segment_trusted_labels.json"
-            if trusted_labels_path.exists():
-                with open(trusted_labels_path, "r") as f:
-                    self.trusted_labels = set(json.load(f))
-            else:
-                self.trusted_labels = None
 
             # Load config if exists
             hidden_dim = 256
@@ -782,8 +746,6 @@ class SegmentClassifierService:
         labels = []
         for i, p in enumerate(probs):
             label = self.mlb.classes_[i]
-            if self.trusted_labels is not None and label not in self.trusted_labels:
-                continue
                 
             if p > threshold:
                 labels.append(label)
@@ -892,12 +854,6 @@ class SegmentClassifierService:
         # Apply smoothing to probabilities to reduce jitter and enforce segment continuity
         # Rolling mean with a window of 5 steps
         probs_df = pd.DataFrame(probs, columns=self.mlb.classes_)
-
-        # Filter untrusted labels
-        if self.trusted_labels is not None:
-             untrusted = [l for l in self.mlb.classes_ if l not in self.trusted_labels]
-             if untrusted:
-                probs_df[untrusted] = 0.0
 
         probs_smoothed = probs_df.rolling(window=5, center=True, min_periods=1).mean().values
             
