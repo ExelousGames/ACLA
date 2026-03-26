@@ -228,10 +228,13 @@ def render_annotation_manager(df, session_id, selected_annotation_key, numeric_c
                         update_selection_state(next_option)
                     else:
                         st.session_state.temp_success = "Updated annotation. (End of list)"
+                        update_selection_state(selected_option)
                 except ValueError:
                     st.session_state.temp_success = "Updated annotation."
+                    update_selection_state(selected_option)
             else:
                 st.session_state.temp_success = "Annotation updated!"
+                update_selection_state(selected_option)
             
             save_annotations(session_id, st.session_state.current_annotations, selected_annotation_key)
             st.rerun()
