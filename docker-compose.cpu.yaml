@@ -1,0 +1,10 @@
+services:
+  ai_service:
+    build:
+      context: ./acla_ai_service
+      dockerfile: dev.cpu.dockerfile
+    environment:
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - GOOGLE_APPLICATION_CREDENTIALS=${GOOGLE_APPLICATION_CREDENTIALS}
+      - GEMINI_BATCH_GCS_BUCKET=${GEMINI_BATCH_GCS_BUCKET}
+    network_mode: "bridge"

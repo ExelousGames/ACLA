@@ -18,8 +18,8 @@ elif [ -e /dev/kfd ] && [ -e /dev/dri ] && command -v rocminfo &> /dev/null; the
     echo "✅ AMD GPU detected (ROCm)."
     COMPOSE_OVERRIDE_ARGS="-f docker-compose.amd.yaml"
 else
-    echo "⚠️  No supported GPU detected. Defaulting to NVIDIA profile."
-    COMPOSE_OVERRIDE_ARGS="-f docker-compose.nvidia.yaml"
+    echo "⚠️  No supported GPU detected. Defaulting to CPU profile."
+    COMPOSE_OVERRIDE_ARGS="-f docker-compose.cpu.yaml"
 fi
 
 # Stop and remove only the ai_service container
