@@ -10,9 +10,11 @@ def render_feature_visualization(df, viz_start_idx, viz_end_idx, session_id, num
         st.session_state.detailed_graph_ids = [0, 1, 2, 3, 4, 5]
         st.session_state.detailed_next_graph_id = 6
 
-    if st.button("Add Graph", key="detailed_add_graph_btn"):
+    def on_add_graph():
         st.session_state.detailed_graph_ids.append(st.session_state.detailed_next_graph_id)
         st.session_state.detailed_next_graph_id += 1
+
+    st.button("Add Graph", key="detailed_add_graph_btn", on_click=on_add_graph)
 
     graphs_to_remove = []
 

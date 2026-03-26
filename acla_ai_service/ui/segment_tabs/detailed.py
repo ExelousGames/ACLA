@@ -53,6 +53,13 @@ def render_detailed_labeling(selected_annotation_key, selected_session_key, avai
         status = "✅" if s in annotated_sessions else "⭕"
         return f"{status} {s}"
 
+    def on_session_change():
+        sel_session = st.session_state.get("detailed_session_selector")
+        if sel_session:
+            st.session_state.current_annotations = load_annotations(sel_session, selected_annotation_key)
+            st.session_state.last_session_id = sel_session
+            st.session_state.last_annotation_key = selected_annotation_key
+
     # Calculate index to maintain selection across reruns
     index = 0
     if "detailed_session_selector" in st.session_state:
@@ -69,13 +76,14 @@ def render_detailed_labeling(selected_annotation_key, selected_session_key, avai
             options=available_sessions,
             format_func=format_session_option,
             index=index,
-            key="detailed_session_selector"
+            key="detailed_session_selector",
+            on_change=on_session_change
         )
     
     with st.spinner(f"Loading session {session_id}..."):
         df = load_session_data(selected_session_key, session_id)
         
-        # Load existing annotations for this session if we switched sessions
+        # Initial load of existing annotations for this session
         if ("last_session_id" not in st.session_state or 
             st.session_state.last_session_id != session_id or 
             "last_annotation_key" not in st.session_state or
@@ -124,6 +132,12 @@ def render_detailed_labeling(selected_annotation_key, selected_session_key, avai
         st.session_state.detailed_global_viz_end_input = default_viz_end
     
     # Callback to sync inputs with slider
+    def update_global_inputs_from_slider():
+        if "detailed_global_viz_range" in st.session_state:
+            s, e = st.session_state.detailed_global_viz_range
+            st.session_state.detailed_global_viz_start_input = s
+            st.session_state.detailed_global_viz_end_input = e
+
     def update_global_slider_range():
         s = st.session_state.get("detailed_global_viz_start_input", 0)
         e = st.session_state.get("detailed_global_viz_end_input", 0)
@@ -137,6 +151,7 @@ def render_detailed_labeling(selected_annotation_key, selected_session_key, avai
             min_value=0,
             max_value=len(df),
             key="detailed_global_viz_range",
+            on_change=update_global_inputs_from_slider,
             label_visibility="collapsed"
         )
     

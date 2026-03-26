@@ -37,36 +37,37 @@ def render_annotation_manager(df, session_id, selected_annotation_key, numeric_c
             labels = ", ".join(get_display_labels(ann.labels))
             return f"#{option}: {labels} (Start: {ann.start_index}, End: {ann.end_index})"
     
+        def on_detailed_annotation_change():
+            sel = st.session_state.get("detailed_annotation_selector")
+            st.session_state.last_detailed_selection = sel
+            
+            # Clear form inputs to force refresh of values
+            keys_to_clear = [k for k in st.session_state.keys() if k.startswith("detailed_form_")]
+            for k in keys_to_clear:
+                del st.session_state[k]
+                
+            if isinstance(sel, int) and sel < len(st.session_state.current_annotations):
+                ann_sel = st.session_state.current_annotations[sel]
+                st.session_state.detailed_global_viz_start_input = ann_sel.start_index
+                st.session_state.detailed_global_viz_end_input = ann_sel.end_index
+                st.session_state.detailed_global_viz_range = (ann_sel.start_index, ann_sel.end_index)
+
         # Determine the default index for the selectbox
         default_index = 0
         if "last_detailed_selection" in st.session_state and st.session_state.last_detailed_selection in annotation_options:
             default_index = annotation_options.index(st.session_state.last_detailed_selection)
+        
+        if "last_detailed_selection" not in st.session_state:
+            st.session_state.last_detailed_selection = annotation_options[default_index] if annotation_options else None
         
         selected_option = st.selectbox(
             "Select Action / Annotation",
             options=annotation_options,
             format_func=format_func,
             index=default_index,
-            key="detailed_annotation_selector"
+            key="detailed_annotation_selector",
+            on_change=on_detailed_annotation_change
         )
-        
-        # Auto-update visualization range when selection changes
-        if "last_detailed_selection" not in st.session_state:
-            st.session_state.last_detailed_selection = None
-        
-        if selected_option != st.session_state.last_detailed_selection:
-            st.session_state.last_detailed_selection = selected_option
-            
-            # Clear form inputs to force refresh of values
-            keys_to_clear = [k for k in st.session_state.keys() if k.startswith("detailed_form_")]
-            for k in keys_to_clear:
-                del st.session_state[k]
-    
-            # Auto-set the visualization range to show the segment
-            ann_sel = st.session_state.current_annotations[selected_option]
-            st.session_state.detailed_global_viz_start_input = ann_sel.start_index
-            st.session_state.detailed_global_viz_end_input = ann_sel.end_index
-            st.session_state.detailed_global_viz_range = (ann_sel.start_index, ann_sel.end_index)
             
         # Manual Annotation Logic
         input_min = 0
@@ -199,7 +200,13 @@ def render_annotation_manager(df, session_id, selected_annotation_key, numeric_c
             # Access values from session state
             s_start = st.session_state[f"detailed_form_start_{selected_option}"]
             s_end = st.session_state[f"detailed_form_end_{selected_option}"]
-            s_labels = form_labels # Use locally aggregated variable
+            
+            # Use session_state dynamically for labels to prevent stale closure data in callbacks
+            s_labels = []
+            prefix = f"detailed_form_labels_{selected_option}_"
+            for k in list(st.session_state.keys()):
+                if k.startswith(prefix) and isinstance(st.session_state[k], list):
+                    s_labels.extend(st.session_state[k])
             
             if s_start >= s_end:
                 st.session_state.temp_error = "Start index must be less than end index."
