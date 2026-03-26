@@ -39,7 +39,6 @@ def render_annotation_manager(df, session_id, selected_annotation_key, numeric_c
     
         def on_detailed_annotation_change():
             sel = st.session_state.get("detailed_annotation_selector")
-            st.session_state.last_detailed_selection = sel
             
             # Clear form inputs to force refresh of values
             keys_to_clear = [k for k in st.session_state.keys() if k.startswith("detailed_form_")]
@@ -52,19 +51,19 @@ def render_annotation_manager(df, session_id, selected_annotation_key, numeric_c
                 st.session_state.detailed_global_viz_end_input = ann_sel.end_index
                 st.session_state.detailed_global_viz_range = (ann_sel.start_index, ann_sel.end_index)
 
-        # Determine the default index for the selectbox
-        default_index = 0
-        if "last_detailed_selection" in st.session_state and st.session_state.last_detailed_selection in annotation_options:
-            default_index = annotation_options.index(st.session_state.last_detailed_selection)
-        
-        if "last_detailed_selection" not in st.session_state:
-            st.session_state.last_detailed_selection = annotation_options[default_index] if annotation_options else None
+        # Apply pending selection from previous actions (like 'Update & Next' or 'Delete')
+        if "pending_detailed_selection" in st.session_state:
+            st.session_state.detailed_annotation_selector = st.session_state.pending_detailed_selection
+            del st.session_state.pending_detailed_selection
+
+        # Initialize the session state key if not present or invalid
+        if "detailed_annotation_selector" not in st.session_state or st.session_state.detailed_annotation_selector not in annotation_options:
+            st.session_state.detailed_annotation_selector = annotation_options[0] if annotation_options else None
         
         selected_option = st.selectbox(
             "Select Action / Annotation",
             options=annotation_options,
             format_func=format_func,
-            index=default_index,
             key="detailed_annotation_selector",
             on_change=on_detailed_annotation_change
         )
@@ -177,8 +176,9 @@ def render_annotation_manager(df, session_id, selected_annotation_key, numeric_c
         # Form Actions
         col_actions = st.columns([1, 1, 1, 3])
         def update_selection_state(next_selection_key):
-            st.session_state.last_detailed_selection = next_selection_key
-            st.session_state.detailed_annotation_selector = next_selection_key
+            # We track the next selection in a separate variable instead of forcing the widget key directly.
+            # When the script reruns, we'll initialize the widget key with this value.
+            st.session_state.pending_detailed_selection = next_selection_key
             
             keys_to_clear = [k for k in st.session_state.keys() if k.startswith("detailed_form_")]
             for k in keys_to_clear:
@@ -196,18 +196,7 @@ def render_annotation_manager(df, session_id, selected_annotation_key, numeric_c
                  st.session_state.detailed_global_viz_end_input = default_end
                  st.session_state.detailed_global_viz_range = (default_start, default_end)
     
-        def handle_submit(go_next=False):
-            # Access values from session state
-            s_start = st.session_state[f"detailed_form_start_{selected_option}"]
-            s_end = st.session_state[f"detailed_form_end_{selected_option}"]
-            
-            # Use session_state dynamically for labels to prevent stale closure data in callbacks
-            s_labels = []
-            prefix = f"detailed_form_labels_{selected_option}_"
-            for k in list(st.session_state.keys()):
-                if k.startswith(prefix) and isinstance(st.session_state[k], list):
-                    s_labels.extend(st.session_state[k])
-            
+        def handle_submit(go_next, s_start, s_end, s_labels):
             if s_start >= s_end:
                 st.session_state.temp_error = "Start index must be less than end index."
                 return
@@ -245,7 +234,8 @@ def render_annotation_manager(df, session_id, selected_annotation_key, numeric_c
                 st.session_state.temp_success = "Annotation updated!"
             
             save_annotations(session_id, st.session_state.current_annotations, selected_annotation_key)
-    
+            st.rerun()
+
         def handle_delete():
             """Delete the currently selected annotation, its children, and move to the next one."""
             if isinstance(selected_option, int) and selected_option < len(st.session_state.current_annotations):
@@ -278,15 +268,19 @@ def render_annotation_manager(df, session_id, selected_annotation_key, numeric_c
                 
                 # Save changes
                 save_annotations(session_id, st.session_state.current_annotations, selected_annotation_key)
+                st.rerun()
     
         with col_actions[0]:
-             st.button("Update & Next ⏭️", type="primary", key=f"detailed_submit_next_{selected_option}", on_click=handle_submit, args=(True,))
+             if st.button("Update & Next ⏭️", type="primary", key=f"detailed_submit_next_{selected_option}"):
+                 handle_submit(True, form_start, form_end, form_labels)
         
         with col_actions[1]:
-            st.button(submit_label, type="secondary", key=f"detailed_submit_{selected_option}", on_click=handle_submit, args=(False,))
+            if st.button(submit_label, type="secondary", key=f"detailed_submit_{selected_option}"):
+                 handle_submit(False, form_start, form_end, form_labels)
         
         with col_actions[2]:
-            st.button("🗑️ Delete", type="secondary", key=f"detailed_delete_{selected_option}", on_click=handle_delete, help="Delete this annotation")
+            if st.button("🗑️ Delete", type="secondary", key=f"detailed_delete_{selected_option}", help="Delete this annotation"):
+                 handle_delete()
         
         if "temp_error" in st.session_state:
             st.error(st.session_state.temp_error)

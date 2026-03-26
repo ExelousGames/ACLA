@@ -35,6 +35,9 @@ def render_manual_annotation_manager(df, numeric_cols, session_id, selected_anno
             labels = ", ".join(get_display_labels(ann.labels))
             return f"#{option}: {labels} (Start: {ann.start_index}, End: {ann.end_index})"
 
+    if "manual_annotation_selector" not in st.session_state or st.session_state.manual_annotation_selector not in annotation_options:
+        st.session_state.manual_annotation_selector = annotation_options[0] if annotation_options else "Create New"
+
     selected_option = st.selectbox(
         "Select Action / Annotation",
         options=annotation_options,
@@ -114,12 +117,7 @@ def render_manual_annotation_manager(df, numeric_cols, session_id, selected_anno
 
     # Form Actions
     col_actions = st.columns([1, 1, 1, 3])
-    def handle_submit():
-        # Access values from session state
-        s_start = st.session_state[f"manual_form_start_{selected_option}"]
-        s_end = st.session_state[f"manual_form_end_{selected_option}"]
-        s_labels = st.session_state[f"manual_form_labels_{selected_option}"]
-        
+    def handle_submit(s_start, s_end, s_labels):
         if s_start >= s_end:
             st.session_state.temp_error = "Start index must be less than end index."
             return
@@ -156,9 +154,11 @@ def render_manual_annotation_manager(df, numeric_cols, session_id, selected_anno
             st.session_state.temp_success = "Annotation added!"
         
         save_annotations(session_id, st.session_state.current_annotations, selected_annotation_key)
+        st.rerun()
 
     with col_actions[0]:
-        st.button(submit_label, type="primary", key=f"manual_submit_{selected_option}", on_click=handle_submit)
+        if st.button(submit_label, type="primary", key=f"manual_submit_{selected_option}"):
+            handle_submit(form_start, form_end, form_labels)
     
     if "temp_error" in st.session_state:
         st.error(st.session_state.temp_error)

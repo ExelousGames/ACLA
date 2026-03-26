@@ -70,11 +70,7 @@ def render_subsegment_manager(df, session_id, selected_annotation_key):
         default_notes = "" if is_new else getattr(selected_sub_seg, 'notes', "")
         sub_notes = st.text_area("Sub-Segment Notes (Optional)", value=default_notes, key=f"sub_notes_{input_key_suffix}")
         
-        def save_sub_segment_callback():
-            s_start = st.session_state[f"sub_start_{input_key_suffix}"]
-            s_end = st.session_state[f"sub_end_{input_key_suffix}"]
-            s_labels = st.session_state[f"sub_labels_{input_key_suffix}"]
-            s_notes = st.session_state[f"sub_notes_{input_key_suffix}"]
+        def save_sub_segment_callback(s_start, s_end, s_labels, s_notes):
             if s_start >= s_end:
                 st.toast("Error: Start index must be less than end index.", icon="❌")
                 return
@@ -113,6 +109,7 @@ def render_subsegment_manager(df, session_id, selected_annotation_key):
             st.session_state.detailed_global_viz_range = (p_start, p_end)
             st.session_state.detailed_global_viz_start_input = p_start
             st.session_state.detailed_global_viz_end_input = p_end
+            st.rerun()
 
         def delete_sub_segment_callback():
             if not is_new and selected_sub_seg:
@@ -120,10 +117,13 @@ def render_subsegment_manager(df, session_id, selected_annotation_key):
                 st.session_state.has_unsaved_changes = True
                 save_annotations(session_id, st.session_state.current_annotations, selected_annotation_key)
                 st.toast("Sub-segment deleted successfully!", icon="✅")
+                st.rerun()
 
         c1, c2 = st.columns(2)
         with c1:
-            st.button("Save Sub-Segment" if is_new else "Update Sub-Segment", use_container_width=True, type="primary", on_click=save_sub_segment_callback)
+            if st.button("Save Sub-Segment" if is_new else "Update Sub-Segment", use_container_width=True, type="primary"):
+                save_sub_segment_callback(sub_start, sub_end, sub_labels, sub_notes)
         with c2:
             if not is_new:
-                st.button("Delete", use_container_width=True, type="secondary", on_click=delete_sub_segment_callback)
+                if st.button("Delete", use_container_width=True, type="secondary"):
+                    delete_sub_segment_callback()
