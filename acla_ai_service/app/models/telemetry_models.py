@@ -832,6 +832,7 @@ class FeatureProcessor:
         self._handle_complex_fields(processed_df)
 
         # Handle missing values
+        pd.set_option('future.no_silent_downcasting', True)
         numeric_columns = processed_df.select_dtypes(include=['number']).columns
         processed_df[numeric_columns] = processed_df[numeric_columns].fillna(0).infer_objects(copy=False)
 
@@ -839,6 +840,7 @@ class FeatureProcessor:
         boolean_features = [col for col in processed_df.columns if
                           isinstance(col, str) and any(keyword in col.lower() for keyword in ['on', 'enabled', 'valid', 'running', 'controlled'])]
 
+        pd.set_option('future.no_silent_downcasting', True)
         for col in boolean_features:
             if col in processed_df.columns:
                 if processed_df[col].dtype == 'object':
@@ -1034,7 +1036,7 @@ class FeatureProcessor:
                                 df.loc[idx, f"{prefix}_car_id"] = -1
 
                     else:
-                        print(f"[DEBUG] Could not parse car_coords for row {idx}: {type(car_coords_raw)} -> {car_coords}")
+                        print(f"[DEBUG] Could not parse car_coords for row {idx}: {type(car_coords_raw)} - {car_coords_raw} -> {car_coords}")
                         # Set default values
                         df.loc[idx, 'Graphics_player_pos_x'] = 0.0
                         df.loc[idx, 'Graphics_player_pos_y'] = 0.0

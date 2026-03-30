@@ -21,21 +21,28 @@ def render_track_map(df, viz_start_idx, viz_end_idx, session_id):
         st.caption("Axis Settings")
         col_ctrl1, col_ctrl2, col_ctrl3, col_ctrl4, col_ctrl5 = st.columns(5)
         with col_ctrl1:
-            invert_x = st.checkbox("Invert X", value=False, key="detailed_invert_x")
+            invert_x = st.checkbox("Invert X", value=st.session_state.get("saved_detailed_invert_x", False), key="detailed_invert_x")
+            st.session_state.saved_detailed_invert_x = invert_x
         with col_ctrl2:
-            invert_y = st.checkbox("Invert Y", value=False, key="detailed_invert_y")
+            invert_y = st.checkbox("Invert Y", value=st.session_state.get("saved_detailed_invert_y", False), key="detailed_invert_y")
+            st.session_state.saved_detailed_invert_y = invert_y
         with col_ctrl3:
-            invert_z = st.checkbox("Invert Z", value=False, key="detailed_invert_z")
+            invert_z = st.checkbox("Invert Z", value=st.session_state.get("saved_detailed_invert_z", False), key="detailed_invert_z")
+            st.session_state.saved_detailed_invert_z = invert_z
         with col_ctrl4:
-            only_player = st.checkbox("Only Player", value=False, key="detailed_only_player")
+            only_player = st.checkbox("Only Player", value=st.session_state.get("saved_detailed_only_player", False), key="detailed_only_player")
+            st.session_state.saved_detailed_only_player = only_player
         with col_ctrl5:
+            traj_opts = ["Gas/Brake", "Balance (Oversteer/Understeer)", "Solid Green"]
+            saved_traj = st.session_state.get("saved_detailed_traj_color_mode", "Gas/Brake")
             traj_color_mode = st.selectbox(
                 "Trajectory Color", 
-                ["Gas/Brake", "Balance (Oversteer/Understeer)", "Solid Green"], 
-                index=0, 
+                traj_opts, 
+                index=traj_opts.index(saved_traj) if saved_traj in traj_opts else 0, 
                 key="detailed_traj_color_mode",
                 help="Gas/Brake: Green = Gas, Red = Brake.\n\nBalance: Red = Oversteer, Blue = Understeer."
             )
+            st.session_state.saved_detailed_traj_color_mode = traj_color_mode
         
         # Create windowed dataframe for trajectory plotting using Global Range
         start_idx = min(viz_start_idx, len(df) - 1)
@@ -266,7 +273,7 @@ def render_track_map(df, viz_start_idx, viz_end_idx, session_id):
                     player_seg_color = (map_plot_df["Physics_gas"] - map_plot_df["Physics_brake"]) if "Physics_gas" in map_plot_df.columns and "Physics_brake" in map_plot_df.columns else "green"
                     p_cmin, p_cmax, p_cscale = -1, 1, "RdYlGn"
                 elif traj_color_mode == "Balance (Oversteer/Understeer)":
-                    understeer_amplifier = 3.0
+                    understeer_amplifier = 2.0
                     if "Physics_slip_angle_rear_left" in context_plot_df.columns and "Physics_slip_angle_front_left" in context_plot_df.columns:
                         ctx_bal = ((context_plot_df["Physics_slip_angle_rear_left"].abs() + context_plot_df["Physics_slip_angle_rear_right"].abs()) / 2) - ((context_plot_df["Physics_slip_angle_front_left"].abs() + context_plot_df["Physics_slip_angle_front_right"].abs()) / 2)
                         player_ctx_color = np.where(ctx_bal < 0, ctx_bal * understeer_amplifier, ctx_bal)

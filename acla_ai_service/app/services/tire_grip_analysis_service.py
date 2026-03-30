@@ -8,8 +8,8 @@ The service answers a single question:
     car to exceeding its learned slip-angle envelope?"
 
 Simplified version:
-Determines DRIVER_PUSH_TO_LIMIT by checking the slip angle, slip ratio, and gas.
-The limit is determined by all three factors together. The limit can go over 1.
+Determines DRIVER_PUSH_TO_LIMIT by checking the slip angle and slip ratio.
+The limit is determined by both factors together. The limit can go over 1.
 """
 
 import math
@@ -48,7 +48,6 @@ class SlipEnvelopeConfig:
     # Weights for the combined metric
     slip_angle_weight: float = 1.0
     slip_ratio_weight: float = 1.0
-    gas_weight: float = 1.0
 
     def combined_limit(self) -> float:
         return max(self.front_slip_limit, self.rear_slip_limit)
@@ -81,13 +80,9 @@ class TireGripAnalysisService:
         )
         norm_longitudinal = longitudinal_slip / longitudinal_limit
 
-        # 3. Gas
-        gas = df["Physics_gas"].fillna(0.0).to_numpy(dtype=float)
-        
         # Combine factors
         w_lat = self.config.slip_angle_weight
         w_long = self.config.slip_ratio_weight
-        w_gas = self.config.gas_weight
         
         # Friction Circle for tires: sqrt((lat)^2 + (long)^2)
         # This captures that you can't brake 100% and turn 100% at the same time.
@@ -95,9 +90,8 @@ class TireGripAnalysisService:
         # but in reality sqrt(0.7^2 + 0.7^2) ~= 1.0 (at the limit).
         tire_utilization = np.sqrt((w_lat * norm_lateral)**2 + (w_long * norm_longitudinal)**2)
 
-        # Calculate push index as the maximum of the tire utilization and gas
-        # We keep gas separate because it represents engine limit/driver intent on straights
-        push_index = np.maximum(tire_utilization, w_gas * gas)
+        # Calculate push index as the tire utilization
+        push_index = tire_utilization
 
         feature_name = self.feature_catalog.ContextFeature.DRIVER_PUSH_TO_LIMIT.value
         return [{feature_name: float(value)} for value in push_index]
@@ -148,7 +142,7 @@ class TireGripAnalysisService:
 
         df = pd.DataFrame(telemetry_list)
 
-        required_inputs = {"Physics_gas"}
+        required_inputs = set()
         required_inputs.update(self._slip_columns())
         required_inputs.update(self._longitudinal_slip_columns())
 

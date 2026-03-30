@@ -19,7 +19,7 @@ class PipelineConfig:
     _training_segments_prefix: str = "training_segments_"
     
     # Cleanup flags
-    session_cleanup: bool = True
+    session_cleanup: bool = False # True will download new data and overwrite existing cache key
     processed_session_cleanup: bool = True
     segment_cleanup: bool = True
     top_laps_cleanup: bool = True
