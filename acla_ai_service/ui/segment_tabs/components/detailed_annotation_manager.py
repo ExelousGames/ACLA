@@ -164,10 +164,10 @@ def render_annotation_manager(df, session_id, selected_annotation_key, numeric_c
                 selected_labels_all.extend(uncat_selected)
                 
         form_labels = selected_labels_all
-    
-        # Gemini AI Analysis
-        from .detailed_gemini_analysis import render_gemini_analysis
-        render_gemini_analysis(df, form_start, form_end, form_labels)
+
+        # VLM Sub-Segment Discovery (Local LLM)
+        from .detailed_agent_annotation import render_agent_annotation
+        render_agent_annotation(df, form_start, form_end, form_labels, session_id, selected_annotation_key)
     
         # Feature Change Calculator
         from .detailed_feature_calculator import render_feature_calculator

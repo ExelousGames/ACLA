@@ -20,18 +20,6 @@ from .shared import (
 )
 
 try:
-    from ..gemini_analyzer import GeminiAnalyzer, GRAPH_DEFINITIONS
-except ImportError:
-    # Fallback if relative import fails structure
-    try:
-        from ui.gemini_analyzer import GeminiAnalyzer, GRAPH_DEFINITIONS
-    except ImportError:
-        GeminiAnalyzer = None
-        GRAPH_DEFINITIONS = []
-
-
-
-try:
     from ..services.batch_annotation_service import BatchAnnotationService, StreamlitBatchObserver
 except ImportError:
     try:

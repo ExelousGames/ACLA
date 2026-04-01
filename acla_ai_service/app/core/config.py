@@ -31,7 +31,7 @@ class Settings(BaseSettings):
     openai_api_key: Optional[str] = None
     
     # Hugging Face Configuration
-    hf_api_token: Optional[str] = None
+    hf_token: Optional[str] = None
     hf_username: Optional[str] = None
     
     # CORS Configuration

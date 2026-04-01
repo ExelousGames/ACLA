@@ -40,4 +40,6 @@ einops
 gguf
 timm
 google-genai
+langgraph>=0.2.0
+langchain-core>=0.3.0
 mistral_common==1.5.5

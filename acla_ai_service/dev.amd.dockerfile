@@ -36,7 +36,8 @@ RUN git clone https://github.com/ROCm/llama.cpp /opt/llama.cpp \
        -DCMAKE_BUILD_TYPE=Release -DLLAMA_CURL=ON \
     && cmake --build build --config Release -j$(nproc) \
     && ln -s /opt/llama.cpp/build/bin/llama-server /usr/local/bin/llama-server \
-    && ln -s /opt/llama.cpp/build/bin/llama-cli /usr/local/bin/llama-cli
+    && ln -s /opt/llama.cpp/build/bin/llama-cli /usr/local/bin/llama-cli \
+    && ln -s /opt/llama.cpp/build/bin/llama-quantize /usr/local/bin/llama-quantize
 
 # Copy the rest of the application
 COPY . .

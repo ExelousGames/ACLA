@@ -357,7 +357,7 @@ class LocalTelemetryLLM:
             f"Original error: {cause}"
         )
         # We don't want to enforce manual downloads, transformers can do it
-        # Try adjusting your model ID, HF_API_TOKEN or connection
+        # Try adjusting your model ID, HF_TOKEN or connection
         raise RuntimeError(hint) from cause
 
     def _resolve_llama_cpp_model_path(self, adapter_path: Optional[Path] = None) -> Path:
@@ -411,7 +411,7 @@ class LocalTelemetryLLM:
 
         tokenizer_kwargs = {
             "cache_dir": self.config.model.cache_dir,
-            "token": settings.hf_api_token,
+            "token": settings.hf_token,
             "trust_remote_code": self.config.model.trust_remote_code,
         }
         if self.config.model.gguf_file:
@@ -548,7 +548,7 @@ class LocalTelemetryLLM:
             "cache_dir": self.config.model.cache_dir,
             "dtype": None if (self.config.model.load_in_8bit or self.config.model.load_in_4bit) else torch_dtype,
             "device_map": self.config.model.device_map,
-            "token": settings.hf_api_token,
+            "token": settings.hf_token,
             "trust_remote_code": self.config.model.trust_remote_code,
         }
         if self.config.model.gguf_file:
