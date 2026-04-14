@@ -5,7 +5,6 @@
 #   name            – human-readable display name
 #   type            – main | sub | segment_type | circuit | circuit_section
 #   description     – what the label means
-#   what_to_look_for – telemetry signals / graphs that indicate this label
 #   parent          – parent label ID (null for top-level)
 #   children        – list of child label IDs
 #   exclusive_with  – labels that cannot coexist with this one
@@ -29,11 +28,6 @@ labels:
       The driver is attempting to pass another car, or is being passed.
       This involves deliberate line deviation, late braking, or exploiting
       a speed differential to change track position.
-    what_to_look_for:
-      - "Speed differential between player and another car (visible in speed trace)"
-      - "Late braking compared to normal — brake trace onset significantly later than expert"
-      - "Line deviation — trajectory shifts off the optimal racing line to find a gap"
-      - "Close proximity to other cars (if available in telemetry)"
     parent: null
     children: []
     exclusive_with: ["2", "4"]
@@ -50,11 +44,6 @@ labels:
       The segment contains gaps, dropouts, or corrupted telemetry.
       Sensor data may drop to zero, become constant unexpectedly, or
       show physically impossible values.
-    what_to_look_for:
-      - "Sensor values dropping to zero or NaN unexpectedly"
-      - "Constant/flat-line readings where variation is expected"
-      - "Physically impossible values (negative speed, >100% throttle)"
-      - "Sudden jumps or discontinuities in otherwise smooth signals"
     parent: null
     children: []
     exclusive_with: ["1", "EA", "4", "RM", "MS"]
@@ -70,11 +59,6 @@ labels:
       The driver is closely following the expert's optimal racing line
       and speed profile.  The time difference to the expert is stable
       or decreasing.  No significant errors are present.
-    what_to_look_for:
-      - "Time Difference to Expert is stable (flat) or decreasing"
-      - "Speed delta near zero throughout the segment"
-      - "Trajectory closely overlaps the expert line"
-      - "Throttle and brake traces closely match expert"
     parent: null
     children: []
     exclusive_with: ["MS", "RM", "2"]
@@ -90,11 +74,6 @@ labels:
       The driver is entering, waiting in, or exiting the pit lane.
       This involves a significant speed reduction and a distinct
       trajectory deviation into the pit area.
-    what_to_look_for:
-      - "Significant speed reduction well below normal corner speed"
-      - "Trajectory deviates sharply into the pit lane area"
-      - "Throttle drops to zero for an extended period (pit stop)"
-      - "Speed limiter engaged (constant low speed in pit lane)"
     parent: null
     children: []
     exclusive_with: ["1", "2"]
@@ -111,11 +90,6 @@ labels:
       off-track, exiting the pit, or having a speed deficit — and is
       merging back onto the optimal racing line.  The time delta to
       the expert may initially be large but should be closing.
-    what_to_look_for:
-      - "Large initial speed gap to expert that gradually closes"
-      - "Trajectory initially far from expert line, converging back"
-      - "Time Difference to Expert decreasing (gap closing)"
-      - "Throttle application pattern consistent with catching up"
     parent: null
     children: ["RM1", "RM2", "RM5", "RM6", "RM7", "RM8", "RM9", "RM10", "RM11"]
     exclusive_with: ["EA"]
@@ -132,11 +106,6 @@ labels:
       The driver has committed a driving error that results in time
       loss or vehicle instability.  The time difference to the expert
       increases continuously without a quick recovery.
-    what_to_look_for:
-      - "Time Difference to Expert graph increasing continuously without decreasing shortly after"
-      - "Differences in throttle and brake between player and expert"
-      - "Push_limit graph showing understeer or oversteer"
-      - "Trajectory deviations from optimal line"
     parent: null
     children:
       - "MS1"
@@ -203,9 +172,6 @@ labels:
       The segment takes place on the Brands Hatch circuit.  Identify
       which specific named corner or straight section the segment
       corresponds to using the trajectory overlay.
-    what_to_look_for:
-      - "Trajectory overlay matching Brands Hatch circuit layout"
-      - "Corner/straight characteristics matching a known section"
     parent: null
     children:
       - "brands_hatch1"
@@ -239,9 +205,6 @@ labels:
       The segment takes place on the Silverstone circuit.  Identify
       which specific named corner or straight section the segment
       corresponds to using the trajectory overlay.
-    what_to_look_for:
-      - "Trajectory overlay matching Silverstone circuit layout"
-      - "Corner/straight characteristics matching a known section"
     parent: null
     children:
       - "silverstone1"
@@ -282,9 +245,6 @@ labels:
       The driver went off the circuit surface and is now returning
       to the track.  There may be a large trajectory deviation and
       sudden speed loss.
-    what_to_look_for:
-      - "Sudden speed drop followed by gradual recovery"
-      - "Large lateral deviation from expert line"
     parent: RM
     children: []
     exclusive_with: ["RM2"]
@@ -295,9 +255,6 @@ labels:
     description: >
       The driver is re-joining the track after a pit stop.  Speed
       increases from pit-limiter speed to racing speed.
-    what_to_look_for:
-      - "Speed increasing from pit-limiter level (~50 km/h) to racing speed"
-      - "Trajectory merging from pit lane exit onto expert trajectory"
     parent: RM
     children: []
     exclusive_with: ["RM1"]
@@ -308,10 +265,6 @@ labels:
     description: >
       The driver has a speed deficit of more than 20 km/h compared
       to the expert and is working to close the gap.
-    what_to_look_for:
-      - "Speed delta (player - expert) exceeds -20 km/h at segment start"
-      - "Speed delta gradually decreasing toward zero"
-      - "Heavy throttle application to catch up"
     parent: RM
     children: []
     exclusive_with: ["RM6"]
@@ -322,9 +275,6 @@ labels:
     description: >
       The driver has a speed deficit of less than 20 km/h compared
       to the expert and is closing the gap.
-    what_to_look_for:
-      - "Speed delta (player - expert) is between 0 and -20 km/h"
-      - "Gap closing over the segment length"
     parent: RM
     children: []
     exclusive_with: ["RM5"]
@@ -335,9 +285,6 @@ labels:
     description: >
       The driver's trajectory is converging back to the optimal
       expert racing line after a deviation.
-    what_to_look_for:
-      - "Trajectory gradually converging toward the expert line"
-      - "Lateral distance to expert line decreasing"
     parent: RM
     children: []
     exclusive_with: []
@@ -348,9 +295,6 @@ labels:
     description: >
       During recovery the driver applies throttle earlier than
       the expert at the corner exit.
-    what_to_look_for:
-      - "Throttle onset occurs at an earlier index/point than expert throttle onset"
-      - "Recovery pattern — catching up by being more aggressive on exit"
     parent: RM
     children: []
     exclusive_with: ["RM9"]
@@ -361,9 +305,6 @@ labels:
     description: >
       During recovery the driver applies throttle later than
       the expert at the corner exit.
-    what_to_look_for:
-      - "Throttle onset occurs at a later index/point than expert throttle onset"
-      - "Cautious recovery — building speed more gradually"
     parent: RM
     children: []
     exclusive_with: ["RM8"]
@@ -374,9 +315,6 @@ labels:
     description: >
       During recovery the driver starts braking earlier than
       the expert at the corner entry.
-    what_to_look_for:
-      - "Brake onset occurs at an earlier index than expert brake onset"
-      - "Cautious approach to the corner during recovery"
     parent: RM
     children: []
     exclusive_with: ["RM11"]
@@ -387,9 +325,6 @@ labels:
     description: >
       During recovery the driver starts braking later than
       the expert at the corner entry.
-    what_to_look_for:
-      - "Brake onset occurs at a later index than expert brake onset"
-      - "Aggressive approach to corner during recovery"
     parent: RM
     children: []
     exclusive_with: ["RM10"]
@@ -404,10 +339,6 @@ labels:
     description: >
       The driver starts braking after the optimal braking point,
       carrying too much speed into the corner.
-    what_to_look_for:
-      - "Brake trace onset is at a later index than expert brake onset"
-      - "Speed at the braking point is higher than expert"
-      - "Time delta increases through the braking zone"
     parent: MS
     children: []
     exclusive_with: ["MS5"]
@@ -418,10 +349,6 @@ labels:
     description: >
       The driver starts braking before the optimal braking point,
       losing time by decelerating too soon.
-    what_to_look_for:
-      - "Brake trace onset is at an earlier index than expert brake onset"
-      - "Speed reduction begins sooner than expert"
-      - "Time delta increases because driver is slower than necessary"
     parent: MS
     children: []
     exclusive_with: ["MS1"]
@@ -432,10 +359,6 @@ labels:
     description: >
       Peak brake pressure is lower than the expert's, resulting
       in insufficient deceleration.
-    what_to_look_for:
-      - "Max brake value in segment is lower than expert max brake"
-      - "Speed reduction is slower than expert"
-      - "Braking zone is longer than expert's"
     parent: MS
     children: []
     exclusive_with: ["MS22"]
@@ -446,9 +369,6 @@ labels:
     description: >
       Peak brake pressure exceeds the expert's, risking lock-up
       or instability.
-    what_to_look_for:
-      - "Max brake value in segment exceeds expert max brake"
-      - "Possible lock-up indicators (sudden speed drop, instability)"
     parent: MS
     children: []
     exclusive_with: ["MS13"]
@@ -459,9 +379,6 @@ labels:
     description: >
       The brake is applied with a very steep ramp — transitioning
       from zero to high pressure too rapidly.
-    what_to_look_for:
-      - "Steep rise in brake trace (high rate of change)"
-      - "Brake onset-to-peak time shorter than expert"
     parent: MS
     children: []
     exclusive_with: ["MS24"]
@@ -472,9 +389,6 @@ labels:
     description: >
       The brake is applied with a gradual ramp — not reaching
       peak pressure quickly enough.
-    what_to_look_for:
-      - "Gradual rise in brake trace (low rate of change)"
-      - "Brake onset-to-peak time longer than expert"
     parent: MS
     children: []
     exclusive_with: ["MS14"]
@@ -485,10 +399,6 @@ labels:
     description: >
       The driver releases the brake pedal too fast — losing trail
       braking and destabilising the car mid-corner.
-    what_to_look_for:
-      - "Steep drop in brake trace (high negative rate of change)"
-      - "Brake release duration shorter than expert"
-      - "Potential mid-corner instability (push_limit spike)"
     parent: MS
     children: []
     exclusive_with: ["MS18"]
@@ -499,10 +409,6 @@ labels:
     description: >
       The driver releases the brake pedal too gradually — carrying
       too much braking into the corner and scrubbing speed.
-    what_to_look_for:
-      - "Gradual drop in brake trace (low negative rate of change)"
-      - "Brake release duration longer than expert"
-      - "Speed lower than expert through mid-corner"
     parent: MS
     children: []
     exclusive_with: ["MS17"]
@@ -513,9 +419,6 @@ labels:
     description: >
       The driver begins releasing the brake at a later point than
       the expert, staying on the brake too long.
-    what_to_look_for:
-      - "Brake release onset at a later index than expert"
-      - "Trail-braking zone extends further than expert's"
     parent: MS
     children: []
     exclusive_with: ["MS28"]
@@ -526,9 +429,6 @@ labels:
     description: >
       The driver begins releasing the brake at an earlier point
       than the expert, losing trail-braking benefit.
-    what_to_look_for:
-      - "Brake release onset at an earlier index than expert"
-      - "Less trail-braking than expert, potential understeer"
     parent: MS
     children: []
     exclusive_with: ["MS27"]
@@ -539,9 +439,6 @@ labels:
     description: >
       The total duration of brake application is shorter than the
       expert's — potentially under-braking.
-    what_to_look_for:
-      - "Total brake application duration (samples) shorter than expert"
-      - "Higher corner entry speed than expert"
     parent: MS
     children: []
     exclusive_with: ["MS32"]
@@ -552,9 +449,6 @@ labels:
     description: >
       The total duration of brake application is longer than the
       expert's — over-braking and losing time.
-    what_to_look_for:
-      - "Total brake application duration (samples) longer than expert"
-      - "Lower corner entry speed than expert"
     parent: MS
     children: []
     exclusive_with: ["MS31"]
@@ -565,9 +459,6 @@ labels:
     description: >
       The driver is simultaneously on throttle and brake for an
       excessive duration (left-foot braking overlap).
-    what_to_look_for:
-      - "Both throttle > 0 and brake > 0 for a sustained period"
-      - "Overlap duration longer than expert (or expert has no overlap)"
     parent: MS
     children: []
     exclusive_with: []
@@ -582,10 +473,6 @@ labels:
     description: >
       Throttle is applied with a very steep ramp —
       risking wheelspin or oversteer on corner exit.
-    what_to_look_for:
-      - "Steep rise in throttle trace (high rate of change)"
-      - "Throttle onset-to-full time shorter than expert"
-      - "Possible push_limit drop (oversteer/wheelspin)"
     parent: MS
     children: []
     exclusive_with: ["MS25"]
@@ -596,10 +483,6 @@ labels:
     description: >
       Throttle is applied too gradually — not building speed
       quickly enough on corner exit.
-    what_to_look_for:
-      - "Gradual rise in throttle trace (low rate of change)"
-      - "Throttle onset-to-full time longer than expert"
-      - "Speed at exit lower than expert"
     parent: MS
     children: []
     exclusive_with: ["MS15"]
@@ -610,9 +493,6 @@ labels:
     description: >
       Peak throttle application is lower than the expert's —
       not using full power when it is safe to do so.
-    what_to_look_for:
-      - "Max throttle value in segment lower than expert"
-      - "Speed lower than expert on straights or exits"
     parent: MS
     children: []
     exclusive_with: ["MS26"]
@@ -623,9 +503,6 @@ labels:
     description: >
       Peak throttle exceeds what the expert uses — possibly
       causing wheelspin or instability.
-    what_to_look_for:
-      - "Max throttle value exceeds expert max throttle"
-      - "Possible oversteer or wheelspin (push_limit drop)"
     parent: MS
     children: []
     exclusive_with: ["MS19"]
@@ -636,9 +513,6 @@ labels:
     description: >
       The driver gets on the throttle before the optimal point,
       risking oversteer or running wide on exit.
-    what_to_look_for:
-      - "Throttle onset at an earlier index than expert"
-      - "Potential exit trajectory deviation (running wide)"
     parent: MS
     children: []
     exclusive_with: ["MS21"]
@@ -649,9 +523,6 @@ labels:
     description: >
       The driver gets on the throttle after the optimal point,
       losing exit speed.
-    what_to_look_for:
-      - "Throttle onset at a later index than expert"
-      - "Lower exit speed than expert"
     parent: MS
     children: []
     exclusive_with: ["MS20"]
@@ -662,9 +533,6 @@ labels:
     description: >
       The driver lifts off the throttle too abruptly, causing
       weight transfer instability.
-    what_to_look_for:
-      - "Steep drop in throttle trace (high negative rate of change)"
-      - "Throttle lift-to-zero time shorter than expert"
     parent: MS
     children: []
     exclusive_with: []
@@ -675,9 +543,6 @@ labels:
     description: >
       The driver stays on the throttle longer than the expert
       before lifting — late lift-off.
-    what_to_look_for:
-      - "Throttle release onset at a later index than expert"
-      - "Higher speed into braking zone"
     parent: MS
     children: []
     exclusive_with: ["MS30"]
@@ -688,9 +553,6 @@ labels:
     description: >
       The driver lifts off the throttle earlier than the expert —
       coasting or early lift.
-    what_to_look_for:
-      - "Throttle release onset at an earlier index than expert"
-      - "Speed lower than expert approaching braking zone"
     parent: MS
     children: []
     exclusive_with: ["MS29"]
@@ -705,10 +567,6 @@ labels:
     description: >
       The driver turns into the corner after the optimal turn-in
       point, resulting in a wider entry.
-    what_to_look_for:
-      - "Steering angle onset at a later index than expert"
-      - "Entry trajectory wider than expert"
-      - "Potential late apex"
     parent: MS
     children: []
     exclusive_with: ["MS6"]
@@ -719,10 +577,6 @@ labels:
     description: >
       The driver turns into the corner before the optimal turn-in
       point, resulting in a tighter entry.
-    what_to_look_for:
-      - "Steering angle onset at an earlier index than expert"
-      - "Entry trajectory tighter than expert"
-      - "Potential early apex"
     parent: MS
     children: []
     exclusive_with: ["MS2"]
@@ -733,9 +587,6 @@ labels:
     description: >
       The driver reaches the apex (closest point to the inside
       of the corner) later than the expert.
-    what_to_look_for:
-      - "Minimum distance to inside kerb occurs at a later index than expert"
-      - "Apex point shifted downstream in the trajectory"
     parent: MS
     children: []
     exclusive_with: ["MS7"]
@@ -746,9 +597,6 @@ labels:
     description: >
       The driver reaches the apex earlier than the expert,
       potentially compromising exit speed.
-    what_to_look_for:
-      - "Minimum distance to inside kerb occurs at an earlier index than expert"
-      - "Apex point shifted upstream in the trajectory"
     parent: MS
     children: []
     exclusive_with: ["MS3"]
@@ -759,9 +607,6 @@ labels:
     description: >
       The driver exits the corner (straightens steering) earlier
       than the expert.
-    what_to_look_for:
-      - "Steering angle returns to near-zero at an earlier index than expert"
-      - "May lead to running wide on exit"
     parent: MS
     children: []
     exclusive_with: ["MS8"]
@@ -772,9 +617,6 @@ labels:
     description: >
       The driver exits the corner (straightens steering) later
       than the expert, staying in the turn too long.
-    what_to_look_for:
-      - "Steering angle returns to near-zero at a later index than expert"
-      - "Speed build-up on exit delayed"
     parent: MS
     children: []
     exclusive_with: ["MS4"]
@@ -789,9 +631,6 @@ labels:
     description: >
       The driver takes a tighter line than the expert on corner
       entry, reducing corner speed potential.
-    what_to_look_for:
-      - "Trajectory is closer to the inside than expert on entry"
-      - "Higher steering angle than expert on entry"
     parent: MS
     children: []
     exclusive_with: ["MS33"]
@@ -802,9 +641,6 @@ labels:
     description: >
       The driver takes a wider line than the expert on corner
       entry, requiring a tighter mid-corner to hit the apex.
-    what_to_look_for:
-      - "Trajectory is farther from the inside than expert on entry"
-      - "May cause a late apex or excess steering mid-corner"
     parent: MS
     children: []
     exclusive_with: ["MS9"]
@@ -815,9 +651,6 @@ labels:
     description: >
       The driver's closest point to the inside of the corner is
       wider (farther from the kerb) than the expert's apex.
-    what_to_look_for:
-      - "Minimum lateral distance to inside kerb is greater than expert"
-      - "Trajectory doesn't clip the apex as tightly as expert"
     parent: MS
     children: []
     exclusive_with: []
@@ -828,10 +661,6 @@ labels:
     description: >
       The driver stays too close to the inside on corner exit,
       not using the full track width to carry speed.
-    what_to_look_for:
-      - "Trajectory is tighter (more inside) than expert on exit"
-      - "Less track width used on exit"
-      - "Lower acceleration potential on exit"
     parent: MS
     children: []
     exclusive_with: ["MS16"]
@@ -842,9 +671,6 @@ labels:
     description: >
       The driver runs too wide on corner exit, potentially going
       off-track or losing time by exceeding track limits.
-    what_to_look_for:
-      - "Trajectory is farther from the inside than expert on exit"
-      - "May approach or exceed track limits"
     parent: MS
     children: []
     exclusive_with: ["MS11"]
@@ -855,9 +681,6 @@ labels:
     description: >
       The driver cuts inside the optimal racing line, shortening
       the corner but potentially violating track limits.
-    what_to_look_for:
-      - "Trajectory cuts significantly inside the expert line"
-      - "Shorter path but may compromise speed or grip"
     parent: MS
     children: []
     exclusive_with: []
@@ -867,9 +690,6 @@ labels:
     type: sub
     description: >
       The driver goes off the track surface during corner entry.
-    what_to_look_for:
-      - "Trajectory exceeds track boundary on entry"
-      - "Sudden speed change or grip loss on entry"
     parent: MS
     children: []
     exclusive_with: []
@@ -879,9 +699,6 @@ labels:
     type: sub
     description: >
       The driver goes off the track surface during corner exit.
-    what_to_look_for:
-      - "Trajectory exceeds track boundary on exit"
-      - "Sudden speed change or grip loss on exit"
     parent: MS
     children: []
     exclusive_with: []
@@ -891,9 +708,6 @@ labels:
     type: sub
     description: >
       The driver goes off the track surface on a straight section.
-    what_to_look_for:
-      - "Trajectory deviates beyond track boundary on a straight"
-      - "Unusual lateral movement on a section with no corners"
     parent: MS
     children: []
     exclusive_with: []
@@ -908,9 +722,6 @@ labels:
     description: >
       The driver is not using the available tire grip efficiently
       on corner entry — either under- or over-loading the tires.
-    what_to_look_for:
-      - "Push_limit graph shows the driver is well below the grip limit on entry"
-      - "Speed lower than expert despite available grip margin"
     parent: MS
     children: []
     exclusive_with: []
@@ -921,9 +732,6 @@ labels:
     description: >
       The driver is not using the available tire grip efficiently
       on corner exit.
-    what_to_look_for:
-      - "Push_limit graph shows the driver is well below the grip limit on exit"
-      - "Speed lower than expert despite available grip margin"
     parent: MS
     children: []
     exclusive_with: []
@@ -934,10 +742,6 @@ labels:
     description: >
       The rear of the car loses grip on corner entry, causing
       the car to rotate more than intended.
-    what_to_look_for:
-      - "Push_limit graph showing grip loss (value drops) on entry"
-      - "Driver may apply opposite steering lock (counter-steer)"
-      - "Sudden yaw rate change"
     parent: MS
     children: []
     exclusive_with: ["MS45"]
@@ -948,10 +752,6 @@ labels:
     description: >
       The front tires lose grip on corner entry, causing the
       car to push wide (not turning enough).
-    what_to_look_for:
-      - "Push_limit graph showing the car is at the limit but trajectory is wider than expert"
-      - "Increased steering angle with no additional rotation"
-      - "Speed too high for available grip"
     parent: MS
     children: []
     exclusive_with: ["MS44"]
@@ -962,10 +762,6 @@ labels:
     description: >
       The rear of the car loses grip on corner exit, usually
       due to aggressive throttle application.
-    what_to_look_for:
-      - "Push_limit graph showing grip loss on exit"
-      - "Throttle application coincides with instability"
-      - "Possible snap oversteer on power"
     parent: MS
     children: []
     exclusive_with: ["MS47"]
@@ -976,9 +772,6 @@ labels:
     description: >
       The front tires lose grip on corner exit, causing the
       car to run wide despite steering input.
-    what_to_look_for:
-      - "Push_limit at limit on exit but trajectory wider than expert"
-      - "Throttle application causes front to wash out"
     parent: MS
     children: []
     exclusive_with: ["MS46"]
@@ -993,9 +786,6 @@ labels:
     description: >
       The driver upshifts before reaching optimal RPM, losing
       acceleration in the next gear.
-    what_to_look_for:
-      - "Gear change to a higher gear at a lower RPM/speed than expert"
-      - "Engine RPM at shift point lower than expert"
     parent: MS
     children: []
     exclusive_with: ["MS36"]
@@ -1006,9 +796,6 @@ labels:
     description: >
       The driver upshifts past the optimal RPM, hitting the
       rev limiter or losing power in over-rev.
-    what_to_look_for:
-      - "Gear change to a higher gear at a higher RPM/speed than expert"
-      - "Engine may hit rev limiter"
     parent: MS
     children: []
     exclusive_with: ["MS35"]
@@ -1019,9 +806,6 @@ labels:
     description: >
       The driver downshifts before the optimal point,
       potentially causing engine braking instability.
-    what_to_look_for:
-      - "Gear change to a lower gear at a higher speed than expert"
-      - "Potential rear-wheel instability from engine braking"
     parent: MS
     children: []
     exclusive_with: ["MS38"]
@@ -1032,9 +816,6 @@ labels:
     description: >
       The driver downshifts after the optimal point,
       entering the corner in too high a gear.
-    what_to_look_for:
-      - "Gear change to a lower gear at a lower speed than expert"
-      - "May cause low RPM mid-corner, reducing engine response"
     parent: MS
     children: []
     exclusive_with: ["MS37"]
@@ -1045,9 +826,6 @@ labels:
     description: >
       The driver is in a lower gear than the expert during
       acceleration, hitting the rev limiter sooner.
-    what_to_look_for:
-      - "Gear number lower than expert at the same track position"
-      - "Higher RPM than expert at the same speed"
     parent: MS
     children: []
     exclusive_with: ["MS49"]
@@ -1058,10 +836,6 @@ labels:
     description: >
       The driver is in a higher gear than the expert during
       acceleration, resulting in less torque/power.
-    what_to_look_for:
-      - "Gear number higher than expert at the same track position"
-      - "Lower RPM than expert at the same speed"
-      - "Slower acceleration than expert"
     parent: MS
     children: []
     exclusive_with: ["MS48"]
@@ -1076,10 +850,6 @@ labels:
     description: >
       The segment is entirely within a corner.  The driver is
       turning throughout.
-    what_to_look_for:
-      - "Sustained non-zero steering angle"
-      - "Speed generally lower than straight-line speed"
-      - "Lateral G-force present throughout"
     parent: null
     children: []
     exclusive_with: ["ST2", "ST3", "ST4", "ST5", "ST6"]
@@ -1090,10 +860,6 @@ labels:
     description: >
       The segment is on a straight section.  Minimal steering,
       high speed, full throttle typical.
-    what_to_look_for:
-      - "Steering angle near zero"
-      - "High and increasing speed"
-      - "Full or near-full throttle"
     parent: null
     children: []
     exclusive_with: ["ST1", "ST3", "ST4", "ST5", "ST6"]
@@ -1104,10 +870,6 @@ labels:
     description: >
       The segment covers the approach/braking zone before a corner.
       The driver is decelerating and preparing to turn in.
-    what_to_look_for:
-      - "Brake application begins during segment"
-      - "Speed decreasing"
-      - "Steering angle near zero initially, may begin turning at end"
     parent: null
     children: []
     exclusive_with: ["ST1", "ST2", "ST4", "ST5", "ST6"]
@@ -1118,10 +880,6 @@ labels:
     description: >
       The segment covers the exit of a corner leading onto a
       straight.  Steering angle is decreasing, throttle increasing.
-    what_to_look_for:
-      - "Steering angle decreasing toward zero"
-      - "Throttle increasing"
-      - "Speed increasing as the car straightens"
     parent: null
     children: []
     exclusive_with: ["ST1", "ST2", "ST3", "ST5", "ST6"]
@@ -1132,9 +890,6 @@ labels:
     description: >
       The segment is a short connection between two corners —
       not a full straight but a brief transition.
-    what_to_look_for:
-      - "Brief period of near-zero steering between two turning phases"
-      - "Short duration compared to a full straight"
     parent: null
     children: []
     exclusive_with: ["ST1", "ST2", "ST3", "ST4", "ST6"]
@@ -1145,10 +900,6 @@ labels:
     description: >
       The segment covers multiple corners with no intervening
       straight — e.g., an esses or chicane complex.
-    what_to_look_for:
-      - "Steering angle alternates direction without returning to zero"
-      - "No full-throttle straight section between turns"
-      - "Speed remains in cornering range throughout"
     parent: null
     children: []
     exclusive_with: ["ST1", "ST2", "ST3", "ST4", "ST5"]
@@ -1161,9 +912,6 @@ labels:
     name: "Brabham Straight"
     type: circuit_section
     description: "Main straight at Brands Hatch, from Clark Curve to Paddock Hill Bend."
-    what_to_look_for:
-      - "Full throttle, high speed, near-zero steering"
-      - "Trajectory along the main straight"
     parent: brands_hatch
     children: []
     exclusive_with: []
@@ -1172,9 +920,6 @@ labels:
     name: "Paddock Hill Bend"
     type: circuit_section
     description: "Downhill right-hander after Brabham Straight. One of the most iconic corners in motorsport."
-    what_to_look_for:
-      - "Braking from high speed into a right-hand turn"
-      - "Downhill gradient visible in speed/trajectory"
     parent: brands_hatch
     children: []
     exclusive_with: []
@@ -1183,10 +928,6 @@ labels:
     name: "Druids"
     type: circuit_section
     description: "Tight hairpin at the top of the hill. Very slow, sharp left turn."
-    what_to_look_for:
-      - "Heavy braking, very low speed"
-      - "Sharp left steering angle"
-      - "Hairpin trajectory shape"
     parent: brands_hatch
     children: []
     exclusive_with: []
@@ -1195,9 +936,6 @@ labels:
     name: "Graham Hill Bend"
     type: circuit_section
     description: "Long sweeping right-hand bend descending from Druids."
-    what_to_look_for:
-      - "Sustained right steering"
-      - "Gradual descent (downhill)"
     parent: brands_hatch
     children: []
     exclusive_with: []
@@ -1206,9 +944,6 @@ labels:
     name: "Cooper Straight"
     type: circuit_section
     description: "Short straight between Graham Hill Bend and Surtees."
-    what_to_look_for:
-      - "Brief full-throttle section"
-      - "Near-zero steering"
     parent: brands_hatch
     children: []
     exclusive_with: []
@@ -1217,9 +952,6 @@ labels:
     name: "Surtees"
     type: circuit_section
     description: "Fast right-hand kink. Often taken flat-out in faster cars."
-    what_to_look_for:
-      - "Slight right steering at high speed"
-      - "Minimal speed reduction"
     parent: brands_hatch
     children: []
     exclusive_with: []
@@ -1228,9 +960,6 @@ labels:
     name: "Pilgrim's Drop"
     type: circuit_section
     description: "Downhill section after Surtees, leading to Hawthorns."
-    what_to_look_for:
-      - "Downhill descent visible in trajectory/speed"
-      - "Transitional section"
     parent: brands_hatch
     children: []
     exclusive_with: []
@@ -1239,8 +968,6 @@ labels:
     name: "Hawthorns"
     type: circuit_section
     description: "Fast left-hand corner through the trees section of the circuit."
-    what_to_look_for:
-      - "Left steering at relatively high speed"
     parent: brands_hatch
     children: []
     exclusive_with: []
@@ -1249,9 +976,6 @@ labels:
     name: "Derek Minter Straight"
     type: circuit_section
     description: "Straight section between Hawthorns and Westfield."
-    what_to_look_for:
-      - "Full throttle, high speed"
-      - "Near-zero steering"
     parent: brands_hatch
     children: []
     exclusive_with: []
@@ -1260,9 +984,6 @@ labels:
     name: "Westfield Bend"
     type: circuit_section
     description: "Medium-speed left-hand corner."
-    what_to_look_for:
-      - "Braking into a left turn"
-      - "Medium cornering speed"
     parent: brands_hatch
     children: []
     exclusive_with: []
@@ -1271,9 +992,6 @@ labels:
     name: "Dingle Dell"
     type: circuit_section
     description: "Dip and slight right. Part of the downhill back section."
-    what_to_look_for:
-      - "Slight right steering"
-      - "Downhill speed increase"
     parent: brands_hatch
     children: []
     exclusive_with: []
@@ -1282,9 +1000,6 @@ labels:
     name: "Sheene Curve"
     type: circuit_section
     description: "Fast right-hand curve named after Barry Sheene."
-    what_to_look_for:
-      - "Fast right-hand curve"
-      - "High speed with moderate steering"
     parent: brands_hatch
     children: []
     exclusive_with: []
@@ -1293,8 +1008,6 @@ labels:
     name: "Stirlings"
     type: circuit_section
     description: "Technical section with direction changes."
-    what_to_look_for:
-      - "Multiple direction changes in quick succession"
     parent: brands_hatch
     children: []
     exclusive_with: []
@@ -1303,9 +1016,6 @@ labels:
     name: "Clearways"
     type: circuit_section
     description: "Long right-hand curve leading back to the main straight."
-    what_to_look_for:
-      - "Sustained right-hand steering"
-      - "Acceleration through exit toward main straight"
     parent: brands_hatch
     children: []
     exclusive_with: []
@@ -1314,9 +1024,6 @@ labels:
     name: "Clark Curve"
     type: circuit_section
     description: "Final curve before the main straight."
-    what_to_look_for:
-      - "Right-hand curve"
-      - "Exit onto Brabham Straight"
     parent: brands_hatch
     children: []
     exclusive_with: []
@@ -1325,9 +1032,6 @@ labels:
     name: "Pit"
     type: circuit_section
     description: "Pit lane section at Brands Hatch."
-    what_to_look_for:
-      - "Low speed, pit limiter engaged"
-      - "Trajectory through pit lane"
     parent: brands_hatch
     children: []
     exclusive_with: []
@@ -1336,8 +1040,6 @@ labels:
     name: "Graham Hill"
     type: circuit_section
     description: "Graham Hill section (alternate naming for the area around Graham Hill Bend)."
-    what_to_look_for:
-      - "Right-hand turning in the Graham Hill area"
     parent: brands_hatch
     children: []
     exclusive_with: []
@@ -1346,8 +1048,6 @@ labels:
     name: "Hailwoods Hill"
     type: circuit_section
     description: "Uphill section of the circuit named after Mike Hailwood."
-    what_to_look_for:
-      - "Uphill gradient, speed reduction from climb"
     parent: brands_hatch
     children: []
     exclusive_with: []
@@ -1360,9 +1060,6 @@ labels:
     name: "Woodcote"
     type: circuit_section
     description: "Fast right-hand corner leading onto the pit straight."
-    what_to_look_for:
-      - "High-speed right-hand turn"
-      - "Acceleration onto the main straight"
     parent: silverstone
     children: []
     exclusive_with: []
@@ -1371,9 +1068,6 @@ labels:
     name: "Copse"
     type: circuit_section
     description: "Fast right-hand corner. One of the fastest corners on the calendar."
-    what_to_look_for:
-      - "Very high speed right-hand turn"
-      - "Minimal speed reduction"
     parent: silverstone
     children: []
     exclusive_with: []
@@ -1382,9 +1076,6 @@ labels:
     name: "Maggotts"
     type: circuit_section
     description: "First part of the fast Maggotts-Becketts-Chapel complex. Left-hand turn."
-    what_to_look_for:
-      - "Fast left-hand turn"
-      - "Part of a rapid direction-change sequence"
     parent: silverstone
     children: []
     exclusive_with: []
@@ -1393,9 +1084,6 @@ labels:
     name: "Becketts"
     type: circuit_section
     description: "Second part of the Maggotts-Becketts complex. Fast right-hand flick."
-    what_to_look_for:
-      - "Fast right-hand direction change from Maggotts"
-      - "High lateral load"
     parent: silverstone
     children: []
     exclusive_with: []
@@ -1404,9 +1092,6 @@ labels:
     name: "Chapel"
     type: circuit_section
     description: "Final left-hand part of the Maggotts-Becketts-Chapel complex. Opens onto Hangar Straight."
-    what_to_look_for:
-      - "Left-hand turn opening onto a long straight"
-      - "Acceleration zone"
     parent: silverstone
     children: []
     exclusive_with: []
@@ -1415,10 +1100,6 @@ labels:
     name: "Hangar Straight"
     type: circuit_section
     description: "Long straight between Chapel and Stowe — one of the fastest sections."
-    what_to_look_for:
-      - "Full throttle, very high speed"
-      - "Near-zero steering"
-      - "Long duration straight"
     parent: silverstone
     children: []
     exclusive_with: []
@@ -1427,9 +1108,6 @@ labels:
     name: "Stowe"
     type: circuit_section
     description: "Fast right-hand corner at the end of Hangar Straight."
-    what_to_look_for:
-      - "Heavy braking from very high speed"
-      - "Right-hand turn"
     parent: silverstone
     children: []
     exclusive_with: []
@@ -1438,9 +1116,6 @@ labels:
     name: "Vale"
     type: circuit_section
     description: "Slow chicane complex after Stowe."
-    what_to_look_for:
-      - "Direction changes at low speed"
-      - "Heavy braking"
     parent: silverstone
     children: []
     exclusive_with: []
@@ -1449,9 +1124,6 @@ labels:
     name: "Club"
     type: circuit_section
     description: "Right-hand corner leading onto Hamilton Straight."
-    what_to_look_for:
-      - "Right-hand turn at medium speed"
-      - "Important exit speed for the following straight"
     parent: silverstone
     children: []
     exclusive_with: []
@@ -1460,9 +1132,6 @@ labels:
     name: "Hamilton Straight"
     type: circuit_section
     description: "Straight section between Club and Abbey."
-    what_to_look_for:
-      - "Full throttle acceleration"
-      - "Near-zero steering"
     parent: silverstone
     children: []
     exclusive_with: []
@@ -1471,8 +1140,6 @@ labels:
     name: "Abbey"
     type: circuit_section
     description: "Fast right-hand corner — first corner of the Arena section."
-    what_to_look_for:
-      - "High-speed right-hand turn"
     parent: silverstone
     children: []
     exclusive_with: []
@@ -1481,8 +1148,6 @@ labels:
     name: "Farm Curve"
     type: circuit_section
     description: "Sweeping right-hand curve connecting Abbey to Village."
-    what_to_look_for:
-      - "Right-hand sweeper at moderate speed"
     parent: silverstone
     children: []
     exclusive_with: []
@@ -1491,9 +1156,6 @@ labels:
     name: "Village"
     type: circuit_section
     description: "Tight left-hand corner in the Arena section."
-    what_to_look_for:
-      - "Sharp braking, left-hand turn"
-      - "Slow corner speed"
     parent: silverstone
     children: []
     exclusive_with: []
@@ -1502,9 +1164,6 @@ labels:
     name: "The Loop"
     type: circuit_section
     description: "Right-hand hairpin after Village. One of the slowest points on the circuit."
-    what_to_look_for:
-      - "Very low speed, tight right-hand turn"
-      - "Hairpin trajectory"
     parent: silverstone
     children: []
     exclusive_with: []
@@ -1513,8 +1172,6 @@ labels:
     name: "Aintree"
     type: circuit_section
     description: "Left-right complex after The Loop."
-    what_to_look_for:
-      - "Direction changes at moderate speed"
     parent: silverstone
     children: []
     exclusive_with: []
@@ -1523,9 +1180,6 @@ labels:
     name: "Wellington Straight"
     type: circuit_section
     description: "Medium-length straight between Aintree and Brooklands."
-    what_to_look_for:
-      - "Full throttle, increasing speed"
-      - "Near-zero steering"
     parent: silverstone
     children: []
     exclusive_with: []
@@ -1534,8 +1188,6 @@ labels:
     name: "Brooklands"
     type: circuit_section
     description: "Right-hand corner before Luffield."
-    what_to_look_for:
-      - "Braking into a right-hand turn"
     parent: silverstone
     children: []
     exclusive_with: []
@@ -1544,9 +1196,6 @@ labels:
     name: "Luffield"
     type: circuit_section
     description: "Long left-hand corner leading onto the pit straight."
-    what_to_look_for:
-      - "Sustained left steering"
-      - "Critical exit speed — defines pit-straight speed"
     parent: silverstone
     children: []
     exclusive_with: []
@@ -1555,9 +1204,6 @@ labels:
     name: "Pit"
     type: circuit_section
     description: "Pit lane section at Silverstone."
-    what_to_look_for:
-      - "Low speed, pit limiter engaged"
-      - "Trajectory through pit lane"
     parent: silverstone
     children: []
     exclusive_with: []
@@ -1566,9 +1212,6 @@ labels:
     name: "Vale first 90 shape turn"
     type: circuit_section
     description: "First part of the Vale chicane — a ~90-degree turn."
-    what_to_look_for:
-      - "Sharp ~90-degree direction change"
-      - "First part of the chicane complex"
     parent: silverstone
     children: []
     exclusive_with: []
@@ -1577,9 +1220,6 @@ labels:
     name: "Vale second over 90 rounded turn"
     type: circuit_section
     description: "Second part of the Vale chicane — a rounded turn of more than 90 degrees."
-    what_to_look_for:
-      - "Rounded turn >90 degrees"
-      - "Second part of the Vale chicane"
     parent: silverstone
     children: []
     exclusive_with: []

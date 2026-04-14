@@ -23,6 +23,7 @@ from __future__ import annotations
 import io
 import json
 import logging
+import operator
 import threading
 from dataclasses import dataclass, field
 from typing import Any, Annotated, Callable, Dict, List, Literal, Optional, Sequence, TypedDict
@@ -55,21 +56,24 @@ class AnnotationState(TypedDict, total=False):
     parent_end: int          # parent segment end boundary
     available_labels: dict
     label_guidelines: dict
-    # --- planner tool requests (selective execution) ---
-    requested_statistics: list   # stat category IDs from STATISTIC_CATEGORIES
-    requested_graphs: list       # graph IDs from AGENT_GRAPH_DEFINITIONS
-    # --- tool outputs ---
-    tool_statistics_text: str
-    tool_graph_images: list  # list of bytes (PNG images)
-    tool_graph_descriptions: list
-    # --- agent state ---
+    # --- planner state ---
     plan: str
+    plan_steps: list
+    current_step_index: int
+    step_results: Annotated[list, operator.add]
+    all_graph_images: list
+    all_graph_descriptions: list
+    # --- Per-step transient state ---
+    current_step_statistics_text: str
+    current_step_graph_images: list
+    current_step_graph_descriptions: list
+    # --- agent state ---
     proposed_sub_start: int      # VLM-proposed sub-segment start index
     proposed_sub_end: int        # VLM-proposed sub-segment end index
     proposed_labels: list
     proposed_reasoning: str
     parse_warnings: list         # JSON parse / structural issues from solver
-    raw_subsegment_solver_response: str  # raw VLM output from subsegment solver
+    raw_step_solver_response: str  # raw VLM output from step solver
     evaluation: str
     evaluation_feedback: str
     iteration: int
@@ -91,18 +95,21 @@ def _default_state() -> AnnotationState:
         "parent_end": 0,
         "available_labels": {},
         "label_guidelines": {},
-        "requested_statistics": [],
-        "requested_graphs": [],
-        "tool_statistics_text": "",
-        "tool_graph_images": [],
-        "tool_graph_descriptions": [],
         "plan": "",
+        "plan_steps": [],
+        "current_step_index": 0,
+        "step_results": [],
+        "all_graph_images": [],
+        "all_graph_descriptions": [],
+        "current_step_statistics_text": "",
+        "current_step_graph_images": [],
+        "current_step_graph_descriptions": [],
         "proposed_sub_start": 0,
         "proposed_sub_end": 0,
         "proposed_labels": [],
         "proposed_reasoning": "",
         "parse_warnings": [],
-        "raw_subsegment_solver_response": "",
+        "raw_step_solver_response": "",
         "evaluation": "",
         "evaluation_feedback": "",
         "iteration": 0,
@@ -159,7 +166,7 @@ def _build_subsegment_context(
     parent_end: int,
     catalog: Optional[LabelCatalog] = None,
 ) -> str:
-    """Build rich context for the **subsegment solver**.
+    """Build rich context for the **step solver**.
 
     Combines in one pass:
     - Parent Main Labels as hints
@@ -308,77 +315,83 @@ def _validate_and_fix_hierarchy(
     return list(dict.fromkeys(fixed)), warnings
 
 
-
-    """Create a concise text summary of the telemetry slice.
-
-    Delegates to the tools module when the pre-computed statistics text is
-    not already available in ``segment_data``.
-    """
-    from .annotation_agent_tools import format_statistics_as_text
-    return format_statistics_as_text(segment_data)
-
-
 # ---------------------------------------------------------------------------
-# Planner tool-request parser
+# Plan parsing helpers
 # ---------------------------------------------------------------------------
 
 
-def _parse_planner_tool_requests(
-    plan_text: str,
-) -> Dict[str, List[str]]:
-    """Extract the structured tool-request JSON from the planner output.
+def _parse_planner_steps(plan_text: str, available_tools: list) -> list:
+    """Parse planner VLM output into structured step dicts.
 
-    The planner is instructed to end its response with a JSON block like::
+    Attempts to extract a JSON ``{"steps": [...]}`` block from the plan.
+    Falls back to a single catch-all step that requests all available
+    statistics and graphs when parsing fails.
 
-        ```json
-        {"requested_statistics": ["speed", "throttle"], "requested_graphs": ["speed", "throttle"]}
-        ```
-
-    Returns
-    -------
-    dict with keys ``requested_statistics`` and ``requested_graphs``.
-    If parsing fails, both lists are empty (caller treats empty as "all").
+    Each returned step dict has keys:
+        step_id, description, requested_statistics, requested_graphs
     """
-    from .annotation_agent_tools import ALL_STATISTIC_CATEGORY_IDS, AGENT_GRAPH_DEFINITIONS
+    from .annotation_agent_tools import AGENT_GRAPH_DEFINITIONS
 
-    valid_graph_ids = {g["id"] for g in AGENT_GRAPH_DEFINITIONS}
-    valid_stat_ids = set(ALL_STATISTIC_CATEGORY_IDS)
+    all_graph_ids = [g["id"] for g in AGENT_GRAPH_DEFINITIONS]
 
-    result: Dict[str, List[str]] = {
-        "requested_statistics": [],
-        "requested_graphs": [],
-    }
-
+    # Try to extract JSON from the plan text
+    steps_raw: list | None = None
     try:
-        json_str = plan_text
-        if "```json" in json_str:
-            json_str = json_str.split("```json")[-1].split("```")[0]
-        elif "```" in json_str:
-            # Try last code block
-            parts = json_str.split("```")
-            for part in reversed(parts):
-                stripped = part.strip()
-                if stripped.startswith("{"):
-                    json_str = stripped
-                    break
+        # Look for ```json ... ``` fenced block first
+        import re
+        json_match = re.search(r"```json\s*(\{.*?\})\s*```", plan_text, re.DOTALL)
+        if json_match:
+            parsed = json.loads(json_match.group(1))
+        else:
+            # Try parsing the whole text or the first { ... } block
+            brace_match = re.search(r"(\{.*\})", plan_text, re.DOTALL)
+            if brace_match:
+                parsed = json.loads(brace_match.group(1))
+            else:
+                parsed = None
+        if parsed and isinstance(parsed, dict) and "steps" in parsed:
+            steps_raw = parsed["steps"]
+    except (json.JSONDecodeError, ValueError):
+        steps_raw = None
 
-        parsed = json.loads(json_str.strip())
+    if not steps_raw or not isinstance(steps_raw, list):
+        # Fallback — single step that asks for everything
+        LOGGER.warning("Could not parse planner steps; using fallback.")
+        return [{
+            "step_id": 1,
+            "description": "Analyse all telemetry features and propose the most fitting labels.",
+            "requested_statistics": list(available_tools),
+            "requested_graphs": list(all_graph_ids),
+        }]
 
-        raw_stats = parsed.get("requested_statistics", [])
-        if isinstance(raw_stats, list):
-            result["requested_statistics"] = [
-                s for s in raw_stats if s in valid_stat_ids
-            ]
+    structured: list[dict] = []
+    for i, raw_step in enumerate(steps_raw, start=1):
+        step_id = raw_step.get("step_id", i)
+        desc = raw_step.get("description", f"Step {step_id}")
 
-        raw_graphs = parsed.get("requested_graphs", [])
-        if isinstance(raw_graphs, list):
-            result["requested_graphs"] = [
-                g for g in raw_graphs if g in valid_graph_ids
-            ]
-    except (json.JSONDecodeError, IndexError, KeyError, ValueError):
-        LOGGER.debug("Planner did not produce parseable tool requests; using all tools.")
+        # Extract requested tools from the step description / explicit keys
+        req_stats = raw_step.get("requested_statistics", [])
+        req_graphs = raw_step.get("requested_graphs", [])
 
-    return result
+        # If the VLM didn't specify explicit tool requests, try to infer
+        # from keywords in the description
+        if not req_stats and not req_graphs:
+            desc_lower = desc.lower()
+            req_stats = [t for t in available_tools if t in desc_lower]
+            req_graphs = [g for g in all_graph_ids if g in desc_lower]
+
+        # Validate against known tool IDs
+        req_stats = [s for s in req_stats if s in available_tools]
+        req_graphs = [g for g in req_graphs if g in all_graph_ids]
+
+        structured.append({
+            "step_id": step_id,
+            "description": desc,
+            "requested_statistics": req_stats,
+            "requested_graphs": req_graphs,
+        })
+
+    return structured
 
 
 # ---------------------------------------------------------------------------
@@ -404,7 +417,7 @@ def planner_node(state: AnnotationState) -> dict:
     existing children to decide *which statistics and graphs* are needed
     to find a new sub-segment within the parent range.
     """
-    from .annotation_agent_tools import STATISTIC_CATEGORIES, AGENT_GRAPH_DEFINITIONS
+    from .annotation_agent_tools import STATISTIC_CATEGORIES, AGENT_GRAPH_DEFINITIONS, ALL_STATISTIC_CATEGORY_IDS
 
     iteration = state.get("iteration", 0) + 1
     feedback = state.get("evaluation_feedback", "")
@@ -427,6 +440,14 @@ def planner_node(state: AnnotationState) -> dict:
     )
 
     main_readable = [LABEL_MAPPING.get(l, l) for l in parent_main_labels]
+    catalog = get_label_catalog()
+    analysis_hints = []
+    for label_id in parent_main_labels:
+        label_def = catalog.get_label(label_id)
+        if label_def and label_def.analysis_steps:
+            analysis_hints.append(f"  - {label_def.name} ({label_id}):")
+            for step in label_def.analysis_steps:
+                analysis_hints.append(f"    - {step}")
 
     prompt_parts = [
         "You are a racing telemetry analyst planning a sub-segment discovery strategy.",
@@ -436,6 +457,11 @@ def planner_node(state: AnnotationState) -> dict:
         f"Range: [{parent_start}, {parent_end}] (length: {parent_end - parent_start} data points)",
         "",
     ]
+
+    if analysis_hints:
+        prompt_parts.append("=== Analysis Hints (from Label Catalog) ===")
+        prompt_parts.extend(analysis_hints)
+        prompt_parts.append("")
 
     # Existing children for duplicate avoidance
     if existing_children:
@@ -472,12 +498,21 @@ def planner_node(state: AnnotationState) -> dict:
         "A sub-segment is a contiguous region where a specific event "
         "or behaviour occurs.",
         "",
-        "At the end of your response, output a JSON block specifying "
-        "which tools to run:",
+        "Your plan must be a JSON object with a single key \"steps\".",
+        "The \"steps\" key must contain a list of step objects.",
+        "Each step object must have:",
+        "  - \"step_id\": An integer (1, 2, 3, ...).",
+        "  - \"description\": A string describing the goal of the step.",
+        "You can have multiple steps. The final step should be for synthesizing the proposal and usually has no tool requests.",
+        "",
+        "Example of a valid plan:",
         "```json",
         '{',
-        '  "requested_statistics": ["category_id_1", "category_id_2"],',
-        '  "requested_graphs": ["graph_id_1", "graph_id_2"]',
+        '  "steps": [',
+        '    {"step_id": 1, "description": "Analyze speed and acceleration to find the core anomaly."},',
+        '    {"step_id": 2, "description": "Investigate braking behavior around the identified anomaly."},',
+        '    {"step_id": 3, "description": "Synthesize findings to define the precise sub-segment boundaries and labels."}',
+        '  ]',
         '}',
         "```",
     ])
@@ -516,7 +551,8 @@ def planner_node(state: AnnotationState) -> dict:
                "Examine all telemetry features and propose the most fitting labels."
 
     # Parse structured tool requests from planner output
-    tool_requests = _parse_planner_tool_requests(plan)
+    available_tools = list(ALL_STATISTIC_CATEGORY_IDS)
+    parsed_steps = _parse_planner_steps(plan, available_tools)
 
     msg = {"role": "planner", "iteration": iteration, "content": plan}
     messages = list(state.get("messages", []))
@@ -524,9 +560,12 @@ def planner_node(state: AnnotationState) -> dict:
 
     return {
         "plan": plan,
+        "plan_steps": parsed_steps,
+        "current_step_index": 0,
+        "step_results": [],
+        "all_graph_images": [],
+        "all_graph_descriptions": [],
         "iteration": iteration,
-        "requested_statistics": tool_requests["requested_statistics"],
-        "requested_graphs": tool_requests["requested_graphs"],
         "messages": messages,
     }
 
@@ -536,70 +575,78 @@ def planner_node(state: AnnotationState) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def tool_executor_node(state: AnnotationState) -> dict:
-    """Execute the annotation tools to gather evidence for the solver.
-
-    Only runs the statistics categories and graphs that the planner
-    requested.  If the planner did not produce parseable requests
-    (empty lists), falls back to running all tools.
+def step_executor_node(state: AnnotationState) -> Dict[str, Any]:
+    """
+    Executes the tools (statistics, graphs) requested for the current step in the plan.
     """
     from .annotation_agent_tools import (
         get_telemetry_statistics,
         format_statistics_as_text,
         generate_telemetry_graphs,
     )
-
-    segment_data = state.get("segment_data", {})
+    messages = list(state.get("messages", []))
+    plan_steps = state.get("plan_steps", [])
+    current_step_index = state.get("current_step_index", 0)
     df = state.get("df_ref")
-    start = segment_data.get("start_index", 0)
-    end = segment_data.get("end_index", 0)
-    session_id = segment_data.get("session_id", "unknown")
+    start = state.get("parent_start", 0)
+    end = state.get("parent_end", 0)
+    session_id = state.get("segment_data", {}).get("session_id", "unknown")
 
-    req_stats = state.get("requested_statistics", [])
-    req_graphs = state.get("requested_graphs", [])
+    if not plan_steps or current_step_index >= len(plan_steps):
+        LOGGER.warning("Step executor called with no steps or invalid index. Skipping.")
+        return {
+            "current_step_statistics_text": "",
+            "current_step_graph_images": [],
+            "current_step_graph_descriptions": [],
+        }
 
-    # --- Tool 1: statistics (selective) ---
-    stats = get_telemetry_statistics(
-        df, start, end, session_id,
-        stat_categories=req_stats or None,  # None = all
-    )
-    stats_text = format_statistics_as_text(stats)
+    step = plan_steps[current_step_index]
+    requested_stats = step.get("requested_statistics", [])
+    requested_graphs = step.get("requested_graphs", [])
+    LOGGER.info(f"Executing step {current_step_index + 1}/{len(plan_steps)}: {step.get('description')}")
+    LOGGER.info(f"  - Requested statistics: {requested_stats}")
+    LOGGER.info(f"  - Requested graphs: {requested_graphs}")
 
-    # --- Tool 2: graphs (selective) ---
-    graph_image_bytes: list = []
-    graph_descriptions: list = []
+    stats_text = ""
+    if requested_stats:
+        stats = get_telemetry_statistics(
+            df, start, end, session_id,
+            stat_categories=requested_stats
+        )
+        stats_text = format_statistics_as_text(stats)
 
-    if df is not None:
+    image_bytes_list = []
+    desc_list = []
+    if requested_graphs:
         graph_results = generate_telemetry_graphs(
             df, start, end,
-            graph_ids=req_graphs or None,  # None = all
+            graph_ids=requested_graphs
         )
         for img, desc in graph_results:
-            graph_descriptions.append(desc)
-            # Serialize PIL Image → PNG bytes for state transport
+            desc_list.append(desc)
             buf = io.BytesIO()
             img.save(buf, format="PNG")
-            graph_image_bytes.append(buf.getvalue())
+            image_bytes_list.append(buf.getvalue())
 
-    msg = {
-        "role": "tool_executor",
-        "iteration": state.get("iteration", 0),
-        "content": (
-            f"Statistics: {len(stats.get('telemetry_summary', {}))} columns "
-            f"(categories: {req_stats or 'all'}). "
-            f"Graphs: {len(graph_descriptions)} "
-            f"(ids: {req_graphs or 'all'})"
-            f"{' with images' if graph_image_bytes else ' (descriptions only)'}."
-        ),
-    }
-    messages = list(state.get("messages", []))
-    messages.append(msg)
+
+    # Create a tool message for logging/debugging
+    tool_outputs = []
+    if stats_text:
+        tool_outputs.append({"tool_name": "get_telemetry_statistics", "content": stats_text})
+    if image_bytes_list:
+        # For logging, just note that images were generated
+        content = f"Generated {len(image_bytes_list)} graphs: {', '.join(desc_list)}"
+        tool_outputs.append({"tool_name": "generate_telemetry_graphs", "content": content})
+
+    if tool_outputs:
+        messages.append({"role": "tool", "content": tool_outputs})
 
     return {
-        "segment_data": stats,  # overwrite with full stats
-        "tool_statistics_text": stats_text,
-        "tool_graph_images": graph_image_bytes,
-        "tool_graph_descriptions": graph_descriptions,
+        "current_step_statistics_text": stats_text,
+        "current_step_graph_images": image_bytes_list,
+        "current_step_graph_descriptions": desc_list,
+        "all_graph_images": state.get("all_graph_images", []) + image_bytes_list,
+        "all_graph_descriptions": state.get("all_graph_descriptions", []) + desc_list,
         "messages": messages,
     }
 
@@ -731,33 +778,121 @@ def _build_graph_prompt_section(
     return parts
 
 
-# --- Subsegment solver -----------------------------------------------------
+# --- Step solver ------------------------------------------------------------
 
 
-def subsegment_solver_node(state: AnnotationState) -> dict:
-    """Propose ONE sub-segment (start, end, labels) within the parent range.
-
-    Uses :func:`_build_subsegment_context` to provide parent Main Labels as
-    hints, available sub-labels, segment types, circuit sections, and
-    existing children for duplicate avoidance.  Calls
-    :func:`_validate_and_fix_hierarchy` to auto-insert missing parents.
+def step_reasoner_node(state: AnnotationState) -> Dict[str, Any]:
     """
-    plan = state.get("plan", "")
+    Reasons about the output of the current step's tool executions.
+    """
+    messages = list(state.get("messages", []))
+    iteration = state.get("iteration", 0)
+    plan_steps = state.get("plan_steps", [])
+    current_step_index = state.get("current_step_index", 0)
+    step = plan_steps[current_step_index]
+    parent_main_labels = state.get("parent_main_labels", [])
+    parent_start = state.get("parent_start", 0)
+    parent_end = state.get("parent_end", 0)
+
+    # Filter previous results for the current iteration
+    previous_step_results = [res for res in state.get("step_results", []) if res.get("iteration") == iteration]
+    reasoning_history = "\n".join(
+        [f"Step {res['step_id']}: {res['description']}\nReasoning: {res['reasoning']}" for res in previous_step_results]
+    )
+
+    stats_text = state.get("current_step_statistics_text", "")
+    graph_descriptions = state.get("current_step_graph_descriptions", [])
+    graph_images = state.get("current_step_graph_images", [])
+
+    prompt = (
+        f"You are an expert telemetry analyst executing one step of a larger plan. "
+        f"Your goal is to analyze the provided data and form a conclusion for this specific step, which will be used later.\n\n"
+        f"**Parent Segment Context:**\n"
+        f"- Labels: {[LABEL_MAPPING.get(l, l) for l in parent_main_labels]}\n"
+        f"- Index Range: {parent_start} to {parent_end}\n\n"
+        f"**Plan Execution History (Current Iteration):**\n{reasoning_history or 'This is the first step.'}\n\n"
+        f"**Current Step ({step['step_id']}): {step['description']}**\n\n"
+        f"**Tool Outputs for this Step:**\n"
+    )
+
+    content_for_vlm = []
+    if stats_text:
+        prompt += f"- Telemetry Statistics:\n{stats_text}\n"
+
+    if graph_descriptions:
+        prompt += f"- Generated Graphs:\n" + "\n".join([f"  - {desc}" for desc in graph_descriptions]) + "\n"
+
+    prompt += (
+        "\n**Your Task:**\n"
+        "Based *only* on the information for the current step, provide your reasoning and analysis. "
+        "What have you learned? What are the key takeaways from these statistics and graphs? "
+        "Do not propose a final answer or segment boundaries yet. Focus only on interpreting this step's data."
+    )
+    content_for_vlm.append({"type": "text", "text": prompt})
+
+    for image_bytes in graph_images:
+        import base64
+        content_for_vlm.append({"type": "image_url", "image_url": {"url": f"data:image/png;base64,{base64.b64encode(image_bytes).decode()}"}})
+
+    vlm_response_text = _call_vlm(prompt, graph_images)
+    messages.append({"role": "assistant", "content": vlm_response_text})
+
+    # Increment index for the next step
+    next_step_index = current_step_index + 1
+
+    return {
+        "current_step_index": next_step_index,
+        "step_results": [{
+            "iteration": iteration,
+            "step_id": step["step_id"],
+            "description": step["description"],
+            "reasoning": vlm_response_text,
+            "statistics_text": stats_text,
+            "graph_descriptions": graph_descriptions,
+        }],
+        "messages": messages,
+    }
+
+
+def step_router(state: AnnotationState) -> Literal["step_executor", "proposal_synthesizer"]:
+    """
+    Routes to the next step executor or to the proposal synthesizer if all steps are complete.
+    """
+    if state["current_step_index"] < len(state.get("plan_steps", [])):
+        return "step_executor"
+    return "proposal_synthesizer"
+
+
+def proposal_synthesizer_node(state: AnnotationState) -> Dict[str, Any]:
+    """
+    Synthesizes all step results into a final proposal JSON.
+    """
+    messages = state.get("messages", [])
+    iteration = state.get("iteration", 0)
+    all_graph_images = state.get("all_graph_images", [])
     parent_main_labels = state.get("parent_main_labels", [])
     existing_children = state.get("existing_children", [])
     parent_start = state.get("parent_start", 0)
     parent_end = state.get("parent_end", 0)
     segment_data = state.get("segment_data", {})
-    stats_text = state.get("tool_statistics_text", "")
-    graph_descriptions = state.get("tool_graph_descriptions", [])
-    graph_image_bytes = state.get("tool_graph_images", [])
+
+    # Filter results for the current iteration
+    current_iteration_steps = [res for res in state.get("step_results", []) if res.get("iteration") == iteration]
+    
+    # Format the evidence from all steps
+    evidence_summary = ""
+    for step in sorted(current_iteration_steps, key=lambda x: x['step_id']):
+        evidence_summary += f"--- Step {step['step_id']}: {step['description']} ---\n"
+        if step.get('statistics_text'):
+            evidence_summary += f"Statistics:\n{step['statistics_text']}\n"
+        if step.get('graph_descriptions'):
+            evidence_summary += f"Graphs: {', '.join(step['graph_descriptions'])}\n"
+        evidence_summary += f"Reasoning: {step['reasoning']}\n\n"
 
     subsegment_context = _build_subsegment_context(
         parent_main_labels, existing_children, parent_start, parent_end,
     )
-    telemetry_summary = stats_text or _summarise_telemetry(segment_data)
-
-    main_readable = [LABEL_MAPPING.get(l, l) for l in parent_main_labels]
+    telemetry_summary = _summarise_telemetry(segment_data)
 
     prompt_parts = [
         "You are a racing telemetry analyst discovering sub-segments.",
@@ -771,34 +906,31 @@ def subsegment_solver_node(state: AnnotationState) -> dict:
         "recovery manoeuvre).",
         "",
         "=== Parent Segment Main Labels ===",
-        f"{', '.join(main_readable)} (IDs: {json.dumps(parent_main_labels)})",
+        f"{', '.join([LABEL_MAPPING.get(l, l) for l in parent_main_labels])} (IDs: {json.dumps(parent_main_labels)})",
         "Use these as hints for what kind of events to look for.",
         "",
-        "=== Analysis Plan ===",
-        plan,
-        "",
-        "=== Telemetry Statistics ===",
-        telemetry_summary,
+        "=== Step-by-Step Analysis Evidence ===",
+        evidence_summary,
         "",
     ]
     prompt_parts.extend(
-        _build_graph_prompt_section(graph_descriptions, graph_image_bytes)
+        _build_graph_prompt_section(state.get("all_graph_descriptions", []), all_graph_images)
     )
     prompt_parts.extend([
         subsegment_context,
         "",
         "=== Instructions ===",
-        "Propose ONE sub-segment with its index range and labels.",
-        f"The start_index must be >= {parent_start} and end_index must be <= {parent_end}.",
+        "Based on all the evidence, define the sub-segment by providing a JSON object with the following structure. "
+        f"The start and end indices MUST be within the parent's range [{parent_start}, {parent_end}].\n\n"
         "start_index must be strictly less than end_index.",
         "In your reasoning, describe the chosen range as [start_index, end_index] with its "
-        "length (end_index - start_index) and explain why those specific boundaries were chosen.",
+        "length (end_index - start_index) and explain why those specific boundaries were chosen, referencing the step-by-step analysis and visual evidence.",
         "You MUST respond in the following JSON format only:",
         "```json",
         '{',
-        '  "start_index": <int>,',
-        '  "end_index": <int>,',
-        '  "proposed_labels": ["LABEL_ID_1", "LABEL_ID_2", ...],',
+        f'  "start_index": <integer, e.g., {parent_start + 10}>,',
+        f'  "end_index": <integer, e.g., {parent_end - 10}>,',
+        f'  "proposed_labels": ["LABEL_ID_1", "LABEL_ID_2", ...],',
         '  "reasoning": "Your detailed reasoning for the chosen range and labels."',
         '}',
         "```",
@@ -806,7 +938,7 @@ def subsegment_solver_node(state: AnnotationState) -> dict:
 
     prompt = "\n".join(prompt_parts)
 
-    raw_response = _call_vlm(prompt, graph_image_bytes)
+    raw_response = _call_vlm(prompt, all_graph_images)
     if not raw_response:
         raw_response = json.dumps({
             "start_index": parent_start,
@@ -835,9 +967,9 @@ def subsegment_solver_node(state: AnnotationState) -> dict:
         if isinstance(raw_end, (int, float)):
             proposed_end = int(raw_end)
     else:
-        LOGGER.warning("Subsegment solver response was not valid JSON.")
+        LOGGER.warning("Proposal synthesizer response was not valid JSON.")
         parse_warnings.append(
-            "Subsegment solver output was not valid JSON. "
+            "Proposal synthesizer output was not valid JSON. "
             "Raw response needs to be restructured."
         )
 
@@ -845,17 +977,9 @@ def subsegment_solver_node(state: AnnotationState) -> dict:
     fixed_labels, hierarchy_warnings = _validate_and_fix_hierarchy(sub_labels)
     for w in hierarchy_warnings:
         LOGGER.info("Hierarchy fix: %s", w)
+    parse_warnings.extend(hierarchy_warnings)
 
-    msg = {
-        "role": "subsegment_solver",
-        "iteration": state.get("iteration", 0),
-        "content": reasoning,
-        "proposed_labels": fixed_labels,
-        "proposed_range": [proposed_start, proposed_end],
-        "hierarchy_warnings": hierarchy_warnings,
-    }
-    messages = list(state.get("messages", []))
-    messages.append(msg)
+    messages.append({"role": "assistant", "content": raw_response})
 
     return {
         "proposed_sub_start": proposed_start,
@@ -863,7 +987,7 @@ def subsegment_solver_node(state: AnnotationState) -> dict:
         "proposed_labels": fixed_labels,
         "proposed_reasoning": reasoning,
         "parse_warnings": parse_warnings,
-        "raw_subsegment_solver_response": raw_response,
+        "raw_step_solver_response": raw_response,
         "messages": messages,
     }
 
@@ -874,7 +998,7 @@ def _validate_solver_json_format(
     parent_start: int,
     parent_end: int,
 ) -> List[str]:
-    """Validate subsegment solver JSON output and return detailed format issues.
+    """Validate step solver JSON output and return detailed format issues.
 
     Checks the raw response for structural correctness: parsability,
     required keys (start_index, end_index, proposed_labels, reasoning),
@@ -888,7 +1012,7 @@ def _validate_solver_json_format(
     parsed = _parse_json_response(raw_subsegment)
     if parsed is None:
         issues.append(
-            "Subsegment solver did not produce valid JSON. "
+            "Step solver did not produce valid JSON. "
             "Expected a ```json``` code block containing an object with keys: "
             '"start_index", "end_index", "proposed_labels", "reasoning".'
         )
@@ -898,7 +1022,7 @@ def _validate_solver_json_format(
     for key in ("start_index", "end_index", "proposed_labels", "reasoning"):
         if key not in parsed:
             issues.append(
-                f'Subsegment solver JSON is missing required key "{key}". '
+                f'Step solver JSON is missing required key "{key}". '
                 "The solver must include all four keys."
             )
 
@@ -964,7 +1088,7 @@ def _validate_solver_json_format(
 
 
 def evaluator_node(state: AnnotationState) -> dict:
-    """Evaluate the subsegment solver's proposed sub-segment.
+    """Evaluate the step solver's proposed sub-segment.
 
     Validates the JSON format/range, then asks the VLM to review the
     proposed range and labels against the telemetry data. On accept the
@@ -975,15 +1099,16 @@ def evaluator_node(state: AnnotationState) -> dict:
     proposed_reasoning = state.get("proposed_reasoning", "")
     segment_data = state.get("segment_data", {})
     iteration = state.get("iteration", 0)
-    stats_text = state.get("tool_statistics_text", "")
-    graph_descriptions = state.get("tool_graph_descriptions", [])
-    graph_image_bytes = state.get("tool_graph_images", [])
+    all_graph_images = state.get("all_graph_images", [])
+    all_graph_descriptions = state.get("all_graph_descriptions", [])
     parse_warnings = state.get("parse_warnings", [])
-    raw_subsegment = state.get("raw_subsegment_solver_response", "")
+    raw_subsegment = state.get("raw_step_solver_response", "")
     parent_start = state.get("parent_start", 0)
     parent_end = state.get("parent_end", 0)
     proposed_sub_start = state.get("proposed_sub_start")
     proposed_sub_end = state.get("proposed_sub_end")
+    parent_main_labels = state.get("parent_main_labels", [])
+    messages = list(state.get("messages", []))
 
     # --- JSON format / range validation ---
     format_issues = _validate_solver_json_format(
@@ -998,7 +1123,7 @@ def evaluator_node(state: AnnotationState) -> dict:
             f"JSON format / structural issues detected in solver output:\n"
             f"{warning_text}\n\n"
             "=== Required JSON Format ===\n"
-            "The subsegment solver must output:\n"
+            "The step solver must output:\n"
             "```json\n"
             '{"start_index": <int>, "end_index": <int>, '
             '"proposed_labels": ["LABEL_ID", ...], '
@@ -1014,7 +1139,6 @@ def evaluator_node(state: AnnotationState) -> dict:
             "verdict": "reject",
             "content": feedback,
         }
-        messages = list(state.get("messages", []))
         messages.append(msg)
         return {
             "evaluation": "reject",
@@ -1023,116 +1147,108 @@ def evaluator_node(state: AnnotationState) -> dict:
             "messages": messages,
         }
 
-    if not proposed_labels:
-        feedback = (
-            "No labels were proposed by the solver. The JSON output was "
-            "malformed or contained no valid label IDs. "
-            "The solver must propose at least one label."
-        )
-        msg = {
-            "role": "evaluator",
-            "iteration": iteration,
-            "verdict": "reject",
-            "content": feedback,
-        }
-        messages = list(state.get("messages", []))
-        messages.append(msg)
-        return {
-            "evaluation": "reject",
-            "evaluation_feedback": feedback,
-            "parse_warnings": [],
-            "messages": messages,
-        }
-
-    telemetry_summary = stats_text or _summarise_telemetry(segment_data)
-    proposed_readable = [LABEL_MAPPING.get(l, l) for l in proposed_labels]
-
-    # Run hierarchy validation for exclusive-with detection
-    _, hierarchy_warnings = _validate_and_fix_hierarchy(proposed_labels)
-    conflict_warnings = [w for w in hierarchy_warnings if "exclusive" in w.lower()]
+    # --- VLM evaluation ---
+    telemetry_summary = _summarise_telemetry(segment_data)
+    
+    # Filter step results for the current iteration
+    current_iteration_steps = [res for res in state.get("step_results", []) if res.get("iteration") == iteration]
+    
+    # Format the evidence from all steps
+    evidence_summary = ""
+    for step in sorted(current_iteration_steps, key=lambda x: x['step_id']):
+        evidence_summary += f"--- Step {step['step_id']}: {step['description']} ---\n"
+        if step.get('statistics_text'):
+            evidence_summary += f"Statistics:\n{step['statistics_text']}\n"
+        if step.get('graph_descriptions'):
+            evidence_summary += f"Graphs: {', '.join(step['graph_descriptions'])}\n"
+        evidence_summary += f"Reasoning: {step['reasoning']}\n\n"
 
     prompt_parts = [
-        "You are a quality evaluator for racing telemetry sub-segment proposals.",
+        "You are a meticulous quality assurance specialist. Your job is to critically evaluate a proposed sub-segment annotation based on all available evidence.",
         "",
-        "=== Telemetry Statistics ===",
-        telemetry_summary,
+        "=== Parent Segment Context ===",
+        f"Main labels: {[LABEL_MAPPING.get(l, l) for l in parent_main_labels]}",
+        f"Range: [{parent_start}, {parent_end}]",
+        f"Telemetry Summary:\n{telemetry_summary}",
+        "",
+        "=== Step-by-Step Analysis Evidence ===",
+        evidence_summary,
         "",
     ]
     prompt_parts.extend(
-        _build_graph_prompt_section(graph_descriptions, graph_image_bytes)
+        _build_graph_prompt_section(all_graph_descriptions, all_graph_images)
     )
     prompt_parts.extend([
         "=== Proposed Sub-Segment ===",
-        f"Range: [{proposed_sub_start}, {proposed_sub_end}] "
-        f"(length: {(proposed_sub_end or 0) - (proposed_sub_start or 0)})  "
-        f"parent range: [{parent_start}, {parent_end}] "
-        f"(length: {parent_end - parent_start})",
-        f"Labels: {', '.join(proposed_readable)} (IDs: {json.dumps(proposed_labels)})",
+        f"Proposed Labels: {[LABEL_MAPPING.get(l, l) for l in proposed_labels]}",
+        f"Proposed Range: [{proposed_sub_start}, {proposed_sub_end}]",
+        f"Proposer's Reasoning: {proposed_reasoning}",
         "",
-        "=== Solver's Reasoning ===",
-        proposed_reasoning,
-        "",
-    ])
-
-    if conflict_warnings:
-        prompt_parts.append("=== Exclusive-With Conflicts ===")
-        for w in conflict_warnings:
-            prompt_parts.append(f"- {w}")
-        prompt_parts.append("")
-
-    prompt_parts.extend([
-        "=== Evaluation Criteria ===",
-        "1. Does the proposed range capture a distinct telemetry pattern?",
-        "2. Do the proposed labels match the observed behaviour in that range?",
-        "3. Are there any labels missing, contradicting the data, or exclusive-with conflicts?",
-        "4. Does the range [start_index, end_index] tightly capture the identified event, "
-        "or is it too wide or too narrow? Suggest tighter or wider boundaries if needed.",
-        "",
-        "Provide your evaluation. If the proposal is wrong or incomplete, "
-        "explain what should change.",
+        "=== Your Task ===",
+        "Critically evaluate the proposal. Does the reasoning logically follow from the step-by-step analysis? Are the proposed start/end indices tightly aligned with the evidence in the telemetry data and graphs? Are the labels appropriate?",
+        "1. **Analyze:** Compare the proposal to the evidence. Look for inconsistencies, loose boundaries, or flawed logic.",
+        "2. **Decide:** Output a single word: `pass` or `fail`.",
+        "3. **Justify:** On a new line, provide a concise but detailed justification for your decision. If it fails, explain exactly what is wrong (e.g., 'The end_index is 50 points too late, as the graph shows the anomaly ends at index 1500,' or 'The reasoning ignores the braking data from step 2.').",
     ])
 
     prompt = "\n".join(prompt_parts)
 
-    raw_response = _call_vlm(prompt, graph_image_bytes)
-    if not raw_response:
-        raw_response = "No VLM available. VERDICT: ACCEPT"
+    evaluation = _call_vlm(prompt, all_graph_images)
+    if not evaluation:
+        evaluation = "fail\nCould not evaluate."
 
-    feedback = raw_response
-    verdict = _extract_verdict(raw_response)
+    verdict_str, *feedback_lines = evaluation.strip().split("\n", 1)
+    verdict = "fail"
+    if "pass" in verdict_str.lower():
+        verdict = "pass"
+    feedback = feedback_lines[0].strip() if feedback_lines else "No feedback provided."
 
     msg = {
         "role": "evaluator",
         "iteration": iteration,
-        "verdict": verdict,
         "content": feedback,
+        "verdict": verdict,
     }
-    messages = list(state.get("messages", []))
     messages.append(msg)
 
-    result: dict = {
+    # On accept, promote proposed to final
+    if verdict == "pass":
+        return {
+            "evaluation": verdict,
+            "evaluation_feedback": feedback,
+            "final_sub_start": proposed_sub_start,
+            "final_sub_end": proposed_sub_end,
+            "final_labels": proposed_labels,
+            "final_reasoning": proposed_reasoning,
+            "messages": messages,
+        }
+
+    # On max-iteration exhaustion, promote the last proposal to final so the
+    # pipeline always returns a useful result even without an explicit "pass".
+    if state.get("iteration", 0) >= state.get("max_iterations", 3):
+        LOGGER.info(
+            "Max iterations reached without 'pass'; promoting last proposal to final."
+        )
+        return {
+            "evaluation": verdict,
+            "evaluation_feedback": feedback,
+            "final_sub_start": proposed_sub_start,
+            "final_sub_end": proposed_sub_end,
+            "final_labels": proposed_labels,
+            "final_reasoning": proposed_reasoning,
+            "messages": messages,
+        }
+
+    return {
         "evaluation": verdict,
         "evaluation_feedback": feedback,
         "messages": messages,
     }
 
-    if verdict == "accept":
-        result["final_labels"] = proposed_labels
-        result["final_reasoning"] = proposed_reasoning
-        result["final_sub_start"] = proposed_sub_start
-        result["final_sub_end"] = proposed_sub_end
-
-    return result
-
-
-# ---------------------------------------------------------------------------
-# Routing
-# ---------------------------------------------------------------------------
-
 
 def should_retry(state: AnnotationState) -> Literal["planner", "end"]:
     """Decide whether to loop back to the planner or finish."""
-    if state.get("evaluation") == "accept":
+    if state.get("evaluation") == "pass":
         return "end"
     if state.get("iteration", 0) >= state.get("max_iterations", 3):
         # Max retries reached — accept the latest proposal as-is
@@ -1145,30 +1261,39 @@ def should_retry(state: AnnotationState) -> Literal["planner", "end"]:
 # ---------------------------------------------------------------------------
 
 
-def build_annotation_graph() -> StateGraph:
-    """Construct and compile the annotation graph.
+def build_annotation_graph(
+    vlm_llm: Callable,
+    text_llm: Callable,
+) -> CompiledGraph:
+    """Build the annotation agent graph."""
+    with _llm_lock:
+        _llm_holder["vlm"] = vlm_llm
+        _llm_holder["llm"] = text_llm
 
-    Flow: planner → tool_executor → subsegment_solver → evaluator
-    On rejection the evaluator loops back to the planner.
-    """
     graph = StateGraph(AnnotationState)
 
     graph.add_node("planner", planner_node)
-    graph.add_node("tool_executor", tool_executor_node)
-    graph.add_node("subsegment_solver", subsegment_solver_node)
+    graph.add_node("step_executor", step_executor_node)
+    graph.add_node("step_reasoner", step_reasoner_node)
+    graph.add_node("proposal_synthesizer", proposal_synthesizer_node)
     graph.add_node("evaluator", evaluator_node)
 
     graph.set_entry_point("planner")
-    graph.add_edge("planner", "tool_executor")
-    graph.add_edge("tool_executor", "subsegment_solver")
-    graph.add_edge("subsegment_solver", "evaluator")
+    graph.add_edge("planner", "step_executor")
+    graph.add_edge("step_executor", "step_reasoner")
+    graph.add_conditional_edges(
+        "step_reasoner",
+        step_router,
+        {
+            "step_executor": "step_executor",
+            "proposal_synthesizer": "proposal_synthesizer",
+        },
+    )
+    graph.add_edge("proposal_synthesizer", "evaluator")
     graph.add_conditional_edges(
         "evaluator",
         should_retry,
-        {
-            "planner": "planner",
-            "end": END,
-        },
+        {"planner": "planner", "end": END},
     )
 
     return graph.compile()
@@ -1237,7 +1362,7 @@ def run_annotation_pipeline(
     config: Optional[AnnotationPipelineConfig] = None,
     progress_callback=None,
 ) -> AnnotationResult:
-    """Execute the planner → tool_executor → subsegment_solver → evaluator pipeline.
+    """Execute the planner → tool_executor → step_solver → evaluator pipeline.
 
     Parameters
     ----------
@@ -1309,7 +1434,7 @@ def run_annotation_pipeline(
         )
 
     # Build graph
-    graph = build_annotation_graph()
+    graph = build_annotation_graph(vlm_generate, llm_generate)
 
     # Register VLM + LLM functions for this run
     with _llm_lock:
@@ -1349,7 +1474,7 @@ def run_annotation_pipeline(
                     n_stats = len(final_state.get("segment_data", {}).get("telemetry_summary", {}))
                     n_graphs = len(final_state.get("tool_graph_descriptions", []))
                     detail = f"Gathered {n_stats} stat columns + {n_graphs} graph(s)"
-                elif node_name == "subsegment_solver":
+                elif node_name == "step_solver":
                     labels = final_state.get("proposed_labels", [])
                     ss = final_state.get("proposed_sub_start", "?")
                     se = final_state.get("proposed_sub_end", "?")
@@ -1367,14 +1492,22 @@ def run_annotation_pipeline(
         _llm_holder["vlm"] = None
         _llm_holder["llm"] = None
 
-    accepted = final_state.get("evaluation") == "accept"
+    accepted = final_state.get("evaluation") == "pass"
+
+    # Safety-net: if final_* were never written (e.g. an unexpected code path),
+    # fall back to the last proposed values so the result is never empty.
+    final_labels = final_state.get("final_labels") or final_state.get("proposed_labels", [])
+    final_reasoning = final_state.get("final_reasoning") or final_state.get("proposed_reasoning", "")
+    final_sub_start = final_state.get("final_sub_start") or final_state.get("proposed_sub_start")
+    final_sub_end = final_state.get("final_sub_end") or final_state.get("proposed_sub_end")
+
     return AnnotationResult(
-        final_labels=final_state.get("final_labels") or final_state.get("proposed_labels", []),
-        final_reasoning=final_state.get("final_reasoning") or final_state.get("proposed_reasoning", ""),
+        sub_start=final_sub_start,
+        sub_end=final_sub_end,
+        final_labels=final_labels,
+        final_reasoning=final_reasoning,
         accepted=accepted,
         iterations=final_state.get("iteration", 0),
         messages=final_state.get("messages", []),
-        graph_images=final_state.get("tool_graph_images", []),
-        sub_start=final_state.get("final_sub_start") or final_state.get("proposed_sub_start"),
-        sub_end=final_state.get("final_sub_end") or final_state.get("proposed_sub_end"),
+        graph_images=final_state.get("all_graph_images", []),
     )

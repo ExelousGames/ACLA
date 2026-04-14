@@ -2,7 +2,7 @@
 Streamlit UI component for the LangGraph multi-agent sub-segment discovery pipeline.
 
 Renders below the Gemini analysis section in the annotation manager and
-lets users run the Planner → Tool Executor → Subsegment Solver → Evaluator
+lets users run the Planner → Tool Executor → Step Solver → Evaluator
 cycle to discover a new sub-segment within the currently selected parent segment.
 The VLM analyses both telemetry statistics and **graph images**.
 """
@@ -46,7 +46,7 @@ def render_agent_annotation(df, form_start, form_end, form_labels, session_id, s
     """
     with st.expander("🔍 VLM Sub-Segment Discovery"):
         st.markdown(
-            "Run a **Planner → Tool Executor → Subsegment Solver → Evaluator** cycle "
+            "Run a **Planner → Tool Executor → Step Solver → Evaluator** cycle "
             "using the **Vision Language Model** "
             "to discover a new sub-segment within this parent segment."
         )
@@ -184,26 +184,17 @@ def render_agent_annotation(df, form_start, form_end, form_labels, session_id, s
                 step_log = progress_area.empty()
                 log_entries = []
 
-                def on_progress(step_name: str, iteration: int, detail: str):
-                    step_map = {
-                        "planner": 1,
-                        "tool_executor": 2,
-                        "subsegment_solver": 3,
-                        "evaluator": 4,
-                    }
-                    step_num = step_map.get(step_name, 0)
-                    total_steps = 4 * int(max_iterations)
-                    current_step = (max(1, iteration) - 1) * 4 + step_num
-                    pct = max(0.0, min(current_step / total_steps, 1.0))
+                def on_progress(node_name: str, iteration: int, detail: str):
+                    """Callback to update Streamlit UI with progress."""
+                    # Map node names to progress fraction
+                    node_order = ["planner", "step_executor", "step_reasoner",
+                                  "proposal_synthesizer", "evaluator"]
+                    idx = node_order.index(node_name) if node_name in node_order else 0
+                    progress = min((idx + 1) / len(node_order), 0.99)
+                    message = f"[Iter {iteration}] {node_name}: {detail}"
 
-                    status_text.markdown(
-                        f"**Iteration {iteration}** — _{step_name.replace('_', ' ').title()}_"
-                    )
-                    progress_bar.progress(pct)
-                    log_entries.append(
-                        f"**[Iter {iteration}] {step_name.replace('_', ' ').title()}**: {detail[:300]}"
-                    )
-                    step_log.markdown("\n\n---\n".join(log_entries))
+                    progress_bar.progress(progress)
+                    status_text.markdown(f"**Status:** _{message}_")
 
                 with st.spinner("Running sub-segment discovery pipeline..."):
                     result = run_annotation_pipeline(

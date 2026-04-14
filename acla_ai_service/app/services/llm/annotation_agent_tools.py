@@ -110,29 +110,29 @@ AGENT_GRAPH_DEFINITIONS: List[Dict[str, Any]] = [
 
 STATISTIC_CATEGORIES: Dict[str, Dict[str, Any]] = {
     "speed": {
-        "columns": [ "Physics_speed_kmh", "expert_optimal_speed_kmh"],
-        "deltas": [("Physics_speed_kmh", "expert_optimal_speed_kmh", "speed_delta")],
-        "description": "Speed traces and expert comparison.",
+        "columns": [ "Physics_speed_kmh", "expert_optimal_speed"],
+        "deltas": [("Physics_speed_kmh", "expert_optimal_speed", "speed_delta")],
+        "description": "Driver speed traces and expert comparison.",
     },
     "throttle": {
         "columns": ["Physics_gas", "expert_optimal_gas"],
         "deltas": [("Physics_gas", "expert_optimal_gas", "throttle_delta")],
-        "description": "Throttle traces and expert comparison.",
+        "description": "Driver throttle traces and expert comparison.",
     },
     "brake": {
         "columns": ["Physics_brake", "expert_optimal_brake"],
         "deltas": [("Physics_brake", "expert_optimal_brake", "brake_delta")],
-        "description": "Brake traces and expert comparison.",
+        "description": "Driver brake traces and expert comparison.",
     },
     "steering": {
         "columns": ["steer_angle"],
         "deltas": [],
-        "description": "Steering angle statistics.",
+        "description": "Driver steering angle statistics.",
     },
     "push_limit": {
         "columns": ["driver_push_to_limit"],
         "deltas": [],
-        "description": "Push-to-limit metric.",
+        "description": "Driver push-to-limit metric.",
     },
     "slip_angles": {
         "columns": [
@@ -142,7 +142,7 @@ STATISTIC_CATEGORIES: Dict[str, Dict[str, Any]] = {
             "Physics_slip_angle_rear_right",
         ],
         "deltas": [],
-        "description": "Tyre slip angles (front/rear). Used to derive oversteer/understeer balance.",
+        "description": "Driver tyre slip angles (front/rear). Used to derive oversteer/understeer balance.",
     },
 }
 

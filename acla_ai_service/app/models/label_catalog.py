@@ -2,8 +2,8 @@
 Label Catalog — loads and queries the YAML label knowledge base.
 
 The catalog enriches the existing LABEL_MAPPING / LABEL_CATEGORIES dicts
-in segment_models.py with rich descriptions, what-to-look-for guidance,
-hierarchy rules, and exclusive-with constraints.
+in segment_models.py with rich descriptions, hierarchy rules, and
+exclusive-with constraints.
 
 Usage::
 
@@ -40,7 +40,7 @@ class LabelEntry:
     """Metadata for a single label loaded from the YAML catalog."""
 
     __slots__ = (
-        "id", "name", "type", "description", "what_to_look_for",
+        "id", "name", "type", "description",
         "parent", "children", "exclusive_with", "analysis_steps",
     )
 
@@ -49,7 +49,6 @@ class LabelEntry:
         self.name: str = raw.get("name", LABEL_MAPPING.get(label_id, label_id))
         self.type: str = raw.get("type", "unknown")
         self.description: str = (raw.get("description") or "").strip()
-        self.what_to_look_for: List[str] = raw.get("what_to_look_for") or []
         self.parent: Optional[str] = raw.get("parent")
         self.children: List[str] = raw.get("children") or []
         self.exclusive_with: List[str] = raw.get("exclusive_with") or []
