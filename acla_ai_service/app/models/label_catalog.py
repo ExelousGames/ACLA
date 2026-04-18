@@ -26,7 +26,7 @@ from app.models.segment_models import LABEL_MAPPING, LABEL_CATEGORIES
 
 LOGGER = logging.getLogger(__name__)
 
-_CATALOG_PATH = Path(__file__).resolve().parent.parent / "config" / "label_catalog.yaml"
+_CATALOG_PATH = Path(__file__).resolve().parent.parent / "skills" / "label_catalog.yaml"
 
 # Module-level singleton
 _catalog_instance: Optional["LabelCatalog"] = None
