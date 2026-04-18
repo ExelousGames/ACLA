@@ -57,6 +57,12 @@ services:
     container_name: acla_backend_c
     env_file:
       - .dev.env
+      - .env.secrets
+    environment:
+      - ADMIN_USERNAME=${ADMIN_USERNAME}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD}
+      - AI_SERVICE_USERNAME=${AI_SERVICE_USERNAME}
+      - AI_SERVICE_PASSWORD=${AI_SERVICE_PASSWORD}
     volumes:
       - ./acla_backend:/app
       - /app/node_modules
@@ -87,8 +93,8 @@ services:
       - BACKEND_PROXY_PORT=${BACKEND_PORT}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - GEMINI_API_KEY=${GEMINI_API_KEY}
-      - BACKEND_USERNAME=${BACKEND_USERNAME}
-      - BACKEND_PASSWORD=${BACKEND_PASSWORD}
+      - AI_SERVICE_USERNAME=${AI_SERVICE_USERNAME}
+      - AI_SERVICE_PASSWORD=${AI_SERVICE_PASSWORD}
       - GOOGLE_APPLICATION_CREDENTIALS=${GOOGLE_APPLICATION_CREDENTIALS}
       - GEMINI_BATCH_GCS_BUCKET=${GEMINI_BATCH_GCS_BUCKET}
       - HF_TOKEN=${HF_TOKEN}

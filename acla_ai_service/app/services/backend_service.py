@@ -32,8 +32,8 @@ class BackendService:
         
         self.base_url = server_ip
         self.base_port = settings.backend_proxy_port
-        self.username = settings.backend_username
-        self.password = settings.backend_password
+        self.username = settings.ai_service_username
+        self.password = settings.ai_service_password
         self.jwt_token: Optional[str] = None
         self.is_connected: bool = False
         self._session_lock = asyncio.Lock()

@@ -36,8 +36,8 @@ async def lifespan(app: FastAPI):
     else:
         print("⚠️  Backend connection failed - some features may not work")
         print("   Check your backend credentials in environment variables:")
-        print("   - BACKEND_USERNAME")
-        print("   - BACKEND_PASSWORD")
+        print("   - AI_SERVICE_USERNAME")
+        print("   - AI_SERVICE_PASSWORD")
     
     yield
     

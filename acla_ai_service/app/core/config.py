@@ -23,9 +23,9 @@ class Settings(BaseSettings):
     backend_proxy_port: Optional[str] = None
     
 
-    # Backend Authentication
-    backend_username: Optional[str] = None
-    backend_password: Optional[str] = None
+    # AI Service Authentication (for backend login)
+    ai_service_username: Optional[str] = None
+    ai_service_password: Optional[str] = None
     
     # OpenAI Configuration
     openai_api_key: Optional[str] = None

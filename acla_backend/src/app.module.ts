@@ -11,6 +11,7 @@ import { RacingSessionModule } from './modules/racing-session/racing-session.mod
 import { AiModelModule as UserSessionAiModelModule } from './modules/user-session-ai-model/user-session-ai-model.module';
 import { AiModelModule } from './modules/ai-model/ai-model.module';
 import { ChunkModule } from './shared/chunk-service/chunk.module';
+import { SeedModule } from './shared/seed/seed.module';
 
 @Module({
 
@@ -23,6 +24,7 @@ import { ChunkModule } from './shared/chunk-service/chunk.module';
     ChunkModule,
     AuthModule,
     AuthorizationModule,
+    SeedModule,
     RacingMapModule,
     UserInfoModule,
     RacingSessionModule,
