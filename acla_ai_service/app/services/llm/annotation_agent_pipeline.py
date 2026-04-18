@@ -67,6 +67,10 @@ class AnnotationState(TypedDict, total=False):
     current_step_statistics_text: str
     current_step_graph_images: list
     current_step_graph_descriptions: list
+    # --- label filtering state ---
+    shortlisted_labels: list     # Phase 1: text-LLM bulk-filtered candidate label IDs
+    verified_labels: list        # Phase 2: VLM per-label binary-verified label IDs
+    verified_label_reasoning: dict  # {label_id: justification} from verifier
     # --- agent state ---
     proposed_sub_start: int      # VLM-proposed sub-segment start index
     proposed_sub_end: int        # VLM-proposed sub-segment end index
@@ -104,6 +108,9 @@ def _default_state() -> AnnotationState:
         "current_step_statistics_text": "",
         "current_step_graph_images": [],
         "current_step_graph_descriptions": [],
+        "shortlisted_labels": [],
+        "verified_labels": [],
+        "verified_label_reasoning": {},
         "proposed_sub_start": 0,
         "proposed_sub_end": 0,
         "proposed_labels": [],
@@ -377,8 +384,10 @@ def _parse_planner_steps(plan_text: str, available_tools: list) -> list:
         # from keywords in the description
         if not req_stats and not req_graphs:
             desc_lower = desc.lower()
-            req_stats = [t for t in available_tools if t in desc_lower]
-            req_graphs = [g for g in all_graph_ids if g in desc_lower]
+            req_stats = [t for t in available_tools
+                         if t in desc_lower or t.replace("_", " ") in desc_lower]
+            req_graphs = [g for g in all_graph_ids
+                          if g in desc_lower or g.replace("_", " ") in desc_lower]
 
         # Validate against known tool IDs
         req_stats = [s for s in req_stats if s in available_tools]
@@ -441,13 +450,11 @@ def planner_node(state: AnnotationState) -> dict:
 
     main_readable = [LABEL_MAPPING.get(l, l) for l in parent_main_labels]
     catalog = get_label_catalog()
-    analysis_hints = []
+    label_descriptions = []
     for label_id in parent_main_labels:
         label_def = catalog.get_label(label_id)
-        if label_def and label_def.analysis_steps:
-            analysis_hints.append(f"  - {label_def.name} ({label_id}):")
-            for step in label_def.analysis_steps:
-                analysis_hints.append(f"    - {step}")
+        if label_def and label_def.description:
+            label_descriptions.append(f"  - {label_def.name} ({label_id}): {label_def.description}")
 
     prompt_parts = [
         "You are a racing telemetry analyst planning a sub-segment discovery strategy.",
@@ -458,9 +465,9 @@ def planner_node(state: AnnotationState) -> dict:
         "",
     ]
 
-    if analysis_hints:
-        prompt_parts.append("=== Analysis Hints (from Label Catalog) ===")
-        prompt_parts.extend(analysis_hints)
+    if label_descriptions:
+        prompt_parts.append("=== Label Descriptions (from Label Catalog) ===")
+        prompt_parts.extend(label_descriptions)
         prompt_parts.append("")
 
     # Existing children for duplicate avoidance
@@ -503,15 +510,17 @@ def planner_node(state: AnnotationState) -> dict:
         "Each step object must have:",
         "  - \"step_id\": An integer (1, 2, 3, ...).",
         "  - \"description\": A string describing the goal of the step.",
+        "  - \"requested_statistics\": A list of statistic category IDs to compute for this step (from the catalogue above). Use an empty list if none are needed.",
+        "  - \"requested_graphs\": A list of graph IDs to generate for this step (from the catalogue above). Use an empty list if none are needed.",
         "You can have multiple steps. The final step should be for synthesizing the proposal and usually has no tool requests.",
         "",
         "Example of a valid plan:",
         "```json",
         '{',
         '  "steps": [',
-        '    {"step_id": 1, "description": "Analyze speed and acceleration to find the core anomaly."},',
-        '    {"step_id": 2, "description": "Investigate braking behavior around the identified anomaly."},',
-        '    {"step_id": 3, "description": "Synthesize findings to define the precise sub-segment boundaries and labels."}',
+        '    {"step_id": 1, "description": "Analyze speed and acceleration to find the core anomaly.", "requested_statistics": ["speed"], "requested_graphs": ["speed", "speed_delta"]},',
+        '    {"step_id": 2, "description": "Investigate braking behavior around the identified anomaly.", "requested_statistics": ["brake"], "requested_graphs": ["brake"]},',
+        '    {"step_id": 3, "description": "Synthesize findings to define the precise sub-segment boundaries and labels.", "requested_statistics": [], "requested_graphs": []}',
         '  ]',
         '}',
         "```",
@@ -854,20 +863,299 @@ def step_reasoner_node(state: AnnotationState) -> Dict[str, Any]:
     }
 
 
-def step_router(state: AnnotationState) -> Literal["step_executor", "proposal_synthesizer"]:
+def step_router(state: AnnotationState) -> Literal["step_executor", "label_shortlister"]:
     """
-    Routes to the next step executor or to the proposal synthesizer if all steps are complete.
+    Routes to the next step executor or to label shortlisting if all steps are complete.
     """
     if state["current_step_index"] < len(state.get("plan_steps", [])):
         return "step_executor"
-    return "proposal_synthesizer"
+    return "label_shortlister"
+
+
+# ---------------------------------------------------------------------------
+# Label shortlister — Phase 1: text-LLM bulk filter
+# ---------------------------------------------------------------------------
+
+
+def label_shortlister_node(state: AnnotationState) -> Dict[str, Any]:
+    """Narrow the label search space using the text-only LLM.
+
+    Sends the step-by-step reasoning (no images) to the text LLM and
+    asks it to select ~5-10 plausible candidate labels from the full
+    set of sub-labels relevant to the parent categories.
+    """
+    messages = list(state.get("messages", []))
+    iteration = state.get("iteration", 0)
+    parent_main_labels = state.get("parent_main_labels", [])
+    existing_children = state.get("existing_children", [])
+    parent_start = state.get("parent_start", 0)
+    parent_end = state.get("parent_end", 0)
+
+    # Collect step reasoning for this iteration
+    current_iteration_steps = [
+        res for res in state.get("step_results", [])
+        if res.get("iteration") == iteration
+    ]
+    reasoning_text = ""
+    for step in sorted(current_iteration_steps, key=lambda x: x["step_id"]):
+        reasoning_text += f"--- Step {step['step_id']}: {step['description']} ---\n"
+        if step.get("statistics_text"):
+            reasoning_text += f"Statistics:\n{step['statistics_text']}\n"
+        reasoning_text += f"Reasoning: {step['reasoning']}\n\n"
+
+    # Build the full candidate label list from parent sub-labels
+    catalog = get_label_catalog()
+    candidate_lines: list[str] = []
+    candidate_ids: list[str] = []
+
+    # Sub-labels from parent categories
+    for pid in parent_main_labels:
+        subs = catalog.get_sublabels(pid)
+        if subs:
+            parent_name = LABEL_MAPPING.get(pid, pid)
+            for entry in subs:
+                candidate_lines.append(
+                    f"- {entry.name} ({entry.id}): {entry.description}"
+                )
+                candidate_ids.append(entry.id)
+
+    # Segment types (always available)
+    for entry in catalog.get_segment_types():
+        candidate_lines.append(
+            f"- {entry.name} ({entry.id}): {entry.description}"
+        )
+        candidate_ids.append(entry.id)
+
+    if not candidate_lines:
+        # No sub-labels to filter — pass through empty
+        LOGGER.info("Label shortlister: no candidate sub-labels, skipping.")
+        messages.append({
+            "role": "label_shortlister",
+            "iteration": iteration,
+            "content": "No candidate sub-labels available for parent categories.",
+        })
+        return {
+            "shortlisted_labels": [],
+            "messages": messages,
+        }
+
+    prompt_parts = [
+        "You are a racing telemetry label specialist.",
+        "",
+        "=== Task ===",
+        "Based on the analysis below, select the 5-10 most plausible "
+        "candidate labels from the list. Only include labels that have "
+        "at least some evidence in the analysis.",
+        "",
+        "=== Parent Segment ===",
+        f"Main labels: {[LABEL_MAPPING.get(l, l) for l in parent_main_labels]}",
+        f"Range: [{parent_start}, {parent_end}]",
+        "",
+        "=== Step-by-Step Analysis (observations from telemetry) ===",
+        reasoning_text,
+        "",
+        "=== Candidate Labels ===",
+        "\n".join(candidate_lines),
+        "",
+    ]
+
+    # Existing children for context
+    if existing_children:
+        prompt_parts.append("=== Already Used Labels (avoid duplicates) ===")
+        for child in existing_children:
+            child_labels = [LABEL_MAPPING.get(l, l) for l in child.get("labels", [])]
+            prompt_parts.append(
+                f"- [{child['start_index']}, {child['end_index']}]: "
+                f"{', '.join(child_labels)}"
+            )
+        prompt_parts.append("")
+
+    prompt_parts.extend([
+        "=== Instructions ===",
+        "Return ONLY a JSON object with a single key \"shortlisted_labels\" "
+        "containing an array of label ID strings. Pick 5-10 labels maximum.",
+        "Example: {\"shortlisted_labels\": [\"MS23\", \"MS5\", \"ST3\"]}",
+    ])
+
+    prompt = "\n".join(prompt_parts)
+
+    # Use text-only LLM (cheap, fast) for this filtering step
+    llm_fn = _llm_holder.get("llm")
+    if not llm_fn:
+        # Fallback: use VLM without images
+        llm_fn = lambda p: _call_vlm(p, [])
+
+    # Override to use VLM for better quality on this critical step
+    # but without images (text-only reasoning)
+    raw = _call_vlm(prompt, [])
+    if not raw:
+        raw = ""
+
+    # Parse shortlisted labels
+    shortlisted: list[str] = []
+    parsed = _parse_json_response(raw)
+    if parsed and isinstance(parsed.get("shortlisted_labels"), list):
+        shortlisted = [
+            lid for lid in parsed["shortlisted_labels"]
+            if isinstance(lid, str) and lid in LABEL_MAPPING
+        ]
+
+    if not shortlisted:
+        # Fallback: pass all candidates (degrade gracefully)
+        LOGGER.warning("Label shortlister failed to parse output; passing all candidates.")
+        shortlisted = candidate_ids
+
+    LOGGER.info(
+        "Label shortlister: %d/%d candidates shortlisted: %s",
+        len(shortlisted), len(candidate_ids), shortlisted,
+    )
+
+    messages.append({
+        "role": "label_shortlister",
+        "iteration": iteration,
+        "content": f"Shortlisted {len(shortlisted)} labels: {shortlisted}\n\nRaw: {raw[:500]}",
+    })
+
+    return {
+        "shortlisted_labels": shortlisted,
+        "messages": messages,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Label verifier — Phase 2: VLM per-label binary check
+# ---------------------------------------------------------------------------
+
+
+def label_verifier_node(state: AnnotationState) -> Dict[str, Any]:
+    """Verify each shortlisted label with a binary yes/no VLM check.
+
+    Sends the VLM the graphs + stats for each candidate label and asks:
+    "Does this label match the evidence? yes/no + one-sentence justification."
+    """
+    messages = list(state.get("messages", []))
+    iteration = state.get("iteration", 0)
+    shortlisted = state.get("shortlisted_labels", [])
+    all_graph_images = state.get("all_graph_images", [])
+    all_graph_descriptions = state.get("all_graph_descriptions", [])
+    parent_main_labels = state.get("parent_main_labels", [])
+    parent_start = state.get("parent_start", 0)
+    parent_end = state.get("parent_end", 0)
+
+    if not shortlisted:
+        LOGGER.info("Label verifier: no shortlisted labels to verify.")
+        messages.append({
+            "role": "label_verifier",
+            "iteration": iteration,
+            "content": "No labels to verify.",
+        })
+        return {
+            "verified_labels": [],
+            "verified_label_reasoning": {},
+            "messages": messages,
+        }
+
+    # Collect step reasoning for evidence context
+    current_iteration_steps = [
+        res for res in state.get("step_results", [])
+        if res.get("iteration") == iteration
+    ]
+    evidence_summary = ""
+    for step in sorted(current_iteration_steps, key=lambda x: x["step_id"]):
+        evidence_summary += f"Step {step['step_id']}: {step['reasoning']}\n"
+
+    # Build graph description section (shared across all label checks)
+    graph_section = ""
+    if all_graph_descriptions:
+        graph_section = "Telemetry graphs are provided as images:\n" + "\n".join(
+            f"- Graph {i}: {desc}" for i, desc in enumerate(all_graph_descriptions, 1)
+        )
+
+    catalog = get_label_catalog()
+    verified: list[str] = []
+    reasoning_map: dict[str, str] = {}
+    verification_log: list[str] = []
+
+    for label_id in shortlisted:
+        entry = catalog.get_label(label_id)
+        label_name = entry.name if entry else LABEL_MAPPING.get(label_id, label_id)
+        label_desc = entry.description if entry else ""
+
+        prompt = (
+            f"You are a racing telemetry expert. Evaluate whether the label "
+            f"below matches the telemetry evidence.\n\n"
+            f"=== Label to Evaluate ===\n"
+            f"**{label_name}** ({label_id}): {label_desc}\n\n"
+            f"=== Parent Segment ===\n"
+            f"Main labels: {[LABEL_MAPPING.get(l, l) for l in parent_main_labels]}\n"
+            f"Range: [{parent_start}, {parent_end}]\n\n"
+            f"=== Analysis Evidence ===\n"
+            f"{evidence_summary}\n"
+        )
+        if graph_section:
+            prompt += f"\n{graph_section}\n"
+
+        prompt += (
+            f"\n=== Decision ===\n"
+            f"Does the label \"{label_name}\" match the evidence? "
+            f"Answer with exactly one line: YES or NO, followed by a "
+            f"one-sentence justification.\n"
+            f"Example: YES — The telemetry shows a clear late braking event.\n"
+            f"Example: NO — No evidence of throttle hesitation in the data."
+        )
+
+        response = _call_vlm(prompt, all_graph_images)
+        if not response:
+            response = "NO — VLM unavailable."
+
+        # Parse yes/no
+        first_line = response.strip().split("\n")[0].upper()
+        is_yes = first_line.startswith("YES")
+        justification = response.strip()
+
+        if is_yes:
+            verified.append(label_id)
+            reasoning_map[label_id] = justification
+            verification_log.append(f"✓ {label_name} ({label_id}): {justification[:100]}")
+        else:
+            verification_log.append(f"✗ {label_name} ({label_id}): {justification[:100]}")
+
+        LOGGER.info(
+            "Label verifier: %s (%s) → %s",
+            label_name, label_id, "YES" if is_yes else "NO",
+        )
+
+    # If nothing verified, keep the top 2 shortlisted as fallback
+    if not verified and shortlisted:
+        LOGGER.warning("Label verifier: no labels verified; keeping top 2 shortlisted as fallback.")
+        verified = shortlisted[:2]
+        for lid in verified:
+            reasoning_map[lid] = "Fallback — no labels passed verification."
+
+    messages.append({
+        "role": "label_verifier",
+        "iteration": iteration,
+        "content": (
+            f"Verified {len(verified)}/{len(shortlisted)} labels:\n"
+            + "\n".join(verification_log)
+        ),
+    })
+
+    return {
+        "verified_labels": verified,
+        "verified_label_reasoning": reasoning_map,
+        "messages": messages,
+    }
 
 
 def proposal_synthesizer_node(state: AnnotationState) -> Dict[str, Any]:
+    """Assemble the final proposal from verified labels and step evidence.
+
+    The heavy label selection work is done by label_shortlister and
+    label_verifier.  This node only needs to determine precise
+    sub-segment boundaries and emit well-formed JSON.
     """
-    Synthesizes all step results into a final proposal JSON.
-    """
-    messages = state.get("messages", [])
+    messages = list(state.get("messages", []))
     iteration = state.get("iteration", 0)
     all_graph_images = state.get("all_graph_images", [])
     parent_main_labels = state.get("parent_main_labels", [])
@@ -875,64 +1163,91 @@ def proposal_synthesizer_node(state: AnnotationState) -> Dict[str, Any]:
     parent_start = state.get("parent_start", 0)
     parent_end = state.get("parent_end", 0)
     segment_data = state.get("segment_data", {})
+    verified_labels = state.get("verified_labels", [])
+    verified_reasoning = state.get("verified_label_reasoning", {})
 
-    # Filter results for the current iteration
-    current_iteration_steps = [res for res in state.get("step_results", []) if res.get("iteration") == iteration]
-    
-    # Format the evidence from all steps
+    # Collect step evidence for this iteration
+    current_iteration_steps = [
+        res for res in state.get("step_results", [])
+        if res.get("iteration") == iteration
+    ]
     evidence_summary = ""
-    for step in sorted(current_iteration_steps, key=lambda x: x['step_id']):
+    for step in sorted(current_iteration_steps, key=lambda x: x["step_id"]):
         evidence_summary += f"--- Step {step['step_id']}: {step['description']} ---\n"
-        if step.get('statistics_text'):
+        if step.get("statistics_text"):
             evidence_summary += f"Statistics:\n{step['statistics_text']}\n"
-        if step.get('graph_descriptions'):
+        if step.get("graph_descriptions"):
             evidence_summary += f"Graphs: {', '.join(step['graph_descriptions'])}\n"
         evidence_summary += f"Reasoning: {step['reasoning']}\n\n"
 
-    subsegment_context = _build_subsegment_context(
-        parent_main_labels, existing_children, parent_start, parent_end,
-    )
-    telemetry_summary = _summarise_telemetry(segment_data)
+    # Build concise verified-label section (small, focused)
+    verified_section_lines: list[str] = ["=== Verified Labels (use these) ==="]
+    catalog = get_label_catalog()
+    for lid in verified_labels:
+        entry = catalog.get_label(lid)
+        name = entry.name if entry else LABEL_MAPPING.get(lid, lid)
+        justification = verified_reasoning.get(lid, "")
+        verified_section_lines.append(f"- {name} ({lid}): {justification[:150]}")
+    if not verified_labels:
+        verified_section_lines.append("(No labels verified — propose the best-fit label IDs based on evidence.)")
+    verified_section = "\n".join(verified_section_lines)
+
+    # Existing children for duplicate avoidance
+    children_section = ""
+    if existing_children:
+        lines = ["=== Already Discovered Sub-Segments (avoid overlap) ==="]
+        for child in existing_children:
+            child_labels = [LABEL_MAPPING.get(l, l) for l in child.get("labels", [])]
+            lines.append(
+                f"- [{child['start_index']}, {child['end_index']}]: "
+                f"{', '.join(child_labels)}"
+            )
+        children_section = "\n".join(lines)
 
     prompt_parts = [
-        "You are a racing telemetry analyst discovering sub-segments.",
+        "You are a racing telemetry analyst assembling a sub-segment proposal.",
         "",
         "=== Task ===",
-        "Find exactly ONE notable sub-segment within the parent segment "
-        f"range [{parent_start}, {parent_end}] "
-        f"(total length: {parent_end - parent_start} data points).",
-        "A sub-segment is a contiguous region where a specific event or "
-        "behaviour occurs (e.g. a braking mistake, a corner apex, a "
-        "recovery manoeuvre).",
+        "Define exactly ONE sub-segment within the parent range "
+        f"[{parent_start}, {parent_end}] "
+        f"(length: {parent_end - parent_start} data points).",
+        "Determine the precise start and end indices based on the evidence.",
         "",
-        "=== Parent Segment Main Labels ===",
-        f"{', '.join([LABEL_MAPPING.get(l, l) for l in parent_main_labels])} (IDs: {json.dumps(parent_main_labels)})",
-        "Use these as hints for what kind of events to look for.",
+        "=== Parent Segment ===",
+        f"Main labels: {', '.join([LABEL_MAPPING.get(l, l) for l in parent_main_labels])}",
         "",
         "=== Step-by-Step Analysis Evidence ===",
         evidence_summary,
         "",
     ]
     prompt_parts.extend(
-        _build_graph_prompt_section(state.get("all_graph_descriptions", []), all_graph_images)
+        _build_graph_prompt_section(
+            state.get("all_graph_descriptions", []), all_graph_images
+        )
     )
     prompt_parts.extend([
-        subsegment_context,
+        verified_section,
         "",
+    ])
+    if children_section:
+        prompt_parts.extend([children_section, ""])
+    prompt_parts.extend([
         "=== Instructions ===",
-        "Based on all the evidence, define the sub-segment by providing a JSON object with the following structure. "
-        f"The start and end indices MUST be within the parent's range [{parent_start}, {parent_end}].\n\n"
+        "Use ONLY the verified labels listed above (you may drop some if "
+        "the evidence does not support them).",
+        f"start_index and end_index MUST be within [{parent_start}, {parent_end}]. "
         "start_index must be strictly less than end_index.",
-        "In your reasoning, describe the chosen range as [start_index, end_index] with its "
-        "length (end_index - start_index) and explain why those specific boundaries were chosen, referencing the step-by-step analysis and visual evidence.",
-        "You MUST respond in the following JSON format only:",
+        "Explain why the specific boundaries were chosen, referencing the "
+        "step-by-step analysis and visual evidence.",
+        "",
+        "Respond in this JSON format ONLY:",
         "```json",
-        '{',
-        f'  "start_index": <integer, e.g., {parent_start + 10}>,',
-        f'  "end_index": <integer, e.g., {parent_end - 10}>,',
-        f'  "proposed_labels": ["LABEL_ID_1", "LABEL_ID_2", ...],',
-        '  "reasoning": "Your detailed reasoning for the chosen range and labels."',
-        '}',
+        "{",
+        f'  "start_index": <integer>,',
+        f'  "end_index": <integer>,',
+        f'  "proposed_labels": ["LABEL_ID_1", ...],',
+        '  "reasoning": "..."',
+        "}",
         "```",
     ])
 
@@ -943,7 +1258,7 @@ def proposal_synthesizer_node(state: AnnotationState) -> Dict[str, Any]:
         raw_response = json.dumps({
             "start_index": parent_start,
             "end_index": min(parent_start + 10, parent_end),
-            "proposed_labels": [],
+            "proposed_labels": verified_labels,
             "reasoning": "Passthrough — VLM not available.",
         })
 
@@ -1275,6 +1590,8 @@ def build_annotation_graph(
     graph.add_node("planner", planner_node)
     graph.add_node("step_executor", step_executor_node)
     graph.add_node("step_reasoner", step_reasoner_node)
+    graph.add_node("label_shortlister", label_shortlister_node)
+    graph.add_node("label_verifier", label_verifier_node)
     graph.add_node("proposal_synthesizer", proposal_synthesizer_node)
     graph.add_node("evaluator", evaluator_node)
 
@@ -1286,9 +1603,11 @@ def build_annotation_graph(
         step_router,
         {
             "step_executor": "step_executor",
-            "proposal_synthesizer": "proposal_synthesizer",
+            "label_shortlister": "label_shortlister",
         },
     )
+    graph.add_edge("label_shortlister", "label_verifier")
+    graph.add_edge("label_verifier", "proposal_synthesizer")
     graph.add_edge("proposal_synthesizer", "evaluator")
     graph.add_conditional_edges(
         "evaluator",
@@ -1470,11 +1789,24 @@ def run_annotation_pipeline(
                         f"Requested stats: {req_s or 'all'}, "
                         f"graphs: {req_g or 'all'}"
                     )
-                elif node_name == "tool_executor":
+                elif node_name == "step_executor":
                     n_stats = len(final_state.get("segment_data", {}).get("telemetry_summary", {}))
                     n_graphs = len(final_state.get("tool_graph_descriptions", []))
                     detail = f"Gathered {n_stats} stat columns + {n_graphs} graph(s)"
-                elif node_name == "step_solver":
+                elif node_name == "label_shortlister":
+                    shortlisted = final_state.get("shortlisted_labels", [])
+                    detail = (
+                        f"Shortlisted {len(shortlisted)} labels: "
+                        f"{', '.join(LABEL_MAPPING.get(l, l) for l in shortlisted[:5])}"
+                        f"{'...' if len(shortlisted) > 5 else ''}"
+                    )
+                elif node_name == "label_verifier":
+                    verified = final_state.get("verified_labels", [])
+                    detail = (
+                        f"Verified {len(verified)} labels: "
+                        f"{', '.join(LABEL_MAPPING.get(l, l) for l in verified)}"
+                    )
+                elif node_name == "proposal_synthesizer":
                     labels = final_state.get("proposed_labels", [])
                     ss = final_state.get("proposed_sub_start", "?")
                     se = final_state.get("proposed_sub_end", "?")

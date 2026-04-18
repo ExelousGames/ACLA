@@ -8,7 +8,6 @@
 #   parent          – parent label ID (null for top-level)
 #   children        – list of child label IDs
 #   exclusive_with  – labels that cannot coexist with this one
-#   analysis_steps  – (main labels only) ordered procedure for the solver
 #
 # This file is loaded once by LabelCatalog (label_catalog.py).
 # LABEL_MAPPING / LABEL_CATEGORIES in segment_models.py remain the
@@ -27,15 +26,13 @@ labels:
     description: >
       The driver is attempting to pass another car, or is being passed.
       This involves deliberate line deviation, late braking, or exploiting
-      a speed differential to change track position.
+      a speed differential to change track position.  Key telemetry
+      indicators include unusual speed differentials between the player
+      and nearby cars, late braking patterns, and deliberate trajectory
+      deviations from the optimal racing line.
     parent: null
     children: []
     exclusive_with: ["2", "4"]
-    analysis_steps:
-      - "Check speed trace for unusual speed differentials"
-      - "Look for late braking patterns"
-      - "Inspect trajectory for deliberate line deviations"
-      - "Assess if the move was successful and safe"
 
   "2":
     name: "Missing data"
@@ -43,14 +40,13 @@ labels:
     description: >
       The segment contains gaps, dropouts, or corrupted telemetry.
       Sensor data may drop to zero, become constant unexpectedly, or
-      show physically impossible values.
+      show physically impossible values.  Typical signatures are
+      zero/NaN dropouts across telemetry channels, flat-line segments
+      in otherwise dynamic signals, and physically impossible or
+      out-of-range values.
     parent: null
     children: []
     exclusive_with: ["1", "EA", "4", "RM", "MS"]
-    analysis_steps:
-      - "Scan all telemetry channels for zero/NaN dropouts"
-      - "Look for flat-line segments in otherwise dynamic signals"
-      - "Check for physically impossible or out-of-range values"
 
   EA:
     name: "Expert Adherence"
@@ -58,14 +54,13 @@ labels:
     description: >
       The driver is closely following the expert's optimal racing line
       and speed profile.  The time difference to the expert is stable
-      or decreasing.  No significant errors are present.
+      or decreasing.  No significant errors are present.  In the
+      telemetry the Time Difference to Expert graph should be flat or
+      decreasing, the speed delta near zero, and the trajectory closely
+      following the expert line.
     parent: null
     children: []
     exclusive_with: ["MS", "RM", "2"]
-    analysis_steps:
-      - "Check Time Difference to Expert graph — should be flat or decreasing"
-      - "Verify speed delta is near zero"
-      - "Confirm trajectory follows expert line"
 
   "4":
     name: "Pit Stop"
@@ -73,14 +68,13 @@ labels:
     description: >
       The driver is entering, waiting in, or exiting the pit lane.
       This involves a significant speed reduction and a distinct
-      trajectory deviation into the pit area.
+      trajectory deviation into the pit area.  Telemetry signatures
+      include a dramatic speed reduction, a trajectory deviation into
+      the pit lane, and a constant low speed consistent with the pit
+      speed limiter being engaged.
     parent: null
     children: []
     exclusive_with: ["1", "2"]
-    analysis_steps:
-      - "Look for dramatic speed reduction"
-      - "Check trajectory for pit lane entry/exit deviation"
-      - "Verify if speed limiter is engaged (constant low speed)"
 
   RM:
     name: "Recovery & Merge"
@@ -90,14 +84,13 @@ labels:
       off-track, exiting the pit, or having a speed deficit — and is
       merging back onto the optimal racing line.  The time delta to
       the expert may initially be large but should be closing.
+      Telemetry indicators include recovery from low speed, off-track
+      excursions, or pit exit; a decreasing time delta to the expert;
+      and trajectory converging back toward the optimal line.  Specific
+      recovery sub-labels describe the root cause.
     parent: null
     children: ["RM1", "RM2", "RM5", "RM6", "RM7", "RM8", "RM9", "RM10", "RM11"]
     exclusive_with: ["EA"]
-    analysis_steps:
-      - "Identify if driver is recovering from low speed, off-track, or pit exit"
-      - "Check if time delta to expert is decreasing"
-      - "Examine trajectory for merge-back behavior"
-      - "Assign specific recovery sub-labels"
 
   MS:
     name: "Mistake"
@@ -105,7 +98,13 @@ labels:
     description: >
       The driver has committed a driving error that results in time
       loss or vehicle instability.  The time difference to the expert
-      increases continuously without a quick recovery.
+      increases continuously without a quick recovery.  In the
+      telemetry, the Time Difference to Expert graph typically shows a
+      continuously increasing gap; throttle and brake traces diverge
+      from the expert; the push_limit graph may reveal understeer or
+      oversteer causing lower speed; and the Trajectory map can show
+      deviations from the optimal line.  Sub-labels describe the
+      specific root cause of the mistake.
     parent: null
     children:
       - "MS1"
@@ -158,20 +157,16 @@ labels:
       - "MS51"
       - "MS52"
     exclusive_with: ["EA"]
-    analysis_steps:
-      - "Analyze the Time Difference to Expert graph — a mistake normally causes this time gap to increase continuously without decreasing shortly after"
-      - "Examine the differences in throttle and brake between the player and the expert to find out why the player is slower"
-      - "Examine the push_limit graph to find understeer or oversteer, which could lead to lower speed"
-      - "Check the Trajectory map for mistakes caused by deviations from the optimal line"
-      - "Find the sub-labels that describe the root cause"
 
   brands_hatch:
     name: "Brands Hatch"
     type: circuit
     description: >
-      The segment takes place on the Brands Hatch circuit.  Identify
-      which specific named corner or straight section the segment
-      corresponds to using the trajectory overlay.
+      The segment takes place on the Brands Hatch circuit.  The
+      Trajectories Overlay can be used to identify which specific
+      named corner or straight section the segment corresponds to.
+      The shape of the segment should also be described using Segment
+      Type labels (ST1–ST6).
     parent: null
     children:
       - "brands_hatch1"
@@ -193,18 +188,16 @@ labels:
       - "brands_hatch18"
       - "brands_hatch19"
     exclusive_with: ["silverstone"]
-    analysis_steps:
-      - "Look at the Trajectories Overlay to identify the section of the circuit"
-      - "Identify specific named corners or straight sections"
-      - "Also identify the shape of the segment using Segment Type labels ST1-ST6"
 
   silverstone:
     name: "Silverstone"
     type: circuit
     description: >
-      The segment takes place on the Silverstone circuit.  Identify
-      which specific named corner or straight section the segment
-      corresponds to using the trajectory overlay.
+      The segment takes place on the Silverstone circuit.  The
+      Trajectories Overlay can be used to identify which specific
+      named corner or straight section the segment corresponds to.
+      The shape of the segment should also be described using Segment
+      Type labels (ST1–ST6).
     parent: null
     children:
       - "silverstone1"
@@ -229,10 +222,6 @@ labels:
       - "silverstone20"
       - "silverstone21"
     exclusive_with: ["brands_hatch"]
-    analysis_steps:
-      - "Look at the Trajectories Overlay to identify the section of the circuit"
-      - "Identify specific named corners or straight sections"
-      - "Also identify the shape of the segment using Segment Type labels ST1-ST6"
 
   # =========================================================================
   # RECOVERY & MERGE SUB-LABELS

@@ -188,6 +188,7 @@ def render_agent_annotation(df, form_start, form_end, form_labels, session_id, s
                     """Callback to update Streamlit UI with progress."""
                     # Map node names to progress fraction
                     node_order = ["planner", "step_executor", "step_reasoner",
+                                  "label_shortlister", "label_verifier",
                                   "proposal_synthesizer", "evaluator"]
                     idx = node_order.index(node_name) if node_name in node_order else 0
                     progress = min((idx + 1) / len(node_order), 0.99)
