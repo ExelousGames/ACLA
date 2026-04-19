@@ -1,4 +1,4 @@
-import { Card, Flex, Box, IconButton, Heading, Grid, Text, Slider, Spinner, AlertDialog, Button } from '@radix-ui/themes';
+import { Card, Flex, Box, IconButton, Heading, Grid, Text, Spinner, AlertDialog, Button } from '@radix-ui/themes';
 import { useContext, useEffect, useRef, useState, useMemo, useCallback, JSX } from 'react';
 import { AnalysisContext } from './analysis-context';
 import { UploadReacingSessionInitDto, UploadRacingSessionInitReturnDto, RacingSessionDetailedInfoDto } from 'data/live-analysis/live-analysis-type';
@@ -706,9 +706,9 @@ export default function LiveAnalysisSessionRecording() {
     }, [state, canRecord, startRecording, stopRecordingProcess, TelemetryDataLiveStatus, hasRecordedData, isUploading, openUploadDialog, handleCancelUpload, closeUploadDialog]);
 
     return (
-        <Box position="absolute" left="0" right="0" bottom="0" mb="5" height="64px" style={{ borderRadius: '100px', boxShadow: 'var(--shadow-6)', marginLeft: 200, marginRight: 200 }}>
-            <Flex height="100%" justify="between" position="relative">
-                <Flex gap="4" align="center" p="3">
+        <Box position="absolute" left="0" right="0" bottom="0" mb="5" height="64px" style={{ borderRadius: '100px', boxShadow: 'var(--shadow-6)', marginLeft: 'max(24px, 10%)', marginRight: 'max(24px, 10%)' }}>
+            <Flex height="100%" align="center" position="relative" overflow="hidden" style={{ borderRadius: '100px' }}>
+                <Flex gap="4" align="center" p="3" style={{ minWidth: 0, flex: 1 }}>
 
                     {controlButtons}
                     <AlertDialog.Root open={uploadDialogOpen} onOpenChange={handleDialogOpenChange}>
@@ -760,21 +760,21 @@ export default function LiveAnalysisSessionRecording() {
                     </AlertDialog.Root>
 
                 </Flex>
-                <Flex align="center" gap="3">
-                    <Flex align="center" gap="3">
-                        <Box>
-                            <Text size="1" as="div" weight="medium">Racing Map Name Here</Text>
-                            <Text size="1" as="div" color="gray" mb="2">Practice Session</Text>
-                            <Box position="relative" height="4px" width="320px" style={{ backgroundColor: 'var(--gray-a5)', borderRadius: 'var(--radius-1)' }}>
-                                <Box position="absolute" height="4px" width="64px" style={{ borderRadius: 'var(--radius-1)', backgroundColor: 'var(--gray-a9)' }} />
-                                <Box position="absolute" top="0" right="0" mt="-28px"><Text size="1" color="gray">0:58 / Lap 2</Text></Box>
-                            </Box>
+                <Flex align="center" justify="center" gap="3" p="3" style={{ flexShrink: 0, width: 280 }}>
+                    <Box style={{ minWidth: 0, flex: 1 }}>
+                        <Text size="1" as="div" weight="medium" style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>Racing Map Name Here</Text>
+                        <Flex justify="between" align="center" gap="2" mb="2">
+                            <Text size="1" as="span" color="gray" style={{ whiteSpace: 'nowrap' }}>Practice Session</Text>
+                            <Text size="1" as="span" color="gray" style={{ whiteSpace: 'nowrap' }}>0:58 / Lap 2</Text>
+                        </Flex>
+                        <Box position="relative" height="4px" width="100%" style={{ backgroundColor: 'var(--gray-a5)', borderRadius: 'var(--radius-1)' }}>
+                            <Box position="absolute" height="4px" width="64px" style={{ borderRadius: 'var(--radius-1)', backgroundColor: 'var(--gray-a9)' }} />
                         </Box>
-                    </Flex>
+                    </Box>
                 </Flex>
-                <Flex align="center" gap="2" p="5">
-                    <Slider defaultValue={[80]} variant="soft" color="gray" radius="full" size="2" style={{ width: 80 }} />
-                </Flex>
+                {/* Spacer to balance the left controls and keep center content centered */}
+                <Box style={{ flex: 1 }} />
+
             </Flex>
         </Box>
     );
