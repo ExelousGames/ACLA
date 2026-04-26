@@ -1,21 +1,34 @@
 """
 Multi-agent annotation pipeline using LangGraph.
 
-Implements a Planner → Tool Executor → Solver → Evaluator cycle for
-automated telemetry segment annotation.  The **Tool Executor** gathers
-evidence via two tool categories:
+Implements a multi-step planner → executor → reasoner loop followed by
+label verification and a synthesis → evaluator cycle for automated
+telemetry sub-segment annotation.
 
-* **get_telemetry_statistics** – numerical summaries (text)
-* **generate_telemetry_graphs** – rendered graphs (PIL images)
+Tool categories used during execution:
 
-The Vision Language Model (VLM) receives both the statistical text *and*
-the graph images, replicating the same visual evidence a human annotator
-would see.
+* **get_telemetry_statistics** – numerical summaries (mean, min, max, std,
+  player-vs-expert deltas) returned as text
+* **generate_telemetry_graphs** – rendered telemetry graphs (PIL images)
+
+The Vision Language Model (VLM) receives both statistical text *and* graph
+images at each step, replicating the visual evidence a human annotator
+would use.
 
 Graph flow:
-    planner  →  tool_executor  →  solver  →  evaluator  ─┐
-       ↑                                                   │
-       └───────────── (retry if rejected) ─────────────────┘
+
+    planner ──► step_executor ──► step_reasoner ─┐
+       ▲                                          │ (repeat for each plan step)
+       │                          ┌───────────────┘
+       │                          ▼
+       │                  label_verifier      ← VLM binary-verifies every candidate
+       │                          │
+       │                  proposal_synthesizer ← VLM determines precise boundaries
+       │                          │
+       │                    evaluator ─────────────────────────┐
+       │                          │ (pass)                     │ (fail, retry)
+       │                         END                           │
+       └──────────────────────────────────────────────────────-┘
 """
 
 from __future__ import annotations
@@ -68,8 +81,7 @@ class AnnotationState(TypedDict, total=False):
     current_step_graph_images: list
     current_step_graph_descriptions: list
     # --- label filtering state ---
-    shortlisted_labels: list     # Phase 1: text-LLM bulk-filtered candidate label IDs
-    verified_labels: list        # Phase 2: VLM per-label binary-verified label IDs
+    verified_labels: list        # VLM per-label binary-verified label IDs
     verified_label_reasoning: dict  # {label_id: justification} from verifier
     # --- agent state ---
     proposed_sub_start: int      # VLM-proposed sub-segment start index
@@ -108,7 +120,6 @@ def _default_state() -> AnnotationState:
         "current_step_statistics_text": "",
         "current_step_graph_images": [],
         "current_step_graph_descriptions": [],
-        "shortlisted_labels": [],
         "verified_labels": [],
         "verified_label_reasoning": {},
         "proposed_sub_start": 0,
@@ -863,191 +874,56 @@ def step_reasoner_node(state: AnnotationState) -> Dict[str, Any]:
     }
 
 
-def step_router(state: AnnotationState) -> Literal["step_executor", "label_shortlister"]:
-    """
-    Routes to the next step executor or to label shortlisting if all steps are complete.
-    """
+def step_router(state: AnnotationState) -> Literal["step_executor", "label_verifier"]:
+    """Routes to the next step executor or to label verification if all steps are complete."""
     if state["current_step_index"] < len(state.get("plan_steps", [])):
         return "step_executor"
-    return "label_shortlister"
+    return "label_verifier"
 
 
 # ---------------------------------------------------------------------------
-# Label shortlister — Phase 1: text-LLM bulk filter
-# ---------------------------------------------------------------------------
-
-
-def label_shortlister_node(state: AnnotationState) -> Dict[str, Any]:
-    """Narrow the label search space using the text-only LLM.
-
-    Sends the step-by-step reasoning (no images) to the text LLM and
-    asks it to select ~5-10 plausible candidate labels from the full
-    set of sub-labels relevant to the parent categories.
-    """
-    messages = list(state.get("messages", []))
-    iteration = state.get("iteration", 0)
-    parent_main_labels = state.get("parent_main_labels", [])
-    existing_children = state.get("existing_children", [])
-    parent_start = state.get("parent_start", 0)
-    parent_end = state.get("parent_end", 0)
-
-    # Collect step reasoning for this iteration
-    current_iteration_steps = [
-        res for res in state.get("step_results", [])
-        if res.get("iteration") == iteration
-    ]
-    reasoning_text = ""
-    for step in sorted(current_iteration_steps, key=lambda x: x["step_id"]):
-        reasoning_text += f"--- Step {step['step_id']}: {step['description']} ---\n"
-        if step.get("statistics_text"):
-            reasoning_text += f"Statistics:\n{step['statistics_text']}\n"
-        reasoning_text += f"Reasoning: {step['reasoning']}\n\n"
-
-    # Build the full candidate label list from parent sub-labels
-    catalog = get_label_catalog()
-    candidate_lines: list[str] = []
-    candidate_ids: list[str] = []
-
-    # Sub-labels from parent categories
-    for pid in parent_main_labels:
-        subs = catalog.get_sublabels(pid)
-        if subs:
-            parent_name = LABEL_MAPPING.get(pid, pid)
-            for entry in subs:
-                candidate_lines.append(
-                    f"- {entry.name} ({entry.id}): {entry.description}"
-                )
-                candidate_ids.append(entry.id)
-
-    # Segment types (always available)
-    for entry in catalog.get_segment_types():
-        candidate_lines.append(
-            f"- {entry.name} ({entry.id}): {entry.description}"
-        )
-        candidate_ids.append(entry.id)
-
-    if not candidate_lines:
-        # No sub-labels to filter — pass through empty
-        LOGGER.info("Label shortlister: no candidate sub-labels, skipping.")
-        messages.append({
-            "role": "label_shortlister",
-            "iteration": iteration,
-            "content": "No candidate sub-labels available for parent categories.",
-        })
-        return {
-            "shortlisted_labels": [],
-            "messages": messages,
-        }
-
-    prompt_parts = [
-        "You are a racing telemetry label specialist.",
-        "",
-        "=== Task ===",
-        "Based on the analysis below, select the 5-10 most plausible "
-        "candidate labels from the list. Only include labels that have "
-        "at least some evidence in the analysis.",
-        "",
-        "=== Parent Segment ===",
-        f"Main labels: {[LABEL_MAPPING.get(l, l) for l in parent_main_labels]}",
-        f"Range: [{parent_start}, {parent_end}]",
-        "",
-        "=== Step-by-Step Analysis (observations from telemetry) ===",
-        reasoning_text,
-        "",
-        "=== Candidate Labels ===",
-        "\n".join(candidate_lines),
-        "",
-    ]
-
-    # Existing children for context
-    if existing_children:
-        prompt_parts.append("=== Already Used Labels (avoid duplicates) ===")
-        for child in existing_children:
-            child_labels = [LABEL_MAPPING.get(l, l) for l in child.get("labels", [])]
-            prompt_parts.append(
-                f"- [{child['start_index']}, {child['end_index']}]: "
-                f"{', '.join(child_labels)}"
-            )
-        prompt_parts.append("")
-
-    prompt_parts.extend([
-        "=== Instructions ===",
-        "Return ONLY a JSON object with a single key \"shortlisted_labels\" "
-        "containing an array of label ID strings. Pick 5-10 labels maximum.",
-        "Example: {\"shortlisted_labels\": [\"MS23\", \"MS5\", \"ST3\"]}",
-    ])
-
-    prompt = "\n".join(prompt_parts)
-
-    # Use text-only LLM (cheap, fast) for this filtering step
-    llm_fn = _llm_holder.get("llm")
-    if not llm_fn:
-        # Fallback: use VLM without images
-        llm_fn = lambda p: _call_vlm(p, [])
-
-    # Override to use VLM for better quality on this critical step
-    # but without images (text-only reasoning)
-    raw = _call_vlm(prompt, [])
-    if not raw:
-        raw = ""
-
-    # Parse shortlisted labels
-    shortlisted: list[str] = []
-    parsed = _parse_json_response(raw)
-    if parsed and isinstance(parsed.get("shortlisted_labels"), list):
-        shortlisted = [
-            lid for lid in parsed["shortlisted_labels"]
-            if isinstance(lid, str) and lid in LABEL_MAPPING
-        ]
-
-    if not shortlisted:
-        # Fallback: pass all candidates (degrade gracefully)
-        LOGGER.warning("Label shortlister failed to parse output; passing all candidates.")
-        shortlisted = candidate_ids
-
-    LOGGER.info(
-        "Label shortlister: %d/%d candidates shortlisted: %s",
-        len(shortlisted), len(candidate_ids), shortlisted,
-    )
-
-    messages.append({
-        "role": "label_shortlister",
-        "iteration": iteration,
-        "content": f"Shortlisted {len(shortlisted)} labels: {shortlisted}\n\nRaw: {raw[:500]}",
-    })
-
-    return {
-        "shortlisted_labels": shortlisted,
-        "messages": messages,
-    }
-
-
-# ---------------------------------------------------------------------------
-# Label verifier — Phase 2: VLM per-label binary check
+# Label verifier — VLM per-label binary check
 # ---------------------------------------------------------------------------
 
 
 def label_verifier_node(state: AnnotationState) -> Dict[str, Any]:
-    """Verify each shortlisted label with a binary yes/no VLM check.
+    """Verify every candidate label with a binary yes/no VLM check.
 
-    Sends the VLM the graphs + stats for each candidate label and asks:
+    Builds the full candidate list from parent sub-labels and segment types,
+    then sends the VLM the graphs + stats for each candidate and asks:
     "Does this label match the evidence? yes/no + one-sentence justification."
     """
     messages = list(state.get("messages", []))
     iteration = state.get("iteration", 0)
-    shortlisted = state.get("shortlisted_labels", [])
     all_graph_images = state.get("all_graph_images", [])
     all_graph_descriptions = state.get("all_graph_descriptions", [])
     parent_main_labels = state.get("parent_main_labels", [])
     parent_start = state.get("parent_start", 0)
     parent_end = state.get("parent_end", 0)
 
+    # Build full candidate list from parent sub-labels + segment types
+    catalog = get_label_catalog()
+    candidate_ids: list[str] = []
+    for pid in parent_main_labels:
+        for entry in catalog.get_sublabels(pid):
+            candidate_ids.append(entry.id)
+    for entry in catalog.get_segment_types():
+        candidate_ids.append(entry.id)
+
+    # Deduplicate while preserving order
+    seen: set[str] = set()
+    shortlisted: list[str] = []
+    for lid in candidate_ids:
+        if lid not in seen:
+            seen.add(lid)
+            shortlisted.append(lid)
+
     if not shortlisted:
-        LOGGER.info("Label verifier: no shortlisted labels to verify.")
+        LOGGER.info("Label verifier: no candidate labels to verify.")
         messages.append({
             "role": "label_verifier",
             "iteration": iteration,
-            "content": "No labels to verify.",
+            "content": "No candidate labels available for parent categories.",
         })
         return {
             "verified_labels": [],
@@ -1590,7 +1466,6 @@ def build_annotation_graph(
     graph.add_node("planner", planner_node)
     graph.add_node("step_executor", step_executor_node)
     graph.add_node("step_reasoner", step_reasoner_node)
-    graph.add_node("label_shortlister", label_shortlister_node)
     graph.add_node("label_verifier", label_verifier_node)
     graph.add_node("proposal_synthesizer", proposal_synthesizer_node)
     graph.add_node("evaluator", evaluator_node)
@@ -1603,10 +1478,9 @@ def build_annotation_graph(
         step_router,
         {
             "step_executor": "step_executor",
-            "label_shortlister": "label_shortlister",
+            "label_verifier": "label_verifier",
         },
     )
-    graph.add_edge("label_shortlister", "label_verifier")
     graph.add_edge("label_verifier", "proposal_synthesizer")
     graph.add_edge("proposal_synthesizer", "evaluator")
     graph.add_conditional_edges(
@@ -1793,13 +1667,6 @@ def run_annotation_pipeline(
                     n_stats = len(final_state.get("segment_data", {}).get("telemetry_summary", {}))
                     n_graphs = len(final_state.get("tool_graph_descriptions", []))
                     detail = f"Gathered {n_stats} stat columns + {n_graphs} graph(s)"
-                elif node_name == "label_shortlister":
-                    shortlisted = final_state.get("shortlisted_labels", [])
-                    detail = (
-                        f"Shortlisted {len(shortlisted)} labels: "
-                        f"{', '.join(LABEL_MAPPING.get(l, l) for l in shortlisted[:5])}"
-                        f"{'...' if len(shortlisted) > 5 else ''}"
-                    )
                 elif node_name == "label_verifier":
                     verified = final_state.get("verified_labels", [])
                     detail = (
