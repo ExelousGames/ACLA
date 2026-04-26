@@ -32,7 +32,7 @@ const SessionAnalysisSplit: React.FC = () => {
                 <Box className="chat-section" style={{ flex: '0 0 calc(40% - 24px)' }}>
                     <AiChat
                         sessionId={analysisContext.sessionSelected?.SessionId}
-                        title={`AI Analysis - ${analysisContext.sessionSelected?.session_name || 'Session'}`}
+                        title={`AI Assistant- ${analysisContext.sessionSelected?.session_name || 'Session'}`}
                     />
                 </Box>
             </Flex>
