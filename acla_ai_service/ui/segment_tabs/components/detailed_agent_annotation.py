@@ -1,10 +1,16 @@
 """
 Streamlit UI component for the LangGraph multi-agent sub-segment discovery pipeline.
 
-Renders below the Gemini analysis section in the annotation manager and
-lets users run the Planner → Tool Executor → Step Solver → Evaluator
-cycle to discover a new sub-segment within the currently selected parent segment.
-The VLM analyses both telemetry statistics and **graph images**.
+Renders below the Gemini analysis section in the annotation manager and lets users
+run the full annotation cycle on the currently selected parent segment:
+
+    planner → steps_data_fetcher → step_reasoner (repeated per plan step)
+        → label_verifier → proposal_synthesizer → evaluator
+
+The VLM receives both telemetry statistics (numerical summaries) and rendered
+graph images at each step, replicating the visual evidence a human annotator
+would use. On evaluator pass the discovered sub-segment is ready for review;
+on fail the pipeline retries from the planner up to a configurable limit.
 """
 
 import io
@@ -181,19 +187,52 @@ def render_agent_annotation(df, form_start, form_end, form_labels, session_id, s
                 progress_area = st.container()
                 status_text = progress_area.empty()
                 progress_bar = progress_area.progress(0)
-                step_log = progress_area.empty()
-                log_entries = []
 
-                def on_progress(node_name: str, iteration: int, detail: str):
-                    """Callback to update Streamlit UI with progress."""
-                    # Map node names to progress fraction
-                    node_order = ["planner", "step_executor", "step_reasoner",
+                # Live VLM output — one placeholder rewritten in full each update
+                # so all calls remain visible. Each VLM call (prompt + response)
+                # is its own section; sections are never erased mid-run.
+                st.markdown("**Live VLM Output**")
+                vlm_output_area = st.empty()
+                completed_sections: list[dict] = []  # [{prompt, text}]
+                vlm_buffer: list[str] = []           # response chunks for active call
+                active_prompt: list[str] = [""]      # prompt for active call
+
+                def _render_vlm_output() -> None:
+                    parts = []
+                    for s in completed_sections:
+                        parts.append(
+                            f"*Prompt:*\n```\n{s['prompt']}\n```\n\n"
+                            f"*Response:*\n\n{s['text']}"
+                        )
+                    if active_prompt[0] or vlm_buffer:
+                        parts.append(
+                            f"*Prompt:*\n```\n{active_prompt[0]}\n```\n\n"
+                            f"*Response (streaming...)*\n\n{''.join(vlm_buffer)}"
+                        )
+                    vlm_output_area.markdown("\n\n---\n\n".join(parts))
+
+                def on_vlm_prompt(prompt: str) -> None:
+                    # Finalise the previous call before starting the next
+                    if active_prompt[0] or vlm_buffer:
+                        completed_sections.append({
+                            "prompt": active_prompt[0],
+                            "text": "".join(vlm_buffer),
+                        })
+                        vlm_buffer.clear()
+                    active_prompt[0] = prompt
+                    _render_vlm_output()
+
+                def on_vlm_stream(chunk: str) -> None:
+                    vlm_buffer.append(chunk)
+                    _render_vlm_output()
+
+                def on_progress(node_name: str, iteration: int, detail: str) -> None:
+                    node_order = ["planner", "steps_data_fetcher", "step_reasoner",
                                   "label_shortlister", "label_verifier",
                                   "proposal_synthesizer", "evaluator"]
                     idx = node_order.index(node_name) if node_name in node_order else 0
                     progress = min((idx + 1) / len(node_order), 0.99)
                     message = f"[Iter {iteration}] {node_name}: {detail}"
-
                     progress_bar.progress(progress)
                     status_text.markdown(f"**Status:** _{message}_")
 
@@ -207,7 +246,18 @@ def render_agent_annotation(df, form_start, form_end, form_labels, session_id, s
                         existing_children=existing_children,
                         config=config,
                         progress_callback=on_progress,
+                        vlm_stream_callback=on_vlm_stream,
+                        vlm_prompt_callback=on_vlm_prompt,
                     )
+                # Finalise the last active call
+                if active_prompt[0] or vlm_buffer:
+                    completed_sections.append({
+                        "prompt": active_prompt[0],
+                        "text": "".join(vlm_buffer),
+                    })
+                    vlm_buffer.clear()
+                    active_prompt[0] = ""
+                    _render_vlm_output()
 
                 progress_bar.progress(1.0)
 

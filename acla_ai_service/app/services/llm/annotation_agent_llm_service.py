@@ -24,6 +24,7 @@ Typical usage::
 from __future__ import annotations
 
 import base64
+import json
 import logging
 import socket
 import subprocess
@@ -32,7 +33,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional
+from typing import Callable, List, Optional
 
 import requests
 
@@ -52,8 +53,6 @@ _QUANTIZE_BIN = Path("/opt/llama.cpp/build/bin/llama-quantize")
 
 # Well-known Qwen2.5-VL sizes (repo → short name)
 QWEN25_VL_MODELS = {
-    "Qwen/Qwen2.5-VL-3B-Instruct": "Qwen2.5-VL-3B",
-    "Qwen/Qwen2.5-VL-7B-Instruct": "Qwen2.5-VL-7B",
     "Qwen/Qwen2.5-VL-32B-Instruct": "Qwen2.5-VL-32B",
     "Qwen/Qwen2.5-VL-72B-Instruct": "Qwen2.5-VL-72B",
 }
@@ -198,6 +197,7 @@ class AnnotationAgentLLMService:
         images: Optional[List[bytes]] = None,
         max_tokens: int = 1024,
         temperature: float = 0.7,
+        stream_callback: Optional[Callable[[str], None]] = None,
     ) -> str:
         """Send a chat-completion request to the running llama-server.
 
@@ -213,6 +213,9 @@ class AnnotationAgentLLMService:
             Maximum tokens to generate.
         temperature:
             Sampling temperature.
+        stream_callback:
+            Optional callable invoked with each text chunk as it streams in.
+            When provided, the endpoint is called with ``stream=True`` (SSE).
 
         Returns
         -------
@@ -240,6 +243,9 @@ class AnnotationAgentLLMService:
         }
 
         try:
+            if stream_callback is not None:
+                return self._generate_streaming(payload, stream_callback)
+
             resp = requests.post(
                 f"{self._base_url}/v1/chat/completions",
                 json=payload,
@@ -250,6 +256,40 @@ class AnnotationAgentLLMService:
             return data["choices"][0]["message"]["content"].strip()
         except requests.RequestException as exc:
             raise RuntimeError(f"llama-server chat completion failed: {exc}") from exc
+
+    def _generate_streaming(
+        self,
+        payload: dict,
+        stream_callback: Callable[[str], None],
+    ) -> str:
+        """SSE-streaming variant of generate(); calls stream_callback per chunk."""
+        payload = {**payload, "stream": True}
+        full_text = ""
+        with requests.post(
+            f"{self._base_url}/v1/chat/completions",
+            json=payload,
+            stream=True,
+            timeout=300,
+        ) as resp:
+            resp.raise_for_status()
+            for raw_line in resp.iter_lines():
+                if not raw_line:
+                    continue
+                line = raw_line.decode("utf-8") if isinstance(raw_line, bytes) else raw_line
+                if not line.startswith("data: "):
+                    continue
+                data_str = line[6:].strip()
+                if data_str == "[DONE]":
+                    break
+                try:
+                    chunk = json.loads(data_str)
+                    delta = chunk["choices"][0]["delta"].get("content", "")
+                    if delta:
+                        full_text += delta
+                        stream_callback(delta)
+                except (json.JSONDecodeError, KeyError, IndexError):
+                    pass
+        return full_text.strip()
 
     # -- internal helpers ---------------------------------------------------
 

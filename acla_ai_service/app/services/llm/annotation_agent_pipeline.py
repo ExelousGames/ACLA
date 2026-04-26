@@ -17,7 +17,7 @@ would use.
 
 Graph flow:
 
-    planner ──► step_executor ──► step_reasoner ─┐
+    planner ──► steps_data_fetcher ──► step_reasoner ─┐
        ▲                                          │ (repeat for each plan step)
        │                          ┌───────────────┘
        │                          ▼
@@ -447,8 +447,6 @@ def planner_node(state: AnnotationState) -> dict:
     parent_end = state.get("parent_end", 0)
     segment_data = state.get("segment_data", {})
 
-    telemetry_summary = _summarise_telemetry(segment_data)
-
     # Build tool catalogue for the planner
     stat_catalogue = ", ".join(
         f"`{cid}` ({cdef['description']})"
@@ -507,9 +505,6 @@ def planner_node(state: AnnotationState) -> dict:
 
     prompt_parts.extend([
         "",
-        "=== Telemetry Data (Statistics Tool Output) ===",
-        telemetry_summary,
-        "",
         "=== Task ===",
         "Plan which statistics and graphs to generate to help discover "
         "ONE notable sub-segment within the parent segment range. "
@@ -523,15 +518,14 @@ def planner_node(state: AnnotationState) -> dict:
         "  - \"description\": A string describing the goal of the step.",
         "  - \"requested_statistics\": A list of statistic category IDs to compute for this step (from the catalogue above). Use an empty list if none are needed.",
         "  - \"requested_graphs\": A list of graph IDs to generate for this step (from the catalogue above). Use an empty list if none are needed.",
-        "You can have multiple steps. The final step should be for synthesizing the proposal and usually has no tool requests.",
+        "You can have multiple steps. Each step should request specific statistics or graphs to analyze.",
         "",
         "Example of a valid plan:",
         "```json",
         '{',
         '  "steps": [',
         '    {"step_id": 1, "description": "Analyze speed and acceleration to find the core anomaly.", "requested_statistics": ["speed"], "requested_graphs": ["speed", "speed_delta"]},',
-        '    {"step_id": 2, "description": "Investigate braking behavior around the identified anomaly.", "requested_statistics": ["brake"], "requested_graphs": ["brake"]},',
-        '    {"step_id": 3, "description": "Synthesize findings to define the precise sub-segment boundaries and labels.", "requested_statistics": [], "requested_graphs": []}',
+        '    {"step_id": 2, "description": "Investigate braking behavior around the identified anomaly.", "requested_statistics": ["brake"], "requested_graphs": ["brake"]}',
         '  ]',
         '}',
         "```",
@@ -595,7 +589,7 @@ def planner_node(state: AnnotationState) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def step_executor_node(state: AnnotationState) -> Dict[str, Any]:
+def steps_data_fetcher_node(state: AnnotationState) -> Dict[str, Any]:
     """
     Executes the tools (statistics, graphs) requested for the current step in the plan.
     """
@@ -814,12 +808,6 @@ def step_reasoner_node(state: AnnotationState) -> Dict[str, Any]:
     parent_start = state.get("parent_start", 0)
     parent_end = state.get("parent_end", 0)
 
-    # Filter previous results for the current iteration
-    previous_step_results = [res for res in state.get("step_results", []) if res.get("iteration") == iteration]
-    reasoning_history = "\n".join(
-        [f"Step {res['step_id']}: {res['description']}\nReasoning: {res['reasoning']}" for res in previous_step_results]
-    )
-
     stats_text = state.get("current_step_statistics_text", "")
     graph_descriptions = state.get("current_step_graph_descriptions", [])
     graph_images = state.get("current_step_graph_images", [])
@@ -830,7 +818,6 @@ def step_reasoner_node(state: AnnotationState) -> Dict[str, Any]:
         f"**Parent Segment Context:**\n"
         f"- Labels: {[LABEL_MAPPING.get(l, l) for l in parent_main_labels]}\n"
         f"- Index Range: {parent_start} to {parent_end}\n\n"
-        f"**Plan Execution History (Current Iteration):**\n{reasoning_history or 'This is the first step.'}\n\n"
         f"**Current Step ({step['step_id']}): {step['description']}**\n\n"
         f"**Tool Outputs for this Step:**\n"
     )
@@ -874,10 +861,10 @@ def step_reasoner_node(state: AnnotationState) -> Dict[str, Any]:
     }
 
 
-def step_router(state: AnnotationState) -> Literal["step_executor", "label_verifier"]:
+def step_router(state: AnnotationState) -> Literal["steps_data_fetcher", "label_verifier"]:
     """Routes to the next step executor or to label verification if all steps are complete."""
     if state["current_step_index"] < len(state.get("plan_steps", [])):
-        return "step_executor"
+        return "steps_data_fetcher"
     return "label_verifier"
 
 
@@ -895,7 +882,6 @@ def label_verifier_node(state: AnnotationState) -> Dict[str, Any]:
     """
     messages = list(state.get("messages", []))
     iteration = state.get("iteration", 0)
-    all_graph_images = state.get("all_graph_images", [])
     all_graph_descriptions = state.get("all_graph_descriptions", [])
     parent_main_labels = state.get("parent_main_labels", [])
     parent_start = state.get("parent_start", 0)
@@ -940,13 +926,6 @@ def label_verifier_node(state: AnnotationState) -> Dict[str, Any]:
     for step in sorted(current_iteration_steps, key=lambda x: x["step_id"]):
         evidence_summary += f"Step {step['step_id']}: {step['reasoning']}\n"
 
-    # Build graph description section (shared across all label checks)
-    graph_section = ""
-    if all_graph_descriptions:
-        graph_section = "Telemetry graphs are provided as images:\n" + "\n".join(
-            f"- Graph {i}: {desc}" for i, desc in enumerate(all_graph_descriptions, 1)
-        )
-
     catalog = get_label_catalog()
     verified: list[str] = []
     reasoning_map: dict[str, str] = {}
@@ -968,8 +947,6 @@ def label_verifier_node(state: AnnotationState) -> Dict[str, Any]:
             f"=== Analysis Evidence ===\n"
             f"{evidence_summary}\n"
         )
-        if graph_section:
-            prompt += f"\n{graph_section}\n"
 
         prompt += (
             f"\n=== Decision ===\n"
@@ -980,7 +957,7 @@ def label_verifier_node(state: AnnotationState) -> Dict[str, Any]:
             f"Example: NO — No evidence of throttle hesitation in the data."
         )
 
-        response = _call_vlm(prompt, all_graph_images)
+        response = _call_vlm(prompt, [])
         if not response:
             response = "NO — VLM unavailable."
 
@@ -1464,20 +1441,20 @@ def build_annotation_graph(
     graph = StateGraph(AnnotationState)
 
     graph.add_node("planner", planner_node)
-    graph.add_node("step_executor", step_executor_node)
+    graph.add_node("steps_data_fetcher", steps_data_fetcher_node)
     graph.add_node("step_reasoner", step_reasoner_node)
     graph.add_node("label_verifier", label_verifier_node)
     graph.add_node("proposal_synthesizer", proposal_synthesizer_node)
     graph.add_node("evaluator", evaluator_node)
 
     graph.set_entry_point("planner")
-    graph.add_edge("planner", "step_executor")
-    graph.add_edge("step_executor", "step_reasoner")
+    graph.add_edge("planner", "steps_data_fetcher")
+    graph.add_edge("steps_data_fetcher", "step_reasoner")
     graph.add_conditional_edges(
         "step_reasoner",
         step_router,
         {
-            "step_executor": "step_executor",
+            "steps_data_fetcher": "steps_data_fetcher",
             "label_verifier": "label_verifier",
         },
     )
@@ -1554,6 +1531,8 @@ def run_annotation_pipeline(
     existing_children: Optional[List[dict]] = None,
     config: Optional[AnnotationPipelineConfig] = None,
     progress_callback=None,
+    vlm_stream_callback: Optional[Callable] = None,
+    vlm_prompt_callback: Optional[Callable] = None,
 ) -> AnnotationResult:
     """Execute the planner → tool_executor → step_solver → evaluator pipeline.
 
@@ -1610,11 +1589,14 @@ def run_annotation_pipeline(
         prompt: str, images: Optional[List[bytes]] = None,
     ) -> str:
         """Send prompt (with optional images) to the llama-cpp VLM."""
+        if vlm_prompt_callback:
+            vlm_prompt_callback(prompt)
         return vlm_service.generate(
             prompt,
             images=images,
             max_tokens=config.max_new_tokens,
             temperature=config.temperature,
+            stream_callback=vlm_stream_callback,
         )
 
     def llm_generate(prompt: str) -> str:
@@ -1663,7 +1645,7 @@ def run_annotation_pipeline(
                         f"Requested stats: {req_s or 'all'}, "
                         f"graphs: {req_g or 'all'}"
                     )
-                elif node_name == "step_executor":
+                elif node_name == "steps_data_fetcher":
                     n_stats = len(final_state.get("segment_data", {}).get("telemetry_summary", {}))
                     n_graphs = len(final_state.get("tool_graph_descriptions", []))
                     detail = f"Gathered {n_stats} stat columns + {n_graphs} graph(s)"
