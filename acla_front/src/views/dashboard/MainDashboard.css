@@ -1,34 +1,18 @@
-/* Ensure no global overflow */
-html,
-body {
-    height: 100%;
-    margin: 0;
-    padding: 0;
-    overflow: hidden;
-}
-
-#root {
-    height: 100%;
-}
-
-/* Global rule to prevent any scrolling */
-* {
-    scrollbar-width: none;
-    /* Firefox */
-    -ms-overflow-style: none;
-    /* Internet Explorer/Edge */
-}
-
-*::-webkit-scrollbar {
-    display: none;
-    /* Chrome, Safari, Opera */
-}
-
 .main-dashboard-container {
     height: 100vh;
     display: flex;
     flex-direction: column;
     overflow: hidden;
+}
+
+/* Hide scrollbars inside dashboard only */
+.main-dashboard-container *  {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+}
+
+.main-dashboard-container *::-webkit-scrollbar {
+    display: none;
 }
 
 .main-dashboard-header {
