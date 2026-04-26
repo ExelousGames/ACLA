@@ -1,7 +1,7 @@
 """
 Streamlit UI component for the LangGraph multi-agent sub-segment discovery pipeline.
 
-Renders below the Gemini analysis section in the annotation manager and
+Renders below the analysis section in the annotation manager and
 lets users run the Planner → Tool Executor → Step Solver → Evaluator
 cycle to discover a new sub-segment within the currently selected parent segment.
 The VLM analyses both telemetry statistics and **graph images**.
