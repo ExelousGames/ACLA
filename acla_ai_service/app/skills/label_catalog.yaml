@@ -2,12 +2,13 @@
 # Label Catalog – racing telemetry annotation knowledge base
 #
 # Every label used by the annotation pipeline is defined here with:
-#   name            – human-readable display name
-#   type            – main | sub | segment_type | circuit | circuit_section
-#   description     – what the label means
-#   parent          – parent label ID (null for top-level)
-#   children        – list of child label IDs
-#   exclusive_with  – labels that cannot coexist with this one
+#   name                  – human-readable display name
+#   type                  – main | sub | segment_type | circuit | circuit_section
+#   description           – what the label means
+#   annotation_guideline  – (optional) step-by-step instructions for identifying this label
+#   parent                – parent label ID (null for top-level)
+#   children              – list of child label IDs
+#   exclusive_with        – labels that cannot coexist with this one
 #
 # This file is loaded once by LabelCatalog (label_catalog.py).
 # LABEL_MAPPING / LABEL_CATEGORIES in segment_models.py remain the
@@ -30,6 +31,10 @@ labels:
       indicators include unusual speed differentials between the player
       and nearby cars, late braking patterns, and deliberate trajectory
       deviations from the optimal racing line.
+    annotation_guideline: >
+      Analyze the driver's attempt to pass an opponent.  Look for late
+      braking, line deviation to find a gap, and speed differentials.
+      Assess if the move was successful and safe.
     parent: null
     children: []
     exclusive_with: ["2", "4"]
@@ -44,6 +49,9 @@ labels:
       zero/NaN dropouts across telemetry channels, flat-line segments
       in otherwise dynamic signals, and physically impossible or
       out-of-range values.
+    annotation_guideline: >
+      This segment contains gaps or corrupted telemetry.  Identify if
+      the sensor data drops to zero or becomes inconsistent unexpectedly.
     parent: null
     children: []
     exclusive_with: ["1", "EA", "4", "RM", "MS"]
@@ -58,6 +66,9 @@ labels:
       telemetry the Time Difference to Expert graph should be flat or
       decreasing, the speed delta near zero, and the trajectory closely
       following the expert line.
+    annotation_guideline: >
+      The driver is following the optimal racing line and speed profile
+      closely.  Nothing needs to be labeled right now.
     parent: null
     children: []
     exclusive_with: ["MS", "RM", "2"]
@@ -72,6 +83,10 @@ labels:
       include a dramatic speed reduction, a trajectory deviation into
       the pit lane, and a constant low speed consistent with the pit
       speed limiter being engaged.
+    annotation_guideline: >
+      The driver is entering, waiting in, or exiting the pit lane.
+      Look for significant speed reduction and distinct trajectory
+      deviation into the pit area.
     parent: null
     children: []
     exclusive_with: ["1", "2"]
@@ -88,6 +103,10 @@ labels:
       excursions, or pit exit; a decreasing time delta to the expert;
       and trajectory converging back toward the optimal line.  Specific
       recovery sub-labels describe the root cause.
+    annotation_guideline: >
+      The driver is recovering from a mistake such as slower speed.
+      Identify if the driver is recovering from low speed, off-track,
+      or merging back to the expert line.
     parent: null
     children: ["RM1", "RM2", "RM5", "RM6", "RM7", "RM8", "RM9", "RM10", "RM11"]
     exclusive_with: ["EA"]
@@ -105,6 +124,19 @@ labels:
       oversteer causing lower speed; and the Trajectory map can show
       deviations from the optimal line.  Sub-labels describe the
       specific root cause of the mistake.
+    annotation_guideline: >
+      The driver has committed a driving error resulting in time loss
+      or instability.
+      Step 1: Analyze the 'Time Difference to Expert' graph; a mistake
+      normally causes this time gap to increase continuously without
+      decreasing shortly after.
+      Step 2: Examine the differences in 'throttle' and 'brake' between
+      the player and the expert to find out why the player is slower.
+      Step 3: Examine the 'push_limit' graph to find understeer or
+      oversteer, which could lead to lower speed.
+      Step 4: Check the 'Trajectory' map for mistakes caused by
+      deviations from the optimal line.
+      Step 5: Find the labels that describe the *root cause*.
     parent: null
     children:
       - "MS1"
@@ -167,6 +199,10 @@ labels:
       named corner or straight section the segment corresponds to.
       The shape of the segment should also be described using Segment
       Type labels (ST1–ST6).
+    annotation_guideline: >
+      Look at the Trajectories Overlay and identify specific named
+      corners or straight sections of the Brands Hatch circuit.  Also,
+      identify the shape of the segment using labels ST1–ST6.
     parent: null
     children:
       - "brands_hatch1"
@@ -198,6 +234,10 @@ labels:
       named corner or straight section the segment corresponds to.
       The shape of the segment should also be described using Segment
       Type labels (ST1–ST6).
+    annotation_guideline: >
+      Look at the Trajectories Overlay and identify specific named
+      corners or straight sections of the Silverstone circuit.  Also,
+      identify the shape of the segment using labels ST1–ST6.
     parent: null
     children:
       - "silverstone1"
@@ -1212,3 +1252,23 @@ labels:
     parent: silverstone
     children: []
     exclusive_with: []
+
+# =============================================================================
+# Category-level annotation guidelines
+#
+# These guidelines apply to a label *category* (a group) rather than a
+# single label ID.  They are loaded into LabelCatalog.category_guidelines.
+# =============================================================================
+
+category_guidelines:
+
+  Segment Type: >
+    If the segment contains a corner, label the shape as 'In the corner'
+    (ST1).  If the segment is on the straight, label as 'On the straight'
+    (ST2).  If the segment is approaching a corner but not yet in it,
+    label as 'Approach to corner' (ST3).  If the segment is exiting a
+    corner, label as 'Exit corner leading to straight' (ST4).  If the
+    segment is between corners and hasn't been named yet, label as
+    'Between consecutive corners' (ST5).  If the segment covers
+    consecutive corners with no straight in between, label as
+    'Consecutive corners with no straight in between' (ST6).

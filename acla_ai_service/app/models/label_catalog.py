@@ -40,7 +40,7 @@ class LabelEntry:
     """Metadata for a single label loaded from the YAML catalog."""
 
     __slots__ = (
-        "id", "name", "type", "description",
+        "id", "name", "type", "description", "annotation_guideline",
         "parent", "children", "exclusive_with",
     )
 
@@ -49,6 +49,7 @@ class LabelEntry:
         self.name: str = raw.get("name", LABEL_MAPPING.get(label_id, label_id))
         self.type: str = raw.get("type", "unknown")
         self.description: str = (raw.get("description") or "").strip()
+        self.annotation_guideline: Optional[str] = (raw.get("annotation_guideline") or "").strip() or None
         self.parent: Optional[str] = raw.get("parent")
         self.children: List[str] = raw.get("children") or []
         self.exclusive_with: List[str] = raw.get("exclusive_with") or []
@@ -61,8 +62,13 @@ class LabelEntry:
 class LabelCatalog:
     """Queryable catalog of all annotation labels."""
 
-    def __init__(self, entries: Dict[str, LabelEntry]) -> None:
+    def __init__(
+        self,
+        entries: Dict[str, LabelEntry],
+        category_guidelines: Optional[Dict[str, str]] = None,
+    ) -> None:
         self._entries = entries
+        self.category_guidelines: Dict[str, str] = category_guidelines or {}
 
         # Build reverse mapping: sub-label → parent
         self.parent_of: Dict[str, str] = {}
@@ -126,6 +132,17 @@ class LabelCatalog:
             "exclusive_conflicts": exclusive_conflicts,
         }
 
+    # -- annotation guidelines ------------------------------------------------
+
+    def get_annotation_guideline(self, label_id: str) -> Optional[str]:
+        """Return the annotation guideline for *label_id*, or ``None``."""
+        entry = self._entries.get(label_id)
+        return entry.annotation_guideline if entry else None
+
+    def get_category_guideline(self, category: str) -> Optional[str]:
+        """Return the category-level annotation guideline, or ``None``."""
+        return self.category_guidelines.get(category)
+
     @property
     def all_ids(self) -> List[str]:
         return list(self._entries.keys())
@@ -159,7 +176,13 @@ def load_label_catalog(path: Optional[Path] = None) -> LabelCatalog:
         if lid not in entries:
             LOGGER.warning("Label '%s' (%s) exists in LABEL_MAPPING but has no YAML catalog entry.", lid, LABEL_MAPPING[lid])
 
-    return LabelCatalog(entries)
+    # Load category-level annotation guidelines
+    raw_cat_guidelines: Dict[str, Any] = raw.get("category_guidelines", {})
+    category_guidelines: Dict[str, str] = {
+        str(k): str(v).strip() for k, v in raw_cat_guidelines.items()
+    }
+
+    return LabelCatalog(entries, category_guidelines=category_guidelines)
 
 
 def get_label_catalog() -> LabelCatalog:

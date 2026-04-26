@@ -47,7 +47,6 @@ from PIL import Image
 from app.models.segment_models import (
     LABEL_MAPPING,
     LABEL_CATEGORIES,
-    MAIN_LABEL_GUIDELINES,
 )
 from app.models.label_catalog import get_label_catalog, LabelCatalog
 
@@ -68,7 +67,6 @@ class AnnotationState(TypedDict, total=False):
     parent_start: int        # parent segment start boundary
     parent_end: int          # parent segment end boundary
     available_labels: dict
-    label_guidelines: dict
     # --- planner state ---
     plan: str
     plan_steps: list
@@ -110,7 +108,6 @@ def _default_state() -> AnnotationState:
         "parent_start": 0,
         "parent_end": 0,
         "available_labels": {},
-        "label_guidelines": {},
         "plan": "",
         "plan_steps": [],
         "current_step_index": 0,
@@ -1626,7 +1623,6 @@ def run_annotation_pipeline(
         "parent_start": start_index,
         "parent_end": end_index,
         "available_labels": LABEL_CATEGORIES,
-        "label_guidelines": MAIN_LABEL_GUIDELINES,
         "max_iterations": config.max_iterations,
     })
 

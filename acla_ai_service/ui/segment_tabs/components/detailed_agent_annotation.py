@@ -24,7 +24,6 @@ from ..shared import (
     LABEL_MAPPING,
     LABEL_NAME_TO_ID,
     LABEL_CATEGORIES,
-    MAIN_LABEL_GUIDELINES,
     get_display_labels,
     save_annotations,
 )
