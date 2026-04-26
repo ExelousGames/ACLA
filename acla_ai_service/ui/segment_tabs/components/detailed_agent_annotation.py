@@ -1,7 +1,7 @@
 """
 Streamlit UI component for the LangGraph multi-agent sub-segment discovery pipeline.
 
-Renders below the Gemini analysis section in the annotation manager and lets users
+Renders below the analysis section in the annotation manager and lets users
 run the full annotation cycle on the currently selected parent segment:
 
     planner → steps_data_fetcher → step_reasoner (repeated per plan step)
