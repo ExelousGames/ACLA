@@ -111,7 +111,6 @@ class GraphAnalysisSkill:
 
         lines: List[str] = [
             "=== Graph Description Skill — How to Describe These Graphs ===",
-            "Your job is to describe what you see.  Do NOT interpret, diagnose, or suggest labels.",
             "",
         ]
 

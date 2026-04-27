@@ -68,9 +68,9 @@ class AnnotationAgentLLMConfig:
     mmproj_path: Optional[str] = None
     """Path to the mmproj (clip vision projector) GGUF.  ``None`` = auto-detect."""
 
-    context_size: int = 16384
+    context_size: int = 32768
     """Context window size.  Annotation prompts (guidelines + stats + graphs)
-    are long — 16 k tokens is a safe default."""
+    are long — 32 k tokens allows richer multi-graph context."""
 
     n_gpu_layers: int = -1
     """Number of layers to offload to GPU.  ``-1`` = all layers (recommended

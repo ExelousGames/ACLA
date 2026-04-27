@@ -130,13 +130,14 @@ labels:
       Step 1: Analyze the 'Time Difference to Expert' graph; a mistake
       normally causes this time gap to increase continuously without
       decreasing shortly after.
-      Step 2: Examine the differences in 'throttle' and 'brake' between
-      the player and the expert to find out why the player is slower.
-      Step 3: Examine the 'push_limit' graph to find understeer or
+      Step 2: Examine the differences in 'throttle' between the player
+      and the expert to identify when the driver applyed too much or too little throttle, or got on/off the throttle at the wrong time.
+      Step 3: Examine the differences in 'brake' between the player
+      and the expert to identify if the driver braked too hard or too softly, or got on/off the brake at the wrong time.
+      Step 4: Examine the 'push_limit' graph to find understeer or
       oversteer, which could lead to lower speed.
-      Step 4: Check the 'Trajectory' map for mistakes caused by
+      Step 5: Check the 'Trajectory' map for mistakes caused by
       deviations from the optimal line.
-      Step 5: Find the labels that describe the *root cause*.
     parent: null
     children:
       - "MS1"

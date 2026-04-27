@@ -119,7 +119,7 @@ def render_agent_annotation(df, form_start, form_end, form_labels, session_id, s
                 "Context size",
                 min_value=2048,
                 max_value=131072,
-                value=16384,
+                value=32768,
                 step=1024,
                 key="agent_annot_ctx",
             )

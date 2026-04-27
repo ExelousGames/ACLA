@@ -40,28 +40,19 @@ graphs:
       - "Legend identifies which line is expert_optimal_throttle vs Physics_gas (player)"
       - "Grid lines for reading exact values"
     what_to_describe: >
-      Step 1: Identify which line is the expert and which is the player
-      from the legend.  State the colour of each.
-      Step 2: Describe the player's throttle APPLICATION POINT — at
-      which index does the player's trace first rise from zero?
-      Report the expert's application index too.  State which one
-      applies first and the approximate index gap.
-      Step 3: Describe the APPLICATION RAMP — how steeply does each
-      trace rise?  Use terms: "steep/aggressive ramp", "gradual ramp",
-      "near-identical ramp".  If possible, note over how many indices
-      each trace goes from 0 to peak.
-      Step 4: Report the PEAK VALUE for each trace.  State the
-      player's peak and the expert's peak numerically.
-      Step 5: Describe any HESITATIONS, DIPS, or LIFTS — places where
-      the player's trace drops or fluctuates mid-plateau while the
-      expert remains steady.  Report the index range and depth of
-      each dip.
-      Step 6: Describe the RELEASE — at which index does each trace
-      begin dropping from its plateau?  How abrupt is the drop?
-      Use terms: "sharp drop", "gradual taper", "stepped release".
-      Step 7: Describe the overall SHAPE — does the player's trace
-      match the expert's shape, or are they fundamentally different
-      (e.g., one has a plateau and the other does not)?
+      Write a single cohesive paragraph describing the throttle graph.
+      Identify the expert and player lines from the legend and state the
+      colour of each.  Cover the application points for both traces —
+      which index each rises from zero, which applies first, and the
+      approximate index gap.  Describe the application ramp steepness
+      for each (steep/aggressive, gradual, near-identical) and over
+      how many indices each goes from 0 to peak.  Report the peak value
+      for each trace numerically.  Note any hesitations, dips, or lifts
+      in the player's trace — the index range and depth of each dip.
+      Describe the release point for each trace and how abrupt the drop
+      is (sharp drop, gradual taper, stepped release).  End with the
+      overall shape comparison — whether the player's trace matches the
+      expert's shape or differs fundamentally.
     description_vocabulary:
       application_point: "The index where the trace first rises above ~0.05 from zero"
       ramp_rate: "Steep (reaches peak within ~5 indices), moderate (~5–15 indices), gradual (>15 indices)"
@@ -87,29 +78,20 @@ graphs:
       - "Legend identifies which is which"
       - "Grid lines for reading exact values"
     what_to_describe: >
-      Step 1: Identify the expert and player traces from the legend.
-      State the colour of each.
-      Step 2: Report the BRAKING INITIATION INDEX for each trace —
-      where does brake pressure first rise from zero?  State the
-      player's index and the expert's index.  State which begins
-      braking first and the index gap.
-      Step 3: Describe the APPLICATION RAMP for each — how steeply
-      does pressure build?  Report approximate indices from zero to
-      peak for each trace.
-      Step 4: Report the PEAK BRAKE PRESSURE for each trace — read
-      the y-axis values precisely.
-      Step 5: Describe the RELEASE PHASE for each trace:
-        (a) At which index does pressure begin decreasing?
-        (b) How rapidly does it decrease?  "Sharp drop to zero" vs
-            "gradual trail-off" vs "stepped reduction".
-        (c) At which index does each trace reach zero?
-      Step 6: Report the TOTAL BRAKING DURATION for each trace —
-      number of indices from initiation to full release.
-      Step 7: If both brake and throttle are visible, describe any
-      index range where both are simultaneously above zero.
-      Step 8: Describe the overall SHAPE comparison — does the
-      player's brake profile mirror the expert's shape, or are they
-      different (e.g., one has a single peak, the other has two)?
+      Write a single cohesive paragraph describing the brake graph.
+      Identify the expert and player traces from the legend and state
+      the colour of each.  Cover the braking initiation index for both
+      traces — where each rises from zero, which begins first, and the
+      index gap.  Describe the application ramp steepness for each and
+      the approximate indices from zero to peak.  Report the peak brake
+      pressure for each trace numerically.  Describe the release phase
+      for each — the index where pressure begins decreasing, the rate
+      of decrease (sharp drop, gradual trail-off, stepped reduction),
+      and the index where each trace reaches zero.  State the total
+      braking duration (indices from initiation to full release) for
+      each.  If both brake and throttle are visible, mention any index
+      range where both are simultaneously above zero.  Close with the
+      overall shape comparison.
     description_vocabulary:
       initiation_index: "The index where the trace first rises above ~0.05"
       peak_pressure: "The highest y-value reached, read from the y-axis"
@@ -128,32 +110,26 @@ graphs:
     graph_type: feature_plot
     axes:
       x: "Segment index (time progression left to right)"
-      y: "Time delta in seconds (positive = player behind expert, negative = player ahead)"
+      y: "Time delta in milliseconds (positive = player behind expert, negative = player ahead)"
     visual_elements:
       - "Single line trace showing cumulative time gap"
       - "A RISING line means the gap is growing (player falling further behind)"
       - "A FALLING line means the gap is shrinking (player catching up)"
       - "A FLAT line means the gap is stable"
     what_to_describe: >
-      Step 1: Report the starting value — what is the time delta at
-      the leftmost index of the segment?  State the value in seconds.
-      Step 2: Report the ending value — what is the time delta at the
-      rightmost index?  State the value in seconds.
-      Step 3: Report the NET CHANGE — ending minus starting value.
-      State whether the gap increased, decreased, or stayed the same,
-      and by how many seconds.
-      Step 4: Describe the SHAPE of the line across the segment.
-      Use terms: "continuously rising", "continuously falling",
-      "flat", "rises then flattens", "rises then falls", "falls then
-      rises", "oscillating".
-      Step 5: Identify any INFLECTION POINTS — indices where the line
-      changes direction (rising to flat, flat to rising, etc.).
-      Report the index and the time delta value at each inflection.
-      Step 6: Describe the STEEPNESS of any rising or falling sections.
-      Use terms: "steep rise" (>0.1s over ~20 indices), "gradual rise",
-      "slight drift".
-      Step 7: Note any DISCONTINUITIES — sudden vertical jumps or
-      drops that look like data artifacts rather than smooth trends.
+      Write a single cohesive paragraph describing the time delta graph.
+      State the value at the leftmost index and the value at the
+      rightmost index in milliseconds, then state the net change
+      (whether the gap increased, decreased, or stayed the same and
+      by how many milliseconds).  Describe the overall shape of the
+      line using terms such as continuously rising, continuously falling,
+      flat, rises then flattens, rises then falls, or oscillating.
+      Identify any inflection points — indices where the line changes
+      direction — and report the index and delta value at each.
+      Describe the steepness of any rising or falling sections (steep
+      rise if >0.1 s over ~20 indices, gradual, slight drift).  Note
+      any discontinuities that look like data artifacts rather than
+      smooth trends.
     description_vocabulary:
       rising: "Time delta value is increasing (gap growing)"
       falling: "Time delta value is decreasing (gap shrinking)"
@@ -179,22 +155,18 @@ graphs:
       - "Values above zero mean the expert is faster at that index"
       - "Values below zero mean the player is faster at that index"
     what_to_describe: >
-      Step 1: Report the OVERALL BIAS — is the line mostly above zero,
-      mostly below zero, or balanced around zero?
-      Step 2: Report the PEAK POSITIVE value — the maximum km/h where
-      the expert is faster.  State the index and the value.
-      Step 3: Report the PEAK NEGATIVE value — the maximum km/h where
-      the player is faster.  State the index and the value.
-      Step 4: Describe the SHAPE — is the line smooth or spiky?  Does
-      it have one dominant peak or multiple?  Is there a sustained
-      section above or below zero?
-      Step 5: Report any sustained sections where the absolute speed
-      difference exceeds 20 km/h.  State the index range and the
-      approximate magnitude.
-      Step 6: Report any sustained sections where the difference
-      stays near zero (within +/- 5 km/h).  State the index range.
-      Step 7: Describe transitions — where does the line cross zero?
-      Report those index positions.
+      Write a single cohesive paragraph describing the speed delta graph.
+      State the overall bias — whether the line sits mostly above zero,
+      mostly below zero, or balanced.  Report the peak positive value
+      (the maximum km/h where the expert is faster) with its index, and
+      the peak negative value (the maximum km/h where the player is
+      faster) with its index.  Describe the shape — smooth or spiky,
+      one dominant peak or multiple, any sustained section above or
+      below zero.  Note any sustained sections where the absolute
+      difference exceeds 20 km/h (with index range and magnitude) and
+      any sustained sections where the difference stays near zero
+      (within ±5 km/h).  Report the index positions where the line
+      crosses zero.
     description_vocabulary:
       positive_region: "Expert faster than player (line above zero)"
       negative_region: "Player faster than expert (line below zero)"
@@ -217,31 +189,20 @@ graphs:
       - "Legend identifies which line is which"
       - "Speed dropping = deceleration/braking, speed minimum = apex/lowest speed, speed rising = acceleration"
     what_to_describe: >
-      Step 1: Identify the expert and player traces from the legend.
-      State the colour of each.
-      Step 2: Describe the overall SHAPE of each trace.
-      Use terms: "V-shape" (decelerate then accelerate, typical corner),
-      "U-shape" (gradual deceleration, sustained low, gradual acceleration),
-      "flat-top" (sustained high speed, typical straight),
-      "descending" (speed decreasing throughout),
-      "ascending" (speed increasing throughout).
-      Step 3: Report the ENTRY SPEED for each trace — the speed at the
-      leftmost index.  State values in km/h.
-      Step 4: Report the MINIMUM SPEED for each trace — the lowest
-      speed value and the index where it occurs.
-      Step 5: Report the EXIT SPEED for each trace — the speed at the
-      rightmost index.
-      Step 6: Describe the DECELERATION PHASE for each — at which
-      index does speed start dropping?  How steeply?  Over how many
-      indices does each trace go from entry speed to minimum speed?
-      Step 7: Describe the ACCELERATION PHASE for each — at which
-      index does speed start rising after the minimum?  How steeply?
-      Step 8: Note any FLAT SPOTS, STEPS, or PLATEAUS in the player's
-      trace — sections where speed holds constant briefly before
-      continuing to change.
-      Step 9: Note any section where the player's speed is constant
-      at a low value (~60–80 km/h) for an extended duration — this
-      is a distinctive visual pattern.
+      Write a single cohesive paragraph describing the speed graph.
+      Identify the expert and player traces from the legend and state
+      the colour of each.  Describe the overall shape of each trace
+      using terms such as V-shape, U-shape, flat-top, descending, or
+      ascending.  Report the entry speed for each trace (km/h at the
+      leftmost index), the minimum speed and the index where it occurs,
+      and the exit speed at the rightmost index.  Describe the
+      deceleration phase for each — where speed starts dropping,
+      how steeply, and over how many indices each trace falls from
+      entry to minimum.  Describe the acceleration phase — where speed
+      starts rising after the minimum and how steeply.  Note any flat
+      spots, steps, or plateaus in the player's trace, and any extended
+      section where the player's speed holds constant at a low value
+      (~60–80 km/h).
     description_vocabulary:
       entry_speed: "Speed at the leftmost index of the segment"
       minimum_speed: "The lowest speed value and the index where it occurs"
@@ -267,26 +228,18 @@ graphs:
       - "Higher values = driver using more of the car's available grip"
       - "Spikes indicate moments where the car approached or exceeded grip limits"
     what_to_describe: >
-      Step 1: Report the BASELINE LEVEL — what is the typical value
-      the trace hovers around for most of the segment?
-      Step 2: Identify any SPIKES — sudden increases above the baseline.
-      For each spike, report:
-        (a) The index where it starts rising
-        (b) The peak value
-        (c) The index where it peaks
-        (d) The index where it returns to baseline
-        (e) The duration in indices
-      Step 3: Describe WHERE each spike falls within the segment:
-      "early" (first third), "middle" (second third), "late"
-      (final third).
-      Step 4: If there are MULTIPLE spikes, describe how many and
-      whether they are isolated or clustered.
-      Step 5: Describe any SUSTAINED HIGH sections — index ranges
-      where the value stays elevated (not just a spike but a plateau).
-      Step 6: Describe any SUSTAINED LOW sections — extended ranges
-      where the value stays near zero or very low.
-      Step 7: Report the overall RANGE — minimum and maximum values
-      seen across the segment.
+      Write a single cohesive paragraph describing the push/limit graph.
+      State the baseline level — the typical value the trace hovers
+      around for most of the segment.  For each spike (sudden increase
+      above baseline), describe where it starts rising, its peak value,
+      the index of the peak, the index where it returns to baseline,
+      its duration in indices, and where it falls within the segment
+      (early, middle, or late third).  If there are multiple spikes,
+      state how many and whether they are isolated or clustered.
+      Describe any sustained high sections (elevated plateau rather than
+      a spike) and any sustained low sections (near zero for many
+      indices).  Close with the overall range — the minimum and maximum
+      values seen across the segment.
     description_vocabulary:
       baseline: "The typical value the trace sits at during normal driving"
       spike: "A brief sharp increase above the baseline, then return"
@@ -318,39 +271,25 @@ graphs:
       - "Red annotation = Minimum speed point with km/h value"
       - "Y-axis is INVERTED (standard for top-down track views)"
     what_to_describe: >
-      Step 1: State the DIRECTION OF TRAVEL — from the Start (X)
-      marker to the End (O) marker.  Describe this as a compass-like
-      direction (e.g., "left to right", "top-right to bottom-left").
-      Step 2: Describe the OVERALL SHAPE of the trajectory.  Is it:
-      a single curve, a straight line, an S-shape (multiple direction
-      changes), a hairpin, an approach that begins to curve, a curve
-      that straightens out, or a short transition between curves?
-      Step 3: Describe the SEPARATION between the player (green) and
-      expert (blue) lines.  Are they close together throughout?  Do
-      they diverge?  Where is the maximum separation?  Report this
-      as "close", "moderate gap", or "large divergence" and state
-      which section (entry, mid, exit) has the most separation.
-      Step 4: At CORNER ENTRY (the section near the Start marker if
-      the segment covers a corner approach): describe the relative
-      positions of the two lines.  Is the player's line inside or
-      outside of the expert's?  Do they begin turning at approximately
-      the same point, or does one stay straight longer?
-      Step 5: At the APEX AREA (near the purple star): describe how
-      close the player's line passes to the inside of the corner
-      compared to the expert's.  Are they at a similar distance from
-      the inside, or is there a visible gap?
-      Step 6: At CORNER EXIT (the section near the End marker if the
-      segment covers a corner exit): describe the relative positions.
-      Does the player's line open out to the same width as the expert's?
-      Is the player's line tighter or wider than the expert's?
-      Step 7: Describe any KINKS, WOBBLES, or SHARP CORRECTIONS in
-      the player's line that are not present in the expert's smooth
-      line.  Report their approximate location.
-      Step 8: If the minimum speed annotation is visible, report its
-      value and approximate location on the trajectory.
-      Step 9: If the player's line DEVIATES DRAMATICALLY from the
-      expert's line (large gap with a sharp correction back), describe
-      the location and magnitude of the deviation.
+      Write a single cohesive paragraph describing the detailed
+      trajectory graph.  State the direction of travel from the Start
+      (X) marker to the End (O) marker.  Describe the overall shape
+      of the trajectory (single curve, straight, S-shape, hairpin,
+      approach to curve, exit from curve, short transition).  Describe
+      the separation between the player (green) and expert (blue) lines
+      throughout — whether they are close, show a moderate gap, or
+      diverge largely, and which section (entry, mid, exit) has the
+      most separation.  At corner entry describe the relative positions
+      and whether the turn-in points coincide or one stays straight
+      longer.  Near the apex (purple star) describe how close the
+      player's line passes to the inside relative to the expert's.  At
+      corner exit describe whether the player's line opens out to the
+      same width as the expert's or is tighter/wider.  Note any kinks,
+      wobbles, or sharp corrections in the player's line and their
+      approximate location.  If the minimum speed annotation is visible,
+      state its value and location.  If the player's line deviates
+      dramatically with a sharp correction back, describe the location
+      and magnitude.
     description_vocabulary:
       inside: "The side of the track closer to the centre of the corner"
       outside: "The side of the track farther from the centre of the corner"
@@ -382,34 +321,21 @@ graphs:
       - "Blue/grey dashed line = Expert trajectory (reference position)"
       - "Black X = Start, Black O = End"
     what_to_describe: >
-      Step 1: State the DIRECTION OF TRAVEL from Start (X) to End (O).
-      Step 2: Describe the COLOUR SEQUENCE along the player's line
-      in the direction of travel.  List each colour section in order,
-      e.g.: "green from Start to approximately [index/position],
-      then transitioning to red until [position], then yellow briefly,
-      then green to End."  Be specific about where transitions occur
-      relative to the corner geometry (before the curve begins, at
-      the start of the curve, at the apex area, after the apex, on
-      the straight).
-      Step 3: Describe the LENGTH of each colour section relative to
-      the total trajectory.  Use terms: "short section", "extended
-      section", "brief transition", "dominant colour".
-      Step 4: Describe where the RED (braking) section starts and
-      ends relative to the corner geometry — is it before the curve
-      begins?  Does it extend into the curve?  Does it end before
-      the apex area?
-      Step 5: Describe where the GREEN (throttle) section resumes
-      after any braking — is it at the apex area?  After the apex?
-      Well after the curve ends?
-      Step 6: Describe any YELLOW sections — where are they, and how
-      long are they?  Are they a brief transition between red and
-      green, or an extended coasting section?
-      Step 7: Describe the player's trajectory POSITION relative to
-      the expert's dashed line — same observations as trajectory_detailed
-      (inside/outside, separation, etc.).
-      Step 8: Note if there are any sections that appear MIXED or
-      transitional in colour (e.g., orange, which indicates partial
-      brake + partial gas).
+      Write a single cohesive paragraph describing the gas/brake
+      trajectory graph.  State the direction of travel from Start (X)
+      to End (O).  Describe the colour sequence along the player's line
+      in travel order — list each colour section and where each
+      transition occurs relative to the corner geometry (before the
+      curve, at curve entry, at the apex area, after the apex, on the
+      straight).  For each colour section describe its length relative
+      to the total trajectory (short section, extended section, brief
+      transition, dominant colour).  Note where the red braking section
+      starts and ends relative to the corner geometry, where the green
+      throttle section resumes after braking, and the position and
+      duration of any yellow coasting sections.  Describe the player's
+      trajectory position relative to the expert's dashed line
+      (inside/outside, separation by section).  Note any mixed or
+      transitional colour sections (e.g., orange) and where they occur.
     description_vocabulary:
       green_section: "Throttle-dominant section (gas > brake)"
       red_section: "Brake-dominant section (brake > gas)"
@@ -438,27 +364,21 @@ graphs:
       - "Black X = Start, Black O = End"
       - "IMPORTANT: understeer (blue) is amplified 2x in the colour mapping for visibility"
     what_to_describe: >
-      Step 1: State the DIRECTION OF TRAVEL from Start (X) to End (O).
-      Step 2: Describe the COLOUR SEQUENCE along the trajectory in
-      the direction of travel.  List each colour section in order with
-      approximate locations relative to the corner geometry.
-      Step 3: For each RED section:
-        (a) Where is it on the trajectory (entry, mid-corner, exit,
-            straight)?
-        (b) How saturated is the red — vivid/dark red or light/faint?
-        (c) How long is the section (brief flash or extended)?
-      Step 4: For each BLUE section:
-        (a) Where is it on the trajectory?
-        (b) How saturated is the blue?
-        (c) How long is the section?
-        (d) NOTE: blue is amplified 2x, so a light blue represents
-            a smaller actual effect than an equally vivid red.
-      Step 5: For WHITE/NEUTRAL sections: describe where they are
-      and how much of the trajectory they cover.
-      Step 6: Describe the player's trajectory POSITION relative to
-      the expert's dashed grey line — same as trajectory_detailed.
-      Step 7: If there are ABRUPT colour changes (e.g., sudden
-      transition from neutral to vivid red), note the location.
+      Write a single cohesive paragraph describing the oversteer/
+      understeer balance trajectory graph.  State the direction of
+      travel from Start (X) to End (O).  Describe the colour sequence
+      along the trajectory in travel order with approximate locations
+      relative to the corner geometry.  For each red section state
+      where it falls on the trajectory (entry, mid-corner, exit,
+      straight), how saturated the red is (vivid/dark vs light/faint),
+      and whether it is brief or extended.  For each blue section
+      cover the same detail and note that blue is displayed at 2x
+      amplification so a given blue intensity represents half the
+      actual slip difference of the same red intensity.  Describe
+      white/neutral sections — where they are and how much of the
+      trajectory they cover.  Describe the player's trajectory position
+      relative to the expert's dashed grey line.  Note any abrupt
+      colour changes and their locations.
     description_vocabulary:
       red_section: "Rear-slip-dominant section (rear tyres slipping more than fronts)"
       blue_section: "Front-slip-dominant section (front tyres slipping more than rears)"

@@ -435,7 +435,7 @@ def planner_node(state: AnnotationState) -> dict:
     existing children to decide *which statistics and graphs* are needed
     to find a new sub-segment within the parent range.
     """
-    from .annotation_agent_tools import STATISTIC_CATEGORIES, AGENT_GRAPH_DEFINITIONS, ALL_STATISTIC_CATEGORY_IDS
+    from .annotation_agent_tools import TELEMETRY_COLUMN_GROUPS, AGENT_GRAPH_DEFINITIONS, ALL_TELEMETRY_GROUP_IDS
 
     iteration = state.get("iteration", 0) + 1
     feedback = state.get("evaluation_feedback", "")
@@ -446,9 +446,9 @@ def planner_node(state: AnnotationState) -> dict:
     segment_data = state.get("segment_data", {})
 
     # Build tool catalogue for the planner
-    stat_catalogue = ", ".join(
+    group_catalogue = ", ".join(
         f"`{cid}` ({cdef['description']})"
-        for cid, cdef in STATISTIC_CATEGORIES.items()
+        for cid, cdef in TELEMETRY_COLUMN_GROUPS.items()
     )
     graph_catalogue = ", ".join(
         f"`{gdef['id']}` ({gdef['title']})"
@@ -458,10 +458,13 @@ def planner_node(state: AnnotationState) -> dict:
     main_readable = [LABEL_MAPPING.get(l, l) for l in parent_main_labels]
     catalog = get_label_catalog()
     label_descriptions = []
+    annotation_guidelines = []
     for label_id in parent_main_labels:
         label_def = catalog.get_label(label_id)
         if label_def and label_def.description:
             label_descriptions.append(f"  - {label_def.name} ({label_id}): {label_def.description}")
+        if label_def and label_def.annotation_guideline:
+            annotation_guidelines.append(f"  [{label_def.name}]\n  {label_def.annotation_guideline}")
 
     prompt_parts = [
         "You are a racing telemetry analyst planning a sub-segment discovery strategy.",
@@ -475,6 +478,12 @@ def planner_node(state: AnnotationState) -> dict:
     if label_descriptions:
         prompt_parts.append("=== Label Descriptions (from Label Catalog) ===")
         prompt_parts.extend(label_descriptions)
+        prompt_parts.append("")
+
+    if annotation_guidelines:
+        prompt_parts.append("=== Annotation Guidelines ===")
+        prompt_parts.append("Follow these steps when planning analysis for the identified labels:")
+        prompt_parts.extend(annotation_guidelines)
         prompt_parts.append("")
 
     # Existing children for duplicate avoidance
@@ -494,7 +503,7 @@ def planner_node(state: AnnotationState) -> dict:
         "=== Available Tools ===",
         "1. **get_telemetry_statistics** — numerical statistics (mean, min, max, std) "
         "and player-vs-expert deltas.",
-        f"   Available statistic categories: {stat_catalogue}",
+        f"   Available telemetry column groups: {group_catalogue}",
         "2. **generate_telemetry_graphs** — visual telemetry graphs rendered as images.",
         f"   Available graph IDs: {graph_catalogue}",
         "   The solver has a Vision Language Model and CAN analyse the "
@@ -563,7 +572,7 @@ def planner_node(state: AnnotationState) -> dict:
                "Examine all telemetry features and propose the most fitting labels."
 
     # Parse structured tool requests from planner output
-    available_tools = list(ALL_STATISTIC_CATEGORY_IDS)
+    available_tools = list(ALL_TELEMETRY_GROUP_IDS)
     parsed_steps = _parse_planner_steps(plan, available_tools)
 
     msg = {"role": "planner", "iteration": iteration, "content": plan}
@@ -812,14 +821,16 @@ def step_reasoner_node(state: AnnotationState) -> Dict[str, Any]:
 
     prompt = (
         f"You are a telemetry graph describer.  Your ONLY job is to produce a "
-        f"detailed, precise description of the data and graphs provided for "
-        f"this step.  Do NOT diagnose problems, assign labels, or suggest what "
-        f"the observations mean.  Other nodes in the pipeline will interpret "
-        f"your description — your job is to give them accurate raw observations.\n\n"
+        f"detailed, precise description of the data and graphs provided.  "
+        f"Write in flowing prose paragraphs — do NOT use numbered lists, "
+        f"bullet points, or step-by-step formatting.  Do NOT diagnose problems, "
+        f"assign labels, or suggest what the observations mean.  Other nodes "
+        f"in the pipeline will interpret your description — your job is to give "
+        f"them accurate raw observations.\n\n"
         f"**Segment Context:**\n"
         f"- Index Range: {parent_start} to {parent_end}\n\n"
-        f"**Current Step ({step['step_id']}): {step['description']}**\n\n"
-        f"**Tool Outputs for this Step:**\n"
+        f"**Analysis Goal: {step['description']}**\n\n"
+        f"**Tool Outputs:**\n"
     )
 
     content_for_vlm = []
@@ -840,13 +851,14 @@ def step_reasoner_node(state: AnnotationState) -> Dict[str, Any]:
 
     prompt += (
         "\n**Your Task:**\n"
-        "Describe what you see in each graph image by following the 'what_to_describe' "
-        "checklist above for each graph type.  For each graph:\n"
-        "1. Go through EVERY step in the checklist and report your observation.\n"
-        "2. Use exact index positions and numerical values wherever readable.\n"
-        "3. Use the vocabulary terms provided for consistent descriptions.\n"
-        "4. Avoid the common description errors listed.\n\n"
-        "If statistics are also provided, describe the key numerical values.\n\n"
+        "For each graph, write the paragraph description specified in the "
+        "'what_to_describe' guidance above.  Cover every aspect listed, use "
+        "the vocabulary terms provided, and avoid the listed description errors.  "
+        "Your output should read as flowing prose — do NOT use numbered lists "
+        "or bullet points.  Use exact index positions and numerical values "
+        "wherever readable.\n\n"
+        "If statistics are also provided, describe the key numerical values in "
+        "a brief paragraph.\n\n"
         "IMPORTANT: Do NOT interpret, diagnose, or suggest labels.  Do NOT say "
         "'this indicates a mistake' or 'this suggests the driver did X wrong'.  "
         "Only describe WHAT you see — shapes, values, positions, colours, "
@@ -1502,7 +1514,7 @@ class AnnotationPipelineConfig:
     # llama-cpp VLM settings
     gguf_path: Optional[str] = None
     mmproj_path: Optional[str] = None
-    context_size: int = 16384
+    context_size: int = 32768
     n_gpu_layers: int = -1
 
     # HuggingFace source repo + conversion

@@ -38,13 +38,13 @@ LOGGER = logging.getLogger(__name__)
 AGENT_GRAPH_DEFINITIONS: List[Dict[str, Any]] = [
     {
         "id": "throttle",
-        "title": "Throttle Application: Expert vs Player",
+        "title": "Throttle Application - ",
         "columns": ["expert_optimal_throttle", "Physics_gas"],
         "description": "Expert vs player throttle traces.",
     },
     {
         "id": "brake",
-        "title": "Brake Application: Expert vs Player",
+        "title": "Brake Application - ",
         "columns": ["expert_optimal_brake", "Physics_brake"],
         "description": "Expert vs player brake traces.",
     },
@@ -104,11 +104,11 @@ AGENT_GRAPH_DEFINITIONS: List[Dict[str, Any]] = [
 ]
 
 # ---------------------------------------------------------------------------
-# Statistic categories — group telemetry columns into named categories
-# that the planner can selectively request.
+# Telemetry column groups — map named group IDs to the DataFrame columns
+# and player-vs-expert deltas the planner can selectively request.
 # ---------------------------------------------------------------------------
 
-STATISTIC_CATEGORIES: Dict[str, Dict[str, Any]] = {
+TELEMETRY_COLUMN_GROUPS: Dict[str, Dict[str, Any]] = {
     "speed": {
         "columns": [ "Physics_speed_kmh", "expert_optimal_speed"],
         "deltas": [("Physics_speed_kmh", "expert_optimal_speed", "speed_delta")],
@@ -146,7 +146,7 @@ STATISTIC_CATEGORIES: Dict[str, Dict[str, Any]] = {
     },
 }
 
-ALL_STATISTIC_CATEGORY_IDS: List[str] = list(STATISTIC_CATEGORIES.keys())
+ALL_TELEMETRY_GROUP_IDS: List[str] = list(TELEMETRY_COLUMN_GROUPS.keys())
 
 # ---------------------------------------------------------------------------
 # Tool 1: Statistical summary
@@ -165,7 +165,7 @@ def get_telemetry_statistics(
     Parameters
     ----------
     stat_categories : list[str], optional
-        Subset of category IDs from ``STATISTIC_CATEGORIES`` to compute.
+        Subset of category IDs from ``TELEMETRY_COLUMN_GROUPS`` to compute.
         ``None`` means compute all categories (backward-compatible).
     """
     segment_df = df.iloc[int(start_index): int(end_index)]
@@ -176,15 +176,15 @@ def get_telemetry_statistics(
 
     # Resolve which categories to compute
     if stat_categories:
-        selected = [c for c in stat_categories if c in STATISTIC_CATEGORIES]
+        selected = [c for c in stat_categories if c in TELEMETRY_COLUMN_GROUPS]
     else:
-        selected = list(STATISTIC_CATEGORIES.keys())
+        selected = list(TELEMETRY_COLUMN_GROUPS.keys())
 
     # Collect columns and deltas from selected categories
     summary_cols: List[str] = []
     delta_pairs: List[Tuple[str, str, str]] = []
     for cat_id in selected:
-        cat = STATISTIC_CATEGORIES[cat_id]
+        cat = TELEMETRY_COLUMN_GROUPS[cat_id]
         summary_cols.extend(cat["columns"])
         delta_pairs.extend(cat["deltas"])
 
