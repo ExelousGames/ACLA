@@ -49,6 +49,7 @@ from app.models.segment_models import (
     LABEL_CATEGORIES,
 )
 from app.models.label_catalog import get_label_catalog, LabelCatalog
+from app.models.graph_analysis_skill import get_graph_skill
 
 LOGGER = logging.getLogger(__name__)
 
@@ -810,10 +811,12 @@ def step_reasoner_node(state: AnnotationState) -> Dict[str, Any]:
     graph_images = state.get("current_step_graph_images", [])
 
     prompt = (
-        f"You are an expert telemetry analyst executing one step of a larger plan. "
-        f"Your goal is to analyze the provided data and form a conclusion for this specific step, which will be used later.\n\n"
-        f"**Parent Segment Context:**\n"
-        f"- Labels: {[LABEL_MAPPING.get(l, l) for l in parent_main_labels]}\n"
+        f"You are a telemetry graph describer.  Your ONLY job is to produce a "
+        f"detailed, precise description of the data and graphs provided for "
+        f"this step.  Do NOT diagnose problems, assign labels, or suggest what "
+        f"the observations mean.  Other nodes in the pipeline will interpret "
+        f"your description — your job is to give them accurate raw observations.\n\n"
+        f"**Segment Context:**\n"
         f"- Index Range: {parent_start} to {parent_end}\n\n"
         f"**Current Step ({step['step_id']}): {step['description']}**\n\n"
         f"**Tool Outputs for this Step:**\n"
@@ -826,11 +829,28 @@ def step_reasoner_node(state: AnnotationState) -> Dict[str, Any]:
     if graph_descriptions:
         prompt += f"- Generated Graphs:\n" + "\n".join([f"  - {desc}" for desc in graph_descriptions]) + "\n"
 
+    # Inject graph analysis skill instructions when graphs are present
+    if graph_images:
+        requested_graph_ids = step.get("requested_graphs", [])
+        if requested_graph_ids:
+            graph_skill = get_graph_skill()
+            skill_prompt = graph_skill.build_graph_prompt(requested_graph_ids)
+            if skill_prompt:
+                prompt += f"\n{skill_prompt}\n"
+
     prompt += (
         "\n**Your Task:**\n"
-        "Based *only* on the information for the current step, provide your reasoning and analysis. "
-        "What have you learned? What are the key takeaways from these statistics and graphs? "
-        "Do not propose a final answer or segment boundaries yet. Focus only on interpreting this step's data."
+        "Describe what you see in each graph image by following the 'what_to_describe' "
+        "checklist above for each graph type.  For each graph:\n"
+        "1. Go through EVERY step in the checklist and report your observation.\n"
+        "2. Use exact index positions and numerical values wherever readable.\n"
+        "3. Use the vocabulary terms provided for consistent descriptions.\n"
+        "4. Avoid the common description errors listed.\n\n"
+        "If statistics are also provided, describe the key numerical values.\n\n"
+        "IMPORTANT: Do NOT interpret, diagnose, or suggest labels.  Do NOT say "
+        "'this indicates a mistake' or 'this suggests the driver did X wrong'.  "
+        "Only describe WHAT you see — shapes, values, positions, colours, "
+        "separations, sequences.  Downstream nodes will handle interpretation."
     )
     content_for_vlm.append({"type": "text", "text": prompt})
 
