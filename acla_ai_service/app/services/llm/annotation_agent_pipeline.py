@@ -1709,7 +1709,7 @@ def run_annotation_pipeline(
 
     # Stream through graph nodes for progress reporting
     final_state = dict(initial_state)
-    for event in graph.stream(initial_state):
+    for event in graph.stream(initial_state, config={"recursion_limit": 100}):
         for node_name, node_output in event.items():
             final_state.update(node_output)
             if progress_callback:
