@@ -2,7 +2,7 @@
 Multi-agent annotation pipeline using LangGraph.
 
 Implements a multi-step planner → executor → reasoner loop followed by
-label verification and a synthesis → evaluator cycle for automated
+label filtering and a synthesis → evaluator cycle for automated
 telemetry sub-segment annotation.
 
 Tool categories used during execution:
@@ -21,8 +21,8 @@ Graph flow:
        ▲                                          │ (repeat for each plan step)
        │                          ┌───────────────┘
        │                          ▼
-       │                  label_verifier      ← VLM binary-verifies every candidate
-       │                          │
+       │                  label_verifier      ← embedding similarity filter
+       │                          │             (narrows candidates before synthesis)
        │                  proposal_synthesizer ← VLM determines precise boundaries
        │                          │
        │                    evaluator ─────────────────────────┐
@@ -80,8 +80,8 @@ class AnnotationState(TypedDict, total=False):
     current_step_graph_images: list
     current_step_graph_descriptions: list
     # --- label filtering state ---
-    verified_labels: list        # VLM per-label binary-verified label IDs
-    verified_label_reasoning: dict  # {label_id: justification} from verifier
+    verified_labels: list        # label IDs that passed the embedding similarity filter
+    verified_label_reasoning: dict  # {label_id: "Similarity <score> — <label text>"}
     # --- agent state ---
     proposed_sub_start: int      # VLM-proposed sub-segment start index
     proposed_sub_end: int        # VLM-proposed sub-segment end index
@@ -146,6 +146,41 @@ def _default_state() -> AnnotationState:
 
 _llm_holder: Dict[str, Optional[Callable]] = {"vlm": None, "llm": None}
 _llm_lock = threading.Lock()
+
+# ---------------------------------------------------------------------------
+# Embedding model singleton (lazy-loaded, shared across runs)
+# ---------------------------------------------------------------------------
+
+_EMBED_MODEL_NAME = "all-MiniLM-L6-v2"
+_SIMILARITY_THRESHOLD = 0.25
+_MIN_FILTER_LABELS = 2   # always pass at least this many (highest scoring)
+_MAX_FILTER_LABELS = 8   # cap to keep synthesizer prompt focused
+
+_embedder_instance = None
+_embedder_lock = threading.Lock()
+
+
+def _get_embedder():
+    """Return the SentenceTransformer singleton, loading on first call."""
+    global _embedder_instance
+    if _embedder_instance is not None:
+        return _embedder_instance
+    with _embedder_lock:
+        if _embedder_instance is None:
+            from sentence_transformers import SentenceTransformer
+            LOGGER.info("Loading embedding model '%s' …", _EMBED_MODEL_NAME)
+            _embedder_instance = SentenceTransformer(_EMBED_MODEL_NAME)
+            LOGGER.info("Embedding model loaded.")
+    return _embedder_instance
+
+
+def _cosine_sim(a, b) -> float:
+    """Cosine similarity between two 1-D numpy arrays."""
+    import numpy as np
+    na, nb = np.linalg.norm(a), np.linalg.norm(b)
+    if na == 0 or nb == 0:
+        return 0.0
+    return float(np.dot(a, b) / (na * nb))
 
 
 # ---------------------------------------------------------------------------
@@ -898,25 +933,31 @@ def step_router(state: AnnotationState) -> Literal["steps_data_fetcher", "label_
 
 
 # ---------------------------------------------------------------------------
-# Label verifier — VLM per-label binary check
+# Label verifier — embedding similarity filter
 # ---------------------------------------------------------------------------
 
 
 def label_verifier_node(state: AnnotationState) -> Dict[str, Any]:
-    """Verify every candidate label with a binary yes/no VLM check.
+    """Filter candidate labels by embedding similarity to step reasoner evidence.
 
-    Builds the full candidate list from parent sub-labels and segment types,
-    then sends the VLM the graphs + stats for each candidate and asks:
-    "Does this label match the evidence? yes/no + one-sentence justification."
+    Embeds the concatenated step-reasoner observations as a query, embeds
+    each candidate label's name + description, then keeps only labels whose
+    cosine similarity exceeds _SIMILARITY_THRESHOLD.  At least
+    _MIN_FILTER_LABELS labels are always passed (highest scoring), and the
+    result is capped at _MAX_FILTER_LABELS to keep the synthesizer prompt
+    focused.
+
+    Replaces the previous per-label VLM binary-check loop, eliminating N
+    separate VLM calls and replacing them with a single batch embedding
+    computation.
     """
+    import numpy as np
+
     messages = list(state.get("messages", []))
     iteration = state.get("iteration", 0)
-    all_graph_descriptions = state.get("all_graph_descriptions", [])
     parent_main_labels = state.get("parent_main_labels", [])
-    parent_start = state.get("parent_start", 0)
-    parent_end = state.get("parent_end", 0)
 
-    # Build full candidate list from parent sub-labels + segment types
+    # Build candidate list from parent sub-labels + segment types
     catalog = get_label_catalog()
     candidate_ids: list[str] = []
     for pid in parent_main_labels:
@@ -934,7 +975,7 @@ def label_verifier_node(state: AnnotationState) -> Dict[str, Any]:
             shortlisted.append(lid)
 
     if not shortlisted:
-        LOGGER.info("Label verifier: no candidate labels to verify.")
+        LOGGER.info("Label similarity filter: no candidate labels.")
         messages.append({
             "role": "label_verifier",
             "iteration": iteration,
@@ -946,80 +987,88 @@ def label_verifier_node(state: AnnotationState) -> Dict[str, Any]:
             "messages": messages,
         }
 
-    # Collect step reasoning for evidence context
+    # Build query from this iteration's step reasoner outputs
     current_iteration_steps = [
         res for res in state.get("step_results", [])
         if res.get("iteration") == iteration
     ]
-    evidence_summary = ""
-    for step in sorted(current_iteration_steps, key=lambda x: x["step_id"]):
-        evidence_summary += f"Step {step['step_id']}: {step['reasoning']}\n"
+    evidence_parts: list[str] = [
+        step["reasoning"]
+        for step in sorted(current_iteration_steps, key=lambda x: x["step_id"])
+        if step.get("reasoning")
+    ]
+    query_text = " ".join(evidence_parts).strip()
 
-    catalog = get_label_catalog()
-    verified: list[str] = []
-    reasoning_map: dict[str, str] = {}
-    verification_log: list[str] = []
+    if not query_text:
+        LOGGER.warning("Label similarity filter: no evidence text; passing top candidates.")
+        fallback = shortlisted[:_MAX_FILTER_LABELS]
+        messages.append({
+            "role": "label_verifier",
+            "iteration": iteration,
+            "content": f"No evidence text; passed top {len(fallback)} candidates unchanged.",
+        })
+        return {
+            "verified_labels": fallback,
+            "verified_label_reasoning": {lid: "No evidence available." for lid in fallback},
+            "messages": messages,
+        }
 
-    for label_id in shortlisted:
-        entry = catalog.get_label(label_id)
-        label_name = entry.name if entry else LABEL_MAPPING.get(label_id, label_id)
-        label_desc = entry.description if entry else ""
-
-        prompt = (
-            f"You are a racing telemetry expert. Evaluate whether the label "
-            f"below matches the telemetry evidence.\n\n"
-            f"=== Label to Evaluate ===\n"
-            f"**{label_name}** ({label_id}): {label_desc}\n\n"
-            f"=== Parent Segment ===\n"
-            f"Main labels: {[LABEL_MAPPING.get(l, l) for l in parent_main_labels]}\n"
-            f"Range: [{parent_start}, {parent_end}]\n\n"
-            f"=== Analysis Evidence ===\n"
-            f"{evidence_summary}\n"
-        )
-
-        prompt += (
-            f"\n=== Decision ===\n"
-            f"Does the label \"{label_name}\" match the evidence? "
-            f"Answer with exactly one line: YES or NO, followed by a "
-            f"one-sentence justification.\n"
-            f"Example: YES — The telemetry shows a clear late braking event.\n"
-            f"Example: NO — No evidence of throttle hesitation in the data."
-        )
-
-        response = _call_vlm(prompt, [])
-        if not response:
-            response = "NO — VLM unavailable."
-
-        # Parse yes/no
-        first_line = response.strip().split("\n")[0].upper()
-        is_yes = first_line.startswith("YES")
-        justification = response.strip()
-
-        if is_yes:
-            verified.append(label_id)
-            reasoning_map[label_id] = justification
-            verification_log.append(f"✓ {label_name} ({label_id}): {justification[:100]}")
+    # Build label text corpus: "Name: description" per candidate
+    label_texts: list[str] = []
+    for lid in shortlisted:
+        entry = catalog.get_label(lid)
+        if entry and entry.description:
+            label_texts.append(f"{entry.name}: {entry.description}")
+        elif entry:
+            label_texts.append(entry.name)
         else:
-            verification_log.append(f"✗ {label_name} ({label_id}): {justification[:100]}")
+            label_texts.append(LABEL_MAPPING.get(lid, lid))
 
-        LOGGER.info(
-            "Label verifier: %s (%s) → %s",
-            label_name, label_id, "YES" if is_yes else "NO",
-        )
+    # Batch-embed query and all candidates
+    embedder = _get_embedder()
+    query_emb: np.ndarray = embedder.encode(query_text, convert_to_numpy=True)
+    label_embs: np.ndarray = embedder.encode(label_texts, convert_to_numpy=True)
 
-    # If nothing verified, keep the top 2 shortlisted as fallback
-    if not verified and shortlisted:
-        LOGGER.warning("Label verifier: no labels verified; keeping top 2 shortlisted as fallback.")
-        verified = shortlisted[:2]
-        for lid in verified:
-            reasoning_map[lid] = "Fallback — no labels passed verification."
+    # Score each candidate
+    scored: list[tuple[str, float, str]] = [
+        (lid, _cosine_sim(query_emb, label_embs[i]), label_texts[i])
+        for i, lid in enumerate(shortlisted)
+    ]
+    scored.sort(key=lambda x: x[1], reverse=True)
 
+    # Apply threshold, guarantee min, cap max
+    above = [(lid, sim, txt) for lid, sim, txt in scored if sim >= _SIMILARITY_THRESHOLD]
+    if len(above) < _MIN_FILTER_LABELS:
+        above = scored[:_MIN_FILTER_LABELS]
+    filtered = above[:_MAX_FILTER_LABELS]
+
+    verified: list[str] = [lid for lid, _, _ in filtered]
+    reasoning_map: dict[str, str] = {
+        lid: f"Similarity {sim:.3f} — {txt[:100]}"
+        for lid, sim, txt in filtered
+    }
+
+    passed_log = "\n".join(
+        f"✓ {lid} ({LABEL_MAPPING.get(lid, lid)}): {sim:.3f}"
+        for lid, sim, _ in filtered
+    )
+    rejected_log = "\n".join(
+        f"✗ {lid} ({LABEL_MAPPING.get(lid, lid)}): {sim:.3f}"
+        for lid, sim, _ in scored
+        if lid not in verified
+    )
+
+    LOGGER.info(
+        "Label similarity filter: %d/%d passed (threshold=%.2f)",
+        len(verified), len(shortlisted), _SIMILARITY_THRESHOLD,
+    )
     messages.append({
         "role": "label_verifier",
         "iteration": iteration,
         "content": (
-            f"Verified {len(verified)}/{len(shortlisted)} labels:\n"
-            + "\n".join(verification_log)
+            f"Embedding filter: {len(verified)}/{len(shortlisted)} labels passed "
+            f"(threshold={_SIMILARITY_THRESHOLD}):\n{passed_log}"
+            + (f"\n\nRejected:\n{rejected_log}" if rejected_log else "")
         ),
     })
 
