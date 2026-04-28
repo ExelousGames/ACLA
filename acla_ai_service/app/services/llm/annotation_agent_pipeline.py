@@ -1,9 +1,11 @@
 """
 Multi-agent annotation pipeline using LangGraph.
 
-Implements a multi-step planner → executor → reasoner loop followed by
-label filtering and a synthesis → evaluator cycle for automated
-telemetry sub-segment annotation.
+Implements a multi-step planner → executor → reasoner → synthesis pipeline
+for automated telemetry sub-segment annotation.  Each step that produces
+LLM output runs a step-appropriate evaluator suite (see step_evaluator_agents.py)
+internally before writing to state.  This catches and corrects errors at the
+point of origin, eliminating the need for a retry loop.
 
 Tool categories used during execution:
 
@@ -12,20 +14,23 @@ Tool categories used during execution:
 The Vision Language Model (VLM) receives rendered graph images at each step,
 replicating the visual evidence a human annotator would use.
 
-Graph flow:
+Graph flow (forward-only — no retry edge):
 
-    planner ──► steps_data_fetcher ──► step_reasoner ─┐
-       ▲                                          │ (repeat for each plan step)
-       │                          ┌───────────────┘
-       │                          ▼
-       │                  label_verifier      ← embedding similarity filter
-       │                          │             (narrows candidates before synthesis)
-       │                  proposal_synthesizer ← VLM determines precise boundaries
-       │                          │
-       │                    evaluator ─────────────────────────┐
-       │                          │ (pass)                     │ (fail, retry)
-       │                         END                           │
-       └──────────────────────────────────────────────────────-┘
+    planner ──────────► steps_data_fetcher ──► step_reasoner ─┐
+    (eval: format,      (no LLM output,       (eval: format,  │ (repeat per
+     intent)             no evaluator)          intent,        │  plan step)
+                                                evidence)      │
+                        ┌──────────────────────────────────────┘
+                        ▼
+                label_verifier          ← embedding similarity filter
+                        │                 (eval: format, range, intent, consistency)
+                proposal_synthesizer    ← VLM determines precise boundaries
+                        │                 (eval: ALL FIVE)
+                       END
+
+    Every LLM-producing node calls run_evaluator_suite() internally
+    before writing its output to state.  steps_data_fetcher is the only
+    node that does NOT run evaluators (it fetches data, not LLM output).
 """
 
 from __future__ import annotations
@@ -47,6 +52,11 @@ from app.models.segment_models import (
 )
 from app.models.label_catalog import get_label_catalog, LabelCatalog
 from app.models.graph_analysis_skill import get_graph_skill
+from app.services.llm.step_evaluator_agents import (
+    run_evaluator_suite,
+    set_eval_llm,
+    EvalPipelineResult,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -85,18 +95,19 @@ class AnnotationState(TypedDict, total=False):
     proposed_labels: list
     proposed_label_annotations: list  # [{label_id, start_index, end_index, reasoning}]
     proposed_reasoning: str
-    parse_warnings: list         # JSON parse / structural issues from solver
     raw_step_solver_response: str  # raw VLM output from step solver
-    evaluation: str
-    evaluation_feedback: str
-    iteration: int
-    max_iterations: int
+    evaluation: str              # final verdict from evaluator suite ("pass"/"fail")
+    evaluation_feedback: str     # aggregated evaluator feedback
     final_labels: list
     final_label_annotations: list  # [{label_id, start_index, end_index, reasoning}]
     final_reasoning: str
     final_sub_start: int
     final_sub_end: int
     messages: list
+    # --- per-step evaluator feedback (for debugging) ---
+    eval_feedback_planner: dict
+    eval_feedback_step_reasoner: dict
+    eval_feedback_synthesizer: dict
 
 
 def _default_state() -> AnnotationState:
@@ -124,12 +135,9 @@ def _default_state() -> AnnotationState:
         "proposed_labels": [],
         "proposed_label_annotations": [],
         "proposed_reasoning": "",
-        "parse_warnings": [],
         "raw_step_solver_response": "",
         "evaluation": "",
         "evaluation_feedback": "",
-        "iteration": 0,
-        "max_iterations": 3,
         "final_labels": [],
         "final_label_annotations": [],
         "final_reasoning": "",
@@ -454,11 +462,12 @@ def planner_node(state: AnnotationState) -> dict:
     The planner inspects the telemetry summary, parent Main Labels, and
     existing children to decide *which statistics and graphs* are needed
     to find a new sub-segment within the parent range.
+
+    Runs evaluator suite (format, intent) on its own output before
+    writing to state.
     """
     from .annotation_agent_tools import AGENT_GRAPH_DEFINITIONS
 
-    iteration = state.get("iteration", 0) + 1
-    feedback = state.get("evaluation_feedback", "")
     parent_main_labels = state.get("parent_main_labels", [])
     existing_children = state.get("existing_children", [])
     parent_start = state.get("parent_start", 0)
@@ -548,54 +557,44 @@ def planner_node(state: AnnotationState) -> dict:
         "```",
     ])
 
-    if feedback:
-        prompt_parts.extend([
-            "",
-            f"=== Previous Attempt Feedback (iteration {iteration - 1}) ===",
-            feedback,
-            "Revise your plan to address the evaluator's concerns.",
-        ])
-        if "JSON format" in feedback or "required key" in feedback.lower():
-            prompt_parts.extend([
-                "",
-                "**FORMAT REMINDER**: The evaluator detected JSON format problems. "
-                "In your revised plan, explicitly instruct the solver to output "
-                'well-formed JSON inside ```json``` code blocks with a "labels" array '
-                "where each entry has: label_id, start_index, end_index, reasoning.",
-            ])
-        if "outside parent" in feedback.lower() or "exceeds parent" in feedback.lower():
-            prompt_parts.extend([
-                "",
-                f"**RANGE REMINDER**: The proposed sub-segment range must be within "
-                f"[{parent_start}, {parent_end}]. The previous proposal violated "
-                f"this constraint.",
-            ])
-
     prompt = "\n".join(prompt_parts)
 
-    # Call VLM (text-only for planning — no images needed)
+    # 1. Generate output (LLM call)
     vlm_fn = _llm_holder.get("vlm")
     if vlm_fn:
-        plan = vlm_fn(prompt)
+        raw_plan = vlm_fn(prompt)
     else:
-        plan = "[VLM not available — using passthrough plan] " \
-               "Examine all telemetry features and propose the most fitting labels."
+        raw_plan = "[VLM not available — using passthrough plan] " \
+                   "Examine all telemetry features and propose the most fitting labels."
 
-    # Parse structured tool requests from planner output
-    parsed_steps = _parse_planner_steps(plan, [])
+    # 2. Run evaluator suite for THIS step
+    suite_result: EvalPipelineResult = run_evaluator_suite(
+        original_prompt=prompt,
+        step_output=raw_plan,
+        step_name="planner",
+        parent_start=parent_start,
+        parent_end=parent_end,
+        label_mapping=LABEL_MAPPING,
+    )
 
-    msg = {"role": "planner", "iteration": iteration, "content": plan}
+    # 3. Use the evaluated (possibly corrected) result
+    evaluated_plan = suite_result.final_result
+
+    # Parse structured tool requests from evaluated planner output
+    parsed_steps = _parse_planner_steps(evaluated_plan, [])
+
+    msg = {"role": "planner", "content": evaluated_plan}
     messages = list(state.get("messages", []))
     messages.append(msg)
 
     return {
-        "plan": plan,
+        "plan": evaluated_plan,
         "plan_steps": parsed_steps,
         "current_step_index": 0,
         "step_results": [],
         "all_graph_images": [],
         "all_graph_descriptions": [],
-        "iteration": iteration,
+        "eval_feedback_planner": suite_result.model_dump(),
         "messages": messages,
     }
 
@@ -679,53 +678,6 @@ def _call_vlm(
     return vlm_fn(prompt)
 
 
-def _extract_verdict(text: str) -> str:
-    """Determine accept/reject from the evaluator's free-text output.
-
-    Uses the text-only LLM to classify the evaluator's intent.  The
-    evaluator writes naturally — no magic keywords required.  A short
-    LLM call reads the evaluation and answers with a single word.
-
-    Falls back to simple heuristics if the LLM is unavailable.
-    """
-    llm_fn = _llm_holder.get("llm")
-    if llm_fn:
-        classification_prompt = (
-            "Read the following evaluation of a racing telemetry annotation "
-            "proposal. Determine whether the evaluator thinks the proposal "
-            "is good enough to accept, or needs changes (reject).\n\n"
-            "=== Evaluation ===\n"
-            f"{text}\n\n"
-            "Does the evaluator accept or reject the proposal? "
-            "Answer with exactly one word: ACCEPT or REJECT"
-        )
-        try:
-            answer = llm_fn(classification_prompt).strip().upper()
-            if "ACCEPT" in answer:
-                return "accept"
-            if "REJECT" in answer:
-                return "reject"
-        except Exception:
-            LOGGER.debug("LLM verdict classification failed, using heuristic.")
-
-    # Heuristic fallback: scan the last portion of the text
-    tail = text[-500:].lower()
-    # Look for strong negative signals
-    negative_signals = [
-        "missing", "incorrect", "should be", "not appropriate",
-        "should change", "need to", "should also", "not present",
-        "not fully supported", "inconsisten", "does not",
-    ]
-    positive_signals = [
-        "well-supported", "correctly", "accurate", "appropriate",
-        "good", "agree", "consistent", "matches",
-    ]
-    neg = sum(1 for s in negative_signals if s in tail)
-    pos = sum(1 for s in positive_signals if s in tail)
-    if pos > neg:
-        return "accept"
-    return "reject"
-
 
 def _parse_json_response(raw: str) -> Optional[dict]:
     """Best-effort extraction of a JSON block from an LLM response."""
@@ -773,25 +725,6 @@ def _parse_json_response(raw: str) -> Optional[dict]:
     return None
 
 
-def _build_graph_prompt_section(
-    graph_descriptions: List[str],
-    graph_image_bytes: List[bytes],
-) -> List[str]:
-    """Return prompt lines describing telemetry graph context."""
-    if not graph_descriptions:
-        return []
-    parts: list[str] = ["=== Telemetry Graphs ==="]
-    if graph_image_bytes:
-        parts.append(
-            "The following graphs are provided as images. Analyse each "
-            "image carefully — they correspond to the descriptions below:"
-        )
-    for i, desc in enumerate(graph_descriptions, 1):
-        parts.append(f"Graph {i}: {desc}")
-    parts.append("")
-    return parts
-
-
 # --- Step solver ------------------------------------------------------------
 
 
@@ -800,7 +733,6 @@ def step_reasoner_node(state: AnnotationState) -> Dict[str, Any]:
     Reasons about the output of the current step's tool executions.
     """
     messages = list(state.get("messages", []))
-    iteration = state.get("iteration", 0)
     plan_steps = state.get("plan_steps", [])
     current_step_index = state.get("current_step_index", 0)
     step = plan_steps[current_step_index]
@@ -859,8 +791,23 @@ def step_reasoner_node(state: AnnotationState) -> Dict[str, Any]:
         import base64
         content_for_vlm.append({"type": "image_url", "image_url": {"url": f"data:image/png;base64,{base64.b64encode(image_bytes).decode()}"}})
 
-    vlm_response_text = _call_vlm(prompt, graph_images)
-    messages.append({"role": "assistant", "content": vlm_response_text})
+    # 1. Generate output (VLM call with graph images)
+    raw_response = _call_vlm(prompt, graph_images)
+
+    # 2. Run evaluator suite for THIS step (includes evidence_evaluator)
+    suite_result: EvalPipelineResult = run_evaluator_suite(
+        original_prompt=prompt,
+        step_output=raw_response,
+        step_name="step_reasoner",
+        parent_start=parent_start,
+        parent_end=parent_end,
+        graph_images=state.get("all_graph_images", []) + graph_images,
+        label_mapping=LABEL_MAPPING,
+    )
+
+    # 3. Use the evaluated (possibly corrected) result
+    evaluated_response = suite_result.final_result
+    messages.append({"role": "assistant", "content": evaluated_response})
 
     # Increment index for the next step
     next_step_index = current_step_index + 1
@@ -868,12 +815,12 @@ def step_reasoner_node(state: AnnotationState) -> Dict[str, Any]:
     return {
         "current_step_index": next_step_index,
         "step_results": [{
-            "iteration": iteration,
             "step_id": step["step_id"],
             "description": step["description"],
-            "graph_observations": vlm_response_text,
+            "graph_observations": evaluated_response,
             "graph_descriptions": graph_descriptions,
         }],
+        "eval_feedback_step_reasoner": suite_result.model_dump(),
         "messages": messages,
     }
 
@@ -907,7 +854,6 @@ def label_verifier_node(state: AnnotationState) -> Dict[str, Any]:
     import numpy as np
 
     messages = list(state.get("messages", []))
-    iteration = state.get("iteration", 0)
     parent_main_labels = state.get("parent_main_labels", [])
 
     # Build candidate list from parent sub-labels + segment types
@@ -931,7 +877,6 @@ def label_verifier_node(state: AnnotationState) -> Dict[str, Any]:
         LOGGER.info("Label similarity filter: no candidate labels.")
         messages.append({
             "role": "label_verifier",
-            "iteration": iteration,
             "content": "No candidate labels available for parent categories.",
         })
         return {
@@ -940,14 +885,11 @@ def label_verifier_node(state: AnnotationState) -> Dict[str, Any]:
             "messages": messages,
         }
 
-    # Build query from this iteration's step reasoner outputs
-    current_iteration_steps = [
-        res for res in state.get("step_results", [])
-        if res.get("iteration") == iteration
-    ]
+    # Build query from all step reasoner outputs
+    all_steps = state.get("step_results", [])
     evidence_parts: list[str] = [
         step["graph_observations"]
-        for step in sorted(current_iteration_steps, key=lambda x: x["step_id"])
+        for step in sorted(all_steps, key=lambda x: x["step_id"])
         if step.get("graph_observations")
     ]
     query_text = " ".join(evidence_parts).strip()
@@ -957,7 +899,6 @@ def label_verifier_node(state: AnnotationState) -> Dict[str, Any]:
         fallback = shortlisted[:_MAX_FILTER_LABELS]
         messages.append({
             "role": "label_verifier",
-            "iteration": iteration,
             "content": f"No evidence text; passed top {len(fallback)} candidates unchanged.",
         })
         return {
@@ -1017,7 +958,6 @@ def label_verifier_node(state: AnnotationState) -> Dict[str, Any]:
     )
     messages.append({
         "role": "label_verifier",
-        "iteration": iteration,
         "content": (
             f"Embedding filter: {len(verified)}/{len(shortlisted)} labels passed "
             f"(threshold={_SIMILARITY_THRESHOLD}):\n{passed_log}"
@@ -1038,24 +978,23 @@ def proposal_synthesizer_node(state: AnnotationState) -> Dict[str, Any]:
     The heavy label selection work is done by label_shortlister and
     label_verifier.  This node only needs to determine precise
     sub-segment boundaries and emit well-formed JSON.
+
+    Runs the FULL evaluator suite (all 5 evaluators) on its own output
+    before writing to state.  Since there is no retry loop, the
+    evaluated output is promoted directly to final_* fields.
     """
     messages = list(state.get("messages", []))
-    iteration = state.get("iteration", 0)
     parent_main_labels = state.get("parent_main_labels", [])
     existing_children = state.get("existing_children", [])
     parent_start = state.get("parent_start", 0)
     parent_end = state.get("parent_end", 0)
-    segment_data = state.get("segment_data", {})
     verified_labels = state.get("verified_labels", [])
     verified_reasoning = state.get("verified_label_reasoning", {})
 
-    # Collect step evidence for this iteration
-    current_iteration_steps = [
-        res for res in state.get("step_results", [])
-        if res.get("iteration") == iteration
-    ]
+    # Collect all step evidence
+    all_steps = state.get("step_results", [])
     evidence_summary = ""
-    for step in sorted(current_iteration_steps, key=lambda x: x["step_id"]):
+    for step in sorted(all_steps, key=lambda x: x["step_id"]):
         evidence_summary += f"--- Graph {step['step_id']}: {step['description']} ---\n"
         if step.get("graph_descriptions"):
             evidence_summary += f"Graphs: {', '.join(step['graph_descriptions'])}\n"
@@ -1136,23 +1075,38 @@ def proposal_synthesizer_node(state: AnnotationState) -> Dict[str, Any]:
 
     prompt = "\n".join(prompt_parts)
 
+    # 1. Generate output (VLM call)
     raw_response = _call_vlm(prompt, [])
     if not raw_response:
         raw_response = json.dumps({
-            "start_index": parent_start,
-            "end_index": min(parent_start + 10, parent_end),
-            "proposed_labels": verified_labels,
-            "reasoning": "Passthrough — VLM not available.",
+            "labels": [{
+                "label_id": lid,
+                "start_index": parent_start,
+                "end_index": min(parent_start + 10, parent_end),
+                "reasoning": "Passthrough — VLM not available.",
+            } for lid in verified_labels[:1]] if verified_labels else [],
         })
 
-    # Parse
+    # 2. Run FULL evaluator suite (all 5 evaluators)
+    suite_result: EvalPipelineResult = run_evaluator_suite(
+        original_prompt=prompt,
+        step_output=raw_response,
+        step_name="proposal_synthesizer",
+        parent_start=parent_start,
+        parent_end=parent_end,
+        graph_images=state.get("all_graph_images"),
+        label_mapping=LABEL_MAPPING,
+    )
+
+    # 3. Parse the fully evaluated final result
+    evaluated_response = suite_result.final_result
+
     sub_labels: list[str] = []
     label_proposals: list[dict] = []
-    reasoning = raw_response
-    parse_warnings: list[str] = list(state.get("parse_warnings", []))
+    reasoning = evaluated_response
     proposed_start = parent_start
     proposed_end = parent_end
-    parsed = _parse_json_response(raw_response)
+    parsed = _parse_json_response(evaluated_response)
     if parsed:
         label_annotations = parsed.get("labels", [])
         starts: list[int] = []
@@ -1177,320 +1131,45 @@ def proposal_synthesizer_node(state: AnnotationState) -> Dict[str, Any]:
             })
             starts.append(ann_start)
             ends.append(ann_end)
-        reasoning = "; ".join(p["reasoning"] for p in label_proposals) if label_proposals else raw_response
+        reasoning = "; ".join(p["reasoning"] for p in label_proposals) if label_proposals else evaluated_response
         if starts:
             proposed_start = min(starts)
         if ends:
             proposed_end = max(ends)
     else:
-        LOGGER.warning("Proposal synthesizer response was not valid JSON.")
-        parse_warnings.append(
-            "Proposal synthesizer output was not valid JSON. "
-            "Raw response needs to be restructured."
-        )
+        LOGGER.warning("Proposal synthesizer evaluated response was not valid JSON.")
 
     # Validate hierarchy (auto-insert missing parents for sub-labels)
     fixed_labels, hierarchy_warnings = _validate_and_fix_hierarchy(sub_labels)
     for w in hierarchy_warnings:
         LOGGER.info("Hierarchy fix: %s", w)
-    parse_warnings.extend(hierarchy_warnings)
 
-    messages.append({"role": "assistant", "content": raw_response})
+    messages.append({"role": "assistant", "content": evaluated_response})
+
+    # Build per-evaluator feedback summary
+    eval_feedback_text = "\n".join(
+        f"[{r.evaluator_name}] {r.verdict}: {r.feedback}"
+        for r in suite_result.evaluator_results
+    )
 
     return {
+        "evaluation": suite_result.final_verdict,
+        "evaluation_feedback": eval_feedback_text,
         "proposed_sub_start": proposed_start,
         "proposed_sub_end": proposed_end,
         "proposed_labels": fixed_labels,
         "proposed_label_annotations": label_proposals,
         "proposed_reasoning": reasoning,
-        "parse_warnings": parse_warnings,
-        "raw_step_solver_response": raw_response,
+        "raw_step_solver_response": evaluated_response,
+        # Promote directly to final — no retry loop
+        "final_sub_start": proposed_start,
+        "final_sub_end": proposed_end,
+        "final_labels": fixed_labels,
+        "final_label_annotations": label_proposals,
+        "final_reasoning": reasoning,
+        "eval_feedback_synthesizer": suite_result.model_dump(),
         "messages": messages,
     }
-
-
-def _validate_solver_json_format(
-    raw_subsegment: str,
-    proposed_labels: List[str],
-    parent_start: int,
-    parent_end: int,
-) -> List[str]:
-    """Validate step solver JSON output and return detailed format issues.
-
-    Checks the raw response for structural correctness: parsability,
-    required top-level key "labels", and per-entry keys
-    (label_id, start_index, end_index, reasoning), value types,
-    range bounds, and valid label IDs.
-    """
-    issues: list[str] = []
-
-    if not raw_subsegment:
-        return issues
-
-    parsed = _parse_json_response(raw_subsegment)
-    if parsed is None:
-        issues.append(
-            "Step solver did not produce valid JSON. "
-            'Expected a ```json``` code block containing an object with a "labels" '
-            'array where each entry has: "label_id", "start_index", "end_index", "reasoning".'
-        )
-        return issues
-
-    if "labels" not in parsed:
-        issues.append(
-            'Step solver JSON is missing required key "labels". '
-            'The solver must include a "labels" array.'
-        )
-        return issues
-
-    labels_arr = parsed.get("labels")
-    if not isinstance(labels_arr, list):
-        issues.append(
-            f'"labels" must be a JSON array, got {type(labels_arr).__name__}.'
-        )
-        return issues
-
-    if not labels_arr:
-        issues.append('"labels" array is empty — at least one label entry is required.')
-
-    for i, entry in enumerate(labels_arr):
-        if not isinstance(entry, dict):
-            issues.append(f'"labels[{i}]" must be an object, got {type(entry).__name__}.')
-            continue
-
-        for key in ("label_id", "start_index", "end_index", "reasoning"):
-            if key not in entry:
-                issues.append(f'"labels[{i}]" is missing required key "{key}".')
-
-        lid = entry.get("label_id")
-        if lid is not None:
-            if not isinstance(lid, str):
-                issues.append(
-                    f'"labels[{i}].label_id" must be a string, got {type(lid).__name__}.'
-                )
-            elif lid not in LABEL_MAPPING:
-                issues.append(f'"labels[{i}].label_id" contains unknown ID: "{lid}".')
-
-        si = entry.get("start_index")
-        ei = entry.get("end_index")
-        if si is not None and not isinstance(si, (int, float)):
-            issues.append(
-                f'"labels[{i}].start_index" must be an integer, got {type(si).__name__}.'
-            )
-        if ei is not None and not isinstance(ei, (int, float)):
-            issues.append(
-                f'"labels[{i}].end_index" must be an integer, got {type(ei).__name__}.'
-            )
-
-        if isinstance(si, (int, float)) and isinstance(ei, (int, float)):
-            si_int, ei_int = int(si), int(ei)
-            if si_int >= ei_int:
-                issues.append(
-                    f'"labels[{i}]" start_index ({si_int}) must be strictly less than '
-                    f'end_index ({ei_int}).'
-                )
-            if si_int < parent_start:
-                issues.append(
-                    f'"labels[{i}]" start_index ({si_int}) is outside parent range — '
-                    f'must be >= {parent_start}.'
-                )
-            if ei_int > parent_end:
-                issues.append(
-                    f'"labels[{i}]" end_index ({ei_int}) exceeds parent end ({parent_end}) — '
-                    f'must be <= {parent_end}.'
-                )
-
-        rs = entry.get("reasoning")
-        if rs is not None and not isinstance(rs, str):
-            issues.append(
-                f'"labels[{i}].reasoning" must be a string, got {type(rs).__name__}.'
-            )
-
-    return issues
-
-
-def evaluator_node(state: AnnotationState) -> dict:
-    """Evaluate the step solver's proposed sub-segment.
-
-    Validates the JSON format/range, then asks the VLM to review the
-    proposed range and labels against the telemetry data. On accept the
-    evaluator sets ``final_sub_start``, ``final_sub_end``, ``final_labels``,
-    and ``final_reasoning``.
-    """
-    proposed_labels = state.get("proposed_labels", [])
-    proposed_label_annotations = state.get("proposed_label_annotations", [])
-    proposed_reasoning = state.get("proposed_reasoning", "")
-    segment_data = state.get("segment_data", {})
-    iteration = state.get("iteration", 0)
-    all_graph_images = state.get("all_graph_images", [])
-    all_graph_descriptions = state.get("all_graph_descriptions", [])
-    parse_warnings = state.get("parse_warnings", [])
-    raw_subsegment = state.get("raw_step_solver_response", "")
-    parent_start = state.get("parent_start", 0)
-    parent_end = state.get("parent_end", 0)
-    proposed_sub_start = state.get("proposed_sub_start")
-    proposed_sub_end = state.get("proposed_sub_end")
-    parent_main_labels = state.get("parent_main_labels", [])
-    messages = list(state.get("messages", []))
-
-    # --- JSON format / range validation ---
-    format_issues = _validate_solver_json_format(
-        raw_subsegment, proposed_labels, parent_start, parent_end,
-    )
-    all_warnings = list(parse_warnings) + format_issues
-
-    # --- Structural pre-check: auto-reject if JSON was broken ---
-    if all_warnings:
-        warning_text = "\n".join(f"- {w}" for w in all_warnings)
-        feedback = (
-            f"JSON format / structural issues detected in solver output:\n"
-            f"{warning_text}\n\n"
-            "=== Required JSON Format ===\n"
-            "The step solver must output:\n"
-            "```json\n"
-            '{"labels": [{"label_id": "LABEL_ID", "start_index": <int>, '
-            '"end_index": <int>, "reasoning": "..."}]}\n'
-            "```\n\n"
-            "Each label must have its own start_index and end_index "
-            f"within parent bounds [{parent_start}, {parent_end}].\n"
-            "Instruct the solver to fix these issues in the next iteration."
-        )
-        LOGGER.warning("Evaluator auto-reject (format): %s", warning_text)
-        msg = {
-            "role": "evaluator",
-            "iteration": iteration,
-            "verdict": "reject",
-            "content": feedback,
-        }
-        messages.append(msg)
-        return {
-            "evaluation": "reject",
-            "evaluation_feedback": feedback,
-            "parse_warnings": [],
-            "messages": messages,
-        }
-
-    # --- VLM evaluation ---
-
-    # Filter step results for the current iteration
-    current_iteration_steps = [res for res in state.get("step_results", []) if res.get("iteration") == iteration]
-
-    # Format the evidence from all steps
-    evidence_summary = ""
-    for step in sorted(current_iteration_steps, key=lambda x: x['step_id']):
-        evidence_summary += f"--- Graph {step['step_id']}: {step['description']} ---\n"
-        if step.get('graph_descriptions'):
-            evidence_summary += f"Graphs: {', '.join(step['graph_descriptions'])}\n"
-        evidence_summary += f"Graph Observations: {step['graph_observations']}\n\n"
-
-    prompt_parts = [
-        "You are a meticulous quality assurance specialist. Your job is to critically evaluate a proposed sub-segment annotation based on all available evidence.",
-        "",
-        "=== Parent Segment Context ===",
-        f"Main labels: {[LABEL_MAPPING.get(l, l) for l in parent_main_labels]}",
-        f"Range: [{parent_start}, {parent_end}]",
-        "",
-        "=== Graph Observations ===",
-        evidence_summary,
-        "",
-    ]
-    prompt_parts.extend(
-        _build_graph_prompt_section(all_graph_descriptions, all_graph_images)
-    )
-    # Build per-label annotation lines for the evaluator prompt
-    if proposed_label_annotations:
-        label_ann_lines = ["=== Proposed Sub-Segment (per-label boundaries) ==="]
-        for ann in proposed_label_annotations:
-            lid = ann["label_id"]
-            name = LABEL_MAPPING.get(lid, lid)
-            label_ann_lines.append(
-                f"- {name} ({lid}): [{ann['start_index']}, {ann['end_index']}] — {ann['reasoning']}"
-            )
-        label_ann_lines.append(f"Overall envelope: [{proposed_sub_start}, {proposed_sub_end}]")
-        proposed_segment_section = label_ann_lines
-    else:
-        proposed_segment_section = [
-            "=== Proposed Sub-Segment ===",
-            f"Proposed Labels: {[LABEL_MAPPING.get(l, l) for l in proposed_labels]}",
-            f"Proposed Range: [{proposed_sub_start}, {proposed_sub_end}]",
-            f"Proposer's Reasoning: {proposed_reasoning}",
-        ]
-
-    prompt_parts.extend(proposed_segment_section)
-    prompt_parts.extend([
-        "",
-        "=== Your Task ===",
-        "Critically evaluate the proposal. Does the reasoning logically follow from the graph observations? Are the proposed start/end indices tightly aligned with the evidence in the telemetry data and graphs? Are the labels appropriate?",
-        "1. **Analyze:** Compare the proposal to the evidence. Look for inconsistencies, loose boundaries, or flawed logic.",
-        "2. **Decide:** Output a single word: `pass` or `fail`.",
-        "3. **Justify:** On a new line, provide a concise but detailed justification for your decision. If it fails, explain exactly what is wrong (e.g., 'The end_index is 50 points too late, as the graph shows the anomaly ends at index 1500,' or 'The reasoning ignores the braking data from step 2.').",
-    ])
-
-    prompt = "\n".join(prompt_parts)
-
-    evaluation = _call_vlm(prompt, all_graph_images)
-    if not evaluation:
-        evaluation = "fail\nCould not evaluate."
-
-    verdict_str, *feedback_lines = evaluation.strip().split("\n", 1)
-    verdict = "fail"
-    if "pass" in verdict_str.lower():
-        verdict = "pass"
-    feedback = feedback_lines[0].strip() if feedback_lines else "No feedback provided."
-
-    msg = {
-        "role": "evaluator",
-        "iteration": iteration,
-        "content": feedback,
-        "verdict": verdict,
-    }
-    messages.append(msg)
-
-    # On accept, promote proposed to final
-    if verdict == "pass":
-        return {
-            "evaluation": verdict,
-            "evaluation_feedback": feedback,
-            "final_sub_start": proposed_sub_start,
-            "final_sub_end": proposed_sub_end,
-            "final_labels": proposed_labels,
-            "final_label_annotations": proposed_label_annotations,
-            "final_reasoning": proposed_reasoning,
-            "messages": messages,
-        }
-
-    # On max-iteration exhaustion, promote the last proposal to final so the
-    # pipeline always returns a useful result even without an explicit "pass".
-    if state.get("iteration", 0) >= state.get("max_iterations", 3):
-        LOGGER.info(
-            "Max iterations reached without 'pass'; promoting last proposal to final."
-        )
-        return {
-            "evaluation": verdict,
-            "evaluation_feedback": feedback,
-            "final_sub_start": proposed_sub_start,
-            "final_sub_end": proposed_sub_end,
-            "final_labels": proposed_labels,
-            "final_label_annotations": proposed_label_annotations,
-            "final_reasoning": proposed_reasoning,
-            "messages": messages,
-        }
-
-    return {
-        "evaluation": verdict,
-        "evaluation_feedback": feedback,
-        "messages": messages,
-    }
-
-
-def should_retry(state: AnnotationState) -> Literal["planner", "end"]:
-    """Decide whether to loop back to the planner or finish."""
-    if state.get("evaluation") == "pass":
-        return "end"
-    if state.get("iteration", 0) >= state.get("max_iterations", 3):
-        # Max retries reached — accept the latest proposal as-is
-        return "end"
-    return "planner"
 
 
 # ---------------------------------------------------------------------------
@@ -1501,11 +1180,18 @@ def should_retry(state: AnnotationState) -> Literal["planner", "end"]:
 def build_annotation_graph(
     vlm_llm: Callable,
     text_llm: Callable,
-) -> CompiledGraph:
-    """Build the annotation agent graph."""
+):
+    """Build the annotation agent graph.
+
+    Linear forward-only flow — no retry edge.  Each LLM-producing node
+    runs its own evaluator suite internally before writing to state.
+    """
     with _llm_lock:
         _llm_holder["vlm"] = vlm_llm
         _llm_holder["llm"] = text_llm
+
+    # Also register LLMs for the evaluator agents
+    set_eval_llm(vlm_llm, text_llm)
 
     graph = StateGraph(AnnotationState)
 
@@ -1514,7 +1200,7 @@ def build_annotation_graph(
     graph.add_node("step_reasoner", step_reasoner_node)
     graph.add_node("label_verifier", label_verifier_node)
     graph.add_node("proposal_synthesizer", proposal_synthesizer_node)
-    graph.add_node("evaluator", evaluator_node)
+    # No separate evaluator node — evaluation happens inside each node
 
     graph.set_entry_point("planner")
     graph.add_edge("planner", "steps_data_fetcher")
@@ -1528,12 +1214,8 @@ def build_annotation_graph(
         },
     )
     graph.add_edge("label_verifier", "proposal_synthesizer")
-    graph.add_edge("proposal_synthesizer", "evaluator")
-    graph.add_conditional_edges(
-        "evaluator",
-        should_retry,
-        {"planner": "planner", "end": END},
-    )
+    graph.add_edge("proposal_synthesizer", END)
+    # No retry edge — evaluators fix in-place within each node
 
     return graph.compile()
 
@@ -1549,7 +1231,6 @@ class AnnotationPipelineConfig:
 
     max_new_tokens: int = 512
     temperature: float = 0.7
-    max_iterations: int = 3
 
     # llama-cpp VLM settings
     gguf_path: Optional[str] = None
@@ -1597,7 +1278,12 @@ def run_annotation_pipeline(
     vlm_stream_callback: Optional[Callable] = None,
     vlm_prompt_callback: Optional[Callable] = None,
 ) -> AnnotationResult:
-    """Execute the planner → tool_executor → step_solver → evaluator pipeline.
+    """Execute the forward-only annotation pipeline.
+
+    The pipeline runs: planner → steps_data_fetcher → step_reasoner (loop)
+    → label_verifier → proposal_synthesizer → END.  Each LLM-producing
+    node runs its own evaluator suite internally before writing to state,
+    so there is no separate evaluator node or retry loop.
 
     Parameters
     ----------
@@ -1614,7 +1300,7 @@ def run_annotation_pipeline(
     config : AnnotationPipelineConfig, optional
         VLM and pipeline parameters.
     progress_callback : callable, optional
-        ``fn(step_name: str, iteration: int, detail: str)``
+        ``fn(step_name: str, detail: str)``
         called after each node completes.
 
     Returns
@@ -1672,11 +1358,6 @@ def run_annotation_pipeline(
     # Build graph
     graph = build_annotation_graph(vlm_generate, llm_generate)
 
-    # Register VLM + LLM functions for this run
-    with _llm_lock:
-        _llm_holder["vlm"] = vlm_generate
-        _llm_holder["llm"] = llm_generate
-
     # Initial state
     initial_state = _default_state()
     initial_state.update({
@@ -1687,7 +1368,6 @@ def run_annotation_pipeline(
         "parent_start": start_index,
         "parent_end": end_index,
         "available_labels": LABEL_CATEGORIES,
-        "max_iterations": config.max_iterations,
     })
 
     # Stream through graph nodes for progress reporting
@@ -1696,18 +1376,17 @@ def run_annotation_pipeline(
         for node_name, node_output in event.items():
             final_state.update(node_output)
             if progress_callback:
-                iteration = final_state.get("iteration", 0)
                 detail = ""
                 if node_name == "planner":
-                    req_s = final_state.get("requested_statistics", [])
-                    req_g = final_state.get("requested_graphs", [])
-                    detail = (
-                        f"Requested stats: {req_s or 'all'}, "
-                        f"graphs: {req_g or 'all'}"
-                    )
+                    n_steps = len(final_state.get("plan_steps", []))
+                    detail = f"Planned {n_steps} analysis step(s)"
                 elif node_name == "steps_data_fetcher":
                     n_graphs = len(final_state.get("current_step_graph_descriptions", []))
                     detail = f"Gathered {n_graphs} graph(s)"
+                elif node_name == "step_reasoner":
+                    idx = final_state.get("current_step_index", 0)
+                    total = len(final_state.get("plan_steps", []))
+                    detail = f"Reasoned about step {idx}/{total}"
                 elif node_name == "label_verifier":
                     verified = final_state.get("verified_labels", [])
                     detail = (
@@ -1715,24 +1394,22 @@ def run_annotation_pipeline(
                         f"{', '.join(LABEL_MAPPING.get(l, l) for l in verified)}"
                     )
                 elif node_name == "proposal_synthesizer":
-                    labels = final_state.get("proposed_labels", [])
-                    ss = final_state.get("proposed_sub_start", "?")
-                    se = final_state.get("proposed_sub_end", "?")
+                    labels = final_state.get("final_labels", [])
+                    ss = final_state.get("final_sub_start", "?")
+                    se = final_state.get("final_sub_end", "?")
+                    verdict = final_state.get("evaluation", "")
                     detail = (
                         f"Range [{ss}, {se}], "
-                        f"labels: {', '.join(LABEL_MAPPING.get(l, l) for l in labels)}"
+                        f"labels: {', '.join(LABEL_MAPPING.get(l, l) for l in labels)}, "
+                        f"eval: {verdict}"
                     )
-                elif node_name == "evaluator":
-                    detail = (
-                        f"{final_state.get('evaluation', '').upper()}: "
-                        f"{final_state.get('evaluation_feedback', '')}"
-                    )
-                progress_callback(node_name, iteration, detail)
+                progress_callback(node_name, detail)
 
     # Clean up VLM/LLM holders
     with _llm_lock:
         _llm_holder["vlm"] = None
         _llm_holder["llm"] = None
+    set_eval_llm(None, None)
 
     accepted = final_state.get("evaluation") == "pass"
 
@@ -1749,7 +1426,7 @@ def run_annotation_pipeline(
         final_labels=final_labels,
         final_reasoning=final_reasoning,
         accepted=accepted,
-        iterations=final_state.get("iteration", 0),
+        iterations=1,  # forward-only pipeline, always 1 pass
         messages=final_state.get("messages", []),
         graph_images=final_state.get("all_graph_images", []),
     )
