@@ -7,9 +7,9 @@ run the full annotation cycle on the currently selected parent segment:
     planner → steps_data_fetcher → step_reasoner (repeated per plan step)
         → label_verifier → proposal_synthesizer → evaluator
 
-The VLM receives both telemetry statistics (numerical summaries) and rendered
-graph images at each step, replicating the visual evidence a human annotator
-would use. On evaluator pass the discovered sub-segment is ready for review;
+The VLM receives rendered graph images at each step, replicating the visual
+evidence a human annotator would use. On evaluator pass the discovered
+sub-segment is ready for review;
 on fail the pipeline retries from the planner up to a configurable limit.
 """
 
@@ -340,12 +340,29 @@ def render_agent_annotation(df, form_start, form_end, form_labels, session_id, s
                     progress_bar.progress(pct)
                     status_text.markdown(
                         f"**Status:** _[Iter {iteration}] "
-                        f"{node_name}: {detail}_"
+                        f"{node_name}: {detail[:200]}_"
                     )
 
                     # Finalize the active VLM section (if any) and
                     # collapse it with this node's name / detail.
+                    prev_completed_len = len(completed_sections)
                     _finalize_active_section(node_name, iteration, detail)
+
+                    # The evaluator has a structural pre-check path that
+                    # auto-rejects without calling the VLM (format / JSON
+                    # issues detected before inference).  In that case no
+                    # section was just added — insert a synthetic one so
+                    # the verdict and format issues are always visible.
+                    if node_name == "evaluator" and len(completed_sections) == prev_completed_len:
+                        completed_sections.append({
+                            "node_name": "evaluator",
+                            "iteration": iteration,
+                            "detail": detail,
+                            "prompt": "(structural pre-check — no VLM inference)",
+                            "text": detail,
+                            "duration": 0,
+                        })
+
                     active_node_info.update({
                         "name": node_name,
                         "iteration": iteration,

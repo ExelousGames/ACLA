@@ -7,13 +7,10 @@ telemetry sub-segment annotation.
 
 Tool categories used during execution:
 
-* **get_telemetry_statistics** – numerical summaries (mean, min, max, std,
-  player-vs-expert deltas) returned as text
 * **generate_telemetry_graphs** – rendered telemetry graphs (PIL images)
 
-The Vision Language Model (VLM) receives both statistical text *and* graph
-images at each step, replicating the visual evidence a human annotator
-would use.
+The Vision Language Model (VLM) receives rendered graph images at each step,
+replicating the visual evidence a human annotator would use.
 
 Graph flow:
 
@@ -410,8 +407,8 @@ def _parse_planner_steps(plan_text: str, available_tools: list) -> list:
         LOGGER.warning("Could not parse planner steps; using fallback.")
         return [{
             "step_id": 1,
-            "description": "Analyse all telemetry features and propose the most fitting labels.",
-            "requested_statistics": list(available_tools),
+            "description": "Analyse all telemetry graphs and propose the most fitting labels.",
+            "requested_statistics": [],
             "requested_graphs": list(all_graph_ids),
         }]
 
@@ -420,42 +417,26 @@ def _parse_planner_steps(plan_text: str, available_tools: list) -> list:
         step_id = raw_step.get("step_id", i)
         desc = raw_step.get("description", f"Step {step_id}")
 
-        # Extract requested tools from the step description / explicit keys
-        req_stats = raw_step.get("requested_statistics", [])
         req_graphs = raw_step.get("requested_graphs", [])
 
-        # If the VLM didn't specify explicit tool requests, try to infer
+        # If the VLM didn't specify explicit graph requests, try to infer
         # from keywords in the description
-        if not req_stats and not req_graphs:
+        if not req_graphs:
             desc_lower = desc.lower()
-            req_stats = [t for t in available_tools
-                         if t in desc_lower or t.replace("_", " ") in desc_lower]
             req_graphs = [g for g in all_graph_ids
                           if g in desc_lower or g.replace("_", " ") in desc_lower]
 
-        # Validate against known tool IDs
-        req_stats = [s for s in req_stats if s in available_tools]
+        # Validate against known graph IDs
         req_graphs = [g for g in req_graphs if g in all_graph_ids]
 
         structured.append({
             "step_id": step_id,
             "description": desc,
-            "requested_statistics": req_stats,
+            "requested_statistics": [],
             "requested_graphs": req_graphs,
         })
 
     return structured
-
-
-# ---------------------------------------------------------------------------
-# Telemetry helpers
-# ---------------------------------------------------------------------------
-
-
-def _summarise_telemetry(segment_data: dict) -> str:
-    """Convert a segment_data dict into human-readable text for LLM prompts."""
-    from .annotation_agent_tools import format_statistics_as_text
-    return format_statistics_as_text(segment_data)
 
 
 # ---------------------------------------------------------------------------
@@ -470,7 +451,7 @@ def planner_node(state: AnnotationState) -> dict:
     existing children to decide *which statistics and graphs* are needed
     to find a new sub-segment within the parent range.
     """
-    from .annotation_agent_tools import TELEMETRY_COLUMN_GROUPS, AGENT_GRAPH_DEFINITIONS, ALL_TELEMETRY_GROUP_IDS
+    from .annotation_agent_tools import AGENT_GRAPH_DEFINITIONS
 
     iteration = state.get("iteration", 0) + 1
     feedback = state.get("evaluation_feedback", "")
@@ -478,13 +459,7 @@ def planner_node(state: AnnotationState) -> dict:
     existing_children = state.get("existing_children", [])
     parent_start = state.get("parent_start", 0)
     parent_end = state.get("parent_end", 0)
-    segment_data = state.get("segment_data", {})
 
-    # Build tool catalogue for the planner
-    group_catalogue = ", ".join(
-        f"`{cid}` ({cdef['description']})"
-        for cid, cdef in TELEMETRY_COLUMN_GROUPS.items()
-    )
     graph_catalogue = ", ".join(
         f"`{gdef['id']}` ({gdef['title']})"
         for gdef in AGENT_GRAPH_DEFINITIONS
@@ -536,10 +511,7 @@ def planner_node(state: AnnotationState) -> dict:
 
     prompt_parts.extend([
         "=== Available Tools ===",
-        "1. **get_telemetry_statistics** — numerical statistics (mean, min, max, std) "
-        "and player-vs-expert deltas.",
-        f"   Available telemetry column groups: {group_catalogue}",
-        "2. **generate_telemetry_graphs** — visual telemetry graphs rendered as images.",
+        "1. **generate_telemetry_graphs** — visual telemetry graphs rendered as images.",
         f"   Available graph IDs: {graph_catalogue}",
         "   The solver has a Vision Language Model and CAN analyse the "
         "graph images directly.",
@@ -558,16 +530,15 @@ def planner_node(state: AnnotationState) -> dict:
         "Each step object must have:",
         "  - \"step_id\": An integer (1, 2, 3, ...).",
         "  - \"description\": A string describing the goal of the step.",
-        "  - \"requested_statistics\": A list of statistic category IDs to compute for this step (from the catalogue above). Use an empty list if none are needed.",
         "  - \"requested_graphs\": A list of graph IDs to generate for this step (from the catalogue above). Use an empty list if none are needed.",
-        "You can have multiple steps. Each step should request specific statistics or graphs to analyze.",
+        "You can have multiple steps. Each step should request specific graphs to analyze.",
         "",
         "Example of a valid plan:",
         "```json",
         '{',
         '  "steps": [',
-        '    {"step_id": 1, "description": "Analyze speed and acceleration to find the core anomaly.", "requested_statistics": ["speed"], "requested_graphs": ["speed", "speed_delta"]},',
-        '    {"step_id": 2, "description": "Investigate braking behavior around the identified anomaly.", "requested_statistics": ["brake"], "requested_graphs": ["brake"]}',
+        '    {"step_id": 1, "description": "Analyze speed and acceleration to find the core anomaly.", "requested_graphs": ["speed", "speed_delta"]},',
+        '    {"step_id": 2, "description": "Investigate braking behavior around the identified anomaly.", "requested_graphs": ["brake"]}',
         '  ]',
         '}',
         "```",
@@ -607,8 +578,7 @@ def planner_node(state: AnnotationState) -> dict:
                "Examine all telemetry features and propose the most fitting labels."
 
     # Parse structured tool requests from planner output
-    available_tools = list(ALL_TELEMETRY_GROUP_IDS)
-    parsed_steps = _parse_planner_steps(plan, available_tools)
+    parsed_steps = _parse_planner_steps(plan, [])
 
     msg = {"role": "planner", "iteration": iteration, "content": plan}
     messages = list(state.get("messages", []))
@@ -635,18 +605,13 @@ def steps_data_fetcher_node(state: AnnotationState) -> Dict[str, Any]:
     """
     Executes the tools (statistics, graphs) requested for the current step in the plan.
     """
-    from .annotation_agent_tools import (
-        get_telemetry_statistics,
-        format_statistics_as_text,
-        generate_telemetry_graphs,
-    )
+    from .annotation_agent_tools import generate_telemetry_graphs
     messages = list(state.get("messages", []))
     plan_steps = state.get("plan_steps", [])
     current_step_index = state.get("current_step_index", 0)
     df = state.get("df_ref")
     start = state.get("parent_start", 0)
     end = state.get("parent_end", 0)
-    session_id = state.get("segment_data", {}).get("session_id", "unknown")
 
     if not plan_steps or current_step_index >= len(plan_steps):
         LOGGER.warning("Step executor called with no steps or invalid index. Skipping.")
@@ -657,20 +622,11 @@ def steps_data_fetcher_node(state: AnnotationState) -> Dict[str, Any]:
         }
 
     step = plan_steps[current_step_index]
-    requested_stats = step.get("requested_statistics", [])
     requested_graphs = step.get("requested_graphs", [])
     LOGGER.info(f"Executing step {current_step_index + 1}/{len(plan_steps)}: {step.get('description')}")
-    LOGGER.info(f"  - Requested statistics: {requested_stats}")
     LOGGER.info(f"  - Requested graphs: {requested_graphs}")
 
     stats_text = ""
-    if requested_stats:
-        stats = get_telemetry_statistics(
-            df, start, end, session_id,
-            stat_categories=requested_stats
-        )
-        stats_text = format_statistics_as_text(stats)
-
     image_bytes_list = []
     desc_list = []
     if requested_graphs:
@@ -687,8 +643,6 @@ def steps_data_fetcher_node(state: AnnotationState) -> Dict[str, Any]:
 
     # Create a tool message for logging/debugging
     tool_outputs = []
-    if stats_text:
-        tool_outputs.append({"tool_name": "get_telemetry_statistics", "content": stats_text})
     if image_bytes_list:
         # For logging, just note that images were generated
         content = f"Generated {len(image_bytes_list)} graphs: {', '.join(desc_list)}"
@@ -869,8 +823,6 @@ def step_reasoner_node(state: AnnotationState) -> Dict[str, Any]:
     )
 
     content_for_vlm = []
-    if stats_text:
-        prompt += f"- Telemetry Statistics:\n{stats_text}\n"
 
     if graph_descriptions:
         prompt += f"- Generated Graphs:\n" + "\n".join([f"  - {desc}" for desc in graph_descriptions]) + "\n"
@@ -892,8 +844,6 @@ def step_reasoner_node(state: AnnotationState) -> Dict[str, Any]:
         "Your output should read as flowing prose — do NOT use numbered lists "
         "or bullet points.  Use exact index positions and numerical values "
         "wherever readable.\n\n"
-        "If statistics are also provided, describe the key numerical values in "
-        "a brief paragraph.\n\n"
         "IMPORTANT: Do NOT interpret, diagnose, or suggest labels.  Do NOT say "
         "'this indicates a mistake' or 'this suggests the driver did X wrong'.  "
         "Only describe WHAT you see — shapes, values, positions, colours, "
@@ -918,7 +868,6 @@ def step_reasoner_node(state: AnnotationState) -> Dict[str, Any]:
             "step_id": step["step_id"],
             "description": step["description"],
             "reasoning": vlm_response_text,
-            "statistics_text": stats_text,
             "graph_descriptions": graph_descriptions,
         }],
         "messages": messages,
@@ -1105,8 +1054,6 @@ def proposal_synthesizer_node(state: AnnotationState) -> Dict[str, Any]:
     evidence_summary = ""
     for step in sorted(current_iteration_steps, key=lambda x: x["step_id"]):
         evidence_summary += f"--- Step {step['step_id']}: {step['description']} ---\n"
-        if step.get("statistics_text"):
-            evidence_summary += f"Statistics:\n{step['statistics_text']}\n"
         if step.get("graph_descriptions"):
             evidence_summary += f"Graphs: {', '.join(step['graph_descriptions'])}\n"
         evidence_summary += f"Reasoning: {step['reasoning']}\n\n"
@@ -1394,17 +1341,14 @@ def evaluator_node(state: AnnotationState) -> dict:
         }
 
     # --- VLM evaluation ---
-    telemetry_summary = _summarise_telemetry(segment_data)
-    
+
     # Filter step results for the current iteration
     current_iteration_steps = [res for res in state.get("step_results", []) if res.get("iteration") == iteration]
-    
+
     # Format the evidence from all steps
     evidence_summary = ""
     for step in sorted(current_iteration_steps, key=lambda x: x['step_id']):
         evidence_summary += f"--- Step {step['step_id']}: {step['description']} ---\n"
-        if step.get('statistics_text'):
-            evidence_summary += f"Statistics:\n{step['statistics_text']}\n"
         if step.get('graph_descriptions'):
             evidence_summary += f"Graphs: {', '.join(step['graph_descriptions'])}\n"
         evidence_summary += f"Reasoning: {step['reasoning']}\n\n"
@@ -1415,7 +1359,6 @@ def evaluator_node(state: AnnotationState) -> dict:
         "=== Parent Segment Context ===",
         f"Main labels: {[LABEL_MAPPING.get(l, l) for l in parent_main_labels]}",
         f"Range: [{parent_start}, {parent_end}]",
-        f"Telemetry Summary:\n{telemetry_summary}",
         "",
         "=== Step-by-Step Analysis Evidence ===",
         evidence_summary,
@@ -1586,18 +1529,12 @@ class AnnotationResult:
 
 
 def _prepare_segment_data(
-    df,
+    session_id: str,
     start_index: int,
     end_index: int,
-    session_id: str,
-    current_labels: List[str],
 ) -> dict:
-    """Extract a telemetry summary dict from a DataFrame slice.
-
-    Delegates to :func:`annotation_agent_tools.get_telemetry_statistics`.
-    """
-    from .annotation_agent_tools import get_telemetry_statistics
-    return get_telemetry_statistics(df, start_index, end_index, session_id)
+    """Return a minimal segment metadata dict (no statistics computed)."""
+    return {"session_id": session_id, "start_index": start_index, "end_index": end_index}
 
 
 def run_annotation_pipeline(
@@ -1641,9 +1578,7 @@ def run_annotation_pipeline(
 
     # Prepare segment data (lightweight stats only — heavy tool work is
     # done by the tool_executor node).
-    segment_data = _prepare_segment_data(
-        df, start_index, end_index, session_id, parent_main_labels,
-    )
+    segment_data = _prepare_segment_data(session_id, start_index, end_index)
 
     # ------------------------------------------------------------------
     # Build VLM generate function (llama-cpp backed)
@@ -1723,9 +1658,8 @@ def run_annotation_pipeline(
                         f"graphs: {req_g or 'all'}"
                     )
                 elif node_name == "steps_data_fetcher":
-                    n_stats = len(final_state.get("segment_data", {}).get("telemetry_summary", {}))
-                    n_graphs = len(final_state.get("tool_graph_descriptions", []))
-                    detail = f"Gathered {n_stats} stat columns + {n_graphs} graph(s)"
+                    n_graphs = len(final_state.get("current_step_graph_descriptions", []))
+                    detail = f"Gathered {n_graphs} graph(s)"
                 elif node_name == "label_verifier":
                     verified = final_state.get("verified_labels", [])
                     detail = (
@@ -1741,8 +1675,10 @@ def run_annotation_pipeline(
                         f"labels: {', '.join(LABEL_MAPPING.get(l, l) for l in labels)}"
                     )
                 elif node_name == "evaluator":
-                    detail = f"{final_state.get('evaluation', '').upper()}: " \
-                             f"{final_state.get('evaluation_feedback', '')[:200]}"
+                    detail = (
+                        f"{final_state.get('evaluation', '').upper()}: "
+                        f"{final_state.get('evaluation_feedback', '')}"
+                    )
                 progress_callback(node_name, iteration, detail)
 
     # Clean up VLM/LLM holders
