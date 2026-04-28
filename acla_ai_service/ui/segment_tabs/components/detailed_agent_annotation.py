@@ -328,9 +328,7 @@ def render_agent_annotation(df, form_start, form_end, form_labels, session_id, s
                     vlm_buffer.append(chunk)
                     _render_vlm_output()
 
-                def on_progress(
-                    node_name: str, iteration: int, detail: str,
-                ) -> None:
+                def on_progress(node_name: str, detail: str) -> None:
                     # Update progress bar
                     idx = (
                         _NODE_ORDER.index(node_name)
@@ -339,14 +337,13 @@ def render_agent_annotation(df, form_start, form_end, form_labels, session_id, s
                     pct = min((idx + 1) / len(_NODE_ORDER), 0.99)
                     progress_bar.progress(pct)
                     status_text.markdown(
-                        f"**Status:** _[Iter {iteration}] "
-                        f"{node_name}: {detail[:200]}_"
+                        f"**Status:** _{node_name}: {detail[:200]}_"
                     )
 
                     # Finalize the active VLM section (if any) and
                     # collapse it with this node's name / detail.
                     prev_completed_len = len(completed_sections)
-                    _finalize_active_section(node_name, iteration, detail)
+                    _finalize_active_section(node_name, 0, detail)
 
                     # The evaluator has a structural pre-check path that
                     # auto-rejects without calling the VLM (format / JSON
@@ -356,7 +353,7 @@ def render_agent_annotation(df, form_start, form_end, form_labels, session_id, s
                     if node_name == "evaluator" and len(completed_sections) == prev_completed_len:
                         completed_sections.append({
                             "node_name": "evaluator",
-                            "iteration": iteration,
+                            "iteration": 0,
                             "detail": detail,
                             "prompt": "(structural pre-check — no VLM inference)",
                             "text": detail,
@@ -365,7 +362,7 @@ def render_agent_annotation(df, form_start, form_end, form_labels, session_id, s
 
                     active_node_info.update({
                         "name": node_name,
-                        "iteration": iteration,
+                        "iteration": 0,
                         "detail": detail,
                     })
                     _render_vlm_output()

@@ -146,9 +146,9 @@ def render_detailed_labeling(selected_annotation_key, selected_session_key, avai
     with col_global_inputs:
          c_input1, c_input2 = st.columns(2)
          with c_input1:
-             st.number_input("Start", min_value=0, max_value=len(df), value=viz_start_idx, key="detailed_global_viz_start_input", on_change=update_global_slider_range)
+             st.number_input("Start", min_value=0, max_value=len(df), key="detailed_global_viz_start_input", on_change=update_global_slider_range)
          with c_input2:
-             st.number_input("End", min_value=0, max_value=len(df), value=viz_end_idx, key="detailed_global_viz_end_input", on_change=update_global_slider_range)
+             st.number_input("End", min_value=0, max_value=len(df), key="detailed_global_viz_end_input", on_change=update_global_slider_range)
 
     from .components.detailed_feature_visualization import render_feature_visualization
     render_feature_visualization(df, viz_start_idx, viz_end_idx, session_id, numeric_cols, default_cols)

@@ -1229,6 +1229,7 @@ def build_annotation_graph(
 class AnnotationPipelineConfig:
     """Configuration for the annotation pipeline."""
 
+    max_iterations: int = 3
     max_new_tokens: int = 512
     temperature: float = 0.7
 

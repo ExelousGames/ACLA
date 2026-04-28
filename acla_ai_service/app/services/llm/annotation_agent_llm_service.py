@@ -55,6 +55,7 @@ _QUANTIZE_BIN = Path("/opt/llama.cpp/build/bin/llama-quantize")
 QWEN25_VL_MODELS = {
     "Qwen/Qwen2.5-VL-32B-Instruct": "Qwen2.5-VL-32B",
     "Qwen/Qwen2.5-VL-72B-Instruct": "Qwen2.5-VL-72B",
+    "Qwen/Qwen3-VL-30B-A3B-Thinking": "Qwen3-VL-30B-A3B-Thinking",
 }
 
 
@@ -301,18 +302,31 @@ class AnnotationAgentLLMService:
                 return p
             raise FileNotFoundError(f"GGUF model file not found: {p}")
 
-        # Auto-detect: look for a VL-related GGUF in the models directory
+        if self._config.hf_repo:
+            # When a specific repo is configured, only accept the matching file.
+            # Do NOT fall through to generic auto-detect (that would silently use
+            # a different model that happens to be present on disk).
+            model_name = self._config.hf_repo.split("/")[-1]
+            quant = self._config.quantization_type
+            specific = _MODELS_DIR / f"{model_name}-{quant}.gguf"
+            if specific.is_file():
+                LOGGER.info("Found GGUF for %s: %s", self._config.hf_repo, specific)
+                return specific
+            if self._config.auto_download:
+                gguf, _ = self._convert_from_hf()
+                return gguf
+            raise FileNotFoundError(
+                f"GGUF for {self._config.hf_repo} not found at {specific}.  "
+                "Enable auto_download or convert manually."
+            )
+
+        # No hf_repo set — generic scan for any VL GGUF
         candidates = sorted(_MODELS_DIR.glob("*.gguf"))
         for c in candidates:
             name_lower = c.name.lower()
             if "vl" in name_lower and "mmproj" not in name_lower:
                 LOGGER.info("Auto-detected GGUF model: %s", c)
                 return c
-
-        # Convert from HuggingFace if enabled
-        if self._config.auto_download:
-            gguf, _ = self._convert_from_hf()
-            return gguf
 
         raise FileNotFoundError(
             f"No VL GGUF model file found in {_MODELS_DIR}.  Set hf_repo "
@@ -328,16 +342,26 @@ class AnnotationAgentLLMService:
                 return p
             raise FileNotFoundError(f"mmproj file not found: {p}")
 
-        # Auto-detect
+        if self._config.hf_repo:
+            # Same as _resolve_gguf: don't fall through to another model's mmproj.
+            model_name = self._config.hf_repo.split("/")[-1]
+            specific = _MODELS_DIR / f"mmproj-{model_name}-f16.gguf"
+            if specific.is_file():
+                LOGGER.info("Found mmproj for %s: %s", self._config.hf_repo, specific)
+                return specific
+            if self._config.auto_download:
+                _, mmproj = self._convert_from_hf()
+                return mmproj
+            raise FileNotFoundError(
+                f"mmproj for {self._config.hf_repo} not found at {specific}.  "
+                "Enable auto_download or convert manually."
+            )
+
+        # No hf_repo set — generic scan
         candidates = sorted(_MODELS_DIR.glob("*mmproj*.gguf"))
         if candidates:
             LOGGER.info("Auto-detected mmproj: %s", candidates[0])
             return candidates[0]
-
-        # Convert from HuggingFace if enabled
-        if self._config.auto_download:
-            _, mmproj = self._convert_from_hf()
-            return mmproj
 
         raise FileNotFoundError(
             f"No mmproj file found in {_MODELS_DIR}.  Set hf_repo "
@@ -477,7 +501,20 @@ class AnnotationAgentLLMService:
 # ---------------------------------------------------------------------------
 
 _service_instance: Optional[AnnotationAgentLLMService] = None
+_service_config: Optional[AnnotationAgentLLMConfig] = None
 _service_lock = threading.Lock()
+
+
+def _configs_match(a: AnnotationAgentLLMConfig, b: AnnotationAgentLLMConfig) -> bool:
+    """True when both configs would produce an identical llama-server invocation."""
+    return (
+        a.hf_repo == b.hf_repo
+        and a.quantization_type == b.quantization_type
+        and a.gguf_path == b.gguf_path
+        and a.mmproj_path == b.mmproj_path
+        and a.context_size == b.context_size
+        and a.n_gpu_layers == b.n_gpu_layers
+    )
 
 
 def get_or_start_service(
@@ -485,18 +522,31 @@ def get_or_start_service(
 ) -> AnnotationAgentLLMService:
     """Return the running service instance, starting it if necessary.
 
-    The server stays alive across multiple ``run_annotation_pipeline()``
-    calls so the (expensive) model load happens only once.
+    If a service is already running but was started with a different model
+    config (e.g. the user changed the selected model), the old server is
+    stopped and a new one is started with the updated config.
     """
-    global _service_instance
+    global _service_instance, _service_config
     with _service_lock:
-        if _service_instance is not None and _service_instance.is_running():
-            return _service_instance
-
         cfg = config or AnnotationAgentLLMConfig()
+
+        if _service_instance is not None and _service_instance.is_running():
+            if _service_config is not None and _configs_match(_service_config, cfg):
+                return _service_instance
+            # Config changed — stop the old server and start fresh
+            LOGGER.info(
+                "Model config changed (was %s, now %s) — restarting llama-server.",
+                _service_config.hf_repo if _service_config else "unknown",
+                cfg.hf_repo,
+            )
+            _service_instance.stop()
+            _service_instance = None
+            _service_config = None
+
         svc = AnnotationAgentLLMService(cfg)
         svc.start()
         _service_instance = svc
+        _service_config = cfg
         return svc
 
 
