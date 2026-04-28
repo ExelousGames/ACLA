@@ -14,6 +14,7 @@ on fail the pipeline retries from the planner up to a configurable limit.
 """
 
 import io
+import time
 import uuid
 import streamlit as st
 import traceback
@@ -187,55 +188,172 @@ def render_agent_annotation(df, form_start, form_end, form_labels, session_id, s
                 status_text = progress_area.empty()
                 progress_bar = progress_area.progress(0)
 
-                # Live VLM output — one placeholder rewritten in full each update
-                # so all calls remain visible. Each VLM call (prompt + response)
-                # is its own section; sections are never erased mid-run.
+                # ----------------------------------------------------------
+                # Live VLM output — collapsible steps
+                # Each completed VLM call collapses into an expander with a
+                # summary header (icon + node name + detail + duration).
+                # The active / streaming call stays expanded at the bottom.
+                # ----------------------------------------------------------
                 st.markdown("**Live VLM Output**")
                 vlm_output_area = st.empty()
-                completed_sections: list[dict] = []  # [{prompt, text}]
-                vlm_buffer: list[str] = []           # response chunks for active call
-                active_prompt: list[str] = [""]      # prompt for active call
 
-                def _render_vlm_output() -> None:
-                    parts = []
-                    for s in completed_sections:
-                        parts.append(
-                            f"*Prompt:*\n```\n{s['prompt']}\n```\n\n"
-                            f"*Response:*\n\n{s['text']}"
-                        )
-                    if active_prompt[0] or vlm_buffer:
-                        parts.append(
-                            f"*Prompt:*\n```\n{active_prompt[0]}\n```\n\n"
-                            f"*Response (streaming...)*\n\n{''.join(vlm_buffer)}"
-                        )
-                    vlm_output_area.markdown("\n\n---\n\n".join(parts))
+                # [{node_name, iteration, detail, prompt, text, duration}]
+                completed_sections: list[dict] = []
+                vlm_buffer: list[str] = []        # response chunks for active call
+                active_prompt: list[str] = [""]   # prompt for active call
+                step_start_time: list[float] = [0.0]
+                # Tracks which node is currently active (set when on_progress
+                # fires for the *previous* node, letting us predict the next).
+                active_node_info: dict = {"name": "", "iteration": 0, "detail": ""}
 
-                def on_vlm_prompt(prompt: str) -> None:
-                    # Finalise the previous call before starting the next
+                _NODE_ORDER = [
+                    "planner", "steps_data_fetcher", "step_reasoner",
+                    "label_shortlister", "label_verifier",
+                    "proposal_synthesizer", "evaluator",
+                ]
+                _NODE_ICONS = {
+                    "planner": "🧠",
+                    "steps_data_fetcher": "📊",
+                    "step_reasoner": "🔍",
+                    "label_shortlister": "🏷️",
+                    "label_verifier": "✅",
+                    "proposal_synthesizer": "📝",
+                    "evaluator": "⚖️",
+                }
+
+                def _truncate(text: str, max_len: int = 80) -> str:
+                    line = text.strip().split("\n")[0]
+                    return line[:max_len] + "…" if len(line) > max_len else line
+
+                def _next_node_after(node_name: str) -> str:
+                    """Predict which node runs next in the pipeline."""
+                    if node_name in _NODE_ORDER:
+                        idx = _NODE_ORDER.index(node_name)
+                        if idx + 1 < len(_NODE_ORDER):
+                            return _NODE_ORDER[idx + 1]
+                    return _NODE_ORDER[0]
+
+                def _finalize_active_section(
+                    node_name: str, iteration: int, detail: str,
+                ) -> None:
+                    """Move the active VLM section to completed_sections."""
                     if active_prompt[0] or vlm_buffer:
+                        elapsed = (
+                            time.time() - step_start_time[0]
+                            if step_start_time[0] else 0
+                        )
                         completed_sections.append({
+                            "node_name": node_name,
+                            "iteration": iteration,
+                            "detail": detail,
                             "prompt": active_prompt[0],
                             "text": "".join(vlm_buffer),
+                            "duration": elapsed,
                         })
                         vlm_buffer.clear()
+                        active_prompt[0] = ""
+                        step_start_time[0] = 0.0
+
+                def _render_vlm_output() -> None:
+                    """Re-render all sections inside the single placeholder.
+
+                    Completed steps → collapsed ``st.expander``
+                    Active step    → shown open at the bottom
+                    """
+                    with vlm_output_area.container():
+                        for i, s in enumerate(completed_sections):
+                            node_display = (
+                                s["node_name"].replace("_", " ").title()
+                                or f"Step {i + 1}"
+                            )
+                            icon = _NODE_ICONS.get(s["node_name"], "●")
+                            dur = s.get("duration", 0)
+                            dur_str = f"{dur:.1f}s" if dur else ""
+
+                            header = f"{icon} {node_display}"
+                            if s.get("detail"):
+                                header += f" — {_truncate(s['detail'], 60)}"
+                            if dur_str:
+                                header += f"  ({dur_str})"
+
+                            with st.expander(header, expanded=False):
+                                st.markdown(
+                                    f"**Prompt:**\n```\n{s['prompt']}\n```"
+                                )
+                                st.markdown(f"**Response:**\n\n{s['text']}")
+
+                        # Active / streaming section — stays expanded
+                        if active_prompt[0] or vlm_buffer:
+                            predicted = _next_node_after(
+                                active_node_info.get("name", ""),
+                            )
+                            node_display = (
+                                predicted.replace("_", " ").title()
+                                if predicted else "Processing"
+                            )
+                            icon = _NODE_ICONS.get(predicted, "●")
+                            elapsed = (
+                                time.time() - step_start_time[0]
+                                if step_start_time[0] else 0
+                            )
+
+                            st.markdown(
+                                f"**{icon} {node_display}** "
+                                f"_{elapsed:.0f}s …_"
+                            )
+                            st.markdown(
+                                f"*Prompt:*\n```\n{active_prompt[0]}\n```"
+                            )
+                            st.markdown(
+                                f"*Response (streaming…)*\n\n"
+                                f"{''.join(vlm_buffer)}"
+                            )
+
+                # ---- Callbacks ----
+
+                def on_vlm_prompt(prompt: str) -> None:
+                    # If there's a dangling active section not yet finalized
+                    # by on_progress, finalize it with whatever info we have.
+                    if active_prompt[0] or vlm_buffer:
+                        _finalize_active_section(
+                            active_node_info.get("name", ""),
+                            active_node_info.get("iteration", 0),
+                            active_node_info.get("detail", ""),
+                        )
                     active_prompt[0] = prompt
+                    step_start_time[0] = time.time()
                     _render_vlm_output()
 
                 def on_vlm_stream(chunk: str) -> None:
                     vlm_buffer.append(chunk)
                     _render_vlm_output()
 
-                def on_progress(node_name: str, iteration: int, detail: str) -> None:
-                    node_order = ["planner", "steps_data_fetcher", "step_reasoner",
-                                  "label_shortlister", "label_verifier",
-                                  "proposal_synthesizer", "evaluator"]
-                    idx = node_order.index(node_name) if node_name in node_order else 0
-                    progress = min((idx + 1) / len(node_order), 0.99)
-                    message = f"[Iter {iteration}] {node_name}: {detail}"
-                    progress_bar.progress(progress)
-                    status_text.markdown(f"**Status:** _{message}_")
+                def on_progress(
+                    node_name: str, iteration: int, detail: str,
+                ) -> None:
+                    # Update progress bar
+                    idx = (
+                        _NODE_ORDER.index(node_name)
+                        if node_name in _NODE_ORDER else 0
+                    )
+                    pct = min((idx + 1) / len(_NODE_ORDER), 0.99)
+                    progress_bar.progress(pct)
+                    status_text.markdown(
+                        f"**Status:** _[Iter {iteration}] "
+                        f"{node_name}: {detail}_"
+                    )
 
-                with st.spinner("Running sub-segment discovery pipeline..."):
+                    # Finalize the active VLM section (if any) and
+                    # collapse it with this node's name / detail.
+                    _finalize_active_section(node_name, iteration, detail)
+                    active_node_info.update({
+                        "name": node_name,
+                        "iteration": iteration,
+                        "detail": detail,
+                    })
+                    _render_vlm_output()
+
+                with st.spinner("Running sub-segment discovery pipeline…"):
                     result = run_annotation_pipeline(
                         df=df,
                         start_index=int(form_start),
@@ -248,14 +366,14 @@ def render_agent_annotation(df, form_start, form_end, form_labels, session_id, s
                         vlm_stream_callback=on_vlm_stream,
                         vlm_prompt_callback=on_vlm_prompt,
                     )
-                # Finalise the last active call
+
+                # Finalise the last active call (if on_progress didn't)
                 if active_prompt[0] or vlm_buffer:
-                    completed_sections.append({
-                        "prompt": active_prompt[0],
-                        "text": "".join(vlm_buffer),
-                    })
-                    vlm_buffer.clear()
-                    active_prompt[0] = ""
+                    _finalize_active_section(
+                        active_node_info.get("name", ""),
+                        active_node_info.get("iteration", 0),
+                        active_node_info.get("detail", ""),
+                    )
                     _render_vlm_output()
 
                 progress_bar.progress(1.0)
