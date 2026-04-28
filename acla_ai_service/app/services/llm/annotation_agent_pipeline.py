@@ -83,6 +83,7 @@ class AnnotationState(TypedDict, total=False):
     proposed_sub_start: int      # VLM-proposed sub-segment start index
     proposed_sub_end: int        # VLM-proposed sub-segment end index
     proposed_labels: list
+    proposed_label_annotations: list  # [{label_id, start_index, end_index, reasoning}]
     proposed_reasoning: str
     parse_warnings: list         # JSON parse / structural issues from solver
     raw_step_solver_response: str  # raw VLM output from step solver
@@ -91,6 +92,7 @@ class AnnotationState(TypedDict, total=False):
     iteration: int
     max_iterations: int
     final_labels: list
+    final_label_annotations: list  # [{label_id, start_index, end_index, reasoning}]
     final_reasoning: str
     final_sub_start: int
     final_sub_end: int
@@ -120,6 +122,7 @@ def _default_state() -> AnnotationState:
         "proposed_sub_start": 0,
         "proposed_sub_end": 0,
         "proposed_labels": [],
+        "proposed_label_annotations": [],
         "proposed_reasoning": "",
         "parse_warnings": [],
         "raw_step_solver_response": "",
@@ -128,6 +131,7 @@ def _default_state() -> AnnotationState:
         "iteration": 0,
         "max_iterations": 3,
         "final_labels": [],
+        "final_label_annotations": [],
         "final_reasoning": "",
         "final_sub_start": 0,
         "final_sub_end": 0,
@@ -556,8 +560,8 @@ def planner_node(state: AnnotationState) -> dict:
                 "",
                 "**FORMAT REMINDER**: The evaluator detected JSON format problems. "
                 "In your revised plan, explicitly instruct the solver to output "
-                "well-formed JSON inside ```json``` code blocks with the exact "
-                "required keys (start_index, end_index, proposed_labels, reasoning).",
+                'well-formed JSON inside ```json``` code blocks with a "labels" array '
+                "where each entry has: label_id, start_index, end_index, reasoning.",
             ])
         if "outside parent" in feedback.lower() or "exceeds parent" in feedback.lower():
             prompt_parts.extend([
@@ -867,7 +871,7 @@ def step_reasoner_node(state: AnnotationState) -> Dict[str, Any]:
             "iteration": iteration,
             "step_id": step["step_id"],
             "description": step["description"],
-            "reasoning": vlm_response_text,
+            "graph_observations": vlm_response_text,
             "graph_descriptions": graph_descriptions,
         }],
         "messages": messages,
@@ -942,9 +946,9 @@ def label_verifier_node(state: AnnotationState) -> Dict[str, Any]:
         if res.get("iteration") == iteration
     ]
     evidence_parts: list[str] = [
-        step["reasoning"]
+        step["graph_observations"]
         for step in sorted(current_iteration_steps, key=lambda x: x["step_id"])
-        if step.get("reasoning")
+        if step.get("graph_observations")
     ]
     query_text = " ".join(evidence_parts).strip()
 
@@ -993,7 +997,7 @@ def label_verifier_node(state: AnnotationState) -> Dict[str, Any]:
 
     verified: list[str] = [lid for lid, _, _ in filtered]
     reasoning_map: dict[str, str] = {
-        lid: f"Similarity {sim:.3f} — {txt[:100]}"
+        lid: f"Similarity {sim:.3f} — {txt}"
         for lid, sim, txt in filtered
     }
 
@@ -1037,7 +1041,6 @@ def proposal_synthesizer_node(state: AnnotationState) -> Dict[str, Any]:
     """
     messages = list(state.get("messages", []))
     iteration = state.get("iteration", 0)
-    all_graph_images = state.get("all_graph_images", [])
     parent_main_labels = state.get("parent_main_labels", [])
     existing_children = state.get("existing_children", [])
     parent_start = state.get("parent_start", 0)
@@ -1053,10 +1056,10 @@ def proposal_synthesizer_node(state: AnnotationState) -> Dict[str, Any]:
     ]
     evidence_summary = ""
     for step in sorted(current_iteration_steps, key=lambda x: x["step_id"]):
-        evidence_summary += f"--- Step {step['step_id']}: {step['description']} ---\n"
+        evidence_summary += f"--- Graph {step['step_id']}: {step['description']} ---\n"
         if step.get("graph_descriptions"):
             evidence_summary += f"Graphs: {', '.join(step['graph_descriptions'])}\n"
-        evidence_summary += f"Reasoning: {step['reasoning']}\n\n"
+        evidence_summary += f"Graph Observations: {step['graph_observations']}\n\n"
 
     # Build concise verified-label section (small, focused)
     verified_section_lines: list[str] = ["=== Verified Labels (use these) ==="]
@@ -1065,7 +1068,7 @@ def proposal_synthesizer_node(state: AnnotationState) -> Dict[str, Any]:
         entry = catalog.get_label(lid)
         name = entry.name if entry else LABEL_MAPPING.get(lid, lid)
         justification = verified_reasoning.get(lid, "")
-        verified_section_lines.append(f"- {name} ({lid}): {justification[:150]}")
+        verified_section_lines.append(f"- ID: {lid} | Name: {name} | {justification}")
     if not verified_labels:
         verified_section_lines.append("(No labels verified — propose the best-fit label IDs based on evidence.)")
     verified_section = "\n".join(verified_section_lines)
@@ -1094,15 +1097,10 @@ def proposal_synthesizer_node(state: AnnotationState) -> Dict[str, Any]:
         "=== Parent Segment ===",
         f"Main labels: {', '.join([LABEL_MAPPING.get(l, l) for l in parent_main_labels])}",
         "",
-        "=== Step-by-Step Analysis Evidence ===",
+        "=== Graph Observations ===",
         evidence_summary,
         "",
     ]
-    prompt_parts.extend(
-        _build_graph_prompt_section(
-            state.get("all_graph_descriptions", []), all_graph_images
-        )
-    )
     prompt_parts.extend([
         verified_section,
         "",
@@ -1113,25 +1111,32 @@ def proposal_synthesizer_node(state: AnnotationState) -> Dict[str, Any]:
         "=== Instructions ===",
         "Use ONLY the verified labels listed above (you may drop some if "
         "the evidence does not support them).",
-        f"start_index and end_index MUST be within [{parent_start}, {parent_end}]. "
-        "start_index must be strictly less than end_index.",
-        "Explain why the specific boundaries were chosen, referencing the "
-        "step-by-step analysis and visual evidence.",
+        "Each label may cover a different precise sub-range within "
+        f"[{parent_start}, {parent_end}]. "
+        "Determine separate start_index and end_index for every label based on where "
+        "that specific behaviour begins and ends in the graphs. "
+        "start_index must be strictly less than end_index for each label.",
+        "For each label explain why those specific boundaries were chosen, "
+        "referencing the graph observations from the step reasoners.",
         "",
         "Respond in this JSON format ONLY:",
         "```json",
         "{",
-        f'  "start_index": <integer>,',
-        f'  "end_index": <integer>,',
-        f'  "proposed_labels": ["LABEL_ID_1", ...],',
-        '  "reasoning": "..."',
+        '  "labels": [',
+        '    {',
+        '      "label_id": "LABEL_ID_1",',
+        f'      "start_index": <integer within [{parent_start}, {parent_end}]>,',
+        f'      "end_index": <integer within [{parent_start}, {parent_end}]>,',
+        '      "reasoning": "..."',
+        '    }',
+        '  ]',
         "}",
         "```",
     ])
 
     prompt = "\n".join(prompt_parts)
 
-    raw_response = _call_vlm(prompt, all_graph_images)
+    raw_response = _call_vlm(prompt, [])
     if not raw_response:
         raw_response = json.dumps({
             "start_index": parent_start,
@@ -1142,23 +1147,41 @@ def proposal_synthesizer_node(state: AnnotationState) -> Dict[str, Any]:
 
     # Parse
     sub_labels: list[str] = []
+    label_proposals: list[dict] = []
     reasoning = raw_response
     parse_warnings: list[str] = list(state.get("parse_warnings", []))
     proposed_start = parent_start
     proposed_end = parent_end
     parsed = _parse_json_response(raw_response)
     if parsed:
-        sub_labels = [l for l in parsed.get("proposed_labels", []) if l in LABEL_MAPPING]
-        reasoning = parsed.get("reasoning", raw_response)
-        if not isinstance(reasoning, str):
-            reasoning = json.dumps(reasoning) if isinstance(reasoning, dict) else str(reasoning)
-        # Extract range
-        raw_start = parsed.get("start_index")
-        raw_end = parsed.get("end_index")
-        if isinstance(raw_start, (int, float)):
-            proposed_start = int(raw_start)
-        if isinstance(raw_end, (int, float)):
-            proposed_end = int(raw_end)
+        label_annotations = parsed.get("labels", [])
+        starts: list[int] = []
+        ends: list[int] = []
+        for ann in (label_annotations if isinstance(label_annotations, list) else []):
+            lid = ann.get("label_id")
+            if not lid or lid not in LABEL_MAPPING:
+                continue
+            raw_start = ann.get("start_index")
+            raw_end = ann.get("end_index")
+            ann_reasoning = ann.get("reasoning", "")
+            if not isinstance(ann_reasoning, str):
+                ann_reasoning = str(ann_reasoning)
+            ann_start = int(raw_start) if isinstance(raw_start, (int, float)) else parent_start
+            ann_end = int(raw_end) if isinstance(raw_end, (int, float)) else parent_end
+            sub_labels.append(lid)
+            label_proposals.append({
+                "label_id": lid,
+                "start_index": ann_start,
+                "end_index": ann_end,
+                "reasoning": ann_reasoning,
+            })
+            starts.append(ann_start)
+            ends.append(ann_end)
+        reasoning = "; ".join(p["reasoning"] for p in label_proposals) if label_proposals else raw_response
+        if starts:
+            proposed_start = min(starts)
+        if ends:
+            proposed_end = max(ends)
     else:
         LOGGER.warning("Proposal synthesizer response was not valid JSON.")
         parse_warnings.append(
@@ -1178,6 +1201,7 @@ def proposal_synthesizer_node(state: AnnotationState) -> Dict[str, Any]:
         "proposed_sub_start": proposed_start,
         "proposed_sub_end": proposed_end,
         "proposed_labels": fixed_labels,
+        "proposed_label_annotations": label_proposals,
         "proposed_reasoning": reasoning,
         "parse_warnings": parse_warnings,
         "raw_step_solver_response": raw_response,
@@ -1194,8 +1218,9 @@ def _validate_solver_json_format(
     """Validate step solver JSON output and return detailed format issues.
 
     Checks the raw response for structural correctness: parsability,
-    required keys (start_index, end_index, proposed_labels, reasoning),
-    value types, range bounds, and valid label IDs.
+    required top-level key "labels", and per-entry keys
+    (label_id, start_index, end_index, reasoning), value types,
+    range bounds, and valid label IDs.
     """
     issues: list[str] = []
 
@@ -1206,76 +1231,80 @@ def _validate_solver_json_format(
     if parsed is None:
         issues.append(
             "Step solver did not produce valid JSON. "
-            "Expected a ```json``` code block containing an object with keys: "
-            '"start_index", "end_index", "proposed_labels", "reasoning".'
+            'Expected a ```json``` code block containing an object with a "labels" '
+            'array where each entry has: "label_id", "start_index", "end_index", "reasoning".'
         )
         return issues
 
-    # Required keys
-    for key in ("start_index", "end_index", "proposed_labels", "reasoning"):
-        if key not in parsed:
+    if "labels" not in parsed:
+        issues.append(
+            'Step solver JSON is missing required key "labels". '
+            'The solver must include a "labels" array.'
+        )
+        return issues
+
+    labels_arr = parsed.get("labels")
+    if not isinstance(labels_arr, list):
+        issues.append(
+            f'"labels" must be a JSON array, got {type(labels_arr).__name__}.'
+        )
+        return issues
+
+    if not labels_arr:
+        issues.append('"labels" array is empty — at least one label entry is required.')
+
+    for i, entry in enumerate(labels_arr):
+        if not isinstance(entry, dict):
+            issues.append(f'"labels[{i}]" must be an object, got {type(entry).__name__}.')
+            continue
+
+        for key in ("label_id", "start_index", "end_index", "reasoning"):
+            if key not in entry:
+                issues.append(f'"labels[{i}]" is missing required key "{key}".')
+
+        lid = entry.get("label_id")
+        if lid is not None:
+            if not isinstance(lid, str):
+                issues.append(
+                    f'"labels[{i}].label_id" must be a string, got {type(lid).__name__}.'
+                )
+            elif lid not in LABEL_MAPPING:
+                issues.append(f'"labels[{i}].label_id" contains unknown ID: "{lid}".')
+
+        si = entry.get("start_index")
+        ei = entry.get("end_index")
+        if si is not None and not isinstance(si, (int, float)):
             issues.append(
-                f'Step solver JSON is missing required key "{key}". '
-                "The solver must include all four keys."
+                f'"labels[{i}].start_index" must be an integer, got {type(si).__name__}.'
+            )
+        if ei is not None and not isinstance(ei, (int, float)):
+            issues.append(
+                f'"labels[{i}].end_index" must be an integer, got {type(ei).__name__}.'
             )
 
-    # Type checks for indices
-    si = parsed.get("start_index")
-    ei = parsed.get("end_index")
-    if si is not None and not isinstance(si, (int, float)):
-        issues.append(
-            f'"start_index" must be an integer, got {type(si).__name__}.'
-        )
-    if ei is not None and not isinstance(ei, (int, float)):
-        issues.append(
-            f'"end_index" must be an integer, got {type(ei).__name__}.'
-        )
+        if isinstance(si, (int, float)) and isinstance(ei, (int, float)):
+            si_int, ei_int = int(si), int(ei)
+            if si_int >= ei_int:
+                issues.append(
+                    f'"labels[{i}]" start_index ({si_int}) must be strictly less than '
+                    f'end_index ({ei_int}).'
+                )
+            if si_int < parent_start:
+                issues.append(
+                    f'"labels[{i}]" start_index ({si_int}) is outside parent range — '
+                    f'must be >= {parent_start}.'
+                )
+            if ei_int > parent_end:
+                issues.append(
+                    f'"labels[{i}]" end_index ({ei_int}) exceeds parent end ({parent_end}) — '
+                    f'must be <= {parent_end}.'
+                )
 
-    # Range checks
-    if isinstance(si, (int, float)) and isinstance(ei, (int, float)):
-        si_int, ei_int = int(si), int(ei)
-        if si_int >= ei_int:
+        rs = entry.get("reasoning")
+        if rs is not None and not isinstance(rs, str):
             issues.append(
-                f"start_index ({si_int}) must be strictly less than "
-                f"end_index ({ei_int})."
+                f'"labels[{i}].reasoning" must be a string, got {type(rs).__name__}.'
             )
-        if si_int < parent_start:
-            issues.append(
-                f"start_index ({si_int}) is outside parent range — "
-                f"must be >= {parent_start}."
-            )
-        if ei_int > parent_end:
-            issues.append(
-                f"end_index ({ei_int}) exceeds parent end ({parent_end}) — "
-                f"must be <= {parent_end}."
-            )
-
-    # Label checks
-    pl = parsed.get("proposed_labels")
-    if pl is not None and not isinstance(pl, list):
-        issues.append(
-            f'"proposed_labels" must be a JSON array, '
-            f"got {type(pl).__name__}."
-        )
-    elif isinstance(pl, list):
-        bad_ids = [l for l in pl if not isinstance(l, str)]
-        if bad_ids:
-            issues.append(
-                f'"proposed_labels" contains non-string elements: {bad_ids}. '
-                "All label IDs must be strings."
-            )
-        unknown = [l for l in pl if isinstance(l, str) and l not in LABEL_MAPPING]
-        if unknown:
-            issues.append(
-                f'"proposed_labels" contains unknown IDs: {unknown}.'
-            )
-
-    # Reasoning check
-    rs = parsed.get("reasoning")
-    if rs is not None and not isinstance(rs, str):
-        issues.append(
-            f'"reasoning" must be a string, got {type(rs).__name__}.'
-        )
 
     return issues
 
@@ -1289,6 +1318,7 @@ def evaluator_node(state: AnnotationState) -> dict:
     and ``final_reasoning``.
     """
     proposed_labels = state.get("proposed_labels", [])
+    proposed_label_annotations = state.get("proposed_label_annotations", [])
     proposed_reasoning = state.get("proposed_reasoning", "")
     segment_data = state.get("segment_data", {})
     iteration = state.get("iteration", 0)
@@ -1318,11 +1348,11 @@ def evaluator_node(state: AnnotationState) -> dict:
             "=== Required JSON Format ===\n"
             "The step solver must output:\n"
             "```json\n"
-            '{"start_index": <int>, "end_index": <int>, '
-            '"proposed_labels": ["LABEL_ID", ...], '
-            '"reasoning": "..."}\n'
+            '{"labels": [{"label_id": "LABEL_ID", "start_index": <int>, '
+            '"end_index": <int>, "reasoning": "..."}]}\n'
             "```\n\n"
-            f"Range must be within parent bounds [{parent_start}, {parent_end}].\n"
+            "Each label must have its own start_index and end_index "
+            f"within parent bounds [{parent_start}, {parent_end}].\n"
             "Instruct the solver to fix these issues in the next iteration."
         )
         LOGGER.warning("Evaluator auto-reject (format): %s", warning_text)
@@ -1348,10 +1378,10 @@ def evaluator_node(state: AnnotationState) -> dict:
     # Format the evidence from all steps
     evidence_summary = ""
     for step in sorted(current_iteration_steps, key=lambda x: x['step_id']):
-        evidence_summary += f"--- Step {step['step_id']}: {step['description']} ---\n"
+        evidence_summary += f"--- Graph {step['step_id']}: {step['description']} ---\n"
         if step.get('graph_descriptions'):
             evidence_summary += f"Graphs: {', '.join(step['graph_descriptions'])}\n"
-        evidence_summary += f"Reasoning: {step['reasoning']}\n\n"
+        evidence_summary += f"Graph Observations: {step['graph_observations']}\n\n"
 
     prompt_parts = [
         "You are a meticulous quality assurance specialist. Your job is to critically evaluate a proposed sub-segment annotation based on all available evidence.",
@@ -1360,21 +1390,37 @@ def evaluator_node(state: AnnotationState) -> dict:
         f"Main labels: {[LABEL_MAPPING.get(l, l) for l in parent_main_labels]}",
         f"Range: [{parent_start}, {parent_end}]",
         "",
-        "=== Step-by-Step Analysis Evidence ===",
+        "=== Graph Observations ===",
         evidence_summary,
         "",
     ]
     prompt_parts.extend(
         _build_graph_prompt_section(all_graph_descriptions, all_graph_images)
     )
+    # Build per-label annotation lines for the evaluator prompt
+    if proposed_label_annotations:
+        label_ann_lines = ["=== Proposed Sub-Segment (per-label boundaries) ==="]
+        for ann in proposed_label_annotations:
+            lid = ann["label_id"]
+            name = LABEL_MAPPING.get(lid, lid)
+            label_ann_lines.append(
+                f"- {name} ({lid}): [{ann['start_index']}, {ann['end_index']}] — {ann['reasoning']}"
+            )
+        label_ann_lines.append(f"Overall envelope: [{proposed_sub_start}, {proposed_sub_end}]")
+        proposed_segment_section = label_ann_lines
+    else:
+        proposed_segment_section = [
+            "=== Proposed Sub-Segment ===",
+            f"Proposed Labels: {[LABEL_MAPPING.get(l, l) for l in proposed_labels]}",
+            f"Proposed Range: [{proposed_sub_start}, {proposed_sub_end}]",
+            f"Proposer's Reasoning: {proposed_reasoning}",
+        ]
+
+    prompt_parts.extend(proposed_segment_section)
     prompt_parts.extend([
-        "=== Proposed Sub-Segment ===",
-        f"Proposed Labels: {[LABEL_MAPPING.get(l, l) for l in proposed_labels]}",
-        f"Proposed Range: [{proposed_sub_start}, {proposed_sub_end}]",
-        f"Proposer's Reasoning: {proposed_reasoning}",
         "",
         "=== Your Task ===",
-        "Critically evaluate the proposal. Does the reasoning logically follow from the step-by-step analysis? Are the proposed start/end indices tightly aligned with the evidence in the telemetry data and graphs? Are the labels appropriate?",
+        "Critically evaluate the proposal. Does the reasoning logically follow from the graph observations? Are the proposed start/end indices tightly aligned with the evidence in the telemetry data and graphs? Are the labels appropriate?",
         "1. **Analyze:** Compare the proposal to the evidence. Look for inconsistencies, loose boundaries, or flawed logic.",
         "2. **Decide:** Output a single word: `pass` or `fail`.",
         "3. **Justify:** On a new line, provide a concise but detailed justification for your decision. If it fails, explain exactly what is wrong (e.g., 'The end_index is 50 points too late, as the graph shows the anomaly ends at index 1500,' or 'The reasoning ignores the braking data from step 2.').",
@@ -1408,6 +1454,7 @@ def evaluator_node(state: AnnotationState) -> dict:
             "final_sub_start": proposed_sub_start,
             "final_sub_end": proposed_sub_end,
             "final_labels": proposed_labels,
+            "final_label_annotations": proposed_label_annotations,
             "final_reasoning": proposed_reasoning,
             "messages": messages,
         }
@@ -1424,6 +1471,7 @@ def evaluator_node(state: AnnotationState) -> dict:
             "final_sub_start": proposed_sub_start,
             "final_sub_end": proposed_sub_end,
             "final_labels": proposed_labels,
+            "final_label_annotations": proposed_label_annotations,
             "final_reasoning": proposed_reasoning,
             "messages": messages,
         }
