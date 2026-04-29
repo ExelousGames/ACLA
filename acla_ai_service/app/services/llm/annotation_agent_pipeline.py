@@ -1052,10 +1052,12 @@ def proposal_synthesizer_node(state: AnnotationState) -> Dict[str, Any]:
         "You are a racing telemetry analyst assembling a sub-segment proposal.",
         "",
         "=== Task ===",
-        "Define exactly ONE sub-segment within the parent range "
+        "Define ONE sub-segment within the parent range "
         f"[{parent_start}, {parent_end}] "
-        f"(length: {parent_end - parent_start} data points).",
-        "Determine the precise start and end indices based on the evidence.",
+        f"(length: {parent_end - parent_start} data points). "
+        "The sub-segment may carry ONE OR MORE of the verified labels listed below — "
+        "include every label whose behaviour is clearly evidenced in the graphs, "
+        "each with its own precise start/end indices.",
         "",
         "=== Parent Segment ===",
         f"Main labels: {', '.join([LABEL_MAPPING.get(l, l) for l in parent_main_labels])}",
@@ -1072,8 +1074,9 @@ def proposal_synthesizer_node(state: AnnotationState) -> Dict[str, Any]:
         prompt_parts.extend([children_section, ""])
     prompt_parts.extend([
         "=== Instructions ===",
-        "Use ONLY the verified labels listed above (you may drop some if "
-        "the evidence does not support them).",
+        "Emit one JSON entry per verified label that the evidence supports. "
+        "If a verified label is not supported by the evidence, drop it. "
+        "Do NOT invent labels not in the verified list above.",
         "Each label may cover a different precise sub-range within "
         f"[{parent_start}, {parent_end}]. "
         "Determine separate start_index and end_index for every label based on where "
@@ -1082,12 +1085,19 @@ def proposal_synthesizer_node(state: AnnotationState) -> Dict[str, Any]:
         "For each label explain why those specific boundaries were chosen, "
         "referencing the graph observations from the step describers.",
         "",
-        "Respond in this JSON format ONLY:",
+        "Respond in this JSON format ONLY (this example shows TWO labels — "
+        "include as many entries as the evidence supports, from the verified list):",
         "```json",
         "{",
         '  "labels": [',
         '    {',
         '      "label_id": "LABEL_ID_1",',
+        f'      "start_index": <integer within [{parent_start}, {parent_end}]>,',
+        f'      "end_index": <integer within [{parent_start}, {parent_end}]>,',
+        '      "reasoning": "..."',
+        '    },',
+        '    {',
+        '      "label_id": "LABEL_ID_2",',
         f'      "start_index": <integer within [{parent_start}, {parent_end}]>,',
         f'      "end_index": <integer within [{parent_start}, {parent_end}]>,',
         '      "reasoning": "..."',
@@ -1103,14 +1113,11 @@ def proposal_synthesizer_node(state: AnnotationState) -> Dict[str, Any]:
     set_active_stage("proposal_synthesizer", "main")
     raw_response = _call_vlm(prompt, [])
     if not raw_response:
-        raw_response = json.dumps({
-            "labels": [{
-                "label_id": lid,
-                "start_index": parent_start,
-                "end_index": min(parent_start + 10, parent_end),
-                "reasoning": "Passthrough — VLM not available.",
-            } for lid in verified_labels[:1]] if verified_labels else [],
-        })
+        raise RuntimeError(
+            f"proposal_synthesizer: VLM returned empty response "
+            f"(parent=[{parent_start}, {parent_end}], "
+            f"verified_labels={verified_labels})"
+        )
 
     # 2. Run FULL evaluator suite (all 5 evaluators)
     suite_result: EvalPipelineResult = run_evaluator_suite(
