@@ -1,7 +1,7 @@
 """
 Multi-agent annotation pipeline using LangGraph.
 
-Implements a multi-step planner → executor → reasoner → synthesis pipeline
+Implements a multi-step planner → executor → describer → synthesis pipeline
 for automated telemetry sub-segment annotation.  Each step that produces
 LLM output runs a step-appropriate evaluator suite (see step_evaluator_agents.py)
 internally before writing to state.  This catches and corrects errors at the
@@ -16,11 +16,11 @@ replicating the visual evidence a human annotator would use.
 
 Graph flow (forward-only — no retry edge):
 
-    planner ──────────► steps_data_fetcher ──► step_reasoner ─┐
-    (eval: format,      (no LLM output,       (eval: format,  │ (repeat per
-     intent)             no evaluator)          intent,        │  plan step)
-                                                evidence)      │
-                        ┌──────────────────────────────────────┘
+    planner ──────────► steps_data_fetcher ──► step_describer ─┐
+    (eval: format,      (no LLM output,       (eval: format,   │ (repeat per
+     intent)             no evaluator)          intent,         │  plan step)
+                                                evidence)       │
+                        ┌───────────────────────────────────────┘
                         ▼
                 label_verifier          ← embedding similarity filter
                         │                 (eval: format, range, intent, consistency)
@@ -55,6 +55,10 @@ from app.models.graph_analysis_skill import get_graph_skill
 from app.services.llm.step_evaluator_agents import (
     run_evaluator_suite,
     set_eval_llm,
+    set_active_stage,
+    set_active_iteration,
+    get_active_stage,
+    _eval_llm_holder,
     EvalPipelineResult,
 )
 
@@ -106,7 +110,7 @@ class AnnotationState(TypedDict, total=False):
     messages: list
     # --- per-step evaluator feedback (for debugging) ---
     eval_feedback_planner: dict
-    eval_feedback_step_reasoner: dict
+    eval_feedback_step_describer: dict
     eval_feedback_synthesizer: dict
 
 
@@ -148,13 +152,11 @@ def _default_state() -> AnnotationState:
 
 
 # ---------------------------------------------------------------------------
-# LLM function holders (set per-run, avoids passing callables through state).
+# LLM dispatch — _eval_llm_holder (defined in step_evaluator_agents) is the
+# single source of truth for the VLM/LLM callables and the active stage.
 #   "vlm" – generate(prompt, images=None) → str   (vision + text)
 #   "llm" – generate(prompt) → str                (text-only, for routing)
 # ---------------------------------------------------------------------------
-
-_llm_holder: Dict[str, Optional[Callable]] = {"vlm": None, "llm": None}
-_llm_lock = threading.Lock()
 
 # ---------------------------------------------------------------------------
 # Embedding model singleton (lazy-loaded, shared across runs)
@@ -560,7 +562,8 @@ def planner_node(state: AnnotationState) -> dict:
     prompt = "\n".join(prompt_parts)
 
     # 1. Generate output (LLM call)
-    vlm_fn = _llm_holder.get("vlm")
+    set_active_stage("planner", "main")
+    vlm_fn = _eval_llm_holder.get("vlm")
     if vlm_fn:
         raw_plan = vlm_fn(prompt)
     else:
@@ -669,7 +672,7 @@ def _call_vlm(
     graph_image_bytes: List[bytes],
 ) -> str:
     """Dispatch a prompt to the VLM, optionally with graph images."""
-    vlm_fn = _llm_holder.get("vlm")
+    vlm_fn = _eval_llm_holder.get("vlm")
     if not vlm_fn:
         return ""
 
@@ -728,9 +731,13 @@ def _parse_json_response(raw: str) -> Optional[dict]:
 # --- Step solver ------------------------------------------------------------
 
 
-def step_reasoner_node(state: AnnotationState) -> Dict[str, Any]:
+def step_describer_node(state: AnnotationState) -> Dict[str, Any]:
     """
-    Reasons about the output of the current step's tool executions.
+    Produces a detailed prose description of the graphs and data gathered for
+    the current plan step.  This node only describes what is visible — it does
+    not interpret, diagnose, or assign labels.  Downstream nodes
+    (label_verifier, proposal_synthesizer) consume these descriptions to make
+    decisions.
     """
     messages = list(state.get("messages", []))
     plan_steps = state.get("plan_steps", [])
@@ -749,7 +756,7 @@ def step_reasoner_node(state: AnnotationState) -> Dict[str, Any]:
         f"detailed, precise description of the data and graphs provided.  "
         f"Write in flowing prose paragraphs — do NOT use numbered lists, "
         f"bullet points, or step-by-step formatting.  Do NOT diagnose problems, "
-        f"assign labels, or suggest what the observations mean.  Other nodes "
+        f"assign labels, or suggest what the observations mean.  Downstream nodes "
         f"in the pipeline will interpret your description — your job is to give "
         f"them accurate raw observations.\n\n"
         f"**Segment Context:**\n"
@@ -780,10 +787,24 @@ def step_reasoner_node(state: AnnotationState) -> Dict[str, Any]:
         "Your output should read as flowing prose — do NOT use numbered lists "
         "or bullet points.  Use exact index positions and numerical values "
         "wherever readable.\n\n"
+        "When both expert and player traces are visible, your description must "
+        "include direct comparisons stated as observations — for example, "
+        "\"the player's brake trace begins rising at index 55, ten indices "
+        "after the expert's at index 45\" or \"at the apex the player's line "
+        "passes farther from the inside than the expert's\".  These comparative "
+        "observations remain factual: state which trace is earlier/later/higher/"
+        "lower/closer/farther/wider/tighter/sharper/more gradual and by how much.  "
+        "When describing a trajectory in a corner segment, anchor each comparison "
+        "to whichever corner phase is visible (entry, apex, exit) and state it "
+        "relative to the expert dashed line.  Use the comparative phrasings "
+        "supplied in the graph skill above as templates — do NOT use diagnostic "
+        "verbs (\"should have\", \"failed to\", \"too late\", \"mistakenly\") and "
+        "do NOT mention labels.\n\n"
         "IMPORTANT: Do NOT interpret, diagnose, or suggest labels.  Do NOT say "
         "'this indicates a mistake' or 'this suggests the driver did X wrong'.  "
         "Only describe WHAT you see — shapes, values, positions, colours, "
-        "separations, sequences.  Downstream nodes will handle interpretation."
+        "separations, sequences, and direct expert-vs-player comparisons.  "
+        "Downstream nodes will handle interpretation."
     )
     content_for_vlm.append({"type": "text", "text": prompt})
 
@@ -792,13 +813,16 @@ def step_reasoner_node(state: AnnotationState) -> Dict[str, Any]:
         content_for_vlm.append({"type": "image_url", "image_url": {"url": f"data:image/png;base64,{base64.b64encode(image_bytes).decode()}"}})
 
     # 1. Generate output (VLM call with graph images)
+    # Stage first (resets iter/total on node change), then iteration.
+    set_active_stage("step_describer", "main")
+    set_active_iteration(current_step_index + 1, len(plan_steps))
     raw_response = _call_vlm(prompt, graph_images)
 
     # 2. Run evaluator suite for THIS step (includes evidence_evaluator)
     suite_result: EvalPipelineResult = run_evaluator_suite(
         original_prompt=prompt,
         step_output=raw_response,
-        step_name="step_reasoner",
+        step_name="step_describer",
         parent_start=parent_start,
         parent_end=parent_end,
         graph_images=state.get("all_graph_images", []) + graph_images,
@@ -820,7 +844,7 @@ def step_reasoner_node(state: AnnotationState) -> Dict[str, Any]:
             "graph_observations": evaluated_response,
             "graph_descriptions": graph_descriptions,
         }],
-        "eval_feedback_step_reasoner": suite_result.model_dump(),
+        "eval_feedback_step_describer": suite_result.model_dump(),
         "messages": messages,
     }
 
@@ -838,9 +862,9 @@ def step_router(state: AnnotationState) -> Literal["steps_data_fetcher", "label_
 
 
 def label_verifier_node(state: AnnotationState) -> Dict[str, Any]:
-    """Filter candidate labels by embedding similarity to step reasoner evidence.
+    """Filter candidate labels by embedding similarity to step describer evidence.
 
-    Embeds the concatenated step-reasoner observations as a query, embeds
+    Embeds the concatenated step-describer observations as a query, embeds
     each candidate label's name + description, then keeps only labels whose
     cosine similarity exceeds _SIMILARITY_THRESHOLD.  At least
     _MIN_FILTER_LABELS labels are always passed (highest scoring), and the
@@ -885,7 +909,7 @@ def label_verifier_node(state: AnnotationState) -> Dict[str, Any]:
             "messages": messages,
         }
 
-    # Build query from all step reasoner outputs
+    # Build query from all step describer outputs
     all_steps = state.get("step_results", [])
     evidence_parts: list[str] = [
         step["graph_observations"]
@@ -1056,7 +1080,7 @@ def proposal_synthesizer_node(state: AnnotationState) -> Dict[str, Any]:
         "that specific behaviour begins and ends in the graphs. "
         "start_index must be strictly less than end_index for each label.",
         "For each label explain why those specific boundaries were chosen, "
-        "referencing the graph observations from the step reasoners.",
+        "referencing the graph observations from the step describers.",
         "",
         "Respond in this JSON format ONLY:",
         "```json",
@@ -1076,6 +1100,7 @@ def proposal_synthesizer_node(state: AnnotationState) -> Dict[str, Any]:
     prompt = "\n".join(prompt_parts)
 
     # 1. Generate output (VLM call)
+    set_active_stage("proposal_synthesizer", "main")
     raw_response = _call_vlm(prompt, [])
     if not raw_response:
         raw_response = json.dumps({
@@ -1186,27 +1211,23 @@ def build_annotation_graph(
     Linear forward-only flow — no retry edge.  Each LLM-producing node
     runs its own evaluator suite internally before writing to state.
     """
-    with _llm_lock:
-        _llm_holder["vlm"] = vlm_llm
-        _llm_holder["llm"] = text_llm
-
-    # Also register LLMs for the evaluator agents
+    # Register LLMs (single shared holder lives in step_evaluator_agents)
     set_eval_llm(vlm_llm, text_llm)
 
     graph = StateGraph(AnnotationState)
 
     graph.add_node("planner", planner_node)
     graph.add_node("steps_data_fetcher", steps_data_fetcher_node)
-    graph.add_node("step_reasoner", step_reasoner_node)
+    graph.add_node("step_describer", step_describer_node)
     graph.add_node("label_verifier", label_verifier_node)
     graph.add_node("proposal_synthesizer", proposal_synthesizer_node)
     # No separate evaluator node — evaluation happens inside each node
 
     graph.set_entry_point("planner")
     graph.add_edge("planner", "steps_data_fetcher")
-    graph.add_edge("steps_data_fetcher", "step_reasoner")
+    graph.add_edge("steps_data_fetcher", "step_describer")
     graph.add_conditional_edges(
-        "step_reasoner",
+        "step_describer",
         step_router,
         {
             "steps_data_fetcher": "steps_data_fetcher",
@@ -1278,10 +1299,11 @@ def run_annotation_pipeline(
     progress_callback=None,
     vlm_stream_callback: Optional[Callable] = None,
     vlm_prompt_callback: Optional[Callable] = None,
+    vlm_reasoning_callback: Optional[Callable] = None,
 ) -> AnnotationResult:
     """Execute the forward-only annotation pipeline.
 
-    The pipeline runs: planner → steps_data_fetcher → step_reasoner (loop)
+    The pipeline runs: planner → steps_data_fetcher → step_describer (loop)
     → label_verifier → proposal_synthesizer → END.  Each LLM-producing
     node runs its own evaluator suite internally before writing to state,
     so there is no separate evaluator node or retry loop.
@@ -1338,13 +1360,14 @@ def run_annotation_pipeline(
     ) -> str:
         """Send prompt (with optional images) to the llama-cpp VLM."""
         if vlm_prompt_callback:
-            vlm_prompt_callback(prompt)
+            vlm_prompt_callback(prompt, get_active_stage())
         return vlm_service.generate(
             prompt,
             images=images,
             max_tokens=config.max_new_tokens,
             temperature=config.temperature,
             stream_callback=vlm_stream_callback,
+            reasoning_callback=vlm_reasoning_callback,
         )
 
     def llm_generate(prompt: str) -> str:
@@ -1384,10 +1407,10 @@ def run_annotation_pipeline(
                 elif node_name == "steps_data_fetcher":
                     n_graphs = len(final_state.get("current_step_graph_descriptions", []))
                     detail = f"Gathered {n_graphs} graph(s)"
-                elif node_name == "step_reasoner":
+                elif node_name == "step_describer":
                     idx = final_state.get("current_step_index", 0)
                     total = len(final_state.get("plan_steps", []))
-                    detail = f"Reasoned about step {idx}/{total}"
+                    detail = f"Described step {idx}/{total}"
                 elif node_name == "label_verifier":
                     verified = final_state.get("verified_labels", [])
                     detail = (
@@ -1406,10 +1429,7 @@ def run_annotation_pipeline(
                     )
                 progress_callback(node_name, detail)
 
-    # Clean up VLM/LLM holders
-    with _llm_lock:
-        _llm_holder["vlm"] = None
-        _llm_holder["llm"] = None
+    # Clean up VLM/LLM holder
     set_eval_llm(None, None)
 
     accepted = final_state.get("evaluation") == "pass"

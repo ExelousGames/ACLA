@@ -51,11 +51,23 @@ _MODELS_DIR = Path(__file__).resolve().parents[3] / "models"
 _CONVERT_SCRIPT = Path("/opt/llama.cpp/convert_hf_to_gguf.py")
 _QUANTIZE_BIN = Path("/opt/llama.cpp/build/bin/llama-quantize")
 
-# Well-known Qwen2.5-VL sizes (repo → short name)
-QWEN25_VL_MODELS = {
-    "Qwen/Qwen2.5-VL-32B-Instruct": "Qwen2.5-VL-32B",
-    "Qwen/Qwen2.5-VL-72B-Instruct": "Qwen2.5-VL-72B",
-    "Qwen/Qwen3-VL-30B-A3B-Thinking": "Qwen3-VL-30B-A3B-Thinking",
+# Well-known Qwen2.5-VL / Qwen3-VL specs (repo → {label, max_context, max_new_tokens})
+QWEN25_VL_MODELS: dict[str, dict] = {
+    "Qwen/Qwen2.5-VL-72B-Instruct": {
+        "label": "Qwen2.5-VL-72B",
+        "max_context": 131072,
+        "max_new_tokens": 8192,
+    },
+    "Qwen/Qwen3-VL-30B-A3B-Instruct": {
+        "label": "Qwen3-VL-30B-A3B-Instruct",
+        "max_context": 262144,
+        "max_new_tokens": 8192,
+    },
+    "Qwen/Qwen3-VL-30B-A3B-Thinking": {
+        "label": "Qwen3-VL-30B-A3B-Thinking",
+        "max_context": 262144,
+        "max_new_tokens": 32768,
+    },
 }
 
 
@@ -199,6 +211,7 @@ class AnnotationAgentLLMService:
         max_tokens: int = 1024,
         temperature: float = 0.7,
         stream_callback: Optional[Callable[[str], None]] = None,
+        reasoning_callback: Optional[Callable[[str], None]] = None,
     ) -> str:
         """Send a chat-completion request to the running llama-server.
 
@@ -215,13 +228,23 @@ class AnnotationAgentLLMService:
         temperature:
             Sampling temperature.
         stream_callback:
-            Optional callable invoked with each text chunk as it streams in.
-            When provided, the endpoint is called with ``stream=True`` (SSE).
+            Optional callable invoked with each text chunk of the final
+            answer (``delta.content``) as it streams in.  When provided, the
+            endpoint is called with ``stream=True`` (SSE).
+        reasoning_callback:
+            Optional callable invoked with each chain-of-thought chunk
+            (``delta.reasoning_content``) emitted by reasoning models such
+            as Qwen3-VL-Thinking.  Only meaningful when ``stream_callback``
+            is also provided.  If ``None`` and a reasoning stream is
+            received, the chunks are forwarded to ``stream_callback`` so
+            the user still sees output.
 
         Returns
         -------
         str
-            The assistant's reply text.
+            The assistant's final answer (``message.content``).  For
+            thinking models, the chain-of-thought is *not* included — it is
+            surfaced separately via ``reasoning_callback``.
         """
         if not self.is_running():
             raise RuntimeError("llama-server is not running — call start() first.")
@@ -245,7 +268,9 @@ class AnnotationAgentLLMService:
 
         try:
             if stream_callback is not None:
-                return self._generate_streaming(payload, stream_callback)
+                return self._generate_streaming(
+                    payload, stream_callback, reasoning_callback,
+                )
 
             resp = requests.post(
                 f"{self._base_url}/v1/chat/completions",
@@ -254,7 +279,17 @@ class AnnotationAgentLLMService:
             )
             resp.raise_for_status()
             data = resp.json()
-            return data["choices"][0]["message"]["content"].strip()
+            message = data["choices"][0]["message"]
+            answer = (message.get("content") or "").strip()
+            reasoning = (message.get("reasoning_content") or "").strip()
+            if not answer and reasoning:
+                LOGGER.warning(
+                    "llama-server returned only reasoning_content (%d chars) "
+                    "with empty content — the model likely hit max_tokens "
+                    "during its thinking phase.  Increase max_new_tokens.",
+                    len(reasoning),
+                )
+            return answer
         except requests.RequestException as exc:
             raise RuntimeError(f"llama-server chat completion failed: {exc}") from exc
 
@@ -262,10 +297,18 @@ class AnnotationAgentLLMService:
         self,
         payload: dict,
         stream_callback: Callable[[str], None],
+        reasoning_callback: Optional[Callable[[str], None]] = None,
     ) -> str:
-        """SSE-streaming variant of generate(); calls stream_callback per chunk."""
+        """SSE-streaming variant of generate().
+
+        Routes ``delta.content`` chunks to ``stream_callback`` and
+        ``delta.reasoning_content`` chunks (emitted by reasoning models) to
+        ``reasoning_callback`` if provided, otherwise to ``stream_callback``
+        so something is displayed.  Returns only the final answer text.
+        """
         payload = {**payload, "stream": True}
-        full_text = ""
+        answer_text = ""
+        reasoning_text = ""
         with requests.post(
             f"{self._base_url}/v1/chat/completions",
             json=payload,
@@ -284,13 +327,29 @@ class AnnotationAgentLLMService:
                     break
                 try:
                     chunk = json.loads(data_str)
-                    delta = chunk["choices"][0]["delta"].get("content", "")
-                    if delta:
-                        full_text += delta
-                        stream_callback(delta)
+                    delta = chunk["choices"][0].get("delta", {})
+                    answer_delta = delta.get("content") or ""
+                    reasoning_delta = delta.get("reasoning_content") or ""
+                    if answer_delta:
+                        answer_text += answer_delta
+                        stream_callback(answer_delta)
+                    if reasoning_delta:
+                        reasoning_text += reasoning_delta
+                        if reasoning_callback is not None:
+                            reasoning_callback(reasoning_delta)
+                        else:
+                            stream_callback(reasoning_delta)
                 except (json.JSONDecodeError, KeyError, IndexError):
                     pass
-        return full_text.strip()
+        if not answer_text and reasoning_text:
+            LOGGER.warning(
+                "llama-server stream returned only reasoning_content (%d "
+                "chars) with empty content — the model likely hit "
+                "max_tokens during its thinking phase.  Increase "
+                "max_new_tokens.",
+                len(reasoning_text),
+            )
+        return answer_text.strip()
 
     # -- internal helpers ---------------------------------------------------
 

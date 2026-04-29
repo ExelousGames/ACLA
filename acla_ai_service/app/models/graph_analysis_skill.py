@@ -6,7 +6,7 @@ each telemetry graph type.  The VLM's only job is to produce detailed, precise
 visual descriptions — it does NOT diagnose, label, or interpret.  Downstream
 pipeline nodes use these descriptions to make decisions.
 
-Used by the ``step_reasoner`` node to inject graph-specific description
+Used by the ``step_describer`` node to inject graph-specific description
 checklists into the VLM prompt when the current step includes graph images.
 
 Usage::

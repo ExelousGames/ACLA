@@ -19,7 +19,7 @@
 #   common_description_errors – VLM misreadings to avoid
 #
 # This file is loaded once by GraphAnalysisSkill (graph_analysis_skill.py).
-# The step_reasoner node injects the relevant entries into the VLM prompt
+# The step_describer node injects the relevant entries into the VLM prompt
 # when the current step includes graph images.
 # =============================================================================
 
@@ -61,6 +61,11 @@ graphs:
       release_rate: "Sharp (drops to zero within ~5 indices), gradual (>10 indices), stepped (drops in stages)"
       hesitation: "A temporary dip or fluctuation in the trace before it returns to its prior level"
       overlap_region: "Index range where both the throttle and brake traces are simultaneously above zero"
+    comparative_vocabulary:
+      - "The player's throttle trace begins rising at index 80, eight indices later than the expert's at index 72."
+      - "The player's peak throttle (0.78) is lower than the expert's (1.00)."
+      - "The player applies throttle more gradually than the expert, taking 14 indices to reach peak versus the expert's 6."
+      - "The player releases the throttle earlier than the expert, lifting at index 110 versus the expert's index 118."
     common_description_errors:
       - "Do NOT confuse the expert line with the player line — always verify against the legend before describing"
       - "Do NOT describe a difference in a braking zone as a throttle difference — only describe throttle behaviour where throttle is actually applied"
@@ -99,6 +104,13 @@ graphs:
       release_rate: "Sharp (to zero within ~5 indices), gradual trail-brake (>10 indices), stepped"
       braking_duration: "Count of indices from initiation to full release (trace returns to ~0)"
       trail_braking: "A phase where brake pressure decreases gradually rather than releasing abruptly"
+    comparative_vocabulary:
+      - "The player's brake trace begins rising at index 55, ten indices later than the expert's at index 45."
+      - "The player's peak brake pressure (0.62) is lower than the expert's (0.85)."
+      - "The player applies the brake more gradually than the expert, taking 8 indices to reach peak versus the expert's 3."
+      - "The player releases the brake more gradually than the expert, taking 12 indices to reach zero versus the expert's 4."
+      - "The player's total braking duration (24 indices) is longer than the expert's (18 indices)."
+      - "The player applies throttle and brake simultaneously between indices 70 and 78."
     common_description_errors:
       - "Do NOT confuse brake release (trace returning to zero) with brake reduction (trace decreasing but not to zero, i.e. trail braking) — describe what the trace actually does"
       - "Do NOT omit the expert comparison — always describe BOTH traces, not just the player"
@@ -138,6 +150,9 @@ graphs:
       net_change: "Ending value minus starting value"
       steep: "A change of >0.1 seconds over a short span (~20 indices)"
       gradual: "A slow, steady change over many indices"
+    comparative_vocabulary:
+      - "The player loses 320 ms to the expert across the segment (gap rises from 0 ms to 320 ms)."
+      - "The player gains 80 ms back on the expert between indices 60 and 110."
     common_description_errors:
       - "Do NOT ignore the SCALE of the y-axis — a 0.01s change is negligible, a 0.5s change is large.  Always read and report the actual values."
       - "Do NOT describe every micro-fluctuation as a trend change — only report clear, sustained directional changes"
@@ -173,6 +188,9 @@ graphs:
       zero_crossing: "Index where the line crosses from positive to negative or vice versa"
       sustained_gap: "A section where the absolute difference stays above a threshold for many indices"
       peak_difference: "The largest absolute value of the speed difference in the segment"
+    comparative_vocabulary:
+      - "The expert is faster than the player by up to 28 km/h around index 75."
+      - "The player is faster than the expert by 6 km/h between indices 110 and 130."
     common_description_errors:
       - "Do NOT read the sign backwards — positive = expert faster, not player faster"
       - "Do NOT describe brief single-index spikes as sustained differences — report their duration"
@@ -211,6 +229,11 @@ graphs:
       acceleration_onset: "The index where speed starts increasing after the minimum"
       flat_spot: "A section where speed holds approximately constant for several indices"
       speed_step: "A sudden small jump or drop in speed (possibly a gear shift)"
+    comparative_vocabulary:
+      - "The player's entry speed (172 km/h) is lower than the expert's (188 km/h)."
+      - "The player's minimum speed (78 km/h at index 92) is lower than the expert's (95 km/h at index 88)."
+      - "The player's exit speed (134 km/h) is lower than the expert's (152 km/h)."
+      - "The player begins decelerating at index 60, four indices later than the expert at index 56."
     common_description_errors:
       - "Do NOT compare values from different phases — report entry vs entry, minimum vs minimum, exit vs exit"
       - "Do NOT confuse the two traces — always verify which line is which from the legend"

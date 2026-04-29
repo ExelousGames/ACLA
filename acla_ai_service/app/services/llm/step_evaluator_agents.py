@@ -36,7 +36,14 @@ LOGGER = logging.getLogger(__name__)
 # LLM function holder — shared with annotation_agent_pipeline
 # ---------------------------------------------------------------------------
 
-_eval_llm_holder: Dict[str, Optional[Callable]] = {"vlm": None, "llm": None}
+_eval_llm_holder: Dict[str, Any] = {
+    "vlm": None,
+    "llm": None,
+    "stage_node": "",
+    "stage_phase": "",
+    "stage_iter": None,
+    "stage_total": None,
+}
 _eval_llm_lock = threading.Lock()
 
 
@@ -45,6 +52,40 @@ def set_eval_llm(vlm: Optional[Callable], llm: Optional[Callable]) -> None:
     with _eval_llm_lock:
         _eval_llm_holder["vlm"] = vlm
         _eval_llm_holder["llm"] = llm
+
+
+def set_active_stage(node_name: str, phase: str) -> None:
+    """Record which (node, phase) is about to make a VLM call.
+
+    Read by the pipeline's vlm_generate wrapper to tag prompt-callback
+    events with the correct source.  Iteration counter is reset when
+    the node changes, and preserved otherwise so evaluator phases
+    inherit the iteration set by the pipeline node.
+    """
+    with _eval_llm_lock:
+        if node_name != _eval_llm_holder["stage_node"]:
+            _eval_llm_holder["stage_iter"] = None
+            _eval_llm_holder["stage_total"] = None
+        _eval_llm_holder["stage_node"] = node_name
+        _eval_llm_holder["stage_phase"] = phase
+
+
+def set_active_iteration(iteration: Optional[int], total: Optional[int]) -> None:
+    """Set the iteration tag for the current node (e.g. step_describer k/N)."""
+    with _eval_llm_lock:
+        _eval_llm_holder["stage_iter"] = iteration
+        _eval_llm_holder["stage_total"] = total
+
+
+def get_active_stage() -> Dict[str, Any]:
+    """Snapshot the current stage tags for callback dispatch."""
+    with _eval_llm_lock:
+        return {
+            "node_name": _eval_llm_holder["stage_node"],
+            "phase": _eval_llm_holder["stage_phase"],
+            "iteration": _eval_llm_holder["stage_iter"],
+            "total": _eval_llm_holder["stage_total"],
+        }
 
 
 def _call_eval_vlm(
@@ -658,7 +699,7 @@ STEP_EVALUATOR_PROFILES: Dict[str, List[str]] = {
         "format_evaluator",
         "intent_evaluator",
     ],
-    "step_reasoner": [
+    "step_describer": [
         "format_evaluator",
         "intent_evaluator",
         "evidence_evaluator",
@@ -814,7 +855,7 @@ def run_evaluator_suite(
         original_prompt: The prompt that was sent to the LLM for this step.
         step_output: The raw LLM output to evaluate.
         step_name: The pipeline step that produced this output
-                   (e.g., "planner", "step_reasoner", "proposal_synthesizer").
+                   (e.g., "planner", "step_describer", "proposal_synthesizer").
                    Used to select the appropriate evaluator subset from
                    STEP_EVALUATOR_PROFILES.
         parent_start: Parent segment start index.
@@ -871,6 +912,9 @@ def run_evaluator_suite(
         if evaluator_name == "evidence_evaluator":
             kwargs["graph_images"] = graph_images
 
+        # Tag every VLM call this evaluator makes with (step, evaluator)
+        # so the live UI can label its "Live VLM Output" sections correctly.
+        set_active_stage(step_name, evaluator_name)
         eval_result: EvalResult = runner(**kwargs)
         all_eval_results.append(eval_result)
         total_edits += eval_result.edit_count
