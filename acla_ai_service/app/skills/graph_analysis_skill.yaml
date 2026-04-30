@@ -55,12 +55,11 @@ graphs:
       expert's shape or differs fundamentally.
     description_vocabulary:
       application_point: "The index where the trace first rises above ~0.05 from zero"
-      ramp_rate: "Steep (reaches peak within ~5 indices), moderate (~5–15 indices), gradual (>15 indices)"
+      ramp_rate: "Described relative to the expert's ramp — steeper than expert, similar to expert, or more gradual than expert (compare the indices each takes from zero to peak)"
       peak_value: "The highest y-value the trace reaches, read from the y-axis"
       release_point: "The index where the trace begins falling from its plateau"
-      release_rate: "Sharp (drops to zero within ~5 indices), gradual (>10 indices), stepped (drops in stages)"
+      release_rate: "Described relative to the expert's release — sharper than expert, similar to expert, or more gradual than expert; note 'stepped' if the drop happens in stages rather than a single motion"
       hesitation: "A temporary dip or fluctuation in the trace before it returns to its prior level"
-      overlap_region: "Index range where both the throttle and brake traces are simultaneously above zero"
     comparative_vocabulary:
       - "The player's throttle trace begins rising at index 80, eight indices later than the expert's at index 72."
       - "The player's peak throttle (0.78) is lower than the expert's (1.00)."
@@ -101,7 +100,7 @@ graphs:
       initiation_index: "The index where the trace first rises above ~0.05"
       peak_pressure: "The highest y-value reached, read from the y-axis"
       release_onset: "The index where the trace begins decreasing from its peak or plateau"
-      release_rate: "Sharp (to zero within ~5 indices), gradual trail-brake (>10 indices), stepped"
+      release_rate: "Described relative to the expert's release — sharper than expert, similar to expert, or more gradual than expert; flag as trail-brake if pressure decreases gradually rather than abruptly, or stepped if it drops in stages"
       braking_duration: "Count of indices from initiation to full release (trace returns to ~0)"
       trail_braking: "A phase where brake pressure decreases gradually rather than releasing abruptly"
     comparative_vocabulary:

@@ -17,15 +17,14 @@ replicating the visual evidence a human annotator would use.
 Graph flow (forward-only — no retry edge):
 
     planner ──────────► steps_data_fetcher ──► step_describer ─┐
-    (eval: format,      (no LLM output,       (eval: format,   │ (repeat per
-     intent)             no evaluator)          intent,         │  plan step)
-                                                evidence)       │
+    (eval: format)      (no LLM output,       (eval: format,   │ (repeat per
+                         no evaluator)          evidence)       │  plan step)
                         ┌───────────────────────────────────────┘
                         ▼
                 label_verifier          ← embedding similarity filter
-                        │                 (eval: format, range, intent, consistency)
+                        │                 (eval: format, range, consistency)
                 proposal_synthesizer    ← VLM determines precise boundaries
-                        │                 (eval: ALL FIVE)
+                        │                 (eval: ALL FOUR)
                        END
 
     Every LLM-producing node calls run_evaluator_suite() internally
@@ -41,10 +40,9 @@ import logging
 import operator
 import threading
 from dataclasses import dataclass, field
-from typing import Any, Annotated, Callable, Dict, List, Literal, Optional, Sequence, TypedDict
+from typing import Any, Annotated, Callable, Dict, List, Literal, Optional, TypedDict
 
 from langgraph.graph import StateGraph, END
-from PIL import Image
 
 from app.models.segment_models import (
     LABEL_MAPPING,
@@ -60,6 +58,11 @@ from app.services.llm.step_evaluator_agents import (
     get_active_stage,
     _eval_llm_holder,
     EvalPipelineResult,
+    PipelineAttachment,
+    AttachmentPool,
+    merge_pool,
+    pool_get_many,
+    render_inputs_for_prompt,
 )
 
 LOGGER = logging.getLogger(__name__)
@@ -86,32 +89,24 @@ class AnnotationState(TypedDict, total=False):
     step_results: Annotated[list, operator.add]
     all_graph_images: list
     all_graph_descriptions: list
-    # --- Per-step transient state ---
-    current_step_statistics_text: str
-    current_step_graph_images: list
-    current_step_graph_descriptions: list
+    # --- named attachment pool — see step_evaluator_agents.PipelineAttachment ---
+    # Each pipeline agent declares which attachments it consumes / produces by
+    # name.  The pool is keyed by stable namespaced names like
+    # ``"init.parent_segment"``, ``"steps_data_fetcher.3.graph_images"``,
+    # ``"step_describer.3.observations"``.  Evaluators see ONLY the parent
+    # agent's input set, never the whole pool.
+    attachment_pool: Annotated[Dict[str, PipelineAttachment], merge_pool]
     # --- label filtering state ---
     verified_labels: list        # label IDs that passed the embedding similarity filter
     verified_label_reasoning: dict  # {label_id: "Similarity <score> — <label text>"}
     # --- agent state ---
-    proposed_sub_start: int      # VLM-proposed sub-segment start index
-    proposed_sub_end: int        # VLM-proposed sub-segment end index
-    proposed_labels: list
-    proposed_label_annotations: list  # [{label_id, start_index, end_index, reasoning}]
-    proposed_reasoning: str
-    raw_step_solver_response: str  # raw VLM output from step solver
     evaluation: str              # final verdict from evaluator suite ("pass"/"fail")
-    evaluation_feedback: str     # aggregated evaluator feedback
     final_labels: list
     final_label_annotations: list  # [{label_id, start_index, end_index, reasoning}]
     final_reasoning: str
     final_sub_start: int
     final_sub_end: int
     messages: list
-    # --- per-step evaluator feedback (for debugging) ---
-    eval_feedback_planner: dict
-    eval_feedback_step_describer: dict
-    eval_feedback_synthesizer: dict
 
 
 def _default_state() -> AnnotationState:
@@ -129,19 +124,10 @@ def _default_state() -> AnnotationState:
         "step_results": [],
         "all_graph_images": [],
         "all_graph_descriptions": [],
-        "current_step_statistics_text": "",
-        "current_step_graph_images": [],
-        "current_step_graph_descriptions": [],
+        "attachment_pool": {},
         "verified_labels": [],
         "verified_label_reasoning": {},
-        "proposed_sub_start": 0,
-        "proposed_sub_end": 0,
-        "proposed_labels": [],
-        "proposed_label_annotations": [],
-        "proposed_reasoning": "",
-        "raw_step_solver_response": "",
         "evaluation": "",
-        "evaluation_feedback": "",
         "final_labels": [],
         "final_label_annotations": [],
         "final_reasoning": "",
@@ -197,144 +183,6 @@ def _cosine_sim(a, b) -> float:
 # ---------------------------------------------------------------------------
 # Prompt builders
 # ---------------------------------------------------------------------------
-
-
-def _build_label_context(current_labels: List[str]) -> str:
-    """Build a structured description of available labels and guidelines."""
-    lines: list[str] = []
-
-    # Current labels
-    if current_labels:
-        readable = [LABEL_MAPPING.get(l, l) for l in current_labels]
-        lines.append(f"Currently assigned labels: {', '.join(readable)}")
-    else:
-        lines.append("No labels currently assigned.")
-
-    lines.append("")
-
-    # Available labels (names + IDs only)
-    lines.append("=== Available Labels ===")
-    for lid in LABEL_MAPPING:
-        display = LABEL_MAPPING[lid]
-        lines.append(f"- {display} ({lid})")
-
-    return "\n".join(lines)
-
-
-def _build_subsegment_context(
-    parent_main_labels: List[str],
-    existing_children: List[dict],
-    parent_start: int,
-    parent_end: int,
-    catalog: Optional[LabelCatalog] = None,
-) -> str:
-    """Build rich context for the **step solver**.
-
-    Combines in one pass:
-    - Parent Main Labels as hints
-    - Sub-labels from those parent categories (YAML-backed descriptions)
-    - ALL segment types (ST1-ST6)
-    - Circuit section labels from parent's circuit category
-    - Existing child sub-segments (for duplicate avoidance)
-    """
-    cat = catalog or get_label_catalog()
-    lines: list[str] = []
-
-    # Parent context
-    if parent_main_labels:
-        readable = [LABEL_MAPPING.get(l, l) for l in parent_main_labels]
-        lines.append(f"=== Parent Segment (hints) ===")
-        lines.append(f"Main labels: {', '.join(readable)} (IDs: {json.dumps(parent_main_labels)})")
-        lines.append(f"Range: [{parent_start}, {parent_end}] (length: {parent_end - parent_start} data points)")
-    lines.append("")
-
-    # Existing children (duplicate avoidance)
-    if existing_children:
-        lines.append("=== Already Discovered Sub-Segments ===")
-        lines.append("Do NOT re-propose a sub-segment that overlaps significantly with these:")
-        for child in existing_children:
-            child_labels = [LABEL_MAPPING.get(l, l) for l in child.get("labels", [])]
-            lines.append(
-                f"- Range [{child['start_index']}, {child['end_index']}] "
-                f"(length: {child['end_index'] - child['start_index']}): "
-                f"{', '.join(child_labels)}"
-            )
-        lines.append("Find a DIFFERENT notable region within the parent range.")
-        lines.append("")
-
-    # Sub-labels from parent categories
-    parents_with_subs = [pid for pid in parent_main_labels if LABEL_CATEGORIES.get(pid)]
-    if parents_with_subs:
-        for pid in parents_with_subs:
-            parent_entry = cat.get_label(pid)
-            parent_name = parent_entry.name if parent_entry else LABEL_MAPPING.get(pid, pid)
-            subs = cat.get_sublabels(pid)
-            if not subs:
-                continue
-            lines.append(f"=== Sub-Labels for {parent_name} ({pid}) ===")
-            for entry in subs:
-                lines.append(f"- {entry.name} ({entry.id}): {entry.description}")
-            lines.append("")
-
-    # Segment types (always available)
-    lines.append("=== Segment Type (pick one) ===")
-    for entry in cat.get_segment_types():
-        lines.append(f"- {entry.name} ({entry.id}): {entry.description}")
-    lines.append("")
-
-    # Circuit section labels (from parent's circuit category)
-    circuit_parents = [pid for pid in parent_main_labels if pid in ("brands_hatch", "silverstone")]
-    for cpid in circuit_parents:
-        subs = cat.get_sublabels(cpid)
-        if subs:
-            parent_name = LABEL_MAPPING.get(cpid, cpid)
-            lines.append(f"=== Circuit Sections for {parent_name} ({cpid}) ===")
-            for entry in subs:
-                lines.append(f"- {entry.name} ({entry.id}): {entry.description}")
-            lines.append("")
-
-    return "\n".join(lines)
-
-
-def _build_sublabel_context(
-    parent_ids: List[str],
-    current_labels: List[str],
-    catalog: Optional[LabelCatalog] = None,
-) -> str:
-    """Build rich context for the **sub-label solver** (phase 2).
-
-    Only includes sub-labels for the *chosen* parent categories so the
-    search space stays small.
-    """
-    cat = catalog or get_label_catalog()
-    lines: list[str] = []
-
-    # Context: what was already decided
-    if current_labels:
-        readable = [LABEL_MAPPING.get(l, l) for l in current_labels]
-        lines.append(f"Currently assigned labels: {', '.join(readable)}")
-    lines.append("")
-
-    parents_with_subs = [pid for pid in parent_ids if LABEL_CATEGORIES.get(pid)]
-
-    if not parents_with_subs:
-        lines.append("No parent labels have sub-labels. Nothing to refine.")
-        return "\n".join(lines)
-
-    lines.append("")
-
-    for pid in parents_with_subs:
-        parent_entry = cat.get_label(pid)
-        parent_name = parent_entry.name if parent_entry else LABEL_MAPPING.get(pid, pid)
-        subs = cat.get_sublabels(pid)
-        if not subs:
-            continue
-        lines.append(f"=== Sub-Labels for {parent_name} ({pid}) ===")
-        for entry in subs:
-            lines.append(f"- {entry.name} ({entry.id}): {entry.description}")
-        lines.append("")
-
-    return "\n".join(lines)
 
 
 def _validate_and_fix_hierarchy(
@@ -454,8 +302,61 @@ def _parse_planner_steps(plan_text: str, available_tools: list) -> list:
 
 
 # ---------------------------------------------------------------------------
+# Attachment naming convention (namespaced)
+# ---------------------------------------------------------------------------
+#
+#   init.parent_segment
+#   planner.plan
+#   steps_data_fetcher.{k}.graph_images
+#   steps_data_fetcher.{k}.graph_descriptions
+#   step_describer.{k}.observations
+#   label_verifier.verified_labels
+#   proposal_synthesizer.proposal
+#
+# where {k} is the 1-based step index from the planner's plan_steps.
+
+
+# ---------------------------------------------------------------------------
 # Agent node functions
 # ---------------------------------------------------------------------------
+
+
+def init_producer_node(state: AnnotationState) -> Dict[str, Any]:
+    """Seed the attachment pool with the parent_segment attachment.
+
+    This is the explicit init producer — it converts raw run inputs
+    (parent_start, parent_end, parent_main_labels, existing_children) into
+    the first named attachment in the pool, which downstream agents may
+    declare as a ``consumes`` dependency.
+    """
+    parent_main_labels = state.get("parent_main_labels", [])
+    existing_children = state.get("existing_children", [])
+    parent_start = state.get("parent_start", 0)
+    parent_end = state.get("parent_end", 0)
+
+    parent_segment = PipelineAttachment(
+        name="init.parent_segment",
+        kind="structured",
+        content_schema="parent_segment",
+        label="Parent Segment",
+        content={
+            "parent_start": parent_start,
+            "parent_end": parent_end,
+            "main_labels": [LABEL_MAPPING.get(l, l) for l in parent_main_labels],
+            "existing_children": [
+                {
+                    "start_index": child.get("start_index"),
+                    "end_index": child.get("end_index"),
+                    "labels": [LABEL_MAPPING.get(l, l) for l in child.get("labels", [])],
+                }
+                for child in existing_children
+            ],
+        },
+    )
+
+    return {
+        "attachment_pool": {parent_segment.name: parent_segment},
+    }
 
 
 def planner_node(state: AnnotationState) -> dict:
@@ -465,7 +366,7 @@ def planner_node(state: AnnotationState) -> dict:
     existing children to decide *which statistics and graphs* are needed
     to find a new sub-segment within the parent range.
 
-    Runs evaluator suite (format, intent) on its own output before
+    Runs evaluator suite (format) on its own output before
     writing to state.
     """
     from .annotation_agent_tools import AGENT_GRAPH_DEFINITIONS
@@ -561,6 +462,11 @@ def planner_node(state: AnnotationState) -> dict:
 
     prompt = "\n".join(prompt_parts)
 
+    # planner consumes nothing from the pool — it works from raw run inputs
+    # (parent_main_labels, existing_children, parent bounds) which are part
+    # of the run's scaffolding, not produced by another agent.
+    parent_inputs: List[PipelineAttachment] = []
+
     # 1. Generate output (LLM call)
     set_active_stage("planner", "main")
     vlm_fn = _eval_llm_holder.get("vlm")
@@ -570,21 +476,28 @@ def planner_node(state: AnnotationState) -> dict:
         raw_plan = "[VLM not available — using passthrough plan] " \
                    "Examine all telemetry features and propose the most fitting labels."
 
-    # 2. Run evaluator suite for THIS step
+    # 2. Run evaluator suite — evaluators see only what the planner saw.
     suite_result: EvalPipelineResult = run_evaluator_suite(
-        original_prompt=prompt,
-        step_output=raw_plan,
+        parent_prompt=prompt,
+        parent_output_text=raw_plan,
+        parent_inputs=parent_inputs,
         step_name="planner",
         parent_start=parent_start,
         parent_end=parent_end,
-        label_mapping=LABEL_MAPPING,
     )
 
-    # 3. Use the evaluated (possibly corrected) result
     evaluated_plan = suite_result.final_result
 
     # Parse structured tool requests from evaluated planner output
     parsed_steps = _parse_planner_steps(evaluated_plan, [])
+
+    # 3. Emit the named output attachment.
+    plan_attachment = PipelineAttachment(
+        name="planner.plan",
+        kind="text",
+        label="Planner Plan",
+        content=evaluated_plan,
+    )
 
     msg = {"role": "planner", "content": evaluated_plan}
     messages = list(state.get("messages", []))
@@ -597,7 +510,7 @@ def planner_node(state: AnnotationState) -> dict:
         "step_results": [],
         "all_graph_images": [],
         "all_graph_descriptions": [],
-        "eval_feedback_planner": suite_result.model_dump(),
+        "attachment_pool": {plan_attachment.name: plan_attachment},
         "messages": messages,
     }
 
@@ -609,7 +522,13 @@ def planner_node(state: AnnotationState) -> dict:
 
 def steps_data_fetcher_node(state: AnnotationState) -> Dict[str, Any]:
     """
-    Executes the tools (statistics, graphs) requested for the current step in the plan.
+    Executes the tools (statistics, graphs) requested for the current step
+    in the plan and emits two named attachments per step:
+        steps_data_fetcher.{k}.graph_images        (image_set)
+        steps_data_fetcher.{k}.graph_descriptions  (structured)
+
+    Where ``k`` is the 1-based step_id of the current plan step.  This node
+    is not an LLM agent — it has no evaluators.
     """
     from .annotation_agent_tools import generate_telemetry_graphs
     messages = list(state.get("messages", []))
@@ -621,20 +540,16 @@ def steps_data_fetcher_node(state: AnnotationState) -> Dict[str, Any]:
 
     if not plan_steps or current_step_index >= len(plan_steps):
         LOGGER.warning("Step executor called with no steps or invalid index. Skipping.")
-        return {
-            "current_step_statistics_text": "",
-            "current_step_graph_images": [],
-            "current_step_graph_descriptions": [],
-        }
+        return {}
 
     step = plan_steps[current_step_index]
+    step_id = step.get("step_id", current_step_index + 1)
     requested_graphs = step.get("requested_graphs", [])
     LOGGER.info(f"Executing step {current_step_index + 1}/{len(plan_steps)}: {step.get('description')}")
     LOGGER.info(f"  - Requested graphs: {requested_graphs}")
 
-    stats_text = ""
-    image_bytes_list = []
-    desc_list = []
+    image_bytes_list: List[bytes] = []
+    desc_list: List[str] = []
     if requested_graphs:
         graph_results = generate_telemetry_graphs(
             df, start, end,
@@ -646,23 +561,35 @@ def steps_data_fetcher_node(state: AnnotationState) -> Dict[str, Any]:
             img.save(buf, format="PNG")
             image_bytes_list.append(buf.getvalue())
 
-
-    # Create a tool message for logging/debugging
-    tool_outputs = []
     if image_bytes_list:
-        # For logging, just note that images were generated
         content = f"Generated {len(image_bytes_list)} graphs: {', '.join(desc_list)}"
-        tool_outputs.append({"tool_name": "generate_telemetry_graphs", "content": content})
+        messages.append({
+            "role": "tool",
+            "content": [{"tool_name": "generate_telemetry_graphs", "content": content}],
+        })
 
-    if tool_outputs:
-        messages.append({"role": "tool", "content": tool_outputs})
+    # Emit named attachments for this step into the pool.
+    images_att = PipelineAttachment(
+        name=f"steps_data_fetcher.{step_id}.graph_images",
+        kind="image_set",
+        label=f"Step {step_id} — Graph Images",
+        content=image_bytes_list,
+    )
+    descs_att = PipelineAttachment(
+        name=f"steps_data_fetcher.{step_id}.graph_descriptions",
+        kind="structured",
+        content_schema="graph_descriptions",
+        label=f"Step {step_id} — Graph Descriptions",
+        content=desc_list,
+    )
 
     return {
-        "current_step_statistics_text": stats_text,
-        "current_step_graph_images": image_bytes_list,
-        "current_step_graph_descriptions": desc_list,
         "all_graph_images": state.get("all_graph_images", []) + image_bytes_list,
         "all_graph_descriptions": state.get("all_graph_descriptions", []) + desc_list,
+        "attachment_pool": {
+            images_att.name: images_att,
+            descs_att.name: descs_att,
+        },
         "messages": messages,
     }
 
@@ -738,18 +665,36 @@ def step_describer_node(state: AnnotationState) -> Dict[str, Any]:
     not interpret, diagnose, or assign labels.  Downstream nodes
     (label_verifier, proposal_synthesizer) consume these descriptions to make
     decisions.
+
+    Consumes from the pool:
+        - init.parent_segment
+        - steps_data_fetcher.{k}.graph_images
+        - steps_data_fetcher.{k}.graph_descriptions
+    Produces:
+        - step_describer.{k}.observations
     """
     messages = list(state.get("messages", []))
     plan_steps = state.get("plan_steps", [])
     current_step_index = state.get("current_step_index", 0)
     step = plan_steps[current_step_index]
-    parent_main_labels = state.get("parent_main_labels", [])
+    step_id = step.get("step_id", current_step_index + 1)
     parent_start = state.get("parent_start", 0)
     parent_end = state.get("parent_end", 0)
 
-    stats_text = state.get("current_step_statistics_text", "")
-    graph_descriptions = state.get("current_step_graph_descriptions", [])
-    graph_images = state.get("current_step_graph_images", [])
+    # Declare and fetch named attachments from the pool.
+    pool: AttachmentPool = state.get("attachment_pool", {})
+    consumes = [
+        "init.parent_segment",
+        f"steps_data_fetcher.{step_id}.graph_images",
+        f"steps_data_fetcher.{step_id}.graph_descriptions",
+    ]
+    parent_inputs = pool_get_many(pool, consumes)
+
+    # Pull the concrete pieces this node needs from its own input set.
+    images_atts = [a for a in parent_inputs if a.name == f"steps_data_fetcher.{step_id}.graph_images"]
+    descs_atts = [a for a in parent_inputs if a.name == f"steps_data_fetcher.{step_id}.graph_descriptions"]
+    graph_images: List[bytes] = images_atts[0].content if images_atts else []
+    graph_descriptions: List[str] = descs_atts[0].content if descs_atts else []
 
     prompt = (
         f"You are a telemetry graph describer.  Your ONLY job is to produce a "
@@ -764,8 +709,6 @@ def step_describer_node(state: AnnotationState) -> Dict[str, Any]:
         f"**Analysis Goal: {step['description']}**\n\n"
         f"**Tool Outputs:**\n"
     )
-
-    content_for_vlm = []
 
     if graph_descriptions:
         prompt += f"- Generated Graphs:\n" + "\n".join([f"  - {desc}" for desc in graph_descriptions]) + "\n"
@@ -806,11 +749,6 @@ def step_describer_node(state: AnnotationState) -> Dict[str, Any]:
         "separations, sequences, and direct expert-vs-player comparisons.  "
         "Downstream nodes will handle interpretation."
     )
-    content_for_vlm.append({"type": "text", "text": prompt})
-
-    for image_bytes in graph_images:
-        import base64
-        content_for_vlm.append({"type": "image_url", "image_url": {"url": f"data:image/png;base64,{base64.b64encode(image_bytes).decode()}"}})
 
     # 1. Generate output (VLM call with graph images)
     # Stage first (resets iter/total on node change), then iteration.
@@ -818,33 +756,47 @@ def step_describer_node(state: AnnotationState) -> Dict[str, Any]:
     set_active_iteration(current_step_index + 1, len(plan_steps))
     raw_response = _call_vlm(prompt, graph_images)
 
-    # 2. Run evaluator suite for THIS step (includes evidence_evaluator)
+    # 2. Run evaluator suite — evaluators see only this step's parent_inputs,
+    # which includes the same image_set attachment the describer consumed,
+    # so evidence_evaluator can check claims against the actual graphs.
     suite_result: EvalPipelineResult = run_evaluator_suite(
-        original_prompt=prompt,
-        step_output=raw_response,
+        parent_prompt=prompt,
+        parent_output_text=raw_response,
+        parent_inputs=parent_inputs,
         step_name="step_describer",
         parent_start=parent_start,
         parent_end=parent_end,
-        graph_images=state.get("all_graph_images", []) + graph_images,
-        label_mapping=LABEL_MAPPING,
     )
 
-    # 3. Use the evaluated (possibly corrected) result
     evaluated_response = suite_result.final_result
     messages.append({"role": "assistant", "content": evaluated_response})
 
-    # Increment index for the next step
     next_step_index = current_step_index + 1
+
+    # 3. Emit the named output attachment (step observations) into the pool.
+    obs_attachment = PipelineAttachment(
+        name=f"step_describer.{step_id}.observations",
+        kind="structured",
+        content_schema="step_observation",
+        label=f"Step {step_id} — {step['description']}",
+        content={
+            "step_id": step_id,
+            "description": step["description"],
+            "requested_graphs": step.get("requested_graphs", []),
+            "graph_descriptions": graph_descriptions,
+            "graph_observations": evaluated_response,
+        },
+    )
 
     return {
         "current_step_index": next_step_index,
         "step_results": [{
-            "step_id": step["step_id"],
+            "step_id": step_id,
             "description": step["description"],
             "graph_observations": evaluated_response,
             "graph_descriptions": graph_descriptions,
         }],
-        "eval_feedback_step_describer": suite_result.model_dump(),
+        "attachment_pool": {obs_attachment.name: obs_attachment},
         "messages": messages,
     }
 
@@ -871,9 +823,13 @@ def label_verifier_node(state: AnnotationState) -> Dict[str, Any]:
     result is capped at _MAX_FILTER_LABELS to keep the synthesizer prompt
     focused.
 
-    Replaces the previous per-label VLM binary-check loop, eliminating N
-    separate VLM calls and replacing them with a single batch embedding
-    computation.
+    Consumes from the pool:
+        - step_describer.{k}.observations  (for every k in plan_steps)
+    Produces:
+        - label_verifier.verified_labels
+
+    No evaluator suite — this is a deterministic embedding-similarity
+    filter, not an LLM agent.
     """
     import numpy as np
 
@@ -897,25 +853,43 @@ def label_verifier_node(state: AnnotationState) -> Dict[str, Any]:
             seen.add(lid)
             shortlisted.append(lid)
 
+    def _emit_verified(payload: list[dict]) -> PipelineAttachment:
+        return PipelineAttachment(
+            name="label_verifier.verified_labels",
+            kind="structured",
+            content_schema="verified_labels",
+            label="Verified Labels",
+            content=payload,
+        )
+
     if not shortlisted:
         LOGGER.info("Label similarity filter: no candidate labels.")
         messages.append({
             "role": "label_verifier",
             "content": "No candidate labels available for parent categories.",
         })
+        att = _emit_verified([])
         return {
             "verified_labels": [],
             "verified_label_reasoning": {},
+            "attachment_pool": {att.name: att},
             "messages": messages,
         }
 
-    # Build query from all step describer outputs
-    all_steps = state.get("step_results", [])
-    evidence_parts: list[str] = [
-        step["graph_observations"]
-        for step in sorted(all_steps, key=lambda x: x["step_id"])
-        if step.get("graph_observations")
+    # Consume all step_describer observations from the pool, in step_id order.
+    pool: AttachmentPool = state.get("attachment_pool", {})
+    plan_steps = state.get("plan_steps", [])
+    consumes = [
+        f"step_describer.{step.get('step_id', i + 1)}.observations"
+        for i, step in enumerate(plan_steps)
     ]
+    obs_inputs = pool_get_many(pool, consumes)
+    evidence_parts: list[str] = []
+    for att in obs_inputs:
+        c = att.content if isinstance(att.content, dict) else {}
+        obs = c.get("graph_observations")
+        if obs:
+            evidence_parts.append(str(obs))
     query_text = " ".join(evidence_parts).strip()
 
     if not query_text:
@@ -925,9 +899,20 @@ def label_verifier_node(state: AnnotationState) -> Dict[str, Any]:
             "role": "label_verifier",
             "content": f"No evidence text; passed top {len(fallback)} candidates unchanged.",
         })
+        fallback_payload = []
+        for lid in fallback:
+            entry = catalog.get_label(lid)
+            fallback_payload.append({
+                "label_id": lid,
+                "name": entry.name if entry else LABEL_MAPPING.get(lid, lid),
+                "description": entry.description if entry else "",
+                "similarity": None,
+            })
+        att = _emit_verified(fallback_payload)
         return {
             "verified_labels": fallback,
             "verified_label_reasoning": {lid: "No evidence available." for lid in fallback},
+            "attachment_pool": {att.name: att},
             "messages": messages,
         }
 
@@ -989,129 +974,115 @@ def label_verifier_node(state: AnnotationState) -> Dict[str, Any]:
         ),
     })
 
+    verified_payload: list[dict] = []
+    for lid, sim, _txt in filtered:
+        entry = catalog.get_label(lid)
+        verified_payload.append({
+            "label_id": lid,
+            "name": entry.name if entry else LABEL_MAPPING.get(lid, lid),
+            "description": entry.description if entry else "",
+            "similarity": sim,
+        })
+
+    att = _emit_verified(verified_payload)
     return {
         "verified_labels": verified,
         "verified_label_reasoning": reasoning_map,
+        "attachment_pool": {att.name: att},
         "messages": messages,
     }
 
 
 def proposal_synthesizer_node(state: AnnotationState) -> Dict[str, Any]:
-    """Assemble the final proposal from verified labels and step evidence.
+    """Assemble the final label annotations from verified labels and step evidence.
 
-    The heavy label selection work is done by label_shortlister and
-    label_verifier.  This node only needs to determine precise
-    sub-segment boundaries and emit well-formed JSON.
+    Decides which verified labels the evidence actually supports and
+    pinpoints each label's start/end indices within the parent range.
 
-    Runs the FULL evaluator suite (all 5 evaluators) on its own output
-    before writing to state.  Since there is no retry loop, the
-    evaluated output is promoted directly to final_* fields.
+    Consumes from the pool:
+        - init.parent_segment
+        - label_verifier.verified_labels
+        - step_describer.{k}.observations  (for every k in plan_steps)
+    Produces:
+        - proposal_synthesizer.proposal
     """
     messages = list(state.get("messages", []))
-    parent_main_labels = state.get("parent_main_labels", [])
-    existing_children = state.get("existing_children", [])
     parent_start = state.get("parent_start", 0)
     parent_end = state.get("parent_end", 0)
     verified_labels = state.get("verified_labels", [])
-    verified_reasoning = state.get("verified_label_reasoning", {})
 
-    # Collect all step evidence
-    all_steps = state.get("step_results", [])
-    evidence_summary = ""
-    for step in sorted(all_steps, key=lambda x: x["step_id"]):
-        evidence_summary += f"--- Graph {step['step_id']}: {step['description']} ---\n"
-        if step.get("graph_descriptions"):
-            evidence_summary += f"Graphs: {', '.join(step['graph_descriptions'])}\n"
-        evidence_summary += f"Graph Observations: {step['graph_observations']}\n\n"
+    # Declare and fetch named attachments from the pool.
+    pool: AttachmentPool = state.get("attachment_pool", {})
+    plan_steps = state.get("plan_steps", [])
+    consumes = (
+        ["init.parent_segment", "label_verifier.verified_labels"]
+        + [
+            f"step_describer.{step.get('step_id', i + 1)}.observations"
+            for i, step in enumerate(plan_steps)
+        ]
+    )
+    parent_inputs = pool_get_many(pool, consumes)
 
-    # Build concise verified-label section (small, focused)
-    verified_section_lines: list[str] = ["=== Verified Labels (use these) ==="]
-    catalog = get_label_catalog()
-    for lid in verified_labels:
-        entry = catalog.get_label(lid)
-        name = entry.name if entry else LABEL_MAPPING.get(lid, lid)
-        justification = verified_reasoning.get(lid, "")
-        verified_section_lines.append(f"- ID: {lid} | Name: {name} | {justification}")
-    if not verified_labels:
-        verified_section_lines.append("(No labels verified — propose the best-fit label IDs based on evidence.)")
-    verified_section = "\n".join(verified_section_lines)
+    context_block = render_inputs_for_prompt(parent_inputs)
 
-    # Existing children for duplicate avoidance
-    children_section = ""
-    if existing_children:
-        lines = ["=== Already Discovered Sub-Segments (avoid overlap) ==="]
-        for child in existing_children:
-            child_labels = [LABEL_MAPPING.get(l, l) for l in child.get("labels", [])]
-            lines.append(
-                f"- [{child['start_index']}, {child['end_index']}]: "
-                f"{', '.join(child_labels)}"
-            )
-        children_section = "\n".join(lines)
+    n_verified = len(verified_labels)
+    verified_ids_inline = ", ".join(verified_labels) if verified_labels else "(none)"
 
-    prompt_parts = [
-        "You are a racing telemetry analyst assembling a sub-segment proposal.",
+    # Task + instructions only — the rendered attachments are inserted between
+    # them ONLY for the VLM call.  The evaluator receives the same task +
+    # instructions but reads the attachments from the pool itself, avoiding the
+    # duplicate "=== Verified Labels ===" / step-describer sections that would
+    # otherwise appear twice in the evaluator's prompt.
+    intro_parts = [
+        "You are a racing telemetry analyst producing label annotations.",
         "",
         "=== Task ===",
-        "Define ONE sub-segment within the parent range "
-        f"[{parent_start}, {parent_end}] "
-        f"(length: {parent_end - parent_start} data points). "
-        "The sub-segment may carry ONE OR MORE of the verified labels listed below — "
-        "include every label whose behaviour is clearly evidenced in the graphs, "
-        "each with its own precise start/end indices.",
-        "",
-        "=== Parent Segment ===",
-        f"Main labels: {', '.join([LABEL_MAPPING.get(l, l) for l in parent_main_labels])}",
-        "",
-        "=== Graph Observations ===",
-        evidence_summary,
-        "",
+        f"Annotate the parent range [{parent_start}, {parent_end}] "
+        f"(length: {parent_end - parent_start} data points) by selecting which "
+        "of the verified labels below are clearly evidenced in the graphs, "
+        "and pinpointing each label's exact start_index and end_index.",
     ]
-    prompt_parts.extend([
-        verified_section,
-        "",
-    ])
-    if children_section:
-        prompt_parts.extend([children_section, ""])
-    prompt_parts.extend([
+
+    instructions_parts = [
         "=== Instructions ===",
-        "Emit one JSON entry per verified label that the evidence supports. "
-        "If a verified label is not supported by the evidence, drop it. "
-        "Do NOT invent labels not in the verified list above.",
-        "Each label may cover a different precise sub-range within "
-        f"[{parent_start}, {parent_end}]. "
-        "Determine separate start_index and end_index for every label based on where "
-        "that specific behaviour begins and ends in the graphs. "
-        "start_index must be strictly less than end_index for each label.",
-        "For each label explain why those specific boundaries were chosen, "
-        "referencing the graph observations from the step describers.",
+        f"- There are {n_verified} verified candidate label(s): {verified_ids_inline}.",
+        "- Emit one entry in the \"labels\" list for EVERY verified label whose "
+        "behaviour is clearly evidenced — this can be up to "
+        f"{n_verified} entries. Drop only the verified labels the evidence "
+        "does not support. Do NOT cap the output at two entries, and do NOT "
+        "invent labels outside the verified list.",
+        f"- Each entry must satisfy {parent_start} <= start_index < end_index <= {parent_end}.",
+        "- In \"reasoning\", explain why those exact boundaries were chosen, "
+        "citing the step observations above.",
+        "- The top-level JSON has a single key \"labels\" whose value is a flat "
+        "list of entries. Do not wrap the list in any other container.",
         "",
-        "Respond in this JSON format ONLY (this example shows TWO labels — "
-        "include as many entries as the evidence supports, from the verified list):",
+        "=== Output Format ===",
+        "Respond with JSON of this exact shape only. The schema below shows "
+        "ONE entry as a template — repeat that entry object inside the "
+        f'"labels" array once for every supported verified label (up to '
+        f"{n_verified} entries). Output strict JSON only — no comments, no "
+        "trailing commas, no extra keys.",
         "```json",
         "{",
         '  "labels": [',
         '    {',
-        '      "label_id": "LABEL_ID_1",',
-        f'      "start_index": <integer within [{parent_start}, {parent_end}]>,',
-        f'      "end_index": <integer within [{parent_start}, {parent_end}]>,',
-        '      "reasoning": "..."',
-        '    },',
-        '    {',
-        '      "label_id": "LABEL_ID_2",',
-        f'      "start_index": <integer within [{parent_start}, {parent_end}]>,',
-        f'      "end_index": <integer within [{parent_start}, {parent_end}]>,',
+        '      "label_id": "<one of the verified label IDs>",',
+        f'      "start_index": <integer in [{parent_start}, {parent_end}]>,',
+        f'      "end_index": <integer in [{parent_start}, {parent_end}]>,',
         '      "reasoning": "..."',
         '    }',
         '  ]',
         "}",
         "```",
-    ])
+    ]
 
-    prompt = "\n".join(prompt_parts)
+    vlm_prompt = "\n".join(intro_parts + ["", context_block, ""] + instructions_parts)
+    eval_prompt = "\n".join(intro_parts + [""] + instructions_parts)
 
     # 1. Generate output (VLM call)
     set_active_stage("proposal_synthesizer", "main")
-    raw_response = _call_vlm(prompt, [])
+    raw_response = _call_vlm(vlm_prompt, [])
     if not raw_response:
         raise RuntimeError(
             f"proposal_synthesizer: VLM returned empty response "
@@ -1119,15 +1090,15 @@ def proposal_synthesizer_node(state: AnnotationState) -> Dict[str, Any]:
             f"verified_labels={verified_labels})"
         )
 
-    # 2. Run FULL evaluator suite (all 5 evaluators)
+    # 2. Run evaluator suite — evaluators read attachments from the pool, so
+    # we pass the inputs-free eval_prompt to avoid duplicating them.
     suite_result: EvalPipelineResult = run_evaluator_suite(
-        original_prompt=prompt,
-        step_output=raw_response,
+        parent_prompt=eval_prompt,
+        parent_output_text=raw_response,
+        parent_inputs=parent_inputs,
         step_name="proposal_synthesizer",
         parent_start=parent_start,
         parent_end=parent_end,
-        graph_images=state.get("all_graph_images"),
-        label_mapping=LABEL_MAPPING,
     )
 
     # 3. Parse the fully evaluated final result
@@ -1178,28 +1149,22 @@ def proposal_synthesizer_node(state: AnnotationState) -> Dict[str, Any]:
 
     messages.append({"role": "assistant", "content": evaluated_response})
 
-    # Build per-evaluator feedback summary
-    eval_feedback_text = "\n".join(
-        f"[{r.evaluator_name}] {r.verdict}: {r.feedback}"
-        for r in suite_result.evaluator_results
+    # Emit the synthesizer's named output attachment into the pool.
+    proposal_attachment = PipelineAttachment(
+        name="proposal_synthesizer.proposal",
+        kind="text",
+        label="Proposal Synthesizer Output",
+        content=evaluated_response,
     )
 
     return {
         "evaluation": suite_result.final_verdict,
-        "evaluation_feedback": eval_feedback_text,
-        "proposed_sub_start": proposed_start,
-        "proposed_sub_end": proposed_end,
-        "proposed_labels": fixed_labels,
-        "proposed_label_annotations": label_proposals,
-        "proposed_reasoning": reasoning,
-        "raw_step_solver_response": evaluated_response,
-        # Promote directly to final — no retry loop
         "final_sub_start": proposed_start,
         "final_sub_end": proposed_end,
         "final_labels": fixed_labels,
         "final_label_annotations": label_proposals,
         "final_reasoning": reasoning,
-        "eval_feedback_synthesizer": suite_result.model_dump(),
+        "attachment_pool": {proposal_attachment.name: proposal_attachment},
         "messages": messages,
     }
 
@@ -1223,14 +1188,16 @@ def build_annotation_graph(
 
     graph = StateGraph(AnnotationState)
 
+    graph.add_node("init_producer", init_producer_node)
     graph.add_node("planner", planner_node)
     graph.add_node("steps_data_fetcher", steps_data_fetcher_node)
     graph.add_node("step_describer", step_describer_node)
     graph.add_node("label_verifier", label_verifier_node)
     graph.add_node("proposal_synthesizer", proposal_synthesizer_node)
-    # No separate evaluator node — evaluation happens inside each node
+    # No separate evaluator node — evaluation happens inside each node.
 
-    graph.set_entry_point("planner")
+    graph.set_entry_point("init_producer")
+    graph.add_edge("init_producer", "planner")
     graph.add_edge("planner", "steps_data_fetcher")
     graph.add_edge("steps_data_fetcher", "step_describer")
     graph.add_conditional_edges(
@@ -1412,7 +1379,12 @@ def run_annotation_pipeline(
                     n_steps = len(final_state.get("plan_steps", []))
                     detail = f"Planned {n_steps} analysis step(s)"
                 elif node_name == "steps_data_fetcher":
-                    n_graphs = len(final_state.get("current_step_graph_descriptions", []))
+                    plan_steps = final_state.get("plan_steps", [])
+                    idx = final_state.get("current_step_index", 0)
+                    pool = final_state.get("attachment_pool", {})
+                    step_id = plan_steps[idx].get("step_id", idx + 1) if 0 <= idx < len(plan_steps) else idx + 1
+                    descs_att = pool.get(f"steps_data_fetcher.{step_id}.graph_descriptions")
+                    n_graphs = len(descs_att.content) if descs_att and isinstance(descs_att.content, list) else 0
                     detail = f"Gathered {n_graphs} graph(s)"
                 elif node_name == "step_describer":
                     idx = final_state.get("current_step_index", 0)
@@ -1441,18 +1413,11 @@ def run_annotation_pipeline(
 
     accepted = final_state.get("evaluation") == "pass"
 
-    # Safety-net: if final_* were never written (e.g. an unexpected code path),
-    # fall back to the last proposed values so the result is never empty.
-    final_labels = final_state.get("final_labels") or final_state.get("proposed_labels", [])
-    final_reasoning = final_state.get("final_reasoning") or final_state.get("proposed_reasoning", "")
-    final_sub_start = final_state.get("final_sub_start") or final_state.get("proposed_sub_start")
-    final_sub_end = final_state.get("final_sub_end") or final_state.get("proposed_sub_end")
-
     return AnnotationResult(
-        sub_start=final_sub_start,
-        sub_end=final_sub_end,
-        final_labels=final_labels,
-        final_reasoning=final_reasoning,
+        sub_start=final_state.get("final_sub_start"),
+        sub_end=final_state.get("final_sub_end"),
+        final_labels=final_state.get("final_labels", []),
+        final_reasoning=final_state.get("final_reasoning", ""),
         accepted=accepted,
         iterations=1,  # forward-only pipeline, always 1 pass
         messages=final_state.get("messages", []),

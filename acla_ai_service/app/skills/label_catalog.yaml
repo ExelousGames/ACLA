@@ -541,7 +541,7 @@ labels:
     name: "Initiate throttle too early"
     type: sub
     description: >
-      The driver gets on the throttle before the optimal point,
+      The driver gets on the throttle before the expert,
       risking oversteer or running wide on exit.
     parent: MS
     children: []
@@ -551,7 +551,7 @@ labels:
     name: "Initiate throttle too late"
     type: sub
     description: >
-      The driver gets on the throttle after the optimal point,
+      The driver gets on the throttle after the expert,
       losing exit speed.
     parent: MS
     children: []
@@ -814,7 +814,7 @@ labels:
     name: "Shift up too early"
     type: sub
     description: >
-      The driver upshifts before reaching optimal RPM, losing
+      The driver upshifts earlier than the expert, losing
       acceleration in the next gear.
     parent: MS
     children: []
@@ -824,7 +824,7 @@ labels:
     name: "Shift up too late"
     type: sub
     description: >
-      The driver upshifts past the optimal RPM, hitting the
+      The driver upshifts later than the expert, hitting the
       rev limiter or losing power in over-rev.
     parent: MS
     children: []
@@ -834,7 +834,7 @@ labels:
     name: "Shift down too early"
     type: sub
     description: >
-      The driver downshifts before the optimal point,
+      The driver downshifts earlier than the expert,
       potentially causing engine braking instability.
     parent: MS
     children: []
@@ -844,7 +844,7 @@ labels:
     name: "Shift down too late"
     type: sub
     description: >
-      The driver downshifts after the optimal point,
+      The driver downshifts later than the expert,
       entering the corner in too high a gear.
     parent: MS
     children: []
