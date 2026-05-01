@@ -43,6 +43,7 @@ class GraphSkillEntry:
     __slots__ = (
         "id", "title", "graph_type", "axes", "visual_elements",
         "what_to_describe", "description_vocabulary",
+        "comparative_vocabulary",
         "common_description_errors",
     )
 
@@ -54,6 +55,7 @@ class GraphSkillEntry:
         self.visual_elements: List[str] = raw.get("visual_elements", [])
         self.what_to_describe: str = (raw.get("what_to_describe") or "").strip()
         self.description_vocabulary: Dict[str, str] = raw.get("description_vocabulary", {})
+        self.comparative_vocabulary: List[str] = raw.get("comparative_vocabulary", []) or []
         self.common_description_errors: List[str] = raw.get("common_description_errors", [])
 
 
@@ -140,6 +142,15 @@ class GraphAnalysisSkill:
                 lines.append("Vocabulary to use:")
                 for term, definition in entry.description_vocabulary.items():
                     lines.append(f"  {term}: {definition}")
+
+            # Comparative phrasings — canonical sentence templates the VLM
+            # should reuse verbatim when describing player-vs-expert
+            # differences.  Aligning these with label-catalog phrasing keeps
+            # the embedding-similarity filter (label_verifier) accurate.
+            if entry.comparative_vocabulary:
+                lines.append("Comparative phrasings to use verbatim (player vs expert):")
+                for phrase in entry.comparative_vocabulary:
+                    lines.append(f"  - {phrase}")
 
             # Common errors
             if entry.common_description_errors:

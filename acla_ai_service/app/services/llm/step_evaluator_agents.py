@@ -170,13 +170,6 @@ def _format_step_observation(content: Any) -> str:
     if not isinstance(content, dict):
         return str(content)
     parts: list[str] = []
-    step_id = content.get("step_id")
-    description = content.get("description")
-    if step_id is not None or description:
-        header = f"Step {step_id}" if step_id is not None else "Step"
-        if description:
-            header = f"{header} — {description}"
-        parts.append(header)
     descs = content.get("graph_descriptions") or []
     if descs:
         parts.append("Graphs: " + ", ".join(descs))

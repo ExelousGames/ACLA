@@ -109,7 +109,7 @@ labels:
       or merging back to the expert line.
     parent: null
     children: ["RM1", "RM2", "RM5", "RM6", "RM7", "RM8", "RM9", "RM10", "RM11"]
-    exclusive_with: ["EA"]
+    exclusive_with: ["EA", "2"]
 
   MS:
     name: "Mistake"
@@ -189,7 +189,7 @@ labels:
       - "MS50"
       - "MS51"
       - "MS52"
-    exclusive_with: ["EA"]
+    exclusive_with: ["EA", "2"]
 
   brands_hatch:
     name: "Brands Hatch"
@@ -293,8 +293,11 @@ labels:
     name: "Recover from speed gap over 20"
     type: sub
     description: >
-      The driver has a speed deficit of more than 20 km/h compared
-      to the expert and is working to close the gap.
+      Player's speed is lower than expert's by more than 20 km/h
+      on the speed graph (or speed_delta showing expert faster
+      than player by more than 20 km/h) and the gap is closing
+      (time_delta falling).  The driver is recovering from a
+      large speed deficit.
     parent: RM
     children: []
     exclusive_with: ["RM6"]
@@ -303,8 +306,11 @@ labels:
     name: "Recover from small speed gap under 20"
     type: sub
     description: >
-      The driver has a speed deficit of less than 20 km/h compared
-      to the expert and is closing the gap.
+      Player's speed is lower than expert's by less than 20 km/h
+      on the speed graph (or speed_delta showing expert faster
+      than player by less than 20 km/h) and the gap is closing
+      (time_delta falling).  The driver is recovering from a
+      small speed deficit.
     parent: RM
     children: []
     exclusive_with: ["RM5"]
@@ -313,8 +319,10 @@ labels:
     name: "Merge back to expert line"
     type: sub
     description: >
-      The driver's trajectory is converging back to the optimal
-      expert racing line after a deviation.
+      Player trajectory is converging back toward the expert line
+      on the trajectory plot after a deviation — the gap between
+      the green (player) and blue dashed (expert) lines decreases
+      across the segment.
     parent: RM
     children: []
     exclusive_with: []
@@ -323,8 +331,9 @@ labels:
     name: "Accelerate earlier at exit"
     type: sub
     description: >
-      During recovery the driver applies throttle earlier than
-      the expert at the corner exit.
+      During recovery, player begins applying throttle earlier
+      than expert at corner exit on the throttle graph (negative
+      application-onset offset in the corner-exit phase).
     parent: RM
     children: []
     exclusive_with: ["RM9"]
@@ -333,8 +342,9 @@ labels:
     name: "Accelerate later at exit"
     type: sub
     description: >
-      During recovery the driver applies throttle later than
-      the expert at the corner exit.
+      During recovery, player begins applying throttle later than
+      expert at corner exit on the throttle graph (positive
+      application-onset offset in the corner-exit phase).
     parent: RM
     children: []
     exclusive_with: ["RM8"]
@@ -343,8 +353,9 @@ labels:
     name: "Brake earlier at entry"
     type: sub
     description: >
-      During recovery the driver starts braking earlier than
-      the expert at the corner entry.
+      During recovery, player begins braking earlier than expert
+      at corner entry on the brake graph (negative
+      brake-initiation offset in the corner-entry phase).
     parent: RM
     children: []
     exclusive_with: ["RM11"]
@@ -353,8 +364,9 @@ labels:
     name: "Brake later at entry"
     type: sub
     description: >
-      During recovery the driver starts braking later than
-      the expert at the corner entry.
+      During recovery, player begins braking later than expert at
+      corner entry on the brake graph (positive brake-initiation
+      offset in the corner-entry phase).
     parent: RM
     children: []
     exclusive_with: ["RM10"]
@@ -367,8 +379,10 @@ labels:
     name: "Initiate brake too late"
     type: sub
     description: >
-      The driver starts braking after the optimal braking point,
-      carrying too much speed into the corner.
+      Player begins braking later than expert on the brake graph
+      (positive brake-initiation offset).  The driver carries too
+      much speed into the corner because brake application is
+      delayed relative to the expert's braking point.
     parent: MS
     children: []
     exclusive_with: ["MS5"]
@@ -377,8 +391,9 @@ labels:
     name: "Initiate brake too early"
     type: sub
     description: >
-      The driver starts braking before the optimal braking point,
-      losing time by decelerating too soon.
+      Player begins braking earlier than expert on the brake graph
+      (negative brake-initiation offset).  The driver loses time by
+      decelerating before the expert's braking point.
     parent: MS
     children: []
     exclusive_with: ["MS1"]
@@ -387,8 +402,10 @@ labels:
     name: "Highest brake pressure too low"
     type: sub
     description: >
-      Peak brake pressure is lower than the expert's, resulting
-      in insufficient deceleration.
+      Player's peak brake pressure is lower than expert's on the
+      brake graph (negative peak-pressure offset).  The driver does
+      not generate enough deceleration to match the expert's brake
+      input.
     parent: MS
     children: []
     exclusive_with: ["MS22"]
@@ -397,7 +414,8 @@ labels:
     name: "Highest brake pressure too high"
     type: sub
     description: >
-      Peak brake pressure exceeds the expert's, risking lock-up
+      Player's peak brake pressure is higher than expert's on the
+      brake graph (positive peak-pressure offset), risking lock-up
       or instability.
     parent: MS
     children: []
@@ -407,8 +425,10 @@ labels:
     name: "Brake applied too quickly"
     type: sub
     description: >
-      The brake is applied with a very steep ramp — transitioning
-      from zero to high pressure too rapidly.
+      Player applies brake more sharply than expert on the brake
+      graph — the player ramp from zero to peak takes fewer indices
+      than the expert's, transitioning to high brake pressure too
+      rapidly.
     parent: MS
     children: []
     exclusive_with: ["MS24"]
@@ -417,8 +437,9 @@ labels:
     name: "Brake applied too slowly"
     type: sub
     description: >
-      The brake is applied with a gradual ramp — not reaching
-      peak pressure quickly enough.
+      Player applies brake more gradually than expert on the brake
+      graph — the player ramp from zero to peak takes more indices
+      than the expert's, not reaching peak pressure quickly enough.
     parent: MS
     children: []
     exclusive_with: ["MS14"]
@@ -427,8 +448,10 @@ labels:
     name: "Release brake too quickly"
     type: sub
     description: >
-      The driver releases the brake pedal too fast — losing trail
-      braking and destabilising the car mid-corner.
+      Player releases brake more abruptly than expert on the brake
+      graph — the player drops from peak to zero in fewer indices
+      than the expert, losing trail braking and destabilising the
+      car mid-corner.
     parent: MS
     children: []
     exclusive_with: ["MS18"]
@@ -437,8 +460,10 @@ labels:
     name: "Release brake too slowly"
     type: sub
     description: >
-      The driver releases the brake pedal too gradually — carrying
-      too much braking into the corner and scrubbing speed.
+      Player releases brake more gradually than expert on the brake
+      graph — the player drops from peak to zero in more indices
+      than the expert, carrying too much braking into the corner
+      and scrubbing speed.
     parent: MS
     children: []
     exclusive_with: ["MS17"]
@@ -447,8 +472,9 @@ labels:
     name: "Initiate brake release too late"
     type: sub
     description: >
-      The driver begins releasing the brake at a later point than
-      the expert, staying on the brake too long.
+      Player begins releasing brake later than expert on the brake
+      graph (positive brake-release-onset offset), staying on the
+      brake too long.
     parent: MS
     children: []
     exclusive_with: ["MS28"]
@@ -457,8 +483,9 @@ labels:
     name: "Initiate brake release too early"
     type: sub
     description: >
-      The driver begins releasing the brake at an earlier point
-      than the expert, losing trail-braking benefit.
+      Player begins releasing brake earlier than expert on the
+      brake graph (negative brake-release-onset offset), losing
+      trail-braking benefit.
     parent: MS
     children: []
     exclusive_with: ["MS27"]
@@ -467,8 +494,9 @@ labels:
     name: "Highest brake length too short"
     type: sub
     description: >
-      The total duration of brake application is shorter than the
-      expert's — potentially under-braking.
+      Player's braking duration is shorter than expert's on the
+      brake graph (total indices from initiation to full release).
+      Potentially under-braking.
     parent: MS
     children: []
     exclusive_with: ["MS32"]
@@ -477,8 +505,9 @@ labels:
     name: "Highest brake length too long"
     type: sub
     description: >
-      The total duration of brake application is longer than the
-      expert's — over-braking and losing time.
+      Player's braking duration is longer than expert's on the
+      brake graph (total indices from initiation to full release).
+      Over-braking and losing time.
     parent: MS
     children: []
     exclusive_with: ["MS31"]
@@ -487,8 +516,7 @@ labels:
     name: "Throttle and brake applied at the same time for too long"
     type: sub
     description: >
-      The driver is simultaneously on throttle and brake for an
-      excessive duration (left-foot braking overlap).
+      Player applies throttle and brake simultaneously for an extended period.
     parent: MS
     children: []
     exclusive_with: []
@@ -501,8 +529,9 @@ labels:
     name: "Throttle applied too quickly"
     type: sub
     description: >
-      Throttle is applied with a very steep ramp —
-      risking wheelspin or oversteer on corner exit.
+      Player applies throttle more sharply than expert on the
+      throttle graph — ramp from zero to peak takes fewer indices
+      than the expert's.
     parent: MS
     children: []
     exclusive_with: ["MS25"]
@@ -511,8 +540,9 @@ labels:
     name: "Throttle applied too slowly"
     type: sub
     description: >
-      Throttle is applied too gradually — not building speed
-      quickly enough on corner exit.
+      Player applies throttle more gradually than expert on the
+      throttle graph — ramp from zero to peak takes more indices
+      than the expert's.
     parent: MS
     children: []
     exclusive_with: ["MS15"]
@@ -521,8 +551,8 @@ labels:
     name: "Highest throttle pressure too low"
     type: sub
     description: >
-      Peak throttle application is lower than the expert's —
-      not using full power when it is safe to do so.
+      Peak throttle is lower than expert on the throttle graph —
+      player tops out at a lower y-value than the expert.
     parent: MS
     children: []
     exclusive_with: ["MS26"]
@@ -531,8 +561,8 @@ labels:
     name: "Highest throttle pressure too high"
     type: sub
     description: >
-      Peak throttle exceeds what the expert uses — possibly
-      causing wheelspin or instability.
+      Peak throttle is higher than expert on the throttle graph —
+      player tops out at a higher y-value than the expert.
     parent: MS
     children: []
     exclusive_with: ["MS19"]
@@ -541,8 +571,9 @@ labels:
     name: "Initiate throttle too early"
     type: sub
     description: >
-      The driver gets on the throttle before the expert,
-      risking oversteer or running wide on exit.
+      Player begins applying throttle earlier than expert on the
+      throttle graph — application-onset index is lower than the
+      expert's.
     parent: MS
     children: []
     exclusive_with: ["MS21"]
@@ -551,8 +582,9 @@ labels:
     name: "Initiate throttle too late"
     type: sub
     description: >
-      The driver gets on the throttle after the expert,
-      losing exit speed.
+      Player begins applying throttle later than expert on the
+      throttle graph — application-onset index is higher than the
+      expert's.
     parent: MS
     children: []
     exclusive_with: ["MS20"]
@@ -561,8 +593,9 @@ labels:
     name: "Release throttle too quickly"
     type: sub
     description: >
-      The driver lifts off the throttle too abruptly, causing
-      weight transfer instability.
+      Player releases throttle more abruptly than expert on the
+      throttle graph — drop from peak to zero takes fewer indices
+      than the expert's.
     parent: MS
     children: []
     exclusive_with: []
@@ -571,8 +604,9 @@ labels:
     name: "Initiate throttle release too late"
     type: sub
     description: >
-      The driver stays on the throttle longer than the expert
-      before lifting — late lift-off.
+      Player begins releasing throttle later than expert on the
+      throttle graph — release-onset index is higher than the
+      expert's (late lift-off).
     parent: MS
     children: []
     exclusive_with: ["MS30"]
@@ -581,8 +615,9 @@ labels:
     name: "Initiate throttle release too early"
     type: sub
     description: >
-      The driver lifts off the throttle earlier than the expert —
-      coasting or early lift.
+      Player begins releasing throttle earlier than expert on the
+      throttle graph — release-onset index is lower than the
+      expert's (early lift-off).
     parent: MS
     children: []
     exclusive_with: ["MS29"]
@@ -595,8 +630,10 @@ labels:
     name: "Initiate the turn too late"
     type: sub
     description: >
-      The driver turns into the corner after the optimal turn-in
-      point, resulting in a wider entry.
+      Player turns in later than expert on the trajectory plot —
+      the player begins curving from the straight at a later point
+      along the trajectory than the expert, resulting in a wider
+      entry line.
     parent: MS
     children: []
     exclusive_with: ["MS6"]
@@ -605,8 +642,9 @@ labels:
     name: "Initiate the turn too early"
     type: sub
     description: >
-      The driver turns into the corner before the optimal turn-in
-      point, resulting in a tighter entry.
+      Player turns in earlier than expert on the trajectory plot —
+      the player begins curving from the straight at an earlier
+      point than the expert, resulting in a tighter entry line.
     parent: MS
     children: []
     exclusive_with: ["MS2"]
@@ -615,8 +653,10 @@ labels:
     name: "Too late compared to expert Apex"
     type: sub
     description: >
-      The driver reaches the apex (closest point to the inside
-      of the corner) later than the expert.
+      Player reaches apex later than expert on the trajectory plot
+      (positive apex-timing offset) — the closest point to the
+      inside of the corner is reached later along the player's
+      trajectory than along the expert's.
     parent: MS
     children: []
     exclusive_with: ["MS7"]
@@ -625,8 +665,9 @@ labels:
     name: "Too early compared to expert Apex"
     type: sub
     description: >
-      The driver reaches the apex earlier than the expert,
-      potentially compromising exit speed.
+      Player reaches apex earlier than expert on the trajectory
+      plot (negative apex-timing offset), potentially compromising
+      exit speed.
     parent: MS
     children: []
     exclusive_with: ["MS3"]
@@ -635,8 +676,9 @@ labels:
     name: "Time to exit too early"
     type: sub
     description: >
-      The driver exits the corner (straightens steering) earlier
-      than the expert.
+      Player exits corner earlier than expert on the trajectory
+      plot (negative exit-timing offset) — the player straightens
+      the steering before the expert does.
     parent: MS
     children: []
     exclusive_with: ["MS8"]
@@ -645,8 +687,9 @@ labels:
     name: "Time to exit too late"
     type: sub
     description: >
-      The driver exits the corner (straightens steering) later
-      than the expert, staying in the turn too long.
+      Player exits corner later than expert on the trajectory plot
+      (positive exit-timing offset) — the player straightens the
+      steering after the expert does, staying in the turn too long.
     parent: MS
     children: []
     exclusive_with: ["MS4"]
@@ -659,8 +702,10 @@ labels:
     name: "Entry trajectory too tight"
     type: sub
     description: >
-      The driver takes a tighter line than the expert on corner
-      entry, reducing corner speed potential.
+      Player's entry line is tighter than expert (closer to inside)
+      on the trajectory plot — the player takes a tighter line
+      through the corner-entry phase, reducing corner speed
+      potential.
     parent: MS
     children: []
     exclusive_with: ["MS33"]
@@ -669,8 +714,10 @@ labels:
     name: "Entry trajectory too wide"
     type: sub
     description: >
-      The driver takes a wider line than the expert on corner
-      entry, requiring a tighter mid-corner to hit the apex.
+      Player's entry line is wider than expert (closer to outside)
+      on the trajectory plot — the player takes a wider line
+      through the corner-entry phase, requiring a tighter
+      mid-corner to hit the apex.
     parent: MS
     children: []
     exclusive_with: ["MS9"]
@@ -679,8 +726,10 @@ labels:
     name: "Apex too wide"
     type: sub
     description: >
-      The driver's closest point to the inside of the corner is
-      wider (farther from the kerb) than the expert's apex.
+      Player's apex is farther from inside than expert on the
+      trajectory plot — the player's closest point to the inside
+      of the corner is wider (farther from the kerb) than the
+      expert's apex.
     parent: MS
     children: []
     exclusive_with: []
@@ -689,8 +738,10 @@ labels:
     name: "Exit trajectory too narrow"
     type: sub
     description: >
-      The driver stays too close to the inside on corner exit,
-      not using the full track width to carry speed.
+      Player's exit line is tighter than expert (uses less track
+      width) on the trajectory plot — the player stays too close
+      to the inside on corner exit, not using the full track
+      width to carry speed.
     parent: MS
     children: []
     exclusive_with: ["MS16"]
@@ -699,8 +750,10 @@ labels:
     name: "Exit trajectory too wide"
     type: sub
     description: >
-      The driver runs too wide on corner exit, potentially going
-      off-track or losing time by exceeding track limits.
+      Player's exit line is wider than expert (uses more track
+      width) on the trajectory plot — the player runs too wide on
+      corner exit, potentially going off-track or losing time by
+      exceeding track limits.
     parent: MS
     children: []
     exclusive_with: ["MS11"]
@@ -709,8 +762,10 @@ labels:
     name: "Cutting the line"
     type: sub
     description: >
-      The driver cuts inside the optimal racing line, shortening
-      the corner but potentially violating track limits.
+      Player cuts inside expert's racing line on the trajectory
+      plot — the player line crosses inside the expert's line,
+      shortening the corner but potentially violating track
+      limits.
     parent: MS
     children: []
     exclusive_with: []
@@ -719,7 +774,9 @@ labels:
     name: "Off track at entry"
     type: sub
     description: >
-      The driver goes off the track surface during corner entry.
+      Player goes off track at corner entry on the trajectory
+      plot — the player trajectory leaves the track surface during
+      the corner-entry phase.
     parent: MS
     children: []
     exclusive_with: []
@@ -728,7 +785,9 @@ labels:
     name: "Off track at exit"
     type: sub
     description: >
-      The driver goes off the track surface during corner exit.
+      Player goes off track at corner exit on the trajectory plot
+      — the player trajectory leaves the track surface during the
+      corner-exit phase.
     parent: MS
     children: []
     exclusive_with: []
@@ -737,7 +796,9 @@ labels:
     name: "Off track in the straight"
     type: sub
     description: >
-      The driver goes off the track surface on a straight section.
+      Player goes off track on the straight on the trajectory plot
+      — the player trajectory leaves the track surface on a
+      straight section (not in a corner).
     parent: MS
     children: []
     exclusive_with: []
@@ -750,8 +811,11 @@ labels:
     name: "Inefficient grip utilization at entry"
     type: sub
     description: >
-      The driver is not using the available tire grip efficiently
-      on corner entry — either under- or over-loading the tires.
+      Player's grip utilisation at corner entry differs from
+      expert's pattern on the push_limit graph — either
+      under-loading (sustained low) or over-loading (vivid spike)
+      during the corner-entry phase, where the expert's pattern
+      is a controlled moderate value.
     parent: MS
     children: []
     exclusive_with: []
@@ -760,8 +824,9 @@ labels:
     name: "Inefficient grip utilization at exit"
     type: sub
     description: >
-      The driver is not using the available tire grip efficiently
-      on corner exit.
+      Player's grip utilisation at corner exit differs from
+      expert's pattern on the push_limit graph — either
+      under-loading or over-loading during the corner-exit phase.
     parent: MS
     children: []
     exclusive_with: []
@@ -770,8 +835,10 @@ labels:
     name: "Oversteering at entry"
     type: sub
     description: >
-      The rear of the car loses grip on corner entry, causing
-      the car to rotate more than intended.
+      Rear-slip dominant section at corner entry on the balance
+      trajectory — the rear of the car loses grip (visible as a
+      red section on the balance plot at the corner-entry phase),
+      causing the car to rotate more than intended.
     parent: MS
     children: []
     exclusive_with: ["MS45"]
@@ -780,8 +847,11 @@ labels:
     name: "Understeering at entry"
     type: sub
     description: >
-      The front tires lose grip on corner entry, causing the
-      car to push wide (not turning enough).
+      Front-slip dominant section at corner entry on the balance
+      trajectory — the front tyres lose grip (visible as a blue
+      section on the balance plot at the corner-entry phase),
+      causing the car to push wide (not turning enough).  Note:
+      blue is amplified 2x in the colour mapping.
     parent: MS
     children: []
     exclusive_with: ["MS44"]
@@ -790,8 +860,10 @@ labels:
     name: "Oversteering at exit"
     type: sub
     description: >
-      The rear of the car loses grip on corner exit, usually
-      due to aggressive throttle application.
+      Rear-slip dominant section at corner exit on the balance
+      trajectory — the rear of the car loses grip (visible as a
+      red section on the balance plot at the corner-exit phase),
+      usually due to aggressive throttle application.
     parent: MS
     children: []
     exclusive_with: ["MS47"]
@@ -800,8 +872,11 @@ labels:
     name: "Understeering at exit"
     type: sub
     description: >
-      The front tires lose grip on corner exit, causing the
-      car to run wide despite steering input.
+      Front-slip dominant section at corner exit on the balance
+      trajectory — the front tyres lose grip (visible as a blue
+      section on the balance plot at the corner-exit phase),
+      causing the car to run wide despite steering input.  Note:
+      blue is amplified 2x in the colour mapping.
     parent: MS
     children: []
     exclusive_with: ["MS46"]
@@ -814,8 +889,7 @@ labels:
     name: "Shift up too early"
     type: sub
     description: >
-      The driver upshifts earlier than the expert, losing
-      acceleration in the next gear.
+      Player upshifts from lower gear earlier than expert  visible on the gear graph.
     parent: MS
     children: []
     exclusive_with: ["MS36"]
@@ -824,8 +898,8 @@ labels:
     name: "Shift up too late"
     type: sub
     description: >
-      The driver upshifts later than the expert, hitting the
-      rev limiter or losing power in over-rev.
+      Player upshifts from higher gear later than expert (positive shift-timing
+      offset) — visible on the gear graph 
     parent: MS
     children: []
     exclusive_with: ["MS35"]
@@ -834,8 +908,8 @@ labels:
     name: "Shift down too early"
     type: sub
     description: >
-      The driver downshifts earlier than the expert,
-      potentially causing engine braking instability.
+      Player downshifts from higher gear earlier than expert — visible on the
+      gear graph as a downshift step occurring earlier.
     parent: MS
     children: []
     exclusive_with: ["MS38"]
@@ -844,8 +918,8 @@ labels:
     name: "Shift down too late"
     type: sub
     description: >
-      The driver downshifts later than the expert,
-      entering the corner in too high a gear.
+      Player downshifts from lower gear later than expert — visible on the gear
+      graph as a downshift step occurring later.
     parent: MS
     children: []
     exclusive_with: ["MS37"]
@@ -854,8 +928,8 @@ labels:
     name: "Gear too low when accelerating"
     type: sub
     description: >
-      The driver is in a lower gear than the expert during
-      acceleration, hitting the rev limiter sooner.
+      Player is in a lower gear than expert during acceleration —
+      visible on the gear graph.
     parent: MS
     children: []
     exclusive_with: ["MS49"]
@@ -864,8 +938,8 @@ labels:
     name: "Gear too high when accelerating"
     type: sub
     description: >
-      The driver is in a higher gear than the expert during
-      acceleration, resulting in less torque/power.
+      Player is in a higher gear than expert during acceleration
+      — visible on the gear graph.
     parent: MS
     children: []
     exclusive_with: ["MS48"]

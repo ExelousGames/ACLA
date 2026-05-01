@@ -724,30 +724,7 @@ def step_describer_node(state: AnnotationState) -> Dict[str, Any]:
 
     prompt += (
         "\n**Your Task:**\n"
-        "For each graph, write the paragraph description specified in the "
-        "'what_to_describe' guidance above.  Cover every aspect listed, use "
-        "the vocabulary terms provided, and avoid the listed description errors.  "
-        "Your output should read as flowing prose — do NOT use numbered lists "
-        "or bullet points.  Use exact index positions and numerical values "
-        "wherever readable.\n\n"
-        "When both expert and player traces are visible, your description must "
-        "include direct comparisons stated as observations — for example, "
-        "\"the player's brake trace begins rising at index 55, ten indices "
-        "after the expert's at index 45\" or \"at the apex the player's line "
-        "passes farther from the inside than the expert's\".  These comparative "
-        "observations remain factual: state which trace is earlier/later/higher/"
-        "lower/closer/farther/wider/tighter/sharper/more gradual and by how much.  "
-        "When describing a trajectory in a corner segment, anchor each comparison "
-        "to whichever corner phase is visible (entry, apex, exit) and state it "
-        "relative to the expert dashed line.  Use the comparative phrasings "
-        "supplied in the graph skill above as templates — do NOT use diagnostic "
-        "verbs (\"should have\", \"failed to\", \"too late\", \"mistakenly\") and "
-        "do NOT mention labels.\n\n"
-        "IMPORTANT: Do NOT interpret, diagnose, or suggest labels.  Do NOT say "
-        "'this indicates a mistake' or 'this suggests the driver did X wrong'.  "
-        "Only describe WHAT you see — shapes, values, positions, colours, "
-        "separations, sequences, and direct expert-vs-player comparisons.  "
-        "Downstream nodes will handle interpretation."
+        "Write one paragraph per graph, following the per-graph guidance above.\n\n"
     )
 
     # 1. Generate output (VLM call with graph images)
@@ -780,8 +757,6 @@ def step_describer_node(state: AnnotationState) -> Dict[str, Any]:
         content_schema="step_observation",
         label=f"Step {step_id} — {step['description']}",
         content={
-            "step_id": step_id,
-            "description": step["description"],
             "requested_graphs": step.get("requested_graphs", []),
             "graph_descriptions": graph_descriptions,
             "graph_observations": evaluated_response,

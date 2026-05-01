@@ -7,6 +7,28 @@
 # problems, assign labels, or draw conclusions — downstream pipeline
 # nodes handle that.
 #
+# DESCRIPTION CONTRACT (applies to every graph that contains a player and
+# expert trace, or that can be compared against the expert):
+#
+#   For every comparable feature (initiation index, peak value, ramp rate,
+#   release index, release rate, duration, line position, apex, exit
+#   width, etc.) the VLM MUST report:
+#       (a) the player value,
+#       (b) the expert value,
+#       (c) the directional offset (player minus expert) using one of the
+#           canonical phrases:
+#               "later than expert" / "earlier than expert"
+#               "lower than expert's" / "higher than expert's"
+#               "more gradually than expert" / "more sharply than expert"
+#               "more abruptly than expert" / "more progressively than expert"
+#               "longer than expert" / "shorter than expert"
+#               "tighter than expert" / "wider than expert"
+#               "closer to inside than expert" / "farther from inside than expert"
+#
+# Per-trace observation alone is NOT acceptable.  The downstream label
+# catalog is built around expert-vs-player relations, so every observation
+# must surface the comparison.
+#
 # For each graph:
 #   id                    – must match AGENT_GRAPH_DEFINITIONS in
 #                           annotation_agent_tools.py
@@ -14,8 +36,11 @@
 #   graph_type            – feature_plot | trajectory_plot
 #   axes                  – what the x-axis and y-axis represent
 #   visual_elements       – colours, line styles, markers the VLM will see
-#   what_to_describe      – step-by-step checklist of observations to report
-#   description_vocabulary – precise terms to use when describing patterns
+#   what_to_describe      – per-feature comparison checklist
+#   description_vocabulary – comparative term:definition pairs
+#   comparative_vocabulary – canonical sentence templates the VLM should
+#                            reuse verbatim (loaded by graph_analysis_skill.py
+#                            and emitted into the VLM prompt)
 #   common_description_errors – VLM misreadings to avoid
 #
 # This file is loaded once by GraphAnalysisSkill (graph_analysis_skill.py).
@@ -40,36 +65,44 @@ graphs:
       - "Legend identifies which line is expert_optimal_throttle vs Physics_gas (player)"
       - "Grid lines for reading exact values"
     what_to_describe: >
-      Write a single cohesive paragraph describing the throttle graph.
-      Identify the expert and player lines from the legend and state the
-      colour of each.  Cover the application points for both traces —
-      which index each rises from zero, which applies first, and the
-      approximate index gap.  Describe the application ramp steepness
-      for each (steep/aggressive, gradual, near-identical) and over
-      how many indices each goes from 0 to peak.  Report the peak value
-      for each trace numerically.  Note any hesitations, dips, or lifts
-      in the player's trace — the index range and depth of each dip.
-      Describe the release point for each trace and how abrupt the drop
-      is (sharp drop, gradual taper, stepped release).  End with the
-      overall shape comparison — whether the player's trace matches the
-      expert's shape or differs fundamentally.
+      Write a single cohesive paragraph. Identify expert vs player from
+      the legend first. For each feature, report (a) player value,
+      (b) expert value, (c) directional offset — embedding the canonical
+      keyword phrase verbatim. Read numerical values from the grid.
+
+      1. Application onset (index where trace first rises above ~0.05):
+         "begins applying throttle earlier/later than expert" + index gap.
+      2. Ramp rate (indices to reach held value):
+         "applies throttle more sharply/gradually than expert" + spans.
+      3. Peak throttle (highest y-value):
+         "peak throttle is lower/higher than expert" + difference (e.g. "by 0.22").
+      4. Release onset (index where trace falls from held value):
+         "begins releasing throttle earlier/later than expert" + index gap.
+      5. Release rate (indices for the drop):
+         "releases throttle more abruptly/gradually than expert" + spans.
+      6. Match sections — index ranges where both hold the same level
+         (within 0.05).
     description_vocabulary:
-      application_point: "The index where the trace first rises above ~0.05 from zero"
-      ramp_rate: "Described relative to the expert's ramp — steeper than expert, similar to expert, or more gradual than expert (compare the indices each takes from zero to peak)"
-      peak_value: "The highest y-value the trace reaches, read from the y-axis"
-      release_point: "The index where the trace begins falling from its plateau"
-      release_rate: "Described relative to the expert's release — sharper than expert, similar to expert, or more gradual than expert; note 'stepped' if the drop happens in stages rather than a single motion"
-      hesitation: "A temporary dip or fluctuation in the trace before it returns to its prior level"
+      throttle_application_onset: "Index where the trace first rises above ~0.05. Report both traces and the index gap."
+      application_ramp_rate: "Indices between onset and plateau. Fewer = sharper; more = more gradual."
+      peak_throttle: "Highest y-value in the held region. 1.00 = full throttle."
+      throttle_release_onset: "Index where the trace begins falling from its held value. Report both traces and the index gap."
+      release_rate: "Indices for the drop back toward zero. Few = abrupt lift; many = gradual feather."
+      match_section: "Continuous index range where player and expert traces stay within 0.05 of each other."
     comparative_vocabulary:
-      - "The player's throttle trace begins rising at index 80, eight indices later than the expert's at index 72."
-      - "The player's peak throttle (0.78) is lower than the expert's (1.00)."
-      - "The player applies throttle more gradually than the expert, taking 14 indices to reach peak versus the expert's 6."
-      - "The player releases the throttle earlier than the expert, lifting at index 110 versus the expert's index 118."
+      - "The player begins applying throttle later than expert by 8 indices (player at index 80 reaching 0.78, expert at index 72 reaching 1.00)."
+      - "The player applies throttle more gradually than expert, taking 12 indices to reach the held value versus the expert's 6."
+      - "Peak throttle is lower than expert by 0.22 — the player tops out at 0.78 while the expert holds 1.00."
+      - "The player begins releasing throttle earlier than expert by 8 indices (release at index 110 down to 0.20, versus expert release at index 118)."
+      - "The player releases throttle more abruptly than expert, dropping from 1.00 to 0.20 in 2 indices versus the expert's 8."
+      - "The player matches the expert's throttle from index 0 to 60, both holding near 0.0."
     common_description_errors:
-      - "Do NOT confuse the expert line with the player line — always verify against the legend before describing"
-      - "Do NOT describe a difference in a braking zone as a throttle difference — only describe throttle behaviour where throttle is actually applied"
-      - "Do NOT omit numerical values — always report index positions and y-axis values wherever readable"
-      - "Do NOT interpret or diagnose — describe what you see, not what it means"
+      - "Verify expert vs player from the legend before describing"
+      - "Use canonical keyword phrases verbatim: 'begins applying throttle earlier/later than expert', 'applies throttle more sharply/gradually than expert', 'peak throttle is lower/higher than expert', 'begins releasing throttle earlier/later than expert', 'releases throttle more abruptly/gradually than expert'"
+      - "Always pair a player metric with the matching expert metric and directional offset"
+      - "Only describe throttle behaviour where throttle is applied — not in braking zones"
+      - "Always report numerical index positions and y-axis values"
+      - "Describe what you see — do not interpret or diagnose"
 
   brake:
     title: "Brake Application: Expert vs Player"
@@ -83,38 +116,58 @@ graphs:
       - "Grid lines for reading exact values"
     what_to_describe: >
       Write a single cohesive paragraph describing the brake graph.
-      Identify the expert and player traces from the legend and state
-      the colour of each.  Cover the braking initiation index for both
-      traces — where each rises from zero, which begins first, and the
-      index gap.  Describe the application ramp steepness for each and
-      the approximate indices from zero to peak.  Report the peak brake
-      pressure for each trace numerically.  Describe the release phase
-      for each — the index where pressure begins decreasing, the rate
-      of decrease (sharp drop, gradual trail-off, stepped reduction),
-      and the index where each trace reaches zero.  State the total
-      braking duration (indices from initiation to full release) for
-      each.  If both brake and throttle are visible, mention any index
-      range where both are simultaneously above zero.  Close with the
-      overall shape comparison.
+      For EVERY feature below, report (a) the player value, (b) the
+      expert value, and (c) the directional offset using the canonical
+      comparative phrasing.
+
+      1. Brake initiation onset — index where each trace first rises
+         above ~0.05.  State whether the player "begins braking later
+         than expert" or "earlier than expert" by N indices.
+      2. Application ramp rate — indices each takes from zero to peak
+         pressure.  State whether the player "applies brake more
+         gradually than expert" or "more sharply than expert", with
+         the index spans.
+      3. Peak brake pressure — highest y-value each trace reaches.
+         State whether the player's peak is "lower than expert's" or
+         "higher than expert's" by 0.X.
+      4. Brake release onset — index where each trace begins falling
+         from peak.  State whether the player "begins releasing brake
+         later than expert" or "earlier than expert" by N indices.
+      5. Release rate — how abrupt the drop is, and whether trail
+         braking is present (gradual decrease rather than sharp drop).
+         State whether the player "releases brake more abruptly than
+         expert" or "more gradually than expert"; flag presence /
+         absence of trail braking on each trace.
+      6. Total braking duration — indices from initiation to full
+         release on each trace.  State whether the player's duration
+         is "longer than expert" or "shorter than expert" by N indices.
+      7. If both brake and throttle are visible, state any index range
+         where the player has both above zero simultaneously, and
+         whether the expert shows the same overlap.
+
+      Identify the expert and player lines from the legend BEFORE
+      starting; state which colour is which.
     description_vocabulary:
-      initiation_index: "The index where the trace first rises above ~0.05"
-      peak_pressure: "The highest y-value reached, read from the y-axis"
-      release_onset: "The index where the trace begins decreasing from its peak or plateau"
-      release_rate: "Described relative to the expert's release — sharper than expert, similar to expert, or more gradual than expert; flag as trail-brake if pressure decreases gradually rather than abruptly, or stepped if it drops in stages"
-      braking_duration: "Count of indices from initiation to full release (trace returns to ~0)"
-      trail_braking: "A phase where brake pressure decreases gradually rather than releasing abruptly"
+      trail_braking: "A phase where brake pressure decreases gradually rather than releasing abruptly. Report whether each trace exhibits it, and over which index range."
     comparative_vocabulary:
-      - "The player's brake trace begins rising at index 55, ten indices later than the expert's at index 45."
-      - "The player's peak brake pressure (0.62) is lower than the expert's (0.85)."
-      - "The player applies the brake more gradually than the expert, taking 8 indices to reach peak versus the expert's 3."
-      - "The player releases the brake more gradually than the expert, taking 12 indices to reach zero versus the expert's 4."
-      - "The player's total braking duration (24 indices) is longer than the expert's (18 indices)."
-      - "The player applies throttle and brake simultaneously between indices 70 and 78."
+      - "The player begins braking at index 55, ten indices later than the expert at index 45."
+      - "The player begins braking at index 38, seven indices earlier than the expert at index 45."
+      - "The player's peak brake pressure (0.62) is lower than the expert's (0.85) by 0.23."
+      - "The player's peak brake pressure (0.95) is higher than the expert's (0.78) by 0.17."
+      - "The player applies brake more gradually than the expert, taking 8 indices to reach peak versus the expert's 3."
+      - "The player applies brake more sharply than the expert, taking 2 indices to reach peak versus the expert's 6."
+      - "The player begins releasing brake at index 96, six indices later than the expert at index 90."
+      - "The player begins releasing brake at index 78, four indices earlier than the expert at index 82."
+      - "The player releases brake more gradually than the expert, taking 12 indices to reach zero versus the expert's 4 — i.e. trail braking is present on the player's trace, absent on the expert's."
+      - "The player releases brake more abruptly than the expert, taking 2 indices to reach zero versus the expert's 8."
+      - "The player's braking duration (24 indices) is longer than the expert's (18 indices) by 6 indices."
+      - "The player's braking duration (12 indices) is shorter than the expert's (18 indices) by 6 indices."
+      - "The player applies throttle and brake simultaneously between indices 70 and 78 (8 indices); the expert shows no overlap in this segment."
     common_description_errors:
-      - "Do NOT confuse brake release (trace returning to zero) with brake reduction (trace decreasing but not to zero, i.e. trail braking) — describe what the trace actually does"
-      - "Do NOT omit the expert comparison — always describe BOTH traces, not just the player"
+      - "Do NOT confuse brake release (trace returning to zero) with brake reduction (trace decreasing but not to zero, i.e. trail braking) — describe what the trace actually does and whether the expert does the same"
+      - "Do NOT report a player metric without also reporting the expert's matching metric and the directional offset (later/earlier, lower/higher, more gradual/sharper, longer/shorter)"
       - "Do NOT round indices to 'about halfway' — read the x-axis grid and report specific indices"
-      - "Do NOT interpret or diagnose — describe what you see, not what it means"
+      - "Do NOT interpret or diagnose — describe what you see and the comparison, not what it means for driving quality"
 
   time_delta:
     title: "Time Difference to Expert"
@@ -125,38 +178,54 @@ graphs:
     visual_elements:
       - "Single line trace showing cumulative time gap"
       - "A RISING line means the gap is growing (player falling further behind)"
-      - "A FALLING line means the gap is shrinking (player catching up)"
+      - "A FALLING line means the gap is shrinking (player catching up / recovering)"
       - "A FLAT line means the gap is stable"
     what_to_describe: >
       Write a single cohesive paragraph describing the time delta graph.
-      State the value at the leftmost index and the value at the
-      rightmost index in milliseconds, then state the net change
-      (whether the gap increased, decreased, or stayed the same and
-      by how many milliseconds).  Describe the overall shape of the
-      line using terms such as continuously rising, continuously falling,
-      flat, rises then flattens, rises then falls, or oscillating.
-      Identify any inflection points — indices where the line changes
-      direction — and report the index and delta value at each.
-      Describe the steepness of any rising or falling sections (steep
-      rise if >0.1 s over ~20 indices, gradual, slight drift).  Note
-      any discontinuities that look like data artifacts rather than
-      smooth trends.
+      Because this graph IS the player-vs-expert comparison, every
+      observation is inherently comparative.
+
+      1. Starting and ending values — value at the leftmost index and
+         the rightmost index in milliseconds.  State the net change as
+         "the gap to expert grows by N ms" or "the gap to expert shrinks
+         by N ms" or "the gap to expert is stable at N ms".
+      2. Overall shape — continuously rising, continuously falling,
+         flat, rises then flattens, rises then falls, or oscillating.
+      3. Rate-of-change differences — split the trace into segments where the
+         slope has changed, then focus on how the rate of change
+         DIFFERS between adjacent segments.  For each segment, report the
+         start index and end index, and describe how its rate of change
+         compares to the previous segment: steeper (gap growing/shrinking
+         faster), shallower (gap growing/shrinking slower), or reversed
+         (sign flip).  E.g. "the gap grows slowly from index 0 to 10,
+         then grows much more steeply from index 10 to 15 (rate of change
+         increases), then shrinks from index 15 to 30 (rate of change
+         reverses sign)".  A sign flip between consecutive segments is a
+         direction reversal — call it out explicitly.  A large change in
+         magnitude without a sign flip is a pace shift — call that out too.
+      4. Any sustained flat sections — index range and value, indicating
+         "the player matches the expert's pace through this section".
+
+      Always report the SIGN explicitly: positive = player BEHIND
+      expert, negative = player AHEAD of expert.
     description_vocabulary:
-      rising: "Time delta value is increasing (gap growing)"
-      falling: "Time delta value is decreasing (gap shrinking)"
-      flat: "Time delta value is approximately constant (gap stable)"
-      inflection_point: "An index where the trend changes direction"
-      net_change: "Ending value minus starting value"
-      steep: "A change of >0.1 seconds over a short span (~20 indices)"
-      gradual: "A slow, steady change over many indices"
+      gap_to_expert: "The y-value of the line. Positive = player is behind expert (losing time); negative = player is ahead of expert (gaining time). Report values with explicit sign and the canonical phrase 'gap to expert grows / shrinks / is stable'."
+      losing_time_to_expert: "A rising section — the player is falling further behind the expert. Report start index, end index, and the ms gained by the expert across the section."
+      gaining_time_on_expert: "A falling section — the player is catching up to (or pulling ahead of) the expert. Report start index, end index, and ms recovered."
+      stable_section: "A flat section — the player matches the expert's pace. Report start index, end index, and the value the gap holds at."
+      inflection: "An index where the trend reverses (from losing-to-gaining or gaining-to-losing). Report index and delta value at the inflection."
+      net_change: "Ending value minus starting value, in ms. The single number that summarises whether the gap to expert grew or shrank across the segment."
     comparative_vocabulary:
       - "The player loses 320 ms to the expert across the segment (gap rises from 0 ms to 320 ms)."
-      - "The player gains 80 ms back on the expert between indices 60 and 110."
+      - "The player gains 80 ms on the expert between indices 60 and 110 (gap falls from 240 ms to 160 ms)."
+      - "The gap to expert is stable at ~50 ms between indices 30 and 90, then begins growing rapidly after index 90."
+      - "The line inflects at index 95 (delta 280 ms): before that the player is losing time to expert, after that the player is gaining time on expert."
+      - "The player matches the expert's pace through the first half of the segment (gap holds at 0 ms from index 0 to index 80)."
     common_description_errors:
       - "Do NOT ignore the SCALE of the y-axis — a 0.01s change is negligible, a 0.5s change is large.  Always read and report the actual values."
       - "Do NOT describe every micro-fluctuation as a trend change — only report clear, sustained directional changes"
-      - "Do NOT interpret why the delta is changing — only describe WHAT the line does (rises, falls, inflection at index X)"
-      - "Do NOT confuse the sign — positive means the player is BEHIND, negative means AHEAD"
+      - "Do NOT confuse the sign — positive means the player is BEHIND expert (losing time), negative means AHEAD of expert (gaining time)"
+      - "Do NOT interpret why the delta is changing — describe WHAT the line does and use the canonical comparative phrasing ('gap to expert grows', 'player gains time on expert', etc.)"
 
   speed_delta:
     title: "Speed Difference (Expert - Player)"
@@ -166,34 +235,47 @@ graphs:
       y: "Speed difference in km/h (positive = expert faster, negative = player faster)"
     visual_elements:
       - "Single line trace oscillating around zero"
-      - "Values above zero mean the expert is faster at that index"
-      - "Values below zero mean the player is faster at that index"
+      - "Values above zero mean the expert is faster than the player at that index"
+      - "Values below zero mean the player is faster than the expert at that index"
     what_to_describe: >
       Write a single cohesive paragraph describing the speed delta graph.
-      State the overall bias — whether the line sits mostly above zero,
-      mostly below zero, or balanced.  Report the peak positive value
-      (the maximum km/h where the expert is faster) with its index, and
-      the peak negative value (the maximum km/h where the player is
-      faster) with its index.  Describe the shape — smooth or spiky,
-      one dominant peak or multiple, any sustained section above or
-      below zero.  Note any sustained sections where the absolute
-      difference exceeds 20 km/h (with index range and magnitude) and
-      any sustained sections where the difference stays near zero
-      (within ±5 km/h).  Report the index positions where the line
-      crosses zero.
+      Because this graph IS the player-vs-expert speed comparison, every
+      observation is inherently comparative.
+
+      1. Overall bias — does the line sit "mostly above zero (expert
+         faster than player)", "mostly below zero (player faster than
+         expert)", or "balanced around zero"?
+      2. Peak positive value — the maximum km/h the expert is faster
+         than the player, with the index.  Report as "expert faster
+         than player by N km/h at index X".
+      3. Peak negative value — the maximum km/h the player is faster
+         than the expert, with the index.  Report as "player faster
+         than expert by N km/h at index X".
+      4. Sustained sections where the absolute difference exceeds
+         20 km/h — index range and magnitude.  Distinguish sustained
+         "expert faster than player" sections from sustained "player
+         faster than expert" sections.
+      5. Sustained sections where the difference stays within ±5 km/h
+         (player matches expert's speed) — index range.
+      6. Zero-crossing indices — where the line crosses from positive
+         to negative or vice versa.
     description_vocabulary:
-      positive_region: "Expert faster than player (line above zero)"
-      negative_region: "Player faster than expert (line below zero)"
-      zero_crossing: "Index where the line crosses from positive to negative or vice versa"
-      sustained_gap: "A section where the absolute difference stays above a threshold for many indices"
-      peak_difference: "The largest absolute value of the speed difference in the segment"
+      expert_faster_than_player: "A section where the y-value is above zero. Report start index, end index, and peak magnitude in km/h."
+      player_faster_than_expert: "A section where the y-value is below zero. Report start index, end index, and peak magnitude in km/h."
+      speed_match: "A section where the absolute difference stays within ±5 km/h — player matches expert's speed."
+      large_gap_section: "A section where the absolute difference exceeds 20 km/h. Report start index, end index, peak magnitude, and direction (expert faster or player faster)."
+      zero_crossing: "Index where the line crosses zero. Report whether the crossing is from 'expert faster' to 'player faster' or vice versa."
+      peak_speed_gap: "The single largest absolute value of the speed difference in the segment, with index and direction."
     comparative_vocabulary:
-      - "The expert is faster than the player by up to 28 km/h around index 75."
-      - "The player is faster than the expert by 6 km/h between indices 110 and 130."
+      - "The expert is faster than the player by up to 28 km/h around index 75; the gap exceeds 20 km/h between indices 65 and 85."
+      - "The player is faster than the expert by 6 km/h between indices 110 and 130, then the line returns to zero."
+      - "The line stays within ±5 km/h between indices 0 and 60 — the player matches the expert's speed in the opening third of the segment."
+      - "The line crosses zero at index 92, transitioning from 'expert faster than player' to 'player faster than expert'."
+      - "The peak speed gap is 35 km/h at index 78, with the expert faster than the player."
     common_description_errors:
-      - "Do NOT read the sign backwards — positive = expert faster, not player faster"
-      - "Do NOT describe brief single-index spikes as sustained differences — report their duration"
-      - "Do NOT interpret causation — describe the speed difference, not why it exists"
+      - "Do NOT read the sign backwards — positive = expert faster than player, negative = player faster than expert"
+      - "Do NOT describe brief single-index spikes as sustained gaps — report their duration; only call something 'sustained' if it spans many indices"
+      - "Do NOT interpret causation — describe the speed difference and use the canonical comparative phrasing ('expert faster than player by N km/h', 'player faster than expert by N km/h')"
 
   speed:
     title: "Speed Trace: Expert vs Player"
@@ -207,72 +289,127 @@ graphs:
       - "Speed dropping = deceleration/braking, speed minimum = apex/lowest speed, speed rising = acceleration"
     what_to_describe: >
       Write a single cohesive paragraph describing the speed graph.
-      Identify the expert and player traces from the legend and state
-      the colour of each.  Describe the overall shape of each trace
-      using terms such as V-shape, U-shape, flat-top, descending, or
-      ascending.  Report the entry speed for each trace (km/h at the
-      leftmost index), the minimum speed and the index where it occurs,
-      and the exit speed at the rightmost index.  Describe the
-      deceleration phase for each — where speed starts dropping,
-      how steeply, and over how many indices each trace falls from
-      entry to minimum.  Describe the acceleration phase — where speed
-      starts rising after the minimum and how steeply.  Note any flat
-      spots, steps, or plateaus in the player's trace, and any extended
-      section where the player's speed holds constant at a low value
-      (~60–80 km/h).
+      For EVERY feature below, report (a) the player value, (b) the
+      expert value, and (c) the directional offset using the canonical
+      comparative phrasing.
+
+      1. Entry speed — speed at the leftmost index for each trace.
+         State whether the player's entry speed is "lower than expert's"
+         or "higher than expert's" by N km/h.
+      2. Minimum speed — the lowest speed each trace reaches and the
+         index at which it occurs.  State whether the player's minimum
+         is "lower than expert's" or "higher than expert's" by N km/h,
+         and whether the player reaches the minimum "earlier than
+         expert" or "later than expert" by N indices.
+      3. Exit speed — speed at the rightmost index for each trace.
+         State whether the player's exit speed is "lower than expert's"
+         or "higher than expert's" by N km/h.
+      4. Deceleration onset — where each trace starts dropping.  State
+         whether the player begins decelerating "earlier than expert"
+         or "later than expert" by N indices.
+      5. Acceleration onset — where each trace starts rising again.
+         State whether the player begins accelerating "earlier than
+         expert" or "later than expert" by N indices.
+      6. Overall shape comparison — V-shape, U-shape, flat-top,
+         descending, ascending — and whether the player and expert
+         shapes match or differ.
+      7. Any flat spot, plateau, or extended low-speed section in the
+         player's trace not present in the expert's.
+
+      Identify the expert and player lines from the legend BEFORE
+      starting; state which colour is which.
     description_vocabulary:
-      entry_speed: "Speed at the leftmost index of the segment"
-      minimum_speed: "The lowest speed value and the index where it occurs"
-      exit_speed: "Speed at the rightmost index of the segment"
-      deceleration_onset: "The index where speed starts decreasing"
-      acceleration_onset: "The index where speed starts increasing after the minimum"
-      flat_spot: "A section where speed holds approximately constant for several indices"
-      speed_step: "A sudden small jump or drop in speed (possibly a gear shift)"
+      entry_speed_offset: "Δ entry speed (player − expert) in km/h. Reported as 'player's entry speed is lower than expert's by N km/h' or 'higher than expert's by N km/h'."
+      minimum_speed_offset: "Δ minimum speed (player − expert) in km/h. Reported as 'player's minimum speed is lower than expert's by N km/h' or 'higher than expert's by N km/h'."
+      minimum_index_offset: "Indices the player reaches the minimum relative to the expert. Reported as 'player reaches minimum speed earlier than expert by N indices' or 'later than expert by N indices'."
+      exit_speed_offset: "Δ exit speed (player − expert) in km/h. Reported as 'player's exit speed is lower than expert's by N km/h' or 'higher than expert's by N km/h'."
+      deceleration_onset_offset: "Indices the player begins decelerating relative to expert. Reported as 'player begins decelerating later than expert by N indices' or 'earlier than expert by N indices'."
+      acceleration_onset_offset: "Indices the player begins accelerating relative to expert. Reported as 'player begins accelerating later than expert by N indices' or 'earlier than expert by N indices'."
+      shape_mismatch: "A region where the player's curve shape differs from the expert's (e.g. flat spot, plateau, double-dip) not present in the expert. Report start index, end index, and the kind of mismatch."
     comparative_vocabulary:
-      - "The player's entry speed (172 km/h) is lower than the expert's (188 km/h)."
-      - "The player's minimum speed (78 km/h at index 92) is lower than the expert's (95 km/h at index 88)."
-      - "The player's exit speed (134 km/h) is lower than the expert's (152 km/h)."
+      - "The player's entry speed (172 km/h) is lower than the expert's (188 km/h) by 16 km/h."
+      - "The player's entry speed (195 km/h) is higher than the expert's (188 km/h) by 7 km/h."
+      - "The player's minimum speed (78 km/h at index 92) is lower than the expert's (95 km/h at index 88) by 17 km/h, and the player reaches the minimum four indices later than the expert."
+      - "The player's minimum speed (102 km/h at index 86) is higher than the expert's (95 km/h at index 88) by 7 km/h."
+      - "The player's exit speed (134 km/h) is lower than the expert's (152 km/h) by 18 km/h."
       - "The player begins decelerating at index 60, four indices later than the expert at index 56."
+      - "The player begins decelerating at index 50, six indices earlier than the expert at index 56."
+      - "The player begins accelerating at index 100, eight indices later than the expert at index 92."
+      - "The player's trace shows a flat spot between indices 90 and 105 (speed holds at ~78 km/h) not present in the expert's trace, which continues to decelerate then accelerates without plateau."
     common_description_errors:
       - "Do NOT compare values from different phases — report entry vs entry, minimum vs minimum, exit vs exit"
       - "Do NOT confuse the two traces — always verify which line is which from the legend"
+      - "Do NOT report a player speed without also reporting the expert's speed at the matching phase and the directional offset (lower/higher, earlier/later)"
       - "Do NOT skip reporting numerical values — always state km/h figures"
-      - "Do NOT interpret — describe the shape and values, not what they mean for driving quality"
 
   push_limit:
     title: "Driver Push/Limit"
     graph_type: feature_plot
     axes:
       x: "Segment index (time progression left to right)"
-      y: "Push-to-limit metric (higher = closer to car's grip limit)"
+      y: "Tire grip utilisation (1.0 = tire operating at its peak grip limit; >1.0 = tire pushed beyond peak / saturated)"
     visual_elements:
-      - "Single line trace showing grip utilisation over the segment"
-      - "Higher values = driver using more of the car's available grip"
-      - "Spikes indicate moments where the car approached or exceeded grip limits"
+      - "Single line trace showing tire grip utilisation over the segment"
+      - "Reference threshold at y = 1.0 — tire is operating exactly at its peak"
+      - "Values below 1.0 = tire has grip headroom remaining"
+      - "Values above 1.0 = tire is being pushed past its peak (over-limit)"
+      - "Only excursions above 1.0 count as spikes worth flagging"
     what_to_describe: >
       Write a single cohesive paragraph describing the push/limit graph.
-      State the baseline level — the typical value the trace hovers
-      around for most of the segment.  For each spike (sudden increase
-      above baseline), describe where it starts rising, its peak value,
-      the index of the peak, the index where it returns to baseline,
-      its duration in indices, and where it falls within the segment
-      (early, middle, or late third).  If there are multiple spikes,
-      state how many and whether they are isolated or clustered.
-      Describe any sustained high sections (elevated plateau rather than
-      a spike) and any sustained low sections (near zero for many
-      indices).  Close with the overall range — the minimum and maximum
-      values seen across the segment.
+      Note: this graph shows the PLAYER only; comparison is to a
+      typical "balanced" expert pattern (trace stays at or below 1.0
+      with no over-limit excursions).
+
+      The y-axis is normalised so that 1.0 = tire operating at its
+      peak grip.  Only values that exceed 1.0 indicate the tire is
+      being pushed past its limit — these are the spikes you must
+      flag.  Values at or below 1.0 are NOT spikes, regardless of
+      how they rise above the local baseline.
+
+      1. Baseline level — the typical value the trace hovers around
+         for most of the segment (state whether it sits well below
+         1.0, near 1.0, or already at the limit).
+      2. Over-limit spikes (peaks where y > 1.0 ONLY): for each one,
+         report where it starts rising above 1.0, peak value, peak
+         index, where it returns below 1.0, duration in indices
+         spent above 1.0, and where it falls within the segment
+         (early third, middle third, late third).  State whether
+         each over-limit spike falls in a corner-entry phase,
+         mid-corner phase, or corner-exit phase if a trajectory or
+         speed graph is also present.  Do NOT report rises that
+         stay at or below 1.0 as spikes.
+      3. If multiple over-limit spikes: how many, isolated or clustered.
+      4. Sustained over-limit sections (trace held above 1.0 for
+         many indices) — index range and peak level.  Phrase as
+         "tire is sustained over its peak grip across indices N–M".
+      5. Sustained low sections (well below 1.0 for many indices) —
+         index range.
+      6. Overall range — minimum and maximum y-values seen, and
+         explicitly whether the maximum exceeds 1.0.
+
+      The expert's typical push_limit trace stays at or below 1.0
+      throughout — the tire is worked hard but never pushed past
+      its peak.  Any excursion above 1.0 — vivid over-limit spike,
+      sustained over-limit section — is a deviation from the expert
+      pattern.
     description_vocabulary:
-      baseline: "The typical value the trace sits at during normal driving"
-      spike: "A brief sharp increase above the baseline, then return"
-      sustained_elevation: "A section where the value stays high for many indices"
-      sustained_low: "A section where the value stays near zero for many indices"
-      peak_value: "The highest value reached during a spike"
+      baseline: "The typical value the trace sits at during normal driving. State its level relative to the 1.0 peak threshold (e.g. 'well below 1.0', 'just under 1.0', 'riding at 1.0')."
+      peak_threshold: "The y = 1.0 reference line — tire operating at its peak grip. Spikes are defined relative to this threshold, not relative to the local baseline."
+      over_limit_spike: "An excursion where the trace rises ABOVE 1.0. Report start index (where it crosses 1.0), peak index, peak value, return-below-1.0 index, and duration spent above 1.0. Tag with the corner phase (entry / mid-corner / exit / straight) if context is available. Rises that stay at or below 1.0 are NOT spikes."
+      sustained_over_limit: "A section where the trace stays above 1.0 for many indices. Reported as 'tire is sustained over its peak grip across indices N–M'. Tag with the corner phase."
+      sustained_low: "A section where the value stays well below 1.0 — driver well within grip limits."
+      grip_phase: "Whether an over-limit spike or sustained over-limit section falls in the corner-entry, mid-corner, corner-exit, or straight phase. Use this tag to align with the trajectory and balance graphs."
+    comparative_vocabulary:
+      - "Baseline grip utilisation sits around 0.60 (well below the 1.0 peak); an over-limit spike to 1.18 occurs at index 78 (peak), rising above 1.0 at index 75 and returning below 1.0 by index 83 — 8 indices spent over the limit, falling in the mid-corner phase."
+      - "Two clustered over-limit spikes occur at indices 60–68 and 72–80, peaking at 1.12 and 1.09 respectively — both fall in the corner-entry phase."
+      - "Tire is sustained over its peak grip across indices 80–110 (values held at 1.05–1.15) — sustained over-limit through the corner-exit phase."
+      - "The trace stays at or below 1.0 for the entire segment (max 0.92 at index 84) — tire is never pushed past its peak; no over-limit spike to report."
     common_description_errors:
-      - "Do NOT confuse this metric with speed — push_limit is about grip utilisation, not velocity"
-      - "Do NOT describe the overall level without also describing specific spikes — both matter"
-      - "Do NOT interpret spikes as oversteer or understeer — that requires the balance trajectory graph.  Just describe the spike shape and location."
-      - "Do NOT omit index positions for spikes — report where they occur"
+      - "Do NOT call a rise a 'spike' unless it exceeds 1.0 — values at or below 1.0 mean the tire is still within its peak grip"
+      - "Do NOT confuse this metric with speed — push_limit is about tire grip utilisation, not velocity"
+      - "Do NOT measure spikes against the local baseline — the 1.0 peak threshold is the reference, not the baseline"
+      - "Do NOT interpret over-limit spikes as oversteer or understeer — that requires the balance trajectory graph.  Just describe the spike shape, location, and corner phase."
+      - "Do NOT omit corner-phase tagging — when a trajectory or speed graph is also present, every over-limit spike must be labelled with its corner phase (entry / mid-corner / exit / straight)"
 
   # =========================================================================
   # TRAJECTORY PLOTS (bird's-eye view of the track)
@@ -294,38 +431,69 @@ graphs:
       - "Y-axis is INVERTED (standard for top-down track views)"
     what_to_describe: >
       Write a single cohesive paragraph describing the detailed
-      trajectory graph.  State the direction of travel from the Start
-      (X) marker to the End (O) marker.  Describe the overall shape
-      of the trajectory (single curve, straight, S-shape, hairpin,
-      approach to curve, exit from curve, short transition).  Describe
-      the separation between the player (green) and expert (blue) lines
-      throughout — whether they are close, show a moderate gap, or
-      diverge largely, and which section (entry, mid, exit) has the
-      most separation.  At corner entry describe the relative positions
-      and whether the turn-in points coincide or one stays straight
-      longer.  Near the apex (purple star) describe how close the
-      player's line passes to the inside relative to the expert's.  At
-      corner exit describe whether the player's line opens out to the
-      same width as the expert's or is tighter/wider.  Note any kinks,
-      wobbles, or sharp corrections in the player's line and their
-      approximate location.  If the minimum speed annotation is visible,
-      state its value and location.  If the player's line deviates
-      dramatically with a sharp correction back, describe the location
-      and magnitude.
+      trajectory graph.  Structure your description around the four
+      phases (entry / apex / exit / overall) and for EACH phase report
+      the player line position relative to the expert line using the
+      canonical comparative phrasing.
+
+      1. Direction and shape — verify direction of travel from the
+         Start (X) marker to the End (O) marker.  Describe overall
+         shape (single curve, straight, S-shape, hairpin, approach
+         to curve, exit from curve, short transition).
+      2. Entry phase — where the trajectories leave the start marker.
+         State whether the player's entry line is "tighter than
+         expert (closer to inside)" or "wider than expert (closer to
+         outside)" or "matches expert".  State whether the player
+         turns in "earlier than expert", "later than expert", or "at
+         the same point".
+      3. Apex phase — at the purple-star apex marker.  State whether
+         the player passes "closer to inside than expert (tighter
+         apex)" or "farther from inside than expert (wider apex)".
+         State whether the player reaches the apex "earlier than
+         expert" or "later than expert" along the trajectory.
+      4. Exit phase — where the trajectories converge on the End
+         marker.  State whether the player's exit line is "tighter
+         than expert (uses less track width)" or "wider than expert
+         (uses more track width)" or "matches expert".  State whether
+         the player exits the corner "earlier than expert" or "later
+         than expert" (i.e. straightens the steering sooner or later).
+      5. Overall divergence — name the phase (entry / apex / exit)
+         where the gap between the two lines is largest, and quantify
+         it in plain English (lines are tightly together, moderate
+         gap, large divergence).
+      6. Any kinks, wobbles, or sharp corrections in the player's
+         line — approximate location and magnitude.  Note whether
+         the expert's line is smooth in the same area.
+      7. Minimum speed annotation if visible — state value and
+         location, and which trace (typically the player's) it is on.
     description_vocabulary:
-      inside: "The side of the track closer to the centre of the corner"
-      outside: "The side of the track farther from the centre of the corner"
-      turn_in_point: "Where the trajectory begins curving from a straight path"
-      apex_proximity: "How close the player's line passes to the inside of the corner"
-      track_width_usage: "How much of the available track the player uses on exit"
-      kink: "A sharp, brief deviation in the trajectory that suggests a correction"
-      divergence: "A section where the two lines are far apart"
-      convergence: "A section where the two lines come closer together"
+      entry_line_offset: "Player entry line position vs expert at the start of the curve. Reported as 'player's entry line is tighter than expert (closer to inside)' or 'wider than expert (closer to outside)'."
+      turn_in_offset: "Where the player begins curving from a straight path relative to the expert. Reported as 'player turns in earlier than expert' or 'later than expert'."
+      apex_position_offset: "Player line position at the apex relative to the expert. Reported as 'player passes closer to inside than expert (tighter apex)' or 'farther from inside than expert (wider apex)'."
+      apex_timing_offset: "Where the player reaches the apex along the trajectory relative to the expert. Reported as 'player reaches apex earlier than expert' or 'later than expert'."
+      exit_line_offset: "Player exit line position vs expert. Reported as 'player's exit line is tighter than expert (uses less track width)' or 'wider than expert (uses more track width)'."
+      exit_timing_offset: "Where the player straightens the steering relative to the expert. Reported as 'player exits the corner earlier than expert' or 'later than expert'."
+      divergence_phase: "The phase (entry / apex / exit) where the gap between the player and expert lines is largest. Always state which phase has the largest divergence."
+      off_track: "An excursion outside the track bounds. Reported as 'player goes off track at entry / at exit / on the straight' with approximate index or location."
+      kink: "A sharp brief deviation in the player line that suggests a correction. Report location and whether the expert line is smooth in the same area."
+      cuts_inside: "The player line crosses inside the expert's racing line, shortening the corner — phrase as 'player cuts inside expert's racing line at <location>'."
+    comparative_vocabulary:
+      - "The player's entry line is tighter than the expert (closer to inside) by roughly half a track-width; the player turns in earlier than the expert."
+      - "The player's entry line is wider than the expert (closer to outside); the player turns in later than the expert."
+      - "The player passes farther from the inside at the apex than the expert (wider apex), and reaches the apex later than the expert along the trajectory."
+      - "The player passes closer to the inside at the apex than the expert (tighter apex), and reaches the apex earlier than the expert."
+      - "The player's exit line is tighter than the expert (uses less track width), suggesting the player exits the corner earlier than the expert."
+      - "The player's exit line is wider than the expert (uses more track width); the player exits the corner later than the expert."
+      - "The two lines are tightly together through entry and apex; the largest divergence falls in the exit phase."
+      - "The player goes off track at corner exit, with the trajectory crossing the outside boundary between the apex and the End marker."
+      - "The player cuts inside the expert's racing line near the apex, shortening the corner."
+      - "A sharp kink occurs in the player's line at mid-corner; the expert's line is smooth in the same area, suggesting a correction by the player."
     common_description_errors:
       - "The Y-AXIS IS INVERTED — do not read up/down wrong when describing inside/outside of corners"
       - "Do NOT assume a direction of travel — always verify from the Start (X) and End (O) markers"
+      - "Do NOT describe the player line in isolation — for every phase (entry / apex / exit) state the player's position RELATIVE to the expert line using the canonical phrasing (tighter / wider / matches; earlier / later)"
+      - "Do NOT skip the divergence_phase callout — always name which phase has the largest gap between lines"
       - "Do NOT describe tiny pixel-level differences as meaningful — only report clear, visible separations"
-      - "Do NOT interpret what a trajectory difference means for driving quality — describe the lines and their relative positions"
       - "The purple apex marker is computed by curvature, not track geometry — describe where it is, do not assume it is the 'correct' apex"
 
   trajectory_gas_brake:
@@ -344,31 +512,56 @@ graphs:
       - "Black X = Start, Black O = End"
     what_to_describe: >
       Write a single cohesive paragraph describing the gas/brake
-      trajectory graph.  State the direction of travel from Start (X)
-      to End (O).  Describe the colour sequence along the player's line
-      in travel order — list each colour section and where each
-      transition occurs relative to the corner geometry (before the
-      curve, at curve entry, at the apex area, after the apex, on the
-      straight).  For each colour section describe its length relative
-      to the total trajectory (short section, extended section, brief
-      transition, dominant colour).  Note where the red braking section
-      starts and ends relative to the corner geometry, where the green
-      throttle section resumes after braking, and the position and
-      duration of any yellow coasting sections.  Describe the player's
-      trajectory position relative to the expert's dashed line
-      (inside/outside, separation by section).  Note any mixed or
-      transitional colour sections (e.g., orange) and where they occur.
+      trajectory graph.  Describe both the COLOUR sequence along the
+      player's line AND the player's position RELATIVE to the expert.
+
+      1. Direction of travel from Start (X) to End (O).
+      2. Colour sequence in travel order — list each section
+         (green / red / yellow / orange-mixed) with its location
+         relative to the corner geometry (before the curve, at curve
+         entry, at the apex area, after the apex, on the straight).
+         For each section state its length (short / extended / brief
+         transition / dominant colour).
+      3. Braking zone — where the red section starts and ends
+         relative to the corner geometry.  If the expert dashed line
+         can be referenced, state whether the player's red section is
+         "longer than expert's typical braking zone" or "shorter
+         than expert's typical braking zone", and whether the red
+         section starts "earlier than expert's braking point" or
+         "later than expert's braking point".
+      4. Throttle resumption — where the green section resumes after
+         the braking phase.  State whether throttle resumes "earlier
+         than expert" or "later than expert" relative to the corner
+         exit.
+      5. Yellow / coasting sections — position and duration.  Note
+         that yellow can mean coasting (both pedals zero) or partial
+         overlap (both partly applied) — phrase as "yellow (coast or
+         overlap)".
+      6. Player trajectory position relative to the expert dashed
+         line through entry / apex / exit phases — use the same
+         canonical phrasing as trajectory_detailed (tighter than
+         expert / wider than expert / matches; earlier / later).
+      7. Mixed or transitional colour sections (e.g. orange) — where
+         they occur.
     description_vocabulary:
-      green_section: "Throttle-dominant section (gas > brake)"
-      red_section: "Brake-dominant section (brake > gas)"
-      yellow_section: "Coasting or balanced section (gas ≈ brake ≈ 0, or partial overlap)"
-      colour_transition: "The point along the trajectory where the colour changes"
-      relative_to_corner: "Described as: before curve, at curve entry, at apex area, at curve exit, on the straight"
+      colour_sequence: "Ordered list of green / red / yellow sections along the player line in travel order. Each section is tagged with its location relative to corner geometry (before curve / at entry / at apex / after apex / on straight)."
+      braking_zone_offset: "Player's red section length and start position relative to the expert's typical braking zone. Reported as 'red section starts earlier than expert's braking point' or 'later than expert's braking point', and 'longer than expert's braking zone' or 'shorter than expert's braking zone'."
+      throttle_resume_offset: "Where the green section resumes relative to the expert's. Reported as 'throttle resumes earlier than expert at corner exit' or 'later than expert at corner exit'."
+      coast_or_overlap: "A yellow section. Phrase explicitly as 'yellow (coast or overlap)' since the colour cannot disambiguate the two."
+      relative_to_corner: "Tag for each colour section: before curve / at curve entry / at apex area / at curve exit / on the straight."
+      trajectory_position_offset: "Player line position vs expert line through entry / apex / exit phases, using the same phrasing as trajectory_detailed (tighter than expert / wider than expert / matches expert)."
+    comparative_vocabulary:
+      - "Colour sequence in travel order: green (on straight) → red (extended, starting before curve entry) → yellow (brief, at apex area) → green (resumes after apex, dominant on exit)."
+      - "The red section starts earlier than the expert's typical braking point (braking begins well before the curve) and is longer than the expert's typical braking zone."
+      - "The red section starts later than the expert's braking point and is shorter than expert's — the player brakes deeper into the corner."
+      - "Throttle resumes earlier than the expert at corner exit; green section dominates from just after the apex onward."
+      - "Throttle resumes later than the expert at corner exit; yellow (coast or overlap) section persists through and beyond the apex."
+      - "Through the apex phase the player's line is tighter than the expert (closer to inside); through the exit phase the player's line is wider than the expert (uses more track width)."
     common_description_errors:
       - "Do NOT describe colour transitions without relating them to the corner geometry — state whether each transition is before, at, or after the curve"
-      - "Yellow does NOT necessarily mean 'nothing is happening' — it can mean coast (both zero) or overlap (both partially applied). Describe it as 'yellow (coast or overlap)' and move on."
-      - "Do NOT describe what the colour pattern means for performance — just describe what colours appear where"
-      - "Do NOT forget to describe the trajectory position (inside/outside) in addition to the colours"
+      - "Yellow does NOT necessarily mean 'nothing is happening' — phrase it as 'yellow (coast or overlap)' and move on."
+      - "Do NOT describe what the colour pattern means for performance — describe colours, locations, and the canonical comparative phrasing only"
+      - "Do NOT forget to describe the trajectory POSITION (tighter than expert / wider than expert) in addition to the colours — both feed downstream labels"
 
   trajectory_balance:
     title: "Oversteer/Understeer Balance Trajectory"
@@ -387,31 +580,54 @@ graphs:
       - "IMPORTANT: understeer (blue) is amplified 2x in the colour mapping for visibility"
     what_to_describe: >
       Write a single cohesive paragraph describing the oversteer/
-      understeer balance trajectory graph.  State the direction of
-      travel from Start (X) to End (O).  Describe the colour sequence
-      along the trajectory in travel order with approximate locations
-      relative to the corner geometry.  For each red section state
-      where it falls on the trajectory (entry, mid-corner, exit,
-      straight), how saturated the red is (vivid/dark vs light/faint),
-      and whether it is brief or extended.  For each blue section
-      cover the same detail and note that blue is displayed at 2x
-      amplification so a given blue intensity represents half the
-      actual slip difference of the same red intensity.  Describe
-      white/neutral sections — where they are and how much of the
-      trajectory they cover.  Describe the player's trajectory position
-      relative to the expert's dashed grey line.  Note any abrupt
-      colour changes and their locations.
+      understeer balance trajectory graph.  The expert's reference
+      pattern is mostly neutral (white) with no vivid red or blue
+      sections — anything more vivid is a deviation from the expert
+      balance.
+
+      1. Direction of travel from Start (X) to End (O).
+      2. Colour sequence along the trajectory in travel order with
+         locations relative to corner geometry (entry / mid-corner /
+         exit / straight).
+      3. For each RED section: location, saturation (vivid/dark vs
+         light/faint), duration (brief / extended).  Tag the corner
+         phase explicitly: "rear-slip dominant section at corner
+         entry / at mid-corner / at corner exit".
+      4. For each BLUE section: location, saturation, duration.  Tag
+         the corner phase explicitly: "front-slip dominant section
+         at corner entry / at mid-corner / at corner exit".  ALWAYS
+         note the 2x amplification — a given blue intensity represents
+         half the actual slip difference of the same red intensity.
+      5. WHITE / neutral sections — where they are and how much of
+         the trajectory they cover.  Neutral sections indicate the
+         player matches the expert's balanced state.
+      6. Player trajectory position relative to the expert dashed
+         line through entry / apex / exit phases (tighter than expert
+         / wider than expert / matches expert).
+      7. Abrupt colour changes — locations where colour shifts
+         sharply (e.g. blue to red), which often indicates a quick
+         transition between slip modes.
     description_vocabulary:
-      red_section: "Rear-slip-dominant section (rear tyres slipping more than fronts)"
-      blue_section: "Front-slip-dominant section (front tyres slipping more than rears)"
-      neutral_section: "Balanced section (similar front and rear slip angles)"
-      saturation: "How vivid or intense the colour is — vivid = strong imbalance, faint = mild imbalance"
-      amplification_note: "Blue is displayed at 2x amplification — a given blue intensity represents half the actual slip difference of the same red intensity"
+      rear_slip_dominant: "A red section — rear tyres slipping more than fronts. ALWAYS tag with corner phase: 'rear-slip dominant at corner entry / mid-corner / corner exit'."
+      front_slip_dominant: "A blue section — front tyres slipping more than rears. ALWAYS tag with corner phase. Note 2x amplification: a faint blue still represents real slip imbalance."
+      neutral_section: "A white section — player matches the expert's balanced state. Report start index/location and end."
+      saturation: "Colour intensity — vivid = strong slip imbalance, faint = mild imbalance. Always pair with the corner-phase tag."
+      amplification_note: "Blue is displayed at 2x amplification — a given blue intensity represents half the actual slip difference of the same red intensity. State this whenever a blue section is described."
+      trajectory_position_offset: "Player line position vs expert line through entry / apex / exit phases, using the same phrasing as trajectory_detailed (tighter than expert / wider than expert / matches expert)."
+      abrupt_colour_change: "An index/location where colour shifts sharply (e.g. blue to red, vivid to neutral). Often co-occurs with a push_limit spike."
+    comparative_vocabulary:
+      - "A vivid red section appears at corner entry (rear-slip dominant at corner entry, extended) before transitioning to neutral white through mid-corner."
+      - "A faint blue section appears at corner exit (front-slip dominant at corner exit, brief); note 2x amplification — actual imbalance is half what the colour intensity suggests."
+      - "A vivid red section appears at corner exit (rear-slip dominant at corner exit) — the player line is wider than the expert through the same phase."
+      - "Vivid blue at corner entry (front-slip dominant at corner entry, extended); the player line is wider than the expert through entry."
+      - "The trajectory is mostly neutral white throughout the segment — player matches the expert's balanced state."
+      - "An abrupt colour change from vivid blue to vivid red occurs at mid-corner — quick transition from front-slip-dominant to rear-slip-dominant."
     common_description_errors:
-      - "Do NOT forget the 2x understeer amplification — always note that blue is amplified when describing blue sections"
-      - "Do NOT confuse entry vs exit — verify travel direction from Start/End markers before describing which part of the corner a colour section is in"
-      - "Do NOT interpret the colours as good or bad — describe what colours appear where, and let downstream nodes draw conclusions"
-      - "Do NOT skip describing neutral sections — knowing where the car IS balanced is as important as where it is not"
+      - "Do NOT forget the 2x understeer amplification — always note it whenever describing blue sections"
+      - "Do NOT confuse entry vs exit — verify travel direction from Start/End markers before tagging corner phase"
+      - "Do NOT skip the corner-phase tag — every red and blue section MUST be labelled 'at corner entry / at mid-corner / at corner exit / on the straight'"
+      - "Do NOT interpret the colours as good or bad — describe colours, corner phase, saturation, and the trajectory position offset; let downstream nodes draw conclusions"
+      - "Do NOT skip describing neutral sections — knowing where the player MATCHES the expert balanced state is as important as where it does not"
 
 # =============================================================================
 # Cross-graph description guidelines
@@ -419,47 +635,67 @@ graphs:
 # When the step includes multiple graph types, these guidelines tell the
 # VLM how to cross-reference observations across graphs for a more
 # complete description.  Still description-only — no diagnosis.
+# Every cross-reference must use the same canonical comparative phrasing.
 # =============================================================================
 
 cross_graph_guidelines:
 
   brake_and_speed: >
-    When both the BRAKE graph and SPEED graph are present, cross-reference
-    your descriptions: report whether the index where brake pressure rises
-    corresponds to the index where speed starts decreasing.  Report whether
-    the index where brake pressure returns to zero corresponds to the speed
-    minimum.  If they do not align, describe the gap in indices.
+    When both BRAKE and SPEED graphs are present: cross-reference the
+    timing offsets.  If the player's brake-initiation index lags the
+    expert's by N indices AND the player's deceleration-onset index on
+    the speed graph lags by ~N indices, state both offsets in the same
+    sentence.  Likewise, report whether the index where each player
+    trace's brake returns to zero corresponds to the player's minimum
+    speed index, and whether that alignment matches the expert's.
+    If the offsets differ by more than 3 indices, describe the gap
+    explicitly.
 
   throttle_and_speed: >
-    When both the THROTTLE graph and SPEED graph are present: report whether
-    the index where throttle rises corresponds to the index where speed
-    starts increasing.  If there is a delay between throttle application and
-    speed increase, describe how many indices the delay spans.
+    When both THROTTLE and SPEED graphs are present: report the
+    player's throttle-onset offset relative to expert AND the player's
+    acceleration-onset offset relative to expert in the same sentence.
+    If there is a delay between the player's throttle application and
+    the player's speed beginning to increase, describe it as "player
+    has throttle applied for N indices before speed begins to rise"
+    and state whether the expert shows the same delay.
 
   time_delta_and_features: >
-    When the TIME DELTA graph is present alongside brake, throttle, or speed
-    graphs: describe which sections of the time delta line (rising, flat,
-    falling) align with which index ranges on the feature graphs.  For
-    example: "The time delta rises between index 100–150, which corresponds
-    to the braking zone on the brake graph."
+    When the TIME DELTA graph is present alongside brake, throttle, or
+    speed graphs: describe which sections of the time delta line
+    (gap-to-expert grows / shrinks / is stable) align with which index
+    ranges on the feature graphs.  For example: "The gap to expert
+    grows between indices 100–150, which corresponds to the braking
+    zone where the player's brake-initiation lags the expert by 10
+    indices and the player's peak brake pressure is lower than the
+    expert's by 0.20."
 
   trajectory_and_features: >
-    When trajectory plots and feature plots are both present: describe which
-    spatial sections of the trajectory (entry, apex, exit) correspond to
-    which index ranges on the feature plots.  This helps link "where on
-    track" to "when in the data".
+    When trajectory plots and feature plots are both present: describe
+    which spatial sections of the trajectory (entry / apex / exit /
+    straight) correspond to which index ranges on the feature plots.
+    Example: "The brake graph's index 50–80 (where the player begins
+    braking later than the expert by 8 indices) corresponds to the
+    corner-entry phase on the trajectory plot, where the player's
+    entry line is wider than the expert."
 
   balance_and_push_limit: >
     When the BALANCE trajectory and PUSH_LIMIT graph are both present:
     describe whether any push_limit spikes occur at the same segment
     section as red or blue colour sections on the balance trajectory.
-    Report the co-occurrence without interpreting it.
+    Use the canonical phrasing: "a push_limit spike at index N
+    co-occurs with a vivid red (rear-slip dominant) section at corner
+    entry on the balance trajectory" — report co-occurrence without
+    interpreting it.
 
   brake_and_throttle_overlap: >
-    When both BRAKE and THROTTLE graphs are present: describe any index
-    range where BOTH traces are simultaneously above zero.  Report the
-    start index, end index, and the approximate values of each trace
-    during the overlap.
+    When both BRAKE and THROTTLE graphs are present: describe any
+    index range where the player has BOTH traces simultaneously above
+    zero.  Report start index, end index, the approximate values of
+    each trace during the overlap, AND whether the expert shows the
+    same overlap.  Phrase as "player applies throttle and brake
+    simultaneously between indices N–M (N indices); the expert shows
+    no overlap / shows overlap of M indices in this segment".
 
 # =============================================================================
 # Trajectory shape description guide
@@ -472,10 +708,12 @@ trajectory_shape_vocabulary: >
   Use these terms when describing the overall shape of a trajectory:
   - "Single curve": The trajectory follows one continuous arc from Start to End.
   - "Straight": The trajectory is essentially a straight line with minimal curvature.
-  - "Approach to curve": The trajectory starts straight and begins curving toward the End marker.
-  - "Exit from curve": The trajectory starts curved and straightens out toward the End marker.
+  - "Approach to corner": The trajectory starts straight and begins curving toward the End marker.
+  - "Exit corner leading to straight": The trajectory starts curved and straightens out toward the End marker.
   - "S-shape / chicane": The trajectory changes direction at least twice (left-right-left or right-left-right).
   - "Hairpin": A very tight, ~180-degree turn.
-  - "Short transition": A brief section between two curves, neither a full straight nor a full corner.
-  Describe the shape first, then the details.  The shape tells downstream
-  nodes what type of segment this is.
+  - "Between consecutive corners": A brief transition between two corners — neither a full straight nor a full corner.
+  - "Consecutive corners with no straight in between": Multiple corners with no intervening straight (esses / chicane complex).
+  Describe the shape first, then the per-phase comparative details (entry / apex / exit).
+  These shape terms intentionally mirror the segment_type labels (ST1–ST6) so
+  downstream nodes can match the description directly.
