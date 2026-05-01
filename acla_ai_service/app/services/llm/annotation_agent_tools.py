@@ -101,6 +101,12 @@ AGENT_GRAPH_DEFINITIONS: List[Dict[str, Any]] = [
             "Mirrors the Balance colour mode in the human annotation track map."
         ),
     },
+    {
+        "id": "gear",
+        "title": "Gear Selection: Expert vs Player",
+        "columns": ["expert_optimal_gear", "Physics_gear"],
+        "description": "Expert vs player gear traces (integer steps).",
+    },
 ]
 
 # ---------------------------------------------------------------------------

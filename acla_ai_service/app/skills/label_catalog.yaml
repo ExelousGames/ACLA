@@ -24,13 +24,11 @@ labels:
   "1":
     name: "Overtaking"
     type: main
-    description: >
-      The driver is attempting to pass another car, or is being passed.
-      This involves deliberate line deviation, late braking, or exploiting
-      a speed differential to change track position.  Key telemetry
-      indicators include unusual speed differentials between the player
-      and nearby cars, late braking patterns, and deliberate trajectory
-      deviations from the optimal racing line.
+    description: "Driver passing or being passed by another car."
+    match_phrases:
+      - "deliberate line deviation"
+      - "late braking to overtake"
+      - "speed differential to change position"
     annotation_guideline: >
       Analyze the driver's attempt to pass an opponent.  Look for late
       braking, line deviation to find a gap, and speed differentials.
@@ -42,13 +40,12 @@ labels:
   "2":
     name: "Missing data"
     type: main
-    description: >
-      The segment contains gaps, dropouts, or corrupted telemetry.
-      Sensor data may drop to zero, become constant unexpectedly, or
-      show physically impossible values.  Typical signatures are
-      zero/NaN dropouts across telemetry channels, flat-line segments
-      in otherwise dynamic signals, and physically impossible or
-      out-of-range values.
+    description: "Segment contains gaps, dropouts, or corrupted telemetry."
+    match_phrases:
+      - "sensor data drops to zero"
+      - "flat-line in otherwise dynamic signal"
+      - "physically impossible values"
+      - "NaN dropout"
     annotation_guideline: >
       This segment contains gaps or corrupted telemetry.  Identify if
       the sensor data drops to zero or becomes inconsistent unexpectedly.
@@ -59,13 +56,13 @@ labels:
   EA:
     name: "Expert Adherence"
     type: main
-    description: >
-      The driver is closely following the expert's optimal racing line
-      and speed profile.  The time difference to the expert is stable
-      or decreasing.  No significant errors are present.  In the
-      telemetry the Time Difference to Expert graph should be flat or
-      decreasing, the speed delta near zero, and the trajectory closely
-      following the expert line.
+    description: "Driver closely follows the expert's line and speed profile."
+    match_phrases:
+      - "gap to expert is stable"
+      - "gap to expert shrinks"
+      - "player matches the expert"
+      - "speed delta near zero"
+      - "trajectory matches expert"
     annotation_guideline: >
       The driver is following the optimal racing line and speed profile
       closely.  Nothing needs to be labeled right now.
@@ -76,13 +73,11 @@ labels:
   "4":
     name: "Pit Stop"
     type: main
-    description: >
-      The driver is entering, waiting in, or exiting the pit lane.
-      This involves a significant speed reduction and a distinct
-      trajectory deviation into the pit area.  Telemetry signatures
-      include a dramatic speed reduction, a trajectory deviation into
-      the pit lane, and a constant low speed consistent with the pit
-      speed limiter being engaged.
+    description: "Driver entering, in, or exiting the pit lane."
+    match_phrases:
+      - "dramatic speed reduction"
+      - "trajectory deviation into pit lane"
+      - "constant low speed pit limiter"
     annotation_guideline: >
       The driver is entering, waiting in, or exiting the pit lane.
       Look for significant speed reduction and distinct trajectory
@@ -94,19 +89,16 @@ labels:
   RM:
     name: "Recovery & Merge"
     type: main
-    description: >
-      The driver is recovering from a prior incident — such as going
-      off-track, exiting the pit, or having a speed deficit — and is
-      merging back onto the optimal racing line.  The time delta to
-      the expert may initially be large but should be closing.
-      Telemetry indicators include recovery from low speed, off-track
-      excursions, or pit exit; a decreasing time delta to the expert;
-      and trajectory converging back toward the optimal line.  Specific
-      recovery sub-labels describe the root cause.
+    description: "Driver recovering from an incident and merging back to the racing line."
+    match_phrases:
+      - "gap to expert shrinks"
+      - "player gains time on expert"
+      - "trajectory converging toward expert"
+      - "time delta falling"
     annotation_guideline: >
       The driver is recovering from a mistake such as slower speed.
       Identify if the driver is recovering from low speed, off-track,
-      or merging back to the expert line.
+      or merging back to the expert line. Time delta must be decreasing.
     parent: null
     children: ["RM1", "RM2", "RM5", "RM6", "RM7", "RM8", "RM9", "RM10", "RM11"]
     exclusive_with: ["EA", "2"]
@@ -114,16 +106,12 @@ labels:
   MS:
     name: "Mistake"
     type: main
-    description: >
-      The driver has committed a driving error that results in time
-      loss or vehicle instability.  The time difference to the expert
-      increases continuously without a quick recovery.  In the
-      telemetry, the Time Difference to Expert graph typically shows a
-      continuously increasing gap; throttle and brake traces diverge
-      from the expert; the push_limit graph may reveal understeer or
-      oversteer causing lower speed; and the Trajectory map can show
-      deviations from the optimal line.  Sub-labels describe the
-      specific root cause of the mistake.
+    description: "Driver error causing time loss or vehicle instability."
+    match_phrases:
+      - "gap to expert grows"
+      - "player loses time to expert"
+      - "time delta rising"
+      - "diverges from expert"
     annotation_guideline: >
       The driver has committed a driving error resulting in time loss
       or instability.
@@ -131,7 +119,7 @@ labels:
       normally causes this time gap to increase continuously without
       decreasing shortly after.
       Step 2: Examine the differences in 'throttle' between the player
-      and the expert to identify when the driver applyed too much or too little throttle, or got on/off the throttle at the wrong time.
+      and the expert to identify when the driver applied too much or too little throttle, or got on/off the throttle at the wrong time.
       Step 3: Examine the differences in 'brake' between the player
       and the expert to identify if the driver braked too hard or too softly, or got on/off the brake at the wrong time.
       Step 4: Examine the 'push_limit' graph to find understeer or
@@ -194,12 +182,7 @@ labels:
   brands_hatch:
     name: "Brands Hatch"
     type: circuit
-    description: >
-      The segment takes place on the Brands Hatch circuit.  The
-      Trajectories Overlay can be used to identify which specific
-      named corner or straight section the segment corresponds to.
-      The shape of the segment should also be described using Segment
-      Type labels (ST1–ST6).
+    description: "Segment on the Brands Hatch circuit."
     annotation_guideline: >
       Look at the Trajectories Overlay and identify specific named
       corners or straight sections of the Brands Hatch circuit.  Also,
@@ -229,12 +212,7 @@ labels:
   silverstone:
     name: "Silverstone"
     type: circuit
-    description: >
-      The segment takes place on the Silverstone circuit.  The
-      Trajectories Overlay can be used to identify which specific
-      named corner or straight section the segment corresponds to.
-      The shape of the segment should also be described using Segment
-      Type labels (ST1–ST6).
+    description: "Segment on the Silverstone circuit."
     annotation_guideline: >
       Look at the Trajectories Overlay and identify specific named
       corners or straight sections of the Silverstone circuit.  Also,
@@ -271,10 +249,11 @@ labels:
   RM1:
     name: "Recover from off-track"
     type: sub
-    description: >
-      The driver went off the circuit surface and is now returning
-      to the track.  There may be a large trajectory deviation and
-      sudden speed loss.
+    description: "Driver returning to track after an off-track excursion."
+    match_phrases:
+      - "player goes off track"
+      - "large trajectory deviation"
+      - "sudden speed loss"
     parent: RM
     children: []
     exclusive_with: ["RM2"]
@@ -282,9 +261,10 @@ labels:
   RM2:
     name: "Exit pit lane"
     type: sub
-    description: >
-      The driver is re-joining the track after a pit stop.  Speed
-      increases from pit-limiter speed to racing speed.
+    description: "Driver re-joining track after a pit stop."
+    match_phrases:
+      - "speed increases from pit-limiter speed"
+      - "pit exit"
     parent: RM
     children: []
     exclusive_with: ["RM1"]
@@ -292,12 +272,12 @@ labels:
   RM5:
     name: "Recover from speed gap over 20"
     type: sub
-    description: >
-      Player's speed is lower than expert's by more than 20 km/h
-      on the speed graph (or speed_delta showing expert faster
-      than player by more than 20 km/h) and the gap is closing
-      (time_delta falling).  The driver is recovering from a
-      large speed deficit.
+    description: "Player more than 20 km/h slower than expert, gap closing."
+    match_phrases:
+      - "expert faster than player by more than 20 km/h"
+      - "speed gap exceeds 20 km/h"
+      - "gap to expert shrinks"
+      - "time delta falling"
     parent: RM
     children: []
     exclusive_with: ["RM6"]
@@ -305,12 +285,12 @@ labels:
   RM6:
     name: "Recover from small speed gap under 20"
     type: sub
-    description: >
-      Player's speed is lower than expert's by less than 20 km/h
-      on the speed graph (or speed_delta showing expert faster
-      than player by less than 20 km/h) and the gap is closing
-      (time_delta falling).  The driver is recovering from a
-      small speed deficit.
+    description: "Player less than 20 km/h slower than expert, gap closing."
+    match_phrases:
+      - "expert faster than player by less than 20 km/h"
+      - "speed gap within 20 km/h"
+      - "gap to expert shrinks"
+      - "time delta falling"
     parent: RM
     children: []
     exclusive_with: ["RM5"]
@@ -318,11 +298,10 @@ labels:
   RM7:
     name: "Merge back to expert line"
     type: sub
-    description: >
-      Player trajectory is converging back toward the expert line
-      on the trajectory plot after a deviation — the gap between
-      the green (player) and blue dashed (expert) lines decreases
-      across the segment.
+    description: "Player trajectory converging toward the expert line."
+    match_phrases:
+      - "trajectory converging toward expert"
+      - "gap between player and expert lines decreases"
     parent: RM
     children: []
     exclusive_with: []
@@ -330,10 +309,11 @@ labels:
   RM8:
     name: "Accelerate earlier at exit"
     type: sub
-    description: >
-      During recovery, player begins applying throttle earlier
-      than expert at corner exit on the throttle graph (negative
-      application-onset offset in the corner-exit phase).
+    description: "During recovery, player applies throttle earlier than expert at corner exit."
+    match_phrases:
+      - "begins applying throttle earlier than expert"
+      - "throttle resumes earlier than expert at corner exit"
+    annotation_guideline: "Only applies when time_delta is falling (recovery context)."
     parent: RM
     children: []
     exclusive_with: ["RM9"]
@@ -341,10 +321,11 @@ labels:
   RM9:
     name: "Accelerate later at exit"
     type: sub
-    description: >
-      During recovery, player begins applying throttle later than
-      expert at corner exit on the throttle graph (positive
-      application-onset offset in the corner-exit phase).
+    description: "During recovery, player applies throttle later than expert at corner exit."
+    match_phrases:
+      - "begins applying throttle later than expert"
+      - "throttle resumes later than expert at corner exit"
+    annotation_guideline: "Only applies when time_delta is falling (recovery context)."
     parent: RM
     children: []
     exclusive_with: ["RM8"]
@@ -352,10 +333,11 @@ labels:
   RM10:
     name: "Brake earlier at entry"
     type: sub
-    description: >
-      During recovery, player begins braking earlier than expert
-      at corner entry on the brake graph (negative
-      brake-initiation offset in the corner-entry phase).
+    description: "During recovery, player brakes earlier than expert at corner entry."
+    match_phrases:
+      - "begins braking earlier than expert"
+      - "brake initiation earlier than expert"
+    annotation_guideline: "Only applies when time_delta is falling (recovery context)."
     parent: RM
     children: []
     exclusive_with: ["RM11"]
@@ -363,10 +345,11 @@ labels:
   RM11:
     name: "Brake later at entry"
     type: sub
-    description: >
-      During recovery, player begins braking later than expert at
-      corner entry on the brake graph (positive brake-initiation
-      offset in the corner-entry phase).
+    description: "During recovery, player brakes later than expert at corner entry."
+    match_phrases:
+      - "begins braking later than expert"
+      - "brake initiation later than expert"
+    annotation_guideline: "Only applies when time_delta is falling (recovery context)."
     parent: RM
     children: []
     exclusive_with: ["RM10"]
@@ -378,11 +361,11 @@ labels:
   MS1:
     name: "Initiate brake too late"
     type: sub
-    description: >
-      Player begins braking later than expert on the brake graph
-      (positive brake-initiation offset).  The driver carries too
-      much speed into the corner because brake application is
-      delayed relative to the expert's braking point.
+    description: "Player brakes later than expert."
+    match_phrases:
+      - "begins braking later than expert"
+      - "brake initiation later than expert"
+    annotation_guideline: "Check brake graph: player onset index > expert onset index."
     parent: MS
     children: []
     exclusive_with: ["MS5"]
@@ -390,10 +373,11 @@ labels:
   MS5:
     name: "Initiate brake too early"
     type: sub
-    description: >
-      Player begins braking earlier than expert on the brake graph
-      (negative brake-initiation offset).  The driver loses time by
-      decelerating before the expert's braking point.
+    description: "Player brakes earlier than expert."
+    match_phrases:
+      - "begins braking earlier than expert"
+      - "brake initiation earlier than expert"
+    annotation_guideline: "Check brake graph: player onset index < expert onset index."
     parent: MS
     children: []
     exclusive_with: ["MS1"]
@@ -401,11 +385,11 @@ labels:
   MS13:
     name: "Highest brake pressure too low"
     type: sub
-    description: >
-      Player's peak brake pressure is lower than expert's on the
-      brake graph (negative peak-pressure offset).  The driver does
-      not generate enough deceleration to match the expert's brake
-      input.
+    description: "Player's peak brake pressure is lower than expert's."
+    match_phrases:
+      - "peak brake pressure is lower than expert"
+      - "peak brake pressure lower than expert's"
+    annotation_guideline: "Check brake graph: player peak y-value < expert peak y-value."
     parent: MS
     children: []
     exclusive_with: ["MS22"]
@@ -413,10 +397,11 @@ labels:
   MS22:
     name: "Highest brake pressure too high"
     type: sub
-    description: >
-      Player's peak brake pressure is higher than expert's on the
-      brake graph (positive peak-pressure offset), risking lock-up
-      or instability.
+    description: "Player's peak brake pressure is higher than expert's."
+    match_phrases:
+      - "peak brake pressure is higher than expert"
+      - "peak brake pressure higher than expert's"
+    annotation_guideline: "Check brake graph: player peak y-value > expert peak y-value."
     parent: MS
     children: []
     exclusive_with: ["MS13"]
@@ -424,11 +409,11 @@ labels:
   MS14:
     name: "Brake applied too quickly"
     type: sub
-    description: >
-      Player applies brake more sharply than expert on the brake
-      graph — the player ramp from zero to peak takes fewer indices
-      than the expert's, transitioning to high brake pressure too
-      rapidly.
+    description: "Player ramps brake to peak more sharply than expert."
+    match_phrases:
+      - "applies brake more sharply than expert"
+      - "brake ramp sharper than expert"
+    annotation_guideline: "Check brake graph: player indices from zero to peak < expert's."
     parent: MS
     children: []
     exclusive_with: ["MS24"]
@@ -436,10 +421,11 @@ labels:
   MS24:
     name: "Brake applied too slowly"
     type: sub
-    description: >
-      Player applies brake more gradually than expert on the brake
-      graph — the player ramp from zero to peak takes more indices
-      than the expert's, not reaching peak pressure quickly enough.
+    description: "Player ramps brake to peak more gradually than expert."
+    match_phrases:
+      - "applies brake more gradually than expert"
+      - "brake ramp more gradual than expert"
+    annotation_guideline: "Check brake graph: player indices from zero to peak > expert's."
     parent: MS
     children: []
     exclusive_with: ["MS14"]
@@ -447,11 +433,11 @@ labels:
   MS17:
     name: "Release brake too quickly"
     type: sub
-    description: >
-      Player releases brake more abruptly than expert on the brake
-      graph — the player drops from peak to zero in fewer indices
-      than the expert, losing trail braking and destabilising the
-      car mid-corner.
+    description: "Player releases brake more abruptly than expert."
+    match_phrases:
+      - "releases brake more abruptly than expert"
+      - "brake release abrupt"
+    annotation_guideline: "Check brake graph: player indices from peak to zero < expert's."
     parent: MS
     children: []
     exclusive_with: ["MS18"]
@@ -459,11 +445,11 @@ labels:
   MS18:
     name: "Release brake too slowly"
     type: sub
-    description: >
-      Player releases brake more gradually than expert on the brake
-      graph — the player drops from peak to zero in more indices
-      than the expert, carrying too much braking into the corner
-      and scrubbing speed.
+    description: "Player releases brake more gradually than expert."
+    match_phrases:
+      - "releases brake more gradually than expert"
+      - "brake release gradual"
+    annotation_guideline: "Check brake graph: player indices from peak to zero > expert's."
     parent: MS
     children: []
     exclusive_with: ["MS17"]
@@ -471,10 +457,11 @@ labels:
   MS27:
     name: "Initiate brake release too late"
     type: sub
-    description: >
-      Player begins releasing brake later than expert on the brake
-      graph (positive brake-release-onset offset), staying on the
-      brake too long.
+    description: "Player begins releasing brake later than expert."
+    match_phrases:
+      - "begins releasing brake later than expert"
+      - "brake release onset later than expert"
+    annotation_guideline: "Check brake graph: player release-onset index > expert's."
     parent: MS
     children: []
     exclusive_with: ["MS28"]
@@ -482,10 +469,11 @@ labels:
   MS28:
     name: "Initiate brake release too early"
     type: sub
-    description: >
-      Player begins releasing brake earlier than expert on the
-      brake graph (negative brake-release-onset offset), losing
-      trail-braking benefit.
+    description: "Player begins releasing brake earlier than expert."
+    match_phrases:
+      - "begins releasing brake earlier than expert"
+      - "brake release onset earlier than expert"
+    annotation_guideline: "Check brake graph: player release-onset index < expert's."
     parent: MS
     children: []
     exclusive_with: ["MS27"]
@@ -493,10 +481,11 @@ labels:
   MS31:
     name: "Highest brake length too short"
     type: sub
-    description: >
-      Player's braking duration is shorter than expert's on the
-      brake graph (total indices from initiation to full release).
-      Potentially under-braking.
+    description: "Player's total braking duration is shorter than expert's."
+    match_phrases:
+      - "braking duration shorter than expert"
+      - "braking duration is shorter than expert's"
+    annotation_guideline: "Check brake graph: total indices from initiation to release < expert's."
     parent: MS
     children: []
     exclusive_with: ["MS32"]
@@ -504,10 +493,11 @@ labels:
   MS32:
     name: "Highest brake length too long"
     type: sub
-    description: >
-      Player's braking duration is longer than expert's on the
-      brake graph (total indices from initiation to full release).
-      Over-braking and losing time.
+    description: "Player's total braking duration is longer than expert's."
+    match_phrases:
+      - "braking duration longer than expert"
+      - "braking duration is longer than expert's"
+    annotation_guideline: "Check brake graph: total indices from initiation to release > expert's."
     parent: MS
     children: []
     exclusive_with: ["MS31"]
@@ -515,8 +505,12 @@ labels:
   MS34:
     name: "Throttle and brake applied at the same time for too long"
     type: sub
-    description: >
-      Player applies throttle and brake simultaneously for an extended period.
+    description: "Player applies throttle and brake simultaneously for an extended period."
+    match_phrases:
+      - "throttle and brake simultaneously"
+      - "applies throttle and brake simultaneously"
+      - "both traces above zero"
+    annotation_guideline: "Check brake + throttle graphs: overlapping non-zero ranges."
     parent: MS
     children: []
     exclusive_with: []
@@ -528,10 +522,11 @@ labels:
   MS15:
     name: "Throttle applied too quickly"
     type: sub
-    description: >
-      Player applies throttle more sharply than expert on the
-      throttle graph — ramp from zero to peak takes fewer indices
-      than the expert's.
+    description: "Player ramps throttle to peak more sharply than expert."
+    match_phrases:
+      - "applies throttle more sharply than expert"
+      - "throttle ramp sharper than expert"
+    annotation_guideline: "Check throttle graph: player indices from zero to peak < expert's."
     parent: MS
     children: []
     exclusive_with: ["MS25"]
@@ -539,10 +534,11 @@ labels:
   MS25:
     name: "Throttle applied too slowly"
     type: sub
-    description: >
-      Player applies throttle more gradually than expert on the
-      throttle graph — ramp from zero to peak takes more indices
-      than the expert's.
+    description: "Player ramps throttle to peak more gradually than expert."
+    match_phrases:
+      - "applies throttle more gradually than expert"
+      - "throttle ramp more gradual than expert"
+    annotation_guideline: "Check throttle graph: player indices from zero to peak > expert's."
     parent: MS
     children: []
     exclusive_with: ["MS15"]
@@ -550,9 +546,11 @@ labels:
   MS19:
     name: "Highest throttle pressure too low"
     type: sub
-    description: >
-      Peak throttle is lower than expert on the throttle graph —
-      player tops out at a lower y-value than the expert.
+    description: "Player's peak throttle is lower than expert's."
+    match_phrases:
+      - "peak throttle is lower than expert"
+      - "peak throttle lower than expert's"
+    annotation_guideline: "Check throttle graph: player peak y-value < expert peak y-value."
     parent: MS
     children: []
     exclusive_with: ["MS26"]
@@ -560,9 +558,11 @@ labels:
   MS26:
     name: "Highest throttle pressure too high"
     type: sub
-    description: >
-      Peak throttle is higher than expert on the throttle graph —
-      player tops out at a higher y-value than the expert.
+    description: "Player's peak throttle is higher than expert's."
+    match_phrases:
+      - "peak throttle is higher than expert"
+      - "peak throttle higher than expert's"
+    annotation_guideline: "Check throttle graph: player peak y-value > expert peak y-value."
     parent: MS
     children: []
     exclusive_with: ["MS19"]
@@ -570,10 +570,11 @@ labels:
   MS20:
     name: "Initiate throttle too early"
     type: sub
-    description: >
-      Player begins applying throttle earlier than expert on the
-      throttle graph — application-onset index is lower than the
-      expert's.
+    description: "Player begins applying throttle earlier than expert."
+    match_phrases:
+      - "begins applying throttle earlier than expert"
+      - "throttle onset earlier than expert"
+    annotation_guideline: "Check throttle graph: player onset index < expert onset index."
     parent: MS
     children: []
     exclusive_with: ["MS21"]
@@ -581,10 +582,11 @@ labels:
   MS21:
     name: "Initiate throttle too late"
     type: sub
-    description: >
-      Player begins applying throttle later than expert on the
-      throttle graph — application-onset index is higher than the
-      expert's.
+    description: "Player begins applying throttle later than expert."
+    match_phrases:
+      - "begins applying throttle later than expert"
+      - "throttle onset later than expert"
+    annotation_guideline: "Check throttle graph: player onset index > expert onset index."
     parent: MS
     children: []
     exclusive_with: ["MS20"]
@@ -592,10 +594,11 @@ labels:
   MS23:
     name: "Release throttle too quickly"
     type: sub
-    description: >
-      Player releases throttle more abruptly than expert on the
-      throttle graph — drop from peak to zero takes fewer indices
-      than the expert's.
+    description: "Player releases throttle more abruptly than expert."
+    match_phrases:
+      - "releases throttle more abruptly than expert"
+      - "throttle release abrupt"
+    annotation_guideline: "Check throttle graph: player indices from peak to zero < expert's."
     parent: MS
     children: []
     exclusive_with: []
@@ -603,10 +606,11 @@ labels:
   MS29:
     name: "Initiate throttle release too late"
     type: sub
-    description: >
-      Player begins releasing throttle later than expert on the
-      throttle graph — release-onset index is higher than the
-      expert's (late lift-off).
+    description: "Player begins releasing throttle later than expert."
+    match_phrases:
+      - "begins releasing throttle later than expert"
+      - "throttle release onset later than expert"
+    annotation_guideline: "Check throttle graph: player release-onset index > expert's."
     parent: MS
     children: []
     exclusive_with: ["MS30"]
@@ -614,10 +618,11 @@ labels:
   MS30:
     name: "Initiate throttle release too early"
     type: sub
-    description: >
-      Player begins releasing throttle earlier than expert on the
-      throttle graph — release-onset index is lower than the
-      expert's (early lift-off).
+    description: "Player begins releasing throttle earlier than expert."
+    match_phrases:
+      - "begins releasing throttle earlier than expert"
+      - "throttle release onset earlier than expert"
+    annotation_guideline: "Check throttle graph: player release-onset index < expert's."
     parent: MS
     children: []
     exclusive_with: ["MS29"]
@@ -629,11 +634,11 @@ labels:
   MS2:
     name: "Initiate the turn too late"
     type: sub
-    description: >
-      Player turns in later than expert on the trajectory plot —
-      the player begins curving from the straight at a later point
-      along the trajectory than the expert, resulting in a wider
-      entry line.
+    description: "Player turns in later than expert, wider entry line."
+    match_phrases:
+      - "player turns in later than expert"
+      - "entry line is wider than expert"
+    annotation_guideline: "Check trajectory plot: player begins curving after expert."
     parent: MS
     children: []
     exclusive_with: ["MS6"]
@@ -641,10 +646,11 @@ labels:
   MS6:
     name: "Initiate the turn too early"
     type: sub
-    description: >
-      Player turns in earlier than expert on the trajectory plot —
-      the player begins curving from the straight at an earlier
-      point than the expert, resulting in a tighter entry line.
+    description: "Player turns in earlier than expert, tighter entry line."
+    match_phrases:
+      - "player turns in earlier than expert"
+      - "entry line is tighter than expert"
+    annotation_guideline: "Check trajectory plot: player begins curving before expert."
     parent: MS
     children: []
     exclusive_with: ["MS2"]
@@ -652,11 +658,11 @@ labels:
   MS3:
     name: "Too late compared to expert Apex"
     type: sub
-    description: >
-      Player reaches apex later than expert on the trajectory plot
-      (positive apex-timing offset) — the closest point to the
-      inside of the corner is reached later along the player's
-      trajectory than along the expert's.
+    description: "Player reaches apex later than expert along the trajectory."
+    match_phrases:
+      - "reaches apex later than expert"
+      - "reaches the apex later than expert"
+    annotation_guideline: "Check trajectory plot: player apex position is later along the path."
     parent: MS
     children: []
     exclusive_with: ["MS7"]
@@ -664,10 +670,11 @@ labels:
   MS7:
     name: "Too early compared to expert Apex"
     type: sub
-    description: >
-      Player reaches apex earlier than expert on the trajectory
-      plot (negative apex-timing offset), potentially compromising
-      exit speed.
+    description: "Player reaches apex earlier than expert along the trajectory."
+    match_phrases:
+      - "reaches apex earlier than expert"
+      - "reaches the apex earlier than expert"
+    annotation_guideline: "Check trajectory plot: player apex position is earlier along the path."
     parent: MS
     children: []
     exclusive_with: ["MS3"]
@@ -675,10 +682,11 @@ labels:
   MS4:
     name: "Time to exit too early"
     type: sub
-    description: >
-      Player exits corner earlier than expert on the trajectory
-      plot (negative exit-timing offset) — the player straightens
-      the steering before the expert does.
+    description: "Player exits the corner earlier than expert."
+    match_phrases:
+      - "player exits the corner earlier than expert"
+      - "straightens steering before expert"
+    annotation_guideline: "Check trajectory plot: player straightens steering before expert does."
     parent: MS
     children: []
     exclusive_with: ["MS8"]
@@ -686,10 +694,11 @@ labels:
   MS8:
     name: "Time to exit too late"
     type: sub
-    description: >
-      Player exits corner later than expert on the trajectory plot
-      (positive exit-timing offset) — the player straightens the
-      steering after the expert does, staying in the turn too long.
+    description: "Player exits the corner later than expert."
+    match_phrases:
+      - "player exits the corner later than expert"
+      - "straightens steering after expert"
+    annotation_guideline: "Check trajectory plot: player straightens steering after expert does."
     parent: MS
     children: []
     exclusive_with: ["MS4"]
@@ -701,11 +710,12 @@ labels:
   MS9:
     name: "Entry trajectory too tight"
     type: sub
-    description: >
-      Player's entry line is tighter than expert (closer to inside)
-      on the trajectory plot — the player takes a tighter line
-      through the corner-entry phase, reducing corner speed
-      potential.
+    description: "Player's entry line is tighter than expert (closer to inside)."
+    match_phrases:
+      - "entry line is tighter than expert"
+      - "closer to inside than expert"
+      - "entry line closer to inside"
+    annotation_guideline: "Check trajectory plot: player entry line inside of expert's."
     parent: MS
     children: []
     exclusive_with: ["MS33"]
@@ -713,11 +723,12 @@ labels:
   MS33:
     name: "Entry trajectory too wide"
     type: sub
-    description: >
-      Player's entry line is wider than expert (closer to outside)
-      on the trajectory plot — the player takes a wider line
-      through the corner-entry phase, requiring a tighter
-      mid-corner to hit the apex.
+    description: "Player's entry line is wider than expert (closer to outside)."
+    match_phrases:
+      - "entry line is wider than expert"
+      - "closer to outside than expert"
+      - "entry line farther from inside"
+    annotation_guideline: "Check trajectory plot: player entry line outside of expert's."
     parent: MS
     children: []
     exclusive_with: ["MS9"]
@@ -725,11 +736,12 @@ labels:
   MS10:
     name: "Apex too wide"
     type: sub
-    description: >
-      Player's apex is farther from inside than expert on the
-      trajectory plot — the player's closest point to the inside
-      of the corner is wider (farther from the kerb) than the
-      expert's apex.
+    description: "Player's apex is farther from inside than expert."
+    match_phrases:
+      - "farther from inside than expert"
+      - "wider apex"
+      - "farther from inside at the apex than expert"
+    annotation_guideline: "Check trajectory plot: player apex wider than expert's."
     parent: MS
     children: []
     exclusive_with: []
@@ -737,11 +749,12 @@ labels:
   MS11:
     name: "Exit trajectory too narrow"
     type: sub
-    description: >
-      Player's exit line is tighter than expert (uses less track
-      width) on the trajectory plot — the player stays too close
-      to the inside on corner exit, not using the full track
-      width to carry speed.
+    description: "Player's exit line is tighter than expert (uses less track width)."
+    match_phrases:
+      - "exit line is tighter than expert"
+      - "uses less track width"
+      - "exit line tighter than expert"
+    annotation_guideline: "Check trajectory plot: player exit line inside of expert's."
     parent: MS
     children: []
     exclusive_with: ["MS16"]
@@ -749,11 +762,12 @@ labels:
   MS16:
     name: "Exit trajectory too wide"
     type: sub
-    description: >
-      Player's exit line is wider than expert (uses more track
-      width) on the trajectory plot — the player runs too wide on
-      corner exit, potentially going off-track or losing time by
-      exceeding track limits.
+    description: "Player's exit line is wider than expert (uses more track width)."
+    match_phrases:
+      - "exit line is wider than expert"
+      - "uses more track width"
+      - "exit line wider than expert"
+    annotation_guideline: "Check trajectory plot: player exit line outside of expert's."
     parent: MS
     children: []
     exclusive_with: ["MS11"]
@@ -761,11 +775,12 @@ labels:
   MS41:
     name: "Cutting the line"
     type: sub
-    description: >
-      Player cuts inside expert's racing line on the trajectory
-      plot — the player line crosses inside the expert's line,
-      shortening the corner but potentially violating track
-      limits.
+    description: "Player cuts inside expert's racing line."
+    match_phrases:
+      - "cuts inside expert's racing line"
+      - "player cuts inside"
+      - "shortening the corner"
+    annotation_guideline: "Check trajectory plot: player line crosses inside expert's line."
     parent: MS
     children: []
     exclusive_with: []
@@ -773,10 +788,12 @@ labels:
   MS50:
     name: "Off track at entry"
     type: sub
-    description: >
-      Player goes off track at corner entry on the trajectory
-      plot — the player trajectory leaves the track surface during
-      the corner-entry phase.
+    description: "Player goes off track at corner entry."
+    match_phrases:
+      - "player goes off track at entry"
+      - "off track at corner entry"
+      - "trajectory leaves track at entry"
+    annotation_guideline: "Check trajectory plot: player trajectory exits track bounds at entry."
     parent: MS
     children: []
     exclusive_with: []
@@ -784,10 +801,12 @@ labels:
   MS51:
     name: "Off track at exit"
     type: sub
-    description: >
-      Player goes off track at corner exit on the trajectory plot
-      — the player trajectory leaves the track surface during the
-      corner-exit phase.
+    description: "Player goes off track at corner exit."
+    match_phrases:
+      - "player goes off track at exit"
+      - "off track at corner exit"
+      - "trajectory leaves track at exit"
+    annotation_guideline: "Check trajectory plot: player trajectory exits track bounds at exit."
     parent: MS
     children: []
     exclusive_with: []
@@ -795,10 +814,12 @@ labels:
   MS52:
     name: "Off track in the straight"
     type: sub
-    description: >
-      Player goes off track on the straight on the trajectory plot
-      — the player trajectory leaves the track surface on a
-      straight section (not in a corner).
+    description: "Player goes off track on a straight section."
+    match_phrases:
+      - "player goes off track on the straight"
+      - "off track on straight"
+      - "trajectory leaves track on straight"
+    annotation_guideline: "Check trajectory plot: player trajectory exits track bounds on straight."
     parent: MS
     children: []
     exclusive_with: []
@@ -810,12 +831,13 @@ labels:
   MS42:
     name: "Inefficient grip utilization at entry"
     type: sub
-    description: >
-      Player's grip utilisation at corner entry differs from
-      expert's pattern on the push_limit graph — either
-      under-loading (sustained low) or over-loading (vivid spike)
-      during the corner-entry phase, where the expert's pattern
-      is a controlled moderate value.
+    description: "Grip utilisation at corner entry deviates from expert's pattern."
+    match_phrases:
+      - "over-limit spike at corner entry"
+      - "sustained low at corner entry"
+      - "push_limit spike at corner entry"
+      - "grip utilisation at corner entry"
+    annotation_guideline: "Check push_limit graph: spike above 1.0 or sustained low during entry phase."
     parent: MS
     children: []
     exclusive_with: []
@@ -823,10 +845,13 @@ labels:
   MS43:
     name: "Inefficient grip utilization at exit"
     type: sub
-    description: >
-      Player's grip utilisation at corner exit differs from
-      expert's pattern on the push_limit graph — either
-      under-loading or over-loading during the corner-exit phase.
+    description: "Grip utilisation at corner exit deviates from expert's pattern."
+    match_phrases:
+      - "over-limit spike at corner exit"
+      - "sustained low at corner exit"
+      - "push_limit spike at corner exit"
+      - "grip utilisation at corner exit"
+    annotation_guideline: "Check push_limit graph: spike above 1.0 or sustained low during exit phase."
     parent: MS
     children: []
     exclusive_with: []
@@ -834,11 +859,12 @@ labels:
   MS44:
     name: "Oversteering at entry"
     type: sub
-    description: >
-      Rear-slip dominant section at corner entry on the balance
-      trajectory — the rear of the car loses grip (visible as a
-      red section on the balance plot at the corner-entry phase),
-      causing the car to rotate more than intended.
+    description: "Rear-slip dominant at corner entry on balance trajectory."
+    match_phrases:
+      - "rear-slip dominant at corner entry"
+      - "red section at corner entry"
+      - "rear-slip dominant section at corner entry"
+    annotation_guideline: "Check balance trajectory: vivid red section during entry phase."
     parent: MS
     children: []
     exclusive_with: ["MS45"]
@@ -846,12 +872,12 @@ labels:
   MS45:
     name: "Understeering at entry"
     type: sub
-    description: >
-      Front-slip dominant section at corner entry on the balance
-      trajectory — the front tyres lose grip (visible as a blue
-      section on the balance plot at the corner-entry phase),
-      causing the car to push wide (not turning enough).  Note:
-      blue is amplified 2x in the colour mapping.
+    description: "Front-slip dominant at corner entry on balance trajectory."
+    match_phrases:
+      - "front-slip dominant at corner entry"
+      - "blue section at corner entry"
+      - "front-slip dominant section at corner entry"
+    annotation_guideline: "Check balance trajectory: blue section during entry phase. Note 2x amplification."
     parent: MS
     children: []
     exclusive_with: ["MS44"]
@@ -859,11 +885,12 @@ labels:
   MS46:
     name: "Oversteering at exit"
     type: sub
-    description: >
-      Rear-slip dominant section at corner exit on the balance
-      trajectory — the rear of the car loses grip (visible as a
-      red section on the balance plot at the corner-exit phase),
-      usually due to aggressive throttle application.
+    description: "Rear-slip dominant at corner exit on balance trajectory."
+    match_phrases:
+      - "rear-slip dominant at corner exit"
+      - "red section at corner exit"
+      - "rear-slip dominant section at corner exit"
+    annotation_guideline: "Check balance trajectory: vivid red section during exit phase."
     parent: MS
     children: []
     exclusive_with: ["MS47"]
@@ -871,12 +898,12 @@ labels:
   MS47:
     name: "Understeering at exit"
     type: sub
-    description: >
-      Front-slip dominant section at corner exit on the balance
-      trajectory — the front tyres lose grip (visible as a blue
-      section on the balance plot at the corner-exit phase),
-      causing the car to run wide despite steering input.  Note:
-      blue is amplified 2x in the colour mapping.
+    description: "Front-slip dominant at corner exit on balance trajectory."
+    match_phrases:
+      - "front-slip dominant at corner exit"
+      - "blue section at corner exit"
+      - "front-slip dominant section at corner exit"
+    annotation_guideline: "Check balance trajectory: blue section during exit phase. Note 2x amplification."
     parent: MS
     children: []
     exclusive_with: ["MS46"]
@@ -888,8 +915,12 @@ labels:
   MS35:
     name: "Shift up too early"
     type: sub
-    description: >
-      Player upshifts from lower gear earlier than expert  visible on the gear graph.
+    description: "Player upshifts earlier than expert."
+    match_phrases:
+      - "player upshifts earlier than expert"
+      - "upshift earlier than expert"
+      - "shifts up earlier than expert"
+    annotation_guideline: "Check gear graph: player upshift index < expert upshift index."
     parent: MS
     children: []
     exclusive_with: ["MS36"]
@@ -897,9 +928,12 @@ labels:
   MS36:
     name: "Shift up too late"
     type: sub
-    description: >
-      Player upshifts from higher gear later than expert (positive shift-timing
-      offset) — visible on the gear graph 
+    description: "Player upshifts later than expert."
+    match_phrases:
+      - "player upshifts later than expert"
+      - "upshift later than expert"
+      - "shifts up later than expert"
+    annotation_guideline: "Check gear graph: player upshift index > expert upshift index."
     parent: MS
     children: []
     exclusive_with: ["MS35"]
@@ -907,9 +941,12 @@ labels:
   MS37:
     name: "Shift down too early"
     type: sub
-    description: >
-      Player downshifts from higher gear earlier than expert — visible on the
-      gear graph as a downshift step occurring earlier.
+    description: "Player downshifts earlier than expert."
+    match_phrases:
+      - "player downshifts earlier than expert"
+      - "downshift earlier than expert"
+      - "shifts down earlier than expert"
+    annotation_guideline: "Check gear graph: player downshift index < expert downshift index."
     parent: MS
     children: []
     exclusive_with: ["MS38"]
@@ -917,9 +954,12 @@ labels:
   MS38:
     name: "Shift down too late"
     type: sub
-    description: >
-      Player downshifts from lower gear later than expert — visible on the gear
-      graph as a downshift step occurring later.
+    description: "Player downshifts later than expert."
+    match_phrases:
+      - "player downshifts later than expert"
+      - "downshift later than expert"
+      - "shifts down later than expert"
+    annotation_guideline: "Check gear graph: player downshift index > expert downshift index."
     parent: MS
     children: []
     exclusive_with: ["MS37"]
@@ -927,9 +967,12 @@ labels:
   MS48:
     name: "Gear too low when accelerating"
     type: sub
-    description: >
-      Player is in a lower gear than expert during acceleration —
-      visible on the gear graph.
+    description: "Player in a lower gear than expert during acceleration."
+    match_phrases:
+      - "player gear lower than expert"
+      - "lower gear than expert during acceleration"
+      - "gear too low"
+    annotation_guideline: "Check gear graph: player gear number < expert gear number during acceleration."
     parent: MS
     children: []
     exclusive_with: ["MS49"]
@@ -937,9 +980,12 @@ labels:
   MS49:
     name: "Gear too high when accelerating"
     type: sub
-    description: >
-      Player is in a higher gear than expert during acceleration
-      — visible on the gear graph.
+    description: "Player in a higher gear than expert during acceleration."
+    match_phrases:
+      - "player gear higher than expert"
+      - "higher gear than expert during acceleration"
+      - "gear too high"
+    annotation_guideline: "Check gear graph: player gear number > expert gear number during acceleration."
     parent: MS
     children: []
     exclusive_with: ["MS48"]
@@ -951,9 +997,11 @@ labels:
   ST1:
     name: "In the corner"
     type: segment_type
-    description: >
-      The segment is entirely within a corner.  The driver is
-      turning throughout.
+    description: "Segment entirely within a corner, driver turning throughout."
+    match_phrases:
+      - "single curve"
+      - "hairpin"
+      - "continuous arc"
     parent: null
     children: []
     exclusive_with: ["ST2", "ST3", "ST4", "ST5", "ST6"]
@@ -961,9 +1009,11 @@ labels:
   ST2:
     name: "On the straight"
     type: segment_type
-    description: >
-      The segment is on a straight section.  Minimal steering,
-      high speed, full throttle typical.
+    description: "Segment on a straight section, minimal steering."
+    match_phrases:
+      - "straight"
+      - "minimal curvature"
+      - "full throttle"
     parent: null
     children: []
     exclusive_with: ["ST1", "ST3", "ST4", "ST5", "ST6"]
@@ -971,9 +1021,11 @@ labels:
   ST3:
     name: "Approach to corner"
     type: segment_type
-    description: >
-      The segment covers the approach/braking zone before a corner.
-      The driver is decelerating and preparing to turn in.
+    description: "Segment covering the braking zone before a corner."
+    match_phrases:
+      - "approach to corner"
+      - "starts straight and begins curving"
+      - "braking zone"
     parent: null
     children: []
     exclusive_with: ["ST1", "ST2", "ST4", "ST5", "ST6"]
@@ -981,9 +1033,11 @@ labels:
   ST4:
     name: "Exit corner leading to straight"
     type: segment_type
-    description: >
-      The segment covers the exit of a corner leading onto a
-      straight.  Steering angle is decreasing, throttle increasing.
+    description: "Segment covering corner exit leading onto a straight."
+    match_phrases:
+      - "exit corner leading to straight"
+      - "starts curved and straightens"
+      - "steering decreasing throttle increasing"
     parent: null
     children: []
     exclusive_with: ["ST1", "ST2", "ST3", "ST5", "ST6"]
@@ -991,9 +1045,11 @@ labels:
   ST5:
     name: "Between consecutive corners"
     type: segment_type
-    description: >
-      The segment is a short connection between two corners —
-      not a full straight but a brief transition.
+    description: "Short transition between two corners, not a full straight."
+    match_phrases:
+      - "between consecutive corners"
+      - "brief transition"
+      - "short connection between corners"
     parent: null
     children: []
     exclusive_with: ["ST1", "ST2", "ST3", "ST4", "ST6"]
@@ -1001,9 +1057,12 @@ labels:
   ST6:
     name: "Consecutive corners with no straight in between"
     type: segment_type
-    description: >
-      The segment covers multiple corners with no intervening
-      straight — e.g., an esses or chicane complex.
+    description: "Multiple corners with no intervening straight (esses/chicane)."
+    match_phrases:
+      - "consecutive corners"
+      - "S-shape"
+      - "chicane"
+      - "esses"
     parent: null
     children: []
     exclusive_with: ["ST1", "ST2", "ST3", "ST4", "ST5"]

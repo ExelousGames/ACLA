@@ -891,14 +891,15 @@ def label_verifier_node(state: AnnotationState) -> Dict[str, Any]:
             "messages": messages,
         }
 
-    # Build label text corpus: "Name: description" per candidate
+    # Build label text corpus: "Name: description. match_phrases" per candidate
     label_texts: list[str] = []
     for lid in shortlisted:
         entry = catalog.get_label(lid)
-        if entry and entry.description:
-            label_texts.append(f"{entry.name}: {entry.description}")
-        elif entry:
-            label_texts.append(entry.name)
+        if entry:
+            text = f"{entry.name}: {entry.description}" if entry.description else entry.name
+            if entry.match_phrases:
+                text += " " + " ".join(entry.match_phrases)
+            label_texts.append(text)
         else:
             label_texts.append(LABEL_MAPPING.get(lid, lid))
 

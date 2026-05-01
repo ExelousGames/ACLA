@@ -411,6 +411,61 @@ graphs:
       - "Do NOT interpret over-limit spikes as oversteer or understeer — that requires the balance trajectory graph.  Just describe the spike shape, location, and corner phase."
       - "Do NOT omit corner-phase tagging — when a trajectory or speed graph is also present, every over-limit spike must be labelled with its corner phase (entry / mid-corner / exit / straight)"
 
+  gear:
+    title: "Gear Selection: Expert vs Player"
+    graph_type: feature_plot
+    axes:
+      x: "Segment index (time progression left to right)"
+      y: "Gear number (integer steps: 1, 2, 3, …)"
+    visual_elements:
+      - "Two step-like traces — expert_optimal_gear and Physics_gear (player)"
+      - "Legend identifies which line is which"
+      - "Traces jump between integer levels (no smooth curves)"
+      - "Grid lines for reading exact gear numbers and shift indices"
+    what_to_describe: >
+      Write a single cohesive paragraph describing the gear graph.
+      For EVERY feature below, report (a) the player value, (b) the
+      expert value, and (c) the directional offset using the canonical
+      comparative phrasing.
+
+      1. Upshift timing — index where each trace steps UP to a higher
+         gear.  State whether the player "upshifts earlier than expert"
+         or "upshifts later than expert" by N indices, for each
+         upshift event.
+      2. Downshift timing — index where each trace steps DOWN to a
+         lower gear.  State whether the player "downshifts earlier than
+         expert" or "downshifts later than expert" by N indices.
+      3. Gear level during acceleration — the gear each trace holds
+         while speed is rising.  State whether the player is in a
+         "lower gear than expert" or "higher gear than expert" and over
+         which index range.
+      4. Number of shifts — total upshifts and downshifts for each
+         trace.  State whether the player shifts "more often than
+         expert" or "fewer times than expert".
+      5. Match sections — index ranges where both traces hold the same
+         gear.
+
+      Identify the expert and player lines from the legend BEFORE
+      starting; state which is which.
+    description_vocabulary:
+      upshift: "An index where the trace steps from gear N to gear N+1. Report both traces and the index gap."
+      downshift: "An index where the trace steps from gear N to gear N-1. Report both traces and the index gap."
+      gear_level_offset: "Index range where the player holds a different gear number than the expert. Reported as 'player in gear N, expert in gear M across indices X–Y'."
+      gear_match: "Index range where both traces hold the same gear number."
+    comparative_vocabulary:
+      - "The player upshifts from 3rd to 4th at index 90, six indices later than the expert at index 84."
+      - "The player upshifts from 3rd to 4th at index 78, four indices earlier than the expert at index 82."
+      - "The player downshifts from 5th to 4th at index 50, three indices earlier than the expert at index 53."
+      - "The player downshifts from 5th to 4th at index 58, five indices later than the expert at index 53."
+      - "The player is in 3rd gear while the expert is in 4th gear across indices 60–85 (lower gear than expert during acceleration)."
+      - "The player is in 5th gear while the expert is in 4th gear across indices 90–110 (higher gear than expert during acceleration)."
+      - "Both traces hold 4th gear from index 30 to index 70 — player matches expert's gear selection."
+    common_description_errors:
+      - "Gear values are INTEGERS — do not report fractional gear numbers"
+      - "Do NOT confuse upshift and downshift — up = higher gear number, down = lower gear number"
+      - "Do NOT report a player shift without also reporting the expert's matching shift and the index gap"
+      - "Do NOT interpret gear choices — describe what you see and the comparison"
+
   # =========================================================================
   # TRAJECTORY PLOTS (bird's-eye view of the track)
   # =========================================================================
