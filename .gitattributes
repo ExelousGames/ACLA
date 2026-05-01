@@ -1,0 +1,7 @@
+# Force LF for shell scripts and Dockerfiles regardless of platform.
+# Windows checkouts otherwise get CRLF, which breaks the shebang inside Linux
+# containers ("exec ...: no such file or directory" — the kernel is looking for
+# /bin/bash\r, not your script).
+*.sh        text eol=lf
+Dockerfile  text eol=lf
+*.dockerfile text eol=lf

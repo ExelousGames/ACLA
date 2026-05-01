@@ -1,5 +1,32 @@
 #!/bin/bash
-
+#
+# backup.sh - Dump and compress the ACLA MongoDB database.
+#
+# HOW TO USE
+#   This script is baked into the mongo image (see Dockerfile) and run by cron
+#   daily at 02:00 (see mongo-cron). You normally don't invoke it by hand.
+#
+#   Run a one-off backup manually (from the host):
+#     docker exec -it mongodb_c /backup.sh
+#
+#   Or from inside the running container:
+#     /backup.sh
+#
+# REQUIRED ENV VARS (provided by docker-compose / the mongo image)
+#   MONGO_INITDB_ROOT_USERNAME  - root user used to authenticate
+#   MONGO_INITDB_ROOT_PASSWORD  - root password
+#   MONGO_DATEBASE              - name of the database to dump (note spelling)
+#
+# OUTPUT
+#   /backups/acla_<YYYY-MM-DD_HH-MM-SS>.tar.gz   compressed dump
+#   /var/log/backup.log                          run log (start/finish + errors)
+#
+# RETENTION
+#   Only the 5 newest acla_*.tar.gz files in /backups are kept; older ones are
+#   deleted at the end of each run.
+#
+# RESTORE
+#   Use restore.sh in this directory; it auto-picks the newest backup.
 
 DATE=$(date +%Y-%m-%d_%H-%M-%S)
 BACKUP_DIR="/backups/acla_$DATE"
