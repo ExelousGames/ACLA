@@ -275,9 +275,10 @@ labels:
     description: "Player more than 20 km/h slower than expert, gap closing."
     match_phrases:
       - "expert faster than player by more than 20 km/h"
+      - "large_gap_section"
       - "speed gap exceeds 20 km/h"
       - "gap to expert shrinks"
-      - "time delta falling"
+      - "gaining_time_on_expert"
     parent: RM
     children: []
     exclusive_with: ["RM6"]
@@ -290,7 +291,7 @@ labels:
       - "expert faster than player by less than 20 km/h"
       - "speed gap within 20 km/h"
       - "gap to expert shrinks"
-      - "time delta falling"
+      - "gaining_time_on_expert"
     parent: RM
     children: []
     exclusive_with: ["RM5"]
@@ -312,8 +313,9 @@ labels:
     description: "During recovery, player applies throttle earlier than expert at corner exit."
     match_phrases:
       - "begins applying throttle earlier than expert"
+      - "throttle_application_onset"
       - "throttle resumes earlier than expert at corner exit"
-    annotation_guideline: "Only applies when time_delta is falling (recovery context)."
+      - "gaining_time_on_expert"
     parent: RM
     children: []
     exclusive_with: ["RM9"]
@@ -324,8 +326,9 @@ labels:
     description: "During recovery, player applies throttle later than expert at corner exit."
     match_phrases:
       - "begins applying throttle later than expert"
+      - "throttle_application_onset"
       - "throttle resumes later than expert at corner exit"
-    annotation_guideline: "Only applies when time_delta is falling (recovery context)."
+      - "gaining_time_on_expert"
     parent: RM
     children: []
     exclusive_with: ["RM8"]
@@ -337,7 +340,7 @@ labels:
     match_phrases:
       - "begins braking earlier than expert"
       - "brake initiation earlier than expert"
-    annotation_guideline: "Only applies when time_delta is falling (recovery context)."
+      - "gaining_time_on_expert"
     parent: RM
     children: []
     exclusive_with: ["RM11"]
@@ -349,7 +352,7 @@ labels:
     match_phrases:
       - "begins braking later than expert"
       - "brake initiation later than expert"
-    annotation_guideline: "Only applies when time_delta is falling (recovery context)."
+      - "gaining_time_on_expert"
     parent: RM
     children: []
     exclusive_with: ["RM10"]
@@ -365,7 +368,7 @@ labels:
     match_phrases:
       - "begins braking later than expert"
       - "brake initiation later than expert"
-    annotation_guideline: "Check brake graph: player onset index > expert onset index."
+      - "losing_time_to_expert"
     parent: MS
     children: []
     exclusive_with: ["MS5"]
@@ -377,7 +380,7 @@ labels:
     match_phrases:
       - "begins braking earlier than expert"
       - "brake initiation earlier than expert"
-    annotation_guideline: "Check brake graph: player onset index < expert onset index."
+      - "losing_time_to_expert"
     parent: MS
     children: []
     exclusive_with: ["MS1"]
@@ -389,7 +392,6 @@ labels:
     match_phrases:
       - "peak brake pressure is lower than expert"
       - "peak brake pressure lower than expert's"
-    annotation_guideline: "Check brake graph: player peak y-value < expert peak y-value."
     parent: MS
     children: []
     exclusive_with: ["MS22"]
@@ -401,7 +403,6 @@ labels:
     match_phrases:
       - "peak brake pressure is higher than expert"
       - "peak brake pressure higher than expert's"
-    annotation_guideline: "Check brake graph: player peak y-value > expert peak y-value."
     parent: MS
     children: []
     exclusive_with: ["MS13"]
@@ -412,8 +413,7 @@ labels:
     description: "Player ramps brake to peak more sharply than expert."
     match_phrases:
       - "applies brake more sharply than expert"
-      - "brake ramp sharper than expert"
-    annotation_guideline: "Check brake graph: player indices from zero to peak < expert's."
+      - "application_ramp_rate"
     parent: MS
     children: []
     exclusive_with: ["MS24"]
@@ -424,8 +424,7 @@ labels:
     description: "Player ramps brake to peak more gradually than expert."
     match_phrases:
       - "applies brake more gradually than expert"
-      - "brake ramp more gradual than expert"
-    annotation_guideline: "Check brake graph: player indices from zero to peak > expert's."
+      - "application_ramp_rate"
     parent: MS
     children: []
     exclusive_with: ["MS14"]
@@ -436,8 +435,8 @@ labels:
     description: "Player releases brake more abruptly than expert."
     match_phrases:
       - "releases brake more abruptly than expert"
-      - "brake release abrupt"
-    annotation_guideline: "Check brake graph: player indices from peak to zero < expert's."
+      - "trail_braking absent"
+      - "release_rate"
     parent: MS
     children: []
     exclusive_with: ["MS18"]
@@ -448,8 +447,8 @@ labels:
     description: "Player releases brake more gradually than expert."
     match_phrases:
       - "releases brake more gradually than expert"
-      - "brake release gradual"
-    annotation_guideline: "Check brake graph: player indices from peak to zero > expert's."
+      - "trail_braking"
+      - "release_rate"
     parent: MS
     children: []
     exclusive_with: ["MS17"]
@@ -461,7 +460,6 @@ labels:
     match_phrases:
       - "begins releasing brake later than expert"
       - "brake release onset later than expert"
-    annotation_guideline: "Check brake graph: player release-onset index > expert's."
     parent: MS
     children: []
     exclusive_with: ["MS28"]
@@ -473,7 +471,6 @@ labels:
     match_phrases:
       - "begins releasing brake earlier than expert"
       - "brake release onset earlier than expert"
-    annotation_guideline: "Check brake graph: player release-onset index < expert's."
     parent: MS
     children: []
     exclusive_with: ["MS27"]
@@ -485,7 +482,6 @@ labels:
     match_phrases:
       - "braking duration shorter than expert"
       - "braking duration is shorter than expert's"
-    annotation_guideline: "Check brake graph: total indices from initiation to release < expert's."
     parent: MS
     children: []
     exclusive_with: ["MS32"]
@@ -497,7 +493,6 @@ labels:
     match_phrases:
       - "braking duration longer than expert"
       - "braking duration is longer than expert's"
-    annotation_guideline: "Check brake graph: total indices from initiation to release > expert's."
     parent: MS
     children: []
     exclusive_with: ["MS31"]
@@ -510,7 +505,6 @@ labels:
       - "throttle and brake simultaneously"
       - "applies throttle and brake simultaneously"
       - "both traces above zero"
-    annotation_guideline: "Check brake + throttle graphs: overlapping non-zero ranges."
     parent: MS
     children: []
     exclusive_with: []
@@ -525,8 +519,7 @@ labels:
     description: "Player ramps throttle to peak more sharply than expert."
     match_phrases:
       - "applies throttle more sharply than expert"
-      - "throttle ramp sharper than expert"
-    annotation_guideline: "Check throttle graph: player indices from zero to peak < expert's."
+      - "application_ramp_rate"
     parent: MS
     children: []
     exclusive_with: ["MS25"]
@@ -537,8 +530,7 @@ labels:
     description: "Player ramps throttle to peak more gradually than expert."
     match_phrases:
       - "applies throttle more gradually than expert"
-      - "throttle ramp more gradual than expert"
-    annotation_guideline: "Check throttle graph: player indices from zero to peak > expert's."
+      - "application_ramp_rate"
     parent: MS
     children: []
     exclusive_with: ["MS15"]
@@ -549,8 +541,7 @@ labels:
     description: "Player's peak throttle is lower than expert's."
     match_phrases:
       - "peak throttle is lower than expert"
-      - "peak throttle lower than expert's"
-    annotation_guideline: "Check throttle graph: player peak y-value < expert peak y-value."
+      - "peak_throttle"
     parent: MS
     children: []
     exclusive_with: ["MS26"]
@@ -561,8 +552,7 @@ labels:
     description: "Player's peak throttle is higher than expert's."
     match_phrases:
       - "peak throttle is higher than expert"
-      - "peak throttle higher than expert's"
-    annotation_guideline: "Check throttle graph: player peak y-value > expert peak y-value."
+      - "peak_throttle"
     parent: MS
     children: []
     exclusive_with: ["MS19"]
@@ -573,8 +563,7 @@ labels:
     description: "Player begins applying throttle earlier than expert."
     match_phrases:
       - "begins applying throttle earlier than expert"
-      - "throttle onset earlier than expert"
-    annotation_guideline: "Check throttle graph: player onset index < expert onset index."
+      - "throttle_application_onset"
     parent: MS
     children: []
     exclusive_with: ["MS21"]
@@ -585,8 +574,7 @@ labels:
     description: "Player begins applying throttle later than expert."
     match_phrases:
       - "begins applying throttle later than expert"
-      - "throttle onset later than expert"
-    annotation_guideline: "Check throttle graph: player onset index > expert onset index."
+      - "throttle_application_onset"
     parent: MS
     children: []
     exclusive_with: ["MS20"]
@@ -597,8 +585,8 @@ labels:
     description: "Player releases throttle more abruptly than expert."
     match_phrases:
       - "releases throttle more abruptly than expert"
-      - "throttle release abrupt"
-    annotation_guideline: "Check throttle graph: player indices from peak to zero < expert's."
+      - "throttle_release_onset"
+      - "release_rate"
     parent: MS
     children: []
     exclusive_with: []
@@ -609,8 +597,7 @@ labels:
     description: "Player begins releasing throttle later than expert."
     match_phrases:
       - "begins releasing throttle later than expert"
-      - "throttle release onset later than expert"
-    annotation_guideline: "Check throttle graph: player release-onset index > expert's."
+      - "throttle_release_onset"
     parent: MS
     children: []
     exclusive_with: ["MS30"]
@@ -621,8 +608,7 @@ labels:
     description: "Player begins releasing throttle earlier than expert."
     match_phrases:
       - "begins releasing throttle earlier than expert"
-      - "throttle release onset earlier than expert"
-    annotation_guideline: "Check throttle graph: player release-onset index < expert's."
+      - "throttle_release_onset"
     parent: MS
     children: []
     exclusive_with: ["MS29"]
@@ -637,8 +623,8 @@ labels:
     description: "Player turns in later than expert, wider entry line."
     match_phrases:
       - "player turns in later than expert"
+      - "turn_in_offset"
       - "entry line is wider than expert"
-    annotation_guideline: "Check trajectory plot: player begins curving after expert."
     parent: MS
     children: []
     exclusive_with: ["MS6"]
@@ -649,8 +635,8 @@ labels:
     description: "Player turns in earlier than expert, tighter entry line."
     match_phrases:
       - "player turns in earlier than expert"
+      - "turn_in_offset"
       - "entry line is tighter than expert"
-    annotation_guideline: "Check trajectory plot: player begins curving before expert."
     parent: MS
     children: []
     exclusive_with: ["MS2"]
@@ -661,8 +647,8 @@ labels:
     description: "Player reaches apex later than expert along the trajectory."
     match_phrases:
       - "reaches apex later than expert"
+      - "apex_timing_offset"
       - "reaches the apex later than expert"
-    annotation_guideline: "Check trajectory plot: player apex position is later along the path."
     parent: MS
     children: []
     exclusive_with: ["MS7"]
@@ -673,8 +659,8 @@ labels:
     description: "Player reaches apex earlier than expert along the trajectory."
     match_phrases:
       - "reaches apex earlier than expert"
+      - "apex_timing_offset"
       - "reaches the apex earlier than expert"
-    annotation_guideline: "Check trajectory plot: player apex position is earlier along the path."
     parent: MS
     children: []
     exclusive_with: ["MS3"]
@@ -685,8 +671,7 @@ labels:
     description: "Player exits the corner earlier than expert."
     match_phrases:
       - "player exits the corner earlier than expert"
-      - "straightens steering before expert"
-    annotation_guideline: "Check trajectory plot: player straightens steering before expert does."
+      - "exit_timing_offset"
     parent: MS
     children: []
     exclusive_with: ["MS8"]
@@ -697,8 +682,7 @@ labels:
     description: "Player exits the corner later than expert."
     match_phrases:
       - "player exits the corner later than expert"
-      - "straightens steering after expert"
-    annotation_guideline: "Check trajectory plot: player straightens steering after expert does."
+      - "exit_timing_offset"
     parent: MS
     children: []
     exclusive_with: ["MS4"]
@@ -713,9 +697,8 @@ labels:
     description: "Player's entry line is tighter than expert (closer to inside)."
     match_phrases:
       - "entry line is tighter than expert"
+      - "entry_line_offset"
       - "closer to inside than expert"
-      - "entry line closer to inside"
-    annotation_guideline: "Check trajectory plot: player entry line inside of expert's."
     parent: MS
     children: []
     exclusive_with: ["MS33"]
@@ -726,9 +709,8 @@ labels:
     description: "Player's entry line is wider than expert (closer to outside)."
     match_phrases:
       - "entry line is wider than expert"
+      - "entry_line_offset"
       - "closer to outside than expert"
-      - "entry line farther from inside"
-    annotation_guideline: "Check trajectory plot: player entry line outside of expert's."
     parent: MS
     children: []
     exclusive_with: ["MS9"]
@@ -739,9 +721,8 @@ labels:
     description: "Player's apex is farther from inside than expert."
     match_phrases:
       - "farther from inside than expert"
+      - "apex_position_offset"
       - "wider apex"
-      - "farther from inside at the apex than expert"
-    annotation_guideline: "Check trajectory plot: player apex wider than expert's."
     parent: MS
     children: []
     exclusive_with: []
@@ -752,9 +733,8 @@ labels:
     description: "Player's exit line is tighter than expert (uses less track width)."
     match_phrases:
       - "exit line is tighter than expert"
+      - "exit_line_offset"
       - "uses less track width"
-      - "exit line tighter than expert"
-    annotation_guideline: "Check trajectory plot: player exit line inside of expert's."
     parent: MS
     children: []
     exclusive_with: ["MS16"]
@@ -765,9 +745,8 @@ labels:
     description: "Player's exit line is wider than expert (uses more track width)."
     match_phrases:
       - "exit line is wider than expert"
+      - "exit_line_offset"
       - "uses more track width"
-      - "exit line wider than expert"
-    annotation_guideline: "Check trajectory plot: player exit line outside of expert's."
     parent: MS
     children: []
     exclusive_with: ["MS11"]
@@ -778,9 +757,8 @@ labels:
     description: "Player cuts inside expert's racing line."
     match_phrases:
       - "cuts inside expert's racing line"
-      - "player cuts inside"
+      - "cuts_inside"
       - "shortening the corner"
-    annotation_guideline: "Check trajectory plot: player line crosses inside expert's line."
     parent: MS
     children: []
     exclusive_with: []
@@ -791,9 +769,8 @@ labels:
     description: "Player goes off track at corner entry."
     match_phrases:
       - "player goes off track at entry"
+      - "off_track"
       - "off track at corner entry"
-      - "trajectory leaves track at entry"
-    annotation_guideline: "Check trajectory plot: player trajectory exits track bounds at entry."
     parent: MS
     children: []
     exclusive_with: []
@@ -804,9 +781,8 @@ labels:
     description: "Player goes off track at corner exit."
     match_phrases:
       - "player goes off track at exit"
+      - "off_track"
       - "off track at corner exit"
-      - "trajectory leaves track at exit"
-    annotation_guideline: "Check trajectory plot: player trajectory exits track bounds at exit."
     parent: MS
     children: []
     exclusive_with: []
@@ -817,9 +793,8 @@ labels:
     description: "Player goes off track on a straight section."
     match_phrases:
       - "player goes off track on the straight"
+      - "off_track"
       - "off track on straight"
-      - "trajectory leaves track on straight"
-    annotation_guideline: "Check trajectory plot: player trajectory exits track bounds on straight."
     parent: MS
     children: []
     exclusive_with: []
@@ -833,11 +808,11 @@ labels:
     type: sub
     description: "Grip utilisation at corner entry deviates from expert's pattern."
     match_phrases:
+      - "over_limit_spike at corner entry"
       - "over-limit spike at corner entry"
-      - "sustained low at corner entry"
-      - "push_limit spike at corner entry"
-      - "grip utilisation at corner entry"
-    annotation_guideline: "Check push_limit graph: spike above 1.0 or sustained low during entry phase."
+      - "sustained_over_limit at corner entry"
+      - "sustained_low at corner entry"
+      - "grip_phase corner-entry"
     parent: MS
     children: []
     exclusive_with: []
@@ -847,11 +822,11 @@ labels:
     type: sub
     description: "Grip utilisation at corner exit deviates from expert's pattern."
     match_phrases:
+      - "over_limit_spike at corner exit"
       - "over-limit spike at corner exit"
-      - "sustained low at corner exit"
-      - "push_limit spike at corner exit"
-      - "grip utilisation at corner exit"
-    annotation_guideline: "Check push_limit graph: spike above 1.0 or sustained low during exit phase."
+      - "sustained_over_limit at corner exit"
+      - "sustained_low at corner exit"
+      - "grip_phase corner-exit"
     parent: MS
     children: []
     exclusive_with: []
@@ -861,10 +836,9 @@ labels:
     type: sub
     description: "Rear-slip dominant at corner entry on balance trajectory."
     match_phrases:
+      - "rear_slip_dominant at corner entry"
       - "rear-slip dominant at corner entry"
-      - "red section at corner entry"
       - "rear-slip dominant section at corner entry"
-    annotation_guideline: "Check balance trajectory: vivid red section during entry phase."
     parent: MS
     children: []
     exclusive_with: ["MS45"]
@@ -874,10 +848,9 @@ labels:
     type: sub
     description: "Front-slip dominant at corner entry on balance trajectory."
     match_phrases:
+      - "front_slip_dominant at corner entry"
       - "front-slip dominant at corner entry"
-      - "blue section at corner entry"
       - "front-slip dominant section at corner entry"
-    annotation_guideline: "Check balance trajectory: blue section during entry phase. Note 2x amplification."
     parent: MS
     children: []
     exclusive_with: ["MS44"]
@@ -887,10 +860,9 @@ labels:
     type: sub
     description: "Rear-slip dominant at corner exit on balance trajectory."
     match_phrases:
+      - "rear_slip_dominant at corner exit"
       - "rear-slip dominant at corner exit"
-      - "red section at corner exit"
       - "rear-slip dominant section at corner exit"
-    annotation_guideline: "Check balance trajectory: vivid red section during exit phase."
     parent: MS
     children: []
     exclusive_with: ["MS47"]
@@ -900,10 +872,9 @@ labels:
     type: sub
     description: "Front-slip dominant at corner exit on balance trajectory."
     match_phrases:
+      - "front_slip_dominant at corner exit"
       - "front-slip dominant at corner exit"
-      - "blue section at corner exit"
       - "front-slip dominant section at corner exit"
-    annotation_guideline: "Check balance trajectory: blue section during exit phase. Note 2x amplification."
     parent: MS
     children: []
     exclusive_with: ["MS46"]
@@ -918,9 +889,7 @@ labels:
     description: "Player upshifts earlier than expert."
     match_phrases:
       - "player upshifts earlier than expert"
-      - "upshift earlier than expert"
-      - "shifts up earlier than expert"
-    annotation_guideline: "Check gear graph: player upshift index < expert upshift index."
+      - "upshift"
     parent: MS
     children: []
     exclusive_with: ["MS36"]
@@ -931,9 +900,7 @@ labels:
     description: "Player upshifts later than expert."
     match_phrases:
       - "player upshifts later than expert"
-      - "upshift later than expert"
-      - "shifts up later than expert"
-    annotation_guideline: "Check gear graph: player upshift index > expert upshift index."
+      - "upshift"
     parent: MS
     children: []
     exclusive_with: ["MS35"]
@@ -944,9 +911,7 @@ labels:
     description: "Player downshifts earlier than expert."
     match_phrases:
       - "player downshifts earlier than expert"
-      - "downshift earlier than expert"
-      - "shifts down earlier than expert"
-    annotation_guideline: "Check gear graph: player downshift index < expert downshift index."
+      - "downshift"
     parent: MS
     children: []
     exclusive_with: ["MS38"]
@@ -957,9 +922,7 @@ labels:
     description: "Player downshifts later than expert."
     match_phrases:
       - "player downshifts later than expert"
-      - "downshift later than expert"
-      - "shifts down later than expert"
-    annotation_guideline: "Check gear graph: player downshift index > expert downshift index."
+      - "downshift"
     parent: MS
     children: []
     exclusive_with: ["MS37"]
@@ -969,10 +932,8 @@ labels:
     type: sub
     description: "Player in a lower gear than expert during acceleration."
     match_phrases:
-      - "player gear lower than expert"
-      - "lower gear than expert during acceleration"
-      - "gear too low"
-    annotation_guideline: "Check gear graph: player gear number < expert gear number during acceleration."
+      - "lower gear than expert"
+      - "gear_level_offset"
     parent: MS
     children: []
     exclusive_with: ["MS49"]
@@ -982,10 +943,8 @@ labels:
     type: sub
     description: "Player in a higher gear than expert during acceleration."
     match_phrases:
-      - "player gear higher than expert"
-      - "higher gear than expert during acceleration"
-      - "gear too high"
-    annotation_guideline: "Check gear graph: player gear number > expert gear number during acceleration."
+      - "higher gear than expert"
+      - "gear_level_offset"
     parent: MS
     children: []
     exclusive_with: ["MS48"]
