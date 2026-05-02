@@ -771,7 +771,6 @@ def _run_evidence_evaluator(
             "=== Instructions ===\n"
             "Respond in this exact format:\n"
             "VERDICT: pass or fail\n"
-            "FEEDBACK: Describe which claims are supported or unsupported.\n"
             "EDITS: (only if fail) A JSON object with:\n"
             '  {"replacements": [{"old": "unsupported claim", "new": "grounded claim"}]}\n'
         )

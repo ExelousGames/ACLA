@@ -50,6 +50,7 @@ from app.models.segment_models import (
 )
 from app.models.label_catalog import get_label_catalog, LabelCatalog
 from app.models.graph_analysis_skill import get_graph_skill
+from app.models.vocabulary import get_vocabulary
 from app.services.llm.step_evaluator_agents import (
     run_evaluator_suite,
     set_eval_llm,
@@ -135,6 +136,24 @@ def _default_state() -> AnnotationState:
         "final_sub_end": 0,
         "messages": [],
     }
+
+
+# ---------------------------------------------------------------------------
+# Glossary injection
+#
+# Every prompt assembled in this pipeline gets scanned for vocabulary
+# phrases (defined in skills/vocabulary.yaml).  Phrases that appear in
+# the prompt body get a Glossary block prepended so the VLM/LLM is
+# taught the meaning of every canonical phrase the prompt references.
+# ---------------------------------------------------------------------------
+
+def _attach_glossary(prompt: str) -> str:
+    """Prepend a glossary block listing every vocabulary phrase used in *prompt*.
+
+    Returns *prompt* unchanged if no vocabulary phrase appeared in it.
+    """
+    block = get_vocabulary().build_glossary_block(prompt)
+    return f"{block}\n{prompt}" if block else prompt
 
 
 # ---------------------------------------------------------------------------
@@ -462,6 +481,11 @@ def planner_node(state: AnnotationState) -> dict:
 
     prompt = "\n".join(prompt_parts)
 
+    # Prepend a glossary block listing every vocabulary phrase that appears
+    # in the prompt (e.g. phrases inside the injected label descriptions or
+    # annotation guidelines).
+    prompt = _attach_glossary(prompt)
+
     # planner consumes nothing from the pool — it works from raw run inputs
     # (parent_main_labels, existing_children, parent bounds) which are part
     # of the run's scaffolding, not produced by another agent.
@@ -727,6 +751,10 @@ def step_describer_node(state: AnnotationState) -> Dict[str, Any]:
         "Write one paragraph per graph, following the per-graph guidance above.\n\n"
     )
 
+    # Prepend a glossary block listing every vocabulary phrase that appears
+    # in the prompt so the VLM is taught the meaning of each canonical phrase.
+    prompt = _attach_glossary(prompt)
+
     # 1. Generate output (VLM call with graph images)
     # Stage first (resets iter/total on node change), then iteration.
     set_active_stage("step_describer", "main")
@@ -891,14 +919,14 @@ def label_verifier_node(state: AnnotationState) -> Dict[str, Any]:
             "messages": messages,
         }
 
-    # Build label text corpus: "Name: description. match_phrases" per candidate
+    # Build label text corpus: "Name: description" per candidate.
+    # Canonical phrases now live inline in description (marked **phrase**),
+    # so they reach the embedder without a separate match_phrases list.
     label_texts: list[str] = []
     for lid in shortlisted:
         entry = catalog.get_label(lid)
         if entry:
             text = f"{entry.name}: {entry.description}" if entry.description else entry.name
-            if entry.match_phrases:
-                text += " " + " ".join(entry.match_phrases)
             label_texts.append(text)
         else:
             label_texts.append(LABEL_MAPPING.get(lid, lid))
@@ -1055,6 +1083,12 @@ def proposal_synthesizer_node(state: AnnotationState) -> Dict[str, Any]:
 
     vlm_prompt = "\n".join(intro_parts + ["", context_block, ""] + instructions_parts)
     eval_prompt = "\n".join(intro_parts + [""] + instructions_parts)
+
+    # Prepend a glossary block listing every vocabulary phrase that appears
+    # in the prompt (the rendered context_block contains the step_describer
+    # observations, which are full of canonical phrases).
+    vlm_prompt = _attach_glossary(vlm_prompt)
+    eval_prompt = _attach_glossary(eval_prompt)
 
     # 1. Generate output (VLM call)
     set_active_stage("proposal_synthesizer", "main")

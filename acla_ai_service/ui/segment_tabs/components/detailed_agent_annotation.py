@@ -289,9 +289,8 @@ def render_agent_annotation(df, form_start, form_end, form_labels, session_id, s
                         for s in completed_sections:
                             header = _format_header(s["meta"], s.get("duration", 0))
                             with st.expander(header, expanded=False):
-                                st.markdown(
-                                    f"**Prompt:**\n```\n{s['prompt']}\n```"
-                                )
+                                st.markdown("**Prompt:**")
+                                st.code(s["prompt"], language=None, wrap_lines=True)
                                 if s.get("reasoning"):
                                     st.markdown(
                                         f"**💭 Thinking:**\n\n{s['reasoning']}"
@@ -312,9 +311,8 @@ def render_agent_annotation(df, form_start, form_end, form_labels, session_id, s
                             f"**{_format_header(active_meta)}** "
                             f"_{elapsed:.0f}s …_"
                         )
-                        st.markdown(
-                            f"*Prompt:*\n```\n{active_prompt[0]}\n```"
-                        )
+                        st.markdown("*Prompt:*")
+                        st.code(active_prompt[0], language=None, wrap_lines=True)
                         if reasoning_buffer:
                             st.markdown(
                                 f"*💭 Thinking (streaming…)*\n\n"
