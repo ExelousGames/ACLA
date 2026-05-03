@@ -16,10 +16,12 @@ replicating the visual evidence a human annotator would use.
 
 Graph flow (forward-only — no retry edge):
 
-    planner ──────────► steps_data_fetcher ──► step_describer ─┐
-    (eval: format)      (no LLM output,       (eval: format,   │ (repeat per
-                         no evaluator)          evidence)       │  plan step)
-                        ┌───────────────────────────────────────┘
+    planner ──────────► step_describer ─┐
+    (eval: format)      (renders graphs │ (repeat per
+                         + describes,    │  plan step)
+                         eval: format,   │
+                         evidence)       │
+                        ┌────────────────┘
                         ▼
                 label_verifier          ← embedding similarity filter
                         │                 (eval: format, range, consistency)
@@ -28,8 +30,7 @@ Graph flow (forward-only — no retry edge):
                        END
 
     Every LLM-producing node calls run_evaluator_suite() internally
-    before writing its output to state.  steps_data_fetcher is the only
-    node that does NOT run evaluators (it fetches data, not LLM output).
+    before writing its output to state.
 """
 
 from __future__ import annotations
@@ -93,7 +94,7 @@ class AnnotationState(TypedDict, total=False):
     # --- named attachment pool — see step_evaluator_agents.PipelineAttachment ---
     # Each pipeline agent declares which attachments it consumes / produces by
     # name.  The pool is keyed by stable namespaced names like
-    # ``"init.parent_segment"``, ``"steps_data_fetcher.3.graph_images"``,
+    # ``"init.parent_segment"``, ``"step_describer.3.graph_images"``,
     # ``"step_describer.3.observations"``.  Evaluators see ONLY the parent
     # agent's input set, never the whole pool.
     attachment_pool: Annotated[Dict[str, PipelineAttachment], merge_pool]
@@ -326,8 +327,8 @@ def _parse_planner_steps(plan_text: str, available_tools: list) -> list:
 #
 #   init.parent_segment
 #   planner.plan
-#   steps_data_fetcher.{k}.graph_images
-#   steps_data_fetcher.{k}.graph_descriptions
+#   step_describer.{k}.graph_images
+#   step_describer.{k}.graph_descriptions
 #   step_describer.{k}.observations
 #   label_verifier.verified_labels
 #   proposal_synthesizer.proposal
@@ -539,85 +540,6 @@ def planner_node(state: AnnotationState) -> dict:
     }
 
 
-# ---------------------------------------------------------------------------
-# Tool executor node
-# ---------------------------------------------------------------------------
-
-
-def steps_data_fetcher_node(state: AnnotationState) -> Dict[str, Any]:
-    """
-    Executes the tools (statistics, graphs) requested for the current step
-    in the plan and emits two named attachments per step:
-        steps_data_fetcher.{k}.graph_images        (image_set)
-        steps_data_fetcher.{k}.graph_descriptions  (structured)
-
-    Where ``k`` is the 1-based step_id of the current plan step.  This node
-    is not an LLM agent — it has no evaluators.
-    """
-    from .annotation_agent_tools import generate_telemetry_graphs
-    messages = list(state.get("messages", []))
-    plan_steps = state.get("plan_steps", [])
-    current_step_index = state.get("current_step_index", 0)
-    df = state.get("df_ref")
-    start = state.get("parent_start", 0)
-    end = state.get("parent_end", 0)
-
-    if not plan_steps or current_step_index >= len(plan_steps):
-        LOGGER.warning("Step executor called with no steps or invalid index. Skipping.")
-        return {}
-
-    step = plan_steps[current_step_index]
-    step_id = step.get("step_id", current_step_index + 1)
-    requested_graphs = step.get("requested_graphs", [])
-    LOGGER.info(f"Executing step {current_step_index + 1}/{len(plan_steps)}: {step.get('description')}")
-    LOGGER.info(f"  - Requested graphs: {requested_graphs}")
-
-    image_bytes_list: List[bytes] = []
-    desc_list: List[str] = []
-    if requested_graphs:
-        graph_results = generate_telemetry_graphs(
-            df, start, end,
-            graph_ids=requested_graphs
-        )
-        for img, desc in graph_results:
-            desc_list.append(desc)
-            buf = io.BytesIO()
-            img.save(buf, format="PNG")
-            image_bytes_list.append(buf.getvalue())
-
-    if image_bytes_list:
-        content = f"Generated {len(image_bytes_list)} graphs: {', '.join(desc_list)}"
-        messages.append({
-            "role": "tool",
-            "content": [{"tool_name": "generate_telemetry_graphs", "content": content}],
-        })
-
-    # Emit named attachments for this step into the pool.
-    images_att = PipelineAttachment(
-        name=f"steps_data_fetcher.{step_id}.graph_images",
-        kind="image_set",
-        label=f"Step {step_id} — Graph Images",
-        content=image_bytes_list,
-    )
-    descs_att = PipelineAttachment(
-        name=f"steps_data_fetcher.{step_id}.graph_descriptions",
-        kind="structured",
-        content_schema="graph_descriptions",
-        label=f"Step {step_id} — Graph Descriptions",
-        content=desc_list,
-    )
-
-    return {
-        "all_graph_images": state.get("all_graph_images", []) + image_bytes_list,
-        "all_graph_descriptions": state.get("all_graph_descriptions", []) + desc_list,
-        "attachment_pool": {
-            images_att.name: images_att,
-            descs_att.name: descs_att,
-        },
-        "messages": messages,
-    }
-
-
 def _call_vlm(
     prompt: str,
     graph_image_bytes: List[bytes],
@@ -684,19 +606,26 @@ def _parse_json_response(raw: str) -> Optional[dict]:
 
 def step_describer_node(state: AnnotationState) -> Dict[str, Any]:
     """
-    Produces a detailed prose description of the graphs and data gathered for
-    the current plan step.  This node only describes what is visible — it does
+    Renders the graphs the planner requested for the current step and writes
+    a prose description of what they show.  Graph rendering happens inline
+    so the images are produced and consumed within the same agent — the VLM
+    sees them as visual evidence and the evaluator suite can re-check claims
+    against the same image set.
+
+    The description is observation-only: it reports what is visible and does
     not interpret, diagnose, or assign labels.  Downstream nodes
-    (label_verifier, proposal_synthesizer) consume these descriptions to make
-    decisions.
+    (label_verifier, proposal_synthesizer) consume these observations to
+    make decisions.
 
     Consumes from the pool:
         - init.parent_segment
-        - steps_data_fetcher.{k}.graph_images
-        - steps_data_fetcher.{k}.graph_descriptions
     Produces:
-        - step_describer.{k}.observations
+        - step_describer.{k}.graph_images        (rendered PNGs for this step)
+        - step_describer.{k}.graph_descriptions  (auto-generated graph captions)
+        - step_describer.{k}.observations        (VLM prose, post-evaluation)
     """
+    from .annotation_agent_tools import generate_telemetry_graphs
+
     messages = list(state.get("messages", []))
     plan_steps = state.get("plan_steps", [])
     current_step_index = state.get("current_step_index", 0)
@@ -704,21 +633,55 @@ def step_describer_node(state: AnnotationState) -> Dict[str, Any]:
     step_id = step.get("step_id", current_step_index + 1)
     parent_start = state.get("parent_start", 0)
     parent_end = state.get("parent_end", 0)
+    df = state.get("df_ref")
 
-    # Declare and fetch named attachments from the pool.
+    # Render the graphs the planner requested for this step.
+    requested_graphs = step.get("requested_graphs", [])
+    LOGGER.info(f"Describing step {current_step_index + 1}/{len(plan_steps)}: {step.get('description')}")
+    LOGGER.info(f"  - Requested graphs: {requested_graphs}")
+
+    graph_images: List[bytes] = []
+    graph_descriptions: List[str] = []
+    if requested_graphs:
+        graph_results = generate_telemetry_graphs(
+            df, parent_start, parent_end,
+            graph_ids=requested_graphs,
+        )
+        for img, desc in graph_results:
+            graph_descriptions.append(desc)
+            buf = io.BytesIO()
+            img.save(buf, format="PNG")
+            graph_images.append(buf.getvalue())
+
+    if graph_images:
+        tool_summary = f"Generated {len(graph_images)} graphs: {', '.join(graph_descriptions)}"
+        messages.append({
+            "role": "tool",
+            "content": [{"tool_name": "generate_telemetry_graphs", "content": tool_summary}],
+        })
+
+    # Wrap the rendered graphs in named attachments so evaluators (and any
+    # downstream nodes) can locate them in the pool.
+    images_attachment = PipelineAttachment(
+        name=f"step_describer.{step_id}.graph_images",
+        kind="image_set",
+        label=f"Step {step_id} — Graph Images",
+        content=graph_images,
+    )
+    descs_attachment = PipelineAttachment(
+        name=f"step_describer.{step_id}.graph_descriptions",
+        kind="structured",
+        content_schema="graph_descriptions",
+        label=f"Step {step_id} — Graph Descriptions",
+        content=graph_descriptions,
+    )
+
+    # Declare and fetch named attachments from the pool.  Combine the upstream
+    # parent_segment with the locally-produced graph attachments to form this
+    # node's parent_inputs (visible to its evaluator suite).
     pool: AttachmentPool = state.get("attachment_pool", {})
-    consumes = [
-        "init.parent_segment",
-        f"steps_data_fetcher.{step_id}.graph_images",
-        f"steps_data_fetcher.{step_id}.graph_descriptions",
-    ]
-    parent_inputs = pool_get_many(pool, consumes)
-
-    # Pull the concrete pieces this node needs from its own input set.
-    images_atts = [a for a in parent_inputs if a.name == f"steps_data_fetcher.{step_id}.graph_images"]
-    descs_atts = [a for a in parent_inputs if a.name == f"steps_data_fetcher.{step_id}.graph_descriptions"]
-    graph_images: List[bytes] = images_atts[0].content if images_atts else []
-    graph_descriptions: List[str] = descs_atts[0].content if descs_atts else []
+    upstream_inputs = pool_get_many(pool, ["init.parent_segment"])
+    parent_inputs = upstream_inputs + [images_attachment, descs_attachment]
 
     prompt = (
         f"You are a telemetry graph describer.  Your ONLY job is to produce a "
@@ -799,15 +762,21 @@ def step_describer_node(state: AnnotationState) -> Dict[str, Any]:
             "graph_observations": evaluated_response,
             "graph_descriptions": graph_descriptions,
         }],
-        "attachment_pool": {obs_attachment.name: obs_attachment},
+        "all_graph_images": state.get("all_graph_images", []) + graph_images,
+        "all_graph_descriptions": state.get("all_graph_descriptions", []) + graph_descriptions,
+        "attachment_pool": {
+            images_attachment.name: images_attachment,
+            descs_attachment.name: descs_attachment,
+            obs_attachment.name: obs_attachment,
+        },
         "messages": messages,
     }
 
 
-def step_router(state: AnnotationState) -> Literal["steps_data_fetcher", "label_verifier"]:
-    """Routes to the next step executor or to label verification if all steps are complete."""
+def step_router(state: AnnotationState) -> Literal["step_describer", "label_verifier"]:
+    """Routes to the next step describer or to label verification if all steps are complete."""
     if state["current_step_index"] < len(state.get("plan_steps", [])):
-        return "steps_data_fetcher"
+        return "step_describer"
     return "label_verifier"
 
 
@@ -1194,7 +1163,6 @@ def build_annotation_graph(
 
     graph.add_node("init_producer", init_producer_node)
     graph.add_node("planner", planner_node)
-    graph.add_node("steps_data_fetcher", steps_data_fetcher_node)
     graph.add_node("step_describer", step_describer_node)
     graph.add_node("label_verifier", label_verifier_node)
     graph.add_node("proposal_synthesizer", proposal_synthesizer_node)
@@ -1202,13 +1170,12 @@ def build_annotation_graph(
 
     graph.set_entry_point("init_producer")
     graph.add_edge("init_producer", "planner")
-    graph.add_edge("planner", "steps_data_fetcher")
-    graph.add_edge("steps_data_fetcher", "step_describer")
+    graph.add_edge("planner", "step_describer")
     graph.add_conditional_edges(
         "step_describer",
         step_router,
         {
-            "steps_data_fetcher": "steps_data_fetcher",
+            "step_describer": "step_describer",
             "label_verifier": "label_verifier",
         },
     )
@@ -1281,10 +1248,10 @@ def run_annotation_pipeline(
 ) -> AnnotationResult:
     """Execute the forward-only annotation pipeline.
 
-    The pipeline runs: planner → steps_data_fetcher → step_describer (loop)
-    → label_verifier → proposal_synthesizer → END.  Each LLM-producing
-    node runs its own evaluator suite internally before writing to state,
-    so there is no separate evaluator node or retry loop.
+    The pipeline runs: planner → step_describer (loop) → label_verifier
+    → proposal_synthesizer → END.  Each LLM-producing node runs its own
+    evaluator suite internally before writing to state, so there is no
+    separate evaluator node or retry loop.
 
     Parameters
     ----------
@@ -1382,18 +1349,21 @@ def run_annotation_pipeline(
                 if node_name == "planner":
                     n_steps = len(final_state.get("plan_steps", []))
                     detail = f"Planned {n_steps} analysis step(s)"
-                elif node_name == "steps_data_fetcher":
-                    plan_steps = final_state.get("plan_steps", [])
-                    idx = final_state.get("current_step_index", 0)
-                    pool = final_state.get("attachment_pool", {})
-                    step_id = plan_steps[idx].get("step_id", idx + 1) if 0 <= idx < len(plan_steps) else idx + 1
-                    descs_att = pool.get(f"steps_data_fetcher.{step_id}.graph_descriptions")
-                    n_graphs = len(descs_att.content) if descs_att and isinstance(descs_att.content, list) else 0
-                    detail = f"Gathered {n_graphs} graph(s)"
                 elif node_name == "step_describer":
                     idx = final_state.get("current_step_index", 0)
                     total = len(final_state.get("plan_steps", []))
-                    detail = f"Described step {idx}/{total}"
+                    plan_steps = final_state.get("plan_steps", [])
+                    pool = final_state.get("attachment_pool", {})
+                    # current_step_index has already been advanced; the step
+                    # just executed is at idx - 1.
+                    just_done = idx - 1
+                    if 0 <= just_done < len(plan_steps):
+                        step_id = plan_steps[just_done].get("step_id", just_done + 1)
+                        descs_att = pool.get(f"step_describer.{step_id}.graph_descriptions")
+                        n_graphs = len(descs_att.content) if descs_att and isinstance(descs_att.content, list) else 0
+                        detail = f"Described step {idx}/{total} ({n_graphs} graph(s))"
+                    else:
+                        detail = f"Described step {idx}/{total}"
                 elif node_name == "label_verifier":
                     verified = final_state.get("verified_labels", [])
                     detail = (

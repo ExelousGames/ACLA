@@ -4,7 +4,7 @@ Streamlit UI component for the LangGraph multi-agent sub-segment discovery pipel
 Renders below the analysis section in the annotation manager and lets users
 run the full annotation cycle on the currently selected parent segment:
 
-    planner → steps_data_fetcher → step_describer (repeated per plan step)
+    planner → step_describer (renders graphs + describes, repeated per plan step)
         → label_verifier → proposal_synthesizer → evaluator
 
 The VLM receives rendered graph images at each step, replicating the visual
@@ -244,7 +244,6 @@ def render_agent_annotation(df, form_start, form_end, form_labels, session_id, s
 
                 _NODE_ICONS = {
                     "planner": "🧠",
-                    "steps_data_fetcher": "📊",
                     "step_describer": "🔍",
                     "label_verifier": "✅",
                     "proposal_synthesizer": "📝",
