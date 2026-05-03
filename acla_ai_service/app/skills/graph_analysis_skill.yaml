@@ -13,7 +13,7 @@
 #   visual_elements          — colours, line styles, markers the VLM will see
 #   how_to_analyze           — 4-6 line numbered procedure on HOW to read
 #                              the graph (not WHAT features to enumerate)
-#   phrases_to_use           — flat list of canonical phrases the VLM MUST
+#   vocabulary_to_use           — flat list of canonical phrases the VLM MUST
 #                              embed verbatim where applicable.  Definitions
 #                              for these phrases live centrally in
 #                              vocabulary.yaml and are injected into the
@@ -52,17 +52,12 @@ graphs:
       - "Legend identifies which colour is expert vs player"
       - "Grid lines for reading exact values"
     how_to_analyze: >
-      1. Read the legend; state which colour is the expert and which is the player.
-      2. Locate the rising edge of each trace (where it first crosses ~0.05) and note
-         the held value each trace settles at.
-      3. For each feature visible on this graph (application onset, ramp rate, peak
-         held value, release onset, release rate), read the player's value and the
-         expert's value at the same phase from the grid.
-      4. Compare the two and pick the canonical phrase from phrases_to_use that
-         matches the directional offset.  Embed it verbatim in your sentence.
-      5. Note any extended overlap-with-brake region only if the brake graph is
-         also present in this step.
-    phrases_to_use:
+      1. Name who is who: read the legend; assign each colour to expert or player.
+      2. Note the left and right edge values for both traces — may start/end at full throttle.
+      3. For each sustained throttle phase, identify the index range (start–end) for the player AND the expert.
+      4. For each transition (>0.1 y-move), state who initiates it and compare index ranges on each trace; record the gap.
+      5. If the brake graph is present, report any overlap range only.
+    vocabulary_to_use:
       - "begins applying throttle earlier than"
       - "begins applying throttle later than"
       - "applies throttle more sharply than"
@@ -75,15 +70,11 @@ graphs:
       - "releases throttle more gradually than"
       - "applies throttle and brake simultaneously"
     sentence_format_guide: >
-      Write one cohesive paragraph.  Each predicate above is used with
-      subject ("the player") and object ("the expert") supplied around
-      it.  For each compared feature use:
-        "The player <canonical predicate> the expert by <N indices | 0.X
-         value> (player <value> at index <X>, expert <value> at index <Y>)."
-      Always pair player metric + expert metric + canonical predicate + numerical gap.
-      Example: "The player begins applying throttle later than the expert
-      by 8 indices (player at index 80 reaching 0.78, expert at index 72
-      reaching 1.00)."
+      One paragraph. Subject = who (player), object = who (expert).
+        "The player <canonical predicate> the expert — player [action] across
+         indices <A>–<B> (<val>), expert across indices <C>–<D> (<val>);
+         gap <N> indices / <Δ> value."
+      Always: who acts, where (index range) each trace acts, numerical gap.
     common_description_errors:
       - "Verify expert vs player from the legend before describing"
       - "Always pair a player metric with the matching expert metric and directional offset"
@@ -102,16 +93,12 @@ graphs:
       - "Legend identifies which is which"
       - "Grid lines for reading exact values"
     how_to_analyze: >
-      1. Read the legend; state which colour is expert and which is player.
-      2. Scan each trace's baseline (zero region) and locate the rising edge.
-      3. For each feature (initiation, ramp, peak, release onset, release rate,
-         total duration), read the player's value AND the expert's value at the
-         same phase from the grid.
-      4. Choose the phrase from phrases_to_use that matches the directional offset
-         and embed it verbatim, paired with the numerical gap.
-      5. If both brake and throttle are visible, scan for any index range where
-         both traces are above zero and describe the overlap explicitly.
-    phrases_to_use:
+      1. Name who is who: read the legend; assign each colour to expert or player.
+      2. For each trace, locate the full brake phase as an index range (onset → peak → release-end); read values at those points.
+      3. Compare who initiates earlier, who peaks higher, who releases first — record both traces' ranges and the gap.
+      4. Select the canonical phrase matching the directional offset; embed it with index ranges and value gap.
+      5. If the throttle graph is present, report any overlap range where both player traces are above zero.
+    vocabulary_to_use:
       - "begins braking earlier than"
       - "begins braking later than"
       - "applies brake more sharply than"
@@ -127,17 +114,13 @@ graphs:
       - "braking duration shorter than"
       - "applies throttle and brake simultaneously"
     sentence_format_guide: >
-      Write one cohesive paragraph.  Each predicate above is used with
-      subject ("the player") and object ("the expert") supplied around
-      it.  For each compared feature use:
-        "The player <canonical predicate> the expert by <N indices | 0.X
-         pressure> (player <value> at index <X>, expert <value> at index <Y>)."
-      Examples:
-        "The player begins braking later than the expert by ten indices
-        (player at index 55, expert at index 45)."
-        "The player releases brake more gradually than the expert, taking
-        12 indices to reach zero versus the expert's 4 — trail braking is
-        present on the player's trace, absent on the expert's."
+      One paragraph. Subject = who (player), object = who (expert).
+        "The player <canonical predicate> the expert — player [action] across
+         indices <A>–<B> (<val>), expert across indices <C>–<D> (<val>);
+         gap <N> indices / <Δ> pressure."
+      Example: "The player begins braking later than the expert — player onset
+      at index 55, expert at index 45 (gap 10 indices); braking phase spans
+      indices 55–100 (player) vs 45–83 (expert)."
     common_description_errors:
       - "Do NOT confuse brake release (trace returning to zero) with brake reduction (decreasing but not to zero — i.e. trail braking)"
       - "Do NOT report a player metric without also reporting the expert's matching metric and the directional offset"
@@ -156,36 +139,25 @@ graphs:
       - "Falling line means the gap is shrinking (player catching up)"
       - "Flat line means the gap is stable"
     how_to_analyze: >
-      1. Read the y-axis scale; note whether values are in milliseconds and the
-         range covered (e.g. ±500 ms versus ±50 ms changes what counts as a
-         "large" change).
-      2. State the starting and ending y-values; compute the net change.
-      3. Identify the overall shape — continuously rising, continuously falling,
-         flat, rises then flattens, oscillating, etc.
-      4. Split the trace at points where the slope clearly changes; for each
-         segment report start index, end index, and how the rate of change
-         compares to the previous segment (steeper / shallower / sign-flip).
-      5. Mark any sustained flat sections — the player matches the expert's pace
-         there.  Mark every inflection point (where the line reverses direction).
-      6. Use the canonical phrases for direction; always state the sign explicitly
-         (positive = player BEHIND expert, negative = player AHEAD).
-    phrases_to_use:
+      1. Read the y-axis scale and range; note the sign (+ = player behind expert, − = player ahead).
+      2. State the start and end values; compute the net change and who is ahead/behind at each end.
+      3. Identify the overall shape (rising / falling / flat / oscillating).
+      4. Split at slope changes; for each segment state the index range (start–end), the ms change, and whether the player is losing or gaining on the expert.
+      5. Mark every inflection and every flat section (flat = who matches whose pace across that range).
+    vocabulary_to_use:
       - "gap to expert grows"
       - "gap to expert shrinks"
       - "gap to expert is stable"
       - "loses time to"
       - "gains time on"
     sentence_format_guide: >
-      Write one cohesive paragraph.  The "gap to expert ..." phrases are
-      complete; the "loses time to" / "gains time on" predicates take
-      subject ("the player") and object ("the expert") supplied around
-      them.  Anchor every observation to specific indices and ms values.
-      Skeleton:
-        "The <canonical phrase> between indices <N> and <M> (delta moves from
-         <X> ms to <Y> ms)."
-      Example: "The gap to expert grows between indices 100 and 150 (delta
-      rises from 80 ms to 320 ms), then becomes stable at ~320 ms through
-      to index 200; the player loses time to the expert across this section."
+      One paragraph. "Gap to expert" phrases stand alone; "loses time to / gains time on"
+      take who (player) and object (expert).
+        "The player <canonical phrase> across indices <N>–<M> (delta <X> ms → <Y> ms;
+         who is ahead/behind at each end)."
+      Example: "The player loses time to the expert across indices 100–150 (gap
+      grows from 80 ms to 320 ms); the gap to expert is stable across indices
+      150–200 (~320 ms; player remains behind expert)."
     common_description_errors:
       - "Do NOT ignore the SCALE of the y-axis — a 0.01 s change is negligible, a 0.5 s change is large"
       - "Do NOT describe every micro-fluctuation as a trend change — only report clear, sustained directional changes"
@@ -203,28 +175,24 @@ graphs:
       - "Values above zero mean the expert is faster than the player at that index"
       - "Values below zero mean the player is faster than the expert at that index"
     how_to_analyze: >
-      1. Read the y-axis range and units (km/h).
-      2. State the overall bias — line sits mostly above zero, mostly below, or
-         balanced.
-      3. Locate the peak speed gap (largest absolute y-value); note the index
-         and direction.
-      4. Identify large-gap sections (|delta| > 20 km/h), speed-match sections
-         (|delta| within ±5 km/h), and zero-crossings.
-      5. For each notable feature embed the canonical phrase plus indices and
-         km/h values.
-    phrases_to_use:
+      1. Read the y-axis range and units (km/h); note who is faster per sign (+ = expert, − = player).
+      2. State the overall bias — who is faster across most of the segment.
+      3. For each notable section, state who is faster, the index range (start–end), and the km/h gap (peak value and its index).
+      4. Identify speed-match ranges (|delta| ≤ 5 km/h) and zero-crossing indices where who-is-faster flips.
+      5. Embed the canonical phrase for each section with index range and km/h values.
+    vocabulary_to_use:
       - "expert faster than player"
       - "player faster than expert"
       - "speed match"
       - "large gap section"
       - "zero crossing"
     sentence_format_guide: >
-      Write one cohesive paragraph.  For each section:
-        "<canonical phrase> by <N km/h> between indices <X> and <Y>
+      One paragraph. Who is faster = embedded in canonical phrase.
+        "<canonical phrase> by <N km/h> across indices <A>–<B>
          (peak <Z km/h> at index <I>)."
-      Example: "Expert faster than player by up to 28 km/h between indices 65
-      and 85 (peak 28 km/h at index 75); the line crosses zero at index 92,
-      after which player faster than expert by 6 km/h between indices 110 and 130."
+      Example: "Expert faster than player by up to 28 km/h across indices 65–85
+      (peak 28 km/h at index 75); zero crossing at index 92; player faster than
+      expert by 6 km/h across indices 110–130."
     common_description_errors:
       - "Do NOT read the sign backwards — positive = expert faster, negative = player faster"
       - "Do NOT describe brief single-index spikes as sustained gaps"
@@ -241,18 +209,12 @@ graphs:
       - "Legend identifies which line is which"
       - "Speed dropping = deceleration / braking; speed minimum = apex / lowest speed; speed rising = acceleration"
     how_to_analyze: >
-      1. Read the legend; state which colour is expert and which is player.
-      2. Locate three reference points on each trace: entry speed (start of
-         segment or just before deceleration), minimum speed (the dip), and
-         exit speed (end of segment or after acceleration).
-      3. For each phase compare the player's value to the expert's value at the
-         SAME phase — entry vs entry, minimum vs minimum, exit vs exit.
-      4. Locate the deceleration onset (where the trace begins falling) and the
-         acceleration onset (where it begins rising) for each trace; report
-         the index gap.
-      5. Note any shape mismatch — flat spot, plateau, or extended low-speed
-         section in the player's trace not present in the expert's.
-    phrases_to_use:
+      1. Name who is who: read the legend; assign each colour to expert or player.
+      2. For each trace identify three phase ranges: deceleration (onset–minimum), low-speed zone (around minimum), acceleration (minimum–exit).
+      3. At each phase compare who has higher/lower speed; record both trace values and the gap.
+      4. Compare deceleration and acceleration onset indices — who starts earlier and by how many indices.
+      5. Note shape mismatches — flat spot, plateau, or extended low-speed range on who (player) absent on who (expert).
+    vocabulary_to_use:
       - "entry speed is lower than"
       - "entry speed is higher than"
       - "minimum speed is lower than"
@@ -266,14 +228,13 @@ graphs:
       - "begins accelerating earlier than"
       - "begins accelerating later than"
     sentence_format_guide: >
-      Write one cohesive paragraph.  Each predicate above takes subject
-      ("the player" or a player metric) and object ("the expert") supplied
-      around it.  For each compared phase:
-        "The player's <phase> speed (<X km/h>) <canonical predicate> the
-         expert (<Y km/h>) by <Z km/h>."
-      Example: "The player's minimum speed (78 km/h at index 92) is lower
-      than the expert (95 km/h at index 88) by 17 km/h, and the player
-      reaches minimum speed later than the expert by four indices."
+      One paragraph. Subject = who (player), object = who (expert).
+        "The player's <phase> speed (<X km/h> across indices <A>–<B>)
+         <canonical predicate> the expert (<Y km/h> across indices <C>–<D>)
+         by <Z km/h>."
+      Example: "The player's minimum-speed phase (78 km/h, indices 88–95) is
+      lower than the expert (95 km/h, indices 82–88) by 17 km/h; the player
+      reaches minimum speed later than the expert by 6 indices."
     common_description_errors:
       - "Do NOT compare values from different phases — entry vs entry, minimum vs minimum, exit vs exit"
       - "Do NOT confuse the two traces — verify which line is which from the legend"
@@ -292,36 +253,29 @@ graphs:
       - "Values below 1.0 = grip headroom remaining; values above 1.0 = over-limit"
       - "Only excursions above 1.0 count as spikes"
     how_to_analyze: >
-      1. Locate the y = 1.0 reference line — this, not the local baseline, is
-         the spike threshold.
-      2. State the baseline level (well below 1.0 / near 1.0 / riding at 1.0).
-      3. For every excursion ABOVE 1.0 record start index (crosses 1.0), peak
-         index, peak value, return index, and duration above 1.0.
-      4. If a trajectory or speed graph is also present in this step, tag each
-         spike with its corner phase (entry / mid-corner / exit / straight).
-      5. Identify any sustained over-limit section (many indices above 1.0) and
-         any sustained low section (well below 1.0).  If the trace never
-         exceeds 1.0, say so explicitly with the maximum value.
-    phrases_to_use:
-      - "over-limit spike at corner entry"
-      - "over-limit spike at mid-corner"
-      - "over-limit spike at corner exit"
-      - "over-limit spike on the straight"
+      1. Note: player's trace only — no expert comparison; y = 1.0 is the threshold.
+      2. State the player's baseline level (well below / near / riding at 1.0) and its index range.
+      3. For every excursion above 1.0, record the index range (onset–peak–return) and the peak value.
+      4. Identify any sustained over-limit range and any sustained low range; if never above 1.0, state the max value and its index.
+    vocabulary_to_use:
+      - "over-limit spike"
       - "sustained over-limit"
       - "sustained low"
       - "tire is sustained over its peak grip"
     sentence_format_guide: >
-      Write one paragraph.  For each over-limit feature:
-        "<canonical phrase> across indices <N>–<M>, peaking at <value> at index <X>."
-      No expert/player comparison — the reference is the y=1.0 threshold.
-      If the trace never exceeds 1.0: "The trace stays at or below 1.0 for the
-      entire segment (max <value> at index <X>); no over-limit spike to report."
+      One paragraph. Who = player's trace only; reference = y = 1.0 (no expert comparison).
+        "<canonical phrase> across indices <N>–<M> (player peaks at <value>
+         at index <X>; returns to 1.0 at index <Y>, duration <D> indices)."
+      Example: "The player's trace shows an over-limit spike across indices 72–88
+      (peaks at 1.18 at index 80, returns at 88, 16 indices); sustained low
+      across indices 0–71 (~0.85)."
+      If never above 1.0: "The player's trace stays at or below 1.0 across the
+      full segment (max <value> at index <X>); no spike to report."
     common_description_errors:
       - "Do NOT call a rise a 'spike' unless it exceeds 1.0 — values below 1.0 mean grip is still within peak"
       - "Do NOT measure spikes against the local baseline — 1.0 is the reference"
       - "Do NOT confuse this metric with speed — push_limit is about tire grip utilisation"
       - "Do NOT interpret over-limit spikes as oversteer or understeer — that requires the balance trajectory graph"
-      - "Do NOT omit corner-phase tagging when a trajectory or speed graph is also present"
 
   gear:
     title: "Gear Selection: Expert vs Player"
@@ -335,16 +289,12 @@ graphs:
       - "Traces jump between integer levels (no smooth curves)"
       - "Grid lines for reading exact gear numbers and shift indices"
     how_to_analyze: >
-      1. Read the legend; state which line is expert and which is player.
-      2. Walk left-to-right and locate every up-step (upshift) and down-step
-         (downshift) on each trace.
-      3. For each shift event compare the player's index to the expert's
-         matching shift — earlier or later, by how many indices.
-      4. Identify any index range where the two traces hold different gear
-         numbers; report whether the player is in a lower or higher gear.
-      5. Tally total shifts on each trace; note whether the player shifts
-         more often or fewer times than the expert.
-    phrases_to_use:
+      1. Name who is who: read the legend; assign each colour to expert or player.
+      2. Walk left-to-right; for each trace record every shift (who shifts, direction, index) and the gear-hold range that follows (indices start–end, gear number).
+      3. For each matching shift, compare who shifts earlier — note both trace indices and the gap.
+      4. Identify ranges where the two traces hold different gear numbers; note who is lower/higher and the full index range.
+      5. Tally shifts per trace; note who shifts more/fewer times.
+    vocabulary_to_use:
       - "upshifts earlier than"
       - "upshifts later than"
       - "downshifts earlier than"
@@ -354,15 +304,13 @@ graphs:
       - "shifts more often than"
       - "shifts fewer times than"
     sentence_format_guide: >
-      Write one cohesive paragraph.  Each predicate above takes subject
-      ("the player") and object ("the expert") supplied around it.  For
-      each shift event:
-        "The player <canonical predicate> the expert at index <X> (player
-         gear <N>→<M> at index <X>, expert gear <N>→<M> at index <Y>)."
-      For gear-level mismatches:
-        "The player is in <N>th gear while the expert is in <M>th gear
-         across indices <X>–<Y> (player in <lower/higher> gear than the
-         expert)."
+      One paragraph. Subject = who (player), object = who (expert).
+      For shift events:
+        "The player <canonical predicate> the expert — player gear <N>→<M>
+         at index <A>, expert gear <N>→<M> at index <B> (gap: <|A−B|> indices)."
+      For gear-hold mismatches (range):
+        "The player is in <N>th gear while the expert is in <M>th gear across
+         indices <X>–<Y> (player in lower/higher gear than the expert)."
     common_description_errors:
       - "Gear values are INTEGERS — do not report fractional gear numbers"
       - "Do NOT confuse upshift and downshift — up = higher gear number, down = lower gear number"
@@ -388,20 +336,13 @@ graphs:
       - "Red annotation = Minimum speed point with km/h value"
       - "Y-axis is INVERTED (standard for top-down track views)"
     how_to_analyze: >
-      1. Verify direction of travel from the Start (X) marker to the End (O)
-         marker BEFORE describing anything else.
-      2. Identify the overall shape of the segment using the
-         trajectory_shape_vocabulary terms (single curve, S-shape, hairpin,
-         approach to corner, exit corner leading to straight, etc.).
-      3. Walk through the three phases entry / apex / exit; for each, compare
-         the player line's position to the expert line's at the SAME phase.
-      4. Name the divergence phase explicitly — which of entry / apex / exit
-         shows the largest gap between the two lines.
-      5. Flag any off-track excursion, sharp kink (correction), or cut-inside
-         move; note whether the expert line is smooth in the same area.
-      6. If the minimum-speed annotation is visible, state the value, location,
-         and which trace it is on.
-    phrases_to_use:
+      1. Verify who is who: identify who (player = green solid) and who (expert = blue dashed); confirm direction of travel from Start (X) → End (O).
+      2. Name the overall shape (trajectory_shape_vocabulary).
+      3. For each phase (entry / apex / exit), compare where the player line sits relative to the expert line and note who is tighter/wider.
+      4. Name the divergence phase — where the gap between who (player) and who (expert) is largest.
+      5. Flag off-track, kinks, or cut-inside: state who exhibits it and where (which phase).
+      6. If the minimum-speed annotation is visible, state the value and where (which phase / which trace it sits on).
+    vocabulary_to_use:
       - "entry line is tighter than"
       - "entry line is wider than"
       - "turns in earlier than"
@@ -423,14 +364,12 @@ graphs:
       - "largest divergence at apex"
       - "largest divergence at exit"
     sentence_format_guide: >
-      Structure the paragraph around the four phases (entry / apex / exit
-      / overall).  Each predicate above takes subject ("the player") and
-      object ("the expert") supplied around it.  For each phase:
-        "Through the <phase> phase the player's line is <canonical
-         predicate> the expert; the player <turns in / reaches apex /
-         exits the corner> <earlier/later> than the expert."
-      Always name the divergence phase explicitly:
-        "The largest divergence falls at the <entry/apex/exit> phase."
+      One paragraph, four phases (entry / apex / exit / overall).
+      Subject = who (player), object = who (expert).
+        "Through the <phase> phase [where], the player's line <canonical predicate>
+         the expert."
+        "The largest divergence falls at the <phase> phase [where]."
+      Name who and where (phase + tighter/wider/inside/outside) for every comparison.
     common_description_errors:
       - "The Y-AXIS IS INVERTED — do not read up/down wrong when describing inside/outside of corners"
       - "Do NOT assume a direction of travel — verify from the Start (X) and End (O) markers"
@@ -454,21 +393,13 @@ graphs:
       - "Blue/grey dashed line = Expert trajectory (reference position)"
       - "Black X = Start, Black O = End"
     how_to_analyze: >
-      1. Verify direction of travel from Start (X) to End (O).
-      2. Walk along the player's coloured line in travel order; list each
-         continuous colour section (green / red / yellow) tagged with its
-         location relative to the corner (before curve / at entry / at apex /
-         after apex / on straight).
-      3. For the red (braking) section compare its start and length to the
-         expert's typical braking zone — earlier/later, longer/shorter.
-      4. For the green (full-throttle) section after the apex compare its
-         start to the expert's typical throttle-resume point — earlier/later.
-      5. Note any yellow section explicitly as "yellow (coast or overlap)";
-         the colour cannot disambiguate the two.
-      6. Independently of the colours, describe the player's spatial position
-         relative to the expert dashed line through entry / apex / exit
-         (tighter/wider/matches).
-    phrases_to_use:
+      1. Verify who is who: player = coloured line, expert = blue/grey dashed; confirm direction of travel from Start (X) → End (O).
+      2. Walk the player's coloured line in travel order; for each colour section name who (player), where (corner phase), and the colour.
+      3. Compare where the red section starts and ends vs the expert's typical braking zone — who starts earlier/later and how many phases/spatial length.
+      4. Compare where the green section resumes vs the expert's throttle-resume point — who is earlier/later.
+      5. Label every yellow section "yellow (coast or overlap)" and note where it falls (which phase).
+      6. Describe where the player line is relative to the expert through each phase (tighter/wider).
+    vocabulary_to_use:
       - "red section starts earlier than"
       - "red section starts later than"
       - "red section is longer than"
@@ -483,14 +414,14 @@ graphs:
       - "exit line is tighter than"
       - "exit line is wider than"
     sentence_format_guide: >
-      Write one cohesive paragraph in two halves: (a) colour sequence in
-      travel order with corner-phase tags, (b) trajectory position offset
-      through entry / apex / exit relative to the expert dashed line.
-      Skeleton for colour sequence:
-        "<colour> (<phase tag>) → <colour> (<phase tag>) → ..."
-      Example: "Colour sequence: green (on straight) → red (extended,
-      starting before curve entry) → yellow (coast or overlap, brief, at
-      apex area) → green (resumes after apex)."
+      One paragraph, two halves: (a) colour sequence with who and where, (b) trajectory offset through phases.
+      Colour skeleton:
+        "Who (player): <colour> at <phase> → <colour> at <phase> → ..."
+      Position skeleton:
+        "Trajectory: who (player) <canonical predicate> who (expert) through <phase>."
+      Example: "Player: green (on straight) → red (at entry, starts earlier than expert) →
+      yellow (coast or overlap, apex area) → green (after apex, resumes later than expert).
+      Trajectory: player entry line is wider than expert through entry phase."
     common_description_errors:
       - "Do NOT describe colour transitions without relating them to the corner geometry"
       - "Yellow does NOT necessarily mean 'nothing is happening' — phrase it as 'yellow (coast or overlap)'"
@@ -513,23 +444,13 @@ graphs:
       - "Black X = Start, Black O = End"
       - "IMPORTANT: understeer (blue) is amplified 2x in the colour mapping for visibility"
     how_to_analyze: >
-      1. Verify direction of travel from Start (X) to End (O); the corner
-         phase tags depend on it.
-      2. Walk along the player's coloured line in travel order; list each
-         continuous colour section (red / blue / neutral white) tagged with
-         corner phase (entry / mid-corner / exit / straight) and saturation
-         (vivid / faint).
-      3. For every red section embed "rear-slip dominant at <phase>"; for
-         every blue section embed "front-slip dominant at <phase>" AND state
-         the 2x understeer amplification reminder.
-      4. Mark every neutral_balance section — knowing where the player MATCHES
-         the expert reference is as important as where it does not.
-      5. Flag any abrupt colour change (vivid blue to vivid red, or vivid to
-         neutral within a few indices); these often co-occur with push_limit
-         spikes when both graphs are visible.
-      6. Independently of the colours, describe the player's spatial position
-         relative to the expert dashed line through entry / apex / exit.
-    phrases_to_use:
+      1. Verify who is who: player = coloured line, expert = grey dashed; confirm direction of travel from Start (X) → End (O).
+      2. Walk the player's coloured line in travel order; for each colour section name who (player), where (corner phase), colour, and saturation (vivid / faint).
+      3. For every red section embed "who (player): rear-slip dominant at <phase>"; for every blue embed "who (player): front-slip dominant at <phase>" and note the 2x understeer amplification.
+      4. Mark every neutral section — where who (player) holds balanced grip and which phase it covers.
+      5. Flag abrupt colour changes: note where they occur (phase) and whether they co-occur with push_limit spikes if visible.
+      6. Describe where the player line is relative to the expert dashed line through each phase (tighter/wider).
+    vocabulary_to_use:
       - "rear-slip dominant at corner entry"
       - "rear-slip dominant at mid-corner"
       - "rear-slip dominant at corner exit"
@@ -546,13 +467,12 @@ graphs:
       - "exit line is tighter than"
       - "exit line is wider than"
     sentence_format_guide: >
-      Write one cohesive paragraph.  For every coloured section:
-        "<canonical phrase> (<saturation>) across indices/region <X>–<Y>."
-      For every blue section ALWAYS include the 2x amplification reminder.
-      Example: "A vivid red section appears at corner entry (rear-slip
-      dominant at corner entry, extended) before transitioning to neutral
-      balance through mid-corner; a faint blue at corner exit (front-slip
-      dominant at corner exit, brief) — note 2x understeer amplification."
+      One paragraph. Subject = who (player's coloured trace).
+        "Who (player): <canonical phrase> (<saturation>) at <phase> [where]."
+      For every blue section ALWAYS include the 2x amplification note.
+      Example: "Player: rear-slip dominant at corner entry (vivid), transitioning to neutral
+      balance through mid-corner [where]; front-slip dominant at corner exit (faint) — note
+      2x understeer amplification; player line is wider than expert at entry phase."
     common_description_errors:
       - "Do NOT forget the 2x understeer amplification — always note it whenever describing blue sections"
       - "Do NOT confuse entry vs exit — verify travel direction from Start/End markers before tagging corner phase"
@@ -609,9 +529,12 @@ cross_graph_guidelines:
 
   balance_and_push_limit: >
     When the BALANCE trajectory and PUSH_LIMIT graph are both present:
-    describe whether any over-limit spike co-occurs with a red or blue
-    colour section on the balance trajectory.  Use phrasing such as
-    "an over-limit spike at corner entry co-occurs with a vivid
+    describe whether any over-limit spike (identified by index range on
+    the push_limit graph) co-occurs with a red or blue colour section
+    on the balance trajectory.  The push_limit graph has no corner
+    phase — derive the phase from where the index range falls along the
+    balance trajectory's entry / mid-corner / exit progression.  Phrase
+    as "an over-limit spike across indices N–M co-occurs with a vivid
     rear-slip dominant at corner entry section on the balance
     trajectory" — report co-occurrence without interpreting it.
 

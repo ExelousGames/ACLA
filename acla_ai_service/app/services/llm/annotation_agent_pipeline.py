@@ -1084,12 +1084,6 @@ def proposal_synthesizer_node(state: AnnotationState) -> Dict[str, Any]:
     vlm_prompt = "\n".join(intro_parts + ["", context_block, ""] + instructions_parts)
     eval_prompt = "\n".join(intro_parts + [""] + instructions_parts)
 
-    # Prepend a glossary block listing every vocabulary phrase that appears
-    # in the prompt (the rendered context_block contains the step_describer
-    # observations, which are full of canonical phrases).
-    vlm_prompt = _attach_glossary(vlm_prompt)
-    eval_prompt = _attach_glossary(eval_prompt)
-
     # 1. Generate output (VLM call)
     set_active_stage("proposal_synthesizer", "main")
     raw_response = _call_vlm(vlm_prompt, [])
@@ -1235,7 +1229,7 @@ class AnnotationPipelineConfig:
     """Configuration for the annotation pipeline."""
 
     max_iterations: int = 3
-    max_new_tokens: int = 512
+    max_new_tokens: int = 1500
     temperature: float = 0.7
 
     # llama-cpp VLM settings

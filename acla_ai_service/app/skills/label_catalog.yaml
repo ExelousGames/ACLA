@@ -129,8 +129,7 @@ labels:
       softly, or got on/off the brake at the wrong time.
       Step 4: Examine the 'push_limit' graph to find understeer or
       oversteer, which could lead to lower speed.
-      Step 5: Check the 'Trajectory' map for mistakes caused by
-      deviations from the optimal line.
+      Step 5: Check the 'trajectory_gas_brake' map to locate entry, apex, and exit phases; 
     parent: null
     children:
       - "MS1"
@@ -366,7 +365,7 @@ labels:
     description: >
       The player brakes later than the expert.  The player **begins
       braking later than** the expert alongside the player **loses time
-      to** the expert on the time-delta graph.
+      to** the expert.
     parent: MS
     children: []
     exclusive_with: ["MS5"]
@@ -375,9 +374,8 @@ labels:
     name: "Initiate brake too early"
     type: sub
     description: >
-      The player brakes earlier than the expert.  The player **begins
-      braking earlier than** the expert alongside the player **loses
-      time to** the expert on the time-delta graph.
+      The player **begins braking earlier than** the expert alongside the player **loses
+      time to** the expert.
     parent: MS
     children: []
     exclusive_with: ["MS1"]
@@ -504,8 +502,7 @@ labels:
     name: "Throttle applied too quickly"
     type: sub
     description: >
-      The player ramps throttle to peak more sharply than the expert.
-      The player **applies throttle more sharply than** the expert.
+      The player **applies throttle more sharply than** the expert. A **over-limit spike** in the push_limit graph corresponding to throttle application will be present.
     parent: MS
     children: []
     exclusive_with: ["MS25"]
@@ -514,8 +511,7 @@ labels:
     name: "Throttle applied too slowly"
     type: sub
     description: >
-      The player ramps throttle to peak more gradually than the expert.
-      The player **applies throttle more gradually than** the expert.
+      The player **applies throttle more gradually than** the expert. A **sustained low** on the push_limit graph corresponding to throttle application will be present.
     parent: MS
     children: []
     exclusive_with: ["MS15"]
@@ -524,8 +520,7 @@ labels:
     name: "Highest throttle pressure too low"
     type: sub
     description: >
-      The player's peak throttle is lower than the expert's.  The
-      player's **peak throttle is lower than** the expert's.
+      The player's **peak throttle is lower than** the expert's for more than 3 indices.
     parent: MS
     children: []
     exclusive_with: ["MS26"]
@@ -534,8 +529,7 @@ labels:
     name: "Highest throttle pressure too high"
     type: sub
     description: >
-      The player's peak throttle is higher than the expert's.  The
-      player's **peak throttle is higher than** the expert's.
+      The player's **peak throttle is higher than** the expert's.
     parent: MS
     children: []
     exclusive_with: ["MS19"]
@@ -544,8 +538,7 @@ labels:
     name: "Initiate throttle too early"
     type: sub
     description: >
-      The player begins applying throttle earlier than the expert.  The
-      player **begins applying throttle earlier than** the expert.
+      The player **begins applying throttle earlier than** the expert.
     parent: MS
     children: []
     exclusive_with: ["MS21"]
@@ -554,8 +547,7 @@ labels:
     name: "Initiate throttle too late"
     type: sub
     description: >
-      The player begins applying throttle later than the expert.  The
-      player **begins applying throttle later than** the expert.
+      The player **begins applying throttle later than** the expert. 
     parent: MS
     children: []
     exclusive_with: ["MS20"]
@@ -757,10 +749,13 @@ labels:
     name: "Inefficient grip utilization at entry"
     type: sub
     description: >
-      Grip utilisation at corner entry deviates from the expert's pattern.
-      Look for **over-limit spike at corner
-      entry** or **sustained over-limit** or **sustained low** in the
-      corner-entry phase on the push_limit graph.
+      Grip utilisation at corner entry deviates from the expert's
+      pattern.  Look for an **over-limit spike** or **sustained
+      over-limit** or **sustained low** on the push_limit graph whose
+      index range corresponds to the corner-entry phase as identified
+      on the trajectory or speed graph (the push_limit graph itself has
+      no corner-phase information — phase is determined by cross-
+      referencing the index range with the trajectory/speed graph).
     parent: MS
     children: []
     exclusive_with: []
@@ -769,10 +764,13 @@ labels:
     name: "Inefficient grip utilization at exit"
     type: sub
     description: >
-      Grip utilisation at corner exit deviates from the expert's pattern.
-      Look for **over-limit spike at corner
-      exit** or **sustained over-limit** or **sustained low** in the
-      corner-exit phase on the push_limit graph.
+      Grip utilisation at corner exit deviates from the expert's
+      pattern.  Look for an **over-limit spike** or **sustained
+      over-limit** or **sustained low** on the push_limit graph whose
+      index range corresponds to the corner-exit phase as identified on
+      the trajectory or speed graph (the push_limit graph itself has no
+      corner-phase information — phase is determined by cross-
+      referencing the index range with the trajectory/speed graph).
     parent: MS
     children: []
     exclusive_with: []

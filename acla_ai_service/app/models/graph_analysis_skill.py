@@ -42,7 +42,7 @@ class GraphSkillEntry:
 
     __slots__ = (
         "id", "title", "graph_type", "axes", "visual_elements",
-        "how_to_analyze", "phrases_to_use",
+        "how_to_analyze", "vocabulary_to_use",
         "sentence_format_guide",
         "common_description_errors",
     )
@@ -54,7 +54,7 @@ class GraphSkillEntry:
         self.axes: Dict[str, str] = raw.get("axes", {})
         self.visual_elements: List[str] = raw.get("visual_elements", [])
         self.how_to_analyze: str = (raw.get("how_to_analyze") or "").strip()
-        self.phrases_to_use: List[str] = raw.get("phrases_to_use") or []
+        self.vocabulary_to_use: List[str] = raw.get("vocabulary_to_use") or []
         self.sentence_format_guide: str = (raw.get("sentence_format_guide") or "").strip()
         self.common_description_errors: List[str] = raw.get("common_description_errors", [])
 
@@ -141,9 +141,9 @@ class GraphAnalysisSkill:
             # for each phrase live centrally in vocabulary.yaml and are
             # injected into the prompt as a Glossary block by the pipeline,
             # so we don't repeat them here.
-            if entry.phrases_to_use:
+            if entry.vocabulary_to_use:
                 lines.append("Canonical phrases to embed verbatim in your description:")
-                for phrase in entry.phrases_to_use:
+                for phrase in entry.vocabulary_to_use:
                     lines.append(f'  - "{phrase}"')
 
             # Sentence format — skeleton + 1-2 example sentences showing how

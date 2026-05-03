@@ -12,7 +12,7 @@
 #   * Keys are PREDICATES only — verb / verb-phrase / comparative
 #     fragments without their subject ("player") or comparison object
 #     ("expert").  Subjects and objects are supplied by the prose in
-#     graph_analysis_skill.phrases_to_use, how_to_analyze, and
+#     graph_analysis_skill.vocabulary_to_use, how_to_analyze, and
 #     label_catalog descriptions where the predicate is consumed.
 #     Example: "begins braking earlier than" (predicate); the surrounding
 #     prose adds the subject ("the player") and object ("the expert").
@@ -25,7 +25,7 @@
 #     prescriptive on sentence structure -- that lives in each graph's
 #     sentence_format_guide.
 #   * The audit script in plans/redo-the-skills-yaml-effervescent-muffin.md
-#     enforces alignment with graph_analysis_skill.phrases_to_use and
+#     enforces alignment with graph_analysis_skill.vocabulary_to_use and
 #     label_catalog **phrase** highlights.
 # =============================================================================
 
@@ -41,7 +41,7 @@ vocabulary:
     expert's.  Report both indices and the gap.
   "applies throttle more sharply than": >
     The player ramps throttle from zero to its held value in fewer
-    indices than the expert; the rising edge is steeper.
+    indices than the expert;
   "applies throttle more gradually than": >
     The player ramps throttle from zero to its held value in more
     indices than the expert; the rising edge is shallower.
@@ -184,29 +184,22 @@ vocabulary:
     right of the expert's acceleration onset.
 
   # ---------- Push / limit ----------
-  "over-limit spike at corner entry": >
-    A push_limit excursion above 1.0 occurring during the corner-entry
-    phase.  Report start index (crosses 1.0), peak index, peak value,
-    return index, and duration above 1.0.
-  "over-limit spike at mid-corner": >
-    A push_limit excursion above 1.0 occurring in the mid-corner phase
-    (between turn-in and the apex region's far side).
-  "over-limit spike at corner exit": >
-    A push_limit excursion above 1.0 occurring during the corner-exit
-    phase (after the apex).
-  "over-limit spike on the straight": >
-    A push_limit excursion above 1.0 on a straight section — typically
-    caused by a wheelspin event under hard acceleration.
+  "over-limit spike": >
+    A push_limit excursion above 1.0.  Report start index (where the
+    trace crosses 1.0), peak index, peak value, return index (where it
+    falls back to 1.0), and duration above 1.0.
   "sustained over-limit": >
     A section where the push_limit trace stays above 1.0 for many
     indices.  Phrase as "tire is sustained over its peak grip across
-    indices N–M" and tag with corner phase.
+    indices N–M".  Report the index range and the peak value.
   "sustained low": >
     A section where the push_limit trace stays well below 1.0 — the
-    driver is well within grip limits.
+    driver is well within grip limits.  Report the index range and the
+    approximate value held.
   "tire is sustained over its peak grip": >
-    Long-form phrasing for sustained_over_limit.  Reserve for sections
-    that span many indices, not single-index spikes.
+    Long-form phrasing for sustained over-limit.  Reserve for sections
+    that span many indices, not single-index spikes.  Report the index
+    range.
 
   # ---------- Gear ----------
   "upshifts earlier than": >
