@@ -6,7 +6,7 @@ each telemetry graph type.  The VLM's only job is to produce detailed, precise
 visual descriptions — it does NOT diagnose, label, or interpret.  Downstream
 pipeline nodes use these descriptions to make decisions.
 
-Used by the ``step_describer`` node to inject graph-specific description
+Used by the ``describe_graphs`` solver to inject graph-specific description
 checklists into the VLM prompt when the current step includes graph images.
 
 Usage::
@@ -42,7 +42,7 @@ class GraphSkillEntry:
 
     __slots__ = (
         "id", "title", "graph_type", "axes", "visual_elements",
-        "how_to_analyze", "vocabulary_to_use",
+        "how_to_analyze", "glossary",
         "sentence_format_guide",
         "common_description_errors",
     )
@@ -54,7 +54,15 @@ class GraphSkillEntry:
         self.axes: Dict[str, str] = raw.get("axes", {})
         self.visual_elements: List[str] = raw.get("visual_elements", [])
         self.how_to_analyze: str = (raw.get("how_to_analyze") or "").strip()
-        self.vocabulary_to_use: List[str] = raw.get("vocabulary_to_use") or []
+        # glossary is a term -> definition map for racing/visualization jargon
+        # the VLM may not understand on its own (e.g. "trail braking",
+        # "over-limit spike", "2x understeer amplification").  Plain-English
+        # comparators ("earlier than", "wider than") do NOT belong here.
+        raw_glossary = raw.get("glossary") or {}
+        self.glossary: Dict[str, str] = {
+            str(k): (str(v).strip() if v is not None else "")
+            for k, v in raw_glossary.items()
+        }
         self.sentence_format_guide: str = (raw.get("sentence_format_guide") or "").strip()
         self.common_description_errors: List[str] = raw.get("common_description_errors", [])
 
@@ -103,7 +111,7 @@ class GraphAnalysisSkill:
         """Build a VLM prompt section for describing the given graphs.
 
         Returns a multi-section text block containing:
-        - Per-graph description checklists, axes, visual elements, vocabulary
+        - Per-graph description checklists, axes, visual elements, glossary
         - Relevant cross-graph description guidelines
         - Trajectory shape vocabulary (if trajectory graph present)
         """
@@ -137,14 +145,17 @@ class GraphAnalysisSkill:
                 lines.append("How to analyze this graph:")
                 lines.append(f"  {entry.how_to_analyze}")
 
-            # Canonical phrases the VLM MUST embed verbatim.  Definitions
-            # for each phrase live centrally in vocabulary.yaml and are
-            # injected into the prompt as a Glossary block by the pipeline,
-            # so we don't repeat them here.
-            if entry.vocabulary_to_use:
-                lines.append("Canonical phrases to embed verbatim in your description:")
-                for phrase in entry.vocabulary_to_use:
-                    lines.append(f'  - "{phrase}"')
+            # Glossary — definitions of racing / visualization jargon used in
+            # the analysis steps and sentence guide above.  Emitted as
+            # "term: definition" pairs so the VLM can resolve any unfamiliar
+            # phrase it encounters in the prompt body.
+            if entry.glossary:
+                lines.append("Glossary — definitions of terms used in this section:")
+                for phrase, definition in entry.glossary.items():
+                    if definition:
+                        lines.append(f'  - "{phrase}": {definition}')
+                    else:
+                        lines.append(f'  - "{phrase}"')
 
             # Sentence format — skeleton + 1-2 example sentences showing how
             # to glue phrases with numerical values into prose.
@@ -164,26 +175,32 @@ class GraphAnalysisSkill:
         graph_id_set = set(graph_ids)
         relevant_guidelines: List[str] = []
 
+        # Each trigger:
+        #   required: every graph in this set must be present (subset check).
+        #   any_of:   list of sets; each set must intersect the present
+        #             graphs (i.e. at least one member of each must be there).
         guideline_triggers = {
-            "brake_and_speed": ({"brake", "speed"}, {"brake"}),
-            "throttle_and_speed": ({"throttle", "speed"}, {"throttle"}),
-            "time_delta_and_features": (
-                {"time_delta"},
+            "brake_and_speed":            {"required": {"brake", "speed"},                     "any_of": []},
+            "throttle_and_speed":         {"required": {"throttle", "speed"},                  "any_of": []},
+            "time_delta_and_features":    {"required": {"time_delta"},                         "any_of": [
                 {"brake", "throttle", "speed", "speed_delta", "push_limit"},
-            ),
-            "trajectory_and_features": (
+            ]},
+            "trajectory_and_features":    {"required": set(),                                  "any_of": [
                 {"trajectory_detailed", "trajectory_gas_brake", "trajectory_balance"},
                 {"throttle", "brake", "speed", "speed_delta", "push_limit"},
-            ),
-            "balance_and_push_limit": ({"trajectory_balance"}, {"push_limit"}),
-            "brake_and_throttle_overlap": ({"brake"}, {"throttle"}),
+            ]},
+            "balance_and_push_limit":     {"required": {"trajectory_balance", "push_limit"},   "any_of": []},
+            "brake_and_throttle_overlap": {"required": {"brake", "throttle"},                  "any_of": []},
         }
 
-        for guideline_id, (set_a, set_b) in guideline_triggers.items():
-            if graph_id_set & set_a and graph_id_set & set_b:
-                text = self.cross_graph_guidelines.get(guideline_id, "")
-                if text:
-                    relevant_guidelines.append(f"[{guideline_id}] {text}")
+        for guideline_id, spec in guideline_triggers.items():
+            if not spec["required"].issubset(graph_id_set):
+                continue
+            if not all(any_set & graph_id_set for any_set in spec["any_of"]):
+                continue
+            text = self.cross_graph_guidelines.get(guideline_id, "")
+            if text:
+                relevant_guidelines.append(f"[{guideline_id}] {text}")
 
         if relevant_guidelines:
             lines.append("=== Cross-Graph Description Guidelines ===")

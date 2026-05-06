@@ -4,13 +4,14 @@ Streamlit UI component for the LangGraph multi-agent sub-segment discovery pipel
 Renders below the analysis section in the annotation manager and lets users
 run the full annotation cycle on the currently selected parent segment:
 
-    planner → step_describer (renders graphs + describes, repeated per plan step)
-        → label_verifier → proposal_synthesizer → evaluator
+    planner → step_solver (dispatches each step to its declared solver
+              agent — currently `describe_graphs`, repeated per plan step)
+        → label_verifier → proposal_synthesizer
 
 The VLM receives rendered graph images at each step, replicating the visual
-evidence a human annotator would use. On evaluator pass the discovered
-sub-segment is ready for review;
-on fail the pipeline retries from the planner up to a configurable limit.
+evidence a human annotator would use. Each LLM-producing node runs its own
+evaluator suite internally before writing to state — there is no separate
+evaluator node or retry loop.
 """
 
 import io
@@ -52,9 +53,11 @@ def render_agent_annotation(df, form_start, form_end, form_labels, session_id, s
     """
     with st.expander("🔍 VLM Sub-Segment Discovery"):
         st.markdown(
-            "Run a **Planner → Tool Executor → Step Solver → Evaluator** cycle "
-            "using the **Vision Language Model** "
-            "to discover a new sub-segment within this parent segment."
+            "Run a **Planner → Step Solver (per step) → Label Verifier → "
+            "Proposal Synthesizer** cycle using the **Vision Language Model** "
+            "to discover a new sub-segment within this parent segment. "
+            "The planner picks a solver agent for each step; today the only "
+            "solver is `describe_graphs`."
         )
 
         # --- Pipeline settings ---
@@ -244,7 +247,8 @@ def render_agent_annotation(df, form_start, form_end, form_labels, session_id, s
 
                 _NODE_ICONS = {
                     "planner": "🧠",
-                    "step_describer": "🔍",
+                    "step_solver": "🛠️",
+                    "describe_graphs": "🔍",
                     "label_verifier": "✅",
                     "proposal_synthesizer": "📝",
                 }
@@ -425,7 +429,7 @@ def render_agent_annotation(df, form_start, form_end, form_labels, session_id, s
                                     if img.width == 0 or img.height == 0:
                                         st.warning(f"Graph {idx + 1}: image has zero dimensions and cannot be displayed.")
                                     else:
-                                        st.image(img, use_container_width=True)
+                                        st.image(img, width='stretch')
                                 except Exception as e:
                                     st.error(f"Graph {idx + 1}: failed to load image — {e}")
 

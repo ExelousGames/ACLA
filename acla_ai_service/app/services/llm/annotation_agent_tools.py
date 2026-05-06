@@ -296,6 +296,7 @@ def _create_feature_plot(
     ax.set_xlabel("Index")
     ax.legend()
     ax.grid(True)
+
     return _plot_to_image(fig)
 
 
@@ -320,9 +321,200 @@ def _make_colored_line_collection(
     return lc
 
 
+# ---------------------------------------------------------------------------
+# Expert-anchored corner phase detection
+#
+# Phase definitions (entry/apex/exit) are anchored on the EXPERT trajectory
+# only. The player may stop mid-corner or drive erratically, so player-derived
+# phases are unreliable. The expert defines *where* the corner phases live;
+# the player is then described *at* those expert-defined indices. The same
+# iloc identifies the same telemetry sample on both lines, so an expert-
+# derived index is meaningful on the player curve too.
+# ---------------------------------------------------------------------------
+
+
+def _max_curvature_index(x: np.ndarray, y: np.ndarray) -> Optional[int]:
+    """Return iloc of max curvature on the (x, y) line, or None if degenerate."""
+    if len(x) < 6 or len(y) < 6:
+        return None
+    dx = np.gradient(x)
+    dy = np.gradient(y)
+    ddx = np.gradient(dx)
+    ddy = np.gradient(dy)
+    numerator = np.abs(dx * ddy - dy * ddx)
+    denominator = np.power(dx ** 2 + dy ** 2, 1.5)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        curvature = np.where(denominator > 1e-6, numerator / denominator, 0)
+    curvature = np.nan_to_num(curvature)
+    if not np.any(curvature > 0):
+        return None
+    return int(np.argmax(curvature))
+
+
+def _expert_phase_indices(df: pd.DataFrame) -> Dict[str, Optional[int]]:
+    """Detect entry/apex/exit phase ilocs from EXPERT telemetry.
+
+    Returns iloc-based positions (0..len(df)-1) for brake_start, apex,
+    brake_end, throttle_resume. A phase that cannot be detected is `None`.
+    Never falls back to player data — see VLM-no-fallback / expert-anchor
+    rules.
+    """
+    out: Dict[str, Optional[int]] = {
+        "brake_start": None, "apex": None,
+        "brake_end": None, "throttle_resume": None,
+    }
+    n = len(df)
+    if n == 0:
+        return out
+
+    brake_col = "expert_optimal_brake"
+    throttle_col = "expert_optimal_throttle"
+    speed_col = "expert_optimal_speed"
+    ex_col = "expert_optimal_player_pos_x"
+    ey_col = "expert_optimal_player_pos_y"
+
+    if brake_col in df.columns:
+        brake_ilocs = np.where(df[brake_col].values > 0.1)[0]
+        if len(brake_ilocs) > 0:
+            out["brake_start"] = int(brake_ilocs[0])
+            out["brake_end"] = int(brake_ilocs[-1])
+
+    if ex_col in df.columns and ey_col in df.columns:
+        out["apex"] = _max_curvature_index(
+            df[ex_col].values.astype(float),
+            df[ey_col].values.astype(float),
+        )
+    if out["apex"] is None and speed_col in df.columns:
+        s = df[speed_col].dropna()
+        if len(s) > 0:
+            try:
+                out["apex"] = int(df.index.get_loc(s.idxmin()))
+            except Exception:
+                out["apex"] = None
+
+    if throttle_col in df.columns:
+        search_start = out["apex"] if out["apex"] is not None else 0
+        if 0 <= search_start < n:
+            tail = df[throttle_col].values[search_start:]
+            above = np.where(tail > 0.5)[0]
+            if len(above) > 0:
+                out["throttle_resume"] = int(search_start + above[0])
+    if out["throttle_resume"] is None and out["brake_end"] is not None and out["brake_end"] + 1 < n:
+        out["throttle_resume"] = out["brake_end"] + 1
+
+    return out
+
+
+# Per-phase label offsets are pushed into different quadrants so neighbouring
+# markers (especially apex + throttle_resume, which often sit within 0-2
+# samples of each other on tight corners) don't stack their labels on top of
+# each other. The order in this dict is also the iloc-order we expect phases
+# to appear in (brake_start → apex → throttle_resume).
+_PHASE_STYLES: Dict[str, Dict[str, Any]] = {
+    "brake_start":     {"marker": "s", "color": "darkorange", "size": 100, "label": "Brake",    "offset": (-46, 14)},
+    "apex":            {"marker": "*", "color": "purple",     "size": 220, "label": "Apex",     "offset": (10, 16)},
+    "throttle_resume": {"marker": "^", "color": "green",      "size": 120, "label": "Throttle", "offset": (10, -20)},
+}
+
+# Phases whose ilocs differ by ≤ this many samples get a single combined label
+# (e.g. "Apex@100 / Throttle@101") rather than two overlapping annotations.
+_PHASE_LABEL_MERGE_ILOCS = 3
+
+
+def _annotate_phase_markers(
+    ax,
+    df: pd.DataFrame,
+    phases: Dict[str, Optional[int]],
+    x_col: str,
+    y_col: str,
+    *,
+    hollow: bool = False,
+) -> None:
+    """Draw labelled phase markers at expert-anchored ilocs on a trajectory.
+
+    `hollow=True` renders the expert-side markers with no fill so they
+    visually distinguish from the filled player-side markers. Labels are
+    only drawn on the filled (player) markers to avoid double-labelling
+    the same iloc. When two filled markers fall within
+    ``_PHASE_LABEL_MERGE_ILOCS`` samples of each other their labels are
+    merged into one annotation with a leader line so the markers stay
+    individually visible without overlapping label text.
+    """
+    if x_col not in df.columns or y_col not in df.columns:
+        return
+    xs = df[x_col].values
+    ys = df[y_col].values
+    n = len(xs)
+
+    entries: List[Tuple[int, str, Dict[str, Any]]] = []
+    for phase_key, style in _PHASE_STYLES.items():
+        iloc = phases.get(phase_key)
+        if iloc is None or iloc < 0 or iloc >= n:
+            continue
+        if pd.isna(xs[iloc]) or pd.isna(ys[iloc]):
+            continue
+        entries.append((iloc, phase_key, style))
+    if not entries:
+        return
+    entries.sort(key=lambda e: e[0])
+
+    # Draw every marker first, regardless of label-merging.
+    for iloc, _, style in entries:
+        if hollow:
+            ax.scatter(
+                xs[iloc], ys[iloc],
+                marker=style["marker"],
+                facecolors="none",
+                edgecolors=style["color"],
+                linewidths=1.2,
+                s=style["size"],
+                zorder=6,
+            )
+        else:
+            ax.scatter(
+                xs[iloc], ys[iloc],
+                marker=style["marker"],
+                color=style["color"],
+                s=style["size"],
+                zorder=6,
+                edgecolors="black",
+                linewidths=0.5,
+            )
+
+    if hollow:
+        return  # expert-side markers carry no labels
+
+    # Cluster filled-marker entries that sit within the merge threshold.
+    clusters: List[List[Tuple[int, str, Dict[str, Any]]]] = []
+    for entry in entries:
+        if clusters and entry[0] - clusters[-1][-1][0] <= _PHASE_LABEL_MERGE_ILOCS:
+            clusters[-1].append(entry)
+        else:
+            clusters.append([entry])
+
+    for cluster in clusters:
+        anchor_iloc, _, anchor_style = cluster[0]
+        labels = [f"{s['label']}@{df.index[i]}" for i, _, s in cluster]
+        text = " / ".join(labels)
+        color = anchor_style["color"] if len(cluster) == 1 else "black"
+        kwargs: Dict[str, Any] = dict(
+            xy=(xs[anchor_iloc], ys[anchor_iloc]),
+            xytext=anchor_style["offset"],
+            textcoords="offset points",
+            fontsize=8,
+            color=color,
+            weight="bold",
+        )
+        if len(cluster) > 1:
+            # Leader line so the merged label clearly belongs to the cluster.
+            kwargs["arrowprops"] = dict(arrowstyle="-", color="grey", lw=0.5)
+        ax.annotate(text, **kwargs)
+
+
 def _create_gas_brake_trajectory_plot(
     df: pd.DataFrame,
     track_config: Dict[str, str],
+    phases: Optional[Dict[str, Optional[int]]] = None,
 ) -> Optional[Image.Image]:
     """Trajectory coloured by gas−brake balance (green = gas, red = brake)."""
     px_col = track_config.get("player_x")
@@ -366,6 +558,14 @@ def _create_gas_brake_trajectory_plot(
     ax.scatter(x[0], y[0], marker="x", color="black", s=80, zorder=5, label="Start")
     ax.scatter(x[-1], y[-1], marker="o", color="black", s=80, zorder=5, label="End")
 
+    # Expert-anchored phase markers (entry / apex / exit). Filled markers on
+    # the player curve, hollow markers on the expert curve at the same iloc.
+    if phases is None:
+        phases = _expert_phase_indices(df)
+    _annotate_phase_markers(ax, df, phases, px_col, py_col, hollow=False)
+    if ex_col and ey_col and ex_col in df.columns and ey_col in df.columns:
+        _annotate_phase_markers(ax, df, phases, ex_col, ey_col, hollow=True)
+
     ax.set_title("Gas/Brake Trajectory\nGreen = Throttle, Red = Brake")
     ax.invert_yaxis()
     ax.set_aspect("equal", "box")
@@ -380,6 +580,7 @@ def _create_gas_brake_trajectory_plot(
 def _create_balance_trajectory_plot(
     df: pd.DataFrame,
     track_config: Dict[str, str],
+    phases: Optional[Dict[str, Optional[int]]] = None,
 ) -> Optional[Image.Image]:
     """Trajectory coloured by oversteer/understeer balance.
 
@@ -441,6 +642,12 @@ def _create_balance_trajectory_plot(
     ax.scatter(x[0], y[0], marker="x", color="black", s=80, zorder=5, label="Start")
     ax.scatter(x[-1], y[-1], marker="o", color="black", s=80, zorder=5, label="End")
 
+    if phases is None:
+        phases = _expert_phase_indices(df)
+    _annotate_phase_markers(ax, df, phases, px_col, py_col, hollow=False)
+    if ex_col and ey_col and ex_col in df.columns and ey_col in df.columns:
+        _annotate_phase_markers(ax, df, phases, ex_col, ey_col, hollow=True)
+
     ax.set_title("Oversteer / Understeer Trajectory\nRed = Oversteer, Blue = Understeer")
     ax.invert_yaxis()
     ax.set_aspect("equal", "box")
@@ -454,8 +661,9 @@ def _create_balance_trajectory_plot(
 def _create_trajectory_plot(
     df: pd.DataFrame,
     track_config: Dict[str, str],
+    phases: Optional[Dict[str, Optional[int]]] = None,
 ) -> Optional[Image.Image]:
-    """Detailed trajectory plot with apex / min-speed annotations."""
+    """Detailed trajectory plot with expert-anchored phase + min-speed annotations."""
     px_col = track_config.get("player_x")
     py_col = track_config.get("player_y")
     if not px_col or not py_col:
@@ -489,27 +697,12 @@ def _create_trajectory_plot(
         marker="o", color="black", s=80, zorder=5, label="End",
     )
 
-    # Apex detection (max curvature point)
-    try:
-        xs = df[px_col].values
-        ys = df[py_col].values
-        if len(xs) > 5:
-            dx = np.gradient(xs)
-            dy = np.gradient(ys)
-            ddx = np.gradient(dx)
-            ddy = np.gradient(dy)
-            numerator = np.abs(dx * ddy - dy * ddx)
-            denominator = np.power(dx ** 2 + dy ** 2, 1.5)
-            with np.errstate(divide="ignore", invalid="ignore"):
-                curvature = np.where(denominator > 1e-6, numerator / denominator, 0)
-            curvature = np.nan_to_num(curvature)
-            apex_idx = int(np.argmax(curvature))
-            ax.scatter(
-                xs[apex_idx], ys[apex_idx],
-                marker="*", color="purple", s=200, zorder=6, label="Apex",
-            )
-    except Exception:
-        pass
+    # Expert-anchored phase markers (entry / apex / exit)
+    if phases is None:
+        phases = _expert_phase_indices(df)
+    _annotate_phase_markers(ax, df, phases, px_col, py_col, hollow=False)
+    if ex_col and ey_col and ex_col in df.columns and ey_col in df.columns:
+        _annotate_phase_markers(ax, df, phases, ex_col, ey_col, hollow=True)
 
     # Min-speed annotation
     speed_col = None
@@ -583,6 +776,7 @@ def generate_telemetry_graphs(
         defs = [d for d in defs if d["id"] in graph_ids]
 
     track_config = _resolve_track_config(segment_df)
+    phases = _expert_phase_indices(segment_df)
     results: List[Tuple[Image.Image, str]] = []
 
     for gdef in defs:
@@ -592,11 +786,11 @@ def generate_telemetry_graphs(
         cols = gdef.get("columns", [])
 
         if gid == "trajectory_detailed":
-            img = _create_trajectory_plot(segment_df, track_config)
+            img = _create_trajectory_plot(segment_df, track_config, phases=phases)
         elif gid == "trajectory_gas_brake":
-            img = _create_gas_brake_trajectory_plot(segment_df, track_config)
+            img = _create_gas_brake_trajectory_plot(segment_df, track_config, phases=phases)
         elif gid == "trajectory_balance":
-            img = _create_balance_trajectory_plot(segment_df, track_config)
+            img = _create_balance_trajectory_plot(segment_df, track_config, phases=phases)
         else:
             img = _create_feature_plot(segment_df, cols, title)
 

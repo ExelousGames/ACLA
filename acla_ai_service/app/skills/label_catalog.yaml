@@ -14,8 +14,9 @@
 # prose.  Predicates only carry the verb / comparison
 # fragment — subject ("the player") and object
 # ("the expert") are supplied by the surrounding
-# prose.  Definitions for each predicate live in
-# skills/vocabulary.yaml.
+# prose.  Racing / visualization jargon used in
+# predicates is defined in the per-graph `glossary`
+# maps in skills/graph_analysis_skill.yaml.
 # annotation_guideline  — (optional) step-by-step instructions for
 # identifying this label
 # parent — parent label ID (null for top-level)
@@ -424,9 +425,7 @@ labels:
     name: "Release brake too quickly"
     type: sub
     description: >
-      The player releases brake more abruptly than the expert; trail
-      braking is absent on the player's trace.  The player **releases
-      brake more abruptly than** the expert.
+      The player **releases brake more abruptly than** the expert.
     parent: MS
     children: []
     exclusive_with: ["MS18"]
@@ -435,9 +434,7 @@ labels:
     name: "Release brake too slowly"
     type: sub
     description: >
-      The player releases brake more gradually than the expert; trail
-      braking is excessive on the player's trace.  The player
-      **releases brake more gradually than** the expert and the
+      The player **releases brake more gradually than** the expert and the
       description may mention **trail braking** on the player's trace.
     parent: MS
     children: []
@@ -447,8 +444,7 @@ labels:
     name: "Initiate brake release too late"
     type: sub
     description: >
-      The player begins releasing brake later than the expert.  The
-      player **begins releasing brake later than** the expert.
+      The player **begins releasing brake later than** the expert.
     parent: MS
     children: []
     exclusive_with: ["MS28"]
@@ -457,8 +453,7 @@ labels:
     name: "Initiate brake release too early"
     type: sub
     description: >
-      The player begins releasing brake earlier than the expert.  The
-      player **begins releasing brake earlier than** the expert.
+      The player **begins releasing brake earlier than** the expert.
     parent: MS
     children: []
     exclusive_with: ["MS27"]
@@ -467,7 +462,6 @@ labels:
     name: "Highest brake length too short"
     type: sub
     description: >
-      The player's total braking duration is shorter than the expert's.
       The player has **braking duration shorter than** the expert.
     parent: MS
     children: []
@@ -477,7 +471,6 @@ labels:
     name: "Highest brake length too long"
     type: sub
     description: >
-      The player's total braking duration is longer than the expert's.
       The player has **braking duration longer than** the expert.
     parent: MS
     children: []
@@ -487,9 +480,7 @@ labels:
     name: "Throttle and brake applied at the same time for too long"
     type: sub
     description: >
-      The player applies throttle and brake simultaneously for an
-      extended period.  The player **applies throttle and brake
-      simultaneously**.
+      The player **applies throttle and brake simultaneously**.
     parent: MS
     children: []
     exclusive_with: []
@@ -556,8 +547,7 @@ labels:
     name: "Release throttle too quickly"
     type: sub
     description: >
-      The player releases throttle more abruptly than the expert.  The
-      player **releases throttle more abruptly than** the expert.
+      The player **releases throttle more abruptly than** the expert.
     parent: MS
     children: []
     exclusive_with: []
@@ -566,8 +556,7 @@ labels:
     name: "Initiate throttle release too late"
     type: sub
     description: >
-      The player begins releasing throttle later than the expert.  The
-      player **begins releasing throttle later than** the expert.
+      The player **begins releasing throttle later than** the expert.
     parent: MS
     children: []
     exclusive_with: ["MS30"]
@@ -576,8 +565,7 @@ labels:
     name: "Initiate throttle release too early"
     type: sub
     description: >
-      The player begins releasing throttle earlier than the expert.  The
-      player **begins releasing throttle earlier than** the expert.
+      The player **begins releasing throttle earlier than** the expert.
     parent: MS
     children: []
     exclusive_with: ["MS29"]
@@ -590,8 +578,7 @@ labels:
     name: "Initiate the turn too late"
     type: sub
     description: >
-      The player turns in later than the expert, with a wider entry
-      line.  The player **turns in later than** the expert and the
+      The player **turns in later than** the expert and the
       player's **entry line is wider than** the expert's.
     parent: MS
     children: []
@@ -601,8 +588,7 @@ labels:
     name: "Initiate the turn too early"
     type: sub
     description: >
-      The player turns in earlier than the expert, with a tighter entry
-      line.  The player **turns in earlier than** the expert and the
+      The player **turns in earlier than** the expert and the
       player's **entry line is tighter than** the expert's.
     parent: MS
     children: []
@@ -612,8 +598,7 @@ labels:
     name: "Too late compared to expert Apex"
     type: sub
     description: >
-      The player reaches the apex later than the expert along the
-      trajectory.  The player **reaches apex later than** the expert.
+      The player **reaches apex later than** the expert.
     parent: MS
     children: []
     exclusive_with: ["MS7"]
@@ -622,8 +607,7 @@ labels:
     name: "Too early compared to expert Apex"
     type: sub
     description: >
-      The player reaches the apex earlier than the expert along the
-      trajectory.  The player **reaches apex earlier than** the expert.
+      The player **reaches apex earlier than** the expert.
     parent: MS
     children: []
     exclusive_with: ["MS3"]
@@ -632,8 +616,7 @@ labels:
     name: "Time to exit too early"
     type: sub
     description: >
-      The player exits the corner earlier than the expert.  The player
-      **exits the corner earlier than** the expert.
+      The player **exits the corner earlier than** the expert.
     parent: MS
     children: []
     exclusive_with: ["MS8"]
@@ -642,8 +625,7 @@ labels:
     name: "Time to exit too late"
     type: sub
     description: >
-      The player exits the corner later than the expert.  The player
-      **exits the corner later than** the expert.
+      The player **exits the corner later than** the expert.
     parent: MS
     children: []
     exclusive_with: ["MS4"]
@@ -656,8 +638,7 @@ labels:
     name: "Entry trajectory too tight"
     type: sub
     description: >
-      The player's entry line is tighter than the expert's (closer to
-      inside).  The player's **entry line is tighter than** the expert's.
+      The player's **entry line is tighter than** the expert's.
     parent: MS
     children: []
     exclusive_with: ["MS33"]
@@ -666,8 +647,7 @@ labels:
     name: "Entry trajectory too wide"
     type: sub
     description: >
-      The player's entry line is wider than the expert's (closer to
-      outside).  The player's **entry line is wider than** the expert's.
+      The player's **entry line is wider than** the expert's.
     parent: MS
     children: []
     exclusive_with: ["MS9"]
@@ -686,9 +666,7 @@ labels:
     name: "Exit trajectory too narrow"
     type: sub
     description: >
-      The player's exit line is tighter than the expert's (uses less
-      track width).  The player's **exit line is tighter than** the
-      expert's.
+      The player's **exit line is tighter than** the expert's.
     parent: MS
     children: []
     exclusive_with: ["MS16"]
@@ -697,9 +675,7 @@ labels:
     name: "Exit trajectory too wide"
     type: sub
     description: >
-      The player's exit line is wider than the expert's (uses more
-      track width).  The player's **exit line is wider than** the
-      expert's.
+      The player's **exit line is wider than** the expert's.
     parent: MS
     children: []
     exclusive_with: ["MS11"]
@@ -708,8 +684,7 @@ labels:
     name: "Cutting the line"
     type: sub
     description: >
-      The player cuts inside the expert's racing line, shortening the
-      corner.  The player **cuts inside the racing line** of the expert.
+      The player **cuts inside the racing line** of the expert.
     parent: MS
     children: []
     exclusive_with: []
@@ -821,8 +796,7 @@ labels:
     name: "Shift up too early"
     type: sub
     description: >
-      The player upshifts earlier than the expert.  The player
-      **upshifts earlier than** the expert.
+      The player **upshifts earlier than** the expert.
     parent: MS
     children: []
     exclusive_with: ["MS36"]
@@ -831,8 +805,7 @@ labels:
     name: "Shift up too late"
     type: sub
     description: >
-      The player upshifts later than the expert.  The player **upshifts
-      later than** the expert.
+      The player **upshifts later than** the expert.
     parent: MS
     children: []
     exclusive_with: ["MS35"]
@@ -841,8 +814,7 @@ labels:
     name: "Shift down too early"
     type: sub
     description: >
-      The player downshifts earlier than the expert.  The player
-      **downshifts earlier than** the expert.
+      The player **downshifts earlier than** the expert.
     parent: MS
     children: []
     exclusive_with: ["MS38"]
@@ -851,8 +823,7 @@ labels:
     name: "Shift down too late"
     type: sub
     description: >
-      The player downshifts later than the expert.  The player
-      **downshifts later than** the expert.
+      The player **downshifts later than** the expert.
     parent: MS
     children: []
     exclusive_with: ["MS37"]
@@ -861,7 +832,6 @@ labels:
     name: "Gear too low when accelerating"
     type: sub
     description: >
-      The player is in a lower gear than the expert during acceleration.
       The player is in a **lower gear than** the expert.
     parent: MS
     children: []
@@ -871,7 +841,6 @@ labels:
     name: "Gear too high when accelerating"
     type: sub
     description: >
-      The player is in a higher gear than the expert during acceleration.
       The player is in a **higher gear than** the expert.
     parent: MS
     children: []

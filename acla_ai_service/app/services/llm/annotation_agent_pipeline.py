@@ -1,27 +1,28 @@
 """
 Multi-agent annotation pipeline using LangGraph.
 
-Implements a multi-step planner → executor → describer → synthesis pipeline
-for automated telemetry sub-segment annotation.  Each step that produces
-LLM output runs a step-appropriate evaluator suite (see step_evaluator_agents.py)
-internally before writing to state.  This catches and corrects errors at the
-point of origin, eliminating the need for a retry loop.
+Implements a planner → step_solver (loop) → label_verifier →
+proposal_synthesizer pipeline for automated telemetry sub-segment annotation.
+The planner picks a solver agent for each plan step; the step_solver node
+dispatches each step to its declared solver via ``SOLVER_REGISTRY``.  Each
+LLM-producing node runs a step-appropriate evaluator suite internally
+(see step_evaluator_agents.py) before writing to state.
 
-Tool categories used during execution:
+Available solvers (see SOLVER_DEFINITIONS below):
 
-* **generate_telemetry_graphs** – rendered telemetry graphs (PIL images)
+* **describe_graphs** – renders telemetry graphs and writes a precise prose
+  observation paragraph per graph.
 
 The Vision Language Model (VLM) receives rendered graph images at each step,
 replicating the visual evidence a human annotator would use.
 
 Graph flow (forward-only — no retry edge):
 
-    planner ──────────► step_describer ─┐
-    (eval: format)      (renders graphs │ (repeat per
-                         + describes,    │  plan step)
-                         eval: format,   │
-                         evidence)       │
-                        ┌────────────────┘
+    planner ──────────► step_solver ─┐
+    (eval: format)      (dispatches  │ (repeat per
+                         to per-step │  plan step)
+                         solver)     │
+                        ┌────────────┘
                         ▼
                 label_verifier          ← embedding similarity filter
                         │                 (eval: format, range, consistency)
@@ -51,7 +52,6 @@ from app.models.segment_models import (
 )
 from app.models.label_catalog import get_label_catalog, LabelCatalog
 from app.models.graph_analysis_skill import get_graph_skill
-from app.models.vocabulary import get_vocabulary
 from app.services.llm.step_evaluator_agents import (
     run_evaluator_suite,
     set_eval_llm,
@@ -94,8 +94,8 @@ class AnnotationState(TypedDict, total=False):
     # --- named attachment pool — see step_evaluator_agents.PipelineAttachment ---
     # Each pipeline agent declares which attachments it consumes / produces by
     # name.  The pool is keyed by stable namespaced names like
-    # ``"init.parent_segment"``, ``"step_describer.3.graph_images"``,
-    # ``"step_describer.3.observations"``.  Evaluators see ONLY the parent
+    # ``"init.parent_segment"``, ``"step_solver.3.graph_images"``,
+    # ``"step_solver.3.observations"``.  Evaluators see ONLY the parent
     # agent's input set, never the whole pool.
     attachment_pool: Annotated[Dict[str, PipelineAttachment], merge_pool]
     # --- label filtering state ---
@@ -137,24 +137,6 @@ def _default_state() -> AnnotationState:
         "final_sub_end": 0,
         "messages": [],
     }
-
-
-# ---------------------------------------------------------------------------
-# Glossary injection
-#
-# Every prompt assembled in this pipeline gets scanned for vocabulary
-# phrases (defined in skills/vocabulary.yaml).  Phrases that appear in
-# the prompt body get a Glossary block prepended so the VLM/LLM is
-# taught the meaning of every canonical phrase the prompt references.
-# ---------------------------------------------------------------------------
-
-def _attach_glossary(prompt: str) -> str:
-    """Prepend a glossary block listing every vocabulary phrase used in *prompt*.
-
-    Returns *prompt* unchanged if no vocabulary phrase appeared in it.
-    """
-    block = get_vocabulary().build_glossary_block(prompt)
-    return f"{block}\n{prompt}" if block else prompt
 
 
 # ---------------------------------------------------------------------------
@@ -254,11 +236,11 @@ def _parse_planner_steps(plan_text: str, available_tools: list) -> list:
     """Parse planner VLM output into structured step dicts.
 
     Attempts to extract a JSON ``{"steps": [...]}`` block from the plan.
-    Falls back to a single catch-all step that requests all available
-    statistics and graphs when parsing fails.
+    Falls back to a single catch-all ``describe_graphs`` step when parsing
+    fails.
 
     Each returned step dict has keys:
-        step_id, description, requested_statistics, requested_graphs
+        step_id, solver, description, requested_statistics, requested_graphs
     """
     from .annotation_agent_tools import AGENT_GRAPH_DEFINITIONS
 
@@ -285,10 +267,11 @@ def _parse_planner_steps(plan_text: str, available_tools: list) -> list:
         steps_raw = None
 
     if not steps_raw or not isinstance(steps_raw, list):
-        # Fallback — single step that asks for everything
+        # Fallback — single describe_graphs step that asks for everything
         LOGGER.warning("Could not parse planner steps; using fallback.")
         return [{
             "step_id": 1,
+            "solver": DEFAULT_SOLVER_ID,
             "description": "Analyse all telemetry graphs and propose the most fitting labels.",
             "requested_statistics": [],
             "requested_graphs": list(all_graph_ids),
@@ -299,11 +282,19 @@ def _parse_planner_steps(plan_text: str, available_tools: list) -> list:
         step_id = raw_step.get("step_id", i)
         desc = raw_step.get("description", f"Step {step_id}")
 
+        solver_id = raw_step.get("solver", DEFAULT_SOLVER_ID)
+        if solver_id not in ALL_SOLVER_IDS:
+            LOGGER.warning(
+                "Step %s requested unknown solver '%s'; falling back to '%s'.",
+                step_id, solver_id, DEFAULT_SOLVER_ID,
+            )
+            solver_id = DEFAULT_SOLVER_ID
+
         req_graphs = raw_step.get("requested_graphs", [])
 
-        # If the VLM didn't specify explicit graph requests, try to infer
-        # from keywords in the description
-        if not req_graphs:
+        # If a describe_graphs step omits explicit graph requests, infer
+        # from keywords in the description.
+        if solver_id == "describe_graphs" and not req_graphs:
             desc_lower = desc.lower()
             req_graphs = [g for g in all_graph_ids
                           if g in desc_lower or g.replace("_", " ") in desc_lower]
@@ -313,6 +304,7 @@ def _parse_planner_steps(plan_text: str, available_tools: list) -> list:
 
         structured.append({
             "step_id": step_id,
+            "solver": solver_id,
             "description": desc,
             "requested_statistics": [],
             "requested_graphs": req_graphs,
@@ -327,13 +319,43 @@ def _parse_planner_steps(plan_text: str, available_tools: list) -> list:
 #
 #   init.parent_segment
 #   planner.plan
-#   step_describer.{k}.graph_images
-#   step_describer.{k}.graph_descriptions
-#   step_describer.{k}.observations
+#   step_solver.{k}.graph_images          (describe_graphs solver)
+#   step_solver.{k}.graph_descriptions    (describe_graphs solver)
+#   step_solver.{k}.observations          (every solver — prose summary)
 #   label_verifier.verified_labels
 #   proposal_synthesizer.proposal
 #
 # where {k} is the 1-based step index from the planner's plan_steps.
+# Outputs every solver produces live under a shared ``step_solver.{k}.*``
+# namespace so downstream consumers stay solver-agnostic; solver-specific
+# intermediates (e.g. graph_images) sit in the same namespace alongside.
+
+
+# ---------------------------------------------------------------------------
+# Solver registry — agents the planner can dispatch a step to
+# ---------------------------------------------------------------------------
+#
+# Each solver is a callable ``fn(state, step) -> partial-state-dict``.  The
+# planner picks a solver per step by setting ``step["solver"]`` to one of
+# the IDs below; ``step_solver_node`` looks the function up at runtime.
+# Each entry's ``description`` is fed verbatim to the planner prompt so the
+# planner knows what each solver does and which fields it requires.
+
+SOLVER_DEFINITIONS: List[Dict[str, str]] = [
+    {
+        "id": "describe_graphs",
+        "label": "Graph Describer",
+        "required_fields": "requested_graphs",
+        "description": (
+            "Renders the telemetry graphs listed in `requested_graphs` and "
+            "writes a precise observation paragraph per graph. Pure "
+            "observation — does not diagnose or assign labels."
+        ),
+    },
+]
+
+ALL_SOLVER_IDS: List[str] = [s["id"] for s in SOLVER_DEFINITIONS]
+DEFAULT_SOLVER_ID: str = "describe_graphs"
 
 
 # ---------------------------------------------------------------------------
@@ -445,47 +467,47 @@ def planner_node(state: AnnotationState) -> dict:
         prompt_parts.append("Find a DIFFERENT region that is not yet covered.")
         prompt_parts.append("")
 
-    prompt_parts.extend([
-        "=== Available Tools ===",
-        "1. **generate_telemetry_graphs** — visual telemetry graphs rendered as images.",
-        f"   Available graph IDs: {graph_catalogue}",
-        "   The solver has a Vision Language Model and CAN analyse the "
-        "graph images directly.",
-    ])
+    solver_lines: list[str] = []
+    for sdef in SOLVER_DEFINITIONS:
+        req = sdef.get("required_fields") or "(none)"
+        solver_lines.append(
+            f"- `{sdef['id']}` — {sdef['description']} Required step fields: {req}."
+        )
 
     prompt_parts.extend([
+        "=== Available Solvers ===",
+        "Each plan step is dispatched to ONE solver agent named below.",
+        *solver_lines,
+        "",
+        "=== Available Graph IDs (for `describe_graphs` solver) ===",
+        graph_catalogue,
         "",
         "=== Task ===",
-        "Plan which statistics and graphs to generate to help discover "
-        "ONE notable sub-segment within the parent segment range. "
-        "A sub-segment is a contiguous region where a specific event "
-        "or behaviour occurs.",
+        "Plan analysis steps to help discover ONE notable sub-segment "
+        "within the parent segment range. A sub-segment is a contiguous "
+        "region where a specific event or behaviour occurs.",
         "",
-        "Your plan must be a JSON object with a single key \"steps\".",
-        "The \"steps\" key must contain a list of step objects.",
+        "Your plan must be a JSON object with a single key \"steps\". "
         "Each step object must have:",
-        "  - \"step_id\": An integer (1, 2, 3, ...).",
-        "  - \"description\": A string describing the goal of the step.",
-        "  - \"requested_graphs\": A list of graph IDs to generate for this step (from the catalogue above). Use an empty list if none are needed.",
-        "You can have multiple steps. Each step should request specific graphs to analyze.",
+        "  - \"step_id\": integer (1, 2, 3, ...).",
+        "  - \"solver\": one of "
+        f"{json.dumps(ALL_SOLVER_IDS)} — pick the solver that fits the step.",
+        "  - \"description\": string describing the goal of the step.",
+        "  - any extra fields the chosen solver requires (e.g. "
+        "`requested_graphs` for `describe_graphs`).",
         "",
-        "Example of a valid plan:",
+        "Example:",
         "```json",
         '{',
         '  "steps": [',
-        '    {"step_id": 1, "description": "Analyze speed and acceleration to find the core anomaly.", "requested_graphs": ["speed", "speed_delta"]},',
-        '    {"step_id": 2, "description": "Investigate braking behavior around the identified anomaly.", "requested_graphs": ["brake"]}',
+        '    {"step_id": 1, "solver": "describe_graphs", "description": "Inspect speed and speed-delta to locate the core anomaly.", "requested_graphs": ["speed", "speed_delta"]},',
+        '    {"step_id": 2, "solver": "describe_graphs", "description": "Examine braking behaviour around the anomaly.", "requested_graphs": ["brake"]}',
         '  ]',
         '}',
         "```",
     ])
 
     prompt = "\n".join(prompt_parts)
-
-    # Prepend a glossary block listing every vocabulary phrase that appears
-    # in the prompt (e.g. phrases inside the injected label descriptions or
-    # annotation guidelines).
-    prompt = _attach_glossary(prompt)
 
     # planner consumes nothing from the pool — it works from raw run inputs
     # (parent_main_labels, existing_children, parent bounds) which are part
@@ -601,43 +623,49 @@ def _parse_json_response(raw: str) -> Optional[dict]:
     return None
 
 
-# --- Step solver ------------------------------------------------------------
+# --- Step solvers -----------------------------------------------------------
+#
+# Solvers are agent functions invoked by ``step_solver_node`` based on
+# ``step["solver"]``.  Each one returns a partial state dict; the dispatcher
+# advances the step counter and merges the dict back.  Every solver writes
+# its prose summary to the shared ``step_solver.{k}.observations``
+# attachment so downstream nodes (label_verifier, proposal_synthesizer)
+# stay solver-agnostic.
 
 
-def step_describer_node(state: AnnotationState) -> Dict[str, Any]:
-    """
-    Renders the graphs the planner requested for the current step and writes
-    a prose description of what they show.  Graph rendering happens inline
-    so the images are produced and consumed within the same agent — the VLM
-    sees them as visual evidence and the evaluator suite can re-check claims
-    against the same image set.
+def _solver_describe_graphs(
+    state: AnnotationState, step: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Solver: render the planner-requested graphs and write a prose description.
+
+    Graph rendering happens inline so the images are produced and consumed
+    within the same agent — the VLM sees them as visual evidence and the
+    evaluator suite can re-check claims against the same image set.
 
     The description is observation-only: it reports what is visible and does
     not interpret, diagnose, or assign labels.  Downstream nodes
-    (label_verifier, proposal_synthesizer) consume these observations to
+    (label_verifier, proposal_synthesizer) consume the observations to
     make decisions.
 
     Consumes from the pool:
         - init.parent_segment
     Produces:
-        - step_describer.{k}.graph_images        (rendered PNGs for this step)
-        - step_describer.{k}.graph_descriptions  (auto-generated graph captions)
-        - step_describer.{k}.observations        (VLM prose, post-evaluation)
+        - step_solver.{k}.graph_images        (rendered PNGs for this step)
+        - step_solver.{k}.graph_descriptions  (auto-generated graph captions)
+        - step_solver.{k}.observations        (VLM prose, post-evaluation)
     """
     from .annotation_agent_tools import generate_telemetry_graphs
 
     messages = list(state.get("messages", []))
     plan_steps = state.get("plan_steps", [])
-    current_step_index = state.get("current_step_index", 0)
-    step = plan_steps[current_step_index]
-    step_id = step.get("step_id", current_step_index + 1)
+    step_id = step.get("step_id")
     parent_start = state.get("parent_start", 0)
     parent_end = state.get("parent_end", 0)
     df = state.get("df_ref")
 
     # Render the graphs the planner requested for this step.
     requested_graphs = step.get("requested_graphs", [])
-    LOGGER.info(f"Describing step {current_step_index + 1}/{len(plan_steps)}: {step.get('description')}")
+    LOGGER.info(f"describe_graphs step {step_id}/{len(plan_steps)}: {step.get('description')}")
     LOGGER.info(f"  - Requested graphs: {requested_graphs}")
 
     graph_images: List[bytes] = []
@@ -663,13 +691,13 @@ def step_describer_node(state: AnnotationState) -> Dict[str, Any]:
     # Wrap the rendered graphs in named attachments so evaluators (and any
     # downstream nodes) can locate them in the pool.
     images_attachment = PipelineAttachment(
-        name=f"step_describer.{step_id}.graph_images",
+        name=f"step_solver.{step_id}.graph_images",
         kind="image_set",
         label=f"Step {step_id} — Graph Images",
         content=graph_images,
     )
     descs_attachment = PipelineAttachment(
-        name=f"step_describer.{step_id}.graph_descriptions",
+        name=f"step_solver.{step_id}.graph_descriptions",
         kind="structured",
         content_schema="graph_descriptions",
         label=f"Step {step_id} — Graph Descriptions",
@@ -714,14 +742,15 @@ def step_describer_node(state: AnnotationState) -> Dict[str, Any]:
         "Write one paragraph per graph, following the per-graph guidance above.\n\n"
     )
 
-    # Prepend a glossary block listing every vocabulary phrase that appears
-    # in the prompt so the VLM is taught the meaning of each canonical phrase.
-    prompt = _attach_glossary(prompt)
-
-    # 1. Generate output (VLM call with graph images)
-    # Stage first (resets iter/total on node change), then iteration.
-    set_active_stage("step_describer", "main")
-    set_active_iteration(current_step_index + 1, len(plan_steps))
+    # 1. Generate output (VLM call with graph images).  Stage name matches
+    # the solver id ("describe_graphs") so evaluator profile + UI icon
+    # mapping resolve to the right entries.
+    # Stage first (resets iter on node change), then iteration so the VLM
+    # callback gets the correct k/N tag.
+    set_active_stage("describe_graphs", "main")
+    plan_steps_count = len(state.get("plan_steps", []))
+    current_step_index = state.get("current_step_index", 0)
+    set_active_iteration(current_step_index + 1, plan_steps_count)
     raw_response = _call_vlm(prompt, graph_images)
 
     # 2. Run evaluator suite — evaluators see only this step's parent_inputs,
@@ -731,7 +760,7 @@ def step_describer_node(state: AnnotationState) -> Dict[str, Any]:
         parent_prompt=prompt,
         parent_output_text=raw_response,
         parent_inputs=parent_inputs,
-        step_name="step_describer",
+        step_name="describe_graphs",
         parent_start=parent_start,
         parent_end=parent_end,
     )
@@ -739,11 +768,9 @@ def step_describer_node(state: AnnotationState) -> Dict[str, Any]:
     evaluated_response = suite_result.final_result
     messages.append({"role": "assistant", "content": evaluated_response})
 
-    next_step_index = current_step_index + 1
-
     # 3. Emit the named output attachment (step observations) into the pool.
     obs_attachment = PipelineAttachment(
-        name=f"step_describer.{step_id}.observations",
+        name=f"step_solver.{step_id}.observations",
         kind="structured",
         content_schema="step_observation",
         label=f"Step {step_id} — {step['description']}",
@@ -755,9 +782,9 @@ def step_describer_node(state: AnnotationState) -> Dict[str, Any]:
     )
 
     return {
-        "current_step_index": next_step_index,
         "step_results": [{
             "step_id": step_id,
+            "solver": "describe_graphs",
             "description": step["description"],
             "graph_observations": evaluated_response,
             "graph_descriptions": graph_descriptions,
@@ -773,10 +800,39 @@ def step_describer_node(state: AnnotationState) -> Dict[str, Any]:
     }
 
 
-def step_router(state: AnnotationState) -> Literal["step_describer", "label_verifier"]:
-    """Routes to the next step describer or to label verification if all steps are complete."""
+SOLVER_REGISTRY: Dict[str, Callable[[AnnotationState, Dict[str, Any]], Dict[str, Any]]] = {
+    "describe_graphs": _solver_describe_graphs,
+}
+
+
+def step_solver_node(state: AnnotationState) -> Dict[str, Any]:
+    """Dispatch the current plan step to the solver agent it declared.
+
+    The planner picks ``step["solver"]`` from ``SOLVER_DEFINITIONS``; this
+    node looks the function up in ``SOLVER_REGISTRY`` and runs it, then
+    advances the step counter.  The graph re-enters this node until every
+    plan step has been processed.
+    """
+    plan_steps = state.get("plan_steps", [])
+    current_step_index = state.get("current_step_index", 0)
+    step = plan_steps[current_step_index]
+    solver_id = step.get("solver", DEFAULT_SOLVER_ID)
+    solver_fn = SOLVER_REGISTRY.get(solver_id)
+    if solver_fn is None:
+        raise RuntimeError(
+            f"Step {step.get('step_id')} requested unknown solver "
+            f"'{solver_id}'. Available: {list(SOLVER_REGISTRY)}"
+        )
+
+    delta = solver_fn(state, step)
+    delta["current_step_index"] = current_step_index + 1
+    return delta
+
+
+def step_router(state: AnnotationState) -> Literal["step_solver", "label_verifier"]:
+    """Routes to the next step solver or to label verification if all steps are complete."""
     if state["current_step_index"] < len(state.get("plan_steps", [])):
-        return "step_describer"
+        return "step_solver"
     return "label_verifier"
 
 
@@ -786,9 +842,9 @@ def step_router(state: AnnotationState) -> Literal["step_describer", "label_veri
 
 
 def label_verifier_node(state: AnnotationState) -> Dict[str, Any]:
-    """Filter candidate labels by embedding similarity to step describer evidence.
+    """Filter candidate labels by embedding similarity to describe_graphs evidence.
 
-    Embeds the concatenated step-describer observations as a query, embeds
+    Embeds the concatenated describe_graphs observations as a query, embeds
     each candidate label's name + description, then keeps only labels whose
     cosine similarity exceeds _SIMILARITY_THRESHOLD.  At least
     _MIN_FILTER_LABELS labels are always passed (highest scoring), and the
@@ -796,7 +852,7 @@ def label_verifier_node(state: AnnotationState) -> Dict[str, Any]:
     focused.
 
     Consumes from the pool:
-        - step_describer.{k}.observations  (for every k in plan_steps)
+        - step_solver.{k}.observations  (for every k in plan_steps)
     Produces:
         - label_verifier.verified_labels
 
@@ -848,11 +904,11 @@ def label_verifier_node(state: AnnotationState) -> Dict[str, Any]:
             "messages": messages,
         }
 
-    # Consume all step_describer observations from the pool, in step_id order.
+    # Consume all step_solver observations from the pool, in step_id order.
     pool: AttachmentPool = state.get("attachment_pool", {})
     plan_steps = state.get("plan_steps", [])
     consumes = [
-        f"step_describer.{step.get('step_id', i + 1)}.observations"
+        f"step_solver.{step.get('step_id', i + 1)}.observations"
         for i, step in enumerate(plan_steps)
     ]
     obs_inputs = pool_get_many(pool, consumes)
@@ -975,7 +1031,7 @@ def proposal_synthesizer_node(state: AnnotationState) -> Dict[str, Any]:
     Consumes from the pool:
         - init.parent_segment
         - label_verifier.verified_labels
-        - step_describer.{k}.observations  (for every k in plan_steps)
+        - step_solver.{k}.observations  (for every k in plan_steps)
     Produces:
         - proposal_synthesizer.proposal
     """
@@ -990,7 +1046,7 @@ def proposal_synthesizer_node(state: AnnotationState) -> Dict[str, Any]:
     consumes = (
         ["init.parent_segment", "label_verifier.verified_labels"]
         + [
-            f"step_describer.{step.get('step_id', i + 1)}.observations"
+            f"step_solver.{step.get('step_id', i + 1)}.observations"
             for i, step in enumerate(plan_steps)
         ]
     )
@@ -1004,7 +1060,7 @@ def proposal_synthesizer_node(state: AnnotationState) -> Dict[str, Any]:
     # Task + instructions only — the rendered attachments are inserted between
     # them ONLY for the VLM call.  The evaluator receives the same task +
     # instructions but reads the attachments from the pool itself, avoiding the
-    # duplicate "=== Verified Labels ===" / step-describer sections that would
+    # duplicate "=== Verified Labels ===" / describe_graphs sections that would
     # otherwise appear twice in the evaluator's prompt.
     intro_parts = [
         "You are a racing telemetry analyst producing label annotations.",
@@ -1019,14 +1075,15 @@ def proposal_synthesizer_node(state: AnnotationState) -> Dict[str, Any]:
     instructions_parts = [
         "=== Instructions ===",
         f"- There are {n_verified} verified candidate label(s): {verified_ids_inline}.",
-        "- Emit one entry in the \"labels\" list for EVERY verified label whose "
-        "behaviour is clearly evidenced — this can be up to "
-        f"{n_verified} entries. Drop only the verified labels the evidence "
-        "does not support. Do NOT cap the output at two entries, and do NOT "
-        "invent labels outside the verified list.",
+        "- For EVERY verified label whose behaviour is clearly evidenced, emit "
+        "one entry in the \"labels\" list (up to "
+        f"{n_verified} entries). For verified labels the evidence does NOT "
+        "support, emit NOTHING — do not include an entry whose reasoning "
+        "argues against the label. Do NOT cap the output at two entries, and "
+        "do NOT invent labels outside the verified list.",
         f"- Each entry must satisfy {parent_start} <= start_index < end_index <= {parent_end}.",
-        "- In \"reasoning\", explain why those exact boundaries were chosen, "
-        "citing the step observations above.",
+        "- In \"reasoning\", explain why this label IS supported and why those "
+        "exact boundaries were chosen, citing the step observations above.",
         "- The top-level JSON has a single key \"labels\" whose value is a flat "
         "list of entries. Do not wrap the list in any other container.",
         "",
@@ -1163,19 +1220,19 @@ def build_annotation_graph(
 
     graph.add_node("init_producer", init_producer_node)
     graph.add_node("planner", planner_node)
-    graph.add_node("step_describer", step_describer_node)
+    graph.add_node("step_solver", step_solver_node)
     graph.add_node("label_verifier", label_verifier_node)
     graph.add_node("proposal_synthesizer", proposal_synthesizer_node)
     # No separate evaluator node — evaluation happens inside each node.
 
     graph.set_entry_point("init_producer")
     graph.add_edge("init_producer", "planner")
-    graph.add_edge("planner", "step_describer")
+    graph.add_edge("planner", "step_solver")
     graph.add_conditional_edges(
-        "step_describer",
+        "step_solver",
         step_router,
         {
-            "step_describer": "step_describer",
+            "step_solver": "step_solver",
             "label_verifier": "label_verifier",
         },
     )
@@ -1248,10 +1305,11 @@ def run_annotation_pipeline(
 ) -> AnnotationResult:
     """Execute the forward-only annotation pipeline.
 
-    The pipeline runs: planner → step_describer (loop) → label_verifier
-    → proposal_synthesizer → END.  Each LLM-producing node runs its own
-    evaluator suite internally before writing to state, so there is no
-    separate evaluator node or retry loop.
+    The pipeline runs: planner → step_solver (loop) → label_verifier
+    → proposal_synthesizer → END.  ``step_solver`` dispatches each plan
+    step to the solver agent the planner declared (see SOLVER_REGISTRY).
+    Each LLM-producing node runs its own evaluator suite internally before
+    writing to state, so there is no separate evaluator node or retry loop.
 
     Parameters
     ----------
@@ -1349,7 +1407,7 @@ def run_annotation_pipeline(
                 if node_name == "planner":
                     n_steps = len(final_state.get("plan_steps", []))
                     detail = f"Planned {n_steps} analysis step(s)"
-                elif node_name == "step_describer":
+                elif node_name == "step_solver":
                     idx = final_state.get("current_step_index", 0)
                     total = len(final_state.get("plan_steps", []))
                     plan_steps = final_state.get("plan_steps", [])
@@ -1358,12 +1416,14 @@ def run_annotation_pipeline(
                     # just executed is at idx - 1.
                     just_done = idx - 1
                     if 0 <= just_done < len(plan_steps):
-                        step_id = plan_steps[just_done].get("step_id", just_done + 1)
-                        descs_att = pool.get(f"step_describer.{step_id}.graph_descriptions")
+                        step = plan_steps[just_done]
+                        step_id = step.get("step_id", just_done + 1)
+                        solver_id = step.get("solver", DEFAULT_SOLVER_ID)
+                        descs_att = pool.get(f"step_solver.{step_id}.graph_descriptions")
                         n_graphs = len(descs_att.content) if descs_att and isinstance(descs_att.content, list) else 0
-                        detail = f"Described step {idx}/{total} ({n_graphs} graph(s))"
+                        detail = f"Solver '{solver_id}' ran step {idx}/{total} ({n_graphs} graph(s))"
                     else:
-                        detail = f"Described step {idx}/{total}"
+                        detail = f"Ran step {idx}/{total}"
                 elif node_name == "label_verifier":
                     verified = final_state.get("verified_labels", [])
                     detail = (

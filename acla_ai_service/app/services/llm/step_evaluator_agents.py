@@ -73,7 +73,7 @@ def set_active_stage(node_name: str, phase: str) -> None:
 
 
 def set_active_iteration(iteration: Optional[int], total: Optional[int]) -> None:
-    """Set the iteration tag for the current node (e.g. step_describer k/N)."""
+    """Set the iteration tag for the current node (e.g. describe_graphs k/N)."""
     with _eval_llm_lock:
         _eval_llm_holder["stage_iter"] = iteration
         _eval_llm_holder["stage_total"] = total
@@ -140,7 +140,7 @@ class PipelineAttachment(BaseModel):
     agents (and to their child evaluators) by name.
 
     Fields:
-        name           Stable, namespaced handle (e.g. ``"step_describer.3.observations"``).
+        name           Stable, namespaced handle (e.g. ``"step_solver.3.observations"``).
         kind           ``"text"``, ``"image_set"``, or ``"structured"``.
                        Determines how the attachment is rendered into a
                        prompt and whether its bytes are forwarded to a VLM.
@@ -771,8 +771,16 @@ def _run_evidence_evaluator(
             "=== Instructions ===\n"
             "Respond in this exact format:\n"
             "VERDICT: pass or fail\n"
-            "EDITS: (only if fail) A JSON object with:\n"
+            "FEEDBACK: Briefly state why entries / claims fail evidence (one or two lines).\n"
+            "EDITS: (only if fail) A JSON object with ONE of these forms:\n"
             '  {"replacements": [{"old": "unsupported claim", "new": "grounded claim"}]}\n'
+            "    — use this for fixing wording inside a reasoning string when the "
+            "entry itself is still supported.\n"
+            '  {"full_replacement": "<entire corrected output, verbatim>"}\n'
+            "    — REQUIRED when the response is structured JSON and the fix is "
+            "to drop an entry, change a label_id, or change a numeric "
+            "start_index / end_index. Emit the complete corrected JSON; do not "
+            "abbreviate.\n"
         )
 
         raw_response = _call_eval_vlm(eval_prompt, images=images or None)
@@ -796,15 +804,19 @@ def _run_evidence_evaluator(
 
         if parsed["edits"] and attempt < max_edit_rounds:
             edits = parsed["edits"]
-            if isinstance(edits, dict) and "replacements" in edits:
-                for repl in edits["replacements"]:
-                    old = repl.get("old", "")
-                    new = repl.get("new", "")
-                    current_result, applied = _apply_eval_replacement(
-                        current_result, old, new
-                    )
-                    if applied:
-                        edit_count += 1
+            if isinstance(edits, dict):
+                if "full_replacement" in edits:
+                    current_result = edits["full_replacement"]
+                    edit_count += 1
+                elif "replacements" in edits:
+                    for repl in edits["replacements"]:
+                        old = repl.get("old", "")
+                        new = repl.get("new", "")
+                        current_result, applied = _apply_eval_replacement(
+                            current_result, old, new
+                        )
+                        if applied:
+                            edit_count += 1
         else:
             break
 
@@ -837,7 +849,7 @@ STEP_EVALUATOR_PROFILES: Dict[str, List[str]] = {
     "planner": [
         "format_evaluator",
     ],
-    "step_describer": [
+    "describe_graphs": [
         "evidence_evaluator",
     ],
     "proposal_synthesizer": [
@@ -976,7 +988,7 @@ def run_evaluator_suite(
                        Includes any image_set attachments the parent saw —
                        evaluators will forward those bytes to the eval VLM.
         step_name: The parent step's name (e.g. ``"planner"``,
-                   ``"step_describer"``, ``"proposal_synthesizer"``).
+                   ``"describe_graphs"``, ``"proposal_synthesizer"``).
                    Used to select the evaluator profile.
         parent_start, parent_end: Fallback parent bounds when no
                        ``parent_segment`` attachment is in ``parent_inputs``.
