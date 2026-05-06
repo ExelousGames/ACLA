@@ -74,39 +74,35 @@ graphs:
       - "Legend identifies which colour is expert vs player"
       - "Grid lines for reading approximate values"
     how_to_analyze: >
+      Observe (record values, do not summarise yet):
       1. Read the legend — assign each colour to expert or player.  Note the
          left and right edge values for both traces (may start/end at full
          throttle or at zero).
 
-      2. Classify the segment using exactly one segment-class glossary term
+      2. Describe the SHAPE of each trace.  For EVERY shape feature
+         mentioned, record the index range (start–end) where it
+         occurs — never describe a feature with only a duration
+         ("across ~5 indices") and no anchor:
+         - Is the release "abrupt" or "gradual"? 
+         - Is the application "abrupt" or "gradual"
+         - is there any "throttle modulation dip" (dip-and-recover during the hold)?  
+         - Are there flat holds at full or near-zero throttle?
+
+      3. Enumerate ONLY clearly-visible events (throttle application, release
+         throttle, modulation dip).  Do not invent events to satisfy a
+         template — if a trace has one application and one release, report
+         one and one.  Skip any event you cannot clearly distinguish from
+         the grid.  For every event record the index on each trace.
+
+      4. Classify the segment using exactly one segment-class glossary term
          (flat-full segment, flat-zero segment, release-only segment,
          apply-only segment, release-and-reapply segment, multi-cycle
-         segment, unmatch segment).  Subsequent steps describe only the
-         events present in that class.
+         segment, unmatch segment).
 
-      3. Describe the SHAPE of each trace before counting events.  For EVERY
-         shape feature you mention, record the approximate index range
-         (start–end) where it occurs — never describe a feature with only
-         a duration ("across ~5 indices") and no anchor:
-         - Is the release "abrupt" (drops within ~1–2 indices, near-vertical
-           step) or "gradual" (descends visibly over many indices with a
-           sloped line)?  Record the start and end indices of the descent on
-           each trace.
-         - Is the re-application "smooth" (single sustained rise) or
-           "modulated" (dip-and-recover during the hold)?  Record the start
-           index of the rise on each trace.
-         - Are there flat holds at full or near-zero throttle?  Record their
-           approximate index ranges (start–end).
-
-      4. Enumerate ONLY clearly-visible events (application onset, release
-         onset, modulation dip).  Do not invent events to satisfy a template —
-         if a trace has one application and one release, report one and one.
-         Skip any event you cannot clearly distinguish from the grid.  For
-         every event record the approximate index on each trace.
-
-      5. Compose using sentence_format_guide: lead with the segment-class
-         glossary term, then add only the body clauses that class requires.
-         All indices and y-values are approximate.
+      5. Write the summary using sentence_format_guide.  Lead with the shape difference 
+        (release and application character,  modulation dips, flat holds) anchored to 
+        approximate index ranges; then the matched events with the index on each trace; then the
+        segment class callout.  All indices and y-values are approximate.
     glossary:
       "flat-full segment": >
         Both traces remain at full throttle (~1.0) across the segment; no
@@ -125,54 +121,54 @@ graphs:
         within the segment (the typical case).
       "multi-cycle segment": >
         More than one release / re-apply pair is visible (e.g. chicane or
-        a series of esses).  Report each cycle in travel order.
+        a series of esses) in travel order.
       "unmatch segment": >
         One trace stays flat while the other is active, or the two traces
-        do not share the same overall shape.  Describe each trace
-        independently.
-      "more abrupt release": >
-        Subject's throttle drops from a held value to near zero compare to the object.
-      "more gradual release": >
-        Subject's throttle descends over more indices compare to the object; the trace has a visible slope
-        rather than a near-vertical step.
-      "throttle-application onset": >
-        An index where the throttle trace rises above ~0.05 from a near-zero
-        level.  Report only clearly-visible onsets — do not fabricate extras.
-      "peak throttle": >
-        The maximum y-value of a sustained throttle hold.  If the trace has
-        multiple distinct holds (separated by clear lifts), report each
-        hold's peak and the approximate index range it covers.
-      "throttle-release onset": >
-        An index where the throttle trace begins falling from a held value
-        back toward zero.  Report only clearly-visible releases.
+        do not share the same overall shape. 
+      "release throttle": >
+        Throttle drops from a held value to near zero. When compare a
+        subject to a object,A subject has more abrupt releases if the length of
+        the drop is shorter; more gradual releases if the drop is longer.
+      "throttle application": >
+        Throttle rises from near zero to a held value. When compare a subject to a
+        object, A subject has more abrupt applications if the length of the rise is 
+        shorter; more gradual applications if the drop is longer.
+      "release onset": >
+        An index where the throttle trace first drops from a held value to
+        near zero — start of throttle release on this segment. A subject has an 
+        earlier release onset if this index is less than the other trace's release onset; 
+        later if it is greater.
+      "application onset": >
+        An index where the throttle trace first rises from near zero to a
+        held value — start of throttle application on this segment. A subject has an 
+        earlier application onset if this index is less than the other trace's application onset; 
+        later if it is greater.
       "throttle modulation dip": >
         A partial lift mid-application where the trace dips and recovers
-        without returning to zero.  Report the approximate dip index and
-        approximate dip value (e.g. "around index 105, ~0.7").
+        without returning to zero.
     sentence_format_guide: >
-      One paragraph.  Subject = player, object = expert.  Every event MUST
-      be anchored to an approximate index range or specific index — never
+      One paragraph.  Every event MUST be anchored to an index range or specific index — never
       quote a duration alone.
 
-      (a) Lead — state the segment class using expert as the reference, anchored to the approximate index range of the
-          segment:
-        "This is a <segment-class> across indices ~A–B."
-
-      (b) Detailed events — emit ONLY the clauses your chosen class
+      (a) Detailed events — emit ONLY the clauses your chosen class
           requires.  Use whichever apply:
 
-        - event comparison (onset, peak, release, application):
-          "<event>: player at index ~A, expert at index ~B — player is
-           <earlier|later> by ~N indices, <higher|lower> by ~Δ value."
+        - event comparison (release, application,release onset, application onset):
+          "<event>: player starts at index A and ends at index B(if there is one); expert 
+          starts at index C and ends at index D(if there is one) — player is <earlier|later> 
+          by N indices, or <more abrupt|more gradual> by M indices."
 
         - Modulation dip:
-          "Player shows a brief throttle modulation dip around index ~N
-           (~val) where expert's hold across indices ~X–Y is smoother."
+          "Player shows a brief throttle modulation dip around index N
+           (val) where expert's hold across indices X–Y is smoother."
+
+      (b) Segment class callout (when applicable):
+        "The segment is a <segment-class> — both traces <description of
+         shape features that define the class, anchored to index ranges>."
     common_description_errors:
       - "Verify expert vs player from the legend before describing"
       - "Do NOT invent events to fill the format. If the trace has only one application and one release, report only one of each"
-      - "Anchor EVERY shape feature and event to an approximate index range or specific index — \"gradual across ~5 indices\" without a start index is insufficient; write \"gradual across indices ~94–99\" instead"
-      - "Indices and y-values are approximate; use \"~\" or \"around index N\" rather than fabricating exact grid coordinates. If you cannot read a value cleanly, describe the shape qualitatively instead"
+      - "Anchor EVERY shape feature and event to an index range or specific index — \"gradual across ~5 indices\" without a start index is insufficient; write \"gradual across indices ~94–99\" instead"
       - "Suspect-pattern check: if your output shows the player consistently offset by exactly the same number of indices at every event, you are pattern-matching rather than reading — restart from step 3"
       - "For a flat-zero segment, state the classification rather than fabricating a release"
       - "The example envelope shows structure, not content — classify from the trace and emit only the clauses your chosen class requires; do not force release / re-application phrasing onto a flat, one-sided, or unmatch segment"
