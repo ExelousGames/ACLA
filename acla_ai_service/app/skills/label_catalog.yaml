@@ -130,7 +130,17 @@ labels:
       softly, or got on/off the brake at the wrong time.
       Step 4: Examine the 'push_limit' graph to find understeer or
       oversteer, which could lead to lower speed.
-      Step 5: Check the 'trajectory_gas_brake' map to locate entry, apex, and exit phases; 
+      Step 5: When requesting any trajectory graph (trajectory_detailed,
+      trajectory_gas_brake, trajectory_balance), include the
+      'compute_expert_phases' tool on that step (it produces the
+      'phase_indices' attachment). The attachment's 'phases' list holds
+      one element per detected arc — chicanes / esses produce multiple
+      entries of opposite 'direction'. Per-arc phase definitions: apex
+      = argmax(|κ|) on the smoothed expert position trace; entry / exit
+      = arc onset / offset where |κ| crosses the noise threshold
+      (turn-in / track-out). The trajectory_detailed image also overlays
+      the same markers (yellow circle = entry, red star = apex, green
+      triangle = exit, numbered #1, #2, … on chicanes).
     parent: null
     children:
       - "MS1"

@@ -253,6 +253,31 @@ def render_agent_annotation(df, form_start, form_end, form_labels, session_id, s
                     "proposal_synthesizer": "📝",
                 }
 
+                _ATTACHMENT_ICONS = {
+                    "text": "📎",
+                    "structured": "📋",
+                    "image_set": "🖼️",
+                }
+
+                def _render_attachments(meta: dict) -> None:
+                    """Show a one-line chip row of attachments fed to this VLM call."""
+                    atts = meta.get("attachments") or []
+                    if not atts:
+                        st.caption(
+                            "_📎 (no upstream attachments — built from raw run inputs)_"
+                        )
+                        return
+                    chips: list[str] = []
+                    for att in atts:
+                        icon = _ATTACHMENT_ICONS.get(att.get("kind", ""), "📎")
+                        label = att.get("label") or att.get("name", "?")
+                        count = att.get("count")
+                        chip = f"{icon} {label}"
+                        if count is not None:
+                            chip = f"{chip} ({count})"
+                        chips.append(chip)
+                    st.caption(" · ".join(chips))
+
                 def _format_header(meta: dict, duration: float | None = None) -> str:
                     """Build a section header like '🧠 Planner (1/2) — main (3.2s)'."""
                     node = meta.get("node_name") or "Processing"
@@ -292,8 +317,10 @@ def render_agent_annotation(df, form_start, form_end, form_labels, session_id, s
                         for s in completed_sections:
                             header = _format_header(s["meta"], s.get("duration", 0))
                             with st.expander(header, expanded=False):
+                                _render_attachments(s["meta"])
                                 st.markdown("**Prompt:**")
-                                st.code(s["prompt"], language=None, wrap_lines=True)
+                                with st.container(border=True):
+                                    st.markdown(s["prompt"])
                                 if s.get("reasoning"):
                                     st.markdown(
                                         f"**💭 Thinking:**\n\n{s['reasoning']}"
@@ -314,8 +341,10 @@ def render_agent_annotation(df, form_start, form_end, form_labels, session_id, s
                             f"**{_format_header(active_meta)}** "
                             f"_{elapsed:.0f}s …_"
                         )
+                        _render_attachments(active_meta)
                         st.markdown("*Prompt:*")
-                        st.code(active_prompt[0], language=None, wrap_lines=True)
+                        with st.container(border=True):
+                            st.markdown(active_prompt[0])
                         if reasoning_buffer:
                             st.markdown(
                                 f"*💭 Thinking (streaming…)*\n\n"

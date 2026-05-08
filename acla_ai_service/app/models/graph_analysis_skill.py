@@ -38,33 +38,55 @@ _skill_instance: Optional["GraphAnalysisSkill"] = None
 # ---------------------------------------------------------------------------
 
 class GraphSkillEntry:
-    """Analysis instructions and canonical phrases for one graph type."""
+    """One graph's YAML record (raw dict + its id)."""
 
-    __slots__ = (
-        "id", "title", "graph_type", "axes", "visual_elements",
-        "how_to_analyze", "glossary",
-        "sentence_format_guide",
-        "common_description_errors",
-    )
+    __slots__ = ("id", "raw")
 
     def __init__(self, graph_id: str, raw: Dict[str, Any]) -> None:
         self.id: str = graph_id
-        self.title: str = raw.get("title", graph_id)
-        self.graph_type: str = raw.get("graph_type", "unknown")
-        self.axes: Dict[str, str] = raw.get("axes", {})
-        self.visual_elements: List[str] = raw.get("visual_elements", [])
-        self.how_to_analyze: str = (raw.get("how_to_analyze") or "").strip()
-        # glossary is a term -> definition map for racing/visualization jargon
-        # the VLM may not understand on its own (e.g. "trail braking",
-        # "over-limit spike", "2x understeer amplification").  Plain-English
-        # comparators ("earlier than", "wider than") do NOT belong here.
-        raw_glossary = raw.get("glossary") or {}
-        self.glossary: Dict[str, str] = {
-            str(k): (str(v).strip() if v is not None else "")
-            for k, v in raw_glossary.items()
-        }
-        self.sentence_format_guide: str = (raw.get("sentence_format_guide") or "").strip()
-        self.common_description_errors: List[str] = raw.get("common_description_errors", [])
+        self.raw: Dict[str, Any] = raw
+
+    @property
+    def title(self) -> str:
+        return self.raw.get("title", self.id)
+
+
+# ---------------------------------------------------------------------------
+# Procedural section renderer
+# ---------------------------------------------------------------------------
+#
+# Walks a YAML key → value pair and emits prompt lines without any
+# per-key special casing.  String → indented block, list → bullets,
+# dict → "- key: value" pairs.  Multi-line strings (YAML `>` with blank
+# lines) keep their internal line breaks so paragraph structure survives.
+
+def _render_section(
+    key: str, value: Any, indent: str = "  ",
+) -> List[str]:
+    if not value:
+        return []
+    header = key.replace("_", " ") + ":"
+    out: List[str] = [header]
+
+    if isinstance(value, str):
+        for ln in value.rstrip("\n").split("\n"):
+            out.append(f"{indent}{ln}" if ln else "")
+    elif isinstance(value, list):
+        for item in value:
+            out.append(f"{indent}- {item}")
+    elif isinstance(value, dict):
+        for k, v in value.items():
+            v_str = "" if v is None else str(v).rstrip("\n")
+            v_lines = v_str.split("\n")
+            first = v_lines[0]
+            out.append(f"{indent}- {k}: {first}" if first else f"{indent}- {k}:")
+            cont_indent = indent + "    "
+            for cont in v_lines[1:]:
+                out.append(f"{cont_indent}{cont}" if cont else "")
+    else:
+        out.append(f"{indent}{value}")
+
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -84,17 +106,6 @@ class GraphAnalysisSkill:
         self.cross_graph_guidelines = cross_graph_guidelines
         self.trajectory_shape_vocabulary = trajectory_shape_vocabulary
 
-    # -- single graph -------------------------------------------------------
-
-    def get_graph(self, graph_id: str) -> Optional[GraphSkillEntry]:
-        """Return the skill entry for *graph_id*, or ``None``."""
-        return self._entries.get(graph_id)
-
-    def get_analysis_instructions(self, graph_id: str) -> Optional[str]:
-        """Return the how_to_analyze procedure for *graph_id*, or ``None``."""
-        entry = self._entries.get(graph_id)
-        return entry.how_to_analyze if entry else None
-
     # -- bulk queries -------------------------------------------------------
 
     @property
@@ -110,66 +121,30 @@ class GraphAnalysisSkill:
     def build_graph_prompt(self, graph_ids: List[str]) -> str:
         """Build a VLM prompt section for describing the given graphs.
 
-        Returns a multi-section text block containing:
-        - Per-graph description checklists, axes, visual elements, glossary
-        - Relevant cross-graph description guidelines
-        - Trajectory shape vocabulary (if trajectory graph present)
+        Walks each graph's YAML record in declaration order and renders
+        every section with the same procedural formatter — no per-key
+        special casing.  Followed by gated cross-graph guidelines and the
+        trajectory shape vocabulary.
         """
         entries = self.get_entries_for_graphs(graph_ids)
         if not entries:
             return ""
 
         lines: List[str] = [
-            "=== Graph Description Skill — How to Describe These Graphs ===",
+            "#### Graph Description Skill — How to Describe These Graphs",
             "",
         ]
 
         for entry in entries:
-            lines.append(f"--- {entry.title} (id: {entry.id}) ---")
-            lines.append(f"Graph type: {entry.graph_type}")
-
-            # Axes
-            if entry.axes:
-                lines.append("Axes:")
-                for axis_name, axis_desc in entry.axes.items():
-                    lines.append(f"  {axis_name}: {axis_desc}")
-
-            # Visual elements
-            if entry.visual_elements:
-                lines.append("Visual elements to identify:")
-                for elem in entry.visual_elements:
-                    lines.append(f"  - {elem}")
-
-            # How to analyze — clear instructions on how to read the graph
-            if entry.how_to_analyze:
-                lines.append("How to analyze this graph:")
-                lines.append(f"  {entry.how_to_analyze}")
-
-            # Glossary — definitions of racing / visualization jargon used in
-            # the analysis steps and sentence guide above.  Emitted as
-            # "term: definition" pairs so the VLM can resolve any unfamiliar
-            # phrase it encounters in the prompt body.
-            if entry.glossary:
-                lines.append("Glossary — definitions of terms used in this section:")
-                for phrase, definition in entry.glossary.items():
-                    if definition:
-                        lines.append(f'  - "{phrase}": {definition}')
-                    else:
-                        lines.append(f'  - "{phrase}"')
-
-            # Sentence format — skeleton + 1-2 example sentences showing how
-            # to glue phrases with numerical values into prose.
-            if entry.sentence_format_guide:
-                lines.append("Sentence format:")
-                lines.append(f"  {entry.sentence_format_guide}")
-
-            # Common errors
-            if entry.common_description_errors:
-                lines.append("Common description errors to AVOID:")
-                for err in entry.common_description_errors:
-                    lines.append(f"  * {err}")
-
+            lines.append(f"##### {entry.title} (id: {entry.id})")
             lines.append("")
+            for key, value in entry.raw.items():
+                if key == "title":
+                    continue  # already used as the graph header
+                section = _render_section(key, value)
+                if section:
+                    lines.extend(section)
+                    lines.append("")
 
         # Cross-graph guidelines (only include relevant ones)
         graph_id_set = set(graph_ids)
@@ -203,7 +178,7 @@ class GraphAnalysisSkill:
                 relevant_guidelines.append(f"[{guideline_id}] {text}")
 
         if relevant_guidelines:
-            lines.append("=== Cross-Graph Description Guidelines ===")
+            lines.append("#### Cross-Graph Description Guidelines")
             for g in relevant_guidelines:
                 lines.append(g)
             lines.append("")
@@ -213,7 +188,7 @@ class GraphAnalysisSkill:
             "trajectory_detailed", "trajectory_gas_brake", "trajectory_balance",
         }
         if has_trajectory and self.trajectory_shape_vocabulary:
-            lines.append("=== Trajectory Shape Vocabulary ===")
+            lines.append("#### Trajectory Shape Vocabulary")
             lines.append(self.trajectory_shape_vocabulary)
             lines.append("")
 

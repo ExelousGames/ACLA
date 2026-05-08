@@ -77,8 +77,11 @@ AGENT_GRAPH_DEFINITIONS: List[Dict[str, Any]] = [
         "title": "Detailed Trajectory",
         "columns": [],  # special: uses position columns
         "description": (
-            "Close-up trajectory with apex and min-speed annotations. "
-            "Green=player, Blue=expert."
+            "Close-up trajectory. Green = player, blue dashed = expert. "
+            "Expert-anchored phase markers per detected arc: yellow circle "
+            "= entry, red star = apex, green triangle = exit. Chicanes / "
+            "esses show numbered apexes (#1, #2, …) — one set of markers "
+            "per arc."
         ),
     },
     {
@@ -322,199 +325,225 @@ def _make_colored_line_collection(
 
 
 # ---------------------------------------------------------------------------
-# Expert-anchored corner phase detection
+# Expert-anchored corner phase detection (compute_expert_phases tool)
 #
-# Phase definitions (entry/apex/exit) are anchored on the EXPERT trajectory
-# only. The player may stop mid-corner or drive erratically, so player-derived
-# phases are unreliable. The expert defines *where* the corner phases live;
-# the player is then described *at* those expert-defined indices. The same
-# iloc identifies the same telemetry sample on both lines, so an expert-
-# derived index is meaningful on the player curve too.
+# Phases are derived only from EXPERT telemetry — the player can stop or
+# drive erratically mid-corner, so player-derived phases are unreliable.
+# The same iloc identifies the same telemetry sample on both lines.
+#
+# Algorithm (track-data-free): smooth the expert (x, y) trace, compute
+# signed parametric curvature κ = (x'·y'' − y'·x'') / (x'² + y'²)^(3/2),
+# and split the segment into arcs where |κ| exceeds a noise threshold and
+# sign(κ) is constant. Each arc yields one (entry, apex, exit) — chicanes
+# and esses naturally produce multiple arcs of opposite sign. Apex is the
+# argmax of |κ| within the arc (geometric, robust on flat-speed sweepers
+# and trail-braked corners where min-speed and apex disagree).
 # ---------------------------------------------------------------------------
 
 
-def _max_curvature_index(x: np.ndarray, y: np.ndarray) -> Optional[int]:
-    """Return iloc of max curvature on the (x, y) line, or None if degenerate."""
-    if len(x) < 6 or len(y) < 6:
-        return None
-    dx = np.gradient(x)
-    dy = np.gradient(y)
+_KAPPA_FLOOR = 1e-3   # absolute κ below this is treated as noise (matches existing usage in detailed_track_map.py)
+_KAPPA_FRAC = 0.20    # arc threshold = max(_KAPPA_FLOOR, _KAPPA_FRAC * max|κ|)
+
+
+def _odd(n: int) -> int:
+    """Return *n* clipped to odd so a centred convolution window is symmetric."""
+    return n if n % 2 == 1 else n + 1
+
+
+def _moving_average(arr: np.ndarray, window: int) -> np.ndarray:
+    """Centred moving average via numpy convolution.
+
+    Uses ``mode='same'`` so output length matches input. Edge samples are
+    biased by zero-padding inside ``np.convolve`` — callers should mask
+    the first/last ``window // 2`` samples when picking peaks.
+    """
+    if window <= 1 or arr.size < window:
+        return arr.astype(float)
+    kernel = np.ones(window, dtype=float) / float(window)
+    return np.convolve(arr.astype(float), kernel, mode="same")
+
+
+def _detect_expert_phases(
+    segment: pd.DataFrame,
+) -> Tuple[List[Dict[str, Any]], int]:
+    """Detect corner phases from the expert position trace alone.
+
+    Returns ``(phases, smoothing_window)`` where ``phases`` is a list of
+    one dict per detected arc (empty for non-corner segments). Each dict
+    holds ilocs **relative to the segment start** plus auxiliary fields
+    the VLM can use to reason about trail-braking and turn direction:
+
+        {
+            "entry": int, "apex": int, "exit": int,
+            "direction": "left" | "right",
+            "kappa_peak": float,                 # signed κ at apex
+            "min_speed_iloc": int,
+            "peak_steer_iloc": int,
+            "apex_speed_disagreement": int,      # |apex - min_speed_iloc|
+        }
+
+    See module-level comment for the algorithm.
+    """
+    n = len(segment)
+    if n < 8:
+        return [], 0
+    if "expert_optimal_player_pos_x" not in segment.columns or \
+       "expert_optimal_player_pos_y" not in segment.columns:
+        return [], 0
+
+    x = segment["expert_optimal_player_pos_x"].to_numpy(dtype=float)
+    y = segment["expert_optimal_player_pos_y"].to_numpy(dtype=float)
+    if not np.isfinite(x).any() or not np.isfinite(y).any():
+        return [], 0
+    # Forward-fill then back-fill via simple numpy interpolation to avoid NaN gradients.
+    x = np.where(np.isfinite(x), x, np.interp(np.arange(n), np.where(np.isfinite(x))[0], x[np.isfinite(x)])) if np.isnan(x).any() else x
+    y = np.where(np.isfinite(y), y, np.interp(np.arange(n), np.where(np.isfinite(y))[0], y[np.isfinite(y)])) if np.isnan(y).any() else y
+
+    window = _odd(max(5, n // 30))
+    x_s = _moving_average(x, window)
+    y_s = _moving_average(y, window)
+
+    dx = np.gradient(x_s)
+    dy = np.gradient(y_s)
     ddx = np.gradient(dx)
     ddy = np.gradient(dy)
-    numerator = np.abs(dx * ddy - dy * ddx)
-    denominator = np.power(dx ** 2 + dy ** 2, 1.5)
-    with np.errstate(divide="ignore", invalid="ignore"):
-        curvature = np.where(denominator > 1e-6, numerator / denominator, 0)
-    curvature = np.nan_to_num(curvature)
-    if not np.any(curvature > 0):
-        return None
-    return int(np.argmax(curvature))
+    denom = (dx * dx + dy * dy) ** 1.5
+    kappa = np.where(denom > 1e-9, (dx * ddy - dy * ddx) / denom, 0.0)
+    kappa = _moving_average(kappa, window)
 
+    # Mask edge samples — convolution edge bias makes them unreliable for peaks.
+    edge = window // 2
+    mask = np.zeros(n, dtype=bool)
+    mask[edge: n - edge] = True
 
-def _expert_phase_indices(df: pd.DataFrame) -> Dict[str, Optional[int]]:
-    """Detect entry/apex/exit phase ilocs from EXPERT telemetry.
+    abs_k = np.abs(kappa)
+    abs_k_masked = np.where(mask, abs_k, 0.0)
+    peak = float(abs_k_masked.max()) if abs_k_masked.size else 0.0
+    if peak < _KAPPA_FLOOR * 2.0:
+        return [], window  # whole segment is below the noise floor → no corner
 
-    Returns iloc-based positions (0..len(df)-1) for brake_start, apex,
-    brake_end, throttle_resume. A phase that cannot be detected is `None`.
-    Never falls back to player data — see VLM-no-fallback / expert-anchor
-    rules.
-    """
-    out: Dict[str, Optional[int]] = {
-        "brake_start": None, "apex": None,
-        "brake_end": None, "throttle_resume": None,
-    }
-    n = len(df)
-    if n == 0:
-        return out
+    threshold = max(_KAPPA_FLOOR, _KAPPA_FRAC * peak)
+    above = (abs_k_masked > threshold)
+    sign_k = np.sign(kappa)
 
-    brake_col = "expert_optimal_brake"
-    throttle_col = "expert_optimal_throttle"
-    speed_col = "expert_optimal_speed"
-    ex_col = "expert_optimal_player_pos_x"
-    ey_col = "expert_optimal_player_pos_y"
+    # Optional speed/steer for auxiliary cross-validation fields.
+    speed = (
+        segment["expert_optimal_speed"].to_numpy(dtype=float)
+        if "expert_optimal_speed" in segment.columns else None
+    )
+    steer = (
+        segment["expert_optimal_steering"].to_numpy(dtype=float)
+        if "expert_optimal_steering" in segment.columns else None
+    )
 
-    if brake_col in df.columns:
-        brake_ilocs = np.where(df[brake_col].values > 0.1)[0]
-        if len(brake_ilocs) > 0:
-            out["brake_start"] = int(brake_ilocs[0])
-            out["brake_end"] = int(brake_ilocs[-1])
+    min_arc_len = max(5, window)
+    phases: List[Dict[str, Any]] = []
 
-    if ex_col in df.columns and ey_col in df.columns:
-        out["apex"] = _max_curvature_index(
-            df[ex_col].values.astype(float),
-            df[ey_col].values.astype(float),
-        )
-    if out["apex"] is None and speed_col in df.columns:
-        s = df[speed_col].dropna()
-        if len(s) > 0:
-            try:
-                out["apex"] = int(df.index.get_loc(s.idxmin()))
-            except Exception:
-                out["apex"] = None
-
-    if throttle_col in df.columns:
-        search_start = out["apex"] if out["apex"] is not None else 0
-        if 0 <= search_start < n:
-            tail = df[throttle_col].values[search_start:]
-            above = np.where(tail > 0.5)[0]
-            if len(above) > 0:
-                out["throttle_resume"] = int(search_start + above[0])
-    if out["throttle_resume"] is None and out["brake_end"] is not None and out["brake_end"] + 1 < n:
-        out["throttle_resume"] = out["brake_end"] + 1
-
-    return out
-
-
-# Per-phase label offsets are pushed into different quadrants so neighbouring
-# markers (especially apex + throttle_resume, which often sit within 0-2
-# samples of each other on tight corners) don't stack their labels on top of
-# each other. The order in this dict is also the iloc-order we expect phases
-# to appear in (brake_start → apex → throttle_resume).
-_PHASE_STYLES: Dict[str, Dict[str, Any]] = {
-    "brake_start":     {"marker": "s", "color": "darkorange", "size": 100, "label": "Brake",    "offset": (-46, 14)},
-    "apex":            {"marker": "*", "color": "purple",     "size": 220, "label": "Apex",     "offset": (10, 16)},
-    "throttle_resume": {"marker": "^", "color": "green",      "size": 120, "label": "Throttle", "offset": (10, -20)},
-}
-
-# Phases whose ilocs differ by ≤ this many samples get a single combined label
-# (e.g. "Apex@100 / Throttle@101") rather than two overlapping annotations.
-_PHASE_LABEL_MERGE_ILOCS = 3
-
-
-def _annotate_phase_markers(
-    ax,
-    df: pd.DataFrame,
-    phases: Dict[str, Optional[int]],
-    x_col: str,
-    y_col: str,
-    *,
-    hollow: bool = False,
-) -> None:
-    """Draw labelled phase markers at expert-anchored ilocs on a trajectory.
-
-    `hollow=True` renders the expert-side markers with no fill so they
-    visually distinguish from the filled player-side markers. Labels are
-    only drawn on the filled (player) markers to avoid double-labelling
-    the same iloc. When two filled markers fall within
-    ``_PHASE_LABEL_MERGE_ILOCS`` samples of each other their labels are
-    merged into one annotation with a leader line so the markers stay
-    individually visible without overlapping label text.
-    """
-    if x_col not in df.columns or y_col not in df.columns:
-        return
-    xs = df[x_col].values
-    ys = df[y_col].values
-    n = len(xs)
-
-    entries: List[Tuple[int, str, Dict[str, Any]]] = []
-    for phase_key, style in _PHASE_STYLES.items():
-        iloc = phases.get(phase_key)
-        if iloc is None or iloc < 0 or iloc >= n:
+    i = 0
+    while i < n:
+        if not above[i]:
+            i += 1
             continue
-        if pd.isna(xs[iloc]) or pd.isna(ys[iloc]):
-            continue
-        entries.append((iloc, phase_key, style))
-    if not entries:
-        return
-    entries.sort(key=lambda e: e[0])
+        s = sign_k[i]
+        j = i
+        while j < n and above[j] and sign_k[j] == s:
+            j += 1
+        # Arc is [i, j)
+        arc_len = j - i
+        arc_peak = float(abs_k[i:j].max()) if arc_len > 0 else 0.0
+        if arc_len >= min_arc_len and arc_peak >= 2.0 * _KAPPA_FLOOR:
+            apex_local = i + int(np.argmax(abs_k[i:j]))
+            phase: Dict[str, Any] = {
+                "entry": int(i),
+                "apex": int(apex_local),
+                "exit": int(j - 1),
+                "direction": "left" if kappa[apex_local] > 0 else "right",
+                "kappa_peak": float(kappa[apex_local]),
+            }
+            if speed is not None and np.isfinite(speed[i:j]).any():
+                ms = i + int(np.nanargmin(speed[i:j]))
+                phase["min_speed_iloc"] = int(ms)
+                phase["apex_speed_disagreement"] = int(abs(apex_local - ms))
+            if steer is not None and np.isfinite(steer[i:j]).any():
+                phase["peak_steer_iloc"] = int(i + int(np.nanargmax(np.abs(steer[i:j]))))
+            phases.append(phase)
+        i = j
 
-    # Draw every marker first, regardless of label-merging.
-    for iloc, _, style in entries:
-        if hollow:
-            ax.scatter(
-                xs[iloc], ys[iloc],
-                marker=style["marker"],
-                facecolors="none",
-                edgecolors=style["color"],
-                linewidths=1.2,
-                s=style["size"],
-                zorder=6,
-            )
-        else:
-            ax.scatter(
-                xs[iloc], ys[iloc],
-                marker=style["marker"],
-                color=style["color"],
-                s=style["size"],
-                zorder=6,
-                edgecolors="black",
-                linewidths=0.5,
-            )
+    return phases, window
 
-    if hollow:
-        return  # expert-side markers carry no labels
 
-    # Cluster filled-marker entries that sit within the merge threshold.
-    clusters: List[List[Tuple[int, str, Dict[str, Any]]]] = []
-    for entry in entries:
-        if clusters and entry[0] - clusters[-1][-1][0] <= _PHASE_LABEL_MERGE_ILOCS:
-            clusters[-1].append(entry)
-        else:
-            clusters.append([entry])
+def compute_expert_phases(
+    df: pd.DataFrame, start_index: int, end_index: int,
+):
+    """Tool — per-arc entry / apex / exit ilocs from the expert position trace.
 
-    for cluster in clusters:
-        anchor_iloc, _, anchor_style = cluster[0]
-        labels = [f"{s['label']}@{df.index[i]}" for i, _, s in cluster]
-        text = " / ".join(labels)
-        color = anchor_style["color"] if len(cluster) == 1 else "black"
-        kwargs: Dict[str, Any] = dict(
-            xy=(xs[anchor_iloc], ys[anchor_iloc]),
-            xytext=anchor_style["offset"],
-            textcoords="offset points",
-            fontsize=8,
-            color=color,
-            weight="bold",
-        )
-        if len(cluster) > 1:
-            # Leader line so the merged label clearly belongs to the cluster.
-            kwargs["arrowprops"] = dict(arrowstyle="-", color="grey", lw=0.5)
-        ax.annotate(text, **kwargs)
+    Computes signed parametric curvature κ on the smoothed expert (x, y)
+    trace and segments the parent slice into arcs where |κ| exceeds a
+    noise threshold with constant sign. Each arc produces one
+    (entry, apex, exit) tuple — chicanes / esses naturally yield multiple
+    arcs of opposite ``direction``. Apex is ``argmax(|κ|)`` within the
+    arc, robust on flat-speed sweepers and trail-braked corners where
+    minimum speed precedes the geometric pinch.
+
+    Returns a ``phase_indices`` attachment with shape::
+
+        {
+            "phases": [
+                { "entry", "apex", "exit", "direction",
+                  "kappa_peak", "min_speed_iloc", "peak_steer_iloc",
+                  "apex_speed_disagreement" },
+                ...
+            ],
+            "smoothing_window": int,
+        }
+
+    All ilocs are relative to ``start_index``. ``phases`` is empty when
+    no arc clears the curvature threshold (pure straight, or segment too
+    short / missing position columns).
+    """
+    from .step_evaluator_agents import PipelineAttachment
+
+    segment = df.iloc[int(start_index): int(end_index)]
+    phases, window = _detect_expert_phases(segment)
+
+    return PipelineAttachment(
+        name="phase_indices",
+        kind="structured",
+        label="Phase Indices (expert-anchored)",
+        content={"phases": phases, "smoothing_window": int(window)},
+    )
+
+
+# Catalog of pre-compute tools, mirroring AGENT_GRAPH_DEFINITIONS. The
+# planner enumerates this in its prompt; the step solver dispatches by id.
+PIPELINE_TOOL_DEFINITIONS: List[Dict[str, Any]] = [
+    {
+        "id": "compute_expert_phases",
+        "label": "Phase Indices (per-arc entry / apex / exit)",
+        "description": (
+            "Detects expert-anchored corner phases from the expert "
+            "position-trace curvature. Produces a 'phase_indices' "
+            "attachment with a 'phases' list — one entry per arc, so "
+            "chicanes / esses produce multiple entries of opposite "
+            "direction. Empty list on straights. Use on any step that "
+            "requests a trajectory graph or reasons about corner phases."
+        ),
+        "callable": compute_expert_phases,
+    },
+]
+
+
+def get_pipeline_tool(tool_id: str) -> Optional[Dict[str, Any]]:
+    """Lookup helper — returns the tool definition or None."""
+    return next(
+        (t for t in PIPELINE_TOOL_DEFINITIONS if t["id"] == tool_id),
+        None,
+    )
 
 
 def _create_gas_brake_trajectory_plot(
     df: pd.DataFrame,
     track_config: Dict[str, str],
-    phases: Optional[Dict[str, Optional[int]]] = None,
 ) -> Optional[Image.Image]:
     """Trajectory coloured by gas−brake balance (green = gas, red = brake)."""
     px_col = track_config.get("player_x")
@@ -558,14 +587,6 @@ def _create_gas_brake_trajectory_plot(
     ax.scatter(x[0], y[0], marker="x", color="black", s=80, zorder=5, label="Start")
     ax.scatter(x[-1], y[-1], marker="o", color="black", s=80, zorder=5, label="End")
 
-    # Expert-anchored phase markers (entry / apex / exit). Filled markers on
-    # the player curve, hollow markers on the expert curve at the same iloc.
-    if phases is None:
-        phases = _expert_phase_indices(df)
-    _annotate_phase_markers(ax, df, phases, px_col, py_col, hollow=False)
-    if ex_col and ey_col and ex_col in df.columns and ey_col in df.columns:
-        _annotate_phase_markers(ax, df, phases, ex_col, ey_col, hollow=True)
-
     ax.set_title("Gas/Brake Trajectory\nGreen = Throttle, Red = Brake")
     ax.invert_yaxis()
     ax.set_aspect("equal", "box")
@@ -580,7 +601,6 @@ def _create_gas_brake_trajectory_plot(
 def _create_balance_trajectory_plot(
     df: pd.DataFrame,
     track_config: Dict[str, str],
-    phases: Optional[Dict[str, Optional[int]]] = None,
 ) -> Optional[Image.Image]:
     """Trajectory coloured by oversteer/understeer balance.
 
@@ -642,12 +662,6 @@ def _create_balance_trajectory_plot(
     ax.scatter(x[0], y[0], marker="x", color="black", s=80, zorder=5, label="Start")
     ax.scatter(x[-1], y[-1], marker="o", color="black", s=80, zorder=5, label="End")
 
-    if phases is None:
-        phases = _expert_phase_indices(df)
-    _annotate_phase_markers(ax, df, phases, px_col, py_col, hollow=False)
-    if ex_col and ey_col and ex_col in df.columns and ey_col in df.columns:
-        _annotate_phase_markers(ax, df, phases, ex_col, ey_col, hollow=True)
-
     ax.set_title("Oversteer / Understeer Trajectory\nRed = Oversteer, Blue = Understeer")
     ax.invert_yaxis()
     ax.set_aspect("equal", "box")
@@ -661,9 +675,18 @@ def _create_balance_trajectory_plot(
 def _create_trajectory_plot(
     df: pd.DataFrame,
     track_config: Dict[str, str],
-    phases: Optional[Dict[str, Optional[int]]] = None,
 ) -> Optional[Image.Image]:
-    """Detailed trajectory plot with expert-anchored phase + min-speed annotations."""
+    """Detailed trajectory plot — player + expert lines, start/end markers,
+    plus expert-anchored entry / apex / exit markers per detected arc.
+
+    Phase markers are drawn on the **expert** line — phases are expert-
+    anchored per project convention (the player can stop or drive
+    erratically mid-corner). Marker ilocs come from the same
+    ``_detect_expert_phases`` helper that powers the ``compute_expert_phases``
+    tool, so the image is consistent with the structured attachment.
+    Chicanes / esses show numbered apex labels (#1, #2, …); single-arc
+    corners show no number.
+    """
     px_col = track_config.get("player_x")
     py_col = track_config.get("player_y")
     if not px_col or not py_col:
@@ -697,32 +720,39 @@ def _create_trajectory_plot(
         marker="o", color="black", s=80, zorder=5, label="End",
     )
 
-    # Expert-anchored phase markers (entry / apex / exit)
-    if phases is None:
-        phases = _expert_phase_indices(df)
-    _annotate_phase_markers(ax, df, phases, px_col, py_col, hollow=False)
-    if ex_col and ey_col and ex_col in df.columns and ey_col in df.columns:
-        _annotate_phase_markers(ax, df, phases, ex_col, ey_col, hollow=True)
-
-    # Min-speed annotation
-    speed_col = None
-    for candidate in ("speed_kmh", "Physics_speed_kmh"):
-        if candidate in df.columns:
-            speed_col = candidate
-            break
-    if speed_col is not None:
-        min_idx = df[speed_col].idxmin()
-        if pd.notna(min_idx) and min_idx in df.index:
-            row = df.loc[min_idx]
-            ax.annotate(
-                f"Min speed: {row[speed_col]:.0f} km/h",
-                xy=(row[px_col], row[py_col]),
-                fontsize=8,
-                color="red",
-                arrowprops=dict(arrowstyle="->", color="red"),
-                xytext=(10, 10),
-                textcoords="offset points",
+    # Phase markers (expert-anchored) — entry / apex / exit per detected arc.
+    phases, _ = _detect_expert_phases(df)
+    if phases and ex_col and ey_col and ex_col in df.columns and ey_col in df.columns:
+        ex_arr = df[ex_col].to_numpy()
+        ey_arr = df[ey_col].to_numpy()
+        for k, ph in enumerate(phases):
+            entry_i, apex_i, exit_i = ph["entry"], ph["apex"], ph["exit"]
+            # Legend-label only the first arc's markers.
+            entry_label = "Entry" if k == 0 else None
+            apex_label = "Apex" if k == 0 else None
+            exit_label = "Exit" if k == 0 else None
+            ax.scatter(
+                ex_arr[entry_i], ey_arr[entry_i],
+                marker="o", color="yellow", s=90, zorder=6,
+                edgecolor="black", linewidth=0.6, label=entry_label,
             )
+            ax.scatter(
+                ex_arr[apex_i], ey_arr[apex_i],
+                marker="*", color="red", s=180, zorder=7,
+                edgecolor="black", linewidth=0.6, label=apex_label,
+            )
+            ax.scatter(
+                ex_arr[exit_i], ey_arr[exit_i],
+                marker="^", color="limegreen", s=90, zorder=6,
+                edgecolor="black", linewidth=0.6, label=exit_label,
+            )
+            if len(phases) > 1:
+                ax.annotate(
+                    f"#{k + 1}",
+                    xy=(ex_arr[apex_i], ey_arr[apex_i]),
+                    xytext=(6, 6), textcoords="offset points",
+                    fontsize=9, fontweight="bold", color="red", zorder=8,
+                )
 
     ax.set_title("Detailed Trajectory")
     ax.invert_yaxis()
@@ -776,7 +806,6 @@ def generate_telemetry_graphs(
         defs = [d for d in defs if d["id"] in graph_ids]
 
     track_config = _resolve_track_config(segment_df)
-    phases = _expert_phase_indices(segment_df)
     results: List[Tuple[Image.Image, str]] = []
 
     for gdef in defs:
@@ -786,11 +815,11 @@ def generate_telemetry_graphs(
         cols = gdef.get("columns", [])
 
         if gid == "trajectory_detailed":
-            img = _create_trajectory_plot(segment_df, track_config, phases=phases)
+            img = _create_trajectory_plot(segment_df, track_config)
         elif gid == "trajectory_gas_brake":
-            img = _create_gas_brake_trajectory_plot(segment_df, track_config, phases=phases)
+            img = _create_gas_brake_trajectory_plot(segment_df, track_config)
         elif gid == "trajectory_balance":
-            img = _create_balance_trajectory_plot(segment_df, track_config, phases=phases)
+            img = _create_balance_trajectory_plot(segment_df, track_config)
         else:
             img = _create_feature_plot(segment_df, cols, title)
 

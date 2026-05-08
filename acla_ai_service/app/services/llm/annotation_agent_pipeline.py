@@ -57,6 +57,7 @@ from app.services.llm.step_evaluator_agents import (
     set_eval_llm,
     set_active_stage,
     set_active_iteration,
+    set_active_attachments,
     get_active_stage,
     _eval_llm_holder,
     EvalPipelineResult,
@@ -275,6 +276,7 @@ def _parse_planner_steps(plan_text: str, available_tools: list) -> list:
             "description": "Analyse all telemetry graphs and propose the most fitting labels.",
             "requested_statistics": [],
             "requested_graphs": list(all_graph_ids),
+            "tools": [],
         }]
 
     structured: list[dict] = []
@@ -302,12 +304,17 @@ def _parse_planner_steps(plan_text: str, available_tools: list) -> list:
         # Validate against known graph IDs
         req_graphs = [g for g in req_graphs if g in all_graph_ids]
 
+        tools = raw_step.get("tools", [])
+        if not isinstance(tools, list):
+            tools = []
+
         structured.append({
             "step_id": step_id,
             "solver": solver_id,
             "description": desc,
             "requested_statistics": [],
             "requested_graphs": req_graphs,
+            "tools": tools,
         })
 
     return structured
@@ -411,7 +418,7 @@ def planner_node(state: AnnotationState) -> dict:
     Runs evaluator suite (format) on its own output before
     writing to state.
     """
-    from .annotation_agent_tools import AGENT_GRAPH_DEFINITIONS
+    from .annotation_agent_tools import AGENT_GRAPH_DEFINITIONS, PIPELINE_TOOL_DEFINITIONS
 
     parent_main_labels = state.get("parent_main_labels", [])
     existing_children = state.get("existing_children", [])
@@ -422,6 +429,10 @@ def planner_node(state: AnnotationState) -> dict:
         f"`{gdef['id']}` ({gdef['title']})"
         for gdef in AGENT_GRAPH_DEFINITIONS
     )
+    tool_catalogue_lines = [
+        f"- `{t['id']}` — {t['label']}: {t['description']}"
+        for t in PIPELINE_TOOL_DEFINITIONS
+    ]
 
     main_readable = [LABEL_MAPPING.get(l, l) for l in parent_main_labels]
     catalog = get_label_catalog()
@@ -437,26 +448,26 @@ def planner_node(state: AnnotationState) -> dict:
     prompt_parts = [
         "You are a racing telemetry analyst planning a sub-segment discovery strategy.",
         "",
-        "=== Parent Segment ===",
+        "#### Parent Segment",
         f"Main labels: {', '.join(main_readable)} (IDs: {json.dumps(parent_main_labels)})",
         f"Range: [{parent_start}, {parent_end}] (length: {parent_end - parent_start} data points)",
         "",
     ]
 
     if label_descriptions:
-        prompt_parts.append("=== Label Descriptions (from Label Catalog) ===")
+        prompt_parts.append("#### Label Descriptions (from Label Catalog)")
         prompt_parts.extend(label_descriptions)
         prompt_parts.append("")
 
     if annotation_guidelines:
-        prompt_parts.append("=== Annotation Guidelines ===")
+        prompt_parts.append("#### Annotation Guidelines")
         prompt_parts.append("Follow these steps when planning analysis for the identified labels:")
         prompt_parts.extend(annotation_guidelines)
         prompt_parts.append("")
 
     # Existing children for duplicate avoidance
     if existing_children:
-        prompt_parts.append("=== Already Discovered Sub-Segments ===")
+        prompt_parts.append("#### Already Discovered Sub-Segments")
         for child in existing_children:
             child_labels = [LABEL_MAPPING.get(l, l) for l in child.get("labels", [])]
             prompt_parts.append(
@@ -475,14 +486,19 @@ def planner_node(state: AnnotationState) -> dict:
         )
 
     prompt_parts.extend([
-        "=== Available Solvers ===",
+        "#### Available Solvers",
         "Each plan step is dispatched to ONE solver agent named below.",
         *solver_lines,
         "",
-        "=== Available Graph IDs (for `describe_graphs` solver) ===",
+        "#### Available Graph IDs (for `describe_graphs` solver)",
         graph_catalogue,
         "",
-        "=== Task ===",
+        "#### Available Pre-Compute Tools",
+        "Invoke per step via the `tools` field. Each invoked tool produces "
+        "an attachment that will be attached to that step's prompt only.",
+        *tool_catalogue_lines,
+        "",
+        "#### Task",
         "Plan analysis steps to help discover ONE notable sub-segment "
         "within the parent segment range. A sub-segment is a contiguous "
         "region where a specific event or behaviour occurs.",
@@ -493,6 +509,8 @@ def planner_node(state: AnnotationState) -> dict:
         "  - \"solver\": one of "
         f"{json.dumps(ALL_SOLVER_IDS)} — pick the solver that fits the step.",
         "  - \"description\": string describing the goal of the step.",
+        "  - \"tools\": list of pre-compute tool ids from the section above. "
+        "Empty list `[]` means no extra tools.",
         "  - any extra fields the chosen solver requires (e.g. "
         "`requested_graphs` for `describe_graphs`).",
         "",
@@ -500,8 +518,8 @@ def planner_node(state: AnnotationState) -> dict:
         "```json",
         '{',
         '  "steps": [',
-        '    {"step_id": 1, "solver": "describe_graphs", "description": "Inspect speed and speed-delta to locate the core anomaly.", "requested_graphs": ["speed", "speed_delta"]},',
-        '    {"step_id": 2, "solver": "describe_graphs", "description": "Examine braking behaviour around the anomaly.", "requested_graphs": ["brake"]}',
+        '    {"step_id": 1, "solver": "describe_graphs", "description": "Locate entry/apex/exit on the detailed trajectory.", "requested_graphs": ["trajectory_detailed"], "tools": ["compute_expert_phases"]},',
+        '    {"step_id": 2, "solver": "describe_graphs", "description": "Inspect speed and throttle around the apex.", "requested_graphs": ["speed", "throttle"], "tools": []}',
         '  ]',
         '}',
         "```",
@@ -516,6 +534,7 @@ def planner_node(state: AnnotationState) -> dict:
 
     # 1. Generate output (LLM call)
     set_active_stage("planner", "main")
+    set_active_attachments(parent_inputs)
     vlm_fn = _eval_llm_holder.get("vlm")
     if vlm_fn:
         raw_plan = vlm_fn(prompt)
@@ -654,7 +673,7 @@ def _solver_describe_graphs(
         - step_solver.{k}.graph_descriptions  (auto-generated graph captions)
         - step_solver.{k}.observations        (VLM prose, post-evaluation)
     """
-    from .annotation_agent_tools import generate_telemetry_graphs
+    from .annotation_agent_tools import generate_telemetry_graphs, get_pipeline_tool
 
     messages = list(state.get("messages", []))
     plan_steps = state.get("plan_steps", [])
@@ -665,8 +684,20 @@ def _solver_describe_graphs(
 
     # Render the graphs the planner requested for this step.
     requested_graphs = step.get("requested_graphs", [])
+    requested_tools = step.get("tools", [])
     LOGGER.info(f"describe_graphs step {step_id}/{len(plan_steps)}: {step.get('description')}")
     LOGGER.info(f"  - Requested graphs: {requested_graphs}")
+    LOGGER.info(f"  - Requested tools: {requested_tools}")
+
+    # Invoke planner-requested pre-compute tools. Each tool returns a
+    # PipelineAttachment that gets rendered into this step's prompt only.
+    tool_attachments: List[PipelineAttachment] = []
+    for tool_id in requested_tools:
+        tool = get_pipeline_tool(tool_id)
+        if tool is None:
+            LOGGER.warning("Step %s requested unknown tool '%s'", step_id, tool_id)
+            continue
+        tool_attachments.append(tool["callable"](df, parent_start, parent_end))
 
     graph_images: List[bytes] = []
     graph_descriptions: List[str] = []
@@ -704,13 +735,6 @@ def _solver_describe_graphs(
         content=graph_descriptions,
     )
 
-    # Declare and fetch named attachments from the pool.  Combine the upstream
-    # parent_segment with the locally-produced graph attachments to form this
-    # node's parent_inputs (visible to its evaluator suite).
-    pool: AttachmentPool = state.get("attachment_pool", {})
-    upstream_inputs = pool_get_many(pool, ["init.parent_segment"])
-    parent_inputs = upstream_inputs + [images_attachment, descs_attachment]
-
     prompt = (
         f"You are a telemetry graph describer.  Your ONLY job is to produce a "
         f"detailed, precise description of the data and graphs provided.  "
@@ -727,6 +751,10 @@ def _solver_describe_graphs(
 
     if graph_descriptions:
         prompt += f"- Generated Graphs:\n" + "\n".join([f"  - {desc}" for desc in graph_descriptions]) + "\n"
+
+    # Render planner-requested tool attachments into the prompt body.
+    if tool_attachments:
+        prompt += "\n" + render_inputs_for_prompt(tool_attachments) + "\n"
 
     # Inject graph analysis skill instructions when graphs are present
     if graph_images:
@@ -751,15 +779,22 @@ def _solver_describe_graphs(
     plan_steps_count = len(state.get("plan_steps", []))
     current_step_index = state.get("current_step_index", 0)
     set_active_iteration(current_step_index + 1, plan_steps_count)
+    pool: AttachmentPool = state.get("attachment_pool", {})
+    parent_segment_inputs = pool_get_many(pool, ["init.parent_segment"])
+    set_active_attachments(
+        parent_segment_inputs
+        + [images_attachment, descs_attachment]
+        + tool_attachments
+    )
     raw_response = _call_vlm(prompt, graph_images)
 
-    # 2. Run evaluator suite — evaluators see only this step's parent_inputs,
-    # which includes the same image_set attachment the describer consumed,
-    # so evidence_evaluator can check claims against the actual graphs.
+    # 2. Run evaluator suite — the prompt already inlines the index range and
+    # graph descriptions, so the only attachment the evaluator needs is the
+    # image_set (raw bytes the prompt cannot embed).
     suite_result: EvalPipelineResult = run_evaluator_suite(
         parent_prompt=prompt,
         parent_output_text=raw_response,
-        parent_inputs=parent_inputs,
+        parent_inputs=[images_attachment],
         step_name="describe_graphs",
         parent_start=parent_start,
         parent_end=parent_end,
@@ -795,6 +830,10 @@ def _solver_describe_graphs(
             images_attachment.name: images_attachment,
             descs_attachment.name: descs_attachment,
             obs_attachment.name: obs_attachment,
+            **{
+                f"step_solver.{step_id}.{a.name}": a
+                for a in tool_attachments
+            },
         },
         "messages": messages,
     }
@@ -1060,12 +1099,12 @@ def proposal_synthesizer_node(state: AnnotationState) -> Dict[str, Any]:
     # Task + instructions only — the rendered attachments are inserted between
     # them ONLY for the VLM call.  The evaluator receives the same task +
     # instructions but reads the attachments from the pool itself, avoiding the
-    # duplicate "=== Verified Labels ===" / describe_graphs sections that would
+    # duplicate "#### Verified Labels" / describe_graphs sections that would
     # otherwise appear twice in the evaluator's prompt.
     intro_parts = [
         "You are a racing telemetry analyst producing label annotations.",
         "",
-        "=== Task ===",
+        "#### Task",
         f"Annotate the parent range [{parent_start}, {parent_end}] "
         f"(length: {parent_end - parent_start} data points) by selecting which "
         "of the verified labels below are clearly evidenced in the graphs, "
@@ -1073,7 +1112,7 @@ def proposal_synthesizer_node(state: AnnotationState) -> Dict[str, Any]:
     ]
 
     instructions_parts = [
-        "=== Instructions ===",
+        "#### Instructions",
         f"- There are {n_verified} verified candidate label(s): {verified_ids_inline}.",
         "- For EVERY verified label whose behaviour is clearly evidenced, emit "
         "one entry in the \"labels\" list (up to "
@@ -1087,7 +1126,7 @@ def proposal_synthesizer_node(state: AnnotationState) -> Dict[str, Any]:
         "- The top-level JSON has a single key \"labels\" whose value is a flat "
         "list of entries. Do not wrap the list in any other container.",
         "",
-        "=== Output Format ===",
+        "#### Output Format",
         "Respond with JSON of this exact shape only. The schema below shows "
         "ONE entry as a template — repeat that entry object inside the "
         f'"labels" array once for every supported verified label (up to '
@@ -1112,6 +1151,7 @@ def proposal_synthesizer_node(state: AnnotationState) -> Dict[str, Any]:
 
     # 1. Generate output (VLM call)
     set_active_stage("proposal_synthesizer", "main")
+    set_active_attachments(parent_inputs)
     raw_response = _call_vlm(vlm_prompt, [])
     if not raw_response:
         raise RuntimeError(
