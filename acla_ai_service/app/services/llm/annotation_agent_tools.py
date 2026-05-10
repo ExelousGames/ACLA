@@ -96,12 +96,24 @@ AGENT_GRAPH_DEFINITIONS: List[Dict[str, Any]] = [
     },
     {
         "id": "trajectory_balance",
-        "title": "Oversteer/Understeer Balance Trajectory",
-        "columns": [],  # special: uses position + slip angle columns
+        "title": "Oversteer/Understeer Slip Balance",
+        "columns": [],  # special: uses slip angle columns directly
         "description": (
-            "Player trajectory coloured by rear-vs-front slip angle balance. "
-            "Red = oversteer (rear slip dominant), Blue = understeer (front slip dominant). "
-            "Mirrors the Balance colour mode in the human annotation track map."
+            "Line plot over segment index of (mean |rear slip| − mean |front slip|). "
+            "Positive (red shading above zero) = oversteer (rear-slip dominant); "
+            "negative (blue shading below zero) = understeer (front-slip dominant). "
+            "Zero = balanced front/rear slip."
+        ),
+    },
+    {
+        "id": "trajectory_offset",
+        "title": "Trajectory Offset (signed)",
+        "columns": [],  # special: uses position columns + smoothed kinematics
+        "description": (
+            "Signed perpendicular offset between player and expert lines over "
+            "segment index. Positive y = player wider than expert (toward "
+            "outside of corner); negative y = tighter (toward inside). "
+            "Expert-anchored entry/apex/exit markers placed on the offset trace."
         ),
     },
     {
@@ -363,6 +375,50 @@ def _moving_average(arr: np.ndarray, window: int) -> np.ndarray:
     return np.convolve(arr.astype(float), kernel, mode="same")
 
 
+def _smoothed_expert_kinematics(
+    segment: pd.DataFrame,
+) -> Optional[Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, int]]:
+    """Smooth the expert (x, y) trace and return parametric kinematics.
+
+    Shared by ``_detect_expert_phases`` (which derives entry / apex / exit
+    ilocs from the curvature peaks) and ``_create_trajectory_offset_plot``
+    (which needs the unit tangent for cross-track error and the signed κ
+    for the wider/tighter sign flip). Keeping a single helper guarantees
+    the smoothing window matches across the marker positions and the
+    offset trace.
+
+    Returns ``(x_s, y_s, dx, dy, kappa, window)`` or ``None`` if the
+    segment is too short, missing required columns, or all-NaN.
+    """
+    n = len(segment)
+    if n < 8:
+        return None
+    if "expert_optimal_player_pos_x" not in segment.columns or \
+       "expert_optimal_player_pos_y" not in segment.columns:
+        return None
+
+    x = segment["expert_optimal_player_pos_x"].to_numpy(dtype=float)
+    y = segment["expert_optimal_player_pos_y"].to_numpy(dtype=float)
+    if not np.isfinite(x).any() or not np.isfinite(y).any():
+        return None
+    x = np.where(np.isfinite(x), x, np.interp(np.arange(n), np.where(np.isfinite(x))[0], x[np.isfinite(x)])) if np.isnan(x).any() else x
+    y = np.where(np.isfinite(y), y, np.interp(np.arange(n), np.where(np.isfinite(y))[0], y[np.isfinite(y)])) if np.isnan(y).any() else y
+
+    window = _odd(max(5, n // 30))
+    x_s = _moving_average(x, window)
+    y_s = _moving_average(y, window)
+
+    dx = np.gradient(x_s)
+    dy = np.gradient(y_s)
+    ddx = np.gradient(dx)
+    ddy = np.gradient(dy)
+    denom = (dx * dx + dy * dy) ** 1.5
+    kappa = np.where(denom > 1e-9, (dx * ddy - dy * ddx) / denom, 0.0)
+    kappa = _moving_average(kappa, window)
+
+    return x_s, y_s, dx, dy, kappa, window
+
+
 def _detect_expert_phases(
     segment: pd.DataFrame,
 ) -> Tuple[List[Dict[str, Any]], int]:
@@ -384,32 +440,11 @@ def _detect_expert_phases(
 
     See module-level comment for the algorithm.
     """
+    kin = _smoothed_expert_kinematics(segment)
+    if kin is None:
+        return [], 0
+    _x_s, _y_s, _dx, _dy, kappa, window = kin
     n = len(segment)
-    if n < 8:
-        return [], 0
-    if "expert_optimal_player_pos_x" not in segment.columns or \
-       "expert_optimal_player_pos_y" not in segment.columns:
-        return [], 0
-
-    x = segment["expert_optimal_player_pos_x"].to_numpy(dtype=float)
-    y = segment["expert_optimal_player_pos_y"].to_numpy(dtype=float)
-    if not np.isfinite(x).any() or not np.isfinite(y).any():
-        return [], 0
-    # Forward-fill then back-fill via simple numpy interpolation to avoid NaN gradients.
-    x = np.where(np.isfinite(x), x, np.interp(np.arange(n), np.where(np.isfinite(x))[0], x[np.isfinite(x)])) if np.isnan(x).any() else x
-    y = np.where(np.isfinite(y), y, np.interp(np.arange(n), np.where(np.isfinite(y))[0], y[np.isfinite(y)])) if np.isnan(y).any() else y
-
-    window = _odd(max(5, n // 30))
-    x_s = _moving_average(x, window)
-    y_s = _moving_average(y, window)
-
-    dx = np.gradient(x_s)
-    dy = np.gradient(y_s)
-    ddx = np.gradient(dx)
-    ddy = np.gradient(dy)
-    denom = (dx * dx + dy * dy) ** 1.5
-    kappa = np.where(denom > 1e-9, (dx * ddy - dy * ddx) / denom, 0.0)
-    kappa = _moving_average(kappa, window)
 
     # Mask edge samples — convolution edge bias makes them unreliable for peaks.
     edge = window // 2
@@ -598,76 +633,49 @@ def _create_gas_brake_trajectory_plot(
     return _plot_to_image(fig)
 
 
-def _create_balance_trajectory_plot(
-    df: pd.DataFrame,
-    track_config: Dict[str, str],
-) -> Optional[Image.Image]:
-    """Trajectory coloured by oversteer/understeer balance.
+def _create_balance_line_plot(df: pd.DataFrame) -> Optional[Image.Image]:
+    """Line plot of oversteer/understeer slip balance over segment index.
 
-    Balance = mean(rear slip) − mean(front slip).
-    Positive → rear slipping more → oversteer (red).
-    Negative → front slipping more → understeer (amplified ×2, blue).
+    Balance = mean(|rear slip|) − mean(|front slip|), in radians.
+    Positive → rear slipping more → oversteer (red shading above zero).
+    Negative → front slipping more → understeer (blue shading below zero).
+    No amplification — the y-axis carries the magnitude directly.
     """
-    px_col = track_config.get("player_x")
-    py_col = track_config.get("player_y")
-    if not px_col or not py_col:
-        return None
-    if px_col not in df.columns or py_col not in df.columns:
-        return None
-    if len(df) < 2:
-        return None
-
-    x = df[px_col].values.astype(float)
-    y = df[py_col].values.astype(float)
-
     rear_l = "Physics_slip_angle_rear_left"
     rear_r = "Physics_slip_angle_rear_right"
     front_l = "Physics_slip_angle_front_left"
     front_r = "Physics_slip_angle_front_right"
-    has_slip = all(c in df.columns for c in (rear_l, rear_r, front_l, front_r))
+    if not all(c in df.columns for c in (rear_l, rear_r, front_l, front_r)):
+        return None
+    if len(df) < 2:
+        return None
 
-    if has_slip:
-        understeer_amplifier = 2.0
-        balance = (
-            (df[rear_l].abs() + df[rear_r].abs()) / 2
-            - (df[front_l].abs() + df[front_r].abs()) / 2
-        )
-        values = np.where(
-            balance.values < 0,
-            balance.values * understeer_amplifier,
-            balance.values,
-        ).astype(float)
-    else:
-        return None  # No slip angle data — skip rather than emit a blank graph
+    balance = (
+        (df[rear_l].abs() + df[rear_r].abs()) / 2.0
+        - (df[front_l].abs() + df[front_r].abs()) / 2.0
+    ).astype(float)
 
-    fig, ax = plt.subplots(figsize=(8, 8))
+    fig, ax = plt.subplots(figsize=(10, 4))
 
-    # Expert trajectory (reference line)
-    ex_col = track_config.get("expert_x")
-    ey_col = track_config.get("expert_y")
-    if ex_col and ey_col and ex_col in df.columns and ey_col in df.columns:
-        ax.plot(
-            df[ex_col], df[ey_col],
-            color="gray", linewidth=1.5, linestyle="--",
-            label="Expert", zorder=1,
-        )
-
-    # RdBu_r: red = positive (oversteer), blue = negative (understeer)
-    lc = _make_colored_line_collection(
-        ax, x, y, values,
-        cmap="RdBu_r", vmin=-0.1, vmax=0.1, linewidth=4,
+    idx = df.index
+    ax.plot(idx, balance, color="black", linewidth=1.2, label="Slip balance (rear − front)")
+    ax.fill_between(
+        idx, balance.values, 0.0,
+        where=(balance.values > 0), interpolate=True,
+        color="red", alpha=0.35, label="Oversteer (rear-slip dominant)",
     )
-    plt.colorbar(lc, ax=ax, label="← Understeer | Neutral | Oversteer →")
+    ax.fill_between(
+        idx, balance.values, 0.0,
+        where=(balance.values < 0), interpolate=True,
+        color="blue", alpha=0.35, label="Understeer (front-slip dominant)",
+    )
+    ax.axhline(0.0, color="gray", linewidth=0.8, linestyle="--")
 
-    ax.scatter(x[0], y[0], marker="x", color="black", s=80, zorder=5, label="Start")
-    ax.scatter(x[-1], y[-1], marker="o", color="black", s=80, zorder=5, label="End")
-
-    ax.set_title("Oversteer / Understeer Trajectory\nRed = Oversteer, Blue = Understeer")
-    ax.invert_yaxis()
-    ax.set_aspect("equal", "box")
-    ax.axis("off")
-    ax.legend(fontsize=8)
-    ax.autoscale()
+    ax.set_title("Oversteer / Understeer Slip Balance")
+    ax.set_xlabel("Index")
+    ax.set_ylabel("Rear − Front mean |slip angle| (rad)")
+    ax.grid(True)
+    ax.legend(loc="best", fontsize=8)
 
     return _plot_to_image(fig)
 
@@ -762,6 +770,113 @@ def _create_trajectory_plot(
     return _plot_to_image(fig)
 
 
+def _create_trajectory_offset_plot(
+    df: pd.DataFrame,
+    track_config: Dict[str, str],
+) -> Optional[Image.Image]:
+    """Trajectory offset plot — signed perpendicular distance between the
+    player's position and the expert's path, plotted over segment index.
+
+    Y-axis sign: positive = player is wider than expert (toward outside of
+    corner); negative = tighter (toward inside). Sign flip uses the local
+    expert curvature κ — on left-handers (κ > 0) inside is to the left, on
+    right-handers (κ < 0) inside is to the right; multiplying the raw
+    signed cross-track by ``-sign(κ)`` makes positive consistently mean
+    "outside / wider" regardless of corner handedness. On near-straight
+    samples (κ ≈ 0) the multiplier collapses to ±1 keeping the raw
+    cross-track sign (left = positive of expert direction-of-travel).
+
+    Phase markers (entry / apex / exit) are placed on the offset trace at
+    the same ilocs as the ``trajectory_detailed`` plot, using the same
+    colours so the VLM transfers its existing marker vocabulary.
+    """
+    px_col = track_config.get("player_x")
+    py_col = track_config.get("player_y")
+    ex_col = track_config.get("expert_x")
+    ey_col = track_config.get("expert_y")
+    if not (px_col and py_col and ex_col and ey_col):
+        return None
+    if any(c not in df.columns for c in (px_col, py_col, ex_col, ey_col)):
+        return None
+    if df.empty:
+        return None
+
+    kin = _smoothed_expert_kinematics(df)
+    if kin is None:
+        return None
+    _x_s, _y_s, dx, dy, kappa, _window = kin
+
+    # Unit tangent of the smoothed expert path
+    tangent_norm = np.sqrt(dx * dx + dy * dy)
+    tangent_norm = np.where(tangent_norm > 1e-9, tangent_norm, 1.0)
+    tx = dx / tangent_norm
+    ty = dy / tangent_norm
+
+    # Offset vector at each iloc — raw player and expert sample positions
+    px = df[px_col].to_numpy(dtype=float)
+    py = df[py_col].to_numpy(dtype=float)
+    ex = df[ex_col].to_numpy(dtype=float)
+    ey = df[ey_col].to_numpy(dtype=float)
+    ox = px - ex
+    oy = py - ey
+
+    # Signed cross-track (z-component of T × O): + = player left of expert dir.
+    cross = tx * oy - ty * ox
+
+    # Flip so + = wider (outside of corner). On straights (κ ≈ 0) keep the
+    # raw cross-track sign instead of zeroing the offset.
+    sign_flip = -np.sign(kappa)
+    sign_flip = np.where(sign_flip == 0, 1.0, sign_flip)
+    offset = cross * sign_flip
+
+    # X-axis = df.index (the dataframe's internal index, matching the
+    # other feature plots so brake/throttle/offset cross-reference cleanly).
+    # Phase ilocs from _detect_expert_phases are 0-based relative to the
+    # segment, so convert via df.index[iloc] when placing markers.
+    x_axis = df.index.to_numpy()
+
+    fig, ax = plt.subplots(figsize=(10, 4))
+    ax.axhline(0.0, color="gray", linestyle="--", linewidth=1, label="Expert (zero offset)")
+    ax.plot(x_axis, offset, color="green", linewidth=2, label="Player offset")
+
+    phases, _ = _detect_expert_phases(df)
+    for k, ph in enumerate(phases):
+        entry_i, apex_i, exit_i = ph["entry"], ph["apex"], ph["exit"]
+        entry_x, apex_x, exit_x = x_axis[entry_i], x_axis[apex_i], x_axis[exit_i]
+        entry_label = "Entry" if k == 0 else None
+        apex_label = "Apex" if k == 0 else None
+        exit_label = "Exit" if k == 0 else None
+        ax.scatter(
+            entry_x, offset[entry_i],
+            marker="o", color="yellow", s=90, zorder=6,
+            edgecolor="black", linewidth=0.6, label=entry_label,
+        )
+        ax.scatter(
+            apex_x, offset[apex_i],
+            marker="*", color="red", s=180, zorder=7,
+            edgecolor="black", linewidth=0.6, label=apex_label,
+        )
+        ax.scatter(
+            exit_x, offset[exit_i],
+            marker="^", color="limegreen", s=90, zorder=6,
+            edgecolor="black", linewidth=0.6, label=exit_label,
+        )
+        if len(phases) > 1:
+            ax.annotate(
+                f"#{k + 1}",
+                xy=(apex_x, offset[apex_i]),
+                xytext=(6, 6), textcoords="offset points",
+                fontsize=9, fontweight="bold", color="red", zorder=8,
+            )
+
+    ax.set_title("Trajectory Offset (signed)")
+    ax.set_xlabel("Index")
+    ax.set_ylabel("Lateral offset (m) — wider > 0, tighter < 0")
+    ax.grid(True)
+    ax.legend(loc="best")
+    return _plot_to_image(fig)
+
+
 def _resolve_track_config(df: pd.DataFrame) -> Dict[str, str]:
     """Auto-detect trajectory column names from the DataFrame."""
     tc: Dict[str, str] = {}
@@ -819,7 +934,9 @@ def generate_telemetry_graphs(
         elif gid == "trajectory_gas_brake":
             img = _create_gas_brake_trajectory_plot(segment_df, track_config)
         elif gid == "trajectory_balance":
-            img = _create_balance_trajectory_plot(segment_df, track_config)
+            img = _create_balance_line_plot(segment_df)
+        elif gid == "trajectory_offset":
+            img = _create_trajectory_offset_plot(segment_df, track_config)
         else:
             img = _create_feature_plot(segment_df, cols, title)
 

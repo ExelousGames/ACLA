@@ -115,7 +115,7 @@ labels:
       Driver error causing time loss or vehicle instability.  Look for
       **gap to expert grows** or the player **loses time to** the expert
       on the time-delta graph, and the player's trace diverges from the
-      expert across throttle, brake, speed, push_limit, or trajectory.
+      expert across throttle, brake, speed, understeer, oversteer, and trajectory.
     annotation_guideline: >
       The driver has committed a driving error resulting in time loss
       or instability.
@@ -128,19 +128,12 @@ labels:
       Step 3: Examine the differences in 'brake' between the player
       and the expert to identify if the driver braked too hard or too
       softly, or got on/off the brake at the wrong time.
-      Step 4: Examine the 'push_limit' graph to find understeer or
-      oversteer, which could lead to lower speed.
-      Step 5: When requesting any trajectory graph (trajectory_detailed,
-      trajectory_gas_brake, trajectory_balance), include the
-      'compute_expert_phases' tool on that step (it produces the
-      'phase_indices' attachment). The attachment's 'phases' list holds
-      one element per detected arc — chicanes / esses produce multiple
-      entries of opposite 'direction'. Per-arc phase definitions: apex
-      = argmax(|κ|) on the smoothed expert position trace; entry / exit
-      = arc onset / offset where |κ| crosses the noise threshold
-      (turn-in / track-out). The trajectory_detailed image also overlays
-      the same markers (yellow circle = entry, red star = apex, green
-      triangle = exit, numbered #1, #2, … on chicanes).
+      Step 4: Examine the 'trajectory_balance' graph to find understeer
+      (blue / front-slip dominant) or oversteer (red / rear-slip
+      dominant), which could lead to lower speed.
+      Step 5: For entry/apex/exit shape questions, request the
+      'trajectory_offset' graph and include the 'compute_expert_phases'
+      tool on the same step (it produces the 'phase_indices' attachment).
     parent: null
     children:
       - "MS1"
@@ -773,8 +766,7 @@ labels:
     name: "Understeering at entry"
     type: sub
     description: >
-      Front-slip dominant at corner entry on the balance trajectory.  Look for **front-slip dominant at corner entry**;
-      remember **2x understeer amplification**.
+      Front-slip dominant at corner entry on the balance trajectory.  Look for **front-slip dominant at corner entry**.
     parent: MS
     children: []
     exclusive_with: ["MS44"]
@@ -792,8 +784,7 @@ labels:
     name: "Understeering at exit"
     type: sub
     description: >
-      Front-slip dominant at corner exit on the balance trajectory.  Look for **front-slip dominant at corner exit**;
-      remember **2x understeer amplification**.
+      Front-slip dominant at corner exit on the balance trajectory.  Look for **front-slip dominant at corner exit**.
     parent: MS
     children: []
     exclusive_with: ["MS46"]

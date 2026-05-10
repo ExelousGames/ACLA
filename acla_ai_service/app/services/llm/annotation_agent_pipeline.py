@@ -518,7 +518,7 @@ def planner_node(state: AnnotationState) -> dict:
         "```json",
         '{',
         '  "steps": [',
-        '    {"step_id": 1, "solver": "describe_graphs", "description": "Locate entry/apex/exit on the detailed trajectory.", "requested_graphs": ["trajectory_detailed"], "tools": ["compute_expert_phases"]},',
+        '    {"step_id": 1, "solver": "describe_graphs", "description": "Measure entry/apex/exit shape via the trajectory offset trace.", "requested_graphs": ["trajectory_offset"], "tools": ["compute_expert_phases"]},',
         '    {"step_id": 2, "solver": "describe_graphs", "description": "Inspect speed and throttle around the apex.", "requested_graphs": ["speed", "throttle"], "tools": []}',
         '  ]',
         '}',

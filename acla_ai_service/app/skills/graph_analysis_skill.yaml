@@ -22,8 +22,7 @@
 #   glossary                 — map of term -> definition for racing or
 #                              visualization jargon the VLM may not understand
 #                              on its own (e.g. "trail braking",
-#                              "over-limit spike", "2x understeer
-#                              amplification", phase references like
+#                              "over-limit spike", phase references like
 #                              "at expert's entry (idx N)", custom
 #                              encodings like "yellow (coast or overlap)").
 #                              Definitions are emitted verbatim in the
@@ -544,7 +543,7 @@ graphs:
       - "Do NOT call a rise a 'spike' unless it exceeds 1.0 — values below 1.0 mean grip is still within peak"
       - "Do NOT measure spikes against the local baseline — 1.0 is the reference"
       - "Do NOT confuse this metric with speed — push_limit is about tire grip utilisation"
-      - "Do NOT interpret over-limit spikes as oversteer or understeer — that requires the balance trajectory graph"
+      - "Do NOT interpret over-limit spikes as oversteer or understeer — that requires the slip balance graph"
 
   gear:
     title: "Gear Selection: Expert vs Player"
@@ -593,6 +592,102 @@ graphs:
       - "Do NOT report a player shift without also reporting the expert's matching shift and the index gap"
       - "Do NOT interpret gear choices — describe what you see"
 
+  trajectory_balance:
+    title: "Oversteer/Understeer Slip Balance"
+    graph_type: feature_plot
+    axes:
+      x: "Segment index (time progression left to right)"
+      y: "Rear − Front mean |slip angle| (rad).  0 = balanced; positive = oversteer; negative = understeer.  ONLY |y| > 0.02 rad counts as oversteer/understeer; |y| ≤ 0.02 is neutral."
+    visual_elements:
+      - "Single black line trace = signed slip balance (mean |rear slip| − mean |front slip|) over segment index"
+      - "RED shading between the trace and y = 0 wherever the trace is above zero (oversteer / rear-slip dominant)"
+      - "BLUE shading between the trace and y = 0 wherever the trace is below zero (understeer / front-slip dominant)"
+      - "Grey dashed horizontal reference line at y = 0 (balanced)"
+      - "Grid lines for reading approximate values"
+      - "No expert trace — player only.  Magnitude is shown directly on the y-axis"
+    how_to_analyze: >
+      Observe (record values, do not summarise yet):
+      1. Note: the neutral band is |y| ≤ 0.02 rad.  Only y > +0.02 counts
+         as oversteer; only y < −0.02 counts as understeer.  Values inside
+         the band are neutral regardless of sign.
+      2. Walk the trace left-to-right.  For every excursion that exceeds
+         +0.02 rad (red shading clearly above the band), record the index
+         range (onset = first index where y > 0.02 → peak → return = first
+         index where y drops back to ≤ 0.02) and the peak value (rad).
+      3. Repeat for every excursion below −0.02 rad — record index range
+         (onset = first index where y < −0.02 → trough → return = first
+         index where y rises back to ≥ −0.02) and trough value (most negative).
+      4. For sections where the trace stays within |y| ≤ 0.02, record the
+         index range and the magnitude held.
+      5. Note every band crossing (index where the trace exits or re-enters
+         the ±0.02 band, with direction).  Treat a transition that goes
+         from below −0.02 to above +0.02 (or vice versa) as two crossings
+         separated by a neutral section if any indices fall inside the
+         band, otherwise as a single direct flip.
+
+      Match (apply glossary tags to each section):
+      6. For each excursion above +0.02, decide whether it is an
+         "oversteer spike" (brief, single peak) or "sustained oversteer"
+         (stays above +0.02 across many indices).
+      7. For each excursion below −0.02, decide whether it is an
+         "understeer spike" or "sustained understeer".
+      8. For each section inside the ±0.02 band, tag "neutral balance".
+      9. For each band crossing, tag "balance flip".
+
+      Compose:
+      10. Write the summary using sentence_format_guide — one clause per
+          tagged section, embedding the glossary term plus the index
+          range and peak/trough value.
+    glossary:
+      "oversteer spike": >
+        A brief excursion above +0.02 rad (single peak, returns to the
+        neutral band within a few indices).  Report onset index (where
+        y first exceeds +0.02), peak index, peak value (rad), and return
+        index (where y drops back to ≤ +0.02).
+      "sustained oversteer": >
+        The trace stays above +0.02 rad across many indices — rear-slip
+        dominant for the duration.  Report the index range and the
+        peak value reached.
+      "understeer spike": >
+        A brief excursion below −0.02 rad (single trough, returns to
+        the neutral band within a few indices).  Report onset index
+        (where y first drops below −0.02), trough index, trough value
+        (most negative rad), and return index (where y rises back to
+        ≥ −0.02).
+      "sustained understeer": >
+        The trace stays below −0.02 rad across many indices — front-slip
+        dominant for the duration.  Report the index range and the
+        trough value (most negative).
+      "neutral balance": >
+        Section where |y| stays within ±0.02 rad — front and rear slip
+        are effectively balanced.  Report the index range and the
+        magnitude held.
+      "balance flip": >
+        A band crossing — the trace exits or re-enters the ±0.02 rad
+        neutral band, or transitions directly from below −0.02 to above
+        +0.02 (or vice versa).  Report the index and the direction
+        (e.g. understeer→neutral, neutral→oversteer, understeer→oversteer).
+    sentence_format_guide: >
+      One paragraph.  Player's trace only; reference = ±0.02 rad neutral
+      band (no expert comparison).  Every clause MUST be anchored to an
+      index range or specific index — never quote a duration alone.
+
+      Excursion skeleton (one clause per tagged section):
+        "<glossary tag> across indices <N>–<M> (peak <value> rad at
+         index <X>; returns to neutral band at index <Y>)."
+
+      Balance-flip skeleton (one clause per band crossing):
+        "Balance flip at index <X> (<understeer→neutral |
+         neutral→oversteer | understeer→oversteer | …>)."
+    common_description_errors:
+      - "Do NOT count |y| ≤ 0.02 rad as oversteer or understeer — that is the neutral band; only excursions beyond ±0.02 qualify"
+      - "Do NOT report an excursion as a 'spike' unless it leaves and returns to the neutral band — values that stay on one side beyond ±0.02 across the full segment are 'sustained oversteer/understeer', not spikes"
+      - "Do NOT confuse the sign — y > +0.02 (red) = oversteer; y < −0.02 (blue) = understeer"
+      - "Do NOT invent an expert trace — this graph shows the player only"
+      - "Anchor EVERY excursion and crossing to an index range or specific index — \"a brief understeer\" without indices is insufficient"
+      - "Do NOT interpret the colours as good or bad — describe what is shown (sign, magnitude, index range)"
+      - "Do NOT skip describing neutral sections"
+
   # =========================================================================
   # TRAJECTORY PLOTS (bird's-eye view of the track)
   # =========================================================================
@@ -617,82 +712,144 @@ graphs:
       Observe (record positions, do not summarise yet):
       1. Verify who is who: player = green solid, expert = blue dashed;
          confirm direction of travel from Start (X) → End (O).
-      2. Name the overall shape (trajectory_shape_vocabulary).
-      3. If the 'Phase Indices (expert-anchored)' attachment is present
-         on this prompt, read its phase_indices.phases list — one element
-         per detected arc.  Empty list ⇒ no corner detected; describe
-         shapes only.  Each phase k holds entry / apex / exit ilocs
-         relative to the segment start; chicanes / esses produce multiple
-         phases of opposite 'direction'.
-      4. For each phase k, at each of its entry / apex / exit ilocs,
-         record where the player's curve sits relative to the expert's
-         curve at that index — closer to inside / closer to outside /
-         aligned, with an approximate offset.  Cross-check against the
-         on-image markers (yellow circle / red star / green triangle on
-         the expert line; for chicanes, marker pairs are tagged #1, #2, …).
-      5. Note the phase + iloc with the largest visible gap between the
-         two lines.
-      6. Scan the player line for any of these glossary events and record
-         where each occurs: "cuts inside the racing line", "kink in the
-         line", "off track at entry", "off track at exit",
-         "off track on the straight".
-      7. Write one paragraph per phase using sentence_format_guide: a
-         sentence per (entry / apex / exit) iloc naming the player's
-         position relative to the expert in plain English (closer to
-         inside / closer to outside), one sentence calling out the
-         largest-divergence phase, plus one sentence per glossary event
-         from step 6.  Reference markers using the "at expert's
-         <entry|apex|exit> (idx N, phase k)" form.
+      2. Read the 'Phase Indices (expert-anchored)' attachment.  Each
+         element of phase_indices.phases is one detected arc with expert
+         entry / apex / exit indices.  Empty list ⇒ no corner; describe the
+         overall shape only and stop.  Chicanes / esses iterate phases
+         0, 1, … of opposite 'direction' — repeat steps 3–5 per phase k.
+
+      For each phase k, walk the corner in order.
+
+      3. ENTRY — at the expert's entry index:
+         (a) "Initiate the turn" (event): does the player's line begin
+             curving earlier (upstream) or later (downstream) than the
+             expert's entry index, or at the same index?
+         (b) "Entry trajectory" (shape): walk both curves from expert's
+             entry index to expert's apex index.  Through that span, does
+             the player's line bulge outside the expert's, cut inside
+             the expert's, or track the expert's?
+      4. APEX — at the expert's apex index (red star):
+         (a) "Reach apex" (event): does the player's tightest point
+             land earlier, later, or at the expert's apex index?
+         (b) "Apex" (shape): at expert's apex index, is the player's
+             curve closer to inside / closer to outside / aligned?
+      5. EXIT — at the expert's exit index (green triangle):
+         (a) "Time to exit" (event): does the player begin unwinding
+             the line earlier, later, or at the expert's exit index?
+         (b) "Exit trajectory" (shape): walk both curves from expert's
+             apex index through and past expert's exit index.  Through
+             that span, does the player's line bulge outside, cut
+             inside, or track the expert?  Flag if it runs wide of
+             normal track-out.
+
+      6. Divergence enumeration: list EVERY span (entry-to-apex and
+         apex-to-exit, for each phase k) where the player's line shows
+         a visible gap from the expert's.  Do NOT pick just the biggest
+         one — every span with a non-'tracks' verdict goes in the list.
+         If a single span shows the player both bulging outside and
+         cutting inside at different points along it, record both
+         observations for that span.  Also list any visible event-term
+         offsets (player initiates the turn / reaches apex / times the
+         exit earlier or later than expert).
+      7. Compose using sentence_format_guide — one paragraph per phase,
+         six clauses (one event + one shape per beat), plus a final
+         enumeration line that lists every divergence found in step 6.
+         Reference markers using "at expert's <entry|apex|exit>
+         (idx N, phase k)" for events and "between expert's
+         <entry|apex> and <apex|exit> (idx N → idx M, phase k)" for
+         shape spans.
     glossary:
-      "cuts inside the racing line": >
-        The player line crosses inside the expert line, shortening the
-        corner relative to the expert's path.  Report where (which phase).
-      "kink in the line": >
-        A sharp brief deviation in the player trajectory suggesting a
-        correction.  Report location and whether the expert line is smooth
-        in the same area.
-      "off track at entry": >
-        The player's trajectory crosses outside the track bounds during
-        the corner-entry phase.
-      "off track at exit": >
-        The player's trajectory crosses outside the track bounds during
-        the corner-exit phase.
-      "off track on the straight": >
-        The player's trajectory crosses outside the track bounds on a
-        straight section.
+      "Initiate the turn": >
+        Event term.  The index on the player's line where the curve first
+        deviates from a straight path into the corner, compared to the
+        expert's entry index (yellow circle on expert line).  Report as
+        earlier (upstream of expert entry) / later (downstream) / at the
+        same index.
+      "Entry trajectory": >
+        Shape term.  The player's curve across the SPAN from expert's
+        entry index to expert's apex index — the entire turn-in half of
+        the corner, not a single point.  Report as bulges outside /
+        cuts inside / tracks the expert.  Single-index verdicts at the
+        entry marker alone are NOT acceptable; the lines almost always
+        meet at the marker, so visible divergence lives mid-span.
+      "Reach apex": >
+        Event term.  The index on the player's line where the curve is at
+        its tightest point, compared to the expert's apex index (red star
+        on expert line — argmax(|κ|) of the smoothed expert position
+        trace).  Report as earlier / later / at the same index.
+      "Apex": >
+        Shape term.  The position of the player's curve at expert's apex
+        index.  Report as closer to inside (tighter line) / closer to
+        outside (wider line) / aligned with the expert.
+      "Time to exit": >
+        Event term.  The index on the player's line where the curve
+        begins to unwind and open back out, compared to the expert's
+        exit index (green triangle on expert line — where |κ| drops back
+        below the noise threshold).  Report as earlier / later / at the
+        same index.
+      "Exit trajectory": >
+        Shape term.  The player's curve across the SPAN from expert's
+        apex index through and past expert's exit index — the entire
+        track-out half of the corner.  Report as bulges outside /
+        cuts inside / tracks the expert; flag if the player's line
+        runs wide of normal track-out.  Single-index verdicts at the
+        exit marker alone are NOT acceptable.
       "at expert's entry (idx N, phase k)": >
-        The 'entry' iloc of the k-th element of phase_indices.phases —
+        The 'entry' index of the k-th element of phase_indices.phases —
         arc onset where |κ| of the smoothed expert position trace first
         clears the noise threshold (turn-in).  k is 0 for a single-arc
         corner; chicanes / esses iterate all phases.  Substitute the
         actual idx N and arc index k.
       "at expert's apex (idx N, phase k)": >
-        The 'apex' iloc of the k-th element of phase_indices.phases —
+        The 'apex' index of the k-th element of phase_indices.phases —
         argmax(|κ|) within the arc on the smoothed expert position
-        trace (geometric apex; can differ from minimum-speed iloc on
+        trace (geometric apex; can differ from minimum-speed index on
         flat-speed sweepers and trail-braked corners).  Substitute the
         actual idx N and arc index k.
       "at expert's exit (idx N, phase k)": >
-        The 'exit' iloc of the k-th element of phase_indices.phases —
+        The 'exit' index of the k-th element of phase_indices.phases —
         arc offset where |κ| drops back below the noise threshold
         (track-out).  Substitute the actual idx N and arc index k.
     sentence_format_guide: >
-      One paragraph per phase k from phase_indices.phases (each phase has
-      its own entry / apex / exit), plus a final 'overall' line.  Subject
-      = player, object = expert.
-        "Through phase <k> at expert's <entry|apex|exit> (idx N), the
-         player's line is <closer to inside | closer to outside | aligned
-         with> the expert."
-        "Across all phases the largest divergence falls at <phase k>'s
-         <entry|apex|exit>."
-      Add one sentence per glossary event observed (off-track / kink /
-      cuts inside).  Single-phase corners use phase 0 only and skip the
-      "across all phases" line.
+      One paragraph per phase k from phase_indices.phases, plus a final
+      'overall' line.  Subject = player, object = expert.
+
+      Each paragraph has three beats (entry, apex, exit), and each beat
+      contributes two sentences: one event sentence, one shape sentence.
+      Event sentences anchor to a single index; shape sentences for entry
+      and exit anchor to a SPAN between markers.
+
+        Event:  "Player initiates the turn <earlier than | later than |
+                 at> expert's entry (idx N, phase k)."
+        Shape:  "Player's entry trajectory between expert's entry
+                 (idx N) and apex (idx M, phase k) <bulges outside |
+                 cuts inside | tracks> the expert."
+        Event:  "Player reaches apex <earlier than | later than | at>
+                 expert's apex (idx M, phase k)."
+        Shape:  "Player's apex at expert's apex (idx M, phase k) is
+                 <closer to inside | closer to outside | aligned with>
+                 the expert."
+        Event:  "Player times the exit <earlier than | later than | at>
+                 expert's exit (idx P, phase k)."
+        Shape:  "Player's exit trajectory between expert's apex (idx M)
+                 and exit (idx P, phase k) <bulges outside | cuts
+                 inside | tracks> the expert."
+
+      Final enumeration line — list EVERY span with a non-'tracks'
+      verdict and EVERY event-offset (earlier/later, not 'at') from the
+      per-phase paragraphs.  Skip only when no divergence at all was
+      observed across any phase.  Suggested skeleton (one clause per
+      finding, comma-separated):
+        "Divergences: phase k entry-to-apex bulges outside, phase k
+         apex-to-exit cuts inside, player reaches apex earlier than
+         expert at idx M phase k, …"
     common_description_errors:
       - "The Y-AXIS IS INVERTED — do not read up/down wrong when describing inside/outside of corners"
       - "Do NOT assume a direction of travel — verify from the Start (X) and End (O) markers"
       - "Do NOT describe the player line in isolation — for every phase state position RELATIVE to the expert line"
-      - "Do NOT skip the divergence callout — always name which phase has the largest gap"
+      - "Do NOT conflate event terms with shape terms — 'Initiate the turn / Reach apex / Time to exit' describe WHEN (index compared to expert), 'Entry / Apex / Exit trajectory' describe WHERE (line position relative to expert)"
+      - "Do NOT default to 'aligned' or 'tracks the expert' when the lines visibly diverge anywhere in the span. Markers are typically the most-aligned points; search the SPAN BETWEEN markers for bulges. Banned hedging phrases: 'closely following', 'no significant deviation', 'minimal', 'smooth and precise', 'does not significantly impact'."
+      - "Do NOT collapse the divergence callout to the single biggest gap — enumerate EVERY span with a visible difference and EVERY event-offset (earlier/later). 'The largest divergence is …' is wrong by construction; the goal is to find all differences, not rank them."
       - "Do NOT describe tiny pixel-level differences as meaningful — only report clear, visible separations"
       - "Phase indices come from the attachment, not from the graph itself — if no 'Phase Indices (expert-anchored)' attachment is present, describe shapes only"
 
@@ -716,12 +873,12 @@ graphs:
          dashed; confirm direction of travel from Start (X) → End (O).
       2. If the 'Phase Indices (expert-anchored)' attachment is present
          on this prompt, read its phase_indices.phases list — one element
-         per arc, each with entry / apex / exit ilocs.  Empty list ⇒
+         per arc, each with entry / apex / exit indices.  Empty list ⇒
          describe colours and positions without anchoring to phases.
       3. Walk the player's coloured line in travel order; record each
          colour section as (colour, start idx, end idx, phase k +
-         entry|apex|exit if it falls in or near a phase iloc).
-      4. For each phase k, at each of its entry / apex / exit ilocs,
+         entry|apex|exit if it falls in or near a phase index).
+      4. For each phase k, at each of its entry / apex / exit indices,
          record the player's colour AT that idx and where the player's
          curve sits relative to the expert's curve — closer to inside /
          closer to outside / aligned.
@@ -745,19 +902,19 @@ graphs:
         disambiguate coast from partial gas/brake overlap; use this exact
         phrasing rather than guessing.
       "at expert's entry (idx N, phase k)": >
-        The 'entry' iloc of the k-th element of phase_indices.phases —
+        The 'entry' index of the k-th element of phase_indices.phases —
         arc onset where |κ| of the smoothed expert position trace first
         clears the noise threshold (turn-in).  k is 0 for a single-arc
         corner; chicanes / esses iterate all phases.  Substitute the
         actual idx N and arc index k.
       "at expert's apex (idx N, phase k)": >
-        The 'apex' iloc of the k-th element of phase_indices.phases —
+        The 'apex' index of the k-th element of phase_indices.phases —
         argmax(|κ|) within the arc on the smoothed expert position
-        trace (geometric apex; can differ from minimum-speed iloc on
+        trace (geometric apex; can differ from minimum-speed index on
         flat-speed sweepers and trail-braked corners).  Substitute the
         actual idx N and arc index k.
       "at expert's exit (idx N, phase k)": >
-        The 'exit' iloc of the k-th element of phase_indices.phases —
+        The 'exit' index of the k-th element of phase_indices.phases —
         arc offset where |κ| drops back below the noise threshold
         (track-out).  Substitute the actual idx N and arc index k.
     sentence_format_guide: >
@@ -788,125 +945,139 @@ graphs:
       - "Do NOT describe what the colour pattern means for performance — describe colours, locations, and marker references only"
       - "Do NOT forget to describe the trajectory POSITION (closer to inside / closer to outside) in addition to the colours"
 
-  trajectory_balance:
-    title: "Oversteer/Understeer Balance Trajectory"
-    graph_type: trajectory_plot
+  trajectory_offset:
+    title: "Trajectory Offset (signed)"
+    graph_type: feature_plot
     axes:
-      x: "Track X position (spatial)"
-      y: "Track Y position (spatial — y-axis INVERTED)"
+      x: "Segment index (time progression left to right)"
+      y: "Lateral offset in metres — positive = player wider than expert (toward outside of corner); negative = tighter (toward inside)"
     visual_elements:
-      - "Player trajectory as a COLOURED line (colour = rear-vs-front slip angle balance)"
-      - "RED sections = rear slip angle dominant (rear tyres slipping more)"
-      - "BLUE sections = front slip angle dominant (front tyres slipping more)"
-      - "WHITE/NEUTRAL sections = balanced (similar front and rear slip)"
-      - "Colour bar: negative (blue) through 0 (neutral) to positive (red)"
-      - "Grey dashed line = Expert trajectory (reference position)"
-      - "Black X = Start, Black O = End"
-      - "IMPORTANT: understeer (blue) is amplified 2x in the colour mapping for visibility"
+      - "Single green line trace = signed lateral offset (player vs expert)"
+      - "Gray dashed horizontal line at y = 0 = expert reference (zero offset)"
+      - "Yellow circle on the offset trace = Entry (turn-in, expert-anchored)"
+      - "Red star on the offset trace = Apex (peak |κ| of expert line)"
+      - "Green triangle on the offset trace = Exit (track-out)"
+      - "Numbered apex labels (#1, #2, …) on chicanes / esses — one set of entry/apex/exit per arc"
     how_to_analyze: >
-      Observe (record positions and colours, do not summarise yet):
-      1. Verify who is who: player = coloured line, expert = grey dashed;
-         confirm direction of travel from Start (X) → End (O).
-      2. If the 'Phase Indices (expert-anchored)' attachment is present
-         on this prompt, read its phase_indices.phases list and use
-         each phase's entry / apex / exit ilocs to anchor every
-         "corner entry / mid-corner / corner exit" statement to a concrete
-         idx + phase k.  Empty list ⇒ describe colour sections without
-         anchoring.
-      3. Walk the player's coloured line in travel order; for each colour
-         section record (colour, start idx, end idx, saturation
-         vivid|faint, phase k + entry|mid-corner|exit if it falls within
-         a phase).
-      4. Note every abrupt colour change point (idx + colour pair).
-      5. For each phase k, at each of its entry / apex / exit ilocs,
-         record where the player's curve sits relative to the expert's
-         curve — closer to inside / closer to outside / aligned.
+      Observe (record values, do not summarise yet):
+      1. Read 'phase_indices.phases' from the 'Phase Indices (expert-
+         anchored)' attachment:
+           - Non-empty list: each element is one detected arc.  Run
+             steps 2–5 once per arc, in travel order (chicanes /
+             esses produce multiple arcs, one paragraph each).
+           - Empty list: the segment has no corner.  Report whether
+             the offset trace stays near zero or drifts away (peak
+             trajectory offset and its index) and stop.
 
-      Match (apply glossary tags by colour + phase):
-      6. For each red section, tag it
-         "rear-slip dominant at corner entry / mid-corner / corner exit".
-      7. For each blue section, tag it
-         "front-slip dominant at corner entry / mid-corner / corner exit"
-         AND remember to apply the "2x understeer amplification" note in
-         the summary.
-      8. For each white / near-neutral section, tag it "neutral balance".
-      9. For each abrupt change point, tag it "abrupt colour change".
+      For each phase k, walk the corner across FOUR sequential
+      span beats.  At each beat read the SLOPE of the trace
+      across the span and tag it with one of:
+        - "moving toward negative (tightening)" — slope trends
+          downward, offset becomes more negative (player line
+          tightening relative to expert).
+        - "moving toward positive (widening)" — slope trends
+          upward, offset becomes more positive (player line
+          widening relative to expert).
+        - "aligned" — trace stays within roughly ±0.5 m of zero
+          across the span (no meaningful deviation).
+        - "recovery" — trajectory offset trends back toward zero from
+          either side (player closing the lateral gap).
 
-      Compose:
-      10. Write one paragraph using sentence_format_guide — one clause per
-          colour section using the matched glossary tag plus saturation,
-          plus a "2x understeer amplification" note whenever any blue is
-          described, plus the position-at-marker line for each (phase k,
-          entry|apex|exit) combination.
+      2. APPROACH-TO-ENTRY span (segment start → expert's entry,
+         OR previous phase's exit → this phase's entry on
+         chicanes): tag the slope.  Record peak trajectory offset with its
+         index inside the span.
+
+      3. ENTRY-TO-APEX span (expert's entry → expert's apex):
+         tag the slope.  Record peak trajectory offset with its index.
+
+      4. APEX-TO-EXIT span (expert's apex → expert's exit): tag
+         the slope.  Record peak trajectory offset with its index.
+
+      5. POST-EXIT span (expert's exit → next phase's entry, OR
+         segment end on the LAST phase): tag the slope —
+         "recovery" applies when trajectory offset trends back toward zero
+         across this span.  Record peak trajectory offset with its index.
+
+      6. Divergence enumeration: list EVERY beat (approach-to-
+         entry, entry-to-apex, apex-to-exit, post-exit, for every
+         phase) whose tag is NOT "aligned".
+      7. Compose using sentence_format_guide.
     glossary:
-      "rear-slip dominant at corner entry": >
-        Section on the balance trajectory where the rear tyres slip more
-        than the fronts, falling within the corner-entry phase.  Appears
-        as red colouring.
-      "rear-slip dominant at mid-corner": >
-        Rear-slip-dominant section in the mid-corner phase.
-      "rear-slip dominant at corner exit": >
-        Rear-slip-dominant section in the corner-exit phase (after the apex).
-      "front-slip dominant at corner entry": >
-        Section on the balance trajectory where the front tyres slip more
-        than the rears, in the corner-entry phase.  Appears as blue
-        colouring; remember the 2x amplification.
-      "front-slip dominant at mid-corner": >
-        Front-slip-dominant section in the mid-corner phase.
-      "front-slip dominant at corner exit": >
-        Front-slip-dominant section in the corner-exit phase.
-      "neutral balance": >
-        White / near-neutral colouring on the balance trajectory — the
-        player's slip distribution is balanced (similar front and rear).
-      "abrupt colour change": >
-        A point on the balance trajectory where the colour shifts sharply
-        (e.g. blue to red, vivid to neutral) within a few indices.  Often
-        co-occurs with a push_limit spike.
-      "2x understeer amplification": >
-        Reminder that blue (front-slip) on the balance trajectory is
-        displayed at 2x intensity for visibility.  A given blue intensity
-        represents half the actual slip difference of the same red
-        intensity.
-      "at expert's entry (idx N, phase k)": >
-        The 'entry' iloc of the k-th element of phase_indices.phases —
+      "moving toward negative (tightening)": >
+        Tag for a span where the offset trace becomes more negative
+        (slope downward, trajectory offset growing below zero) — player's
+        line is tightening relative to the expert.
+      "moving toward positive (widening)": >
+        Tag for a span where the offset trace becomes more positive
+        (slope upward, trajectory offset growing above zero) — player's line
+        is widening relative to the expert.
+      "aligned": >
+        Tag for a span where the offset trace stays within roughly
+        ±0.5 m of zero — no meaningful lateral deviation from the
+        expert.
+      "recovery": >
+        Tag for a span where trajectory offset trends back toward zero from
+        either side (a positive value decreasing toward zero, or a
+        negative value increasing toward zero) — the player is
+        closing the lateral gap.  Most common on the post-exit
+        span; corresponds to the "merging back to expert line"
+        phrase (label RM7).
+      "wider than expert": >
+        Offset value above zero at a specific index — player's line
+        is to the OUTSIDE of the corner relative to the expert.
+      "tighter than expert": >
+        Offset value below zero at a specific index — player's line
+        is to the INSIDE of the corner relative to the expert.
+      "at expert's entry (index N, phase k)": >
+        The 'entry' index of the k-th element of phase_indices.phases —
         arc onset where |κ| of the smoothed expert position trace first
-        clears the noise threshold (turn-in).  k is 0 for a single-arc
-        corner; chicanes / esses iterate all phases.  Substitute the
-        actual idx N and arc index k.
-      "at expert's apex (idx N, phase k)": >
-        The 'apex' iloc of the k-th element of phase_indices.phases —
-        argmax(|κ|) within the arc on the smoothed expert position
-        trace (geometric apex; can differ from minimum-speed iloc on
-        flat-speed sweepers and trail-braked corners).  Substitute the
-        actual idx N and arc index k.
-      "at expert's exit (idx N, phase k)": >
-        The 'exit' iloc of the k-th element of phase_indices.phases —
+        clears the noise threshold (turn-in).
+      "at expert's apex (index N, phase k)": >
+        The 'apex' index of the k-th element of phase_indices.phases —
+        argmax(|κ|) within the arc.
+      "at expert's exit (index N, phase k)": >
+        The 'exit' index of the k-th element of phase_indices.phases —
         arc offset where |κ| drops back below the noise threshold
-        (track-out).  Substitute the actual idx N and arc index k.
+        (track-out).
     sentence_format_guide: >
-      One paragraph.  Subject = player's coloured trace.
+      One paragraph per phase k from phase_indices.phases.  Subject
+      = player.  Each paragraph has FOUR span beats in travel order
+      — approach-to-entry, entry-to-apex, apex-to-exit, post-exit.
+      Each beat picks ONE slope tag from
+      {moving toward negative (tightening), aligned, moving toward
+      positive (widening), recovery}:
 
-      Colour-section skeleton (one clause per section):
-        "Player: <glossary tag> (<vivid|faint>) idx <A>–<B>."
-      For every blue section ALWAYS append a "— 2x understeer amplification"
-      note in the same sentence or as a closing reminder.
+        Approach-to-entry: "Player's line is <tag> across approach-
+                            to-entry of phase k (index <S> →
+                            expert's entry (index <N>)) — peak
+                            <Z> m at index <I>."
+        Entry-to-apex:     "Player's line is <tag> across entry-
+                            to-apex of phase k (expert's entry
+                            (index <N>) → apex (index <M>)) —
+                            peak <Z> m at index <I>."
+        Apex-to-exit:      "Player's line is <tag> across apex-to-
+                            exit of phase k (expert's apex (index
+                            <M>) → exit (index <P>)) — peak <Z> m
+                            at index <I>."
+        Post-exit:         "Player's line is <tag> across post-
+                            exit of phase k (expert's exit (index
+                            <P>) → <next entry | segment end>
+                            (index <E>)) — peak <Z> m at index
+                            <I>."
 
-      Position-at-phase skeleton (one clause per (phase k, marker)):
-        "At expert's <entry|apex|exit> (idx N, phase k) the player's
-         curve is <closer to inside | closer to outside | aligned with>
-         the expert."
-
-      Example (single-phase corner, k = 0): "Player: rear-slip dominant
-      at corner entry (vivid) idx 50–82, transitioning to neutral balance
-      idx 82–95, then front-slip dominant at corner exit (faint) idx
-      95–end — 2x understeer amplification.  At expert's apex (idx 88,
-      phase 0) the player's curve is closer to outside than the expert."
+      Final enumeration line — list EVERY beat (approach-to-entry,
+      entry-to-apex, apex-to-exit, post-exit, every phase) whose
+      tag is NOT "aligned".  Skip only when every beat across all
+      phases is "aligned".
     common_description_errors:
-      - "Do NOT forget the 2x understeer amplification — always note it whenever describing blue sections"
-      - "Do NOT confuse entry vs exit — verify travel direction from Start/End markers before tagging corner phase"
-      - "Do NOT skip the corner-phase tag — every red and blue section MUST be labelled by phase"
-      - "Do NOT interpret the colours as good or bad — describe colours, corner phase, saturation, and trajectory position"
-      - "Do NOT skip describing neutral sections"
+      - "Do NOT default to 'aligned' when the trace clearly leaves the ±0.5 m band — exposing those deviations is the entire point of this graph"
+      - "Read the SIGN — positive = player wider, negative = tighter — do not invert"
+      - "Distinguish 'moving toward negative (tightening)' (offset growing more negative) from 'recovery' (trajectory offset shrinking toward zero from either side); a positive offset trending down toward zero is RECOVERY, not tightening"
+      - "Distinguish 'moving toward positive (widening)' (offset growing more positive) from 'recovery'; a negative offset trending up toward zero is RECOVERY, not widening"
+      - "For chicanes (multiple phases of opposite direction) the per-phase tagging convention holds — the underlying sign flip handles the direction switch, so positive still means wider in every phase"
+      - "Anchor every callout to expert's entry / apex / exit indices from the phase_indices attachment"
+      - "Do NOT interpret the offset as oversteer / understeer / over-limit — describe lateral offset only"
 
 # =============================================================================
 # Cross-graph guidelines
@@ -958,15 +1129,16 @@ cross_graph_guidelines:
     entry line is wider than the expert's."
 
   balance_and_push_limit: >
-    When the BALANCE trajectory and PUSH_LIMIT graph are both present:
-    describe whether any over-limit spike (identified by index range on
-    the push_limit graph) co-occurs with a red or blue colour section
-    on the balance trajectory.  The push_limit graph has no corner
-    phase — derive the phase from where the index range falls along the
-    balance trajectory's entry / mid-corner / exit progression.  Phrase
-    as "an over-limit spike across indices N–M co-occurs with a vivid
-    rear-slip dominant at corner entry section on the balance
-    trajectory" — report co-occurrence without interpreting it.
+    When the SLIP BALANCE and PUSH_LIMIT graphs are both present: both
+    are line plots indexed by segment index, so co-occurrence is a
+    direct overlap of index ranges.  For every over-limit spike
+    (identified by index range on the push_limit graph), check the
+    balance graph at the same index range and report whether it sits
+    above zero (oversteer / red), below zero (understeer / blue), or
+    crosses zero (balance flip).  Phrase as "the over-limit spike
+    across indices N–M co-occurs with an oversteer spike of peak X rad
+    on the balance graph at indices N′–M′" — report co-occurrence
+    without interpreting it.
 
   brake_and_throttle_overlap: >
     When both BRAKE and THROTTLE graphs are present: describe any index

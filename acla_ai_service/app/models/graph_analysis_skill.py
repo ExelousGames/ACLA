@@ -158,11 +158,11 @@ class GraphAnalysisSkill:
             "brake_and_speed":            {"required": {"brake", "speed"},                     "any_of": []},
             "throttle_and_speed":         {"required": {"throttle", "speed"},                  "any_of": []},
             "time_delta_and_features":    {"required": {"time_delta"},                         "any_of": [
-                {"brake", "throttle", "speed", "speed_delta", "push_limit"},
+                {"brake", "throttle", "speed", "speed_delta", "push_limit", "trajectory_balance"},
             ]},
             "trajectory_and_features":    {"required": set(),                                  "any_of": [
-                {"trajectory_detailed", "trajectory_gas_brake", "trajectory_balance"},
-                {"throttle", "brake", "speed", "speed_delta", "push_limit"},
+                {"trajectory_detailed", "trajectory_gas_brake", "trajectory_offset"},
+                {"throttle", "brake", "speed", "speed_delta", "push_limit", "trajectory_balance"},
             ]},
             "balance_and_push_limit":     {"required": {"trajectory_balance", "push_limit"},   "any_of": []},
             "brake_and_throttle_overlap": {"required": {"brake", "throttle"},                  "any_of": []},
@@ -185,7 +185,7 @@ class GraphAnalysisSkill:
 
         # Trajectory shape vocabulary if trajectory is present
         has_trajectory = graph_id_set & {
-            "trajectory_detailed", "trajectory_gas_brake", "trajectory_balance",
+            "trajectory_detailed", "trajectory_gas_brake", "trajectory_offset",
         }
         if has_trajectory and self.trajectory_shape_vocabulary:
             lines.append("#### Trajectory Shape Vocabulary")
