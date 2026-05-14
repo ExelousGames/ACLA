@@ -173,7 +173,10 @@ def _planner(state: AgentState) -> Dict[str, Any]:
     recursion. Otherwise it renders an overview, asks the VLM for a zoom
     decision, and emits plan_steps accordingly.
     """
-    from app.services.llm.annotation_agent_tools import generate_telemetry_graphs
+    from app.services.llm.annotation_agent_tools import (
+        build_graph,
+        render_graph_builds,
+    )
 
     parent_start = state.get("parent_start", 0)
     parent_end = state.get("parent_end", 0)
@@ -182,6 +185,17 @@ def _planner(state: AgentState) -> Dict[str, Any]:
     requested_graphs: List[str] = state.get("requested_graphs", []) or []
     requested_tools: List[str] = state.get("tools", []) or []
     depth = state.get("depth", 0)
+
+    # Constrained per-graph tables (parent agent's responsibility). Each
+    # entry is the full-df-length DataFrame of just the data that graph
+    # draws / consumes. Forwarded into every zoom step so children can
+    # only see (render + query) the data the picked graphs actually use.
+    graph_builds: Dict[str, Any] = {}
+    if df is not None:
+        for gid in requested_graphs:
+            table = build_graph(gid, df)
+            if table is not None and not table.empty:
+                graph_builds[gid] = table
 
     messages = list(state.get("messages", []))
 
@@ -227,17 +241,17 @@ def _planner(state: AgentState) -> Dict[str, Any]:
     if depth > MAX_RECURSIVE_ZOOM_DEPTH:
         return _no_zoom_plan(f"recursion depth {depth} exceeds zoom cap")
 
-    # Render overview for the VLM's zoom decision.
+    # Render overview for the VLM's zoom decision — straight from the
+    # constrained per-graph tables, not raw df.
     overview_images: List[bytes] = []
     overview_descriptions: List[str] = []
-    if df is not None:
-        for img, desc in generate_telemetry_graphs(
-            df, parent_start, parent_end, graph_ids=requested_graphs,
-        ):
-            overview_descriptions.append(desc)
-            buf = io.BytesIO()
-            img.save(buf, format="PNG")
-            overview_images.append(buf.getvalue())
+    for img, desc in render_graph_builds(
+        graph_builds, parent_start, parent_end,
+    ):
+        overview_descriptions.append(desc)
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        overview_images.append(buf.getvalue())
 
     if not overview_images:
         return _no_zoom_plan("no graph images could be rendered")
@@ -325,9 +339,15 @@ def _planner(state: AgentState) -> Dict[str, Any]:
         return _no_zoom_plan("VLM judged no zoom needed")
 
     # Emit one zoom step per requested sub-range. Each carries the planner's
-    # question + context; the zoom worker picks a query and runs it.
+    # question + context + the per-graph tables the parent built; the zoom
+    # worker picks a query and runs it on those tables only.
     plan_steps: List[Dict[str, Any]] = []
     for i, r in enumerate(zoom_ranges, start=1):
+        step_builds = {
+            gid: graph_builds[gid]
+            for gid in r["requested_graphs"]
+            if gid in graph_builds
+        }
         plan_steps.append({
             "step_id": i,
             "agent": "zoom",
@@ -338,6 +358,7 @@ def _planner(state: AgentState) -> Dict[str, Any]:
             "parent_end": r["end"],
             "requested_graphs": r["requested_graphs"],
             "tools": list(requested_tools),
+            "graph_builds": step_builds,
         })
 
     plan_attachment = PipelineAttachment(

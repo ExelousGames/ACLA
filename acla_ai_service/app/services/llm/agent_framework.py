@@ -88,6 +88,9 @@ class AgentState(TypedDict, total=False):
     # undeclared keys are stripped on child.invoke().
     requested_graphs: list
     tools: list
+    question: str
+    context: str
+    graph_builds: dict
 
     # Planner output
     plan: str

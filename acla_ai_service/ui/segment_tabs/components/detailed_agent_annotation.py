@@ -227,7 +227,10 @@ def render_agent_annotation(df, form_start, form_end, form_labels, session_id, s
                 # summary header (icon + node name + detail + duration).
                 # The active / streaming call stays expanded at the bottom.
                 # ----------------------------------------------------------
-                st.markdown("**Live VLM Output**")
+                # Header carries a live total-elapsed counter (wall-clock from
+                # analysis start) — refreshed on every _render_vlm_output().
+                header_area = st.empty()
+                analysis_start_time = time.time()
                 # Two separate placeholders so the streaming "active" block
                 # can be cleared independently of the completed expanders.
                 # Mixing st.expander widgets with bare st.markdown inside a
@@ -362,12 +365,20 @@ def render_agent_annotation(df, form_start, form_end, form_labels, session_id, s
                             f"{''.join(vlm_buffer)}"
                         )
 
+                def _render_header() -> None:
+                    """Refresh the 'Live VLM Output' header with total elapsed."""
+                    total_elapsed = time.time() - analysis_start_time
+                    header_area.markdown(
+                        f"**Live VLM Output** _(total {total_elapsed:.1f}s)_"
+                    )
+
                 def _render_vlm_output() -> None:
                     """Re-render both sections.
 
                     Completed steps → collapsed ``st.expander``
                     Active step    → shown open at the bottom (own placeholder)
                     """
+                    _render_header()
                     _render_completed()
                     _render_active()
 
@@ -411,6 +422,8 @@ def render_agent_annotation(df, form_start, form_end, form_labels, session_id, s
                     status_text.markdown(
                         f"**Status:** _{node_name}: {detail[:200]}_"
                     )
+
+                _render_header()
 
                 with st.spinner("Running sub-segment discovery pipeline…"):
                     result = run_annotation_pipeline(

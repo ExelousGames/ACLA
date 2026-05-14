@@ -196,11 +196,15 @@ def run_annotation_pipeline(
 
     def llm_generate(prompt: str) -> str:
         """Text-only call to the same server (no images, lower temperature)."""
+        if vlm_prompt_callback:
+            vlm_prompt_callback(prompt, get_active_stage())
         return vlm_service.generate(
             prompt,
             images=None,
-            max_tokens=64,
+            max_tokens=config.max_new_tokens,
             temperature=0.1,
+            stream_callback=vlm_stream_callback,
+            reasoning_callback=vlm_reasoning_callback,
         )
 
     set_eval_llm(vlm_generate, llm_generate)

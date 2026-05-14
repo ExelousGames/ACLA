@@ -33,6 +33,12 @@ the parent step's fields land directly in ``state``):
     state["context"]           optional — overview cue motivating it
     state["requested_graphs"]  list of graph ids to render
     state["parent_start"/_end] zoom sub-range bounds
+    state["graph_builds"]      required — {graph_id: DataFrame} built by
+                               the parent agent. Each table holds only the
+                               data that graph uses (drawn series +
+                               renderer-internal columns). Zoom renders /
+                               queries against these tables only — raw df
+                               is not available.
 
 Output (single attachment, leaf name ``answer``, kind=text):
     A prose paragraph answering the question, with ilocs / values cited
@@ -66,6 +72,29 @@ ZOOM_AGENT_NAME = "zoom"
 # Cap on the number of queries the planner may pick per zoom invocation —
 # prevents the VLM from going wild with redundant readings.
 MAX_QUERIES_PER_ZOOM = 4
+
+
+def _union_columns(graph_builds: Dict[str, Any]) -> List[str]:
+    """Stable de-duplicated union of every per-graph table's columns."""
+    seen: Dict[str, None] = {}
+    for table in graph_builds.values():
+        for col in getattr(table, "columns", []):
+            if col not in seen:
+                seen[col] = None
+    return list(seen.keys())
+
+
+def _build_query_table(graph_builds: Dict[str, Any]):
+    """Concat the per-graph tables column-wise, dropping duplicates, so the
+    query layer sees one DataFrame containing every queryable column."""
+    if not graph_builds:
+        return None
+    import pandas as pd
+    tables = list(graph_builds.values())
+    if len(tables) == 1:
+        return tables[0]
+    combined = pd.concat(tables, axis=1)
+    return combined.loc[:, ~combined.columns.duplicated()]
 
 
 def _call_vlm(prompt: str, image_bytes: List[bytes]) -> str:
@@ -151,7 +180,7 @@ def _planner(state: AgentState) -> Dict[str, Any]:
     classification call (the images are NOT propagated downstream).
     """
     from app.services.llm.annotation_agent_tools import (
-        generate_telemetry_graphs,
+        render_graph_builds,
         render_query_catalog_for_prompt,
     )
 
@@ -160,7 +189,7 @@ def _planner(state: AgentState) -> Dict[str, Any]:
     requested_graphs: List[str] = list(state.get("requested_graphs") or [])
     zoom_start = state.get("parent_start", 0)
     zoom_end = state.get("parent_end", 0)
-    df = state.get("df_ref")
+    graph_builds: Dict[str, Any] = state.get("graph_builds") or {}
 
     LOGGER.info(
         "zoom planner: range=[%s,%s] graphs=%s question=%r",
@@ -173,19 +202,19 @@ def _planner(state: AgentState) -> Dict[str, Any]:
             why="parent did not supply a question",
         )
 
-    if not requested_graphs or df is None:
+    if not graph_builds:
         return _unresolved_plan(
             question, context, zoom_start, zoom_end,
-            why="no graphs available to inspect",
+            why="parent did not supply graph_builds — no data available to query",
         )
 
     zoom_images: List[bytes] = []
     zoom_descriptions: List[str] = []
-    # Zoom range is inclusive on both ends — generate_telemetry_graphs uses
-    # an exclusive end internally, so add 1 to include iloc=zoom_end in the
-    # rendered image (matching the query-layer semantics below).
-    for img, desc in generate_telemetry_graphs(
-        df, zoom_start, zoom_end + 1, graph_ids=requested_graphs,
+    # Zoom range is inclusive on both ends — render_graph_builds slices
+    # tables with .iloc[start:end] (exclusive end), so add 1 to include
+    # iloc=zoom_end in the rendered image.
+    for img, desc in render_graph_builds(
+        graph_builds, zoom_start, zoom_end + 1,
     ):
         zoom_descriptions.append(desc)
         buf = io.BytesIO()
@@ -198,7 +227,10 @@ def _planner(state: AgentState) -> Dict[str, Any]:
             why="graph rendering produced no images",
         )
 
-    catalog_block = render_query_catalog_for_prompt()
+    # The VLM may only pick from columns present in the parent-supplied
+    # tables — its query menu reflects exactly what's queryable.
+    query_columns = list(_union_columns(graph_builds))
+    catalog_block = render_query_catalog_for_prompt(query_columns)
     prompt_lines = [
         "You are a telemetry-query selector. Your ONLY job is to pick the "
         "minimum set of queries that, together, answer the question from "
@@ -310,7 +342,7 @@ def _executor(state: AgentState, step: Dict[str, Any], registry) -> Dict[str, An
     """
     from app.services.llm.annotation_agent_tools import run_pipeline_query
 
-    df = state.get("df_ref")
+    graph_builds: Dict[str, Any] = state.get("graph_builds") or {}
     step_id = step.get("step_id", 1)
     rng = step.get("range") or [
         state.get("parent_start", 0), state.get("parent_end", 0),
@@ -326,11 +358,12 @@ def _executor(state: AgentState, step: Dict[str, Any], registry) -> Dict[str, An
     }
     error: Optional[str] = plan_error
     if query_id:
-        if df is None:
-            error = "df_ref missing in state"
+        query_table = _build_query_table(graph_builds)
+        if query_table is None:
+            error = "graph_builds missing in state — parent did not supply any queryable tables"
         else:
             payload, error = run_pipeline_query(
-                df, zoom_start, zoom_end, query_id, params,
+                query_table, zoom_start, zoom_end, query_id, params,
             )
 
     iloc = payload.get("iloc")
@@ -376,6 +409,8 @@ def _executor(state: AgentState, step: Dict[str, Any], registry) -> Dict[str, An
         result_line = f"{head}\n{sample_lines}"
     elif iloc is not None:
         result_line = f"iloc={iloc}, value={value}"
+    elif extra:
+        result_line = "no primary match — see diagnostics"
     else:
         result_line = f"no match — {error or 'unknown'}"
     if extra:
@@ -432,11 +467,15 @@ def _render_partials_for_prompt(results: List[Dict[str, Any]]) -> str:
 
         has_scalar = iloc is not None
         has_samples = isinstance(samples, list) and len(samples) > 0
-        if not has_scalar and not has_samples:
+        has_extras = isinstance(extra, dict) and bool(extra)
+        if not has_scalar and not has_samples and not has_extras:
             lines.append(f"  result: no match — {error or '(unspecified)'}")
         else:
             if has_scalar:
                 lines.append(f"  iloc={iloc}, value={value}")
+            elif not has_samples:
+                # Extras-only payload — diagnostic info instead of a primary match.
+                lines.append("  no primary match — diagnostic only")
             if has_samples:
                 for s in samples:
                     if not isinstance(s, dict):
@@ -446,7 +485,7 @@ def _render_partials_for_prompt(results: List[Dict[str, Any]]) -> str:
                     s_note = s.get("note")
                     tail = f" ({s_note})" if s_note else ""
                     lines.append(f"  - iloc={s_iloc}, value={s_val}{tail}")
-            if isinstance(extra, dict) and extra:
+            if has_extras:
                 extras_str = ", ".join(f"{k}={v!r}" for k, v in extra.items())
                 lines.append(f"  extra: {extras_str}")
         if error:
@@ -482,9 +521,11 @@ def _synthesizer(state: AgentState) -> Dict[str, Any]:
         (n for n in pool.keys() if n.startswith("partial.")),
         key=_step_id_of,
     )
+    partial_attachments: List[PipelineAttachment] = []
     results: List[Dict[str, Any]] = []
     for name in partial_names:
         att = pool[name]
+        partial_attachments.append(att)
         if isinstance(att.content, dict):
             results.append(att.content)
 
@@ -533,7 +574,7 @@ def _synthesizer(state: AgentState) -> Dict[str, Any]:
     prompt = "\n".join(prompt_lines)
 
     set_active_stage(ZOOM_AGENT_NAME, "synthesizer")
-    set_active_attachments([])
+    set_active_attachments(partial_attachments)
     prose = _call_llm(prompt).strip()
     if not prose:
         raise RuntimeError(
@@ -546,13 +587,6 @@ def _synthesizer(state: AgentState) -> Dict[str, Any]:
         kind="text",
         label=label,
         content=prose,
-    )
-
-    emit_step_event(
-        node_name=ZOOM_AGENT_NAME,
-        phase="synthesizer",
-        summary=prose,
-        attachments=[answer],
     )
 
     return {"attachment_pool": {answer.name: answer}}

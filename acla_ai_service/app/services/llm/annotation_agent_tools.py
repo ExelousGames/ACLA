@@ -3,14 +3,17 @@ Tool definitions for the annotation agent pipeline.
 
 Provides two tool categories that the agent nodes can invoke:
 
-1. **Statistical analysis** — numerical summaries of telemetry columns
-   (mean, min, max, std, deltas vs expert).
-2. **Graph generation** — telemetry visualizations rendered as PIL Images
-   (feature plots, trajectory plots) aligned with the GRAPH_DEFINITIONS
-   used by the human annotation workflow.
+1. **Graph generation** — per-graph DataFrame builders + matplotlib
+   renderers (feature plots, trajectory plots) aligned with the
+   ``AGENT_GRAPH_DEFINITIONS`` used by the human annotation workflow.
+2. **Deterministic queries** — the ``PIPELINE_QUERY_DEFINITIONS`` catalog
+   of structured math operations (threshold crossings, extrema, slopes,
+   onset ordering) the zoom executor runs against the graph tables to
+   extract exact ilocs / values for the synthesizer to cite.
 
-These tools mirror what a human annotator sees and allow the vision-capable
-LLM (VLM) to analyse the same visual evidence.
+Together they let the vision-capable LLM see the same visual evidence a
+human annotator sees while the executor produces verifiable numerical
+readings off the underlying DataFrame.
 """
 
 from __future__ import annotations
@@ -39,43 +42,36 @@ AGENT_GRAPH_DEFINITIONS: List[Dict[str, Any]] = [
     {
         "id": "throttle",
         "title": "Throttle Application - ",
-        "columns": ["expert_optimal_throttle", "Physics_gas"],
         "description": "Expert vs player throttle traces.",
     },
     {
         "id": "brake",
         "title": "Brake Application - ",
-        "columns": ["expert_optimal_brake", "Physics_brake"],
         "description": "Expert vs player brake traces.",
     },
     {
         "id": "time_delta",
         "title": "Time Difference to Expert",
-        "columns": ["expert_time_difference"],
         "description": "Instantaneous time delta vs expert.",
     },
     {
         "id": "speed_delta",
         "title": "Speed Difference (Expert - Player)",
-        "columns": ["speed_difference"],
         "description": "Speed difference between expert and player.",
     },
     {
         "id": "speed",
         "title": "Speed Trace: Expert vs Player",
-        "columns": ["expert_optimal_speed", "Physics_speed_kmh"],
         "description": "Expert vs player speed traces.",
     },
     {
         "id": "push_limit",
         "title": "Driver Push/Limit",
-        "columns": ["driver_push_to_limit"],
         "description": "Driver push-to-limit metric.",
     },
     {
         "id": "trajectory_detailed",
         "title": "Detailed Trajectory",
-        "columns": [],  # special: uses position columns
         "description": (
             "Close-up trajectory. Green = player, blue dashed = expert. "
             "Expert-anchored phase markers per detected arc: yellow circle "
@@ -87,7 +83,6 @@ AGENT_GRAPH_DEFINITIONS: List[Dict[str, Any]] = [
     {
         "id": "trajectory_gas_brake",
         "title": "Gas/Brake Trajectory",
-        "columns": [],  # special: uses position + Physics_gas / Physics_brake
         "description": (
             "Player trajectory coloured by throttle/brake balance "
             "(green = full gas, red = full brake, yellow = coasting). "
@@ -97,7 +92,6 @@ AGENT_GRAPH_DEFINITIONS: List[Dict[str, Any]] = [
     {
         "id": "trajectory_balance",
         "title": "Oversteer/Understeer Slip Balance",
-        "columns": [],  # special: uses slip angle columns directly
         "description": (
             "Line plot over segment index of (mean |rear slip| − mean |front slip|). "
             "Positive (red shading above zero) = oversteer (rear-slip dominant); "
@@ -108,7 +102,6 @@ AGENT_GRAPH_DEFINITIONS: List[Dict[str, Any]] = [
     {
         "id": "trajectory_offset",
         "title": "Trajectory Offset (signed)",
-        "columns": [],  # special: uses position columns + smoothed kinematics
         "description": (
             "Signed perpendicular offset between player and expert lines over "
             "segment index. Positive y = player wider than expert (toward "
@@ -119,168 +112,12 @@ AGENT_GRAPH_DEFINITIONS: List[Dict[str, Any]] = [
     {
         "id": "gear",
         "title": "Gear Selection: Expert vs Player",
-        "columns": ["expert_optimal_gear", "Physics_gear"],
         "description": "Expert vs player gear traces (integer steps).",
     },
 ]
 
 # ---------------------------------------------------------------------------
-# Telemetry column groups — map named group IDs to the DataFrame columns
-# and player-vs-expert deltas the planner can selectively request.
-# ---------------------------------------------------------------------------
-
-TELEMETRY_COLUMN_GROUPS: Dict[str, Dict[str, Any]] = {
-    "speed": {
-        "columns": [ "Physics_speed_kmh", "expert_optimal_speed"],
-        "deltas": [("Physics_speed_kmh", "expert_optimal_speed", "speed_delta")],
-        "description": "Driver speed traces and expert comparison.",
-    },
-    "throttle": {
-        "columns": ["Physics_gas", "expert_optimal_gas"],
-        "deltas": [("Physics_gas", "expert_optimal_gas", "throttle_delta")],
-        "description": "Driver throttle traces and expert comparison.",
-    },
-    "brake": {
-        "columns": ["Physics_brake", "expert_optimal_brake"],
-        "deltas": [("Physics_brake", "expert_optimal_brake", "brake_delta")],
-        "description": "Driver brake traces and expert comparison.",
-    },
-    "steering": {
-        "columns": ["steer_angle"],
-        "deltas": [],
-        "description": "Driver steering angle statistics.",
-    },
-    "push_limit": {
-        "columns": ["driver_push_to_limit"],
-        "deltas": [],
-        "description": "Driver push-to-limit metric.",
-    },
-    "slip_angles": {
-        "columns": [
-            "Physics_slip_angle_front_left",
-            "Physics_slip_angle_front_right",
-            "Physics_slip_angle_rear_left",
-            "Physics_slip_angle_rear_right",
-        ],
-        "deltas": [],
-        "description": "Driver tyre slip angles (front/rear). Used to derive oversteer/understeer balance.",
-    },
-}
-
-ALL_TELEMETRY_GROUP_IDS: List[str] = list(TELEMETRY_COLUMN_GROUPS.keys())
-
-# ---------------------------------------------------------------------------
-# Tool 1: Statistical summary
-# ---------------------------------------------------------------------------
-
-
-def get_telemetry_statistics(
-    df: pd.DataFrame,
-    start_index: int,
-    end_index: int,
-    session_id: str = "unknown",
-    stat_categories: Optional[List[str]] = None,
-) -> Dict[str, Any]:
-    """Return a structured dict with numerical telemetry statistics.
-
-    Parameters
-    ----------
-    stat_categories : list[str], optional
-        Subset of category IDs from ``TELEMETRY_COLUMN_GROUPS`` to compute.
-        ``None`` means compute all categories (backward-compatible).
-    """
-    segment_df = df.iloc[int(start_index): int(end_index)]
-
-    track_name = "unknown"
-    if "Static_track" in df.columns and not df.empty:
-        track_name = str(df["Static_track"].iloc[0])
-
-    # Resolve which categories to compute
-    if stat_categories:
-        selected = [c for c in stat_categories if c in TELEMETRY_COLUMN_GROUPS]
-    else:
-        selected = list(TELEMETRY_COLUMN_GROUPS.keys())
-
-    # Collect columns and deltas from selected categories
-    summary_cols: List[str] = []
-    delta_pairs: List[Tuple[str, str, str]] = []
-    for cat_id in selected:
-        cat = TELEMETRY_COLUMN_GROUPS[cat_id]
-        summary_cols.extend(cat["columns"])
-        delta_pairs.extend(cat["deltas"])
-
-    # Deduplicate while preserving order
-    seen_cols: set = set()
-    unique_cols: List[str] = []
-    for c in summary_cols:
-        if c not in seen_cols:
-            seen_cols.add(c)
-            unique_cols.append(c)
-
-    telemetry_summary: Dict[str, Dict[str, Any]] = {}
-    for col in unique_cols:
-        if col in segment_df.columns:
-            series = segment_df[col].dropna()
-            if len(series) > 0:
-                telemetry_summary[col] = {
-                    "mean": round(float(series.mean()), 2),
-                    "min": round(float(series.min()), 2),
-                    "max": round(float(series.max()), 2),
-                    "std": round(float(series.std()), 2),
-                }
-
-    feature_deltas: Dict[str, Any] = {}
-    for player_col, expert_col, name in delta_pairs:
-        if player_col in segment_df.columns and expert_col in segment_df.columns:
-            delta = segment_df[player_col] - segment_df[expert_col]
-            feature_deltas[name] = {
-                "mean": round(float(delta.mean()), 2),
-                "min": round(float(delta.min()), 2),
-                "max": round(float(delta.max()), 2),
-            }
-
-    return {
-        "session_id": session_id,
-        "track_name": track_name,
-        "start_index": start_index,
-        "end_index": end_index,
-        "segment_length": end_index - start_index,
-        "telemetry_summary": telemetry_summary,
-        "feature_deltas": feature_deltas,
-    }
-
-
-def format_statistics_as_text(stats: Dict[str, Any]) -> str:
-    """Render statistics dict as human-readable text for prompt injection."""
-    lines: list[str] = []
-    lines.append(
-        f"Session: {stats.get('session_id', '?')} | "
-        f"Track: {stats.get('track_name', '?')}"
-    )
-    lines.append(
-        f"Segment range: index {stats.get('start_index', '?')} → "
-        f"{stats.get('end_index', '?')} "
-        f"(length {stats.get('segment_length', '?')})"
-    )
-
-    telemetry = stats.get("telemetry_summary", {})
-    if telemetry:
-        lines.append("Key telemetry statistics:")
-        for col, col_stats in telemetry.items():
-            parts = [f"{k}={v}" for k, v in col_stats.items()]
-            lines.append(f"  {col}: {', '.join(parts)}")
-
-    features = stats.get("feature_deltas", {})
-    if features:
-        lines.append("Feature deltas (player vs expert):")
-        for feat, val in features.items():
-            lines.append(f"  {feat}: {val}")
-
-    return "\n".join(lines)
-
-
-# ---------------------------------------------------------------------------
-# Tool 2: Graph generation
+# Graph generation
 # ---------------------------------------------------------------------------
 
 
@@ -295,18 +132,16 @@ def _plot_to_image(fig) -> Image.Image:
 
 
 def _create_feature_plot(
-    df: pd.DataFrame,
-    columns: List[str],
+    table: pd.DataFrame,
     title: str,
 ) -> Optional[Image.Image]:
-    """Line plot for one or more telemetry columns over the segment index."""
-    valid_cols = [c for c in columns if c in df.columns]
-    if not valid_cols or df.empty:
+    """Line plot for every column in ``table`` — one labelled trace each."""
+    if table.empty or len(table.columns) == 0:
         return None
 
     fig, ax = plt.subplots(figsize=(10, 4))
-    for col in valid_cols:
-        ax.plot(df.index, df[col], label=col)
+    for col in table.columns:
+        ax.plot(table.index, table[col], label=col)
     ax.set_title(title)
     ax.set_xlabel("Index")
     ax.legend()
@@ -560,7 +395,7 @@ def compute_expert_phases(
         name="phase_indices",
         kind="structured",
         label="Phase Indices (expert-anchored)",
-        content={"phases": shifted_phases, "smoothing_window": int(window)},
+        content=_round_floats({"phases": shifted_phases, "smoothing_window": int(window)}),
     )
 
 
@@ -598,66 +433,10 @@ def get_pipeline_tool(tool_id: str) -> Optional[Dict[str, Any]]:
 # the query runs deterministic math — no pixel-reading.
 # ---------------------------------------------------------------------------
 
-# DataFrame columns the VLM is allowed to pick from. Listed explicitly so the
-# prompt menu stays scoped to the telemetry signals these queries make sense
-# on (e.g. exclude raw indices, timestamps, derived helper columns).
-QUERY_AVAILABLE_COLUMNS: List[str] = [
-    "Physics_gas",
-    "expert_optimal_gas",
-    "Physics_brake",
-    "expert_optimal_brake",
-    "Physics_speed_kmh",
-    "expert_optimal_speed",
-    "speed_difference",
-    "expert_time_difference",
-    "driver_push_to_limit",
-    "Physics_gear",
-    "expert_optimal_gear",
-    "steer_angle",
-    # Slip-angle inputs to the oversteer/understeer balance graph
-    # (balance = mean(|rear|) − mean(|front|)). The aggregate isn't a
-    # column — pick the raw front/rear slip-angle channels instead.
-    "Physics_slip_angle_front_left",
-    "Physics_slip_angle_front_right",
-    "Physics_slip_angle_rear_left",
-    "Physics_slip_angle_rear_right",
-]
-
-
 def _resolve_column(column: str, segment: pd.DataFrame) -> Optional[np.ndarray]:
     if not column or column not in segment.columns:
         return None
     return segment[column].to_numpy(dtype=float)
-
-
-def _query_find_threshold_crossing(
-    df: pd.DataFrame, start_index: int, end_index: int,
-    column: str, threshold: float, direction: str,
-) -> Optional[Dict[str, Any]]:
-    """First iloc in [start_index, end_index] where <column> crosses <threshold>.
-
-    The slice ``[start_index, end_index]`` is inclusive on BOTH ends —
-    ``end_index`` is reachable. ``direction='rising'`` matches
-    ``arr[i] < threshold <= arr[i+1]``; ``direction='falling'`` matches
-    ``arr[i] > threshold >= arr[i+1]``. Returns ``{iloc, value}`` for the
-    post-crossing sample, or ``None``.
-    """
-    segment = df.iloc[int(start_index): int(end_index) + 1]
-    arr = _resolve_column(column, segment)
-    if arr is None or len(arr) < 2:
-        return None
-    thr = float(threshold)
-    if direction == "rising":
-        mask = (arr[:-1] < thr) & (arr[1:] >= thr)
-    elif direction == "falling":
-        mask = (arr[:-1] > thr) & (arr[1:] <= thr)
-    else:
-        return None
-    idxs = np.where(mask)[0]
-    if len(idxs) == 0:
-        return None
-    local = int(idxs[0]) + 1
-    return {"iloc": int(start_index) + local, "value": float(arr[local])}
 
 
 def _query_find_extremum(
@@ -665,7 +444,7 @@ def _query_find_extremum(
     column: str, kind: str,
 ) -> Optional[Dict[str, Any]]:
     """iloc of the global min or max of <column> in the range."""
-    segment = df.iloc[int(start_index): int(end_index) + 1]
+    segment = df.loc[int(start_index): int(end_index)]
     arr = _resolve_column(column, segment)
     if arr is None or len(arr) == 0:
         return None
@@ -681,31 +460,6 @@ def _query_find_extremum(
     return {"iloc": int(start_index) + local, "value": float(finite[local])}
 
 
-def _query_find_zero_crossing(
-    df: pd.DataFrame, start_index: int, end_index: int,
-    column: str,
-) -> Optional[Dict[str, Any]]:
-    """iloc where <column> first changes sign.
-
-    Detects negative→non-negative and positive→non-positive transitions
-    (so an exact-zero sample on the crossing still counts). When a pair
-    straddles zero, returns whichever sample is closer to zero.
-    """
-    segment = df.iloc[int(start_index): int(end_index) + 1]
-    arr = _resolve_column(column, segment)
-    if arr is None or len(arr) < 2:
-        return None
-    a = arr[:-1]
-    b = arr[1:]
-    mask = ((a < 0) & (b >= 0)) | ((a > 0) & (b <= 0))
-    idxs = np.where(mask)[0]
-    if len(idxs) == 0:
-        return None
-    i0 = int(idxs[0])
-    local = i0 + (1 if abs(arr[i0 + 1]) < abs(arr[i0]) else 0)
-    return {"iloc": int(start_index) + local, "value": float(arr[local])}
-
-
 def _query_find_first_match(
     df: pd.DataFrame, start_index: int, end_index: int,
     column: str, op: str, value: float,
@@ -716,7 +470,7 @@ def _query_find_first_match(
     for discrete-valued columns (gear, integer states) where threshold
     crossings don't make sense.
     """
-    segment = df.iloc[int(start_index): int(end_index) + 1]
+    segment = df.loc[int(start_index): int(end_index)]
     arr = _resolve_column(column, segment)
     if arr is None or len(arr) == 0:
         return None
@@ -753,7 +507,7 @@ def _query_read_values_at_indices(
     """
     if not isinstance(indices, (list, tuple)) or not indices:
         return None
-    segment = df.iloc[int(start_index): int(end_index) + 1]
+    segment = df.loc[int(start_index): int(end_index)]
     arr = _resolve_column(column, segment)
     if arr is None:
         return None
@@ -790,7 +544,7 @@ def _query_compute_slope(
     of the interval. Returns ``None`` when either anchor is out of range,
     the column is missing, or the two ilocs coincide.
     """
-    segment = df.iloc[int(start_index): int(end_index) + 1]
+    segment = df.loc[int(start_index): int(end_index)]
     arr = _resolve_column(column, segment)
     if arr is None or len(arr) == 0:
         return None
@@ -826,72 +580,80 @@ def _query_compute_slope(
     }
 
 
-def _query_compare_crossings(
+def _query_find_threshold_crossing(
     df: pd.DataFrame, start_index: int, end_index: int,
-    series: List[Dict[str, Any]],
+    columns: List[str], threshold: float, smoothing_window: int,
 ) -> Optional[Dict[str, Any]]:
-    """Order first threshold crossings across multiple signals.
+    """Rank <columns> by which first crosses <threshold> on a denoised signal.
 
-    Each entry in <series> is ``{column, threshold, direction}`` (same
-    semantics as ``find_threshold_crossing``). Finds the first crossing for
-    each in the zoom range, ranks them by iloc, and reports the winner.
-    ``iloc``/``value`` reflect the first crosser; ``samples`` lists every
-    requested series with ``rank`` (1=first, None=never crossed) plus
-    ``column``, ``threshold``, ``direction``, ``iloc``, ``value`` and an
-    optional ``note``. ``extra.order`` is the columns in onset order;
-    ``extra.delta_iloc`` is the gap (in samples) between first and second
-    crossings (``None`` if fewer than two crossed). Returns ``None`` only
-    when <series> is malformed (fewer than two entries).
+    Robust-statistics pre-processing: each column is passed through a
+    centered rolling-median filter of width <smoothing_window>. The
+    median filter provably suppresses any spike/dip narrower than
+    ``floor(smoothing_window / 2)`` samples and — unlike a moving
+    average or low-pass filter — does not blur the transition edge or
+    shift the detected crossing in time. Edge samples use a shrinking
+    one-sided window (``min_periods=1``) instead of dropping out.
+
+    Direction is inferred per-column from the first valid cleaned
+    sample's side of <threshold>: below → first rising crossing;
+    above → first falling crossing; exactly on it → no crossing
+    reported. The iloc is the first cleaned sample on the new side.
+
+    Returns ``samples`` — one entry per column, shape
+    ``{ranking, column, iloc}`` — with ``ranking`` 1=first, 2=second,
+    …, ``None``=never crossed (and ``iloc`` also ``None``). Returns
+    ``None`` when fewer than two columns are supplied, <threshold> is
+    non-numeric, or <smoothing_window> is < 1.
     """
-    if not isinstance(series, list) or len(series) < 2:
+    if not isinstance(columns, list) or len(columns) < 2:
         return None
-    segment = df.iloc[int(start_index): int(end_index) + 1]
+    try:
+        thr = float(threshold)
+    except (TypeError, ValueError):
+        return None
+    try:
+        window = int(smoothing_window)
+    except (TypeError, ValueError):
+        return None
+    if window < 1:
+        return None
+    segment = df.loc[int(start_index): int(end_index)]
 
     crossings: List[Dict[str, Any]] = []
-    for spec in series:
-        if not isinstance(spec, dict):
-            continue
-        column = spec.get("column")
-        try:
-            threshold = float(spec.get("threshold"))
-        except (TypeError, ValueError):
-            crossings.append({
-                "column": column, "threshold": spec.get("threshold"),
-                "direction": spec.get("direction"),
-                "iloc": None, "value": None,
-                "note": "threshold not a number",
-            })
-            continue
-        direction = spec.get("direction")
+    for column in columns:
+        entry: Dict[str, Any] = {"column": column, "iloc": None}
         arr = _resolve_column(column, segment)
-        entry: Dict[str, Any] = {
-            "column": column, "threshold": threshold,
-            "direction": direction, "iloc": None, "value": None,
-        }
         if arr is None or len(arr) < 2:
-            entry["note"] = "column missing or insufficient samples"
             crossings.append(entry)
             continue
-        if direction == "rising":
-            mask = (arr[:-1] < threshold) & (arr[1:] >= threshold)
-        elif direction == "falling":
-            mask = (arr[:-1] > threshold) & (arr[1:] <= threshold)
+        clean = (
+            pd.Series(arr)
+            .rolling(window=window, center=True, min_periods=1)
+            .median()
+            .to_numpy()
+        )
+        finite_mask = np.isfinite(clean)
+        if not finite_mask.any():
+            crossings.append(entry)
+            continue
+        first_local = int(np.argmax(finite_mask))
+        first_value = float(clean[first_local])
+        if first_value < thr:
+            on_new_side = clean >= thr
+        elif first_value > thr:
+            on_new_side = clean <= thr
         else:
-            entry["note"] = "direction must be rising | falling"
             crossings.append(entry)
             continue
-        idxs = np.where(mask)[0]
-        if len(idxs) == 0:
-            entry["note"] = "no crossing in range"
-            crossings.append(entry)
-            continue
-        local = int(idxs[0]) + 1
-        entry["iloc"] = int(start_index) + local
-        entry["value"] = float(arr[local])
-        crossings.append(entry)
 
-    if not crossings:
-        return None
+        tail = on_new_side[first_local + 1:]
+        hits = np.where(tail)[0]
+        if len(hits) == 0:
+            crossings.append(entry)
+            continue
+        found_local = int(hits[0]) + first_local + 1
+        entry["iloc"] = int(start_index) + found_local
+        crossings.append(entry)
 
     with_iloc = sorted(
         (c for c in crossings if c["iloc"] is not None),
@@ -899,56 +661,25 @@ def _query_compare_crossings(
     )
     without = [c for c in crossings if c["iloc"] is None]
     samples: List[Dict[str, Any]] = []
-    for rank, c in enumerate(with_iloc, start=1):
-        samples.append({**c, "rank": rank})
+    for ranking, c in enumerate(with_iloc, start=1):
+        samples.append({"ranking": ranking, "column": c["column"], "iloc": c["iloc"]})
     for c in without:
-        samples.append({**c, "rank": None})
+        samples.append({"ranking": None, "column": c["column"], "iloc": None})
 
-    if not with_iloc:
-        return {
-            "iloc": None, "value": None, "samples": samples,
-            "extra": {"order": [], "delta_iloc": None, "first_column": None},
-        }
-    first = with_iloc[0]
-    delta_iloc = (
-        int(with_iloc[1]["iloc"] - first["iloc"]) if len(with_iloc) >= 2 else None
-    )
     return {
-        "iloc": first["iloc"],
-        "value": first["value"],
+        "iloc": None,
+        "value": None,
         "samples": samples,
-        "extra": {
-            "order": [c["column"] for c in with_iloc],
-            "delta_iloc": delta_iloc,
-            "first_column": first["column"],
-        },
+        "extra": {"smoothing_window": window},
     }
 
 
 PIPELINE_QUERY_DEFINITIONS: List[Dict[str, Any]] = [
     {
-        "id": "find_threshold_crossing",
-        "label": "First threshold crossing",
-        "description": (
-            "First iloc in the zoom range where <column> crosses <threshold> "
-            "in <direction>. Use for transitions like brake release "
-            "(Physics_brake, ~0.05, falling) or full-throttle onset "
-            "(Physics_gas, ~0.95, rising)."
-        ),
-        "params_schema": {
-            "column": "DataFrame column name",
-            "threshold": "float",
-            "direction": "rising | falling",
-        },
-        "callable": _query_find_threshold_crossing,
-    },
-    {
         "id": "find_extremum",
         "label": "Global min/max",
         "description": (
-            "iloc of the global min or max of <column> within the zoom range. "
-            "Use for apex-by-speed (Physics_speed_kmh, min), peak speed "
-            "(Physics_speed_kmh, max), max steering input (steer_angle, max)."
+            "iloc of the global min or max of <column> within the zoom range."
         ),
         "params_schema": {
             "column": "DataFrame column name",
@@ -957,21 +688,10 @@ PIPELINE_QUERY_DEFINITIONS: List[Dict[str, Any]] = [
         "callable": _query_find_extremum,
     },
     {
-        "id": "find_zero_crossing",
-        "label": "First sign change",
-        "description": (
-            "First iloc where <column> changes sign. Use for "
-            "balance/steering reversals or apex-by-lateral-g."
-        ),
-        "params_schema": {"column": "DataFrame column name"},
-        "callable": _query_find_zero_crossing,
-    },
-    {
         "id": "find_first_match",
         "label": "First comparison match",
         "description": (
-            "First iloc where <column> <op> <value> holds. Use for "
-            "discrete states like gear shifts (Physics_gear, eq, 4)."
+            "First iloc where <column> <op> <value> holds."
         ),
         "params_schema": {
             "column": "DataFrame column name",
@@ -984,10 +704,9 @@ PIPELINE_QUERY_DEFINITIONS: List[Dict[str, Any]] = [
         "id": "read_values_at_indices",
         "label": "Read values at specific ilocs",
         "description": (
-            "Read <column> at each parent-frame iloc in <indices>. Use "
-            "when the question names specific points (e.g. 'time delta at "
-            "iloc 90 and 100'). Returns one entry per index in `samples`; "
-            "out-of-range or NaN samples come back with value=null."
+            "Read <column> at each parent-frame iloc in <indices>. Returns "
+            "one entry per index in `samples`; out-of-range or NaN samples "
+            "come back with value=null."
         ),
         "params_schema": {
             "column": "DataFrame column name",
@@ -1000,10 +719,9 @@ PIPELINE_QUERY_DEFINITIONS: List[Dict[str, Any]] = [
         "label": "Slope between two ilocs",
         "description": (
             "Slope of <column> from <iloc_a> to <iloc_b>, computed as "
-            "(value_b - value_a) / (iloc_b - iloc_a). Use for 'how steep "
-            "is the brake release between A and B' or 'slope of throttle "
-            "ramp'. Returns the slope as `value`, both anchor points in "
-            "`samples`, and the raw deltas in `extra`."
+            "(value_b - value_a) / (iloc_b - iloc_a). Returns the slope as "
+            "`value`, both anchor points in `samples`, and the raw deltas "
+            "in `extra`."
         ),
         "params_schema": {
             "column": "DataFrame column name",
@@ -1013,24 +731,29 @@ PIPELINE_QUERY_DEFINITIONS: List[Dict[str, Any]] = [
         "callable": _query_compute_slope,
     },
     {
-        "id": "compare_crossings",
-        "label": "Order onsets across signals",
+        "id": "find_threshold_crossing",
+        "label": "Threshold crossing (ranked)",
         "description": (
-            "Find the first threshold crossing for each of N signals and "
-            "rank them by iloc. Use this whenever the question is 'which "
-            "rises/falls first' (e.g. player vs expert brake release, gas "
-            "vs brake onset) — do NOT try to read onset ordering off the "
-            "image. `samples` lists every series with `rank` (1=first, "
-            "null=never crossed); `extra.first_column` names the winner; "
-            "`extra.delta_iloc` is the gap between first and second."
+            "Rank <columns> by which first crosses <threshold> after a "
+            "centered rolling-median filter of width <smoothing_window> "
+            "denoises each signal — eliminates spikes/dips shorter than "
+            "floor(smoothing_window/2) samples without shifting the "
+            "transition edge. Per-column direction is inferred from the "
+            "first cleaned sample's side of the threshold. Returns "
+            "`samples` as `{ranking, column, iloc}` (ranking 1=first, "
+            "null=never crossed)."
         ),
         "params_schema": {
-            "series": (
-                "list of 2+ entries, each "
-                "{column, threshold: float, direction: rising|falling}"
+            "columns": "list of 2+ DataFrame column names",
+            "threshold": "float",
+            "smoothing_window": (
+                "int ≥ 1 — rolling-median width (use an odd value; "
+                "5 cleans 2-sample spikes, 11 cleans 5-sample ones; "
+                "raise for noisier signals, lower it to preserve fast "
+                "transitions)"
             ),
         },
-        "callable": _query_compare_crossings,
+        "callable": _query_find_threshold_crossing,
     },
 ]
 
@@ -1043,8 +766,13 @@ def get_pipeline_query(query_id: str) -> Optional[Dict[str, Any]]:
     )
 
 
-def render_query_catalog_for_prompt() -> str:
-    """Render the query catalog + column menu as a markdown block."""
+def render_query_catalog_for_prompt(columns: List[str]) -> str:
+    """Render the query catalog + column menu as a markdown block.
+
+    ``columns`` is the list of column names the VLM is allowed to pick from
+    — supplied by the caller (zoom passes its graph-table columns so the
+    menu is scoped to the data the parent agent constrained for this step).
+    """
     lines: List[str] = ["**Available queries:**"]
     for q in PIPELINE_QUERY_DEFINITIONS:
         lines.append(f"- `{q['id']}` — {q['description']}")
@@ -1053,9 +781,29 @@ def render_query_catalog_for_prompt() -> str:
     lines.append("")
     lines.append(
         "**Available columns:** "
-        + ", ".join(f"`{c}`" for c in QUERY_AVAILABLE_COLUMNS)
+        + (", ".join(f"`{c}`" for c in columns) if columns else "(none)")
     )
     return "\n".join(lines)
+
+
+def _round_floats(obj: Any, ndigits: int = 2) -> Any:
+    """Recursively round floats in a query payload to ``ndigits``.
+
+    Ints (ilocs, ranks, gear values) and non-finite floats pass through
+    untouched. Applied at the dispatch boundary so every query exposes
+    consistently formatted numbers regardless of how the callable produces them.
+    """
+    if isinstance(obj, float):
+        if not np.isfinite(obj):
+            return obj
+        return round(obj, ndigits)
+    if isinstance(obj, dict):
+        return {k: _round_floats(v, ndigits) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_round_floats(v, ndigits) for v in obj]
+    if isinstance(obj, tuple):
+        return tuple(_round_floats(v, ndigits) for v in obj)
+    return obj
 
 
 def run_pipeline_query(
@@ -1092,57 +840,53 @@ def run_pipeline_query(
     if raw is None:
         col = accepted.get("column")
         col_msg = ""
-        if col is not None:
-            if col not in QUERY_AVAILABLE_COLUMNS:
-                col_msg = (
-                    f" — column '{col}' is not in the catalog; valid: "
-                    + ", ".join(QUERY_AVAILABLE_COLUMNS)
-                )
-            elif col not in df.columns:
-                col_msg = (
-                    f" — column '{col}' is missing from the DataFrame"
-                )
+        if col is not None and col not in df.columns:
+            col_msg = (
+                f" — column '{col}' is not in the graph table; valid: "
+                + ", ".join(df.columns)
+            )
         return base, (
             f"query '{query_id}' returned no data (likely column mismatch, "
             f"out-of-range indices, or NaN values)" + col_msg
         )
     if not isinstance(raw, dict):
         return base, f"query '{query_id}' returned non-dict result: {type(raw).__name__}"
-    return {**base, **raw}, None
+    return _round_floats({**base, **raw}), None
 
 
-def _create_gas_brake_trajectory_plot(
-    df: pd.DataFrame,
-    track_config: Dict[str, str],
-) -> Optional[Image.Image]:
-    """Trajectory coloured by gas−brake balance (green = gas, red = brake)."""
-    px_col = track_config.get("player_x")
-    py_col = track_config.get("player_y")
+def _create_gas_brake_trajectory_plot(table: pd.DataFrame) -> Optional[Image.Image]:
+    """Trajectory coloured by gas−brake balance (green = gas, red = brake).
+
+    Consumes the parent-built table containing player/expert position
+    columns + the pre-computed ``gas_brake_signal`` (= Physics_gas −
+    Physics_brake).
+    """
+    track = _resolve_track_config(table)
+    px_col = track.get("player_x")
+    py_col = track.get("player_y")
     if not px_col or not py_col:
         return None
-    if px_col not in df.columns or py_col not in df.columns:
+    if px_col not in table.columns or py_col not in table.columns:
         return None
-    if len(df) < 2:
+    if len(table) < 2:
         return None
 
-    x = df[px_col].values.astype(float)
-    y = df[py_col].values.astype(float)
+    x = table[px_col].values.astype(float)
+    y = table[py_col].values.astype(float)
 
-    has_gas = "Physics_gas" in df.columns and "Physics_brake" in df.columns
-    values = (
-        (df["Physics_gas"] - df["Physics_brake"]).values.astype(float)
-        if has_gas
-        else np.ones(len(df))
-    )
+    if "gas_brake_signal" in table.columns:
+        values = table["gas_brake_signal"].values.astype(float)
+    else:
+        values = np.ones(len(table))
 
     fig, ax = plt.subplots(figsize=(8, 8))
 
     # Expert trajectory (reference line)
-    ex_col = track_config.get("expert_x")
-    ey_col = track_config.get("expert_y")
-    if ex_col and ey_col and ex_col in df.columns and ey_col in df.columns:
+    ex_col = track.get("expert_x")
+    ey_col = track.get("expert_y")
+    if ex_col and ey_col and ex_col in table.columns and ey_col in table.columns:
         ax.plot(
-            df[ex_col], df[ey_col],
+            table[ex_col], table[ey_col],
             color="steelblue", linewidth=1.5, linestyle="--",
             label="Expert", zorder=1,
         )
@@ -1168,31 +912,22 @@ def _create_gas_brake_trajectory_plot(
     return _plot_to_image(fig)
 
 
-def _create_balance_line_plot(df: pd.DataFrame) -> Optional[Image.Image]:
+def _create_balance_line_plot(table: pd.DataFrame) -> Optional[Image.Image]:
     """Line plot of oversteer/understeer slip balance over segment index.
 
-    Balance = mean(|rear slip|) − mean(|front slip|), in radians.
-    Positive → rear slipping more → oversteer (red shading above zero).
-    Negative → front slipping more → understeer (blue shading below zero).
-    No amplification — the y-axis carries the magnitude directly.
+    Reads the pre-computed ``slip_balance`` column from the parent-built
+    table (mean(|rear|) − mean(|front|), in radians). Positive → rear
+    slipping more → oversteer (red shading above zero). Negative → front
+    slipping more → understeer (blue shading below zero).
     """
-    rear_l = "Physics_slip_angle_rear_left"
-    rear_r = "Physics_slip_angle_rear_right"
-    front_l = "Physics_slip_angle_front_left"
-    front_r = "Physics_slip_angle_front_right"
-    if not all(c in df.columns for c in (rear_l, rear_r, front_l, front_r)):
-        return None
-    if len(df) < 2:
+    if "slip_balance" not in table.columns or len(table) < 2:
         return None
 
-    balance = (
-        (df[rear_l].abs() + df[rear_r].abs()) / 2.0
-        - (df[front_l].abs() + df[front_r].abs()) / 2.0
-    ).astype(float)
+    balance = table["slip_balance"].astype(float)
 
     fig, ax = plt.subplots(figsize=(10, 4))
 
-    idx = df.index
+    idx = table.index
     ax.plot(idx, balance, color="black", linewidth=1.2, label="Slip balance (rear − front)")
     ax.fill_between(
         idx, balance.values, 0.0,
@@ -1215,59 +950,53 @@ def _create_balance_line_plot(df: pd.DataFrame) -> Optional[Image.Image]:
     return _plot_to_image(fig)
 
 
-def _create_trajectory_plot(
-    df: pd.DataFrame,
-    track_config: Dict[str, str],
-) -> Optional[Image.Image]:
+def _create_trajectory_plot(table: pd.DataFrame) -> Optional[Image.Image]:
     """Detailed trajectory plot — player + expert lines, start/end markers,
     plus expert-anchored entry / apex / exit markers per detected arc.
 
-    Phase markers are drawn on the **expert** line — phases are expert-
-    anchored per project convention (the player can stop or drive
-    erratically mid-corner). Marker ilocs come from the same
-    ``_detect_expert_phases`` helper that powers the ``compute_expert_phases``
-    tool, so the image is consistent with the structured attachment.
-    Chicanes / esses show numbered apex labels (#1, #2, …); single-arc
-    corners show no number.
+    Consumes the parent-built table with player/expert position columns;
+    phase detection runs on the slice in front of us so the markers fit
+    the rendered range.
     """
-    px_col = track_config.get("player_x")
-    py_col = track_config.get("player_y")
+    track = _resolve_track_config(table)
+    px_col = track.get("player_x")
+    py_col = track.get("player_y")
     if not px_col or not py_col:
         return None
-    if px_col not in df.columns or py_col not in df.columns:
+    if px_col not in table.columns or py_col not in table.columns:
         return None
-    if df.empty:
+    if table.empty:
         return None
 
     fig, ax = plt.subplots(figsize=(8, 8))
 
     # Player trajectory
-    ax.plot(df[px_col], df[py_col], label="Player", color="green", linewidth=2)
+    ax.plot(table[px_col], table[py_col], label="Player", color="green", linewidth=2)
 
     # Expert trajectory
-    ex_col = track_config.get("expert_x")
-    ey_col = track_config.get("expert_y")
-    if ex_col and ey_col and ex_col in df.columns and ey_col in df.columns:
+    ex_col = track.get("expert_x")
+    ey_col = track.get("expert_y")
+    if ex_col and ey_col and ex_col in table.columns and ey_col in table.columns:
         ax.plot(
-            df[ex_col], df[ey_col],
+            table[ex_col], table[ey_col],
             label="Expert", color="blue", linewidth=1.5, linestyle="--",
         )
 
     # Mark start / end
     ax.scatter(
-        df[px_col].iloc[0], df[py_col].iloc[0],
+        table[px_col].iloc[0], table[py_col].iloc[0],
         marker="x", color="black", s=80, zorder=5, label="Start",
     )
     ax.scatter(
-        df[px_col].iloc[-1], df[py_col].iloc[-1],
+        table[px_col].iloc[-1], table[py_col].iloc[-1],
         marker="o", color="black", s=80, zorder=5, label="End",
     )
 
     # Phase markers (expert-anchored) — entry / apex / exit per detected arc.
-    phases, _ = _detect_expert_phases(df)
-    if phases and ex_col and ey_col and ex_col in df.columns and ey_col in df.columns:
-        ex_arr = df[ex_col].to_numpy()
-        ey_arr = df[ey_col].to_numpy()
+    phases, _ = _detect_expert_phases(table)
+    if phases and ex_col and ey_col and ex_col in table.columns and ey_col in table.columns:
+        ex_arr = table[ex_col].to_numpy()
+        ey_arr = table[ey_col].to_numpy()
         for k, ph in enumerate(phases):
             entry_i, apex_i, exit_i = ph["entry"], ph["apex"], ph["exit"]
             # Legend-label only the first arc's markers.
@@ -1305,76 +1034,30 @@ def _create_trajectory_plot(
     return _plot_to_image(fig)
 
 
-def _create_trajectory_offset_plot(
-    df: pd.DataFrame,
-    track_config: Dict[str, str],
-) -> Optional[Image.Image]:
+def _create_trajectory_offset_plot(table: pd.DataFrame) -> Optional[Image.Image]:
     """Trajectory offset plot — signed perpendicular distance between the
     player's position and the expert's path, plotted over segment index.
 
-    Y-axis sign: positive = player is wider than expert (toward outside of
-    corner); negative = tighter (toward inside). Sign flip uses the local
-    expert curvature κ — on left-handers (κ > 0) inside is to the left, on
-    right-handers (κ < 0) inside is to the right; multiplying the raw
-    signed cross-track by ``-sign(κ)`` makes positive consistently mean
-    "outside / wider" regardless of corner handedness. On near-straight
-    samples (κ ≈ 0) the multiplier collapses to ±1 keeping the raw
-    cross-track sign (left = positive of expert direction-of-travel).
-
-    Phase markers (entry / apex / exit) are placed on the offset trace at
-    the same ilocs as the ``trajectory_detailed`` plot, using the same
-    colours so the VLM transfers its existing marker vocabulary.
+    Reads the pre-computed ``trajectory_offset`` column from the parent-built
+    table. Phase markers (entry / apex / exit) come from
+    ``_detect_expert_phases`` run on the table's expert position columns so
+    they line up with the rendered range. Positive y = player wider than
+    expert (toward outside of corner); negative y = tighter (toward inside).
     """
-    px_col = track_config.get("player_x")
-    py_col = track_config.get("player_y")
-    ex_col = track_config.get("expert_x")
-    ey_col = track_config.get("expert_y")
-    if not (px_col and py_col and ex_col and ey_col):
-        return None
-    if any(c not in df.columns for c in (px_col, py_col, ex_col, ey_col)):
-        return None
-    if df.empty:
+    if "trajectory_offset" not in table.columns or table.empty:
         return None
 
-    kin = _smoothed_expert_kinematics(df)
-    if kin is None:
-        return None
-    _x_s, _y_s, dx, dy, kappa, _window = kin
+    offset = table["trajectory_offset"].to_numpy(dtype=float)
 
-    # Unit tangent of the smoothed expert path
-    tangent_norm = np.sqrt(dx * dx + dy * dy)
-    tangent_norm = np.where(tangent_norm > 1e-9, tangent_norm, 1.0)
-    tx = dx / tangent_norm
-    ty = dy / tangent_norm
-
-    # Offset vector at each iloc — raw player and expert sample positions
-    px = df[px_col].to_numpy(dtype=float)
-    py = df[py_col].to_numpy(dtype=float)
-    ex = df[ex_col].to_numpy(dtype=float)
-    ey = df[ey_col].to_numpy(dtype=float)
-    ox = px - ex
-    oy = py - ey
-
-    # Signed cross-track (z-component of T × O): + = player left of expert dir.
-    cross = tx * oy - ty * ox
-
-    # Flip so + = wider (outside of corner). On straights (κ ≈ 0) keep the
-    # raw cross-track sign instead of zeroing the offset.
-    sign_flip = -np.sign(kappa)
-    sign_flip = np.where(sign_flip == 0, 1.0, sign_flip)
-    offset = cross * sign_flip
-
-    # X-axis = df.index (the dataframe's internal index, matching the
-    # other feature plots so brake/throttle/offset cross-reference cleanly).
-    # Phase ilocs from _detect_expert_phases are 0-based relative to the
-    # segment, so convert via df.index[iloc] when placing markers.
-    x_axis = df.index.to_numpy()
+    # X-axis = table.index (matching the other feature plots so
+    # brake/throttle/offset cross-reference cleanly).
+    x_axis = table.index.to_numpy()
 
     fig, ax = plt.subplots(figsize=(10, 4))
     ax.axhline(0.0, color="gray", linestyle="--", linewidth=1, label="Expert (zero offset)")
     ax.plot(x_axis, offset, color="green", linewidth=2, label="Player offset")
 
-    phases, _ = _detect_expert_phases(df)
+    phases, _ = _detect_expert_phases(table)
     for k, ph in enumerate(phases):
         entry_i, apex_i, exit_i = ph["entry"], ph["apex"], ph["exit"]
         entry_x, apex_x, exit_x = x_axis[entry_i], x_axis[apex_i], x_axis[exit_i]
@@ -1424,28 +1107,214 @@ def _resolve_track_config(df: pd.DataFrame) -> Dict[str, str]:
     return tc
 
 
+# ---------------------------------------------------------------------------
+# Graph data builders — one per graph id. Each takes raw df and returns a
+# DataFrame whose columns are exactly the data series that graph uses
+# (drawn lines + per-row inputs renderers consume internally, e.g. position
+# columns used for phase marker placement). The parent agent calls these to
+# build the constrained ``graph_table`` it hands children; children query
+# / render against the table only.
+# ---------------------------------------------------------------------------
+
+
+def _project_columns(df: pd.DataFrame, cols: List[str]) -> Optional[pd.DataFrame]:
+    if any(c not in df.columns for c in cols):
+        return None
+    return df.loc[:, cols].copy()
+
+
+def _build_throttle(df: pd.DataFrame) -> Optional[pd.DataFrame]:
+    return _project_columns(df, ["expert_optimal_throttle", "Physics_gas"])
+
+
+def _build_brake(df: pd.DataFrame) -> Optional[pd.DataFrame]:
+    return _project_columns(df, ["expert_optimal_brake", "Physics_brake"])
+
+
+def _build_time_delta(df: pd.DataFrame) -> Optional[pd.DataFrame]:
+    return _project_columns(df, ["expert_time_difference"])
+
+
+def _build_speed_delta(df: pd.DataFrame) -> Optional[pd.DataFrame]:
+    return _project_columns(df, ["speed_difference"])
+
+
+def _build_speed(df: pd.DataFrame) -> Optional[pd.DataFrame]:
+    return _project_columns(df, ["expert_optimal_speed", "Physics_speed_kmh"])
+
+
+def _build_push_limit(df: pd.DataFrame) -> Optional[pd.DataFrame]:
+    return _project_columns(df, ["driver_push_to_limit"])
+
+
+def _build_gear(df: pd.DataFrame) -> Optional[pd.DataFrame]:
+    return _project_columns(df, ["expert_optimal_gear", "Physics_gear"])
+
+
+def _build_trajectory_balance(df: pd.DataFrame) -> Optional[pd.DataFrame]:
+    """Compute the single drawn series (mean(|rear|) − mean(|front|))."""
+    raw = (
+        "Physics_slip_angle_front_left",
+        "Physics_slip_angle_front_right",
+        "Physics_slip_angle_rear_left",
+        "Physics_slip_angle_rear_right",
+    )
+    if any(c not in df.columns for c in raw):
+        return None
+    fl, fr, rl, rr = raw
+    balance = (
+        (df[rl].abs() + df[rr].abs()) / 2.0
+        - (df[fl].abs() + df[fr].abs()) / 2.0
+    ).astype(float)
+    return pd.DataFrame({"slip_balance": balance}, index=df.index)
+
+
+def _build_trajectory_detailed(df: pd.DataFrame) -> Optional[pd.DataFrame]:
+    """Player + expert position traces (renderer derives phase markers from them)."""
+    track = _resolve_track_config(df)
+    cols = [
+        track[k] for k in ("player_x", "player_y", "expert_x", "expert_y")
+        if track.get(k)
+    ]
+    if not cols:
+        return None
+    return _project_columns(df, cols)
+
+
+def _build_trajectory_gas_brake(df: pd.DataFrame) -> Optional[pd.DataFrame]:
+    """Player + expert position traces plus the colouring signal (gas − brake)."""
+    track = _resolve_track_config(df)
+    pos_cols = [
+        track[k] for k in ("player_x", "player_y", "expert_x", "expert_y")
+        if track.get(k)
+    ]
+    if not pos_cols:
+        return None
+    if "Physics_gas" not in df.columns or "Physics_brake" not in df.columns:
+        return None
+    if any(c not in df.columns for c in pos_cols):
+        return None
+    out = df.loc[:, pos_cols].copy()
+    out["gas_brake_signal"] = (df["Physics_gas"] - df["Physics_brake"]).astype(float)
+    return out
+
+
+def _build_trajectory_offset(df: pd.DataFrame) -> Optional[pd.DataFrame]:
+    """The signed offset line + expert positions (for phase marker placement)."""
+    track = _resolve_track_config(df)
+    if not all(track.get(k) for k in ("player_x", "player_y", "expert_x", "expert_y")):
+        return None
+    px_col, py_col = track["player_x"], track["player_y"]
+    ex_col, ey_col = track["expert_x"], track["expert_y"]
+    if any(c not in df.columns for c in (px_col, py_col, ex_col, ey_col)):
+        return None
+
+    kin = _smoothed_expert_kinematics(df)
+    if kin is None:
+        return None
+    _x_s, _y_s, dx, dy, kappa, _w = kin
+
+    tangent_norm = np.sqrt(dx * dx + dy * dy)
+    tangent_norm = np.where(tangent_norm > 1e-9, tangent_norm, 1.0)
+    tx = dx / tangent_norm
+    ty = dy / tangent_norm
+
+    px = df[px_col].to_numpy(dtype=float)
+    py = df[py_col].to_numpy(dtype=float)
+    ex = df[ex_col].to_numpy(dtype=float)
+    ey = df[ey_col].to_numpy(dtype=float)
+    ox = px - ex
+    oy = py - ey
+
+    cross = tx * oy - ty * ox
+    sign_flip = -np.sign(kappa)
+    sign_flip = np.where(sign_flip == 0, 1.0, sign_flip)
+    offset = cross * sign_flip
+
+    # Expert positions stay in the table so the renderer's phase detection
+    # has the kinematic inputs it needs after the parent's projection.
+    out = df.loc[:, [ex_col, ey_col]].copy()
+    out["trajectory_offset"] = offset.astype(float)
+    return out
+
+
+_GRAPH_BUILDERS = {
+    "throttle":             _build_throttle,
+    "brake":                _build_brake,
+    "time_delta":           _build_time_delta,
+    "speed_delta":          _build_speed_delta,
+    "speed":                _build_speed,
+    "push_limit":           _build_push_limit,
+    "gear":                 _build_gear,
+    "trajectory_balance":   _build_trajectory_balance,
+    "trajectory_detailed":  _build_trajectory_detailed,
+    "trajectory_gas_brake": _build_trajectory_gas_brake,
+    "trajectory_offset":    _build_trajectory_offset,
+}
+
+
+_GRAPH_RENDERERS = {
+    "trajectory_detailed":  _create_trajectory_plot,
+    "trajectory_gas_brake": _create_gas_brake_trajectory_plot,
+    "trajectory_balance":   _create_balance_line_plot,
+    "trajectory_offset":    _create_trajectory_offset_plot,
+}
+
+
+def build_graph(graph_id: str, df: pd.DataFrame) -> Optional[pd.DataFrame]:
+    """Build one graph's data table from raw df. Returns ``None`` when the
+    raw inputs the graph needs aren't present."""
+    builder = _GRAPH_BUILDERS.get(graph_id)
+    if builder is None:
+        return None
+    return builder(df)
+
+
+def _render_graph_table(graph_id: str, table: pd.DataFrame, title: str) -> Optional[Image.Image]:
+    renderer = _GRAPH_RENDERERS.get(graph_id)
+    if renderer is not None:
+        return renderer(table)
+    return _create_feature_plot(table, title)
+
+
+def render_graph_builds(
+    graph_builds: Dict[str, pd.DataFrame],
+    start_index: int,
+    end_index: int,
+) -> List[Tuple[Image.Image, str]]:
+    """Render the constrained-table form of ``generate_telemetry_graphs``.
+
+    ``graph_builds`` maps graph id → its full-range data table (as produced
+    by ``build_graph`` at the parent agent). Each table is sliced to
+    ``[start_index, end_index)`` (Python-slice end-exclusive, matching
+    ``generate_telemetry_graphs``) before being handed to its renderer.
+    """
+    if not graph_builds:
+        return []
+    desc_by_id = {d["id"]: (d["title"], d["description"]) for d in AGENT_GRAPH_DEFINITIONS}
+    results: List[Tuple[Image.Image, str]] = []
+    for gid, table in graph_builds.items():
+        sliced = table.iloc[int(start_index): int(end_index)]
+        if sliced.empty:
+            continue
+        title, desc = desc_by_id.get(gid, (gid, ""))
+        img = _render_graph_table(gid, sliced, title)
+        if img is not None:
+            results.append((img, f"{title}: {desc}"))
+    return results
+
+
 def generate_telemetry_graphs(
     df: pd.DataFrame,
     start_index: int,
     end_index: int,
     graph_ids: Optional[List[str]] = None,
 ) -> List[Tuple[Image.Image, str]]:
-    """Generate telemetry graphs for the given segment.
+    """Build + render graphs straight from raw df.
 
-    Parameters
-    ----------
-    df : pd.DataFrame
-        Full session telemetry.
-    start_index, end_index : int
-        Segment boundaries (iloc-based).
-    graph_ids : list[str], optional
-        Subset of graph IDs to generate. ``None`` means all available.
-
-    Returns
-    -------
-    list of (PIL.Image, description)
-        Each entry is a rendered graph image paired with its textual
-        description (for use in the VLM prompt).
+    Convenience wrapper for callers (e.g. the describe_graphs planner) that
+    have raw df in hand and want one-shot build+render. Returns
+    ``(PIL.Image, description)`` pairs.
     """
     segment_df = df.iloc[int(start_index): int(end_index)]
     if segment_df.empty:
@@ -1455,27 +1324,13 @@ def generate_telemetry_graphs(
     if graph_ids:
         defs = [d for d in defs if d["id"] in graph_ids]
 
-    track_config = _resolve_track_config(segment_df)
     results: List[Tuple[Image.Image, str]] = []
-
     for gdef in defs:
         gid = gdef["id"]
-        title = gdef["title"]
-        desc = gdef["description"]
-        cols = gdef.get("columns", [])
-
-        if gid == "trajectory_detailed":
-            img = _create_trajectory_plot(segment_df, track_config)
-        elif gid == "trajectory_gas_brake":
-            img = _create_gas_brake_trajectory_plot(segment_df, track_config)
-        elif gid == "trajectory_balance":
-            img = _create_balance_line_plot(segment_df)
-        elif gid == "trajectory_offset":
-            img = _create_trajectory_offset_plot(segment_df, track_config)
-        else:
-            img = _create_feature_plot(segment_df, cols, title)
-
+        table = build_graph(gid, segment_df)
+        if table is None or table.empty:
+            continue
+        img = _render_graph_table(gid, table, gdef["title"])
         if img is not None:
-            results.append((img, f"{title}: {desc}"))
-
+            results.append((img, f"{gdef['title']}: {gdef['description']}"))
     return results
