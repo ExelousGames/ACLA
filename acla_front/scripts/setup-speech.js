@@ -87,8 +87,6 @@ function checkAndInstallSpeechDeps() {
         }
 
         console.log('   ✓ Improved accuracy and reliability');
-        console.log('');
-        console.log('Please restart your Electron app to use the enhanced features.');
 
     } catch (error) {
         console.error('❌ Setup failed:', error.message);
