@@ -4,13 +4,14 @@ Streamlit UI component for the LangGraph multi-agent sub-segment discovery pipel
 Renders below the analysis section in the annotation manager and lets users
 run the full annotation cycle on the currently selected parent segment:
 
-    planner → steps_data_fetcher → step_describer (repeated per plan step)
-        → label_verifier → proposal_synthesizer → evaluator
+    planner → step_solver (dispatches each step to its declared solver
+              agent — currently `describe_graphs`, repeated per plan step)
+        → label_verifier → proposal_synthesizer
 
 The VLM receives rendered graph images at each step, replicating the visual
-evidence a human annotator would use. On evaluator pass the discovered
-sub-segment is ready for review;
-on fail the pipeline retries from the planner up to a configurable limit.
+evidence a human annotator would use. Each LLM-producing node runs its own
+evaluator suite internally before writing to state — there is no separate
+evaluator node or retry loop.
 """
 
 import io
@@ -52,9 +53,11 @@ def render_agent_annotation(df, form_start, form_end, form_labels, session_id, s
     """
     with st.expander("🔍 VLM Sub-Segment Discovery"):
         st.markdown(
-            "Run a **Planner → Tool Executor → Step Solver → Evaluator** cycle "
-            "using the **Vision Language Model** "
-            "to discover a new sub-segment within this parent segment."
+            "Run a **Planner → Step Solver (per step) → Label Verifier → "
+            "Proposal Synthesizer** cycle using the **Vision Language Model** "
+            "to discover a new sub-segment within this parent segment. "
+            "The planner picks a solver agent for each step; today the only "
+            "solver is `describe_graphs`."
         )
 
         # --- Pipeline settings ---
@@ -244,24 +247,52 @@ def render_agent_annotation(df, form_start, form_end, form_labels, session_id, s
 
                 _NODE_ICONS = {
                     "planner": "🧠",
-                    "steps_data_fetcher": "📊",
-                    "step_describer": "🔍",
+                    "step_solver": "🛠️",
+                    "describe_graphs": "🔍",
+                    "zoom": "🔬",
                     "label_verifier": "✅",
                     "proposal_synthesizer": "📝",
                 }
+
+                _ATTACHMENT_ICONS = {
+                    "text": "📎",
+                    "structured": "📋",
+                    "image_set": "🖼️",
+                }
+
+                def _render_attachments(meta: dict) -> None:
+                    """Show a one-line chip row of attachments fed to this VLM call."""
+                    atts = meta.get("attachments") or []
+                    if not atts:
+                        st.caption(
+                            "_📎 (no upstream attachments — built from raw run inputs)_"
+                        )
+                        return
+                    chips: list[str] = []
+                    for att in atts:
+                        icon = _ATTACHMENT_ICONS.get(att.get("kind", ""), "📎")
+                        label = att.get("label") or att.get("name", "?")
+                        count = att.get("count")
+                        chip = f"{icon} {label}"
+                        if count is not None:
+                            chip = f"{chip} ({count})"
+                        chips.append(chip)
+                    st.caption(" · ".join(chips))
 
                 def _format_header(meta: dict, duration: float | None = None) -> str:
                     """Build a section header like '🧠 Planner (1/2) — main (3.2s)'."""
                     node = meta.get("node_name") or "Processing"
                     icon = _NODE_ICONS.get(node, "●")
                     title = node.replace("_", " ").title()
+                    graphs = meta.get("graphs") or []
+                    graph_tag = f" [{', '.join(graphs)}]" if graphs else ""
                     iteration = meta.get("iteration")
                     total = meta.get("total")
                     iter_tag = f" ({iteration}/{total})" if iteration and total else ""
                     phase = meta.get("phase") or ""
                     phase_tag = f" — {phase}" if phase else ""
                     dur_tag = f"  ({duration:.1f}s)" if duration else ""
-                    return f"{icon} {title}{iter_tag}{phase_tag}{dur_tag}"
+                    return f"{icon} {title}{graph_tag}{iter_tag}{phase_tag}{dur_tag}"
 
                 def _finalize_active_section() -> None:
                     """Move the active VLM section to completed_sections."""
@@ -289,14 +320,19 @@ def render_agent_annotation(df, form_start, form_end, form_labels, session_id, s
                         for s in completed_sections:
                             header = _format_header(s["meta"], s.get("duration", 0))
                             with st.expander(header, expanded=False):
+                                _render_attachments(s["meta"])
+                                has_response = bool(s.get("text"))
                                 st.markdown(
-                                    f"**Prompt:**\n```\n{s['prompt']}\n```"
+                                    "**Prompt:**" if has_response else "**Summary:**"
                                 )
+                                with st.container(border=True):
+                                    st.markdown(s["prompt"])
                                 if s.get("reasoning"):
                                     st.markdown(
                                         f"**💭 Thinking:**\n\n{s['reasoning']}"
                                     )
-                                st.markdown(f"**Response:**\n\n{s['text']}")
+                                if has_response:
+                                    st.markdown(f"**Response:**\n\n{s['text']}")
 
                 def _render_active() -> None:
                     """Re-render the live streaming section, or clear it."""
@@ -312,9 +348,10 @@ def render_agent_annotation(df, form_start, form_end, form_labels, session_id, s
                             f"**{_format_header(active_meta)}** "
                             f"_{elapsed:.0f}s …_"
                         )
-                        st.markdown(
-                            f"*Prompt:*\n```\n{active_prompt[0]}\n```"
-                        )
+                        _render_attachments(active_meta)
+                        st.markdown("*Prompt:*")
+                        with st.container(border=True):
+                            st.markdown(active_prompt[0])
                         if reasoning_buffer:
                             st.markdown(
                                 f"*💭 Thinking (streaming…)*\n\n"
@@ -353,6 +390,20 @@ def render_agent_annotation(df, form_start, form_end, form_labels, session_id, s
                     reasoning_buffer.append(chunk)
                     _render_vlm_output()
 
+                def on_step_event(summary: str, stage: dict) -> None:
+                    # Non-VLM event (e.g. zoom rendering). Finalize any
+                    # in-flight active section, then append a response-less
+                    # completed section directly.
+                    _finalize_active_section()
+                    completed_sections.append({
+                        "meta": dict(stage),
+                        "prompt": summary,
+                        "reasoning": "",
+                        "text": "",
+                        "duration": 0,
+                    })
+                    _render_vlm_output()
+
                 def on_progress(node_name: str, detail: str) -> None:
                     # Rough progress: each completed VLM section nudges the bar.
                     pct = min((len(completed_sections) + 1) / 12, 0.99)
@@ -374,6 +425,7 @@ def render_agent_annotation(df, form_start, form_end, form_labels, session_id, s
                         vlm_stream_callback=on_vlm_stream,
                         vlm_prompt_callback=on_vlm_prompt,
                         vlm_reasoning_callback=on_vlm_reasoning,
+                        step_event_callback=on_step_event,
                     )
 
                 # Finalise any still-active call and force a clean re-render
@@ -428,7 +480,7 @@ def render_agent_annotation(df, form_start, form_end, form_labels, session_id, s
                                     if img.width == 0 or img.height == 0:
                                         st.warning(f"Graph {idx + 1}: image has zero dimensions and cannot be displayed.")
                                     else:
-                                        st.image(img, use_container_width=True)
+                                        st.image(img, width='stretch')
                                 except Exception as e:
                                     st.error(f"Graph {idx + 1}: failed to load image — {e}")
 

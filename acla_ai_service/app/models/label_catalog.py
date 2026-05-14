@@ -41,7 +41,7 @@ class LabelEntry:
 
     __slots__ = (
         "id", "name", "type", "description", "annotation_guideline",
-        "parent", "children", "exclusive_with", "match_phrases",
+        "parent", "children", "exclusive_with",
     )
 
     def __init__(self, label_id: str, raw: Dict[str, Any]) -> None:
@@ -53,7 +53,6 @@ class LabelEntry:
         self.parent: Optional[str] = raw.get("parent")
         self.children: List[str] = raw.get("children") or []
         self.exclusive_with: List[str] = raw.get("exclusive_with") or []
-        self.match_phrases: List[str] = raw.get("match_phrases") or []
 
 
 # ---------------------------------------------------------------------------

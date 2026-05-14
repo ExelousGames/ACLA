@@ -6,7 +6,7 @@ each telemetry graph type.  The VLM's only job is to produce detailed, precise
 visual descriptions — it does NOT diagnose, label, or interpret.  Downstream
 pipeline nodes use these descriptions to make decisions.
 
-Used by the ``step_describer`` node to inject graph-specific description
+Used by the ``describe_graphs`` solver to inject graph-specific description
 checklists into the VLM prompt when the current step includes graph images.
 
 Usage::
@@ -38,25 +38,55 @@ _skill_instance: Optional["GraphAnalysisSkill"] = None
 # ---------------------------------------------------------------------------
 
 class GraphSkillEntry:
-    """Description checklist and vocabulary for one graph type."""
+    """One graph's YAML record (raw dict + its id)."""
 
-    __slots__ = (
-        "id", "title", "graph_type", "axes", "visual_elements",
-        "what_to_describe", "description_vocabulary",
-        "comparative_vocabulary",
-        "common_description_errors",
-    )
+    __slots__ = ("id", "raw")
 
     def __init__(self, graph_id: str, raw: Dict[str, Any]) -> None:
         self.id: str = graph_id
-        self.title: str = raw.get("title", graph_id)
-        self.graph_type: str = raw.get("graph_type", "unknown")
-        self.axes: Dict[str, str] = raw.get("axes", {})
-        self.visual_elements: List[str] = raw.get("visual_elements", [])
-        self.what_to_describe: str = (raw.get("what_to_describe") or "").strip()
-        self.description_vocabulary: Dict[str, str] = raw.get("description_vocabulary", {})
-        self.comparative_vocabulary: List[str] = raw.get("comparative_vocabulary", []) or []
-        self.common_description_errors: List[str] = raw.get("common_description_errors", [])
+        self.raw: Dict[str, Any] = raw
+
+    @property
+    def title(self) -> str:
+        return self.raw.get("title", self.id)
+
+
+# ---------------------------------------------------------------------------
+# Procedural section renderer
+# ---------------------------------------------------------------------------
+#
+# Walks a YAML key → value pair and emits prompt lines without any
+# per-key special casing.  String → indented block, list → bullets,
+# dict → "- key: value" pairs.  Multi-line strings (YAML `>` with blank
+# lines) keep their internal line breaks so paragraph structure survives.
+
+def _render_section(
+    key: str, value: Any, indent: str = "  ",
+) -> List[str]:
+    if not value:
+        return []
+    header = key.replace("_", " ") + ":"
+    out: List[str] = [header]
+
+    if isinstance(value, str):
+        for ln in value.rstrip("\n").split("\n"):
+            out.append(f"{indent}{ln}" if ln else "")
+    elif isinstance(value, list):
+        for item in value:
+            out.append(f"{indent}- {item}")
+    elif isinstance(value, dict):
+        for k, v in value.items():
+            v_str = "" if v is None else str(v).rstrip("\n")
+            v_lines = v_str.split("\n")
+            first = v_lines[0]
+            out.append(f"{indent}- {k}: {first}" if first else f"{indent}- {k}:")
+            cont_indent = indent + "    "
+            for cont in v_lines[1:]:
+                out.append(f"{cont_indent}{cont}" if cont else "")
+    else:
+        out.append(f"{indent}{value}")
+
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -76,17 +106,6 @@ class GraphAnalysisSkill:
         self.cross_graph_guidelines = cross_graph_guidelines
         self.trajectory_shape_vocabulary = trajectory_shape_vocabulary
 
-    # -- single graph -------------------------------------------------------
-
-    def get_graph(self, graph_id: str) -> Optional[GraphSkillEntry]:
-        """Return the skill entry for *graph_id*, or ``None``."""
-        return self._entries.get(graph_id)
-
-    def get_description_checklist(self, graph_id: str) -> Optional[str]:
-        """Return the what_to_describe checklist for *graph_id*, or ``None``."""
-        entry = self._entries.get(graph_id)
-        return entry.what_to_describe if entry else None
-
     # -- bulk queries -------------------------------------------------------
 
     @property
@@ -102,101 +121,74 @@ class GraphAnalysisSkill:
     def build_graph_prompt(self, graph_ids: List[str]) -> str:
         """Build a VLM prompt section for describing the given graphs.
 
-        Returns a multi-section text block containing:
-        - Per-graph description checklists, axes, visual elements, vocabulary
-        - Relevant cross-graph description guidelines
-        - Trajectory shape vocabulary (if trajectory graph present)
+        Walks each graph's YAML record in declaration order and renders
+        every section with the same procedural formatter — no per-key
+        special casing.  Followed by gated cross-graph guidelines and the
+        trajectory shape vocabulary.
         """
         entries = self.get_entries_for_graphs(graph_ids)
         if not entries:
             return ""
 
         lines: List[str] = [
-            "=== Graph Description Skill — How to Describe These Graphs ===",
+            "#### Graph Description Skill — How to Describe These Graphs",
             "",
         ]
 
         for entry in entries:
-            lines.append(f"--- {entry.title} (id: {entry.id}) ---")
-            lines.append(f"Graph type: {entry.graph_type}")
-
-            # Axes
-            if entry.axes:
-                lines.append("Axes:")
-                for axis_name, axis_desc in entry.axes.items():
-                    lines.append(f"  {axis_name}: {axis_desc}")
-
-            # Visual elements
-            if entry.visual_elements:
-                lines.append("Visual elements to identify:")
-                for elem in entry.visual_elements:
-                    lines.append(f"  - {elem}")
-
-            # Description checklist
-            if entry.what_to_describe:
-                lines.append("What to describe (follow each step):")
-                lines.append(f"  {entry.what_to_describe}")
-
-            # Vocabulary
-            if entry.description_vocabulary:
-                lines.append("Vocabulary to use:")
-                for term, definition in entry.description_vocabulary.items():
-                    lines.append(f"  {term}: {definition}")
-
-            # Comparative phrasings — canonical sentence templates the VLM
-            # should reuse verbatim when describing player-vs-expert
-            # differences.  Aligning these with label-catalog phrasing keeps
-            # the embedding-similarity filter (label_verifier) accurate.
-            if entry.comparative_vocabulary:
-                lines.append("Comparative phrasings to use verbatim (player vs expert):")
-                for phrase in entry.comparative_vocabulary:
-                    lines.append(f"  - {phrase}")
-
-            # Common errors
-            if entry.common_description_errors:
-                lines.append("Common description errors to AVOID:")
-                for err in entry.common_description_errors:
-                    lines.append(f"  * {err}")
-
+            lines.append(f"##### {entry.title} (id: {entry.id})")
             lines.append("")
+            for key, value in entry.raw.items():
+                if key == "title":
+                    continue  # already used as the graph header
+                section = _render_section(key, value)
+                if section:
+                    lines.extend(section)
+                    lines.append("")
 
         # Cross-graph guidelines (only include relevant ones)
         graph_id_set = set(graph_ids)
         relevant_guidelines: List[str] = []
 
+        # Each trigger:
+        #   required: every graph in this set must be present (subset check).
+        #   any_of:   list of sets; each set must intersect the present
+        #             graphs (i.e. at least one member of each must be there).
         guideline_triggers = {
-            "brake_and_speed": ({"brake", "speed"}, {"brake"}),
-            "throttle_and_speed": ({"throttle", "speed"}, {"throttle"}),
-            "time_delta_and_features": (
-                {"time_delta"},
-                {"brake", "throttle", "speed", "speed_delta", "push_limit"},
-            ),
-            "trajectory_and_features": (
-                {"trajectory_detailed", "trajectory_gas_brake", "trajectory_balance"},
-                {"throttle", "brake", "speed", "speed_delta", "push_limit"},
-            ),
-            "balance_and_push_limit": ({"trajectory_balance"}, {"push_limit"}),
-            "brake_and_throttle_overlap": ({"brake"}, {"throttle"}),
+            "brake_and_speed":            {"required": {"brake", "speed"},                     "any_of": []},
+            "throttle_and_speed":         {"required": {"throttle", "speed"},                  "any_of": []},
+            "time_delta_and_features":    {"required": {"time_delta"},                         "any_of": [
+                {"brake", "throttle", "speed", "speed_delta", "push_limit", "trajectory_balance"},
+            ]},
+            "trajectory_and_features":    {"required": set(),                                  "any_of": [
+                {"trajectory_detailed", "trajectory_gas_brake", "trajectory_offset"},
+                {"throttle", "brake", "speed", "speed_delta", "push_limit", "trajectory_balance"},
+            ]},
+            "balance_and_push_limit":     {"required": {"trajectory_balance", "push_limit"},   "any_of": []},
+            "brake_and_throttle_overlap": {"required": {"brake", "throttle"},                  "any_of": []},
         }
 
-        for guideline_id, (set_a, set_b) in guideline_triggers.items():
-            if graph_id_set & set_a and graph_id_set & set_b:
-                text = self.cross_graph_guidelines.get(guideline_id, "")
-                if text:
-                    relevant_guidelines.append(f"[{guideline_id}] {text}")
+        for guideline_id, spec in guideline_triggers.items():
+            if not spec["required"].issubset(graph_id_set):
+                continue
+            if not all(any_set & graph_id_set for any_set in spec["any_of"]):
+                continue
+            text = self.cross_graph_guidelines.get(guideline_id, "")
+            if text:
+                relevant_guidelines.append(f"[{guideline_id}] {text}")
 
         if relevant_guidelines:
-            lines.append("=== Cross-Graph Description Guidelines ===")
+            lines.append("#### Cross-Graph Description Guidelines")
             for g in relevant_guidelines:
                 lines.append(g)
             lines.append("")
 
         # Trajectory shape vocabulary if trajectory is present
         has_trajectory = graph_id_set & {
-            "trajectory_detailed", "trajectory_gas_brake", "trajectory_balance",
+            "trajectory_detailed", "trajectory_gas_brake", "trajectory_offset",
         }
         if has_trajectory and self.trajectory_shape_vocabulary:
-            lines.append("=== Trajectory Shape Vocabulary ===")
+            lines.append("#### Trajectory Shape Vocabulary")
             lines.append(self.trajectory_shape_vocabulary)
             lines.append("")
 
