@@ -158,7 +158,7 @@ graphs:
           starts at index C and ends at index D(if there is one) — <Player/expert> is <earlier|later> 
           by N indices, or <more abrupt|more gradual> by M indices."
 
-          Modulation dip occurs within the release or application slope itself. When present
+        - Modulation dip occurs within the release or application slope itself. When present
           on either trace, include as a separate clause:
             "<Player/expert>'s <release|application> across indices X–Y contains
             a modulation dip around index N (val); <other>'s <release|application>
@@ -173,12 +173,12 @@ graphs:
          shape features that define the class, anchored to index ranges>."
     common_description_errors:
       - "Verify expert vs player from the legend before describing"
+      - "Refer to each trace as \"player\" or \"expert\" in the output — NEVER by its colour (no \"the blue trace\", \"the red line\", etc.).  Colour is only an internal cue for reading the legend"
       - "Do NOT invent events to fill the format. If the trace has only one application and one release, report only one of each"
       - "Anchor EVERY shape feature and event to an index range or specific index — \"gradual across 5 indices\" without a start index is insufficient; write \"gradual across indices 94–99\" instead"
       - "Suspect-pattern check: if your output shows the player consistently offset by exactly the same number of indices at every event, you are pattern-matching rather than reading — restart from step 3"
       - "For a flat-zero segment, state the classification rather than fabricating a release"
       - "The example envelope shows structure, not content — classify from the trace and emit only the clauses your chosen class requires; do not force release / re-application phrasing onto a flat, one-sided, or unmatch segment"
-      - "Describe what you see — do not interpret or diagnose"
 
   brake:
     title: "Brake Application: Expert vs Player"
@@ -321,6 +321,7 @@ graphs:
          shape features that define the class, anchored to index ranges>."
     common_description_errors:
       - "Verify expert vs player from the legend before describing"
+      - "Refer to each trace as \"player\" or \"expert\" in the output — NEVER by its colour (no \"the blue trace\", \"the red line\", etc.).  Colour is only an internal cue for reading the legend"
       - "Do NOT invent events to fill the format. If a trace has only one initiation and one release, report only one of each"
       - "Anchor EVERY shape feature and event to an index range or specific index — \"gradual across 5 indices\" without a start index is insufficient; write \"gradual across indices 45–50\" instead"
       - "Suspect-pattern check: if your output shows the player consistently offset by exactly the same number of indices at every event, you are pattern-matching rather than reading — restart from step 3"
@@ -342,34 +343,99 @@ graphs:
       - "Flat line means the gap is stable"
     how_to_analyze: >
       Observe (record values, do not summarise yet):
-      1. Read the y-axis scale and range; note the sign (+ = player behind
-         expert, − = player ahead).
-      2. Record the start and end values, the net change in ms, and who is
-         ahead/behind at each end.
-      3. Split the trace at slope changes; for each segment record the
-         index range (start–end), the ms change, and the slope direction
-         (rising / falling / flat).
+      1. Read the y-axis scale and range; note the sign convention
+         (+ = player behind expert, − = player ahead).
+
+      2. Split the trace into slope segments.  A new segment begins
+         wherever the slope ratio (Δms per index) visibly changes —
+         i.e. the line bends/kinks.  Within a segment the slope ratio
+         is approximately constant.  Walk left → right and place a
+         split at every kink; ignore micro-jitter that doesn't change
+         the overall slope.
+
+      3. For each slope segment record:
+           - index range (start–end)
+           - ms value at start and end
+           - slope ratio (Δms / Δindex, signed)
+           - slope tag from glossary: "gap grows" (slope > 0),
+             "gap shrinks" (slope < 0), "gap holds stable" (slope ≈ 0)
+           - who is ahead/behind at each endpoint (sign of ms)
+
+      4. Compute the overall gap across the whole segment: compare ms
+         at the right edge vs the left edge.  Tag as "overall gap
+         grows" (right > left), "overall gap shrinks" (right < left),
+         or "overall gap holds stable" (|right − left| within scale
+         noise).  Record both endpoint ms values.
 
       Compose:
-      4. Write the summary using sentence_format_guide — one sentence per
-         segment from step 3, naming the slope direction in plain English
-         (gap grows / gap shrinks / gap stable) and quoting the ms values
-         and who is ahead/behind.  Skip micro-fluctuations; only report
-         sustained directional changes.
-    glossary: {}
+      5. Write the summary using sentence_format_guide — one sentence
+         per slope segment from step 3 in travel order (index range,
+         ms endpoints, slope tag, who is ahead/behind), then a closing
+         overall-gap sentence from step 4.
+    glossary:
+      "slope segment": >
+        A contiguous index range over which the slope ratio (Δms per
+        index) of the time-delta trace is approximately constant.
+        Segment boundaries are kinks where the slope ratio visibly
+        changes.  Each segment carries exactly one slope tag
+        (gap grows / gap shrinks / gap holds stable).
+      "slope ratio": >
+        Signed rate of change of the time delta: (ms_end − ms_start) /
+        (index_end − index_start) for the segment.  Positive = gap
+        growing; negative = gap shrinking; near zero = stable.
+      "gap grows": >
+        Slope tag for a segment with positive slope ratio — player
+        falls further behind expert across the segment (ms increases).
+      "gap shrinks": >
+        Slope tag for a segment with negative slope ratio — player
+        catches up to expert across the segment (ms decreases).
+      "gap holds stable": >
+        Slope tag for a segment with slope ratio ≈ 0 — neither trace
+        gains time on the other across the segment (ms roughly flat).
+      "overall gap grows": >
+        Whole-segment tag: ms at the right edge is greater than ms at
+        the left edge — the player ended the segment further behind
+        the expert than they started (net time lost).
+      "overall gap shrinks": >
+        Whole-segment tag: ms at the right edge is less than ms at
+        the left edge — the player ended the segment closer to (or
+        further ahead of) the expert than they started (net time
+        gained).
+      "overall gap holds stable": >
+        Whole-segment tag: ms at the right edge is approximately
+        equal to ms at the left edge — no net time change across the
+        segment, even if intermediate slope segments swung.
     sentence_format_guide: >
-      One paragraph, one sentence per slope segment.  Subject = player,
-      object = expert.
+      One paragraph.  Subject = player, object = expert.
+
+      (a) One sentence per slope segment in travel order:
         "Across indices <N>–<M> the gap <grows|shrinks|holds stable>
-         from <X> ms to <Y> ms — player is <behind|ahead> by <Δ> ms at
-         each end."
-      Example: "Across indices 100–150 the gap grows from 80 ms to 320 ms —
-      player is behind expert by 80 ms at index 100 and 320 ms at index 150;
-      across indices 150–200 the gap holds stable at ~320 ms."
+         from <X> ms to <Y> ms (slope <Δms/Δidx>) — player is
+         <behind|ahead> by <|X|> ms at index <N> and <behind|ahead> by
+         <|Y|> ms at index <M>."
+
+      (b) Closing overall-gap sentence (always emit, after the
+          per-segment sentences):
+        "Overall the gap <grows|shrinks|holds stable> across the
+         segment, from <X_left> ms at index <0> to <X_right> ms at
+         index <end> (net <±Δ> ms)."
+
+      Example: "Across indices 0–40 the gap grows from 0 ms to 120 ms
+      (slope +3.0) — player is level at index 0 and behind by 120 ms
+      at index 40.  Across indices 40–95 the gap holds stable from
+      120 ms to 130 ms (slope +0.2) — player is behind by ~120 ms
+      throughout.  Across indices 95–140 the gap shrinks from 130 ms
+      to 60 ms (slope −1.6) — player is behind by 130 ms at index 95
+      and behind by 60 ms at index 140.  Overall the gap grows across
+      the segment, from 0 ms at index 0 to 60 ms at index 140 (net
+      +60 ms)."
     common_description_errors:
+      - "Do NOT skip the per-segment breakdown and only report the overall gap — both are required (per-segment sentences first, overall sentence last)"
+      - "Do NOT skip the closing overall-gap sentence — every output must end with it"
+      - "Overall tag is computed from left-edge vs right-edge ms only — do NOT derive it from how many segments grow vs shrink"
+      - "Do NOT split on micro-jitter — only on visible kinks where the slope ratio clearly changes"
       - "Do NOT ignore the SCALE of the y-axis — a 0.01 s change is negligible, a 0.5 s change is large"
-      - "Do NOT describe every micro-fluctuation as a trend change — only report clear, sustained directional changes"
-      - "Do NOT confuse the sign — positive means the player is BEHIND expert, negative means AHEAD"
+      - "Do NOT confuse the sign — positive means player is BEHIND expert, negative means AHEAD"
       - "Do NOT interpret why the delta changes — describe WHAT the line does"
 
   speed_delta:
@@ -476,6 +542,7 @@ graphs:
     common_description_errors:
       - "Do NOT compare values from different anchors — entry vs entry, minimum vs minimum, exit vs exit"
       - "Do NOT confuse the two traces — verify which line is which from the legend"
+      - "Refer to each trace as \"player\" or \"expert\" in the output — NEVER by its colour (no \"the blue trace\", \"the red line\", etc.).  Colour is only an internal cue for reading the legend"
       - "Do NOT report a player speed without also reporting the expert's speed at the matching anchor and the directional offset"
       - "Do NOT skip reporting numerical values — always state km/h figures"
 
@@ -588,6 +655,7 @@ graphs:
       the expert holds gear 4 — player is in a lower gear."
     common_description_errors:
       - "Gear values are INTEGERS — do not report fractional gear numbers"
+      - "Refer to each trace as \"player\" or \"expert\" in the output — NEVER by its colour (no \"the blue trace\", \"the red line\", etc.).  Colour is only an internal cue for reading the legend"
       - "Do NOT confuse upshift and downshift — up = higher gear number, down = lower gear number"
       - "Do NOT report a player shift without also reporting the expert's matching shift and the index gap"
       - "Do NOT interpret gear choices — describe what you see"
@@ -607,86 +675,120 @@ graphs:
       - "No expert trace — player only.  Magnitude is shown directly on the y-axis"
     how_to_analyze: >
       Observe (record values, do not summarise yet):
-      1. Note: the neutral band is |y| ≤ 0.02 rad.  Only y > +0.02 counts
-         as oversteer; only y < −0.02 counts as understeer.  Values inside
-         the band are neutral regardless of sign.
-      2. Walk the trace left-to-right.  For every excursion that exceeds
-         +0.02 rad (red shading clearly above the band), record the index
-         range (onset = first index where y > 0.02 → peak → return = first
-         index where y drops back to ≤ 0.02) and the peak value (rad).
-      3. Repeat for every excursion below −0.02 rad — record index range
-         (onset = first index where y < −0.02 → trough → return = first
-         index where y rises back to ≥ −0.02) and trough value (most negative).
-      4. For sections where the trace stays within |y| ≤ 0.02, record the
-         index range and the magnitude held.
-      5. Note every band crossing (index where the trace exits or re-enters
-         the ±0.02 band, with direction).  Treat a transition that goes
-         from below −0.02 to above +0.02 (or vice versa) as two crossings
-         separated by a neutral section if any indices fall inside the
-         band, otherwise as a single direct flip.
+      1. Neutral band = |y| ≤ 0.02 rad.  y > +0.02 = oversteer;
+         y < −0.02 = understeer; otherwise neutral.
+      2. Walk the trace left-to-right and split it into contiguous
+         sections by band.  For each section record:
+           - tag (oversteer / understeer / neutral)
+           - start index (first index in the section)
+           - end index (last index in the section)
+           - peak/trough value (rad) for oversteer/understeer sections
 
-      Match (apply glossary tags to each section):
-      6. For each excursion above +0.02, decide whether it is an
-         "oversteer spike" (brief, single peak) or "sustained oversteer"
-         (stays above +0.02 across many indices).
-      7. For each excursion below −0.02, decide whether it is an
-         "understeer spike" or "sustained understeer".
-      8. For each section inside the ±0.02 band, tag "neutral balance".
-      9. For each band crossing, tag "balance flip".
+      Classify (relate sections, do not just enumerate):
+      3. Identify the primary slide: the oversteer or understeer
+         section with the visually tallest peak.  This is the major
+         handling event for the segment.
+      4. For every other oversteer/understeer section, decide whether
+         it is a recovery transient or a standalone event using two
+         visual checks (no arithmetic — compare what you see):
+           - Height: is its peak clearly much shorter than the
+             primary slide's peak, or comparable in height?
+           - Gap: does the trace pass through a sustained neutral run
+             between the primary slide and this section, or does it
+             flip sign and immediately return?
+         Much shorter peak AND no sustained neutral between → recovery
+         transient (driver's correction settling, not a separate
+         balance event).  Comparable peak AND sustained neutral
+         between → standalone event.  Comparable-height opposite-sign
+         bump immediately after the primary with no sustained neutral
+         → true secondary slide (tank-slapper) — flag it, do not hide.
+      5. When the primary slide is oversteer and the next transient is
+         understeer with no sustained neutral between, tag the
+         transient as an over-correction (driver counter-steered past
+         neutral; fronts momentarily slip more than rears).  A small
+         same-sign oversteer bump that follows is the pendulum swinging
+         back — also a recovery transient of the same event.
 
       Compose:
-      10. Write the summary using sentence_format_guide — one clause per
-          tagged section, embedding the glossary term plus the index
-          range and peak/trough value.
+      6. Write the summary using sentence_format_guide — one clause
+         for the primary slide with its recovery transients attached,
+         one clause per standalone event, and neutral runs between
+         events.
     glossary:
-      "oversteer spike": >
-        A brief excursion above +0.02 rad (single peak, returns to the
-        neutral band within a few indices).  Report onset index (where
-        y first exceeds +0.02), peak index, peak value (rad), and return
-        index (where y drops back to ≤ +0.02).
-      "sustained oversteer": >
-        The trace stays above +0.02 rad across many indices — rear-slip
-        dominant for the duration.  Report the index range and the
-        peak value reached.
-      "understeer spike": >
-        A brief excursion below −0.02 rad (single trough, returns to
-        the neutral band within a few indices).  Report onset index
-        (where y first drops below −0.02), trough index, trough value
-        (most negative rad), and return index (where y rises back to
-        ≥ −0.02).
-      "sustained understeer": >
-        The trace stays below −0.02 rad across many indices — front-slip
-        dominant for the duration.  Report the index range and the
-        trough value (most negative).
-      "neutral balance": >
-        Section where |y| stays within ±0.02 rad — front and rear slip
-        are effectively balanced.  Report the index range and the
-        magnitude held.
-      "balance flip": >
-        A band crossing — the trace exits or re-enters the ±0.02 rad
-        neutral band, or transitions directly from below −0.02 to above
-        +0.02 (or vice versa).  Report the index and the direction
-        (e.g. understeer→neutral, neutral→oversteer, understeer→oversteer).
+      "oversteer": >
+        Contiguous range where y > +0.02 rad (rear-slip dominant).
+        Report start index, end index, and peak value (rad).
+      "understeer": >
+        Contiguous range where y < −0.02 rad (front-slip dominant).
+        Report start index, end index, and trough value (most negative rad).
+      "neutral": >
+        Contiguous range where |y| ≤ 0.02 rad — front and rear slip
+        balanced.  Report start index and end index.
+      "primary slide": >
+        The oversteer or understeer section with the visually tallest
+        peak in the segment — the major handling event to report.
+        Anchored by index range and peak value.
+      "recovery transient": >
+        A smaller oversteer or understeer section close to the primary
+        slide, with a peak clearly much shorter than the primary's AND
+        no sustained neutral run between it and the primary.  Reflects
+        the driver catching the slide rather than a separate balance
+        event; reported as part of the primary slide's clause, not
+        standalone.
+      "over-correction": >
+        Specific recovery-transient case where the primary slide is
+        oversteer and the trace immediately dips into understeer
+        before returning.  The dip is the driver counter-steering past
+        neutral (fronts slipping more than rears for an instant), not
+        cornering understeer.  A small same-sign oversteer bump may
+        follow as the pendulum swings back; both are transients of the
+        same event.
+      "standalone event": >
+        An oversteer or understeer section that is NOT a recovery
+        transient — its peak is comparable in height to the primary
+        slide, or a sustained neutral run separates it from the
+        primary.  Reported on its own clause.
+      "true secondary slide": >
+        A comparable-height opposite-sign bump immediately after the
+        primary with no sustained neutral between — a real tank-slapper
+        rather than a recovery transient.  Reported as its own primary-
+        level clause and flagged as a secondary slide.
     sentence_format_guide: >
       One paragraph.  Player's trace only; reference = ±0.02 rad neutral
       band (no expert comparison).  Every clause MUST be anchored to an
-      index range or specific index — never quote a duration alone.
+      index range.
 
-      Excursion skeleton (one clause per tagged section):
-        "<glossary tag> across indices <N>–<M> (peak <value> rad at
-         index <X>; returns to neutral band at index <Y>)."
-
-      Balance-flip skeleton (one clause per band crossing):
-        "Balance flip at index <X> (<understeer→neutral |
-         neutral→oversteer | understeer→oversteer | …>)."
+      Skeleton:
+        Primary slide (always emit first when present):
+          "Primary <oversteer | understeer> across indices <N>–<M>
+           (peak <value> rad)."
+        Recovery transient(s) attached to the primary (when present):
+          "...followed by an over-correction transient across indices
+           <P>–<Q> (peak <value> rad)" (for OS primary → US dip), and/or
+          "...and a same-sign recovery bump across indices <R>–<S>
+           (peak <value> rad)" (pendulum swing back).
+        Standalone event (separated from the primary by a sustained
+        neutral run, or comparable in peak height):
+          "<Oversteer | understeer> across indices <N>–<M>
+           (peak <value> rad)."
+        True secondary slide (comparable-height opposite-sign bump
+        immediately after the primary, no sustained neutral between):
+          "Secondary slide: <oversteer | understeer> across indices
+           <N>–<M> (peak <value> rad) — comparable height to the
+           primary with no neutral run between."
+        Neutral:
+          "Neutral across indices <N>–<M>."
     common_description_errors:
-      - "Do NOT count |y| ≤ 0.02 rad as oversteer or understeer — that is the neutral band; only excursions beyond ±0.02 qualify"
-      - "Do NOT report an excursion as a 'spike' unless it leaves and returns to the neutral band — values that stay on one side beyond ±0.02 across the full segment are 'sustained oversteer/understeer', not spikes"
+      - "Do NOT count |y| ≤ 0.02 rad as oversteer or understeer — that is the neutral band; only ranges beyond ±0.02 qualify"
       - "Do NOT confuse the sign — y > +0.02 (red) = oversteer; y < −0.02 (blue) = understeer"
+      - "Refer to regions as \"oversteer\", \"understeer\", or \"neutral\" in the output — NEVER by their shading colour (no \"the red shading\", \"the blue band\", etc.).  Colour is only an internal cue for reading the sign"
       - "Do NOT invent an expert trace — this graph shows the player only"
-      - "Anchor EVERY excursion and crossing to an index range or specific index — \"a brief understeer\" without indices is insufficient"
+      - "Anchor EVERY section to an index range (start–end)"
       - "Do NOT interpret the colours as good or bad — describe what is shown (sign, magnitude, index range)"
       - "Do NOT skip describing neutral sections"
+      - "Do NOT report a small opposite-sign section immediately after a large oversteer as standalone understeer — describe it as an over-correction transient of the primary slide"
+      - "Do NOT report every contiguous section as an equal event — focus on the primary slide (the major handling problem); recovery transients are driver corrections settling and collapse into the primary's clause"
+      - "Do NOT use numeric ratios or arithmetic to decide transient vs standalone — compare peak heights visually and check whether a sustained neutral run separates the sections"
 
   # =========================================================================
   # TRAJECTORY PLOTS (bird's-eye view of the track)
@@ -846,6 +948,7 @@ graphs:
     common_description_errors:
       - "The Y-AXIS IS INVERTED — do not read up/down wrong when describing inside/outside of corners"
       - "Do NOT assume a direction of travel — verify from the Start (X) and End (O) markers"
+      - "Refer to the lines as \"player\" and \"expert\", and to markers as \"entry\", \"apex\", and \"exit\" in the output — NEVER by their colour or shape (no \"the green line\", \"the blue dashed line\", \"the red star\", \"the yellow circle\", etc.).  Colour and marker shape are only internal cues for identifying which trace and marker is which"
       - "Do NOT describe the player line in isolation — for every phase state position RELATIVE to the expert line"
       - "Do NOT conflate event terms with shape terms — 'Initiate the turn / Reach apex / Time to exit' describe WHEN (index compared to expert), 'Entry / Apex / Exit trajectory' describe WHERE (line position relative to expert)"
       - "Do NOT default to 'aligned' or 'tracks the expert' when the lines visibly diverge anywhere in the span. Markers are typically the most-aligned points; search the SPAN BETWEEN markers for bulges. Banned hedging phrases: 'closely following', 'no significant deviation', 'minimal', 'smooth and precise', 'does not significantly impact'."
@@ -1072,6 +1175,7 @@ graphs:
       phases is "aligned".
     common_description_errors:
       - "Do NOT default to 'aligned' when the trace clearly leaves the ±0.5 m band — exposing those deviations is the entire point of this graph"
+      - "Refer to the trace as \"the offset trace\" or \"the player offset\", and to markers as \"entry\", \"apex\", and \"exit\" in the output — NEVER by their colour or shape (no \"the green line\", \"the red star\", \"the yellow circle\", etc.).  Colour and marker shape are only internal cues for identifying which marker is which"
       - "Read the SIGN — positive = player wider, negative = tighter — do not invert"
       - "Distinguish 'moving toward negative (tightening)' (offset growing more negative) from 'recovery' (trajectory offset shrinking toward zero from either side); a positive offset trending down toward zero is RECOVERY, not tightening"
       - "Distinguish 'moving toward positive (widening)' (offset growing more positive) from 'recovery'; a negative offset trending up toward zero is RECOVERY, not widening"

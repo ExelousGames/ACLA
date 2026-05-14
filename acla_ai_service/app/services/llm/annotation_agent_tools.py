@@ -426,8 +426,11 @@ def _detect_expert_phases(
 
     Returns ``(phases, smoothing_window)`` where ``phases`` is a list of
     one dict per detected arc (empty for non-corner segments). Each dict
-    holds ilocs **relative to the segment start** plus auxiliary fields
-    the VLM can use to reason about trail-braking and turn direction:
+    holds ilocs **relative to the segment start** (the public
+    ``compute_expert_phases`` tool shifts these into the parent frame
+    before exposing them via ``PipelineAttachment``) plus auxiliary
+    fields the VLM can use to reason about trail-braking and turn
+    direction:
 
         {
             "entry": int, "apex": int, "exit": int,
@@ -532,20 +535,32 @@ def compute_expert_phases(
             "smoothing_window": int,
         }
 
-    All ilocs are relative to ``start_index``. ``phases`` is empty when
-    no arc clears the curvature threshold (pure straight, or segment too
+    All ilocs are absolute parent-frame indices in
+    ``[start_index, end_index)`` — matching the feature-plot x-axis and
+    the synthesizer prompt's index range. ``phases`` is empty when no
+    arc clears the curvature threshold (pure straight, or segment too
     short / missing position columns).
     """
     from .step_evaluator_agents import PipelineAttachment
 
-    segment = df.iloc[int(start_index): int(end_index)]
+    start = int(start_index)
+    segment = df.iloc[start: int(end_index)]
     phases, window = _detect_expert_phases(segment)
+
+    iloc_fields = ("entry", "apex", "exit", "min_speed_iloc", "peak_steer_iloc")
+    shifted_phases = [
+        {
+            k: (int(v) + start if k in iloc_fields else v)
+            for k, v in phase.items()
+        }
+        for phase in phases
+    ]
 
     return PipelineAttachment(
         name="phase_indices",
         kind="structured",
         label="Phase Indices (expert-anchored)",
-        content={"phases": phases, "smoothing_window": int(window)},
+        content={"phases": shifted_phases, "smoothing_window": int(window)},
     )
 
 
@@ -574,6 +589,526 @@ def get_pipeline_tool(tool_id: str) -> Optional[Dict[str, Any]]:
         (t for t in PIPELINE_TOOL_DEFINITIONS if t["id"] == tool_id),
         None,
     )
+
+
+# ---------------------------------------------------------------------------
+# Pipeline queries — VLM-picked, parameter-driven detectors that resolve to
+# exact ilocs/values on the real DataFrame. The zoom agent's VLM call
+# classifies which query fits the planner's question, picks parameters, and
+# the query runs deterministic math — no pixel-reading.
+# ---------------------------------------------------------------------------
+
+# DataFrame columns the VLM is allowed to pick from. Listed explicitly so the
+# prompt menu stays scoped to the telemetry signals these queries make sense
+# on (e.g. exclude raw indices, timestamps, derived helper columns).
+QUERY_AVAILABLE_COLUMNS: List[str] = [
+    "Physics_gas",
+    "expert_optimal_gas",
+    "Physics_brake",
+    "expert_optimal_brake",
+    "Physics_speed_kmh",
+    "expert_optimal_speed",
+    "speed_difference",
+    "expert_time_difference",
+    "driver_push_to_limit",
+    "Physics_gear",
+    "expert_optimal_gear",
+    "steer_angle",
+    # Slip-angle inputs to the oversteer/understeer balance graph
+    # (balance = mean(|rear|) − mean(|front|)). The aggregate isn't a
+    # column — pick the raw front/rear slip-angle channels instead.
+    "Physics_slip_angle_front_left",
+    "Physics_slip_angle_front_right",
+    "Physics_slip_angle_rear_left",
+    "Physics_slip_angle_rear_right",
+]
+
+
+def _resolve_column(column: str, segment: pd.DataFrame) -> Optional[np.ndarray]:
+    if not column or column not in segment.columns:
+        return None
+    return segment[column].to_numpy(dtype=float)
+
+
+def _query_find_threshold_crossing(
+    df: pd.DataFrame, start_index: int, end_index: int,
+    column: str, threshold: float, direction: str,
+) -> Optional[Dict[str, Any]]:
+    """First iloc in [start_index, end_index] where <column> crosses <threshold>.
+
+    The slice ``[start_index, end_index]`` is inclusive on BOTH ends —
+    ``end_index`` is reachable. ``direction='rising'`` matches
+    ``arr[i] < threshold <= arr[i+1]``; ``direction='falling'`` matches
+    ``arr[i] > threshold >= arr[i+1]``. Returns ``{iloc, value}`` for the
+    post-crossing sample, or ``None``.
+    """
+    segment = df.iloc[int(start_index): int(end_index) + 1]
+    arr = _resolve_column(column, segment)
+    if arr is None or len(arr) < 2:
+        return None
+    thr = float(threshold)
+    if direction == "rising":
+        mask = (arr[:-1] < thr) & (arr[1:] >= thr)
+    elif direction == "falling":
+        mask = (arr[:-1] > thr) & (arr[1:] <= thr)
+    else:
+        return None
+    idxs = np.where(mask)[0]
+    if len(idxs) == 0:
+        return None
+    local = int(idxs[0]) + 1
+    return {"iloc": int(start_index) + local, "value": float(arr[local])}
+
+
+def _query_find_extremum(
+    df: pd.DataFrame, start_index: int, end_index: int,
+    column: str, kind: str,
+) -> Optional[Dict[str, Any]]:
+    """iloc of the global min or max of <column> in the range."""
+    segment = df.iloc[int(start_index): int(end_index) + 1]
+    arr = _resolve_column(column, segment)
+    if arr is None or len(arr) == 0:
+        return None
+    finite = np.where(np.isfinite(arr), arr, np.nan)
+    if np.all(np.isnan(finite)):
+        return None
+    if kind == "max":
+        local = int(np.nanargmax(finite))
+    elif kind == "min":
+        local = int(np.nanargmin(finite))
+    else:
+        return None
+    return {"iloc": int(start_index) + local, "value": float(finite[local])}
+
+
+def _query_find_zero_crossing(
+    df: pd.DataFrame, start_index: int, end_index: int,
+    column: str,
+) -> Optional[Dict[str, Any]]:
+    """iloc where <column> first changes sign.
+
+    Detects negative→non-negative and positive→non-positive transitions
+    (so an exact-zero sample on the crossing still counts). When a pair
+    straddles zero, returns whichever sample is closer to zero.
+    """
+    segment = df.iloc[int(start_index): int(end_index) + 1]
+    arr = _resolve_column(column, segment)
+    if arr is None or len(arr) < 2:
+        return None
+    a = arr[:-1]
+    b = arr[1:]
+    mask = ((a < 0) & (b >= 0)) | ((a > 0) & (b <= 0))
+    idxs = np.where(mask)[0]
+    if len(idxs) == 0:
+        return None
+    i0 = int(idxs[0])
+    local = i0 + (1 if abs(arr[i0 + 1]) < abs(arr[i0]) else 0)
+    return {"iloc": int(start_index) + local, "value": float(arr[local])}
+
+
+def _query_find_first_match(
+    df: pd.DataFrame, start_index: int, end_index: int,
+    column: str, op: str, value: float,
+) -> Optional[Dict[str, Any]]:
+    """First iloc in the range where <column> <op> <value> holds.
+
+    ``op`` is one of ``"eq"``, ``"ge"``, ``"le"``, ``"gt"``, ``"lt"``. Useful
+    for discrete-valued columns (gear, integer states) where threshold
+    crossings don't make sense.
+    """
+    segment = df.iloc[int(start_index): int(end_index) + 1]
+    arr = _resolve_column(column, segment)
+    if arr is None or len(arr) == 0:
+        return None
+    v = float(value)
+    if op == "eq":
+        mask = arr == v
+    elif op == "ge":
+        mask = arr >= v
+    elif op == "le":
+        mask = arr <= v
+    elif op == "gt":
+        mask = arr > v
+    elif op == "lt":
+        mask = arr < v
+    else:
+        return None
+    idxs = np.where(mask & np.isfinite(arr))[0]
+    if len(idxs) == 0:
+        return None
+    local = int(idxs[0])
+    return {"iloc": int(start_index) + local, "value": float(arr[local])}
+
+
+def _query_read_values_at_indices(
+    df: pd.DataFrame, start_index: int, end_index: int,
+    column: str, indices: List[int],
+) -> Optional[Dict[str, Any]]:
+    """Read <column> at each parent-frame iloc in <indices>.
+
+    Each requested iloc resolves to one entry in ``samples`` —
+    ``{iloc, value}``, with ``value=None`` for out-of-range or NaN samples
+    and a ``note`` explaining why. Returns ``None`` only when the column
+    itself is missing.
+    """
+    if not isinstance(indices, (list, tuple)) or not indices:
+        return None
+    segment = df.iloc[int(start_index): int(end_index) + 1]
+    arr = _resolve_column(column, segment)
+    if arr is None:
+        return None
+    samples: List[Dict[str, Any]] = []
+    for raw_idx in indices:
+        try:
+            idx = int(raw_idx)
+        except (TypeError, ValueError):
+            continue
+        local = idx - int(start_index)
+        if local < 0 or local >= len(arr):
+            samples.append({"iloc": idx, "value": None, "note": "out of zoom range"})
+            continue
+        v = arr[local]
+        if not np.isfinite(v):
+            samples.append({"iloc": idx, "value": None, "note": "NaN / missing"})
+        else:
+            samples.append({"iloc": idx, "value": float(v)})
+    if not samples:
+        return None
+    return {"samples": samples}
+
+
+def _query_compute_slope(
+    df: pd.DataFrame, start_index: int, end_index: int,
+    column: str, iloc_a: int, iloc_b: int,
+) -> Optional[Dict[str, Any]]:
+    """Slope of <column> between two parent-frame ilocs.
+
+    Returns ``{iloc, value, samples, extra}`` where ``value`` is the slope
+    ``(arr[b] - arr[a]) / (iloc_b - iloc_a)``, ``samples`` documents the
+    two anchor points, and ``extra`` carries the raw deltas. ``iloc`` is
+    set to ``iloc_b`` so the synthesizer can cite the slope at the end
+    of the interval. Returns ``None`` when either anchor is out of range,
+    the column is missing, or the two ilocs coincide.
+    """
+    segment = df.iloc[int(start_index): int(end_index) + 1]
+    arr = _resolve_column(column, segment)
+    if arr is None or len(arr) == 0:
+        return None
+    try:
+        a_idx = int(iloc_a)
+        b_idx = int(iloc_b)
+    except (TypeError, ValueError):
+        return None
+    if a_idx == b_idx:
+        return None
+    la = a_idx - int(start_index)
+    lb = b_idx - int(start_index)
+    if not (0 <= la < len(arr)) or not (0 <= lb < len(arr)):
+        return None
+    va, vb = arr[la], arr[lb]
+    if not (np.isfinite(va) and np.isfinite(vb)):
+        return None
+    delta_v = float(vb - va)
+    delta_i = float(b_idx - a_idx)
+    slope = delta_v / delta_i
+    return {
+        "iloc": b_idx,
+        "value": slope,
+        "samples": [
+            {"iloc": a_idx, "value": float(va)},
+            {"iloc": b_idx, "value": float(vb)},
+        ],
+        "extra": {
+            "slope": slope,
+            "delta_value": delta_v,
+            "delta_iloc": delta_i,
+        },
+    }
+
+
+def _query_compare_crossings(
+    df: pd.DataFrame, start_index: int, end_index: int,
+    series: List[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """Order first threshold crossings across multiple signals.
+
+    Each entry in <series> is ``{column, threshold, direction}`` (same
+    semantics as ``find_threshold_crossing``). Finds the first crossing for
+    each in the zoom range, ranks them by iloc, and reports the winner.
+    ``iloc``/``value`` reflect the first crosser; ``samples`` lists every
+    requested series with ``rank`` (1=first, None=never crossed) plus
+    ``column``, ``threshold``, ``direction``, ``iloc``, ``value`` and an
+    optional ``note``. ``extra.order`` is the columns in onset order;
+    ``extra.delta_iloc`` is the gap (in samples) between first and second
+    crossings (``None`` if fewer than two crossed). Returns ``None`` only
+    when <series> is malformed (fewer than two entries).
+    """
+    if not isinstance(series, list) or len(series) < 2:
+        return None
+    segment = df.iloc[int(start_index): int(end_index) + 1]
+
+    crossings: List[Dict[str, Any]] = []
+    for spec in series:
+        if not isinstance(spec, dict):
+            continue
+        column = spec.get("column")
+        try:
+            threshold = float(spec.get("threshold"))
+        except (TypeError, ValueError):
+            crossings.append({
+                "column": column, "threshold": spec.get("threshold"),
+                "direction": spec.get("direction"),
+                "iloc": None, "value": None,
+                "note": "threshold not a number",
+            })
+            continue
+        direction = spec.get("direction")
+        arr = _resolve_column(column, segment)
+        entry: Dict[str, Any] = {
+            "column": column, "threshold": threshold,
+            "direction": direction, "iloc": None, "value": None,
+        }
+        if arr is None or len(arr) < 2:
+            entry["note"] = "column missing or insufficient samples"
+            crossings.append(entry)
+            continue
+        if direction == "rising":
+            mask = (arr[:-1] < threshold) & (arr[1:] >= threshold)
+        elif direction == "falling":
+            mask = (arr[:-1] > threshold) & (arr[1:] <= threshold)
+        else:
+            entry["note"] = "direction must be rising | falling"
+            crossings.append(entry)
+            continue
+        idxs = np.where(mask)[0]
+        if len(idxs) == 0:
+            entry["note"] = "no crossing in range"
+            crossings.append(entry)
+            continue
+        local = int(idxs[0]) + 1
+        entry["iloc"] = int(start_index) + local
+        entry["value"] = float(arr[local])
+        crossings.append(entry)
+
+    if not crossings:
+        return None
+
+    with_iloc = sorted(
+        (c for c in crossings if c["iloc"] is not None),
+        key=lambda c: c["iloc"],
+    )
+    without = [c for c in crossings if c["iloc"] is None]
+    samples: List[Dict[str, Any]] = []
+    for rank, c in enumerate(with_iloc, start=1):
+        samples.append({**c, "rank": rank})
+    for c in without:
+        samples.append({**c, "rank": None})
+
+    if not with_iloc:
+        return {
+            "iloc": None, "value": None, "samples": samples,
+            "extra": {"order": [], "delta_iloc": None, "first_column": None},
+        }
+    first = with_iloc[0]
+    delta_iloc = (
+        int(with_iloc[1]["iloc"] - first["iloc"]) if len(with_iloc) >= 2 else None
+    )
+    return {
+        "iloc": first["iloc"],
+        "value": first["value"],
+        "samples": samples,
+        "extra": {
+            "order": [c["column"] for c in with_iloc],
+            "delta_iloc": delta_iloc,
+            "first_column": first["column"],
+        },
+    }
+
+
+PIPELINE_QUERY_DEFINITIONS: List[Dict[str, Any]] = [
+    {
+        "id": "find_threshold_crossing",
+        "label": "First threshold crossing",
+        "description": (
+            "First iloc in the zoom range where <column> crosses <threshold> "
+            "in <direction>. Use for transitions like brake release "
+            "(Physics_brake, ~0.05, falling) or full-throttle onset "
+            "(Physics_gas, ~0.95, rising)."
+        ),
+        "params_schema": {
+            "column": "DataFrame column name",
+            "threshold": "float",
+            "direction": "rising | falling",
+        },
+        "callable": _query_find_threshold_crossing,
+    },
+    {
+        "id": "find_extremum",
+        "label": "Global min/max",
+        "description": (
+            "iloc of the global min or max of <column> within the zoom range. "
+            "Use for apex-by-speed (Physics_speed_kmh, min), peak speed "
+            "(Physics_speed_kmh, max), max steering input (steer_angle, max)."
+        ),
+        "params_schema": {
+            "column": "DataFrame column name",
+            "kind": "min | max",
+        },
+        "callable": _query_find_extremum,
+    },
+    {
+        "id": "find_zero_crossing",
+        "label": "First sign change",
+        "description": (
+            "First iloc where <column> changes sign. Use for "
+            "balance/steering reversals or apex-by-lateral-g."
+        ),
+        "params_schema": {"column": "DataFrame column name"},
+        "callable": _query_find_zero_crossing,
+    },
+    {
+        "id": "find_first_match",
+        "label": "First comparison match",
+        "description": (
+            "First iloc where <column> <op> <value> holds. Use for "
+            "discrete states like gear shifts (Physics_gear, eq, 4)."
+        ),
+        "params_schema": {
+            "column": "DataFrame column name",
+            "op": "eq | ge | le | gt | lt",
+            "value": "float",
+        },
+        "callable": _query_find_first_match,
+    },
+    {
+        "id": "read_values_at_indices",
+        "label": "Read values at specific ilocs",
+        "description": (
+            "Read <column> at each parent-frame iloc in <indices>. Use "
+            "when the question names specific points (e.g. 'time delta at "
+            "iloc 90 and 100'). Returns one entry per index in `samples`; "
+            "out-of-range or NaN samples come back with value=null."
+        ),
+        "params_schema": {
+            "column": "DataFrame column name",
+            "indices": "list of parent-frame ilocs (int)",
+        },
+        "callable": _query_read_values_at_indices,
+    },
+    {
+        "id": "compute_slope",
+        "label": "Slope between two ilocs",
+        "description": (
+            "Slope of <column> from <iloc_a> to <iloc_b>, computed as "
+            "(value_b - value_a) / (iloc_b - iloc_a). Use for 'how steep "
+            "is the brake release between A and B' or 'slope of throttle "
+            "ramp'. Returns the slope as `value`, both anchor points in "
+            "`samples`, and the raw deltas in `extra`."
+        ),
+        "params_schema": {
+            "column": "DataFrame column name",
+            "iloc_a": "parent-frame iloc (start of interval)",
+            "iloc_b": "parent-frame iloc (end of interval)",
+        },
+        "callable": _query_compute_slope,
+    },
+    {
+        "id": "compare_crossings",
+        "label": "Order onsets across signals",
+        "description": (
+            "Find the first threshold crossing for each of N signals and "
+            "rank them by iloc. Use this whenever the question is 'which "
+            "rises/falls first' (e.g. player vs expert brake release, gas "
+            "vs brake onset) — do NOT try to read onset ordering off the "
+            "image. `samples` lists every series with `rank` (1=first, "
+            "null=never crossed); `extra.first_column` names the winner; "
+            "`extra.delta_iloc` is the gap between first and second."
+        ),
+        "params_schema": {
+            "series": (
+                "list of 2+ entries, each "
+                "{column, threshold: float, direction: rising|falling}"
+            ),
+        },
+        "callable": _query_compare_crossings,
+    },
+]
+
+
+def get_pipeline_query(query_id: str) -> Optional[Dict[str, Any]]:
+    """Lookup helper — returns the query definition or None."""
+    return next(
+        (q for q in PIPELINE_QUERY_DEFINITIONS if q["id"] == query_id),
+        None,
+    )
+
+
+def render_query_catalog_for_prompt() -> str:
+    """Render the query catalog + column menu as a markdown block."""
+    lines: List[str] = ["**Available queries:**"]
+    for q in PIPELINE_QUERY_DEFINITIONS:
+        lines.append(f"- `{q['id']}` — {q['description']}")
+        for pname, ptype in q["params_schema"].items():
+            lines.append(f"    - `{pname}`: {ptype}")
+    lines.append("")
+    lines.append(
+        "**Available columns:** "
+        + ", ".join(f"`{c}`" for c in QUERY_AVAILABLE_COLUMNS)
+    )
+    return "\n".join(lines)
+
+
+def run_pipeline_query(
+    df: pd.DataFrame, start_index: int, end_index: int,
+    query_id: str, params: Dict[str, Any],
+) -> Tuple[Dict[str, Any], Optional[str]]:
+    """Dispatch a query by id with the VLM-supplied params.
+
+    Returns ``(payload, error)`` where ``payload`` is a dict with any of:
+
+      * ``iloc``    — primary parent-frame iloc (None when no match)
+      * ``value``   — primary value (None when no match)
+      * ``samples`` — list of ``{iloc, value, note?}`` for multi-point queries
+      * ``extra``   — query-specific extras (e.g. slope deltas)
+
+    ``error`` is a string when params are malformed or the query raises.
+    Validates that all required params are present before invoking the
+    callable. Missing keys default to None in the returned payload so the
+    answer attachment always has a uniform shape.
+    """
+    base: Dict[str, Any] = {"iloc": None, "value": None, "samples": None, "extra": None}
+    q = get_pipeline_query(query_id)
+    if q is None:
+        return base, f"unknown query '{query_id}'"
+    accepted: Dict[str, Any] = {}
+    for pname in q["params_schema"].keys():
+        if pname not in params:
+            return base, f"missing param '{pname}' for query '{query_id}'"
+        accepted[pname] = params[pname]
+    try:
+        raw = q["callable"](df, start_index, end_index, **accepted)
+    except Exception as exc:  # noqa: BLE001 — surface any failure to the caller
+        return base, f"{type(exc).__name__}: {exc}"
+    if raw is None:
+        col = accepted.get("column")
+        col_msg = ""
+        if col is not None:
+            if col not in QUERY_AVAILABLE_COLUMNS:
+                col_msg = (
+                    f" — column '{col}' is not in the catalog; valid: "
+                    + ", ".join(QUERY_AVAILABLE_COLUMNS)
+                )
+            elif col not in df.columns:
+                col_msg = (
+                    f" — column '{col}' is missing from the DataFrame"
+                )
+        return base, (
+            f"query '{query_id}' returned no data (likely column mismatch, "
+            f"out-of-range indices, or NaN values)" + col_msg
+        )
+    if not isinstance(raw, dict):
+        return base, f"query '{query_id}' returned non-dict result: {type(raw).__name__}"
+    return {**base, **raw}, None
 
 
 def _create_gas_brake_trajectory_plot(

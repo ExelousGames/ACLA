@@ -46,6 +46,8 @@ _eval_llm_holder: Dict[str, Any] = {
     "stage_iter": None,
     "stage_total": None,
     "stage_attachments": [],
+    "stage_graphs": None,
+    "step_event_callback": None,
 }
 _eval_llm_lock = threading.Lock()
 
@@ -57,21 +59,78 @@ def set_eval_llm(vlm: Optional[Callable], llm: Optional[Callable]) -> None:
         _eval_llm_holder["llm"] = llm
 
 
-def set_active_stage(node_name: str, phase: str) -> None:
+def set_step_event_callback(cb: Optional[Callable]) -> None:
+    """Register a callback for non-VLM step events (e.g. zoom rendering)."""
+    with _eval_llm_lock:
+        _eval_llm_holder["step_event_callback"] = cb
+
+
+def emit_step_event(
+    node_name: str,
+    phase: str,
+    summary: str,
+    iteration: Optional[int] = None,
+    total: Optional[int] = None,
+    attachments: Optional[List["PipelineAttachment"]] = None,
+    graphs: Optional[List[str]] = None,
+) -> None:
+    """Surface a non-VLM pipeline event to the UI.
+
+    Used by render-only agents (zoom) that don't go through ``vlm_generate``
+    but still want a section in the live VLM output. Builds the stage
+    payload locally so it doesn't disturb the global stage state used by
+    the next real VLM call.
+    """
+    cb = _eval_llm_holder.get("step_event_callback")
+    if cb is None:
+        return
+    att_summaries: List[Dict[str, Any]] = []
+    for att in attachments or []:
+        count = (
+            len(att.content)
+            if att.kind == "image_set" and isinstance(att.content, list)
+            else None
+        )
+        att_summaries.append({
+            "name": att.name,
+            "label": att.label,
+            "kind": att.kind,
+            "count": count,
+        })
+    stage = {
+        "node_name": node_name,
+        "phase": phase,
+        "iteration": iteration,
+        "total": total,
+        "attachments": att_summaries,
+        "graphs": list(graphs) if graphs else None,
+    }
+    cb(summary, stage)
+
+
+def set_active_stage(
+    node_name: str,
+    phase: str,
+    graphs: Optional[List[str]] = None,
+) -> None:
     """Record which (node, phase) is about to make a VLM call.
 
     Read by the pipeline's vlm_generate wrapper to tag prompt-callback
-    events with the correct source.  Iteration counter and attachment
-    list are reset when the node changes, and preserved otherwise so
-    evaluator phases inherit the values set by the pipeline node.
+    events with the correct source.  Iteration counter, attachment list,
+    and graph-id tag are reset when the node changes, and preserved
+    otherwise so evaluator phases inherit the values set by the pipeline
+    node. ``graphs`` overrides the cached tag when provided.
     """
     with _eval_llm_lock:
         if node_name != _eval_llm_holder["stage_node"]:
             _eval_llm_holder["stage_iter"] = None
             _eval_llm_holder["stage_total"] = None
             _eval_llm_holder["stage_attachments"] = []
+            _eval_llm_holder["stage_graphs"] = None
         _eval_llm_holder["stage_node"] = node_name
         _eval_llm_holder["stage_phase"] = phase
+        if graphs is not None:
+            _eval_llm_holder["stage_graphs"] = list(graphs)
 
 
 def set_active_iteration(iteration: Optional[int], total: Optional[int]) -> None:
@@ -109,12 +168,14 @@ def set_active_attachments(inputs: Optional[List["PipelineAttachment"]]) -> None
 def get_active_stage() -> Dict[str, Any]:
     """Snapshot the current stage tags for callback dispatch."""
     with _eval_llm_lock:
+        graphs = _eval_llm_holder["stage_graphs"]
         return {
             "node_name": _eval_llm_holder["stage_node"],
             "phase": _eval_llm_holder["stage_phase"],
             "iteration": _eval_llm_holder["stage_iter"],
             "total": _eval_llm_holder["stage_total"],
             "attachments": list(_eval_llm_holder["stage_attachments"]),
+            "graphs": list(graphs) if graphs else None,
         }
 
 
@@ -666,6 +727,11 @@ def _run_evidence_evaluator(
             "contradictions, no leaps)?\n"
             "- Are cited indices, labels, observations, or trends actually "
             "present in the evidence — or are some invented?\n"
+            "- Are any ranges / index pairs in the output picked correctly "
+            "per the parent request? Each `[start, end]` (or equivalent) "
+            "must satisfy whatever the parent prompt asks of it and reflect "
+            "a feature actually visible in the evidence rather than an "
+            "arbitrary slice.\n"
             "- For visual claims (graph shapes, trace positions, colours, "
             "comparisons), do they match what is visible in the attached "
             "images? Treat the images as primary evidence for visual claims.\n\n"

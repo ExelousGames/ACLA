@@ -249,6 +249,7 @@ def render_agent_annotation(df, form_start, form_end, form_labels, session_id, s
                     "planner": "🧠",
                     "step_solver": "🛠️",
                     "describe_graphs": "🔍",
+                    "zoom": "🔬",
                     "label_verifier": "✅",
                     "proposal_synthesizer": "📝",
                 }
@@ -283,13 +284,15 @@ def render_agent_annotation(df, form_start, form_end, form_labels, session_id, s
                     node = meta.get("node_name") or "Processing"
                     icon = _NODE_ICONS.get(node, "●")
                     title = node.replace("_", " ").title()
+                    graphs = meta.get("graphs") or []
+                    graph_tag = f" [{', '.join(graphs)}]" if graphs else ""
                     iteration = meta.get("iteration")
                     total = meta.get("total")
                     iter_tag = f" ({iteration}/{total})" if iteration and total else ""
                     phase = meta.get("phase") or ""
                     phase_tag = f" — {phase}" if phase else ""
                     dur_tag = f"  ({duration:.1f}s)" if duration else ""
-                    return f"{icon} {title}{iter_tag}{phase_tag}{dur_tag}"
+                    return f"{icon} {title}{graph_tag}{iter_tag}{phase_tag}{dur_tag}"
 
                 def _finalize_active_section() -> None:
                     """Move the active VLM section to completed_sections."""
@@ -318,14 +321,18 @@ def render_agent_annotation(df, form_start, form_end, form_labels, session_id, s
                             header = _format_header(s["meta"], s.get("duration", 0))
                             with st.expander(header, expanded=False):
                                 _render_attachments(s["meta"])
-                                st.markdown("**Prompt:**")
+                                has_response = bool(s.get("text"))
+                                st.markdown(
+                                    "**Prompt:**" if has_response else "**Summary:**"
+                                )
                                 with st.container(border=True):
                                     st.markdown(s["prompt"])
                                 if s.get("reasoning"):
                                     st.markdown(
                                         f"**💭 Thinking:**\n\n{s['reasoning']}"
                                     )
-                                st.markdown(f"**Response:**\n\n{s['text']}")
+                                if has_response:
+                                    st.markdown(f"**Response:**\n\n{s['text']}")
 
                 def _render_active() -> None:
                     """Re-render the live streaming section, or clear it."""
@@ -383,6 +390,20 @@ def render_agent_annotation(df, form_start, form_end, form_labels, session_id, s
                     reasoning_buffer.append(chunk)
                     _render_vlm_output()
 
+                def on_step_event(summary: str, stage: dict) -> None:
+                    # Non-VLM event (e.g. zoom rendering). Finalize any
+                    # in-flight active section, then append a response-less
+                    # completed section directly.
+                    _finalize_active_section()
+                    completed_sections.append({
+                        "meta": dict(stage),
+                        "prompt": summary,
+                        "reasoning": "",
+                        "text": "",
+                        "duration": 0,
+                    })
+                    _render_vlm_output()
+
                 def on_progress(node_name: str, detail: str) -> None:
                     # Rough progress: each completed VLM section nudges the bar.
                     pct = min((len(completed_sections) + 1) / 12, 0.99)
@@ -404,6 +425,7 @@ def render_agent_annotation(df, form_start, form_end, form_labels, session_id, s
                         vlm_stream_callback=on_vlm_stream,
                         vlm_prompt_callback=on_vlm_prompt,
                         vlm_reasoning_callback=on_vlm_reasoning,
+                        step_event_callback=on_step_event,
                     )
 
                 # Finalise any still-active call and force a clean re-render
