@@ -580,6 +580,102 @@ def _query_compute_slope(
     }
 
 
+def _query_find_dips_on_main_slope(
+    df: pd.DataFrame, start_index: int, end_index: int,
+    column: str, smoothing_window: int, min_dip_depth: float,
+) -> Optional[Dict[str, Any]]:
+    """Find local dips along the linear-regression baseline of <column>.
+
+    Fits a least-squares line to (smoothed) <column> over the zoom range,
+    then identifies every local minimum of the residual (signal − baseline)
+    where the residual is negative AND its magnitude ≥ <min_dip_depth>.
+
+    Each surviving local min represents one "dip on the main slope" — a
+    moment where the signal briefly fell behind the overall trend. The
+    iloc reported per dip is the deepest point of that dip. Endpoints
+    are excluded from local-min detection.
+
+    Returns ``samples`` — one entry per dip, ``{iloc, value, depth}``,
+    sorted by iloc ascending; ``value`` is the raw (unsmoothed) signal
+    at the dip; ``depth`` is the absolute residual. Returns ``None`` when
+    the column is missing, has fewer than 3 finite samples, or the smoothing
+    window is < 1. When the regression succeeds but no dip meets the
+    threshold, returns an empty samples list with extras populated.
+    """
+    try:
+        window = int(smoothing_window)
+    except (TypeError, ValueError):
+        return None
+    if window < 1:
+        return None
+    try:
+        depth_thr = float(min_dip_depth)
+    except (TypeError, ValueError):
+        return None
+
+    segment = df.loc[int(start_index): int(end_index)]
+    arr_raw = _resolve_column(column, segment)
+    if arr_raw is None or len(arr_raw) < 3:
+        return None
+
+    smoothed = (
+        pd.Series(arr_raw)
+        .rolling(window=window, center=True, min_periods=1)
+        .median()
+        .to_numpy()
+    )
+    finite_mask = np.isfinite(smoothed)
+    if int(finite_mask.sum()) < 3:
+        return None
+
+    x_local = np.arange(len(smoothed), dtype=float)
+    slope, intercept = np.polyfit(x_local[finite_mask], smoothed[finite_mask], 1)
+    baseline = intercept + slope * x_local
+    residual = smoothed - baseline
+
+    eps = 1e-9
+    if slope > eps:
+        slope_direction = "rising"
+    elif slope < -eps:
+        slope_direction = "falling"
+    else:
+        slope_direction = "flat"
+
+    samples: List[Dict[str, Any]] = []
+    for i in range(1, len(residual) - 1):
+        ri, rp, rn = residual[i], residual[i - 1], residual[i + 1]
+        if not (np.isfinite(ri) and np.isfinite(rp) and np.isfinite(rn)):
+            continue
+        if not (ri < rp and ri <= rn):
+            continue
+        if ri >= 0:
+            continue
+        depth = abs(float(ri))
+        if depth < depth_thr:
+            continue
+        raw_val = arr_raw[i]
+        if not np.isfinite(raw_val):
+            continue
+        samples.append({
+            "iloc": int(start_index) + i,
+            "value": float(raw_val),
+            "depth": depth,
+        })
+
+    return {
+        "iloc": None,
+        "value": None,
+        "samples": samples,
+        "extra": {
+            "slope": float(slope),
+            "intercept": float(intercept),
+            "slope_direction": slope_direction,
+            "n_dips": len(samples),
+            "smoothing_window": window,
+        },
+    }
+
+
 def _query_find_threshold_crossing(
     df: pd.DataFrame, start_index: int, end_index: int,
     columns: List[str], threshold: float, smoothing_window: int,
@@ -729,6 +825,21 @@ PIPELINE_QUERY_DEFINITIONS: List[Dict[str, Any]] = [
             "iloc_b": "parent-frame iloc (end of interval)",
         },
         "callable": _query_compute_slope,
+    },
+    {
+        "id": "find_dips_on_main_slope",
+        "label": "Dips on linear-regression baseline",
+        "description": (
+            "Find local dips in <column> below its least-squares trend line "
+            "over the zoom range. Returns `samples` — one `{iloc, value, depth}` "
+            "per dip, where `iloc` is the deepest point of that dip."
+        ),
+        "params_schema": {
+            "column": "DataFrame column name",
+            "smoothing_window": "int ≥ 1 — rolling-median width (1=off, 5=light, 11=heavy)",
+            "min_dip_depth": "float — minimum dip depth in signal units (e.g. ~0.05 for brake/throttle 0–1, ~5 for speed in km/h)",
+        },
+        "callable": _query_find_dips_on_main_slope,
     },
     {
         "id": "find_threshold_crossing",
