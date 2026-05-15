@@ -1,35 +1,37 @@
 """
-describe_graphs meta-Agent — overview + question-driven zooms + prose synth.
+describe_graphs meta-Agent — overview + question-driven zoom + prose synth.
 
 Uniform topology (inherited from the framework):
 
-    planner (overview + zoom questions) ──► step_solvers ──► synthesizer ──► evaluator
-                                              (1..N delegates  (single VLM      (no-op)
-                                               to zoom; each    analysis call
-                                               returns ONE      using overview
-                                               structured       images + zoom
-                                               answer)          answer table)
+    planner (overview + zoom questions) ──► step_solver ──► synthesizer ──► evaluator
+                                              (delegates       (single VLM      (no-op)
+                                               ONCE to zoom     analysis call
+                                               with the full    using overview
+                                               question list)   images + zoom
+                                                                answer prose)
 
 Phase 1 — Planner renders a low-resolution overview of the requested graphs
 at the parent range and asks the VLM, using the per-graph skill, which
-precise readings cannot be cleanly resolved at this scale. For each such
-reading it emits ONE zoom step carrying a natural-language ``question``,
-a ``context`` cue, and a sub-range. If every reading is resolvable from
-the overview alone, a ``skip=True`` sentinel step is emitted and the
-synthesizer runs against the overview only.
+precise readings cannot be cleanly resolved at this scale. Every such
+reading is collected into a single ``questions`` list (each entry carries
+a natural-language ``question``, a ``context`` cue, a sub-range, and a
+``requested_graphs`` subset) and dispatched as ONE zoom step. If every
+reading is resolvable from the overview alone, a ``skip=True`` sentinel
+step is emitted and the synthesizer runs against the overview only.
 
-Phase 2 — Executor delegates each zoom step to ``zoom``. The zoom worker
-renders the graph(s) at its sub-range, asks the VLM to pick a query +
-parameters from ``PIPELINE_QUERY_DEFINITIONS``, runs that query on the
-DataFrame (deterministic math — no pixel-reading), and emits ONE
-``step_solver.{step_id}.answer`` attachment with the exact iloc/value.
+Phase 2 — Executor delegates the single zoom step to ``zoom``. The zoom
+worker handles every question in one invocation: it renders all
+sub-ranges, asks the VLM to pick queries from
+``PIPELINE_QUERY_DEFINITIONS`` for every question at once, runs each
+query deterministically, and emits ONE ``step_solver.1.answer``
+attachment carrying the combined prose answer covering every question.
 
 Phase 3 — Synthesizer is the ONLY VLM analysis step. It receives the
-overview images (for trend/shape language) plus the zoom-answer table
-(for precise ilocs), and writes one prose paragraph per graph. It must
-cite ilocs verbatim from the answer table and explicitly flag any
-unresolved readings — no estimating from pixels. The evaluator suite
-runs inline here.
+overview images (for trend/shape language) plus the zoom answer
+attachment (which already cites exact ilocs from deterministic queries),
+and writes one prose paragraph per graph. It must cite ilocs verbatim
+from the zoom answer and explicitly flag any unresolved readings — no
+estimating from pixels. The evaluator suite runs inline here.
 """
 
 from __future__ import annotations
@@ -58,8 +60,9 @@ LOGGER = logging.getLogger(__name__)
 
 DESCRIBE_GRAPHS_AGENT_NAME = "describe_graphs"
 
-# Bounded zoom — caps locked at design time.
-MAX_ZOOM_STEPS = 2          # max number of zoom sub-ranges planner may emit
+# Bounded zoom — caps locked at design time. Zoom-step count is uncapped:
+# the planner emits as many sub-ranges as the skill's how_to_analyze procedure
+# demands.
 MIN_ZOOM_SPAN = 3           # min indices in a zoom sub-range
 MAX_RECURSIVE_ZOOM_DEPTH = 1  # beyond this depth, planner falls back to terminal
 
@@ -128,7 +131,7 @@ def _parse_zoom_decision(
     available_set = set(available_graph_ids)
 
     valid: List[Dict[str, Any]] = []
-    for entry in raw_ranges[:MAX_ZOOM_STEPS]:
+    for entry in raw_ranges:
         if not isinstance(entry, dict):
             continue
         s = entry.get("start")
@@ -286,12 +289,14 @@ def _planner(state: AgentState) -> Dict[str, Any]:
         f"(length {parent_end - parent_start})\n"
         f"**Graphs rendered:** {', '.join(overview_descriptions)}\n\n"
         f"{skill_prompt}\n\n"
-        "Using the per-graph `how_to_analyze` procedure above as your "
-        "yardstick, inspect the overview images and identify each precise "
-        "reading (an exact iloc / threshold crossing / extremum) the "
-        "procedure needs but the overview cannot resolve cleanly. For each "
-        f"such reading, dispatch ONE zoom step (max {MAX_ZOOM_STEPS} total). "
-        "Each zoom step carries:\n"
+        "**Follow the per-graph `how_to_analyze` procedure above as written** "
+        "— it is the authoritative spec for what this analysis must produce. "
+        "Walk through each step against the overview images and **use zoom to "
+        "actually nail down the evidence**: the overview is a sketch, the zoom "
+        "is where you commit to a number. For every precise reading the "
+        "procedure calls for (exact iloc, threshold crossing, extremum, slope "
+        "window, etc.), dispatch ONE zoom step to pin it down — do not guess "
+        "from the overview. Each zoom step carries:\n"
         "- a sub-range tight around the feature,\n"
         "- a `question` in plain English stating EXACTLY what to find (the "
         "zoom worker will pick a query + parameters; you do NOT need to name "
@@ -338,28 +343,31 @@ def _planner(state: AgentState) -> Dict[str, Any]:
     if not zoom_required or not zoom_ranges:
         return _no_zoom_plan("VLM judged no zoom needed")
 
-    # Emit one zoom step per requested sub-range. Each carries the planner's
-    # question + context + the per-graph tables the parent built; the zoom
-    # worker picks a query and runs it on those tables only.
-    plan_steps: List[Dict[str, Any]] = []
-    for i, r in enumerate(zoom_ranges, start=1):
-        step_builds = {
-            gid: graph_builds[gid]
-            for gid in r["requested_graphs"]
-            if gid in graph_builds
-        }
-        plan_steps.append({
-            "step_id": i,
-            "agent": "zoom",
-            "description": r["question"],
+    # Collapse every VLM-emitted zoom range into ONE zoom step carrying the
+    # full question list. The zoom worker handles all questions in a single
+    # invocation — picks queries for every question with one VLM call,
+    # runs them deterministically, and emits one combined answer.
+    questions: List[Dict[str, Any]] = []
+    for r in zoom_ranges:
+        questions.append({
             "question": r["question"],
             "context": r["context"],
-            "parent_start": r["start"],
-            "parent_end": r["end"],
+            "start": r["start"],
+            "end": r["end"],
             "requested_graphs": r["requested_graphs"],
-            "tools": list(requested_tools),
-            "graph_builds": step_builds,
         })
+
+    plan_steps: List[Dict[str, Any]] = [{
+        "step_id": 1,
+        "agent": "zoom",
+        "description": f"Answer {len(questions)} zoom question(s)",
+        "questions": questions,
+        "parent_start": parent_start,
+        "parent_end": parent_end,
+        "requested_graphs": list(requested_graphs),
+        "tools": list(requested_tools),
+        "graph_builds": graph_builds,
+    }]
 
     plan_attachment = PipelineAttachment(
         name="planner.plan",
@@ -369,7 +377,7 @@ def _planner(state: AgentState) -> Dict[str, Any]:
     )
     messages.append({
         "role": "planner",
-        "content": f"describe_graphs plan: {len(plan_steps)} zoom step(s)",
+        "content": f"describe_graphs plan: 1 zoom step ({len(questions)} question(s))",
     })
 
     return {

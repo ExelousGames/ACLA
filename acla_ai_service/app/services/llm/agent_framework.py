@@ -90,6 +90,7 @@ class AgentState(TypedDict, total=False):
     tools: list
     question: str
     context: str
+    questions: list
     graph_builds: dict
 
     # Planner output
@@ -317,7 +318,7 @@ class Agent:
 class AgentBudget:
     """Recursion limits enforced at every spawn."""
     max_depth: int = 4
-    max_total_spawns: int = 16
+    max_total_spawns: int = 64
     max_react_rounds: int = 2
 
     def check(self, state: AgentState) -> None:

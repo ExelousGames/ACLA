@@ -68,6 +68,12 @@ class AnnotationResult:
     graph_images: List[bytes] = field(default_factory=list)  # PNG bytes
     sub_start: Optional[int] = None
     sub_end: Optional[int] = None
+    # Per-label proposals from the synthesizer. Each entry:
+    #   {label_id, start_index, end_index, reasoning}
+    # The UI groups these by (start_index, end_index) to materialise one
+    # sub-segment per AI-discovered range, rather than collapsing them all
+    # into the union span [sub_start, sub_end].
+    label_annotations: List[dict] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -239,6 +245,7 @@ def run_annotation_pipeline(
         iterations=1,
         messages=final_state.get("messages", []),
         graph_images=final_state.get("all_graph_images", []),
+        label_annotations=final_state.get("final_label_annotations", []),
     )
 
 

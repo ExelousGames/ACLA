@@ -803,8 +803,7 @@ labels:
     description: >
       The player's slip balance shows **primary oversteer** (or a
       standalone **oversteer** section, peak above +0.02 rad) across
-      an index range that overlaps **brake initiation** and the
-      **deceleration onset** — i.e. the corner-entry phase.
+      an index range that overlaps the corner-entry phase.
     parent: MS
     children: []
     exclusive_with: ["MS45"]
@@ -815,8 +814,7 @@ labels:
     description: >
       The player's slip balance shows **primary understeer** (or a
       standalone **understeer** section, trough below −0.02 rad)
-      across an index range that overlaps **brake initiation** and
-      the **deceleration onset** — i.e. the corner-entry phase.
+      across an index range that overlaps the corner-entry phase.
     parent: MS
     children: []
     exclusive_with: ["MS44"]
@@ -827,8 +825,7 @@ labels:
     description: >
       The player's slip balance shows **primary oversteer** (or a
       standalone **oversteer** section, peak above +0.02 rad) across
-      an index range that overlaps **throttle application** and the
-      **acceleration onset** — i.e. the corner-exit phase.
+      an index range that overlaps the corner-exit phase.
     parent: MS
     children: []
     exclusive_with: ["MS47"]
@@ -839,8 +836,7 @@ labels:
     description: >
       The player's slip balance shows **primary understeer** (or a
       standalone **understeer** section, trough below −0.02 rad)
-      across an index range that overlaps **throttle application**
-      and the **acceleration onset** — i.e. the corner-exit phase.
+      across an index range that overlaps the corner-exit phase.
     parent: MS
     children: []
     exclusive_with: ["MS46"]

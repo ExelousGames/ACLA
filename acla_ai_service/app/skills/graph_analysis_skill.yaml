@@ -177,9 +177,6 @@ graphs:
       - "Do NOT invent events to fill the format. If the trace has only one application and one release, report only one of each"
       - "Anchor EVERY shape feature and event to an index range or specific index — \"gradual across 5 indices\" without a start index is insufficient; write \"gradual across indices 94–99\" instead"
       - "Suspect-pattern check: if your output shows the player consistently offset by exactly the same number of indices at every event, you are pattern-matching rather than reading — restart from step 3"
-      - "For a flat-zero segment, state the classification rather than fabricating a release"
-      - "The example envelope shows structure, not content — classify from the trace and emit only the clauses your chosen class requires; do not force release / re-application phrasing onto a flat, one-sided, or unmatch segment"
-
   brake:
     title: "Brake Application: Expert vs Player"
     graph_type: feature_plot
@@ -326,9 +323,7 @@ graphs:
       - "Anchor EVERY shape feature and event to an index range or specific index — \"gradual across 5 indices\" without a start index is insufficient; write \"gradual across indices 45–50\" instead"
       - "Suspect-pattern check: if your output shows the player consistently offset by exactly the same number of indices at every event, you are pattern-matching rather than reading — restart from step 3"
       - "For a flat-zero segment, state the classification rather than fabricating an initiation or release"
-      - "The example envelope shows structure, not content — classify from the trace and emit only the clauses your chosen class requires; do not force initiation / release phrasing onto a flat, one-sided, or unmatch segment"
       - "Do NOT confuse brake release (trace returning to zero) with brake reduction (decreasing but not to zero — i.e. trail braking)"
-      - "Describe what you see — do not interpret or diagnose"
 
   time_delta:
     title: "Time Difference to Expert"

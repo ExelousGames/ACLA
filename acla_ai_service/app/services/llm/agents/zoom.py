@@ -1,47 +1,52 @@
 """
-zoom — Agent that answers ONE planner question over a sub-range.
+zoom — Agent that answers ALL planner questions over their sub-ranges in one go.
 
 Topology (standard planner → executor(loop) → synthesizer):
 
-    planner     — renders the zoom graph(s), calls the VLM once to classify
-                  the question and pick ONE OR MORE queries from
-                  ``PIPELINE_QUERY_DEFINITIONS``. Emits N plan steps, each
-                  carrying ``{query, params, why}``. If the VLM declines
-                  (or there's no question / no graph), emits a single
-                  ``query=None`` step so the synthesizer records the
-                  unresolved answer.
+    planner     — receives the parent's full ``questions`` list (each
+                  carrying its own question, context, sub-range, and
+                  requested_graphs subset). Renders the zoom graphs for
+                  every question, then makes ONE VLM call that classifies
+                  every question against its images and picks one or more
+                  queries from ``PIPELINE_QUERY_DEFINITIONS`` for each.
+                  Emits N plan steps — one per picked query — each tagged
+                  with ``question_index`` plus ``{query, params, why}``.
+                  Questions with no usable query become a single marker
+                  step so the synthesizer can still record an unresolved
+                  answer.
 
-    executor    — runs the ONE planned query per step on the DataFrame
-                  (deterministic math) and emits ``partial.{step_id}`` — an
-                  internal attachment, NOT in ``produces``. The framework
-                  accumulates partials across executor iterations via the
-                  attachment-pool reducer.
+    executor    — runs the planned query for the step on the question's
+                  sub-range against the question's graph-filtered
+                  ``graph_builds`` (deterministic math). Emits
+                  ``partial.{step_id}`` — an internal attachment, NOT in
+                  ``produces`` — carrying the result plus its
+                  ``question_index``.
 
-    synthesizer — collects every ``partial.*`` from the pool, makes ONE
-                  text-LLM call to convert the structured query results into
-                  a short prose paragraph that directly answers the question
-                  (citing ilocs / values verbatim from the deterministic
-                  queries), and emits ONE ``answer`` attachment (kind=text)
-                  carrying that prose. ``delegate_step`` renamespaces it to
+    synthesizer — groups every ``partial.*`` by ``question_index``, makes
+                  ONE text-LLM call that converts the structured results
+                  for every question into a clearly delimited prose block
+                  (one paragraph per question, citing ilocs verbatim), and
+                  emits ONE ``answer`` attachment (kind=text) covering
+                  every question. ``delegate_step`` renamespaces it to
                   ``step_solver.{parent_step_id}.answer`` for the
                   describe_graphs synthesizer to consume directly.
 
 Inputs from the parent (forwarded into sub_state by ``delegate_step`` —
 the parent step's fields land directly in ``state``):
 
-    state["question"]          required — natural-language question
-    state["context"]           optional — overview cue motivating it
-    state["requested_graphs"]  list of graph ids to render
-    state["parent_start"/_end] zoom sub-range bounds
+    state["questions"]         required — list of question dicts, each:
+                                 {question, context, start, end,
+                                  requested_graphs: [graph_id, ...]}
     state["graph_builds"]      required — {graph_id: DataFrame} built by
                                the parent agent. Each table holds only the
                                data that graph uses (drawn series +
                                renderer-internal columns). Zoom renders /
                                queries against these tables only — raw df
                                is not available.
+    state["parent_start"/_end] envelope range (full parent scope).
 
 Output (single attachment, leaf name ``answer``, kind=text):
-    A prose paragraph answering the question, with ilocs / values cited
+    Combined prose covering every question, with ilocs / values cited
     verbatim from the structured query partials. The structured partials
     themselves remain available in the attachment pool as
     ``partial.{step_id}`` for UI inspection but are NOT propagated to the
@@ -69,9 +74,9 @@ LOGGER = logging.getLogger(__name__)
 
 ZOOM_AGENT_NAME = "zoom"
 
-# Cap on the number of queries the planner may pick per zoom invocation —
-# prevents the VLM from going wild with redundant readings.
-MAX_QUERIES_PER_ZOOM = 4
+# Cap on the number of queries the planner may pick per question — prevents
+# the VLM from going wild with redundant readings on any single question.
+MAX_QUERIES_PER_QUESTION = 4
 
 
 def _union_columns(graph_builds: Dict[str, Any]) -> List[str]:
@@ -113,16 +118,19 @@ def _call_llm(prompt: str) -> str:
     return llm_fn(prompt)
 
 
-def _parse_query_picks(text: str) -> Optional[List[Dict[str, Any]]]:
-    """Extract the list of query picks from the VLM's response.
+def _parse_multi_question_picks(text: str) -> Optional[Dict[int, List[Dict[str, Any]]]]:
+    """Extract ``{question_index: [query_pick, ...]}`` from the VLM response.
 
-    The VLM must respond with the multi-pick shape regardless of how many
-    queries it picks::
+    The VLM must respond with::
 
-        {"queries": [{"query": "...", "params": {...}, "why": "..."}, ...]}
+        {"questions": [
+           {"question_index": 1,
+            "queries": [{"query": "...", "params": {...}, "why": "..."}, ...]},
+           ...]}
 
-    Returns the list (possibly empty) or ``None`` when no JSON object is
-    found or the ``queries`` key is missing.
+    Returns the mapping (possibly with empty lists for unresolved questions),
+    or ``None`` when no JSON object is found or the ``questions`` key is
+    missing / malformed.
     """
     def _try_loads(s: str) -> Optional[Any]:
         try:
@@ -140,210 +148,347 @@ def _parse_query_picks(text: str) -> Optional[List[Dict[str, Any]]]:
             parsed = _try_loads(brace.group())
     if not isinstance(parsed, dict):
         return None
-    if not isinstance(parsed.get("queries"), list):
+    raw_questions = parsed.get("questions")
+    if not isinstance(raw_questions, list):
         return None
-    return [p for p in parsed["queries"] if isinstance(p, dict)]
+
+    out: Dict[int, List[Dict[str, Any]]] = {}
+    for entry in raw_questions:
+        if not isinstance(entry, dict):
+            continue
+        qi = entry.get("question_index")
+        if not isinstance(qi, int):
+            continue
+        queries = entry.get("queries")
+        if not isinstance(queries, list):
+            continue
+        out[qi] = [q for q in queries if isinstance(q, dict)]
+    return out
 
 
-def _unresolved_plan(
-    question: str,
-    context: str,
-    zoom_start: int,
-    zoom_end: int,
+def _normalize_questions(state: AgentState) -> List[Dict[str, Any]]:
+    """Read questions from state, accepting either the multi-question or
+    legacy single-question shape.
+
+    Returns a list of normalized question dicts:
+        {question, context, start, end, requested_graphs}
+    """
+    raw = state.get("questions")
+    if isinstance(raw, list) and raw:
+        normalized: List[Dict[str, Any]] = []
+        for q in raw:
+            if not isinstance(q, dict):
+                continue
+            normalized.append({
+                "question": str(q.get("question", "")).strip(),
+                "context": str(q.get("context", "") or "").strip(),
+                "start": int(q.get("start", state.get("parent_start", 0))),
+                "end": int(q.get("end", state.get("parent_end", 0))),
+                "requested_graphs": list(q.get("requested_graphs") or []),
+            })
+        return [q for q in normalized if q["question"]]
+
+    # Legacy single-question shape — kept so direct callers without the
+    # describe_graphs collapsing still work.
+    q_text = (state.get("question") or state.get("goal") or "").strip()
+    if not q_text:
+        return []
+    return [{
+        "question": q_text,
+        "context": str(state.get("context") or "").strip(),
+        "start": int(state.get("parent_start", 0)),
+        "end": int(state.get("parent_end", 0)),
+        "requested_graphs": list(state.get("requested_graphs") or []),
+    }]
+
+
+def _unresolved_step(
+    sid: int,
+    qi: int,
+    question: Dict[str, Any],
     why: str,
     error: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Emit a single plan step recording an unresolved answer."""
+    """Single marker step recording an unresolved answer for one question."""
     return {
-        "plan": f"unresolved — {why}",
-        "plan_steps": [{
-            "step_id": 1,
-            "description": question or "(no question)",
-            "question": question,
-            "context": context,
-            "range": [int(zoom_start), int(zoom_end)],
-            "query": None,
-            "params": {},
-            "why": why,
-            "error": error,
-        }],
-        "current_step_index": 0,
+        "step_id": sid,
+        "question_index": qi,
+        "description": question["question"] or "(no question)",
+        "question": question["question"],
+        "context": question["context"],
+        "range": [int(question["start"]), int(question["end"])],
+        "requested_graphs": list(question["requested_graphs"]),
+        "query": None,
+        "params": {},
+        "why": why,
+        "error": error,
     }
 
 
 def _planner(state: AgentState) -> Dict[str, Any]:
-    """Classify the question + pick one or more queries from the catalog.
+    """Classify every question + pick queries from the catalog in ONE VLM call.
 
-    Reads the parent's forwarded fields (``question``, ``context``,
-    ``requested_graphs``) from ``state`` — ``delegate_step`` puts them
-    there, not in a step dict. Renders the zoom graph(s) for the VLM
-    classification call (the images are NOT propagated downstream).
+    Reads the parent's forwarded ``questions`` list from ``state`` (or
+    falls back to the legacy single-question shape). Renders every
+    question's sub-range graphs into a single image batch, labels them
+    in the prompt so the VLM can associate images with questions, and
+    asks the VLM to pick queries per question_index.
     """
     from app.services.llm.annotation_agent_tools import (
         render_graph_builds,
         render_query_catalog_for_prompt,
     )
 
-    question: str = (state.get("question") or state.get("goal") or "").strip()
-    context: str = str(state.get("context") or "").strip()
-    requested_graphs: List[str] = list(state.get("requested_graphs") or [])
-    zoom_start = state.get("parent_start", 0)
-    zoom_end = state.get("parent_end", 0)
+    questions = _normalize_questions(state)
     graph_builds: Dict[str, Any] = state.get("graph_builds") or {}
 
     LOGGER.info(
-        "zoom planner: range=[%s,%s] graphs=%s question=%r",
-        zoom_start, zoom_end, requested_graphs, question,
+        "zoom planner: %d question(s), graphs=%s",
+        len(questions), sorted(graph_builds.keys()),
     )
 
-    if not question:
-        return _unresolved_plan(
-            question, context, zoom_start, zoom_end,
-            why="parent did not supply a question",
-        )
+    if not questions:
+        return {
+            "plan": "unresolved — no questions supplied",
+            "plan_steps": [_unresolved_step(
+                1, 1,
+                {"question": "(no question)", "context": "",
+                 "start": state.get("parent_start", 0),
+                 "end": state.get("parent_end", 0),
+                 "requested_graphs": []},
+                why="parent did not supply any questions",
+            )],
+            "current_step_index": 0,
+        }
 
     if not graph_builds:
-        return _unresolved_plan(
-            question, context, zoom_start, zoom_end,
-            why="parent did not supply graph_builds — no data available to query",
-        )
+        plan_steps = [
+            _unresolved_step(
+                i, i, q,
+                why="parent did not supply graph_builds — no data available to query",
+            )
+            for i, q in enumerate(questions, start=1)
+        ]
+        return {
+            "plan": "unresolved — no graph_builds",
+            "plan_steps": plan_steps,
+            "current_step_index": 0,
+        }
 
-    zoom_images: List[bytes] = []
-    zoom_descriptions: List[str] = []
-    # Zoom range is inclusive on both ends — render_graph_builds slices
-    # tables with .iloc[start:end] (exclusive end), so add 1 to include
-    # iloc=zoom_end in the rendered image.
-    for img, desc in render_graph_builds(
-        graph_builds, zoom_start, zoom_end + 1,
-    ):
-        zoom_descriptions.append(desc)
-        buf = io.BytesIO()
-        img.save(buf, format="PNG")
-        zoom_images.append(buf.getvalue())
+    # Render each question's sub-range graphs. Track image-index ranges so
+    # the prompt can tell the VLM "images N..M correspond to question Q".
+    per_q_render: List[Dict[str, Any]] = []
+    all_images: List[bytes] = []
+    for qi, q in enumerate(questions, start=1):
+        sub_builds = {
+            gid: graph_builds[gid]
+            for gid in q["requested_graphs"]
+            if gid in graph_builds
+        } or graph_builds
+        q_images: List[bytes] = []
+        q_descs: List[str] = []
+        # Zoom range is inclusive on both ends — render_graph_builds slices
+        # with .iloc[start:end] (exclusive end), so add 1 to include the
+        # last iloc in the rendered image.
+        for img, desc in render_graph_builds(
+            sub_builds, q["start"], q["end"] + 1,
+        ):
+            q_descs.append(desc)
+            buf = io.BytesIO()
+            img.save(buf, format="PNG")
+            q_images.append(buf.getvalue())
+        per_q_render.append({
+            "qi": qi,
+            "question": q,
+            "image_count": len(q_images),
+            "descriptions": q_descs,
+        })
+        all_images.extend(q_images)
 
-    if not zoom_images:
-        return _unresolved_plan(
-            question, context, zoom_start, zoom_end,
-            why="graph rendering produced no images",
-        )
+    if not all_images:
+        plan_steps = [
+            _unresolved_step(
+                i, i, q,
+                why="graph rendering produced no images for this question",
+            )
+            for i, q in enumerate(questions, start=1)
+        ]
+        return {
+            "plan": "unresolved — no images rendered",
+            "plan_steps": plan_steps,
+            "current_step_index": 0,
+        }
 
     # The VLM may only pick from columns present in the parent-supplied
     # tables — its query menu reflects exactly what's queryable.
-    query_columns = list(_union_columns(graph_builds))
-    catalog_block = render_query_catalog_for_prompt(query_columns)
+    catalog_block = render_query_catalog_for_prompt(list(_union_columns(graph_builds)))
+
     prompt_lines = [
-        "You are a telemetry-query selector. Your ONLY job is to pick the "
-        "minimum set of queries that, together, answer the question from "
-        "the actual telemetry data. Do NOT estimate any answer from the "
-        "image — each chosen query runs deterministic math on the DataFrame "
-        "and returns the exact iloc / value.",
+        "You are a telemetry-query selector. For EACH question below pick the "
+        "minimum set of queries that, together, answer it from the actual "
+        "telemetry data. Each chosen query runs deterministic math on the "
+        "DataFrame and returns the exact iloc / value — do NOT estimate any "
+        "answer from the image.",
         "",
-        f"**Question:** {question}",
     ]
-    if context:
-        prompt_lines.append(f"**Context:** {context}")
+    img_offset = 1
+    for entry in per_q_render:
+        q = entry["question"]
+        ic = entry["image_count"]
+        if ic == 0:
+            img_label = "no images rendered"
+        elif ic == 1:
+            img_label = f"image {img_offset}"
+        else:
+            img_label = f"images {img_offset}-{img_offset + ic - 1}"
+        prompt_lines.append(f"### Question {entry['qi']}")
+        prompt_lines.append(f"**Question:** {q['question']}")
+        if q["context"]:
+            prompt_lines.append(f"**Context:** {q['context']}")
+        prompt_lines.append(
+            f"**Sub-range:** [{q['start']}, {q['end']}] "
+            f"(inclusive — length {q['end'] - q['start'] + 1})"
+        )
+        prompt_lines.append(
+            f"**Graphs ({img_label}):** "
+            f"{', '.join(entry['descriptions']) or '(none)'}"
+        )
+        prompt_lines.append("")
+        img_offset += ic
+
     prompt_lines.extend([
-        f"**Zoom range:** [{zoom_start}, {zoom_end}] "
-        f"(inclusive — length {zoom_end - zoom_start + 1})",
-        f"**Graphs shown:** {', '.join(zoom_descriptions) or '(none)'}",
-        "",
         catalog_block,
         "",
-        "Inspect the graph(s) to classify what feature(s) the question is "
-        "asking about, then pick one or more queries — typically one is "
-        "enough, but questions that combine readings (e.g. 'values at "
-        "indices X and Y AND the slope between them') need multiple. "
-        f"Use the minimum number of queries that fully answers (cap: "
-        f"{MAX_QUERIES_PER_ZOOM}). Respond JSON ONLY — no prose, no comments:",
+        "Inspect the relevant images for each question, classify the feature "
+        "the question is asking about, then pick one or more queries — "
+        "typically one is enough, but questions that combine readings (e.g. "
+        "'values at ilocs X and Y AND the slope between them') need multiple. "
+        f"Cap per question: {MAX_QUERIES_PER_QUESTION}. Respond JSON ONLY — "
+        "no prose, no comments:",
         "```json",
         "{",
-        '  "queries": [',
+        '  "questions": [',
         '    {',
-        '      "query": "<query id from catalog>",',
-        '      "params": { ... params required by that query ... },',
-        '      "why":   "<one sentence justifying this pick>"',
+        '      "question_index": <int — matches the Question N heading>,',
+        '      "queries": [',
+        '        {',
+        '          "query":  "<query id from catalog>",',
+        '          "params": { ... params required by that query ... },',
+        '          "why":    "<one sentence justifying this pick>"',
+        '        }',
+        '      ]',
         '    }',
         '  ]',
-        "}",
+        '}',
         "```",
-        'If no query in the catalog can answer the question, return '
-        '`{"queries": []}` (empty array).',
+        'If no query in the catalog can answer a question, return '
+        '`"queries": []` for that question_index. Include every question_index '
+        'in the response.',
     ])
     prompt = "\n".join(prompt_lines)
 
-    set_active_stage(ZOOM_AGENT_NAME, "planner", graphs=requested_graphs)
-    set_active_attachments([])
-    raw = _call_vlm(prompt, zoom_images)
-    if not raw:
-        return _unresolved_plan(
-            question, context, zoom_start, zoom_end,
-            why="VLM unavailable",
-        )
-
-    picks = _parse_query_picks(raw)
-    if picks is None:
-        return _unresolved_plan(
-            question, context, zoom_start, zoom_end,
-            why="VLM response was not parseable JSON",
-            error=raw[:200],
-        )
-
-    # Cap to MAX_QUERIES_PER_ZOOM, drop entries without a query_id.
-    valid_picks: List[Dict[str, Any]] = []
-    for p in picks[:MAX_QUERIES_PER_ZOOM]:
-        query_id = p.get("query")
-        if not query_id:
-            continue
-        params = p.get("params") if isinstance(p.get("params"), dict) else {}
-        why = str(p.get("why", ""))
-        valid_picks.append({
-            "query": str(query_id),
-            "params": params,
-            "why": why,
-        })
-
-    if not valid_picks:
-        return _unresolved_plan(
-            question, context, zoom_start, zoom_end,
-            why="VLM picked no usable queries",
-        )
-
-    plan_steps: List[Dict[str, Any]] = []
-    for i, pick in enumerate(valid_picks, start=1):
-        plan_steps.append({
-            "step_id": i,
-            "description": question,
-            "question": question,
-            "context": context,
-            "range": [int(zoom_start), int(zoom_end)],
-            "query": pick["query"],
-            "params": pick["params"],
-            "why": pick["why"],
-            "error": None,
-        })
-
-    plan_summary = ", ".join(
-        f"{p['query']}({', '.join(f'{k}={v!r}' for k, v in p['params'].items())})"
-        for p in valid_picks
+    set_active_stage(
+        ZOOM_AGENT_NAME, "planner",
+        graphs=list(graph_builds.keys()),
     )
+    set_active_attachments([])
+    raw = _call_vlm(prompt, all_images)
+    if not raw:
+        plan_steps = [
+            _unresolved_step(i, i, q, why="VLM unavailable")
+            for i, q in enumerate(questions, start=1)
+        ]
+        return {
+            "plan": "unresolved — VLM unavailable",
+            "plan_steps": plan_steps,
+            "current_step_index": 0,
+        }
+
+    picks_by_qi = _parse_multi_question_picks(raw)
+    if picks_by_qi is None:
+        plan_steps = [
+            _unresolved_step(
+                i, i, q,
+                why="VLM response was not parseable JSON",
+                error=raw[:200],
+            )
+            for i, q in enumerate(questions, start=1)
+        ]
+        return {
+            "plan": "unresolved — VLM response not parseable",
+            "plan_steps": plan_steps,
+            "current_step_index": 0,
+        }
+
+    # Build plan_steps: one per (question, query). Questions with no usable
+    # pick get a single unresolved marker step so the synthesizer can record
+    # them in the prose.
+    plan_steps: List[Dict[str, Any]] = []
+    sid = 1
+    plan_summary_parts: List[str] = []
+    for entry in per_q_render:
+        qi = entry["qi"]
+        q = entry["question"]
+        raw_picks = picks_by_qi.get(qi, [])
+        valid_picks: List[Dict[str, Any]] = []
+        for p in raw_picks[:MAX_QUERIES_PER_QUESTION]:
+            query_id = p.get("query")
+            if not query_id:
+                continue
+            params = p.get("params") if isinstance(p.get("params"), dict) else {}
+            why = str(p.get("why", ""))
+            valid_picks.append({
+                "query": str(query_id),
+                "params": params,
+                "why": why,
+            })
+
+        if not valid_picks:
+            plan_steps.append(_unresolved_step(
+                sid, qi, q, why="VLM picked no usable queries for this question",
+            ))
+            plan_summary_parts.append(f"Q{qi}: unresolved")
+            sid += 1
+            continue
+
+        for pick in valid_picks:
+            plan_steps.append({
+                "step_id": sid,
+                "question_index": qi,
+                "description": q["question"],
+                "question": q["question"],
+                "context": q["context"],
+                "range": [int(q["start"]), int(q["end"])],
+                "requested_graphs": list(q["requested_graphs"]),
+                "query": pick["query"],
+                "params": pick["params"],
+                "why": pick["why"],
+                "error": None,
+            })
+            params_str = ", ".join(f"{k}={v!r}" for k, v in pick["params"].items())
+            plan_summary_parts.append(f"Q{qi}: {pick['query']}({params_str})")
+            sid += 1
+
     return {
-        "plan": plan_summary,
+        "plan": "; ".join(plan_summary_parts) or "no picks",
         "plan_steps": plan_steps,
         "current_step_index": 0,
     }
 
 
 def _executor(state: AgentState, step: Dict[str, Any], registry) -> Dict[str, Any]:
-    """Run the ONE planned query for this step, emit a partial attachment.
+    """Run the planned query for this step, emit a partial attachment.
 
-    Also emits a step event so each query run surfaces in the UI between
-    the planner and synthesizer phases — otherwise the executor work is
-    invisible to the user.
+    Filters ``graph_builds`` to the step's ``requested_graphs`` subset so a
+    query for question A can't accidentally read columns supplied only for
+    question B's graphs. Also emits a step event so each query run surfaces
+    in the UI between the planner and synthesizer phases.
     """
     from app.services.llm.annotation_agent_tools import run_pipeline_query
 
-    graph_builds: Dict[str, Any] = state.get("graph_builds") or {}
+    all_builds: Dict[str, Any] = state.get("graph_builds") or {}
     step_id = step.get("step_id", 1)
+    qi = step.get("question_index", step_id)
     rng = step.get("range") or [
         state.get("parent_start", 0), state.get("parent_end", 0),
     ]
@@ -352,13 +497,15 @@ def _executor(state: AgentState, step: Dict[str, Any], registry) -> Dict[str, An
     params = step.get("params") or {}
     why = step.get("why") or ""
     plan_error = step.get("error")
+    requested = step.get("requested_graphs") or []
+    step_builds = {gid: all_builds[gid] for gid in requested if gid in all_builds} or all_builds
 
     payload: Dict[str, Any] = {
         "iloc": None, "value": None, "samples": None, "extra": None,
     }
     error: Optional[str] = plan_error
     if query_id:
-        query_table = _build_query_table(graph_builds)
+        query_table = _build_query_table(step_builds)
         if query_table is None:
             error = "graph_builds missing in state — parent did not supply any queryable tables"
         else:
@@ -372,6 +519,10 @@ def _executor(state: AgentState, step: Dict[str, Any], registry) -> Dict[str, An
     extra = payload.get("extra")
 
     partial = {
+        "question_index": qi,
+        "question": step.get("question", ""),
+        "context": step.get("context", ""),
+        "range": [zoom_start, zoom_end],
         "query": query_id,
         "params": params,
         "iloc": iloc,
@@ -385,7 +536,7 @@ def _executor(state: AgentState, step: Dict[str, Any], registry) -> Dict[str, An
         name=f"partial.{step_id}",   # internal — not in produces
         kind="structured",
         content_schema="zoom_query_partial",
-        label=f"Zoom partial {step_id}",
+        label=f"Zoom partial {step_id} (Q{qi})",
         content=partial,
     )
 
@@ -420,7 +571,7 @@ def _executor(state: AgentState, step: Dict[str, Any], registry) -> Dict[str, An
         node_name=ZOOM_AGENT_NAME,
         phase="executor",
         summary=(
-            f"**Query {step_id}:** `{query_id}({params_str})`\n\n"
+            f"**Q{qi} step {step_id}:** `{query_id}({params_str})`\n\n"
             f"**Why:** {why}\n\n"
             f"**Result:** {result_line}"
         ),
@@ -430,6 +581,7 @@ def _executor(state: AgentState, step: Dict[str, Any], registry) -> Dict[str, An
     return {
         "step_results": [{
             "step_id": step_id,
+            "question_index": qi,
             "agent": ZOOM_AGENT_NAME,
             "partial": partial,
         }],
@@ -437,13 +589,22 @@ def _executor(state: AgentState, step: Dict[str, Any], registry) -> Dict[str, An
     }
 
 
-def _render_partials_for_prompt(results: List[Dict[str, Any]]) -> str:
-    """Render the executor's structured partials as a compact table for the LLM.
-
-    The LLM uses this as its ONLY source of truth — every iloc / value in the
-    prose must come from here, never invented.
-    """
-    blocks: List[str] = []
+def _render_partials_block(
+    qi: int,
+    question: str,
+    context: str,
+    rng: List[int],
+    results: List[Dict[str, Any]],
+) -> str:
+    """Render one question's structured partials as a compact prompt block."""
+    lines = [f"### Question {qi}: {question}"]
+    if context:
+        lines.append(f"  context: {context}")
+    if rng and len(rng) == 2:
+        lines.append(f"  range: [{rng[0]}, {rng[1]}] (length {rng[1] - rng[0] + 1})")
+    if not results:
+        lines.append("  (no queries ran)")
+        return "\n".join(lines)
     for i, r in enumerate(results, start=1):
         query = r.get("query")
         params = r.get("params") or {}
@@ -455,27 +616,24 @@ def _render_partials_for_prompt(results: List[Dict[str, Any]]) -> str:
         error = r.get("error")
 
         if query is None:
-            blocks.append(
-                f"Query {i}: unresolved — {why or error or 'no query fit'}"
+            lines.append(
+                f"  query {i}: unresolved — {why or error or 'no query fit'}"
             )
             continue
-
         params_str = ", ".join(f"{k}={v!r}" for k, v in params.items())
-        lines = [f"Query {i}: {query}({params_str})"]
+        lines.append(f"  query {i}: {query}({params_str})")
         if why:
-            lines.append(f"  why: {why}")
-
+            lines.append(f"    why: {why}")
         has_scalar = iloc is not None
         has_samples = isinstance(samples, list) and len(samples) > 0
         has_extras = isinstance(extra, dict) and bool(extra)
         if not has_scalar and not has_samples and not has_extras:
-            lines.append(f"  result: no match — {error or '(unspecified)'}")
+            lines.append(f"    result: no match — {error or '(unspecified)'}")
         else:
             if has_scalar:
-                lines.append(f"  iloc={iloc}, value={value}")
+                lines.append(f"    iloc={iloc}, value={value}")
             elif not has_samples:
-                # Extras-only payload — diagnostic info instead of a primary match.
-                lines.append("  no primary match — diagnostic only")
+                lines.append("    no primary match — diagnostic only")
             if has_samples:
                 for s in samples:
                     if not isinstance(s, dict):
@@ -484,33 +642,28 @@ def _render_partials_for_prompt(results: List[Dict[str, Any]]) -> str:
                     s_val = s.get("value")
                     s_note = s.get("note")
                     tail = f" ({s_note})" if s_note else ""
-                    lines.append(f"  - iloc={s_iloc}, value={s_val}{tail}")
+                    lines.append(f"    - iloc={s_iloc}, value={s_val}{tail}")
             if has_extras:
                 extras_str = ", ".join(f"{k}={v!r}" for k, v in extra.items())
-                lines.append(f"  extra: {extras_str}")
+                lines.append(f"    extra: {extras_str}")
         if error:
-            lines.append(f"  error: {error}")
-        blocks.append("\n".join(lines))
-    return "\n\n".join(blocks)
+            lines.append(f"    error: {error}")
+    return "\n".join(lines)
 
 
 def _synthesizer(state: AgentState) -> Dict[str, Any]:
-    """Convert structured query partials into a prose answer via a text LLM call.
+    """Convert per-question query partials into combined prose via one LLM call.
 
-    The LLM receives the original question + the structured query results
-    (deterministic ground truth) and emits ONE short paragraph that directly
-    answers the question, citing ilocs / values VERBATIM. The prose replaces
-    the structured results downstream — describe_graphs consumes the prose
-    directly as the answer attachment's text content.
+    Groups every ``partial.*`` by ``question_index``, then emits one prompt
+    that asks the LLM to write a clearly delimited paragraph for each
+    question, citing ilocs / values verbatim. The combined prose is the
+    single ``answer`` attachment describe_graphs consumes.
     """
-    question = (state.get("question") or state.get("goal") or "").strip()
-    context = str(state.get("context") or "").strip()
-    zoom_start = state.get("parent_start", 0)
-    zoom_end = state.get("parent_end", 0)
+    parent_start = state.get("parent_start", 0)
+    parent_end = state.get("parent_end", 0)
     pool = state.get("attachment_pool", {})
 
     def _step_id_of(name: str) -> int:
-        # "partial.{step_id}" → int(step_id), fallback 0.
         suffix = name.split(".", 1)[1] if "." in name else ""
         try:
             return int(suffix)
@@ -522,17 +675,30 @@ def _synthesizer(state: AgentState) -> Dict[str, Any]:
         key=_step_id_of,
     )
     partial_attachments: List[PipelineAttachment] = []
-    results: List[Dict[str, Any]] = []
+    # Preserve question_index ordering as encountered in the partials.
+    groups_order: List[int] = []
+    groups: Dict[int, Dict[str, Any]] = {}
     for name in partial_names:
         att = pool[name]
         partial_attachments.append(att)
-        if isinstance(att.content, dict):
-            results.append(att.content)
+        content = att.content if isinstance(att.content, dict) else {}
+        qi = content.get("question_index")
+        if not isinstance(qi, int):
+            qi = _step_id_of(name)
+        if qi not in groups:
+            groups_order.append(qi)
+            groups[qi] = {
+                "question": content.get("question", ""),
+                "context": content.get("context", ""),
+                "range": content.get("range") or [parent_start, parent_end],
+                "results": [],
+            }
+        groups[qi]["results"].append(content)
 
-    label = f"Zoom [{zoom_start}, {zoom_end}] — Answer"
+    label = f"Zoom [{parent_start}, {parent_end}] — Answer"
 
-    if not results:
-        prose = f"unresolved — no queries ran for question: {question}"
+    if not groups:
+        prose = "unresolved — no queries ran for any question."
         answer = PipelineAttachment(
             name="answer",
             kind="text",
@@ -547,30 +713,36 @@ def _synthesizer(state: AgentState) -> Dict[str, Any]:
         )
         return {"attachment_pool": {answer.name: answer}}
 
-    partials_block = _render_partials_for_prompt(results)
-    prompt_lines = [
-        "You convert deterministic telemetry-query results into ONE short prose "
-        "paragraph that directly answers a sub-range question. The numbers below "
-        "are the ONLY source of truth — cite ilocs and values VERBATIM from the "
-        "table. Do NOT invent numbers, do NOT estimate, do NOT add commentary "
-        "beyond what the data shows. If a query is unresolved or failed, state "
-        "that explicitly in the prose. No bullets, no headers, no lists — one "
-        "flowing paragraph.",
-        "",
-        f"**Question:** {question}",
+    blocks = [
+        _render_partials_block(
+            qi,
+            groups[qi]["question"],
+            groups[qi]["context"],
+            groups[qi]["range"],
+            groups[qi]["results"],
+        )
+        for qi in groups_order
     ]
-    if context:
-        prompt_lines.append(f"**Context:** {context}")
-    prompt_lines.extend([
-        f"**Zoom range:** [{zoom_start}, {zoom_end}] "
-        f"(inclusive — length {zoom_end - zoom_start + 1})",
+
+    prompt_lines = [
+        "You convert deterministic telemetry-query results into a prose answer "
+        "that covers EVERY question below. Write one short paragraph per "
+        "question, in the order given, each prefixed with `**Q{i} (range "
+        "[a,b]):**` so downstream readers can locate each answer. The numbers "
+        "below are the ONLY source of truth — cite ilocs and values VERBATIM "
+        "from the table. Do NOT invent numbers, do NOT estimate, do NOT add "
+        "commentary beyond what the data shows. If a query is unresolved or "
+        "failed, state that explicitly in that question's paragraph. No "
+        "bullets, no headers beyond the question prefix, no lists.",
         "",
-        "**Query results (ground truth):**",
-        partials_block,
+        f"**Parent range:** [{parent_start}, {parent_end}]",
         "",
-        "Write the answer paragraph now. Output prose only — no JSON, no code "
-        "fences, no preamble.",
-    ])
+        "**Query results (ground truth — grouped by question):**",
+        "\n\n".join(blocks),
+        "",
+        "Write the answer paragraphs now. Output prose only — no JSON, no "
+        "code fences, no preamble.",
+    ]
     prompt = "\n".join(prompt_lines)
 
     set_active_stage(ZOOM_AGENT_NAME, "synthesizer")
@@ -579,7 +751,8 @@ def _synthesizer(state: AgentState) -> Dict[str, Any]:
     if not prose:
         raise RuntimeError(
             f"zoom synthesizer: LLM returned empty response "
-            f"(range=[{zoom_start}, {zoom_end}], question={question!r})"
+            f"(parent_range=[{parent_start}, {parent_end}], "
+            f"questions={len(groups)})"
         )
 
     answer = PipelineAttachment(
@@ -593,13 +766,13 @@ def _synthesizer(state: AgentState) -> Dict[str, Any]:
 
 
 class Zoom(Agent):
-    """Worker agent: answer ONE planner question over a sub-range, possibly
-    via multiple deterministic queries.
+    """Worker agent: answer ALL parent questions in a single invocation.
 
-    Planner picks one or more queries (VLM classification over the zoomed
-    graph); executor runs each query (deterministic math); synthesizer
-    aggregates all partials into a single ``answer`` attachment carrying
-    the full results array. No images or descriptions propagated.
+    Planner picks queries for every question in one VLM call (one or more
+    queries per question, capped per-question); executor runs each query
+    deterministically; synthesizer aggregates every partial into one
+    ``answer`` attachment carrying combined prose with per-question
+    paragraphs. No images or descriptions propagated to the parent.
     """
 
     name = ZOOM_AGENT_NAME

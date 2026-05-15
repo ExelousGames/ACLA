@@ -460,20 +460,18 @@ def render_agent_annotation(df, form_start, form_end, form_labels, session_id, s
                         "Showing best proposal."
                     )
 
-                # Proposed sub-segment range
-                st.markdown("##### Proposed Sub-Segment")
+                # Per-label proposals grouped by range — one row per
+                # AI-discovered sub-segment (labels sharing a range coalesce).
+                grouped_preview = _group_proposals_by_range(result)
                 st.markdown(
-                    f"**Range:** [{result.sub_start}, {result.sub_end}]  "
-                    f"(parent: [{form_start}, {form_end}])"
+                    f"##### Proposed Sub-Segments ({len(grouped_preview)})  "
+                    f"_(parent: [{form_start}, {form_end}])_"
                 )
-
-                # Proposed labels
-                st.markdown("##### Proposed Labels")
-                proposed_display = [
-                    LABEL_MAPPING.get(l, l) for l in result.final_labels
-                ]
-                for label in proposed_display:
-                    st.markdown(f"- {label}")
+                for (gs, ge), anns in grouped_preview:
+                    label_names = ", ".join(
+                        LABEL_MAPPING.get(a["label_id"], a["label_id"]) for a in anns
+                    )
+                    st.markdown(f"- **[{gs}, {ge}]** — {label_names}")
 
                 # Reasoning
                 st.markdown("##### Reasoning")
@@ -526,119 +524,191 @@ def render_agent_annotation(df, form_start, form_end, form_labels, session_id, s
         # --- Staged review (visible when result exists) ---
         if "agent_annot_result" in st.session_state:
             result = st.session_state["agent_annot_result"]
-            proposed_display = [
-                LABEL_MAPPING.get(l, l) for l in result.final_labels
-            ]
+            grouped = _group_proposals_by_range(result)
+
             st.info(
-                f"Pending sub-segment: [{result.sub_start}, {result.sub_end}] — "
-                f"{', '.join(proposed_display)} "
+                f"Pending {len(grouped)} sub-segment(s) "
                 f"({result.iterations} iter, "
                 f"{'accepted' if result.accepted else 'max-iter'})"
             )
 
             st.markdown("##### Review & Edit Before Saving")
+            st.caption(
+                "Each row is one AI-discovered sub-segment. Labels sharing the "
+                "same range are grouped. Edit ranges/labels per row, or remove "
+                "a row by clearing its labels."
+            )
 
-            col_r1, col_r2 = st.columns(2)
-            with col_r1:
-                staged_start = st.number_input(
-                    "Sub-segment start",
-                    min_value=int(form_start),
-                    max_value=int(form_end),
-                    value=int(result.sub_start) if result.sub_start is not None else int(form_start),
-                    key="agent_staged_start",
-                )
-            with col_r2:
-                staged_end = st.number_input(
-                    "Sub-segment end",
-                    min_value=int(form_start),
-                    max_value=int(form_end),
-                    value=int(result.sub_end) if result.sub_end is not None else int(form_end),
-                    key="agent_staged_end",
-                )
-
-            # Editable label multiselect
             all_label_options = sorted(LABEL_MAPPING.values())
-            staged_labels = st.multiselect(
-                "Sub-segment labels",
-                options=all_label_options,
-                default=proposed_display,
-                key="agent_staged_labels",
-            )
+            staged_segments: list[dict] = []
+            for i, ((gs, ge), anns) in enumerate(grouped):
+                with st.container(border=True):
+                    st.markdown(f"**Sub-segment {i + 1}**")
+                    col_r1, col_r2 = st.columns(2)
+                    with col_r1:
+                        seg_start = st.number_input(
+                            "Start",
+                            min_value=int(form_start),
+                            max_value=int(form_end),
+                            value=int(gs),
+                            key=f"agent_staged_start_{i}",
+                        )
+                    with col_r2:
+                        seg_end = st.number_input(
+                            "End",
+                            min_value=int(form_start),
+                            max_value=int(form_end),
+                            value=int(ge),
+                            key=f"agent_staged_end_{i}",
+                        )
 
-            staged_notes = st.text_input(
-                "Notes (optional)",
-                value="",
-                key="agent_staged_notes",
-            )
+                    default_labels = [
+                        LABEL_MAPPING.get(a["label_id"], a["label_id"])
+                        for a in anns
+                        if a["label_id"] in LABEL_MAPPING
+                    ]
+                    seg_labels = st.multiselect(
+                        "Labels",
+                        options=all_label_options,
+                        default=default_labels,
+                        key=f"agent_staged_labels_{i}",
+                    )
+
+                    default_notes = "; ".join(
+                        a.get("reasoning", "") for a in anns if a.get("reasoning")
+                    )[:500]
+                    seg_notes = st.text_input(
+                        "Notes (optional)",
+                        value=default_notes,
+                        key=f"agent_staged_notes_{i}",
+                    )
+
+                    staged_segments.append({
+                        "start": int(seg_start),
+                        "end": int(seg_end),
+                        "labels": seg_labels,
+                        "notes": seg_notes,
+                    })
 
             col_btn1, col_btn2 = st.columns(2)
             with col_btn1:
                 if st.button(
-                    "✅ Confirm & Save Sub-Segment",
+                    f"✅ Confirm & Save All ({len(staged_segments)})",
                     key="agent_annot_confirm",
                     type="primary",
                 ):
-                    _stage_subsegment(
-                        staged_start=int(staged_start),
-                        staged_end=int(staged_end),
-                        staged_label_names=staged_labels,
-                        staged_notes=staged_notes,
+                    _stage_subsegments(
+                        staged_segments=staged_segments,
                         parent_id=parent_id,
                         session_id=session_id,
                         selected_annotation_key=selected_annotation_key,
                     )
             with col_btn2:
                 if st.button(
-                    "❌ Discard Proposal",
+                    "❌ Discard Proposals",
                     key="agent_annot_discard",
                 ):
                     del st.session_state["agent_annot_result"]
                     st.rerun()
 
 
-def _stage_subsegment(
-    staged_start: int,
-    staged_end: int,
-    staged_label_names: list,
-    staged_notes: str,
+def _group_proposals_by_range(result) -> list[tuple[tuple[int, int], list[dict]]]:
+    """Group per-label proposals into one entry per unique (start, end) range.
+
+    Falls back to a single entry covering ``[sub_start, sub_end]`` with all
+    final_labels if the pipeline didn't expose per-label annotations
+    (e.g. older result objects).
+    """
+    label_annotations = list(getattr(result, "label_annotations", None) or [])
+
+    if not label_annotations and result.final_labels:
+        s = result.sub_start if result.sub_start is not None else 0
+        e = result.sub_end if result.sub_end is not None else 0
+        label_annotations = [
+            {
+                "label_id": l,
+                "start_index": s,
+                "end_index": e,
+                "reasoning": result.final_reasoning,
+            }
+            for l in result.final_labels
+        ]
+
+    grouped: dict[tuple[int, int], list[dict]] = {}
+    order: list[tuple[int, int]] = []
+    for ann in label_annotations:
+        try:
+            key = (int(ann["start_index"]), int(ann["end_index"]))
+        except (KeyError, TypeError, ValueError):
+            continue
+        if key not in grouped:
+            grouped[key] = []
+            order.append(key)
+        grouped[key].append(ann)
+
+    order.sort()
+    return [(k, grouped[k]) for k in order]
+
+
+def _stage_subsegments(
+    staged_segments: list[dict],
     parent_id: str | None,
     session_id: str,
     selected_annotation_key: str,
 ):
-    """Create a child AnnotatedSegment and persist it."""
-    if staged_start >= staged_end:
-        st.error("Start index must be less than end index.")
+    """Validate every staged segment, then persist them all atomically."""
+    new_children: list[AnnotatedSegment] = []
+    errors: list[str] = []
+
+    for i, seg in enumerate(staged_segments, start=1):
+        start = seg["start"]
+        end = seg["end"]
+        label_names = seg["labels"]
+
+        # Rows with no labels are treated as user-removed — skip silently.
+        if not label_names:
+            continue
+
+        if start >= end:
+            errors.append(
+                f"Sub-segment {i}: start ({start}) must be less than end ({end})."
+            )
+            continue
+
+        label_ids = [
+            LABEL_NAME_TO_ID[n] for n in label_names if n in LABEL_NAME_TO_ID
+        ]
+        if not label_ids:
+            errors.append(f"Sub-segment {i}: no valid labels resolved.")
+            continue
+
+        new_children.append(AnnotatedSegment(
+            id=str(uuid.uuid4()),
+            labels=label_ids,
+            segment_length=end - start,
+            start_index=start,
+            end_index=end,
+            notes=seg.get("notes", ""),
+            parent_id=parent_id,
+        ))
+
+    if errors:
+        for e in errors:
+            st.error(e)
         return
 
-    label_ids = [
-        LABEL_NAME_TO_ID[n] for n in staged_label_names if n in LABEL_NAME_TO_ID
-    ]
-    if not label_ids:
-        st.error("Select at least one label.")
+    if not new_children:
+        st.warning("Nothing to save — every row had its labels cleared.")
         return
-
-    child = AnnotatedSegment(
-        id=str(uuid.uuid4()),
-        labels=label_ids,
-        segment_length=staged_end - staged_start,
-        start_index=staged_start,
-        end_index=staged_end,
-        notes=staged_notes,
-        parent_id=parent_id,
-    )
 
     annotations = list(st.session_state.get("current_annotations", []))
-    annotations.append(child)
+    annotations.extend(new_children)
     st.session_state["current_annotations"] = annotations
 
     save_annotations(session_id, annotations, selected_annotation_key)
 
-    # Clean up
     if "agent_annot_result" in st.session_state:
         del st.session_state["agent_annot_result"]
 
-    st.success(
-        f"Sub-segment [{staged_start}, {staged_end}] saved with "
-        f"{len(label_ids)} label(s)."
-    )
+    st.success(f"Saved {len(new_children)} sub-segment(s).")
     st.rerun()
