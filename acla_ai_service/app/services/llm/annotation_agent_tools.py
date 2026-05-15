@@ -775,7 +775,7 @@ PIPELINE_QUERY_DEFINITIONS: List[Dict[str, Any]] = [
         "id": "find_extremum",
         "label": "Global min/max",
         "description": (
-            "iloc of the global min or max of <column> within the zoom range."
+            "iloc of the global min or max of <column> in the graph."
         ),
         "params_schema": {
             "column": "DataFrame column name",
@@ -787,11 +787,11 @@ PIPELINE_QUERY_DEFINITIONS: List[Dict[str, Any]] = [
         "id": "find_first_match",
         "label": "First comparison match",
         "description": (
-            "First iloc where <column> <op> <value> holds."
+            "First iloc where <column> <operator> <value> holds."
         ),
         "params_schema": {
             "column": "DataFrame column name",
-            "op": "eq | ge | le | gt | lt",
+            "op": "equal | greater_than_or_equal | less_than_or_equal | greater_than | less_than",
             "value": "float",
         },
         "callable": _query_find_first_match,
@@ -800,8 +800,8 @@ PIPELINE_QUERY_DEFINITIONS: List[Dict[str, Any]] = [
         "id": "read_values_at_indices",
         "label": "Read values at specific ilocs",
         "description": (
-            "Read <column> at each parent-frame iloc in <indices>. Returns "
-            "one entry per index in `samples`; out-of-range or NaN samples "
+            "Read <column> at each iloc in <indices>. Returns "
+            "one entry per index; out-of-range or NaN samples "
             "come back with value=null."
         ),
         "params_schema": {
@@ -814,10 +814,7 @@ PIPELINE_QUERY_DEFINITIONS: List[Dict[str, Any]] = [
         "id": "compute_slope",
         "label": "Slope between two ilocs",
         "description": (
-            "Slope of <column> from <iloc_a> to <iloc_b>, computed as "
-            "(value_b - value_a) / (iloc_b - iloc_a). Returns the slope as "
-            "`value`, both anchor points in `samples`, and the raw deltas "
-            "in `extra`."
+            "Slope of <column> between <iloc_a> and <iloc_b>."
         ),
         "params_schema": {
             "column": "DataFrame column name",
@@ -845,14 +842,10 @@ PIPELINE_QUERY_DEFINITIONS: List[Dict[str, Any]] = [
         "id": "find_threshold_crossing",
         "label": "Threshold crossing (ranked)",
         "description": (
-            "Rank <columns> by which first crosses <threshold> after a "
-            "centered rolling-median filter of width <smoothing_window> "
-            "denoises each signal — eliminates spikes/dips shorter than "
-            "floor(smoothing_window/2) samples without shifting the "
-            "transition edge. Per-column direction is inferred from the "
-            "first cleaned sample's side of the threshold. Returns "
-            "`samples` as `{ranking, column, iloc}` (ranking 1=first, "
-            "null=never crossed)."
+            "Rank <columns> by which first crosses <threshold>, with optional "
+            "smoothing via <smoothing_window>. Returns ranking per column "
+            "(1=first, null=never crossed). useful for comparing which curve"
+            " first crossed the same threshold."
         ),
         "params_schema": {
             "columns": "list of 2+ DataFrame column names",
