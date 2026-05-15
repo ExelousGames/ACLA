@@ -341,12 +341,13 @@ graphs:
       1. Read the y-axis scale and range; note the sign convention
          (+ = player behind expert, − = player ahead).
 
-      2. Split the trace into slope segments.  A new segment begins
-         wherever the slope ratio (Δms per index) visibly changes —
-         i.e. the line bends/kinks.  Within a segment the slope ratio
-         is approximately constant.  Walk left → right and place a
-         split at every kink; ignore micro-jitter that doesn't change
-         the overall slope.
+      2. Perform piecewise linear segmentation of the trace, scanning
+         left → right starting at the leftmost index.  Begin a new
+         segment at every breakpoint — i.e. wherever the local slope
+         (Δms / Δindex) deviates from the slope of the current
+         segment.  Within a segment the slope is approximately
+         constant (linear regime).  Ignore micro-jitter that does not
+         change the segment's slope.
 
       3. For each slope segment record:
            - index range (start–end)
@@ -415,15 +416,6 @@ graphs:
          segment, from <X_left> ms at index <0> to <X_right> ms at
          index <end> (net <±Δ> ms)."
 
-      Example: "Across indices 0–40 the gap grows from 0 ms to 120 ms
-      (slope +3.0) — player is level at index 0 and behind by 120 ms
-      at index 40.  Across indices 40–95 the gap holds stable from
-      120 ms to 130 ms (slope +0.2) — player is behind by ~120 ms
-      throughout.  Across indices 95–140 the gap shrinks from 130 ms
-      to 60 ms (slope −1.6) — player is behind by 130 ms at index 95
-      and behind by 60 ms at index 140.  Overall the gap grows across
-      the segment, from 0 ms at index 0 to 60 ms at index 140 (net
-      +60 ms)."
     common_description_errors:
       - "Do NOT skip the per-segment breakdown and only report the overall gap — both are required (per-segment sentences first, overall sentence last)"
       - "Do NOT skip the closing overall-gap sentence — every output must end with it"
@@ -1061,47 +1053,44 @@ graphs:
       1. Read 'phase_indices.phases' from the 'Phase Indices (expert-
          anchored)' attachment:
            - Non-empty list: each element is one detected arc.  Run
-             steps 2–5 once per arc, in travel order (chicanes /
-             esses produce multiple arcs, one paragraph each).
+             step 2 once per arc, in travel order (chicanes /
+             esses produce multiple arcs).
            - Empty list: the segment has no corner.  Report whether
              the offset trace stays near zero or drifts away (peak
              trajectory offset and its index) and stop.
 
-      For each phase k, walk the corner across FOUR sequential
-      span beats.  At each beat read the SLOPE of the trace
-      across the span and tag it with one of:
-        - "moving toward negative (tightening)" — slope trends
-          downward, offset becomes more negative (player line
-          tightening relative to expert).
-        - "moving toward positive (widening)" — slope trends
-          upward, offset becomes more positive (player line
-          widening relative to expert).
-        - "aligned" — trace stays within roughly ±0.5 m of zero
-          across the span (no meaningful deviation).
-        - "recovery" — trajectory offset trends back toward zero from
-          either side (player closing the lateral gap).
+      2. For each phase k, walk the four corner-span beats in
+         travel order — approach-to-entry, entry-to-apex,
+         apex-to-exit, post-exit (see glossary for each beat's
+         span definition).  For each beat: read the SLOPE of the
+         offset trace across the beat's span and pick one slope
+         tag — moving toward negative (tightening), moving toward
+         positive (widening), aligned, or recovery (see glossary).
+         Record the peak trajectory offset and its index inside
+         the beat's span.
 
-      2. APPROACH-TO-ENTRY span (segment start → expert's entry,
-         OR previous phase's exit → this phase's entry on
-         chicanes): tag the slope.  Record peak trajectory offset with its
-         index inside the span.
+      3. Divergence enumeration: list EVERY beat across all phases
+         whose tag is NOT "aligned".
 
-      3. ENTRY-TO-APEX span (expert's entry → expert's apex):
-         tag the slope.  Record peak trajectory offset with its index.
-
-      4. APEX-TO-EXIT span (expert's apex → expert's exit): tag
-         the slope.  Record peak trajectory offset with its index.
-
-      5. POST-EXIT span (expert's exit → next phase's entry, OR
-         segment end on the LAST phase): tag the slope —
-         "recovery" applies when trajectory offset trends back toward zero
-         across this span.  Record peak trajectory offset with its index.
-
-      6. Divergence enumeration: list EVERY beat (approach-to-
-         entry, entry-to-apex, apex-to-exit, post-exit, for every
-         phase) whose tag is NOT "aligned".
-      7. Compose using sentence_format_guide.
+      4. Compose using sentence_format_guide.
     glossary:
+      "approach-to-entry": >
+        First of four corner-span beats.  Span runs from segment
+        start → this phase's expert entry, OR (on chicanes / esses)
+        from the previous phase's expert exit → this phase's expert
+        entry.
+      "entry-to-apex": >
+        Second of four corner-span beats.  Span runs from this
+        phase's expert entry → this phase's expert apex.
+      "apex-to-exit": >
+        Third of four corner-span beats.  Span runs from this
+        phase's expert apex → this phase's expert exit.
+      "post-exit": >
+        Fourth and final corner-span beat.  Span runs from this
+        phase's expert exit → the next phase's expert entry, OR
+        (on the last phase) → segment end.  "recovery" tag applies
+        when the offset trace trends back toward zero across this
+        span.
       "moving toward negative (tightening)": >
         Tag for a span where the offset trace becomes more negative
         (slope downward, trajectory offset growing below zero) — player's

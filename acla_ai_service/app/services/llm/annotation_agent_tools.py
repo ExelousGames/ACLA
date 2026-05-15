@@ -466,7 +466,8 @@ def _query_find_first_match(
 ) -> Optional[Dict[str, Any]]:
     """First iloc in the range where <column> <op> <value> holds.
 
-    ``op`` is one of ``"eq"``, ``"ge"``, ``"le"``, ``"gt"``, ``"lt"``. Useful
+    ``op`` is one of ``"equal"``, ``"greater_than_or_equal"``,
+    ``"less_than_or_equal"``, ``"greater_than"``, ``"less_than"``. Useful
     for discrete-valued columns (gear, integer states) where threshold
     crossings don't make sense.
     """
@@ -475,18 +476,22 @@ def _query_find_first_match(
     if arr is None or len(arr) == 0:
         return None
     v = float(value)
-    if op == "eq":
+    if op == "equal":
         mask = arr == v
-    elif op == "ge":
+    elif op == "greater_than_or_equal":
         mask = arr >= v
-    elif op == "le":
+    elif op == "less_than_or_equal":
         mask = arr <= v
-    elif op == "gt":
+    elif op == "greater_than":
         mask = arr > v
-    elif op == "lt":
+    elif op == "less_than":
         mask = arr < v
     else:
-        return None
+        raise ValueError(
+            f"unknown op {op!r} — must be one of: equal, "
+            f"greater_than_or_equal, less_than_or_equal, "
+            f"greater_than, less_than"
+        )
     idxs = np.where(mask & np.isfinite(arr))[0]
     if len(idxs) == 0:
         return None
@@ -533,33 +538,27 @@ def _query_read_values_at_indices(
 
 def _query_compute_slope(
     df: pd.DataFrame, start_index: int, end_index: int,
-    column: str, iloc_a: int, iloc_b: int,
+    column: str,
 ) -> Optional[Dict[str, Any]]:
-    """Slope of <column> between two parent-frame ilocs.
+    """Slope of <column> across the zoom range.
 
     Returns ``{iloc, value, samples, extra}`` where ``value`` is the slope
-    ``(arr[b] - arr[a]) / (iloc_b - iloc_a)``, ``samples`` documents the
-    two anchor points, and ``extra`` carries the raw deltas. ``iloc`` is
-    set to ``iloc_b`` so the synthesizer can cite the slope at the end
-    of the interval. Returns ``None`` when either anchor is out of range,
-    the column is missing, or the two ilocs coincide.
+    ``(arr[end] - arr[start]) / (end_index - start_index)``, ``samples``
+    documents the two range endpoints, and ``extra`` carries the raw
+    deltas. ``iloc`` is set to ``end_index`` so the synthesizer can cite
+    the slope at the end of the interval. Returns ``None`` when the column
+    is missing, the range collapses to a single iloc, or either endpoint
+    is non-finite.
     """
-    segment = df.loc[int(start_index): int(end_index)]
-    arr = _resolve_column(column, segment)
-    if arr is None or len(arr) == 0:
-        return None
-    try:
-        a_idx = int(iloc_a)
-        b_idx = int(iloc_b)
-    except (TypeError, ValueError):
-        return None
+    a_idx = int(start_index)
+    b_idx = int(end_index)
     if a_idx == b_idx:
         return None
-    la = a_idx - int(start_index)
-    lb = b_idx - int(start_index)
-    if not (0 <= la < len(arr)) or not (0 <= lb < len(arr)):
+    segment = df.loc[a_idx: b_idx]
+    arr = _resolve_column(column, segment)
+    if arr is None or len(arr) < 2:
         return None
-    va, vb = arr[la], arr[lb]
+    va, vb = arr[0], arr[-1]
     if not (np.isfinite(va) and np.isfinite(vb)):
         return None
     delta_v = float(vb - va)
@@ -770,14 +769,21 @@ def _query_find_threshold_crossing(
     }
 
 
+_RANGE_PARAM_DESC = (
+    "[start_iloc, end_iloc] — inclusive parent-frame iloc bounds this query "
+    "runs over. Must lie within the question's sub-range; pick a tight window "
+    "around the feature you're trying to capture."
+)
+
 PIPELINE_QUERY_DEFINITIONS: List[Dict[str, Any]] = [
     {
         "id": "find_extremum",
         "label": "Global min/max",
         "description": (
-            "iloc of the global min or max of <column> in the graph."
+            "iloc of the global min or max of <column> in <range>."
         ),
         "params_schema": {
+            "range": _RANGE_PARAM_DESC,
             "column": "DataFrame column name",
             "kind": "min | max",
         },
@@ -787,9 +793,10 @@ PIPELINE_QUERY_DEFINITIONS: List[Dict[str, Any]] = [
         "id": "find_first_match",
         "label": "First comparison match",
         "description": (
-            "First iloc where <column> <operator> <value> holds."
+            "First iloc in <range> where <column> <operator> <value> holds."
         ),
         "params_schema": {
+            "range": _RANGE_PARAM_DESC,
             "column": "DataFrame column name",
             "op": "equal | greater_than_or_equal | less_than_or_equal | greater_than | less_than",
             "value": "float",
@@ -801,10 +808,11 @@ PIPELINE_QUERY_DEFINITIONS: List[Dict[str, Any]] = [
         "label": "Read values at specific ilocs",
         "description": (
             "Read <column> at each iloc in <indices>. Returns "
-            "one entry per index; out-of-range or NaN samples "
-            "come back with value=null."
+            "one entry per index; out-of-range (outside <range>) or NaN "
+            "samples come back with value=null."
         ),
         "params_schema": {
+            "range": _RANGE_PARAM_DESC,
             "column": "DataFrame column name",
             "indices": "list of parent-frame ilocs (int)",
         },
@@ -812,14 +820,14 @@ PIPELINE_QUERY_DEFINITIONS: List[Dict[str, Any]] = [
     },
     {
         "id": "compute_slope",
-        "label": "Slope between two ilocs",
+        "label": "Slope across the range",
         "description": (
-            "Slope of <column> between <iloc_a> and <iloc_b>."
+            "Slope of <column> from the start to the end of <range> "
+            "(value-delta / iloc-delta)."
         ),
         "params_schema": {
+            "range": _RANGE_PARAM_DESC,
             "column": "DataFrame column name",
-            "iloc_a": "parent-frame iloc (start of interval)",
-            "iloc_b": "parent-frame iloc (end of interval)",
         },
         "callable": _query_compute_slope,
     },
@@ -828,10 +836,11 @@ PIPELINE_QUERY_DEFINITIONS: List[Dict[str, Any]] = [
         "label": "Dips on linear-regression baseline",
         "description": (
             "Find local dips in <column> below its least-squares trend line "
-            "over the zoom range. Returns `samples` — one `{iloc, value, depth}` "
+            "over <range>. Returns `samples` — one `{iloc, value, depth}` "
             "per dip, where `iloc` is the deepest point of that dip."
         ),
         "params_schema": {
+            "range": _RANGE_PARAM_DESC,
             "column": "DataFrame column name",
             "smoothing_window": "int ≥ 1 — rolling-median width (1=off, 5=light, 11=heavy)",
             "min_dip_depth": "float — minimum dip depth in signal units (e.g. ~0.05 for brake/throttle 0–1, ~5 for speed in km/h)",
@@ -842,12 +851,13 @@ PIPELINE_QUERY_DEFINITIONS: List[Dict[str, Any]] = [
         "id": "find_threshold_crossing",
         "label": "Threshold crossing (ranked)",
         "description": (
-            "Rank <columns> by which first crosses <threshold>, with optional "
-            "smoothing via <smoothing_window>. Returns ranking per column "
-            "(1=first, null=never crossed). useful for comparing which curve"
-            " first crossed the same threshold."
+            "Rank <columns> by which first crosses <threshold> within <range>, "
+            "with optional smoothing via <smoothing_window>. Returns ranking "
+            "per column (1=first, null=never crossed). useful for comparing "
+            "which curve first crossed the same threshold."
         ),
         "params_schema": {
+            "range": _RANGE_PARAM_DESC,
             "columns": "list of 2+ DataFrame column names",
             "threshold": "float",
             "smoothing_window": (
@@ -911,10 +921,15 @@ def _round_floats(obj: Any, ndigits: int = 2) -> Any:
 
 
 def run_pipeline_query(
-    df: pd.DataFrame, start_index: int, end_index: int,
+    df: pd.DataFrame,
     query_id: str, params: Dict[str, Any],
 ) -> Tuple[Dict[str, Any], Optional[str]]:
     """Dispatch a query by id with the VLM-supplied params.
+
+    The range is now a per-query param: ``params["range"]`` must be a
+    ``[start_iloc, end_iloc]`` list. The dispatcher unpacks it and passes
+    it positionally to the underlying callable (so the callable signatures
+    stay unchanged).
 
     Returns ``(payload, error)`` where ``payload`` is a dict with any of:
 
@@ -937,6 +952,28 @@ def run_pipeline_query(
         if pname not in params:
             return base, f"missing param '{pname}' for query '{query_id}'"
         accepted[pname] = params[pname]
+    raw_range = accepted.pop("range")
+    if (
+        not isinstance(raw_range, (list, tuple))
+        or len(raw_range) != 2
+    ):
+        return base, (
+            f"param 'range' for query '{query_id}' must be a "
+            f"[start_iloc, end_iloc] list — got {raw_range!r}"
+        )
+    try:
+        start_index = int(raw_range[0])
+        end_index = int(raw_range[1])
+    except (TypeError, ValueError):
+        return base, (
+            f"param 'range' for query '{query_id}' must contain two ints "
+            f"— got {raw_range!r}"
+        )
+    if end_index < start_index:
+        return base, (
+            f"param 'range' for query '{query_id}' has end < start "
+            f"({start_index}, {end_index})"
+        )
     try:
         raw = q["callable"](df, start_index, end_index, **accepted)
     except Exception as exc:  # noqa: BLE001 — surface any failure to the caller

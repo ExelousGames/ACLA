@@ -1,23 +1,23 @@
 """
-describe_graphs meta-Agent — overview + question-driven zoom + prose synth.
+describe_graphs meta-Agent — planner owns vision, synthesizer is text-only.
 
 Uniform topology (inherited from the framework):
 
-    planner (overview + zoom questions) ──► step_solver ──► synthesizer ──► evaluator
-                                              (delegates       (single VLM      (no-op)
-                                               ONCE to zoom     analysis call
-                                               with the full    using overview
-                                               question list)   images + zoom
-                                                                answer prose)
+    planner (VLM: overview + zoom questions) ──► step_solver ──► synthesizer ──► evaluator
+                                                    (delegates       (text-only       (no-op)
+                                                     ONCE to zoom     LLM analysis
+                                                     with the full    using zoom
+                                                     question list)   answer prose)
 
-Phase 1 — Planner renders a low-resolution overview of the requested graphs
-at the parent range and asks the VLM, using the per-graph skill, which
-precise readings cannot be cleanly resolved at this scale. Every such
-reading is collected into a single ``questions`` list (each entry carries
-a natural-language ``question``, a ``context`` cue, a sub-range, and a
-``requested_graphs`` subset) and dispatched as ONE zoom step. If every
-reading is resolvable from the overview alone, a ``skip=True`` sentinel
-step is emitted and the synthesizer runs against the overview only.
+Phase 1 — Planner renders a low-resolution overview of the requested
+graphs at the parent range and is the ONLY stage with image access. The
+VLM walks the per-graph ``how_to_analyze`` procedure against the overview
+and emits zoom questions covering **every** observation the procedure
+needs — trend shape, slopes, extrema, threshold crossings, transients,
+exact ilocs. Each question carries a natural-language ``question``, a
+``context`` cue, a sub-range, and a ``requested_graphs`` subset; all
+questions are collected into a single zoom step. If no graphs are
+requested or rendering fails, a ``skip=True`` sentinel is emitted instead.
 
 Phase 2 — Executor delegates the single zoom step to ``zoom``. The zoom
 worker handles every question in one invocation: it renders all
@@ -26,12 +26,12 @@ sub-ranges, asks the VLM to pick queries from
 query deterministically, and emits ONE ``step_solver.1.answer``
 attachment carrying the combined prose answer covering every question.
 
-Phase 3 — Synthesizer is the ONLY VLM analysis step. It receives the
-overview images (for trend/shape language) plus the zoom answer
-attachment (which already cites exact ilocs from deterministic queries),
-and writes one prose paragraph per graph. It must cite ilocs verbatim
-from the zoom answer and explicitly flag any unresolved readings — no
-estimating from pixels. The evaluator suite runs inline here.
+Phase 3 — Synthesizer is a TEXT-ONLY LLM analysis step. It receives the
+overview text descriptions (column/unit context) and the zoom answer
+prose, and writes one prose paragraph per graph. It has no image access:
+every observation must be backed by a zoom answer, with ilocs cited
+verbatim, and unresolved readings flagged explicitly. The evaluator suite
+runs inline here.
 """
 
 from __future__ import annotations
@@ -74,6 +74,13 @@ def _call_vlm(prompt: str, graph_image_bytes: List[bytes]) -> str:
     if graph_image_bytes:
         return vlm_fn(prompt, graph_image_bytes)
     return vlm_fn(prompt)
+
+
+def _call_llm(prompt: str) -> str:
+    llm_fn = _eval_llm_holder.get("llm")
+    if not llm_fn:
+        return ""
+    return llm_fn(prompt)
 
 
 # ---------------------------------------------------------------------------
@@ -279,11 +286,12 @@ def _planner(state: AgentState) -> Dict[str, Any]:
     graphs_list = ", ".join(f"`{g}`" for g in requested_graphs)
 
     decision_prompt = (
-        "You are planning a telemetry-graph description task. Your job here "
-        "is NOT to describe the graphs — it is to decide which precise "
-        "readings the downstream description needs that you cannot reliably "
-        "make from this overview, and to dispatch each one to a zoom worker "
-        "as a natural-language question over a sub-range.\n\n"
+        "You are the **only** stage that sees the overview images. The "
+        "downstream synthesizer is text-only — it will write the prose "
+        "description from your zoom answers alone. You must dispatch zoom "
+        "questions that cover **every** observation the per-graph "
+        "`how_to_analyze` procedure needs. Anything you don't capture here "
+        "is lost.\n\n"
         f"**Goal:** {goal}\n"
         f"**Full range:** [{parent_start}, {parent_end}] "
         f"(length {parent_end - parent_start})\n"
@@ -291,22 +299,31 @@ def _planner(state: AgentState) -> Dict[str, Any]:
         f"{skill_prompt}\n\n"
         "**Follow the per-graph `how_to_analyze` procedure above as written** "
         "— it is the authoritative spec for what this analysis must produce. "
-        "Walk through each step against the overview images and **use zoom to "
-        "actually nail down the evidence**: the overview is a sketch, the zoom "
-        "is where you commit to a number. For every precise reading the "
-        "procedure calls for (exact iloc, threshold crossing, extremum, slope "
-        "window, etc.), dispatch ONE zoom step to pin it down — do not guess "
-        "from the overview. Each zoom step carries:\n"
+        "Walk through every step against the overview images, and for each "
+        "observation the procedure calls for, emit a zoom question. The zoom "
+        "worker runs deterministic queries (slopes, extrema, dip detection, "
+        "threshold crossings, point reads) so trend shape, peak/valley "
+        "locations, transients, and exact ilocs all come through zoom — not "
+        "through pixel reading downstream. Each zoom step carries:\n"
         "- a sub-range tight around the feature,\n"
         "- a `question` in plain English stating EXACTLY what to find (the "
-        "zoom worker will pick a query + parameters; you do NOT need to name "
-        "a query or column),\n"
-        "- a `context` sentence summarising the overview cue that motivates "
-        "the question (e.g. 'overview shows brake decaying from ~30 to ~120'),\n"
+        "zoom worker picks a query + parameters; you do NOT name a query or "
+        "column),\n"
+        "- a `context` field formatted as `<glossary_term> — <overview cue>`, "
+        "where `<glossary_term>` is exactly one key from THIS question's "
+        "graph's `glossary:` block above — whatever shape that glossary "
+        "uses (an event onset, a segment class, a phase marker, a shape "
+        "descriptor, a modifier — whichever the question resolves). Do "
+        "not copy terms from other graphs' glossaries. The cue summarises "
+        "the overview signal motivating the question. Examples across "
+        "different graph types: 'release onset — overview shows trace "
+        "decaying around idx 95'; 'apex (phase 1) — overview shows "
+        "trajectory pinching tight at idx 120'; 'time gain — overview "
+        "shows delta dropping by ~0.3 between idx 40 and 60',\n"
         "- an optional `requested_graphs` subset (defaults to all parent "
         f"graphs: {graphs_list}).\n\n"
-        "If every reading the procedure needs is already cleanly resolvable "
-        "from the overview, return `{\"zoom\": false}`.\n\n"
+        "**You must return at least one zoom range.** The synthesizer has no "
+        "image access; `zoom: false` leaves it with nothing to describe.\n\n"
         "**Output (JSON only — no prose, no comments):**\n"
         "```json\n"
         "{\n"
@@ -315,16 +332,12 @@ def _planner(state: AgentState) -> Dict[str, Any]:
         '    {\n'
         f'      "start": <int in [{parent_start},{parent_end}]>,\n'
         f'      "end":   <int in [{parent_start},{parent_end}]>,\n'
-        '      "question": "<what exact reading to find, in plain English>",\n'
-        '      "context":  "<overview cue motivating the question>",\n'
+        '      "question": "<what observation to capture, in plain English>",\n'
+        '      "context":  "<glossary_term> — <overview cue>",\n'
         '      "requested_graphs": ["<subset of parent graphs>"]\n'
         '    }\n'
         "  ]\n"
         "}\n"
-        "```\n"
-        "Or, if no zoom is needed:\n"
-        "```json\n"
-        '{"zoom": false}\n'
         "```\n"
         f"Each zoom span must be >= {MIN_ZOOM_SPAN} indices and lie within "
         f"[{parent_start}, {parent_end}]."
@@ -418,17 +431,17 @@ def _executor(state: AgentState, step: Dict[str, Any], registry) -> Dict[str, An
 
 
 def _synthesizer(state: AgentState) -> Dict[str, Any]:
-    """Write the unified prose description, citing zoom answers verbatim.
+    """Write the unified prose description from zoom-answer text alone.
 
     Inputs:
-      * the planner's overview images (for trend / shape language only),
-      * every ``step_solver.*.answer`` attachment (the structured zoom
-        results — already contain exact ilocs from deterministic queries),
-      * any tool attachments emitted by zoom (currently none).
+      * the planner's overview text descriptions (column / unit context),
+      * every ``step_solver.*.answer`` attachment (zoom prose — exact ilocs
+        from deterministic queries),
+      * any sibling tool attachments from the same step.
 
-    The VLM does NOT re-read indices from pixels — when a precise iloc is
-    needed it cites the answer table verbatim. This is the only VLM
-    analysis call in the describe_graphs subgraph.
+    Text-only LLM call. The synthesizer has NO image access — the planner
+    is the only stage that sees pixels. Every observation cited here must
+    be backed by a zoom answer.
     """
     messages = list(state.get("messages", []))
     parent_start = state.get("parent_start", 0)
@@ -438,18 +451,12 @@ def _synthesizer(state: AgentState) -> Dict[str, Any]:
 
     pool: AttachmentPool = state.get("attachment_pool", {})
 
-    overview_images: List[bytes] = []
     aggregated_descriptions: List[str] = []
-    image_attachments: List[PipelineAttachment] = []
     desc_attachments: List[PipelineAttachment] = []
     answer_attachments: List[PipelineAttachment] = []
     tool_attachments: List[PipelineAttachment] = []
 
-    overview_imgs_att = pool.get("describe_graphs.overview_graph_images")
     overview_descs_att = pool.get("describe_graphs.overview_graph_descriptions")
-    if overview_imgs_att and isinstance(overview_imgs_att.content, list) and overview_imgs_att.content:
-        image_attachments.append(overview_imgs_att)
-        overview_images.extend(overview_imgs_att.content)
     if overview_descs_att and isinstance(overview_descs_att.content, list):
         desc_attachments.append(overview_descs_att)
         for d in overview_descs_att.content:
@@ -469,57 +476,13 @@ def _synthesizer(state: AgentState) -> Dict[str, Any]:
             if sib_name.startswith(sid_prefix) and sib_name != name:
                 tool_attachments.append(sib_att)
 
-    prompt_parts = [
-        "You are a telemetry graph describer. Your ONLY job is to produce a "
-        "detailed, precise description of the data and graphs provided. "
-        "Write in flowing prose paragraphs — do NOT use numbered lists, "
-        "bullet points, or step-by-step formatting. Do NOT diagnose problems, "
-        "assign labels, or suggest what the observations mean. Downstream "
-        "nodes will interpret your description.",
-        "",
-        f"**Analysis Goal:** {goal}",
-        f"**Full range:** [{parent_start}, {parent_end}] "
-        f"(length {parent_end - parent_start})",
-        "",
-    ]
-    if aggregated_descriptions:
-        prompt_parts.append(
-            f"**Overview [{parent_start}, {parent_end}] (full range):** "
-            + "; ".join(aggregated_descriptions)
-        )
-        prompt_parts.append("")
-    if answer_attachments:
-        prompt_parts.append("**Zoom answers (exact ilocs from deterministic queries):**")
-        prompt_parts.append(render_inputs_for_prompt(answer_attachments))
-        prompt_parts.append("")
-    if tool_attachments:
-        prompt_parts.append(render_inputs_for_prompt(tool_attachments))
-        prompt_parts.append("")
-    if requested_graphs:
-        skill_prompt = get_graph_skill().build_graph_prompt(requested_graphs)
-        if skill_prompt:
-            prompt_parts.append(skill_prompt)
-            prompt_parts.append("")
-    prompt_parts.append(
-        "**Your task:** Write one cohesive prose paragraph per graph, "
-        "following the per-graph guidance above. Use the overview image(s) "
-        "for trend, shape, and duration language. When a precise iloc / "
-        "value is needed, cite it VERBATIM from the zoom-answer table above "
-        "— do NOT estimate indices from the image. If a needed reading is "
-        "missing from the answers (or marked unresolved), say so explicitly "
-        "in the prose rather than guessing. Anchor observations to specific "
-        f"indices in [{parent_start}, {parent_end}]."
-    )
-    prompt = "\n".join(prompt_parts)
-
     set_active_stage(DESCRIBE_GRAPHS_AGENT_NAME, "synthesizer", graphs=requested_graphs)
     set_active_iteration(1, 1)
-    set_active_attachments(
-        image_attachments + desc_attachments + answer_attachments + tool_attachments
-    )
+    set_active_attachments(desc_attachments + answer_attachments + tool_attachments)
 
-    if not overview_images:
-        # Defensive fallback — overview rendering failed upstream.
+    if not answer_attachments:
+        # No zoom data was gathered — the planner either skipped or failed.
+        # Without images and without zoom answers there is nothing to describe.
         att = PipelineAttachment(
             name="describe_graphs.observations",
             kind="structured",
@@ -528,7 +491,7 @@ def _synthesizer(state: AgentState) -> Dict[str, Any]:
             content={
                 "requested_graphs": requested_graphs,
                 "graph_descriptions": aggregated_descriptions,
-                "graph_observations": "No graph images were rendered.",
+                "graph_observations": "No zoom data was gathered; no observations available.",
             },
         )
         return {
@@ -537,17 +500,72 @@ def _synthesizer(state: AgentState) -> Dict[str, Any]:
             "messages": messages,
         }
 
-    raw_response = _call_vlm(prompt, overview_images)
+    prompt_parts = [
+        "You are a telemetry graph describer. For each requested graph, "
+        "follow its `how_to_analyze` procedure below — that is the "
+        "authoritative spec for what to produce. Classify with the glossary; "
+        "compose with the `sentence_format_guide`. Only use glossary terms "
+        "defined in the skill below; do not invent terms not in the "
+        "glossary. Write in flowing prose paragraphs — no numbered lists "
+        "or bullets.",
+        "",
+        f"**Analysis Goal:** {goal}",
+        f"**Full range:** [{parent_start}, {parent_end}] "
+        f"(length {parent_end - parent_start})",
+        "",
+    ]
+    if requested_graphs:
+        skill_prompt = get_graph_skill().build_graph_prompt(requested_graphs)
+        if skill_prompt:
+            prompt_parts.append(skill_prompt)
+            prompt_parts.append("")
+    if aggregated_descriptions:
+        prompt_parts.append(
+            f"**Overview [{parent_start}, {parent_end}] (full range):** "
+            + "; ".join(aggregated_descriptions)
+        )
+        prompt_parts.append("")
+    prompt_parts.append(
+        "**Zoom answers (exact ilocs from deterministic queries — your "
+        "numeric ground truth):**"
+    )
+    prompt_parts.append(render_inputs_for_prompt(answer_attachments))
+    prompt_parts.append("")
+    if tool_attachments:
+        prompt_parts.append(render_inputs_for_prompt(tool_attachments))
+        prompt_parts.append("")
+    prompt_parts.append(
+        "**Your task:** Emit one paragraph per graph in the order "
+        "requested, each following THAT graph's `sentence_format_guide`. "
+        "You have NO image access — every numeric claim must be backed by "
+        "a zoom answer, with ilocs and values cited VERBATIM. Each zoom "
+        "answer's `context:` phrase names the glossary term it resolves — "
+        "use that term in your paragraph. If the graph's glossary defines "
+        "an overall classification (segment class, shape category, phase "
+        "type — whatever that glossary uses), apply it as the graph's "
+        "`sentence_format_guide` directs; if the glossary has no such "
+        "classification, omit it. Only use terms from THIS graph's "
+        "glossary in its paragraph — do not borrow vocabulary from other "
+        "graphs. If a needed reading is unresolved, say so explicitly "
+        "rather than guessing. Anchor every event to indices in "
+        f"[{parent_start}, {parent_end}]. After the per-graph paragraphs, "
+        "if any cross-graph guidelines above apply to the requested "
+        "combination, add a final cross-graph paragraph using those "
+        "guidelines."
+    )
+    prompt = "\n".join(prompt_parts)
+
+    raw_response = _call_llm(prompt)
     if not raw_response:
         raise RuntimeError(
-            f"describe_graphs synthesizer: VLM returned empty response "
+            f"describe_graphs synthesizer: LLM returned empty response "
             f"(range=[{parent_start}, {parent_end}])"
         )
 
     suite_result: EvalPipelineResult = run_evaluator_suite(
         parent_prompt=prompt,
         parent_output_text=raw_response,
-        parent_inputs=image_attachments + answer_attachments + tool_attachments,
+        parent_inputs=answer_attachments + tool_attachments,
         step_name="describe_graphs",
         parent_start=parent_start,
         parent_end=parent_end,
@@ -585,14 +603,15 @@ def _evaluator(state: AgentState) -> Dict[str, Any]:
 
 
 class DescribeGraphs(Agent):
-    """Meta-agent: planner emits zoom questions; synthesizer writes prose.
+    """Meta-agent: planner owns vision, synthesizer is text-only.
 
-    Planner renders an overview and emits a zoom step (with question +
-    sub-range) for each reading the overview can't resolve. The executor
-    delegates each to ``zoom``, which picks a query + parameters and runs
-    deterministic math for the exact iloc. The synthesizer makes the single
-    VLM analysis call against the overview images + zoom-answer table and
-    emits the unified prose description.
+    Planner renders an overview and (with VLM image access) emits a zoom
+    step covering every observation the per-graph procedure requires. The
+    executor delegates to ``zoom``, which picks queries + parameters and
+    runs deterministic math for each question. The synthesizer makes a
+    text-only LLM call against the zoom-answer prose + skill text and
+    emits the unified description — it has no image access, so every
+    observation it cites is backed by a deterministic zoom answer.
     """
 
     name = DESCRIBE_GRAPHS_AGENT_NAME

@@ -216,7 +216,7 @@ def _unresolved_step(
         "description": question["question"] or "(no question)",
         "question": question["question"],
         "context": question["context"],
-        "range": [int(question["start"]), int(question["end"])],
+        "question_range": [int(question["start"]), int(question["end"])],
         "requested_graphs": list(question["requested_graphs"]),
         "query": None,
         "params": {},
@@ -363,7 +363,10 @@ def _planner(state: AgentState) -> Dict[str, Any]:
         "the question is asking about, then pick one or more queries — "
         "typically one is enough, but questions that combine readings (e.g. "
         "'values at ilocs X and Y AND the slope between them') need multiple. "
-        f"Cap per question: {MAX_QUERIES_PER_QUESTION}. Respond JSON ONLY — "
+        f"Cap per question: {MAX_QUERIES_PER_QUESTION}. **Every query you "
+        "pick MUST include `range: [start_iloc, end_iloc]` in its params.** "
+        "Use a tight window around the feature you're trying to capture; "
+        "stay within the question's sub-range. Respond JSON ONLY — "
         "no prose, no comments:",
         "```json",
         "{",
@@ -373,7 +376,10 @@ def _planner(state: AgentState) -> Dict[str, Any]:
         '      "queries": [',
         '        {',
         '          "query":  "<query id from catalog>",',
-        '          "params": { ... params required by that query ... },',
+        '          "params": {',
+        '            "range":  [<start_iloc>, <end_iloc>],',
+        '            ...other params required by that query...',
+        '          },',
         '          "why":    "<one sentence justifying this pick>"',
         '        }',
         '      ]',
@@ -443,22 +449,42 @@ def _planner(state: AgentState) -> Dict[str, Any]:
                 "why": why,
             })
 
-        if not valid_picks:
+        # Drop picks that don't include a valid `range` in their params —
+        # every query now requires a per-query range.
+        ranged_picks: List[Dict[str, Any]] = []
+        for pick in valid_picks:
+            r = pick["params"].get("range")
+            if (
+                not isinstance(r, (list, tuple))
+                or len(r) != 2
+                or not all(isinstance(v, int) for v in r)
+            ):
+                LOGGER.info(
+                    "zoom planner: dropping Q%d pick %s — missing/invalid range %r",
+                    qi, pick["query"], r,
+                )
+                continue
+            # Normalize to a plain list of ints so downstream rendering is stable.
+            pick["params"]["range"] = [int(r[0]), int(r[1])]
+            ranged_picks.append(pick)
+
+        if not ranged_picks:
             plan_steps.append(_unresolved_step(
-                sid, qi, q, why="VLM picked no usable queries for this question",
+                sid, qi, q,
+                why="VLM picked no queries with a valid `range` param for this question",
             ))
             plan_summary_parts.append(f"Q{qi}: unresolved")
             sid += 1
             continue
 
-        for pick in valid_picks:
+        for pick in ranged_picks:
             plan_steps.append({
                 "step_id": sid,
                 "question_index": qi,
                 "description": q["question"],
                 "question": q["question"],
                 "context": q["context"],
-                "range": [int(q["start"]), int(q["end"])],
+                "question_range": [int(q["start"]), int(q["end"])],
                 "requested_graphs": list(q["requested_graphs"]),
                 "query": pick["query"],
                 "params": pick["params"],
@@ -489,16 +515,24 @@ def _executor(state: AgentState, step: Dict[str, Any], registry) -> Dict[str, An
     all_builds: Dict[str, Any] = state.get("graph_builds") or {}
     step_id = step.get("step_id", 1)
     qi = step.get("question_index", step_id)
-    rng = step.get("range") or [
-        state.get("parent_start", 0), state.get("parent_end", 0),
-    ]
-    zoom_start, zoom_end = int(rng[0]), int(rng[1])
     query_id = step.get("query")
     params = step.get("params") or {}
     why = step.get("why") or ""
     plan_error = step.get("error")
     requested = step.get("requested_graphs") or []
     step_builds = {gid: all_builds[gid] for gid in requested if gid in all_builds} or all_builds
+
+    # The per-query range lives in params["range"] (set by the planner from
+    # the VLM's pick). Fall back to the question's range for unresolved /
+    # query-less steps so the partial still records a meaningful window.
+    raw_range = params.get("range") if isinstance(params, dict) else None
+    if isinstance(raw_range, (list, tuple)) and len(raw_range) == 2:
+        zoom_start, zoom_end = int(raw_range[0]), int(raw_range[1])
+    else:
+        fallback = step.get("question_range") or [
+            state.get("parent_start", 0), state.get("parent_end", 0),
+        ]
+        zoom_start, zoom_end = int(fallback[0]), int(fallback[1])
 
     payload: Dict[str, Any] = {
         "iloc": None, "value": None, "samples": None, "extra": None,
@@ -510,7 +544,7 @@ def _executor(state: AgentState, step: Dict[str, Any], registry) -> Dict[str, An
             error = "graph_builds missing in state — parent did not supply any queryable tables"
         else:
             payload, error = run_pipeline_query(
-                query_table, zoom_start, zoom_end, query_id, params,
+                query_table, query_id, params,
             )
 
     iloc = payload.get("iloc")
@@ -728,12 +762,15 @@ def _synthesizer(state: AgentState) -> Dict[str, Any]:
         "You convert deterministic telemetry-query results into a prose answer "
         "that covers EVERY question below. Write one short paragraph per "
         "question, in the order given, each prefixed with `**Q{i} (range "
-        "[a,b]):**` so downstream readers can locate each answer. The numbers "
-        "below are the ONLY source of truth — cite ilocs and values VERBATIM "
-        "from the table. Do NOT invent numbers, do NOT estimate, do NOT add "
-        "commentary beyond what the data shows. If a query is unresolved or "
-        "failed, state that explicitly in that question's paragraph. No "
-        "bullets, no headers beyond the question prefix, no lists.",
+        "[a,b]):**` so downstream readers can locate each answer. Preserve "
+        "each question's `context:` phrase verbatim in its paragraph — that "
+        "phrase carries the glossary term the downstream describer needs. "
+        "The numbers below are the ONLY source of truth — cite ilocs and "
+        "values VERBATIM from the table. Do NOT invent numbers, do NOT "
+        "estimate, do NOT add commentary beyond what the data shows. If a "
+        "query is unresolved or failed, state that explicitly in that "
+        "question's paragraph. No bullets, no headers beyond the question "
+        "prefix, no lists.",
         "",
         f"**Parent range:** [{parent_start}, {parent_end}]",
         "",
