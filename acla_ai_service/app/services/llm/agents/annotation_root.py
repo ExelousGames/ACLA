@@ -1,21 +1,39 @@
 """
-annotation_root Agent — the outer annotation pipeline as a uniform Agent.
+annotation_root Agent — the ONE annotation pipeline as a uniform Agent.
 
 Topology (inherited from the framework):
 
-    planner ──► step_solvers (loop) ──► proposal_synthesizer ──► evaluator ──► END
-                  ▲                                              (no-op:
-                  │                                               synthesizer
-                  │                                               runs eval
-              describe_graphs                                     suite inline)
+    planner ──► step_solvers (loop) ──► synthesizer ──► evaluator ──► END
+                  ▲                                       (no-op:
+                  │                                        synthesizer
+                  │                                        ran the eval
+              describe_graphs                              suite inline)
               describe_graphs
               ...
               label_verifier        ◄── always appended as the last step
 
-The planner emits one ``describe_graphs`` step per analysis goal plus a
-trailing ``label_verifier`` step. The synthesizer is the existing
-proposal_synthesizer logic — it judges every verified label against the
-collected describe_graphs observations and pinpoints their start/end indices.
+This is the only annotation agent. Callers parameterise it via state:
+
+    planner_prompt       full text the planner sends to the VLM
+    synth_prompt_intro   text the synthesizer prepends before the rendered
+                         context block (skills + task framing)
+    synth_prompt_outro   text the synthesizer appends after the rendered
+                         context block (output-schema + hard rules)
+    initial_attachments  list[PipelineAttachment] seeded into the pool before
+                         the planner runs (e.g. ``init.parent_segment``)
+
+    df_ref, parent_start, parent_end, parent_main_labels, ...   pre-existing
+                         framework state fields. ``parent_main_labels`` drives
+                         the label_verifier's candidate pool.
+
+Output (in state):
+
+    final_synth_response  raw evaluator-finalised VLM response from the
+                          synthesizer. Pipeline callers parse this for their
+                          flow-specific shape (sub-segment proposals vs.
+                          lap-section revised range, etc.).
+
+The agent itself has no knowledge of any specific output schema or flow.
 """
 
 from __future__ import annotations
@@ -25,9 +43,6 @@ import logging
 import re
 from typing import Any, Dict, List, Optional
 
-from app.models.graph_analysis_skill import get_graph_skill
-from app.models.label_catalog import LabelCatalog, get_label_catalog
-from app.models.segment_models import LABEL_MAPPING
 from app.services.llm.agent_framework import (
     Agent,
     AgentState,
@@ -38,7 +53,6 @@ from app.services.llm.step_evaluator_agents import (
     EvalPipelineResult,
     PipelineAttachment,
     _eval_llm_holder,
-    pool_get_many,
     render_inputs_for_prompt,
     run_evaluator_suite,
     set_active_attachments,
@@ -125,224 +139,36 @@ def _parse_planner_steps(plan_text: str) -> List[Dict[str, Any]]:
     return structured
 
 
-def _validate_and_fix_hierarchy(
-    labels: List[str],
-    catalog: Optional[LabelCatalog] = None,
-) -> tuple[List[str], List[str]]:
-    """Validate label hierarchy and auto-fix common issues."""
-    cat = catalog or get_label_catalog()
-    fixed = list(dict.fromkeys(labels))
-    warnings: List[str] = []
-
-    to_add: List[str] = []
-    for lid in fixed:
-        parent = cat.parent_of.get(lid)
-        if parent and parent not in fixed and parent not in to_add:
-            to_add.append(parent)
-            warnings.append(
-                f"Auto-inserted parent '{parent}' ({LABEL_MAPPING.get(parent, parent)}) "
-                f"for sub-label '{lid}' ({LABEL_MAPPING.get(lid, lid)})."
-            )
-    fixed = to_add + fixed
-
-    rules = cat.get_hierarchy_rules(fixed)
-    for conflict in rules["exclusive_conflicts"]:
-        a, b = conflict["labels"]
-        warnings.append(
-            f"Conflict: '{a}' ({LABEL_MAPPING.get(a, a)}) and "
-            f"'{b}' ({LABEL_MAPPING.get(b, b)}) are mutually exclusive."
-        )
-    return list(dict.fromkeys(fixed)), warnings
-
-
-def _parse_json_response(raw: str) -> Optional[dict]:
-    """Best-effort extraction of a JSON block from an LLM response."""
-
-    def _try_loads(s: str) -> Optional[dict]:
-        s = s.strip()
-        try:
-            return json.loads(s)
-        except json.JSONDecodeError:
-            pass
-        try:
-            fixed = re.sub(
-                r'"((?:[^"\\]|\\.)*)"',
-                lambda m: '"' + m.group(1).replace('\n', '\\n').replace('\r', '\\r') + '"',
-                s,
-            )
-            return json.loads(fixed)
-        except (json.JSONDecodeError, re.error):
-            pass
-        return None
-
-    try:
-        json_str = raw
-        if "```json" in json_str:
-            json_str = json_str.split("```json")[1].split("```")[0]
-        elif "```" in json_str:
-            json_str = json_str.split("```")[1].split("```")[0]
-        result = _try_loads(json_str)
-        if result is not None:
-            return result
-    except (IndexError, KeyError):
-        pass
-
-    brace_match = re.search(r'\{[\s\S]*\}', raw)
-    if brace_match:
-        result = _try_loads(brace_match.group())
-        if result is not None:
-            return result
-
-    return None
-
-
 # ---------------------------------------------------------------------------
-# Planner — seeds init.parent_segment, calls VLM, appends label_verifier step
+# Planner — calls VLM with caller-provided prompt, appends label_verifier step
 # ---------------------------------------------------------------------------
 
 
 def _planner(state: AgentState) -> Dict[str, Any]:
-    """Analyse the segment and produce an analysis plan for sub-segment discovery.
+    """Run the planner phase.
 
-    Seeds the attachment pool with ``init.parent_segment``, then calls the
-    VLM to plan describe_graphs steps. Appends a trailing ``label_verifier``
-    step so embedding-similarity filtering always runs after observation.
+    Reads ``state['planner_prompt']`` and sends it to the VLM. The caller
+    is responsible for including everything the VLM needs to make a plan
+    (task framing, skill blocks, eligible graphs, output-format directive).
+
+    Seeds the attachment pool with ``state['initial_attachments']`` so
+    downstream step solvers can consume them (e.g. ``init.parent_segment``).
     """
-    from app.services.llm.annotation_agent_tools import (
-        AGENT_GRAPH_DEFINITIONS,
-        PIPELINE_TOOL_DEFINITIONS,
-    )
+    planner_prompt = state.get("planner_prompt")
+    if not planner_prompt:
+        raise RuntimeError(
+            "annotation_root._planner: state['planner_prompt'] is required. "
+            "The caller (pipeline wrapper) must build the full planner prompt."
+        )
 
-    parent_main_labels = state.get("parent_main_labels", [])
-    existing_children = state.get("existing_children", [])
     parent_start = state.get("parent_start", 0)
     parent_end = state.get("parent_end", 0)
-
-    # Seed init.parent_segment so all downstream agents can consume it.
-    parent_segment = PipelineAttachment(
-        name="init.parent_segment",
-        kind="structured",
-        content_schema="parent_segment",
-        label="Parent Segment",
-        content={
-            "parent_start": parent_start,
-            "parent_end": parent_end,
-            "main_labels": [LABEL_MAPPING.get(l, l) for l in parent_main_labels],
-            "existing_children": [
-                {
-                    "start_index": child.get("start_index"),
-                    "end_index": child.get("end_index"),
-                    "labels": [LABEL_MAPPING.get(l, l) for l in child.get("labels", [])],
-                }
-                for child in existing_children
-            ],
-        },
-    )
-
-    graph_catalogue = ", ".join(
-        f"`{gdef['id']}` ({gdef['title']})"
-        for gdef in AGENT_GRAPH_DEFINITIONS
-    )
-    tool_catalogue_lines = [
-        f"- `{t['id']}` — {t['label']}: {t['description']}"
-        for t in PIPELINE_TOOL_DEFINITIONS
-    ]
-
-    main_readable = [LABEL_MAPPING.get(l, l) for l in parent_main_labels]
-    catalog = get_label_catalog()
-    label_descriptions: List[str] = []
-    annotation_guidelines: List[str] = []
-    for label_id in parent_main_labels:
-        label_def = catalog.get_label(label_id)
-        if label_def and label_def.description:
-            label_descriptions.append(
-                f"  - {label_def.name} ({label_id}): {label_def.description}"
-            )
-        if label_def and label_def.annotation_guideline:
-            annotation_guidelines.append(
-                f"  [{label_def.name}]\n  {label_def.annotation_guideline}"
-            )
-
-    prompt_parts = [
-        "You are a racing telemetry analyst planning a sub-segment discovery strategy.",
-        "",
-        "#### Parent Segment",
-        f"Main labels: {', '.join(main_readable)} (IDs: {json.dumps(parent_main_labels)})",
-        f"Range: [{parent_start}, {parent_end}] (length: {parent_end - parent_start} data points)",
-        "",
-    ]
-
-    if label_descriptions:
-        prompt_parts.append("#### Label Descriptions (from Label Catalog)")
-        prompt_parts.extend(label_descriptions)
-        prompt_parts.append("")
-
-    if annotation_guidelines:
-        prompt_parts.append("#### Annotation Guidelines")
-        prompt_parts.append("Follow these steps when planning analysis for the identified labels:")
-        prompt_parts.extend(annotation_guidelines)
-        prompt_parts.append("")
-
-    if existing_children:
-        prompt_parts.append("#### Already Discovered Sub-Segments")
-        for child in existing_children:
-            child_labels = [LABEL_MAPPING.get(l, l) for l in child.get("labels", [])]
-            prompt_parts.append(
-                f"- Range [{child['start_index']}, {child['end_index']}] "
-                f"(length: {child['end_index'] - child['start_index']}): "
-                f"{', '.join(child_labels)}"
-            )
-        prompt_parts.append("Find a DIFFERENT region that is not yet covered.")
-        prompt_parts.append("")
-
-    prompt_parts.extend([
-        "#### Available Step-Solver Agents",
-        "Each plan step is dispatched to ONE sub-agent. The planner may only "
-        "request `describe_graphs` here — a `label_verifier` step is appended "
-        "automatically by the framework after your plan.",
-        "- `describe_graphs` — renders the telemetry graphs listed in "
-        "`requested_graphs` and writes a precise observation paragraph per "
-        "graph. Pure observation — does not diagnose or assign labels.",
-        "",
-        "#### Available Graph IDs (for `describe_graphs` agent)",
-        graph_catalogue,
-        "",
-        "#### Available Pre-Compute Tools",
-        "Invoke per step via the `tools` field. Each invoked tool produces "
-        "an attachment that will be attached to that step's prompt only.",
-        *tool_catalogue_lines,
-        "",
-        "#### Task",
-        "Plan analysis steps to help discover ONE notable sub-segment "
-        "within the parent segment range. A sub-segment is a contiguous "
-        "region where a specific event or behaviour occurs.",
-        "",
-        "Your plan must be a JSON object with a single key \"steps\". "
-        "Each step object must have:",
-        "  - \"step_id\": integer (1, 2, 3, ...).",
-        "  - \"agent\": always \"describe_graphs\".",
-        "  - \"description\": string describing the goal of the step.",
-        "  - \"requested_graphs\": list of graph IDs from the catalogue above.",
-        "  - \"tools\": list of pre-compute tool IDs (empty list `[]` for none).",
-        "",
-        "Example:",
-        "```json",
-        '{',
-        '  "steps": [',
-        '    {"step_id": 1, "agent": "describe_graphs", "description": "Measure entry/apex/exit shape via the trajectory offset trace.", "requested_graphs": ["trajectory_offset"], "tools": ["compute_expert_phases"]},',
-        '    {"step_id": 2, "agent": "describe_graphs", "description": "Inspect speed and throttle around the apex.", "requested_graphs": ["speed", "throttle"], "tools": []}',
-        '  ]',
-        '}',
-        "```",
-    ])
-
-    prompt = "\n".join(prompt_parts)
 
     set_active_stage("planner", "main")
     set_active_attachments([])
     vlm_fn = _eval_llm_holder.get("vlm")
     if vlm_fn:
-        raw_plan = vlm_fn(prompt)
+        raw_plan = vlm_fn(planner_prompt)
     else:
         raw_plan = (
             "[VLM not available — using passthrough plan] "
@@ -350,7 +176,7 @@ def _planner(state: AgentState) -> Dict[str, Any]:
         )
 
     suite_result: EvalPipelineResult = run_evaluator_suite(
-        parent_prompt=prompt,
+        parent_prompt=planner_prompt,
         parent_output_text=raw_plan,
         parent_inputs=[],
         step_name="planner",
@@ -361,7 +187,9 @@ def _planner(state: AgentState) -> Dict[str, Any]:
 
     parsed_steps = _parse_planner_steps(evaluated_plan)
 
-    # Append label_verifier as the trailing step solver.
+    # Append label_verifier as the trailing step solver. The framework
+    # always runs it after every describe_graphs step so the synthesizer
+    # gets an embedding-filtered candidate shortlist.
     next_step_id = max((s.get("step_id", 0) for s in parsed_steps), default=0) + 1
     parsed_steps.append({
         "step_id": next_step_id,
@@ -369,16 +197,22 @@ def _planner(state: AgentState) -> Dict[str, Any]:
         "description": "Filter candidate labels by embedding similarity to step observations.",
     })
 
+    # Seed the pool with the caller-provided initial attachments + the
+    # planner's own plan text.
+    initial_pool: Dict[str, PipelineAttachment] = {}
+    for att in state.get("initial_attachments", []) or []:
+        if isinstance(att, PipelineAttachment):
+            initial_pool[att.name] = att
     plan_attachment = PipelineAttachment(
         name="planner.plan",
         kind="text",
         label="Planner Plan",
         content=evaluated_plan,
     )
+    initial_pool[plan_attachment.name] = plan_attachment
 
-    msg = {"role": "planner", "content": evaluated_plan}
     messages = list(state.get("messages", []))
-    messages.append(msg)
+    messages.append({"role": "planner", "content": evaluated_plan})
 
     return {
         "plan": evaluated_plan,
@@ -387,16 +221,13 @@ def _planner(state: AgentState) -> Dict[str, Any]:
         "step_results": [],
         "all_graph_images": [],
         "all_graph_descriptions": [],
-        "attachment_pool": {
-            parent_segment.name: parent_segment,
-            plan_attachment.name: plan_attachment,
-        },
+        "attachment_pool": initial_pool,
         "messages": messages,
     }
 
 
 # ---------------------------------------------------------------------------
-# Synthesizer — proposal_synthesizer; produces final label proposals
+# Synthesizer — renders the pool + caller intros around it, calls VLM
 # ---------------------------------------------------------------------------
 
 
@@ -410,23 +241,44 @@ def _call_vlm(prompt: str, graph_image_bytes: List[bytes]) -> str:
 
 
 def _synthesizer(state: AgentState) -> Dict[str, Any]:
-    """Assemble the final label annotations from verified labels and step evidence.
+    """Run the synthesizer phase.
 
-    Reads every ``step_solver.*.observations`` attachment (the describe_graphs
-    outputs) and the label_verifier's verified_labels attachment, prompts the
-    VLM to decide which verified labels the evidence supports, and emits the
-    final proposal. Runs the evaluator suite inline so the evaluator node
-    downstream is a verdict-only pass-through.
+    Composes the final synthesizer prompt as::
+
+        {synth_prompt_intro}
+
+        {rendered context — init.parent_segment + verified_labels + observations}
+
+        {synth_prompt_outro}
+
+    Sends it to the VLM, runs the evaluator suite, and stashes the
+    evaluator-finalised raw response under ``final_synth_response`` for
+    the pipeline caller to parse.
     """
+    synth_intro = state.get("synth_prompt_intro")
+    synth_outro = state.get("synth_prompt_outro")
+    # Allow callables so the caller can defer prompt construction until
+    # synth time (e.g. to read the freshly emitted verified_labels from
+    # the post-label_verifier state).
+    if callable(synth_intro):
+        synth_intro = synth_intro(state)
+    if callable(synth_outro):
+        synth_outro = synth_outro(state)
+    if not synth_intro or not synth_outro:
+        raise RuntimeError(
+            "annotation_root._synthesizer: state['synth_prompt_intro'] and "
+            "['synth_prompt_outro'] are required. The caller (pipeline "
+            "wrapper) must build them."
+        )
+
     messages = list(state.get("messages", []))
     parent_start = state.get("parent_start", 0)
     parent_end = state.get("parent_end", 0)
-    verified_labels = state.get("verified_labels", [])
 
     pool: AttachmentPool = state.get("attachment_pool", {})
 
-    # Collect inputs: parent_segment, verified labels (under whatever step_id
-    # label_verifier ran at), and all describe_graphs observations.
+    # Collect context inputs in stable order: parent_segment → verified
+    # labels → observations.
     parent_inputs: List[PipelineAttachment] = []
     if "init.parent_segment" in pool:
         parent_inputs.append(pool["init.parent_segment"])
@@ -439,155 +291,49 @@ def _synthesizer(state: AgentState) -> Dict[str, Any]:
 
     context_block = render_inputs_for_prompt(parent_inputs)
 
-    n_verified = len(verified_labels)
-    verified_ids_inline = ", ".join(verified_labels) if verified_labels else "(none)"
+    vlm_prompt = "\n\n".join([synth_intro, context_block, synth_outro])
+    # The evaluator suite needs to see the prompt without the inlined
+    # context (its evidence-evaluator inspects ``parent_inputs`` directly).
+    eval_prompt = "\n\n".join([synth_intro, synth_outro])
 
-    intro_parts = [
-        "You are a racing telemetry analyst producing label annotations.",
-        "",
-        "#### Task",
-        f"For the parent range [{parent_start}, {parent_end}] "
-        f"(length: {parent_end - parent_start} data points), judge every "
-        "verified candidate label against the step observations. For each "
-        "candidate that is proved, pinpoint its exact start_index and end_index.",
-    ]
-
-    instructions_parts = [
-        "#### Instructions",
-        f"- There are {n_verified} verified candidate label(s): {verified_ids_inline}.",
-        f"- Emit EXACTLY one entry per verified candidate ({n_verified} entries "
-        "total) — neither more nor fewer. Do not invent labels outside the "
-        "verified list.",
-        "- Judging rule: treat each label's full description as the definition. "
-        "The bolded predicate is the headline claim; the surrounding prose lists "
-        "its qualifiers. Set \"proved\": true only if the step observations "
-        "satisfy the predicate AND every qualifier the description names. "
-        "Otherwise set \"proved\": false.",
-        f"- start_index and end_index are required only when \"proved\" is true; "
-        f"each must satisfy {parent_start} <= start_index < end_index <= {parent_end} "
-        "and the range must contain the cited evidence. Omit both fields when "
-        "\"proved\" is false.",
-        "- In \"reasoning\", cite the step observation sentences that establish "
-        "(or fail to establish) the predicate + qualifiers. When \"proved\" is "
-        "false, name the specific qualifier that is unmet or contradicted.",
-        "- The top-level JSON has a single key \"labels\" whose value is a flat "
-        "list of entries. Do not wrap the list in any other container.",
-        "",
-        "#### Output Format",
-        "Respond with JSON of this exact shape only. Emit one entry per verified "
-        f"candidate ({n_verified} entries total). The schema below shows BOTH "
-        "entry shapes — proved-true (with indices) and proved-false (without). "
-        "Output strict JSON only — no comments, no trailing commas, no extra keys.",
-        "```json",
-        "{",
-        '  "labels": [',
-        '    {',
-        '      "label_id": "<one of the verified label IDs>",',
-        '      "proved": true,',
-        f'      "start_index": <integer in [{parent_start}, {parent_end}]>,',
-        f'      "end_index": <integer in [{parent_start}, {parent_end}]>,',
-        '      "reasoning": "..."',
-        '    },',
-        '    {',
-        '      "label_id": "<one of the verified label IDs>",',
-        '      "proved": false,',
-        '      "reasoning": "..."',
-        '    }',
-        '  ]',
-        "}",
-        "```",
-    ]
-
-    vlm_prompt = "\n".join(intro_parts + ["", context_block, ""] + instructions_parts)
-    eval_prompt = "\n".join(intro_parts + [""] + instructions_parts)
-
-    set_active_stage("proposal_synthesizer", "main")
+    set_active_stage("synthesizer", "main")
     set_active_attachments(parent_inputs)
     raw_response = _call_vlm(vlm_prompt, [])
     if not raw_response:
         raise RuntimeError(
-            f"proposal_synthesizer: VLM returned empty response "
-            f"(parent=[{parent_start}, {parent_end}], "
-            f"verified_labels={verified_labels})"
+            f"annotation_root synthesizer: VLM returned empty response "
+            f"(range=[{parent_start}, {parent_end}])"
         )
 
     suite_result: EvalPipelineResult = run_evaluator_suite(
         parent_prompt=eval_prompt,
         parent_output_text=raw_response,
         parent_inputs=parent_inputs,
-        step_name="proposal_synthesizer",
+        step_name="synthesizer",
         parent_start=parent_start,
         parent_end=parent_end,
     )
     evaluated_response = suite_result.final_result
 
-    sub_labels: List[str] = []
-    label_proposals: List[dict] = []
-    reasoning = evaluated_response
-    proposed_start = parent_start
-    proposed_end = parent_end
-    parsed = _parse_json_response(evaluated_response)
-    if parsed:
-        label_annotations = parsed.get("labels", [])
-        starts: List[int] = []
-        ends: List[int] = []
-        for ann in (label_annotations if isinstance(label_annotations, list) else []):
-            lid = ann.get("label_id")
-            if not lid or lid not in LABEL_MAPPING:
-                continue
-            if not ann.get("proved"):
-                continue
-            raw_start = ann.get("start_index")
-            raw_end = ann.get("end_index")
-            ann_reasoning = ann.get("reasoning", "")
-            if not isinstance(ann_reasoning, str):
-                ann_reasoning = str(ann_reasoning)
-            ann_start = int(raw_start) if isinstance(raw_start, (int, float)) else parent_start
-            ann_end = int(raw_end) if isinstance(raw_end, (int, float)) else parent_end
-            sub_labels.append(lid)
-            label_proposals.append({
-                "label_id": lid,
-                "start_index": ann_start,
-                "end_index": ann_end,
-                "reasoning": ann_reasoning,
-            })
-            starts.append(ann_start)
-            ends.append(ann_end)
-        reasoning = "; ".join(p["reasoning"] for p in label_proposals) if label_proposals else evaluated_response
-        if starts:
-            proposed_start = min(starts)
-        if ends:
-            proposed_end = max(ends)
-    else:
-        LOGGER.warning("Proposal synthesizer evaluated response was not valid JSON.")
-
-    fixed_labels, hierarchy_warnings = _validate_and_fix_hierarchy(sub_labels)
-    for w in hierarchy_warnings:
-        LOGGER.info("Hierarchy fix: %s", w)
-
-    messages.append({"role": "assistant", "content": evaluated_response})
-
     proposal_attachment = PipelineAttachment(
-        name="proposal_synthesizer.proposal",
+        name="synthesizer.response",
         kind="text",
-        label="Proposal Synthesizer Output",
+        label="Synthesizer Output",
         content=evaluated_response,
     )
 
+    messages.append({"role": "assistant", "content": evaluated_response})
+
     return {
         "evaluation": suite_result.final_verdict,
-        "final_sub_start": proposed_start,
-        "final_sub_end": proposed_end,
-        "final_labels": fixed_labels,
-        "final_label_annotations": label_proposals,
-        "final_reasoning": reasoning,
+        "final_synth_response": evaluated_response,
         "attachment_pool": {proposal_attachment.name: proposal_attachment},
         "messages": messages,
     }
 
 
 # ---------------------------------------------------------------------------
-# Evaluator — no-op pass-through (synthesizer ran evaluator suite inline)
+# Evaluator — no-op pass-through (synthesizer ran the suite inline)
 # ---------------------------------------------------------------------------
 
 
@@ -596,13 +342,20 @@ def _evaluator(state: AgentState) -> Dict[str, Any]:
 
 
 class AnnotationRoot(Agent):
-    """Root agent: orchestrates describe_graphs + label_verifier into
-    final label proposals via the proposal_synthesizer.
+    """The only annotation agent. Flow-agnostic.
+
+    Contract: caller seeds ``planner_prompt``, ``synth_prompt_intro``,
+    ``synth_prompt_outro``, ``initial_attachments``, plus the standard
+    framework fields (``df_ref``, ``parent_start``, ``parent_end``,
+    ``parent_main_labels``, ``existing_children``, ``available_labels``).
+    The agent runs planner → describe_graphs+label_verifier → synthesizer
+    and emits ``final_synth_response`` as a raw string for the caller to
+    parse however its use case demands.
     """
 
     name = ANNOTATION_ROOT_AGENT_NAME
     consumes: list = []       # root: starts from raw state inputs
-    produces = ["proposal"]
+    produces = ["response"]
     delegates_to = ["describe_graphs", "label_verifier"]
 
     def planner(self, state: AgentState) -> Dict[str, Any]:

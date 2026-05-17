@@ -402,6 +402,188 @@ def compute_expert_phases(
 NORMALIZED_POSITION_COLUMN = "Graphics_normalized_car_position"
 
 
+def split_lap_by_circuit_sections(
+    df: pd.DataFrame, start_index: int, end_index: int,
+    circuit_id: Optional[str] = None,
+):
+    """Tool — partition a lap-shaped range into per-`circuit_section` sub-ranges.
+
+    Walks ``Graphics_normalized_car_position`` sample-by-sample across
+    ``[start_index, end_index)`` and assigns every iloc to the
+    ``circuit_section`` whose ``normalized_position_range`` contains its
+    position fraction. Consecutive ilocs that land in the same section are
+    grouped into one sub-range. Wrap-around sections (``range_end <
+    range_start``) and lap roll-over (a sample where position resets
+    1.0 → 0.0) are handled.
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        Session telemetry; must contain ``Graphics_normalized_car_position``.
+    start_index, end_index : int
+        Inclusive-exclusive parent slice. The caller picks any contiguous
+        range — the function does not assume a full lap.
+    circuit_id : str, optional
+        Restrict matching to sections whose ``parent`` equals this circuit
+        (e.g. ``"brands_hatch"``). When ``None``, every ``circuit_section``
+        with a filled range competes.
+
+    Returns
+    -------
+    PipelineAttachment ``split_lap_sections`` whose ``content`` is::
+
+        {
+            "circuit_id": <str | None>,
+            "range": [start_index, end_index],
+            "segments": [
+                {
+                    "start_index": int,
+                    "end_index": int,
+                    "circuit_section_id": str,
+                    "circuit_section_name": str,
+                    "normalized_position_range": [float, float],
+                    "coverage_fraction": 0.0..1.0,
+                },
+                ...
+            ],
+            "unmatched_ilocs": int,   # samples that hit no defined section
+        }
+
+    Segments are ordered by ``start_index``. ``coverage_fraction`` is the
+    share of the segment's iloc span that fell inside the matched section's
+    range — informative when a section's range is narrow and the player
+    crossed in/out at the boundary.
+    """
+    from .step_evaluator_agents import PipelineAttachment
+    from app.models.label_catalog import get_label_catalog
+
+    s, e = int(start_index), int(end_index)
+
+    def _attach(content: Dict[str, Any]) -> "PipelineAttachment":
+        return PipelineAttachment(
+            name="split_lap_sections",
+            kind="structured",
+            label="Lap Split by Circuit Section",
+            content=_round_floats(content, ndigits=4),
+        )
+
+    if NORMALIZED_POSITION_COLUMN not in df.columns:
+        return _attach({
+            "error": f"column '{NORMALIZED_POSITION_COLUMN}' missing from telemetry",
+            "circuit_id": circuit_id,
+            "range": [s, e],
+            "segments": [],
+            "unmatched_ilocs": 0,
+        })
+
+    pos = df.iloc[s:e][NORMALIZED_POSITION_COLUMN].to_numpy(dtype=float)
+    if pos.size == 0:
+        return _attach({
+            "error": "empty slice",
+            "circuit_id": circuit_id,
+            "range": [s, e],
+            "segments": [],
+            "unmatched_ilocs": 0,
+        })
+
+    catalog = get_label_catalog()
+    candidates: List[Dict[str, Any]] = []
+    for entry in catalog.entries_by_type("circuit_section"):
+        rng = entry.normalized_position_range
+        if rng is None:
+            continue
+        if circuit_id is not None and entry.parent != circuit_id:
+            continue
+        candidates.append({
+            "id": entry.id,
+            "name": entry.name,
+            "lo": float(rng[0]),
+            "hi": float(rng[1]),
+        })
+
+    if not candidates:
+        return _attach({
+            "error": (
+                f"no circuit_section with a filled normalized_position_range "
+                f"matches circuit_id={circuit_id!r}"
+            ),
+            "circuit_id": circuit_id,
+            "range": [s, e],
+            "segments": [],
+            "unmatched_ilocs": 0,
+        })
+
+    def _section_for(p: float) -> Optional[Dict[str, Any]]:
+        if not np.isfinite(p):
+            return None
+        # Wrap p into [0, 1) defensively — some sessions emit values that drift
+        # slightly past the boundary at the start/finish line.
+        p = p - np.floor(p)
+        for c in candidates:
+            lo, hi = c["lo"], c["hi"]
+            if hi >= lo:
+                if lo <= p <= hi:
+                    return c
+            else:
+                # Wrap section: [lo, 1.0] ∪ [0.0, hi]
+                if p >= lo or p <= hi:
+                    return c
+        return None
+
+    segments: List[Dict[str, Any]] = []
+    unmatched = 0
+    cur_section: Optional[Dict[str, Any]] = None
+    cur_start_iloc = s
+    matched_in_run = 0
+
+    def _close_run(end_iloc_exclusive: int) -> None:
+        nonlocal cur_section, cur_start_iloc, matched_in_run
+        if cur_section is not None and end_iloc_exclusive > cur_start_iloc:
+            length = end_iloc_exclusive - cur_start_iloc
+            segments.append({
+                "start_index": int(cur_start_iloc),
+                "end_index": int(end_iloc_exclusive),
+                "circuit_section_id": cur_section["id"],
+                "circuit_section_name": cur_section["name"],
+                "normalized_position_range": [cur_section["lo"], cur_section["hi"]],
+                "coverage_fraction": float(matched_in_run) / float(length) if length else 0.0,
+            })
+        cur_section = None
+        cur_start_iloc = end_iloc_exclusive
+        matched_in_run = 0
+
+    for offset, p in enumerate(pos):
+        iloc = s + offset
+        section = _section_for(p)
+        if section is None:
+            unmatched += 1
+            # Keep the run open — the player may have a noisy sample.
+            if cur_section is None:
+                cur_start_iloc = iloc + 1
+            continue
+        if cur_section is None:
+            cur_section = section
+            cur_start_iloc = iloc
+            matched_in_run = 1
+            continue
+        if section["id"] == cur_section["id"]:
+            matched_in_run += 1
+            continue
+        # Section changed — close the prior run, start a new one.
+        _close_run(iloc)
+        cur_section = section
+        cur_start_iloc = iloc
+        matched_in_run = 1
+    _close_run(e)
+
+    return _attach({
+        "circuit_id": circuit_id,
+        "range": [s, e],
+        "segments": segments,
+        "unmatched_ilocs": int(unmatched),
+    })
+
+
 def locate_circuit_section(
     df: pd.DataFrame, start_index: int, end_index: int,
 ):
@@ -526,6 +708,21 @@ PIPELINE_TOOL_DEFINITIONS: List[Dict[str, Any]] = [
             "the segment is on — never guess from telemetry shape alone."
         ),
         "callable": locate_circuit_section,
+    },
+    {
+        "id": "split_lap_by_circuit_sections",
+        "label": "Split lap range into per-section sub-ranges",
+        "description": (
+            "Walks `Graphics_normalized_car_position` across the parent "
+            "range and partitions it into one sub-range per "
+            "`circuit_section` whose `normalized_position_range` contains "
+            "the sample. Produces a 'split_lap_sections' attachment with "
+            "an ordered `segments` list (`start_index`, `end_index`, "
+            "`circuit_section_id`, `coverage_fraction`). Used by the "
+            "lap-to-segment excerpter to compute the rough split that "
+            "feeds the per-section annotation agent."
+        ),
+        "callable": split_lap_by_circuit_sections,
     },
 ]
 

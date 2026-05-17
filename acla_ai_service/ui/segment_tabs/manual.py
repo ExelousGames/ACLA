@@ -13,6 +13,7 @@ from .shared import (
 from .components.manual_feature_visualization import render_feature_visualization
 from .components.manual_track_map import render_manual_track_map
 from .components.manual_annotation_manager import render_manual_annotation_manager
+from .components.manual_lap_agent import render_manual_lap_agent
 
 def render_manual_annotation(selected_annotation_key, selected_session_key, available_sessions):
     """
@@ -121,3 +122,6 @@ def render_manual_annotation(selected_annotation_key, selected_session_key, avai
 
     # --- Unified Annotation Management ---
     render_manual_annotation_manager(df, numeric_cols, session_id, selected_annotation_key)
+
+    # --- Lap-to-Segment Excerpter (AI Agent) ---
+    render_manual_lap_agent(df, session_id, selected_annotation_key)

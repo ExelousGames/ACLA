@@ -1,0 +1,166 @@
+# =============================================================================
+# Lap Annotation Skill — knowledge base for the lap-to-segment excerpter
+#
+# Used by the manual.py "Lap-to-Segment Excerpter" flow. The user picks a
+# parent lap range; the deterministic `split_lap_by_circuit_sections` tool
+# rough-splits it into per-`circuit_section` sub-ranges (one row per named
+# corner / straight, ordered by lap progress). The agent processes ONE
+# section at a time and decides:
+#
+#   (a) The rough boundary is fine → submit parent labels for the section.
+#   (b) The boundary needs shrinking/extending so the labels actually
+#       describe a meaningful driving event → call `revise_segment_range`
+#       BEFORE submitting; the splitter rebuilds the remaining array using
+#       the new boundary as the new section end.
+#
+# This skill is loaded by `lap_annotation_skill.py` and injected into both
+# the Claude runner's system prompt and the local-VLM planner / synthesizer
+# prompts. Keep entries terse — bullets over paragraphs.
+#
+# Schema (per circuit, under `circuits.<id>`):
+#   name                  — human-readable circuit name
+#   total_sections        — number of `circuit_section` entries that belong
+#                           to this circuit (sanity check; the splitter
+#                           pulls live ranges from the label_catalog)
+#   section_order         — list of `circuit_section` IDs in lap-progress
+#                           order (start/finish line first). Ranges are
+#                           taken from label_catalog.yaml at runtime so we
+#                           don't duplicate the source-of-truth — but the
+#                           skill prompt block echoes them inline so the
+#                           VLM sees lo/hi without needing a tool call.
+#   default_parent_labels — labels every section on this circuit inherits.
+#                           Always includes the circuit ID; the agent then
+#                           picks one segment_type label (ST1–ST6) per
+#                           section based on telemetry shape.
+#   shrink_extend_rules   — when the agent should call
+#                           `revise_segment_range`. Bullets, each phrased
+#                           as a trigger + action.
+#   segment_type_hints    — short rule for picking ST1–ST6 per section,
+#                           keyed by trajectory shape.
+#
+# Top-level keys:
+#   global_rules          — annotation rules that apply on every circuit.
+# =============================================================================
+
+circuits:
+
+  brands_hatch:
+    name: "Brands Hatch"
+    total_sections: 18
+    section_order:
+      - brands_hatch1   # Brabham Straight
+      - brands_hatch2   # Paddock Hill Bend
+      - brands_hatch18  # Graham Hill
+      - brands_hatch3   # Druids
+      - brands_hatch19  # Hailwoods Hill
+      - brands_hatch4   # Graham Hill Bend
+      - brands_hatch5   # Cooper Straight
+      - brands_hatch6   # Surtees
+      - brands_hatch7   # Pilgrim's Drop
+      - brands_hatch9   # Hawthorns
+      - brands_hatch10  # Derek Minter Straight
+      - brands_hatch11  # Westfield Bend
+      - brands_hatch12  # Dingle Dell
+      - brands_hatch13  # Sheene Curve
+      - brands_hatch14  # Stirlings
+      - brands_hatch15  # Clearways
+      - brands_hatch16  # Clark Curve
+      - brands_hatch17  # Pit
+    default_parent_labels:
+      - brands_hatch
+    shrink_extend_rules:
+      - "Brake initiation onset (first sample where Physics_brake rises off zero) lies UPSTREAM of the section's catalog start → extend backwards: set new_start to that brake onset iloc."
+      - "Throttle re-application onset at corner exit (first sample where Physics_gas rises off zero) lies DOWNSTREAM of the section's catalog end → extend forwards: set new_end to one sample past the throttle onset."
+      - "Section catalog range covers a span where player is fully off-track (trajectory_offset stays > 4m wider for the whole section) → leave the rough boundary; let the off-track-at-* sub-label handle it. Do not shrink unless the off-track block is clearly bounded inside the section."
+      - "Pit-lane entry (Brabham Straight or Clark Curve splitting into pit road) — if Graphics_normalized_car_position diverges into the pit segment's range (≈[0.94, 1.0]) while the trajectory peels off, treat that subrange as `brands_hatch17` (Pit) and shrink the previous section's end accordingly."
+      - "Chicanes / esses where two arcs share one catalog section (e.g. Stirlings) — keep the section whole; do NOT split into two; let segment_type label ST6 describe the shape."
+      - "Never shrink a section to fewer than 3 ilocs — too short for downstream sub-segment discovery. Drop the section instead by submitting an empty proposal."
+    segment_type_hints: >
+      Pick exactly ONE ST label per section:
+      - ST1 (in the corner): trajectory shows a single continuous arc, steering non-zero throughout, brake → apex → throttle structure.
+      - ST2 (on the straight): minimal steering, throttle on most of the section, no detectable curvature peak (compute_expert_phases returns empty).
+      - ST3 (approach to corner): section starts straight then curves — present at sections that are nominally short straights leading into a corner (e.g. Cooper Straight before Surtees).
+      - ST4 (exit corner leading to straight): section starts curved, steering decreasing, throttle increasing — typical of corner-exit sections that flow onto a straight.
+      - ST5 (between consecutive corners): brief connection, not long enough to be a real straight (e.g. Hailwoods Hill linking Druids → Graham Hill Bend).
+      - ST6 (consecutive corners, no straight between): multi-apex sections detected as ≥2 arcs by compute_expert_phases with no flat-curvature gap between (e.g. Stirlings).
+
+  silverstone:
+    name: "Silverstone"
+    total_sections: 21
+    section_order:
+      - silverstone1    # Woodcote
+      - silverstone2    # Copse
+      - silverstone3    # Maggotts
+      - silverstone4    # Becketts
+      - silverstone5    # Chapel
+      - silverstone6    # Hangar Straight
+      - silverstone7    # Stowe
+      - silverstone20   # Vale first 90 shape turn
+      - silverstone21   # Vale second over 90 rounded turn
+      - silverstone8    # Vale
+      - silverstone9    # Club
+      - silverstone10   # Hamilton Straight
+      - silverstone11   # Abbey
+      - silverstone12   # Farm Curve
+      - silverstone13   # Village
+      - silverstone14   # The Loop
+      - silverstone15   # Aintree
+      - silverstone16   # Wellington Straight
+      - silverstone17   # Brooklands
+      - silverstone18   # Luffield
+      - silverstone19   # Pit
+    default_parent_labels:
+      - silverstone
+    shrink_extend_rules:
+      - "Silverstone section ranges are not yet measured (`normalized_position_range: [null, null]` in the label catalog). The splitter will currently emit a single unmatched sweep covering the whole lap. If you encounter this, submit only the circuit label + an ST hint, and surface a note for the human reviewer to fill in the catalog ranges."
+      - "Same general rules as Brands Hatch otherwise — extend backwards into the prior section when brake onset lies upstream of the catalog start; extend forwards when throttle re-application lies downstream of the catalog end; never shrink below 3 ilocs; treat pit-lane divergence in Graphics_normalized_car_position as its own section."
+    segment_type_hints: >
+      Same ST1–ST6 vocabulary as Brands Hatch. Maggotts-Becketts-Chapel is
+      classically ST6 (consecutive corners with no straight). Hangar /
+      Wellington / Hamilton Straight are ST2.
+
+# =============================================================================
+# Global rules — apply on every circuit
+# =============================================================================
+
+global_rules: >
+  Per-section annotation procedure:
+
+  1. Read the rough boundary the splitter handed you and the section's
+     normalized_position_range. Confirm with one `render_graph` call on a
+     trajectory graph (e.g. `trajectory_detailed` or `trajectory_offset`)
+     that the player actually drove through this section in this iloc
+     range.
+
+  2. Check shrink/extend rules for this circuit. If a rule fires, call
+     `revise_segment_range(new_start, new_end)` BEFORE submitting. The
+     splitter rebuilds the remaining sections downstream of `new_end`
+     using the same `Graphics_normalized_car_position`-based logic.
+
+  3. Pick parent labels:
+     - The circuit label (always included; comes from
+       `default_parent_labels`).
+     - The section label (the `circuit_section_id` the splitter assigned;
+       only override when shrink/extend pushed the boundary into a
+       different catalog range — call `locate_circuit_section` to verify).
+     - Exactly ONE segment_type label (ST1–ST6) based on
+       `segment_type_hints` and the actual trajectory shape. Use
+       `compute_expert_phases` when in doubt — empty phases ⇒ ST2; one
+       arc ⇒ ST1 / ST3 / ST4 (pick by where steering ramps in/out);
+       multiple arcs with no flat gap ⇒ ST6.
+     - Optional main labels (EA / MS / RM / Overtaking / Pit Stop /
+       Missing data) only when the section-wide telemetry justifies one.
+       The downstream detailed-annotation flow refines sub-labels per
+       parent — this lap-section flow only sets the parent label.
+
+  4. Submit via `submit_lap_proposal` with one entry per label and a
+     concise reasoning string citing ilocs.
+
+  Hard rules:
+  - One proposal per agent run. The UI loops one section per click —
+    do NOT propose labels for downstream sections you can see in the
+    array; they will get their own run.
+  - Never invent label IDs. Stick to the circuit + section + ST1–ST6
+    + optional main label.
+  - When you shrink/extend, the new range must remain inside the lap
+    parent range and ≥ 3 ilocs long.
