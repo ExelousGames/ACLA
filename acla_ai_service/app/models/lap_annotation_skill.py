@@ -1,17 +1,15 @@
 """
-Lap Annotation Skill — loads and queries the YAML knowledge base used by
-the lap-to-segment excerpter (manual.py).
+Lap Annotation Skill — loads the YAML knowledge base used by the
+lap-to-segment excerpter (manual.py).
 
-Teaches the agent how to:
-  - Map a `Graphics_normalized_car_position`-shaped lap range to per-section
-    sub-ranges.
-  - Decide when to `revise_segment_range` (shrink/extend) the rough split.
-  - Pick the right parent labels (circuit + segment_type + section).
+The skill is label-centric: for each of the 8 candidate parent labels the
+agent may attach to one circuit_section, it describes the telemetry
+characteristic that justifies attaching it, and a `global_rules` block
+prescribes the detection procedure.
 
-The companion deterministic tool `split_lap_by_circuit_sections` in
-`annotation_agent_tools.py` pulls live `normalized_position_range` values
-from `label_catalog.yaml` — the skill prompt echoes those ranges inline
-so the VLM sees lo/hi without paying a tool call.
+Circuit_section IDs (brands_hatch1, silverstone3, ...) and ST1–ST6
+descriptions are NOT duplicated here — those come from `label_catalog.yaml`
+and the `locate_circuit_section` tool.
 
 Usage::
 
@@ -37,14 +35,19 @@ _SKILL_PATH = (
 
 _skill_instance: Optional["LapAnnotationSkill"] = None
 
+# Label IDs that are gated by which circuit the lap was driven on. When
+# `build_prompt(circuit_id=...)` is called we keep only the matching circuit
+# label and drop the other one from the rendered prompt.
+_CIRCUIT_LABELS = {"brands_hatch", "silverstone"}
 
-class LapCircuitEntry:
-    """One circuit's YAML record."""
+
+class LapLabelEntry:
+    """One label's YAML record."""
 
     __slots__ = ("id", "raw")
 
-    def __init__(self, circuit_id: str, raw: Dict[str, Any]) -> None:
-        self.id: str = circuit_id
+    def __init__(self, label_id: str, raw: Dict[str, Any]) -> None:
+        self.id: str = label_id
         self.raw: Dict[str, Any] = raw
 
     @property
@@ -52,94 +55,65 @@ class LapCircuitEntry:
         return self.raw.get("name", self.id)
 
     @property
-    def section_order(self) -> List[str]:
-        return list(self.raw.get("section_order") or [])
+    def applies_when(self) -> str:
+        return str(self.raw.get("applies_when", "")).strip()
 
     @property
-    def default_parent_labels(self) -> List[str]:
-        return list(self.raw.get("default_parent_labels") or [])
+    def characteristics(self) -> str:
+        return str(self.raw.get("characteristics", "")).strip()
 
 
 class LapAnnotationSkill:
-    """Queryable lap-annotation skill — one entry per circuit + global rules."""
+    """Queryable lap-annotation skill — one entry per candidate label."""
 
     def __init__(
         self,
-        circuits: Dict[str, LapCircuitEntry],
+        labels: Dict[str, LapLabelEntry],
         global_rules: str,
     ) -> None:
-        self._circuits = circuits
+        self._labels = labels
         self.global_rules = global_rules
 
     @property
-    def all_circuit_ids(self) -> List[str]:
-        return list(self._circuits.keys())
+    def all_label_ids(self) -> List[str]:
+        return list(self._labels.keys())
 
-    def get_circuit(self, circuit_id: str) -> Optional[LapCircuitEntry]:
-        return self._circuits.get(circuit_id)
+    def get_label(self, label_id: str) -> Optional[LapLabelEntry]:
+        return self._labels.get(label_id)
 
     def build_prompt(self, circuit_id: Optional[str] = None) -> str:
-        """Render the skill block for the given circuit (or all circuits).
+        """Render the skill block for the agent's system prompt.
 
-        The returned text is injected verbatim into the agent's system
-        prompt. Per-section `normalized_position_range` values are pulled
-        live from the label catalog so the skill stays in sync with the
-        single source of truth.
+        When ``circuit_id`` is given (the lap's circuit), the other
+        circuit's label is filtered out so the agent only sees the
+        relevant one. Main labels (EA / MS / RM / PS / OV / MD) are
+        always included.
         """
-        from app.models.label_catalog import get_label_catalog
-
-        catalog = get_label_catalog()
         lines: List[str] = [
-            "#### Lap Annotation Skill — How to Label One Circuit Section",
+            "#### Lap Annotation Skill — Candidate Label Characteristics",
+            "",
+            "Each candidate parent label below lists the telemetry pattern "
+            "that justifies attaching it. The `global_rules` block at the "
+            "end is the per-section detection procedure.",
             "",
         ]
 
-        circuits = (
-            [self._circuits[circuit_id]]
-            if circuit_id is not None and circuit_id in self._circuits
-            else list(self._circuits.values())
-        )
-
-        for circuit in circuits:
-            lines.append(f"##### {circuit.name} (id: {circuit.id})")
+        for label_id, entry in self._labels.items():
+            if (
+                label_id in _CIRCUIT_LABELS
+                and circuit_id is not None
+                and label_id != circuit_id
+            ):
+                continue
+            lines.append(f"##### `{label_id}` — {entry.name}")
+            if entry.applies_when:
+                lines.append(f"_Applies when:_ {entry.applies_when}")
+            if entry.characteristics:
+                lines.append(entry.characteristics)
             lines.append("")
-            lines.append(f"- default_parent_labels: {circuit.default_parent_labels}")
-            lines.append("")
-
-            section_order = circuit.section_order
-            if section_order:
-                lines.append("Ordered sections (lap-progress order; ranges from label_catalog.yaml):")
-                for sid in section_order:
-                    entry = catalog.get_label(sid)
-                    if entry is None:
-                        lines.append(f"  - `{sid}` (missing from catalog)")
-                        continue
-                    rng = entry.normalized_position_range
-                    rng_str = (
-                        f"[{rng[0]:.3f}, {rng[1]:.3f}]"
-                        if rng is not None else "[null, null] — measure me"
-                    )
-                    lines.append(
-                        f"  - `{sid}` ({entry.name}) — normalized_position_range {rng_str}"
-                    )
-                lines.append("")
-
-            shrink_rules = circuit.raw.get("shrink_extend_rules") or []
-            if shrink_rules:
-                lines.append("Shrink / extend rules (call revise_segment_range when one fires):")
-                for rule in shrink_rules:
-                    lines.append(f"  - {rule}")
-                lines.append("")
-
-            st_hints = circuit.raw.get("segment_type_hints")
-            if st_hints:
-                lines.append("Segment type hints (pick exactly one ST1–ST6):")
-                for ln in str(st_hints).rstrip("\n").split("\n"):
-                    lines.append(f"  {ln}" if ln else "")
-                lines.append("")
 
         if self.global_rules:
-            lines.append("##### Global rules (every circuit)")
+            lines.append("##### Global rules — how to find each label")
             for ln in self.global_rules.rstrip("\n").split("\n"):
                 lines.append(ln)
             lines.append("")
@@ -153,19 +127,19 @@ def load_lap_skill(path: Optional[Path] = None) -> LapAnnotationSkill:
     with open(skill_path, "r", encoding="utf-8") as fh:
         raw = yaml.safe_load(fh) or {}
 
-    circuits_raw: Dict[str, Any] = raw.get("circuits", {}) or {}
-    circuits: Dict[str, LapCircuitEntry] = {
-        str(cid): LapCircuitEntry(str(cid), cdata or {})
-        for cid, cdata in circuits_raw.items()
+    labels_raw: Dict[str, Any] = raw.get("labels", {}) or {}
+    labels: Dict[str, LapLabelEntry] = {
+        str(lid): LapLabelEntry(str(lid), ldata or {})
+        for lid, ldata in labels_raw.items()
     }
 
     global_rules = str(raw.get("global_rules", "")).strip()
 
     LOGGER.info(
-        "Loaded lap annotation skill with %d circuit(s).", len(circuits),
+        "Loaded lap annotation skill with %d label(s).", len(labels),
     )
 
-    return LapAnnotationSkill(circuits, global_rules)
+    return LapAnnotationSkill(labels, global_rules)
 
 
 def get_lap_skill() -> LapAnnotationSkill:

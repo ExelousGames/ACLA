@@ -786,10 +786,10 @@ def _lap_planner_prompt(
     parts = [
         "You are a racing telemetry analyst planning the analysis for "
         "ONE circuit section of a lap. The deterministic splitter handed "
-        "you a rough iloc boundary; the synthesizer downstream will "
-        "decide whether to shrink/extend it and which parent labels "
-        "apply. Your job here is to plan the describe_graphs steps the "
-        "synthesizer needs.",
+        "you a rough iloc boundary; the synthesizer downstream will pick "
+        "the parent labels by matching telemetry against each candidate "
+        "label's `characteristics` block in the skill. Your job here is "
+        "to plan the describe_graphs steps that gather that evidence.",
         "",
         "#### Lap context",
         f"- Circuit: {circuit_id}",
@@ -823,10 +823,13 @@ def _lap_planner_prompt(
         "",
         "#### Task",
         "Plan describe_graphs steps that gather the evidence needed to:",
-        "  1. confirm or revise the section boundary against the "
-        "shrink/extend rules in the skill block above, and",
-        "  2. pick exactly ONE ST1-ST6 segment_type label for this section.",
-        "Keep the plan tight — a typical section needs 1-3 steps.",
+        "  1. score each main label (EA / MS / RM / PS / OV / MD) against "
+        "its `characteristics` block in the skill, and",
+        "  2. optionally identify the trajectory shape if an ST1-ST6 pick "
+        "would be unambiguous (skip when shape is ambiguous).",
+        "Keep the plan tight — a typical section needs 1-3 steps. "
+        "`trajectory_offset` + `time_difference_to_expert` are the two "
+        "diagnostic graphs called out by the skill.",
         "",
         "Your plan must be a JSON object with a single key \"steps\". "
         "Each step object must have:",
@@ -876,8 +879,11 @@ def _lap_synth_prompts(
     intro = "\n".join([
         "You are a racing telemetry analyst producing the final "
         "annotation for ONE circuit section. The describe_graphs steps "
-        "captured the evidence below; now decide whether to "
-        "shrink/extend the boundary and pick the parent labels.",
+        "captured the evidence below; pick the parent labels by matching "
+        "the section's telemetry against each candidate label's "
+        "`characteristics` block in the skill. Revising the boundary is "
+        "an escape hatch only — invoke it when `locate_circuit_section` "
+        "shows the rough range straddles two catalog sections.",
         "",
         "#### Section under review",
         f"- section_id: `{section_id}`",
@@ -890,8 +896,11 @@ def _lap_synth_prompts(
 
     outro = "\n".join([
         "#### Eligible label IDs",
-        "Only IDs from this list will be accepted. Pick the circuit, "
-        "the section, exactly one ST1-ST6, and an optional main label. "
+        "Only IDs from this list will be accepted. Always include the "
+        "circuit and the section. An ST1-ST6 pick is OPTIONAL — include "
+        "one only when the trajectory shape is unambiguous. Main labels "
+        "(EA / MS / RM / PS / OV / MD) follow the skill's `characteristics` "
+        "blocks; at most ONE of {EA, MS, RM} may be attached. "
         f"The verified shortlist from label_verifier is: {verified_inline}. "
         "Treat verified IDs as the primary candidates; fall back to the "
         "eligible list when the verified set misses a required parent.",
@@ -912,8 +921,8 @@ def _lap_synth_prompts(
         f"- revised_range must satisfy {lap_start} <= start < end <= "
         f"{lap_end} and end - start >= 3.",
         "- Every label_id must come from the eligible list above.",
-        "- One ST1-ST6 label is required unless label_ids is empty (drop).",
         "- The circuit label is required unless label_ids is empty.",
+        "- An empty label_ids array is the valid 'drop this section' signal.",
     ])
 
     return intro, outro
