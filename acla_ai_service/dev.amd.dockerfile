@@ -28,6 +28,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     cmake \
     libcurl4-openssl-dev \
+    curl \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Node.js 20 + Claude Code CLI (driven by claude-agent-sdk for the
+# Claude annotation backend). Auth is supplied at runtime by bind-mounting
+# the host's ~/.claude into the container — no API key is baked into the image.
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && npm install -g @anthropic-ai/claude-code \
     && rm -rf /var/lib/apt/lists/*
 RUN git clone https://github.com/ROCm/llama.cpp /opt/llama.cpp \
     && cd /opt/llama.cpp \

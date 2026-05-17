@@ -399,6 +399,104 @@ def compute_expert_phases(
     )
 
 
+NORMALIZED_POSITION_COLUMN = "Graphics_normalized_car_position"
+
+
+def locate_circuit_section(
+    df: pd.DataFrame, start_index: int, end_index: int,
+):
+    """Tool — identify which named ``circuit_section`` the segment overlaps.
+
+    Reads ``Graphics_normalized_car_position`` over ``[start_index, end_index)``
+    and compares the segment's [min, max] fraction against every
+    ``circuit_section`` label whose ``normalized_position_range`` is filled
+    in. Returns the top matches ranked by overlap fraction (overlap / segment
+    span). Handles wrap-around sections where ``range_end < range_start``
+    (e.g. the pit straight that crosses the start/finish line).
+
+    Returns a ``circuit_section_match`` attachment with shape::
+
+        {
+            "segment_position_range": [seg_min, seg_max],
+            "top_matches": [
+                {"label_id", "name", "description",
+                 "section_range": [start, end],
+                 "overlap_fraction": 0.0..1.0},
+                ...
+            ],
+            "best_match": <first entry of top_matches, or None>,
+        }
+
+    ``top_matches`` is empty when the column is missing, all values are
+    non-finite, or no circuit_section in the catalog has its range filled
+    in yet. ``best_match`` is the agent's recommended label.
+    """
+    from .step_evaluator_agents import PipelineAttachment
+    from app.models.label_catalog import get_label_catalog
+
+    s, e = int(start_index), int(end_index)
+
+    def _attach(content: Dict[str, Any]) -> "PipelineAttachment":
+        return PipelineAttachment(
+            name="circuit_section_match",
+            kind="structured",
+            label="Circuit Section Match",
+            content=_round_floats(content, ndigits=4),
+        )
+
+    if NORMALIZED_POSITION_COLUMN not in df.columns:
+        return _attach({
+            "error": f"column '{NORMALIZED_POSITION_COLUMN}' missing from telemetry",
+            "top_matches": [],
+            "best_match": None,
+        })
+
+    pos = df.iloc[s:e][NORMALIZED_POSITION_COLUMN].to_numpy(dtype=float)
+    pos = pos[np.isfinite(pos)]
+    if pos.size == 0:
+        return _attach({
+            "error": "no finite values in normalized position over the segment",
+            "top_matches": [],
+            "best_match": None,
+        })
+
+    seg_lo, seg_hi = float(pos.min()), float(pos.max())
+    seg_span = max(seg_hi - seg_lo, 1e-6)
+
+    catalog = get_label_catalog()
+    matches: List[Dict[str, Any]] = []
+    for entry in catalog.entries_by_type("circuit_section"):
+        rng = entry.normalized_position_range
+        if rng is None:
+            continue
+        r_lo, r_hi = rng
+        if r_hi >= r_lo:
+            overlap = max(0.0, min(seg_hi, r_hi) - max(seg_lo, r_lo))
+        else:
+            # Section wraps across the lap boundary: [r_lo, 1.0] ∪ [0.0, r_hi]
+            overlap = (
+                max(0.0, min(seg_hi, 1.0) - max(seg_lo, r_lo))
+                + max(0.0, min(seg_hi, r_hi) - max(seg_lo, 0.0))
+            )
+        if overlap <= 0:
+            continue
+        matches.append({
+            "label_id": entry.id,
+            "name": entry.name,
+            "description": entry.description,
+            "section_range": [r_lo, r_hi],
+            "overlap_fraction": overlap / seg_span,
+        })
+
+    matches.sort(key=lambda m: m["overlap_fraction"], reverse=True)
+    top = matches[:3]
+    return _attach({
+        "segment_position_range": [seg_lo, seg_hi],
+        "top_matches": top,
+        "best_match": top[0] if top else None,
+    })
+
+
 # Catalog of pre-compute tools, mirroring AGENT_GRAPH_DEFINITIONS. The
 # planner enumerates this in its prompt; the step solver dispatches by id.
 PIPELINE_TOOL_DEFINITIONS: List[Dict[str, Any]] = [
@@ -414,6 +512,20 @@ PIPELINE_TOOL_DEFINITIONS: List[Dict[str, Any]] = [
             "requests a trajectory graph or reasons about corner phases."
         ),
         "callable": compute_expert_phases,
+    },
+    {
+        "id": "locate_circuit_section",
+        "label": "Circuit Section Match (named corner / straight)",
+        "description": (
+            "Reads `Graphics_normalized_car_position` over the segment "
+            "and matches it against every `circuit_section` label's "
+            "`normalized_position_range`. Produces a "
+            "'circuit_section_match' attachment with 'top_matches' "
+            "(ranked by overlap fraction) and a 'best_match' suggestion. "
+            "Use whenever you need to label which named corner / straight "
+            "the segment is on — never guess from telemetry shape alone."
+        ),
+        "callable": locate_circuit_section,
     },
 ]
 

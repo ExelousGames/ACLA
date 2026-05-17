@@ -100,6 +100,13 @@ services:
       - HF_TOKEN=${HF_TOKEN}
     volumes:
       - ./acla_ai_service:/app
+      # Share the host's Claude Code login (Max subscription) with the
+      # container so claude-agent-sdk can spawn `claude` without re-auth.
+      # Read-write so the CLI can refresh its OAuth tokens.
+      # The CLI expects both ~/.claude/ (state dir, holds .credentials.json)
+      # AND ~/.claude.json (top-level config file, sibling of the dir).
+      - ${HOME}/.claude:/root/.claude
+      - ${HOME}/.claude.json:/root/.claude.json
     ports:
       - '8000:8000'
       - '8501:8501'

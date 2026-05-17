@@ -45,15 +45,22 @@ class AnnotationPipelineConfig:
     max_new_tokens: int = 1500
     temperature: float = 0.7
 
-    # llama-cpp VLM settings
+    # Backend selector — "local" (llama-server) or "claude" (claude-agent-sdk).
+    backend: str = "local"
+
+    # llama-cpp VLM settings (only used when backend == "local")
     gguf_path: Optional[str] = None
     mmproj_path: Optional[str] = None
     context_size: int = 32768
     n_gpu_layers: int = -1
 
-    # HuggingFace source repo + conversion
+    # HuggingFace source repo + conversion (only used when backend == "local")
     hf_repo: str = "Qwen/Qwen2.5-VL-72B-Instruct"
     quantization_type: str = "Q4_K_M"
+
+    # Claude backend settings (only used when backend == "claude")
+    claude_model: str = "claude-sonnet-4-6"
+    claude_use_thinking: bool = False
 
 
 @dataclass
@@ -168,22 +175,31 @@ def run_annotation_pipeline(
     existing_children = existing_children or []
 
     # ------------------------------------------------------------------
-    # Build VLM generate function (llama-cpp backed)
+    # Build VLM service — local llama-server or Claude (claude-agent-sdk)
+    # depending on config.backend.
     # ------------------------------------------------------------------
-    from app.services.llm.annotation_agent_llm_service import (
-        get_or_start_service,
-        AnnotationAgentLLMConfig,
-    )
-
-    agent_llm_config = AnnotationAgentLLMConfig(
-        gguf_path=config.gguf_path,
-        mmproj_path=config.mmproj_path,
-        context_size=config.context_size,
-        n_gpu_layers=config.n_gpu_layers,
-        hf_repo=config.hf_repo,
-        quantization_type=config.quantization_type,
-    )
-    vlm_service = get_or_start_service(agent_llm_config)
+    if config.backend == "claude":
+        from app.services.llm.claude_agent_backend import (
+            get_or_start_claude_backend,
+        )
+        vlm_service = get_or_start_claude_backend(
+            model=config.claude_model,
+            use_thinking=config.claude_use_thinking,
+        )
+    else:
+        from app.services.llm.annotation_agent_llm_service import (
+            get_or_start_service,
+            AnnotationAgentLLMConfig,
+        )
+        agent_llm_config = AnnotationAgentLLMConfig(
+            gguf_path=config.gguf_path,
+            mmproj_path=config.mmproj_path,
+            context_size=config.context_size,
+            n_gpu_layers=config.n_gpu_layers,
+            hf_repo=config.hf_repo,
+            quantization_type=config.quantization_type,
+        )
+        vlm_service = get_or_start_service(agent_llm_config)
 
     def vlm_generate(
         prompt: str, images: Optional[List[bytes]] = None,

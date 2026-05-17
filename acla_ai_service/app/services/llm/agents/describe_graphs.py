@@ -185,6 +185,7 @@ def _planner(state: AgentState) -> Dict[str, Any]:
     """
     from app.services.llm.annotation_agent_tools import (
         build_graph,
+        get_pipeline_tool,
         render_graph_builds,
     )
 
@@ -206,6 +207,31 @@ def _planner(state: AgentState) -> Dict[str, Any]:
             table = build_graph(gid, df)
             if table is not None and not table.empty:
                 graph_builds[gid] = table
+
+    # Pre-compute tools — invoke each requested PIPELINE_TOOL over the parent
+    # range and stash the resulting attachment in the pool under a
+    # ``describe_graphs.pipeline_tool.<id>`` name. The synthesizer harvests
+    # this prefix so the tool output reaches the final prompt.
+    pipeline_tool_attachments: Dict[str, "PipelineAttachment"] = {}
+    if df is not None and requested_tools:
+        for tid in requested_tools:
+            tool_def = get_pipeline_tool(tid)
+            if tool_def is None:
+                LOGGER.warning("planner requested unknown pipeline tool: %s", tid)
+                continue
+            try:
+                att = tool_def["callable"](df, parent_start, parent_end)
+            except Exception:
+                LOGGER.exception("pipeline tool '%s' raised", tid)
+                continue
+            if att is not None:
+                pool_name = f"describe_graphs.pipeline_tool.{tid}"
+                pipeline_tool_attachments[pool_name] = PipelineAttachment(
+                    name=pool_name,
+                    kind=att.kind,
+                    label=att.label,
+                    content=att.content,
+                )
 
     messages = list(state.get("messages", []))
 
@@ -235,11 +261,13 @@ def _planner(state: AgentState) -> Dict[str, Any]:
             "role": "planner",
             "content": f"describe_graphs plan: no-zoom ({reason})",
         })
+        pool = {plan_attachment.name: plan_attachment}
+        pool.update(pipeline_tool_attachments)
         return {
             "plan": f"no-zoom: {reason}",
             "plan_steps": [step],
             "current_step_index": 0,
-            "attachment_pool": {plan_attachment.name: plan_attachment},
+            "attachment_pool": pool,
             "messages": messages,
         }
 
@@ -393,15 +421,17 @@ def _planner(state: AgentState) -> Dict[str, Any]:
         "content": f"describe_graphs plan: 1 zoom step ({len(questions)} question(s))",
     })
 
+    pool = {
+        plan_attachment.name: plan_attachment,
+        overview_imgs_attachment.name: overview_imgs_attachment,
+        overview_descs_attachment.name: overview_descs_attachment,
+    }
+    pool.update(pipeline_tool_attachments)
     return {
         "plan": raw_decision,
         "plan_steps": plan_steps,
         "current_step_index": 0,
-        "attachment_pool": {
-            plan_attachment.name: plan_attachment,
-            overview_imgs_attachment.name: overview_imgs_attachment,
-            overview_descs_attachment.name: overview_descs_attachment,
-        },
+        "attachment_pool": pool,
         "messages": messages,
     }
 
@@ -475,6 +505,12 @@ def _synthesizer(state: AgentState) -> Dict[str, Any]:
         for sib_name, sib_att in pool.items():
             if sib_name.startswith(sid_prefix) and sib_name != name:
                 tool_attachments.append(sib_att)
+
+    # Pre-computed pipeline tools (planner-level) — invoked once over the
+    # parent range and stored under ``describe_graphs.pipeline_tool.*``.
+    for name in sorted(pool.keys()):
+        if name.startswith("describe_graphs.pipeline_tool."):
+            tool_attachments.append(pool[name])
 
     set_active_stage(DESCRIBE_GRAPHS_AGENT_NAME, "synthesizer", graphs=requested_graphs)
     set_active_iteration(1, 1)

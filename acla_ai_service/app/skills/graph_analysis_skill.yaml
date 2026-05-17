@@ -78,7 +78,7 @@ graphs:
       1. Read the legend — assign each colour to expert or player.  Note the
          left and right edge values for both traces.
 
-      2.Describe events (throttle application, release throttle, modulation dip) for both expert and player.
+      2.Describe events (throttle application, throttle release, modulation dip) for both expert and player.
         For EVERY event mentioned, record the index range (start–end) where it
         occurs — never describe a feature with only a duration ("across X indices") 
         and no anchor. Make comparsions between expert and player for each event found.
@@ -86,8 +86,8 @@ graphs:
           - Does the release show "trailing off" or an "abrupt drop"?
           - Is there any "modulation dip" (dip-and-recover)?
 
-      3. Enumerate ONLY clearly-visible events (throttle application, release
-         throttle, modulation dip).  Do not invent events to satisfy a
+      3. Enumerate ONLY clearly-visible events (throttle application, throttle
+         release, modulation dip).  Do not invent events to satisfy a
          template — if a trace has one application and one release, report
          one and one.  Skip any event you cannot clearly distinguish from
          the grid.  For every event record the index on each trace.
@@ -123,23 +123,26 @@ graphs:
       "unmatch segment": >
         One trace stays flat while the other is active, or the two traces
         do not share the same overall shape. 
-      "release throttle": >
+      "throttle release": >
         Throttle drops from a consistent value and rests at near zero, with the negative slope potentially containing some fluctuation.
-        The release modulation dip may occur during the release, but the overall slope should be negative. 
+        The release modulation dip may occur during the release, but the overall slope should be negative.
         When compare a subject to a object, a subject has more abrupt releases if the length of
         the drop is shorter; more gradual releases if the drop is longer.
       "throttle application": >
         Throttle rises from a consistent value and rests at the local maximum, with the positive slope potentially containing some fluctuation.
-        The throttle modulation dip may occur during the throttle application, the overall slope should be positive. 
-        When compare a subject to an object, a subject has more abrupt applications 
+        The throttle modulation dip may occur during the throttle application, the overall slope should be positive.
+        When compare a subject to an object, a subject has more abrupt applications
         if the length of the rise is shorter; more gradual applications if the drop is longer.
+      "peak throttle": >
+        The maximum y-value the throttle trace reaches across the segment, with
+        the index (or index range, if held).
       "release onset": >
-        start of throttle release. An index where the throttle trace first drops 
-        from a consistent value with a negative slope. A subject has an earlier release 
+        start of throttle release. An index where the throttle trace first drops
+        from a consistent value with a negative slope. A subject has an earlier release
         onset if this index is less than the other trace's release onset; later if it is greater.
       "application onset": >
-        start of throttle application. An index where the throttle trace begin rises 
-        from near zero with a positive slope. A subject has an earlier application 
+        start of throttle application. An index where the throttle trace begin rises
+        from near zero with a positive slope. A subject has an earlier application
         onset if this index is less than the other trace's application onset; later if it is greater.
       "modulation dip": >
         Occcur in mid-release down slope or mid-application raise slope where 
@@ -278,8 +281,9 @@ graphs:
         rather than dropping abruptly to zero.  Used to maintain front-axle
         load through corner entry.
       "abrupt drop": >
-        A release where the brake trace returns to zero within ~1–2 indices
-        (no trail braking).
+        A subject releases brake where the brake trace returns to zero faster
+        than the object's. The slope is more negative and the release duration is shorter.
+        Used to describe a non-trail-braking release.
       "applies throttle and brake simultaneously": >
         An index range where both the brake trace and the throttle trace
         are above zero at the same time.  Report approximate start, end,

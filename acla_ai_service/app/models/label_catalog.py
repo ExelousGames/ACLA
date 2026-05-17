@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import yaml
 
@@ -33,6 +33,23 @@ _catalog_instance: Optional["LabelCatalog"] = None
 
 
 # ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _parse_position_range(raw: Any) -> Optional[Tuple[float, float]]:
+    """Parse [start, end] fractions; return None when missing or unset."""
+    if not raw or not isinstance(raw, (list, tuple)) or len(raw) != 2:
+        return None
+    start, end = raw[0], raw[1]
+    if start is None or end is None:
+        return None
+    try:
+        return (float(start), float(end))
+    except (TypeError, ValueError):
+        return None
+
+
+# ---------------------------------------------------------------------------
 # Data container for a single label entry
 # ---------------------------------------------------------------------------
 
@@ -41,7 +58,7 @@ class LabelEntry:
 
     __slots__ = (
         "id", "name", "type", "description", "annotation_guideline",
-        "parent", "children", "exclusive_with",
+        "parent", "children", "exclusive_with", "normalized_position_range",
     )
 
     def __init__(self, label_id: str, raw: Dict[str, Any]) -> None:
@@ -53,6 +70,11 @@ class LabelEntry:
         self.parent: Optional[str] = raw.get("parent")
         self.children: List[str] = raw.get("children") or []
         self.exclusive_with: List[str] = raw.get("exclusive_with") or []
+        # [start, end] fraction of lap position, or None if not yet measured.
+        # start > end signals a section that wraps across the start/finish line.
+        self.normalized_position_range: Optional[Tuple[float, float]] = (
+            _parse_position_range(raw.get("normalized_position_range"))
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -98,6 +120,10 @@ class LabelCatalog:
         """Return sub-label entries for *parent_id*."""
         sub_ids = LABEL_CATEGORIES.get(parent_id, [])
         return [self._entries[sid] for sid in sub_ids if sid in self._entries]
+
+    def entries_by_type(self, label_type: str) -> List[LabelEntry]:
+        """Return every entry whose ``type`` matches ``label_type``."""
+        return [e for e in self._entries.values() if e.type == label_type]
 
     def get_hierarchy_rules(self, label_ids: List[str]) -> Dict[str, Any]:
         """Return hierarchy validation info for a set of label IDs.

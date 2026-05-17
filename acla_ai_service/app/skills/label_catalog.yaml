@@ -22,6 +22,13 @@
 # parent — parent label ID (null for top-level)
 # children — list of child label IDs
 # exclusive_with — labels that cannot coexist with this one
+# normalized_position_range — (circuit_section only) [start, end] fractions
+# in [0.0, 1.0] of lap position, matched against the
+# Graphics_normalized_car_position column. A section
+# that crosses the start/finish line wraps — encode as
+# start > end (e.g. [0.95, 0.05] = last 5% + first 5%).
+# Leave as [null, null] until measured; the
+# locate_circuit_section tool ignores unfilled ranges.
 #
 # This file is loaded once by LabelCatalog (label_catalog.py).
 # LABEL_MAPPING / LABEL_CATEGORIES in segment_models.py remain the
@@ -68,9 +75,10 @@ labels:
     description: >
       Driver closely follows the expert's line and speed profile.  Look
       for **overall gap holds stable** in the time delta and **speed
-      match** in the speed delta.  The trajectory **tracks** the
-      expert through entry, apex, and exit with offset **aligned**
-      (within ±0.5 m of zero).
+      match** in the speed delta.  The player's **entry trajectory**
+      and **exit trajectory** track the expert through entry, apex,
+      and exit, with the trajectory offset **aligned** (within ±0.5 m
+      of zero) across every beat.
     annotation_guideline: >
       The driver is following the optimal racing line and speed profile
       closely.  Nothing needs to be labeled right now.
@@ -98,14 +106,18 @@ labels:
     type: main
     description: >
       Driver recovering from an incident and merging back to the racing
-      line.  Look for **overall gap shrinks** or **gap shrinks** slope
-      segments in the time delta as the player **gains time on** the
-      expert; the trajectory offset shows **recovery** (offset trending
-      back toward zero from either side).
+      line. Time delta shows **gap shrinks** and the trajectory offset 
+      shows **recovery**.
     annotation_guideline: >
-      The driver is recovering from a mistake such as slower speed.
-      Identify if the driver is recovering from low speed, off-track,
-      or merging back to the expert line.  Time delta must be decreasing.
+      The driver is recovering from a mistake.
+      Step 1: Analyze the 'Time Difference to Expert' graph; a recovery normally
+      causes this time gap to decrease continuously without increasing.
+      Step 2: Examine the 'trajectory_offset' graph to identify recovery — look for the
+      offset trending back toward zero from either side.
+      Step 3: Examine the 'speed_delta' graph to identify if the player is accelerating
+      back toward the expert's speed profile.
+      Step 4: use the 'compute_expert_phases' tool (it produces a 'phase_indices' attachment
+      contains the indices for entry/apex/exit).
     parent: null
     children: ["RM1", "RM2", "RM5", "RM6", "RM7", "RM8", "RM9", "RM10", "RM11"]
     exclusive_with: ["EA", "2"]
@@ -114,12 +126,9 @@ labels:
     name: "Mistake"
     type: main
     description: >
-      Driver error causing time loss or vehicle instability.  Look for
-      **overall gap grows** or **gap grows** slope segments in the time
-      delta as the player **loses time to** the expert, with the
-      player's trace diverging from the expert across throttle, brake,
-      speed, slip balance (**oversteer**/**understeer**), grip
-      utilisation, and trajectory offset.
+      Driver error causing time loss or vehicle instability. Time delta shows **gap grows** and 
+      the trajectory offset shows a clear deviation from the expert's line (offset **wider than 
+      expert** or **tighter than expert**).
     annotation_guideline: >
       The driver has committed a driving error resulting in time loss
       or instability.
@@ -137,7 +146,8 @@ labels:
       dominant), which could lead to lower speed.
       Step 5: For entry/apex/exit shape questions, request the
       'trajectory_offset' graph and include the 'compute_expert_phases'
-      tool on the same step (it produces the 'phase_indices' attachment).
+      tool on the same step (it produces a 'phase_indices' attachment
+      contains the phase indices for entry/apex/exit).
     parent: null
     children:
       - "MS1"
@@ -196,9 +206,11 @@ labels:
     type: circuit
     description: "Segment on the Brands Hatch circuit."
     annotation_guideline: >
-      Look at the Trajectories Overlay and identify specific named
-      corners or straight sections of the Brands Hatch circuit.  Also,
-      identify the shape of the segment using labels ST1–ST6.
+      Call `locate_circuit_section(start, end)` to identify which named
+      Brands Hatch section the segment overlaps — never guess from
+      trajectory shape.  Use its `best_match` (and any `top_matches`
+      with high `overlap_fraction`) as the circuit_section label.
+      Also identify the shape of the segment using labels ST1–ST6.
     parent: null
     children:
       - "brands_hatch1"
@@ -226,9 +238,11 @@ labels:
     type: circuit
     description: "Segment on the Silverstone circuit."
     annotation_guideline: >
-      Look at the Trajectories Overlay and identify specific named
-      corners or straight sections of the Silverstone circuit.  Also,
-      identify the shape of the segment using labels ST1–ST6.
+      Call `locate_circuit_section(start, end)` to identify which named
+      Silverstone section the segment overlaps — never guess from
+      trajectory shape.  Use its `best_match` (and any `top_matches`
+      with high `overlap_fraction`) as the circuit_section label.
+      Also identify the shape of the segment using labels ST1–ST6.
     parent: null
     children:
       - "silverstone1"
@@ -263,10 +277,11 @@ labels:
     type: sub
     description: >
       Driver returning to track after an off-track excursion — the
-      player's trajectory peaks far **wider than expert** earlier in
-      the segment (large positive offset), then shows **recovery**
-      (offset trending back toward zero) alongside **gap shrinks** as
-      the driver rejoins.
+      trajectory offset peaks far **wider than expert** earlier in the
+      segment (a prior **moving toward positive (widening)** beat),
+      then shows **recovery** (offset trending back toward zero) while
+      the time delta shows **gap shrinks** and the speed delta shows
+      **player faster than** expert as the driver rejoins.
     parent: RM
     children: []
     exclusive_with: ["RM2"]
@@ -275,8 +290,11 @@ labels:
     name: "Exit pit lane"
     type: sub
     description: >
-      Driver re-joining the track after a pit stop — speed increases from
-      pit-limiter speed and the trajectory rejoins the racing line.
+      Driver re-joining the track after a pit stop — the speed trace
+      rises from pit-limiter speed (an **acceleration onset** well
+      below normal corner-exit speed) and the trajectory offset shows
+      **recovery** back toward zero as the line rejoins the racing
+      line.
     parent: RM
     children: []
     exclusive_with: ["RM1"]
@@ -286,9 +304,10 @@ labels:
     type: sub
     description: >
       Player more than 20 km/h slower than the expert with the gap
-      closing.  Look for **expert faster than player** with a **large
-      gap section** in the speed delta, alongside **gap shrinks** as
-      the player **gains time on** the expert.
+      closing — the speed delta shows **expert faster than player**
+      with a **large gap section** (|Δ| > 20 km/h) that trends toward
+      zero across the segment, alongside **gap shrinks** in the time
+      delta.
     parent: RM
     children: []
     exclusive_with: ["RM6"]
@@ -298,9 +317,9 @@ labels:
     type: sub
     description: >
       Player less than 20 km/h slower than the expert with the gap
-      closing.  Look for **expert faster than player** in the speed
-      delta (without a **large gap section**) alongside **gap shrinks**
-      as the player **gains time on** the expert.
+      closing — the speed delta shows **expert faster than player**
+      without any **large gap section** (|Δ| stays ≤ 20 km/h),
+      alongside **gap shrinks** in the time delta.
     parent: RM
     children: []
     exclusive_with: ["RM5"]
@@ -309,9 +328,10 @@ labels:
     name: "Merge back to expert line"
     type: sub
     description: >
-      Player trajectory converging toward the expert line — the offset
-      shows **recovery** (trending back toward zero from either side),
-      typically across the post-exit span of a corner.
+      Player trajectory converging toward the expert line — the
+      trajectory offset shows **recovery** (trending back toward zero
+      from either side), typically across the **post-exit** span of a
+      corner phase.
     parent: RM
     children: []
     exclusive_with: []
@@ -321,8 +341,9 @@ labels:
     type: sub
     description: >
       During recovery, the player's throttle **application onset is
-      earlier than** the expert's at corner exit, alongside **gap
-      shrinks** as the player **gains time on** the expert.
+      earlier than** the expert's around **at expert's exit (idx N,
+      phase k)**, with a matching earlier **acceleration onset** on
+      the speed trace, alongside **gap shrinks** in the time delta.
     parent: RM
     children: []
     exclusive_with: ["RM9"]
@@ -332,8 +353,9 @@ labels:
     type: sub
     description: >
       During recovery, the player's throttle **application onset is
-      later than** the expert's at corner exit, alongside **gap
-      shrinks** as the player **gains time on** the expert.
+      later than** the expert's around **at expert's exit (idx N,
+      phase k)**, with a matching later **acceleration onset** on the
+      speed trace, alongside **gap shrinks** in the time delta.
     parent: RM
     children: []
     exclusive_with: ["RM8"]
@@ -343,8 +365,9 @@ labels:
     type: sub
     description: >
       During recovery, the player's brake **initiation onset is earlier
-      than** the expert's at corner entry, alongside **gap shrinks** as
-      the player **gains time on** the expert.
+      than** the expert's around **at expert's entry (idx N, phase k)**,
+      with a matching earlier **deceleration onset** on the speed
+      trace, alongside **gap shrinks** in the time delta.
     parent: RM
     children: []
     exclusive_with: ["RM11"]
@@ -354,8 +377,9 @@ labels:
     type: sub
     description: >
       During recovery, the player's brake **initiation onset is later
-      than** the expert's at corner entry, alongside **gap shrinks** as
-      the player **gains time on** the expert.
+      than** the expert's around **at expert's entry (idx N, phase k)**,
+      with a matching later **deceleration onset** on the speed trace,
+      alongside **gap shrinks** in the time delta.
     parent: RM
     children: []
     exclusive_with: ["RM10"]
@@ -369,8 +393,11 @@ labels:
     type: sub
     description: >
       The player's brake **initiation onset is later than** the
-      expert's at corner entry, alongside the player **loses time to**
-      the expert.
+      expert's at corner entry, alongside the time **gap grows**.
+      Player often **moving toward positive (widening)** in the
+      trajectory offset across the **entry-to-apex** span as they
+      brake later, with the **entry trajectory bulges outside** the
+      expert's line.
     parent: MS
     children: []
     exclusive_with: ["MS5"]
@@ -380,8 +407,7 @@ labels:
     type: sub
     description: >
       The player's brake **initiation onset is earlier than** the
-      expert's at corner entry, alongside the player **loses time to**
-      the expert.
+      expert's at corner entry, alongside the time **gap grows**
     parent: MS
     children: []
     exclusive_with: ["MS1"]
@@ -391,7 +417,8 @@ labels:
     type: sub
     description: >
       The player's **peak brake pressure is lower than** the expert's
-      across the braking phase.
+      across the braking phase. Player often **moving toward positive 
+      (widening)** in the trajectory offset.
     parent: MS
     children: []
     exclusive_with: ["MS22"]
@@ -401,7 +428,8 @@ labels:
     type: sub
     description: >
       The player's **peak brake pressure is higher than** the expert's
-      across the braking phase.
+      across the braking phase. Player often **moving toward positive 
+      (widening)** in the trajectory offset.
     parent: MS
     children: []
     exclusive_with: ["MS13"]
@@ -412,6 +440,10 @@ labels:
     description: >
       The player's **brake initiation is more abrupt than** the
       expert's — the rise from zero to peak spans fewer indices.
+      Player often **moving toward positive (widening)** in the
+      trajectory offset.  An **oversteer** section (as a **primary
+      slide** or **standalone event**) may co-occur on the slip
+      balance.
     parent: MS
     children: []
     exclusive_with: ["MS24"]
@@ -422,6 +454,8 @@ labels:
     description: >
       The player's **brake initiation is more gradual than** the
       expert's — the rise from zero to peak spans more indices.
+      Player often **moving toward positive (widening)** in the 
+      trajectory offset.
     parent: MS
     children: []
     exclusive_with: ["MS14"]
@@ -430,9 +464,12 @@ labels:
     name: "Release brake too quickly"
     type: sub
     description: >
-      The player's **brake release is more abrupt than** the expert's,
-      possibly described as an **abrupt drop** to zero within a couple
-      of indices.
+      The player's **brake release** is an **abrupt drop** to zero —
+      the drop from peak to zero spans fewer indices than the expert's
+      (a non-trail-braking release).  Player often **moving toward
+      positive (widening)** in the trajectory offset across the exit
+      phase as they release earlier, with the **exit trajectory bulges
+      outside** the expert's line.
     parent: MS
     children: []
     exclusive_with: ["MS18"]
@@ -441,9 +478,9 @@ labels:
     name: "Release brake too slowly"
     type: sub
     description: >
-      The player's **brake release is more gradual than** the expert's,
-      often described as **trail braking** on the player's trace where
-      the expert shows an **abrupt drop**.
+      The player's **brake release** is more gradual than the
+      expert's — the drop from peak to zero spans more indices,
+      consistent with **trail braking**.
     parent: MS
     children: []
     exclusive_with: ["MS17"]
@@ -452,8 +489,8 @@ labels:
     name: "Initiate brake release too late"
     type: sub
     description: >
-      The player's brake **release onset is later than** the expert's
-      during corner entry.
+      The player's brake has later **release onset** than the expert's
+      around **Reach apex**.
     parent: MS
     children: []
     exclusive_with: ["MS28"]
@@ -462,8 +499,8 @@ labels:
     name: "Initiate brake release too early"
     type: sub
     description: >
-      The player's brake **release onset is earlier than** the expert's
-      during corner entry.
+      The player's brake has earlier **release onset** than the expert's
+      during **Reach apex**.
     parent: MS
     children: []
     exclusive_with: ["MS27"]
@@ -473,8 +510,8 @@ labels:
     type: sub
     description: >
       The player's interval between **brake initiation** end and
-      **release onset** spans fewer indices than the expert's — peak
-      brake pressure is held for a shorter span.
+      **release onset** spans fewer indices than the expert's —
+      **peak brake pressure** is held for a shorter span.
     parent: MS
     children: []
     exclusive_with: ["MS32"]
@@ -484,8 +521,8 @@ labels:
     type: sub
     description: >
       The player's interval between **brake initiation** end and
-      **release onset** spans more indices than the expert's — peak
-      brake pressure is held for a longer span.
+      **release onset** spans more indices than the expert's —
+      **peak brake pressure** is held for a longer span.
     parent: MS
     children: []
     exclusive_with: ["MS31"]
@@ -508,10 +545,11 @@ labels:
     name: "Throttle applied too quickly"
     type: sub
     description: >
-      The player's **throttle application is more abrupt than** the
+      The player's **throttle application** is more abrupt than the
       expert's — the rise from zero to peak spans fewer indices, often
-      co-occurring with an **over-limit spike** in grip utilisation
-      across the same index range.
+      co-occurring with **oversteer** or **understeer** in the slip
+      balance, and a **modulation dip** shortly after in the same
+      **throttle application**.
     parent: MS
     children: []
     exclusive_with: ["MS25"]
@@ -520,10 +558,9 @@ labels:
     name: "Throttle applied too slowly"
     type: sub
     description: >
-      The player's **throttle application is more gradual than** the
+      The player's **throttle application** is more gradual than the
       expert's — the rise from zero to peak spans more indices, often
-      co-occurring with **sustained low** grip utilisation across the
-      same index range.
+      co-occurring with **gap grows** in the time delta.
     parent: MS
     children: []
     exclusive_with: ["MS15"]
@@ -532,8 +569,8 @@ labels:
     name: "Highest throttle pressure too low"
     type: sub
     description: >
-      The player's **peak throttle is lower than** the expert's across
-      the throttle application phase for more than 3 indices.
+      The player's **peak throttle** is lower than the expert's across
+      the **throttle application** phase for more than 3 indices.
     parent: MS
     children: []
     exclusive_with: ["MS26"]
@@ -542,8 +579,11 @@ labels:
     name: "Highest throttle pressure too high"
     type: sub
     description: >
-      The player's **peak throttle is higher than** the expert's
-      across the throttle application phase.
+      The player's **peak throttle** is higher than the expert's
+      across the **throttle application** phase, often co-occurring
+      with **oversteer** or **understeer** in the slip balance, and a
+      **modulation dip** shortly after in the same **throttle
+      application**.
     parent: MS
     children: []
     exclusive_with: ["MS19"]
@@ -552,7 +592,7 @@ labels:
     name: "Initiate throttle too early"
     type: sub
     description: >
-      The player's throttle **application onset is earlier than** the
+      The player's throttle **application onset** is earlier than the
       expert's at corner exit.
     parent: MS
     children: []
@@ -562,7 +602,7 @@ labels:
     name: "Initiate throttle too late"
     type: sub
     description: >
-      The player's throttle **application onset is later than** the
+      The player's throttle **application onset** is later than the
       expert's at corner exit.
     parent: MS
     children: []
@@ -572,7 +612,7 @@ labels:
     name: "Release throttle too quickly"
     type: sub
     description: >
-      The player's **throttle release is more abrupt than** the
+      The player's **throttle release** is more abrupt than the
       expert's — the drop from peak to zero spans fewer indices.
     parent: MS
     children: []
@@ -582,7 +622,7 @@ labels:
     name: "Initiate throttle release too late"
     type: sub
     description: >
-      The player's throttle **release onset is later than** the
+      The player's throttle **release onset** is later than the
       expert's approaching corner entry.
     parent: MS
     children: []
@@ -592,7 +632,7 @@ labels:
     name: "Initiate throttle release too early"
     type: sub
     description: >
-      The player's throttle **release onset is earlier than** the
+      The player's throttle **release onset** is earlier than the
       expert's approaching corner entry.
     parent: MS
     children: []
@@ -734,9 +774,9 @@ labels:
     description: >
       Player goes off track at corner entry — the trajectory offset
       peaks far **wider than expert** at corner entry with the offset
-      **moving toward positive (widening)** across the approach-to-
-      entry span, often co-occurring with an **over-limit spike** in
-      grip utilisation.
+      **moving toward positive (widening)** across the
+      **approach-to-entry** span, often co-occurring with an
+      **over-limit spike** in grip utilisation.
     parent: MS
     children: []
     exclusive_with: []
@@ -747,9 +787,9 @@ labels:
     description: >
       Player goes off track at corner exit — the trajectory offset
       peaks far **wider than expert** at corner exit with the offset
-      **moving toward positive (widening)** across the apex-to-exit or
-      post-exit span, often co-occurring with an **over-limit spike**
-      in grip utilisation.
+      **moving toward positive (widening)** across the **apex-to-exit**
+      or **post-exit** span, often co-occurring with an **over-limit
+      spike** in grip utilisation.
     parent: MS
     children: []
     exclusive_with: []
@@ -775,7 +815,7 @@ labels:
     description: >
       Grip utilisation at corner entry deviates from the expert's
       pattern — an **over-limit spike**, **sustained over-limit**
-      (tire is sustained over its peak grip), or **sustained low**
+      (**tire is sustained over its peak grip**), or **sustained low**
       appears across the index range where braking is active and
       speed is decreasing (the entry phase, cross-referenced with the
       trajectory or speed trace).
@@ -789,7 +829,7 @@ labels:
     description: >
       Grip utilisation at corner exit deviates from the expert's
       pattern — an **over-limit spike**, **sustained over-limit**
-      (tire is sustained over its peak grip), or **sustained low**
+      (**tire is sustained over its peak grip**), or **sustained low**
       appears across the index range where throttle is being applied
       and speed is increasing (the exit phase, cross-referenced with
       the trajectory or speed trace).
@@ -801,9 +841,9 @@ labels:
     name: "Oversteering at entry"
     type: sub
     description: >
-      The player's slip balance shows **primary oversteer** (or a
-      standalone **oversteer** section, peak above +0.02 rad) across
-      an index range that overlaps the corner-entry phase.
+      The player's slip balance shows **oversteer** (as the **primary
+      slide** or a **standalone event** with peak above +0.02 rad)
+      across an index range that overlaps the corner-entry phase.
     parent: MS
     children: []
     exclusive_with: ["MS45"]
@@ -812,8 +852,8 @@ labels:
     name: "Understeering at entry"
     type: sub
     description: >
-      The player's slip balance shows **primary understeer** (or a
-      standalone **understeer** section, trough below −0.02 rad)
+      The player's slip balance shows **understeer** (as the **primary
+      slide** or a **standalone event** with trough below −0.02 rad)
       across an index range that overlaps the corner-entry phase.
     parent: MS
     children: []
@@ -823,9 +863,9 @@ labels:
     name: "Oversteering at exit"
     type: sub
     description: >
-      The player's slip balance shows **primary oversteer** (or a
-      standalone **oversteer** section, peak above +0.02 rad) across
-      an index range that overlaps the corner-exit phase.
+      The player's slip balance shows **oversteer** (as the **primary
+      slide** or a **standalone event** with peak above +0.02 rad)
+      across an index range that overlaps the corner-exit phase.
     parent: MS
     children: []
     exclusive_with: ["MS47"]
@@ -834,8 +874,8 @@ labels:
     name: "Understeering at exit"
     type: sub
     description: >
-      The player's slip balance shows **primary understeer** (or a
-      standalone **understeer** section, trough below −0.02 rad)
+      The player's slip balance shows **understeer** (as the **primary
+      slide** or a **standalone event** with trough below −0.02 rad)
       across an index range that overlaps the corner-exit phase.
     parent: MS
     children: []
@@ -918,7 +958,7 @@ labels:
   ST1:
     name: "In the corner"
     type: segment_type
-    description: "Segment entirely within a corner — driver turning throughout (single curve, hairpin, continuous arc)."
+    description: "Full segment covers entire corner — driver turning throughout (single curve, hairpin, continuous arc)."
     parent: null
     children: []
     exclusive_with: ["ST2", "ST3", "ST4", "ST5", "ST6"]
@@ -926,7 +966,7 @@ labels:
   ST2:
     name: "On the straight"
     type: segment_type
-    description: "Segment on a straight section — minimal steering, full throttle, minimal curvature."
+    description: "Full segment on a straight section — minimal steering, full throttle, minimal curvature."
     parent: null
     children: []
     exclusive_with: ["ST1", "ST3", "ST4", "ST5", "ST6"]
@@ -934,7 +974,7 @@ labels:
   ST3:
     name: "Approach to corner"
     type: segment_type
-    description: "Segment covering the braking zone before a corner — starts straight and begins curving."
+    description: "Full segment only covering the braking zone before a corner — starts straight and begins curving."
     parent: null
     children: []
     exclusive_with: ["ST1", "ST2", "ST4", "ST5", "ST6"]
@@ -942,7 +982,7 @@ labels:
   ST4:
     name: "Exit corner leading to straight"
     type: segment_type
-    description: "Segment covering corner exit leading onto a straight — starts curved, steering decreasing, throttle increasing."
+    description: "Full segment only covering corner exit leading onto a straight — starts curved, steering decreasing, throttle increasing."
     parent: null
     children: []
     exclusive_with: ["ST1", "ST2", "ST3", "ST5", "ST6"]
@@ -970,10 +1010,11 @@ labels:
   brands_hatch1:
     name: "Brabham Straight"
     type: circuit_section
-    description: "Main straight at Brands Hatch, from Clark Curve to Paddock Hill Bend."
+    description: "Main straight at Brands Hatch. "
     parent: brands_hatch
     children: []
     exclusive_with: []
+    normalized_position_range: [0.94, 1]
 
   brands_hatch2:
     name: "Paddock Hill Bend"
@@ -982,6 +1023,7 @@ labels:
     parent: brands_hatch
     children: []
     exclusive_with: []
+    normalized_position_range: [1, 0.09]
 
   brands_hatch3:
     name: "Druids"
@@ -990,6 +1032,7 @@ labels:
     parent: brands_hatch
     children: []
     exclusive_with: []
+    normalized_position_range: [0.11, 0.18]
 
   brands_hatch4:
     name: "Graham Hill Bend"
@@ -998,6 +1041,7 @@ labels:
     parent: brands_hatch
     children: []
     exclusive_with: []
+    normalized_position_range: [0.19, 0.25]
 
   brands_hatch5:
     name: "Cooper Straight"
@@ -1006,6 +1050,7 @@ labels:
     parent: brands_hatch
     children: []
     exclusive_with: []
+    normalized_position_range: [0.25, 0.28]
 
   brands_hatch6:
     name: "Surtees"
@@ -1014,6 +1059,7 @@ labels:
     parent: brands_hatch
     children: []
     exclusive_with: []
+    normalized_position_range: [0.28, 0.35]
 
   brands_hatch7:
     name: "Pilgrim's Drop"
@@ -1022,6 +1068,7 @@ labels:
     parent: brands_hatch
     children: []
     exclusive_with: []
+    normalized_position_range: [0.35, 0.47]
 
   brands_hatch9:
     name: "Hawthorns"
@@ -1030,6 +1077,7 @@ labels:
     parent: brands_hatch
     children: []
     exclusive_with: []
+    normalized_position_range: [0.47, 0.55]
 
   brands_hatch10:
     name: "Derek Minter Straight"
@@ -1038,6 +1086,7 @@ labels:
     parent: brands_hatch
     children: []
     exclusive_with: []
+    normalized_position_range: [0.55, 0.56]
 
   brands_hatch11:
     name: "Westfield Bend"
@@ -1046,6 +1095,7 @@ labels:
     parent: brands_hatch
     children: []
     exclusive_with: []
+    normalized_position_range: [0.56, 0.63]
 
   brands_hatch12:
     name: "Dingle Dell"
@@ -1054,6 +1104,7 @@ labels:
     parent: brands_hatch
     children: []
     exclusive_with: []
+    normalized_position_range: [0.63, 0.67]
 
   brands_hatch13:
     name: "Sheene Curve"
@@ -1062,6 +1113,7 @@ labels:
     parent: brands_hatch
     children: []
     exclusive_with: []
+    normalized_position_range: [0.67, 0.72]
 
   brands_hatch14:
     name: "Stirlings"
@@ -1070,6 +1122,7 @@ labels:
     parent: brands_hatch
     children: []
     exclusive_with: []
+    normalized_position_range: [0.72, 0.79]
 
   brands_hatch15:
     name: "Clearways"
@@ -1078,6 +1131,7 @@ labels:
     parent: brands_hatch
     children: []
     exclusive_with: []
+    normalized_position_range: [0.79, 0.84]
 
   brands_hatch16:
     name: "Clark Curve"
@@ -1086,14 +1140,18 @@ labels:
     parent: brands_hatch
     children: []
     exclusive_with: []
+    normalized_position_range: [0.84, 0.94]
 
   brands_hatch17:
     name: "Pit"
     type: circuit_section
-    description: "Pit lane section at Brands Hatch."
+    description: "Pit lane section at Brands Hatch. Close to the Brabham Straight,
+     driver may divert into the pit lane here instead of continuing on the main Brabham 
+     Straight."
     parent: brands_hatch
     children: []
     exclusive_with: []
+    normalized_position_range: [0.94, 1]
 
   brands_hatch18:
     name: "Graham Hill"
@@ -1102,6 +1160,7 @@ labels:
     parent: brands_hatch
     children: []
     exclusive_with: []
+    normalized_position_range: [0.09 , 0.11]
 
   brands_hatch19:
     name: "Hailwoods Hill"
@@ -1110,6 +1169,7 @@ labels:
     parent: brands_hatch
     children: []
     exclusive_with: []
+    normalized_position_range: [0.18, 0.19]
 
   # =========================================================================
   # SILVERSTONE — Circuit Sections
@@ -1122,6 +1182,7 @@ labels:
     parent: silverstone
     children: []
     exclusive_with: []
+    normalized_position_range: [null, null]
 
   silverstone2:
     name: "Copse"
@@ -1130,6 +1191,7 @@ labels:
     parent: silverstone
     children: []
     exclusive_with: []
+    normalized_position_range: [null, null]
 
   silverstone3:
     name: "Maggotts"
@@ -1138,6 +1200,7 @@ labels:
     parent: silverstone
     children: []
     exclusive_with: []
+    normalized_position_range: [null, null]
 
   silverstone4:
     name: "Becketts"
@@ -1146,6 +1209,7 @@ labels:
     parent: silverstone
     children: []
     exclusive_with: []
+    normalized_position_range: [null, null]
 
   silverstone5:
     name: "Chapel"
@@ -1154,6 +1218,7 @@ labels:
     parent: silverstone
     children: []
     exclusive_with: []
+    normalized_position_range: [null, null]
 
   silverstone6:
     name: "Hangar Straight"
@@ -1162,6 +1227,7 @@ labels:
     parent: silverstone
     children: []
     exclusive_with: []
+    normalized_position_range: [null, null]
 
   silverstone7:
     name: "Stowe"
@@ -1170,6 +1236,7 @@ labels:
     parent: silverstone
     children: []
     exclusive_with: []
+    normalized_position_range: [null, null]
 
   silverstone8:
     name: "Vale"
@@ -1178,6 +1245,7 @@ labels:
     parent: silverstone
     children: []
     exclusive_with: []
+    normalized_position_range: [null, null]
 
   silverstone9:
     name: "Club"
@@ -1186,6 +1254,7 @@ labels:
     parent: silverstone
     children: []
     exclusive_with: []
+    normalized_position_range: [null, null]
 
   silverstone10:
     name: "Hamilton Straight"
@@ -1194,6 +1263,7 @@ labels:
     parent: silverstone
     children: []
     exclusive_with: []
+    normalized_position_range: [null, null]
 
   silverstone11:
     name: "Abbey"
@@ -1202,6 +1272,7 @@ labels:
     parent: silverstone
     children: []
     exclusive_with: []
+    normalized_position_range: [null, null]
 
   silverstone12:
     name: "Farm Curve"
@@ -1210,6 +1281,7 @@ labels:
     parent: silverstone
     children: []
     exclusive_with: []
+    normalized_position_range: [null, null]
 
   silverstone13:
     name: "Village"
@@ -1218,6 +1290,7 @@ labels:
     parent: silverstone
     children: []
     exclusive_with: []
+    normalized_position_range: [null, null]
 
   silverstone14:
     name: "The Loop"
@@ -1226,6 +1299,7 @@ labels:
     parent: silverstone
     children: []
     exclusive_with: []
+    normalized_position_range: [null, null]
 
   silverstone15:
     name: "Aintree"
@@ -1234,6 +1308,7 @@ labels:
     parent: silverstone
     children: []
     exclusive_with: []
+    normalized_position_range: [null, null]
 
   silverstone16:
     name: "Wellington Straight"
@@ -1242,6 +1317,7 @@ labels:
     parent: silverstone
     children: []
     exclusive_with: []
+    normalized_position_range: [null, null]
 
   silverstone17:
     name: "Brooklands"
@@ -1250,6 +1326,7 @@ labels:
     parent: silverstone
     children: []
     exclusive_with: []
+    normalized_position_range: [null, null]
 
   silverstone18:
     name: "Luffield"
@@ -1258,6 +1335,7 @@ labels:
     parent: silverstone
     children: []
     exclusive_with: []
+    normalized_position_range: [null, null]
 
   silverstone19:
     name: "Pit"
@@ -1266,6 +1344,7 @@ labels:
     parent: silverstone
     children: []
     exclusive_with: []
+    normalized_position_range: [null, null]
 
   silverstone20:
     name: "Vale first 90 shape turn"
@@ -1274,6 +1353,7 @@ labels:
     parent: silverstone
     children: []
     exclusive_with: []
+    normalized_position_range: [null, null]
 
   silverstone21:
     name: "Vale second over 90 rounded turn"
@@ -1282,6 +1362,7 @@ labels:
     parent: silverstone
     children: []
     exclusive_with: []
+    normalized_position_range: [null, null]
 
 # =============================================================================
 # Category-level annotation guidelines

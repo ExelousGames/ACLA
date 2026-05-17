@@ -1,9 +1,9 @@
 import streamlit as st
 import time
-import threading
+import uuid
+import traceback
 import pandas as pd
 import copy
-from streamlit.runtime.scriptrunner import add_script_run_ctx
 
 from .shared import (
     load_session_data, load_annotations, save_annotations,
@@ -11,25 +11,6 @@ from .shared import (
     LABEL_MAPPING, LABEL_NAME_TO_ID,
     LABEL_CATEGORIES, MAIN_LABEL_GUIDELINES
 )
-
-try:
-    from ..gemini_analyzer import GeminiAnalyzer
-except ImportError:
-    # Fallback if relative import fails structure
-    try:
-        from ui.gemini_analyzer import GeminiAnalyzer
-    except ImportError:
-        GeminiAnalyzer = None
-
-try:
-    from ..services.batch_annotation_service import BatchAnnotationService, StreamlitBatchObserver, BatchFileJobManager
-except ImportError:
-    try:
-        from ui.services.batch_annotation_service import BatchAnnotationService, StreamlitBatchObserver, BatchFileJobManager
-    except ImportError:
-        BatchAnnotationService = None
-        StreamlitBatchObserver = None
-        BatchFileJobManager = None
 
 def render_rule_based_annotation(df, selected_annotation_key):
     """
@@ -212,694 +193,422 @@ def render_rule_based_annotation(df, selected_annotation_key):
             st.info(f"No segments matched the value '{target_value_str}' for feature '{selected_feature}'.")
 
 
-def render_batch_api_file_job_ui(df, selected_annotation_key, process_indices, context_padding=200, overlay_config=None):
+def _render_local_vlm_config():
+    """Render Local VLM settings (mirrors detailed_agent_annotation_local).
+
+    Returns a callable that, when invoked, builds an ``AnnotationPipelineConfig``
+    from the current widget values — deferring the import so the run path
+    surfaces a clean error if the LangGraph deps are missing.
     """
-    Renders the UI for Batch API File Job mode.
-    - Prepares all requests with base64-encoded images in JSONL format
-    - Uploads JSONL file via File API
-    - Submits batch job referencing the uploaded file
-    - Polls for status
-    - Downloads and processes results when complete
+    from app.services.llm.annotation_agent_llm_service import QWEN25_VL_MODELS
+
+    col_s1, col_s2 = st.columns(2)
+    with col_s1:
+        max_iterations = st.number_input(
+            "Max iterations",
+            min_value=1, max_value=10, value=3,
+            key="batch_agent_local_max_iter",
+        )
+    with col_s2:
+        temperature = st.slider(
+            "Temperature",
+            min_value=0.1, max_value=1.5, value=0.7, step=0.1,
+            key="batch_agent_local_temp",
+        )
+
+    model_options = list(QWEN25_VL_MODELS.keys())
+    default_idx = model_options.index("Qwen/Qwen2.5-VL-72B-Instruct")
+    selected_model = st.selectbox(
+        "VLM model",
+        options=model_options,
+        format_func=lambda x: QWEN25_VL_MODELS[x]["label"],
+        index=default_idx,
+        key="batch_agent_local_model",
+    )
+    model_spec = QWEN25_VL_MODELS[selected_model]
+    model_max_context = model_spec["max_context"]
+    model_max_new_tokens = model_spec["max_new_tokens"]
+
+    if "batch_agent_local_ctx" not in st.session_state:
+        st.session_state["batch_agent_local_ctx"] = min(32768, model_max_context)
+    else:
+        st.session_state["batch_agent_local_ctx"] = min(
+            st.session_state["batch_agent_local_ctx"], model_max_context,
+        )
+    if "batch_agent_local_max_new_tokens" not in st.session_state:
+        st.session_state["batch_agent_local_max_new_tokens"] = min(512, model_max_new_tokens)
+    else:
+        st.session_state["batch_agent_local_max_new_tokens"] = min(
+            st.session_state["batch_agent_local_max_new_tokens"], model_max_new_tokens,
+        )
+
+    quantization_type = st.selectbox(
+        "Quantization",
+        options=["Q4_K_M", "Q5_K_M", "Q6_K", "Q8_0"],
+        index=0,
+        key="batch_agent_local_quant",
+    )
+
+    with st.expander("⚙️ Advanced model settings", expanded=False):
+        gguf_path = st.text_input(
+            "GGUF model path (override)", value="",
+            help="Leave empty to auto-detect / auto-convert.",
+            key="batch_agent_local_gguf",
+        )
+        mmproj_path = st.text_input(
+            "mmproj path (override)", value="",
+            help="Leave empty to auto-detect / auto-convert.",
+            key="batch_agent_local_mmproj",
+        )
+        context_size = st.slider(
+            "Context size",
+            min_value=2048, max_value=model_max_context, step=1024,
+            key="batch_agent_local_ctx",
+        )
+        n_gpu_layers = st.number_input(
+            "GPU layers (-1 = all)",
+            min_value=-1, max_value=200, value=-1,
+            key="batch_agent_local_ngl",
+        )
+        max_new_tokens = st.slider(
+            "Max new tokens (per VLM call)",
+            min_value=128, max_value=model_max_new_tokens, step=128,
+            key="batch_agent_local_max_new_tokens",
+        )
+
+    def build_config():
+        from app.services.llm.annotation_agent_pipeline import AnnotationPipelineConfig
+        return AnnotationPipelineConfig(
+            max_iterations=int(max_iterations),
+            max_new_tokens=int(max_new_tokens),
+            temperature=float(temperature),
+            backend="local",
+            gguf_path=gguf_path or None,
+            mmproj_path=mmproj_path or None,
+            context_size=int(context_size),
+            n_gpu_layers=int(n_gpu_layers),
+            hf_repo=selected_model,
+            quantization_type=quantization_type,
+        )
+    return build_config
+
+
+def _render_claude_config():
+    """Render Claude settings (mirrors detailed_agent_annotation_claude)."""
+    from app.services.llm.claude_agent_backend import CLAUDE_VLM_MODELS
+
+    max_iterations = st.number_input(
+        "Tool-call budget (×10)",
+        min_value=1, max_value=10, value=3,
+        help="Caps the agent loop at this many tool calls × 10 per parent segment.",
+        key="batch_agent_claude_max_iter",
+    )
+    claude_model = st.selectbox(
+        "Claude model",
+        options=list(CLAUDE_VLM_MODELS.keys()),
+        format_func=lambda x: CLAUDE_VLM_MODELS[x]["label"],
+        index=0,
+        key="batch_agent_claude_model",
+    )
+    claude_use_thinking = st.checkbox(
+        "Use extended thinking",
+        value=False,
+        key="batch_agent_claude_thinking",
+    )
+    st.caption(
+        "ℹ️ Routed through `claude-agent-sdk` → your local `claude` CLI login. "
+        "Subject to Max-plan rate limits — heavy batches may stall."
+    )
+
+    def build_config():
+        from app.services.llm.annotation_agent_pipeline import AnnotationPipelineConfig
+        return AnnotationPipelineConfig(
+            max_iterations=int(max_iterations),
+            backend="claude",
+            claude_model=claude_model,
+            claude_use_thinking=bool(claude_use_thinking),
+        )
+    return build_config
+
+
+def _persist_children_for_parent(parent, result, session_id, selected_annotation_key):
+    """Auto-save AI-discovered children under ``parent``.
+
+    Replaces any prior children of this parent atomically: removes every
+    annotation whose ``parent_id == parent.id`` from ``current_annotations``,
+    then appends the new children. The caller's skip toggle decides whether
+    we reach this function at all when the parent already has children —
+    if we get here, the user has opted into overwriting.
+
+    Returns ``(saved_count, replaced_count)``. If the pipeline produced no
+    usable proposals we keep the old children intact rather than wiping
+    them out for a no-op.
     """
-    st.markdown("##### Batch API Mode (50% Cost Savings)")
-    st.info(
-        "**How it works:** All segments are prepared as a JSONL file with base64-encoded graphs, "
-        "uploaded via File API, then submitted as a batch job. Results are typically available within "
-        "minutes to hours (up to 24h SLO). You get 50% discount compared to sequential API calls."
-    )
-    
-    if not BatchFileJobManager:
-        st.error("BatchFileJobManager could not be imported.")
-        return
-    
-    # Initialize state for batch file job
-    if "batch_file_manager" not in st.session_state:
-        st.session_state.batch_file_manager = None
-    if "batch_file_logs" not in st.session_state:
-        st.session_state.batch_file_logs = []
-    
-    # UI Components
-    batch_progress_bar = st.progress(0.0)
-    batch_status_text = st.empty()
-    st.markdown("##### Batch Job Log")
-    with st.container(height=400):
-        batch_log_area = st.empty()
-        
-        # Restore logs display
-        if st.session_state.batch_file_logs:
-            batch_log_area.code("\n".join(st.session_state.batch_file_logs), language="text", line_numbers=True)
-    
-    # Create observer for this UI
-    observer = StreamlitBatchObserver(
-        batch_progress_bar, 
-        batch_status_text, 
-        batch_log_area, 
-        st.session_state.batch_file_logs
-    )
-    
-    # Get or create manager
-    manager = st.session_state.batch_file_manager
-    if manager:
-        manager.observer = observer
-    
-    # Determine current state
-    current_status = manager.state.status if manager else "idle"
-    
-    # Display current job info
-    if manager and manager.state.job_name:
-        st.markdown(f"**Job Name:** `{manager.state.job_name}`")
-        st.markdown(f"**Status:** {manager.state.status}")
-        if manager.state.total_requests:
-            st.markdown(f"**Requests:** {manager.state.total_requests}")
-    
-    # Options for batch job
-    st.checkbox(
-        "Include Graphs", 
-        value=True, 
-        key="batch_include_graphs",
-        help="When unchecked, sends text-only requests without generating graphs. Faster and cheaper, but less accurate analysis."
-    )
-    
-    # Control buttons
-    col1, col2, col3 = st.columns([1, 1, 2])
-    
-    with col1:
-        # Submit button - only show when idle or failed
-        submit_disabled = current_status in ["preparing", "uploading", "submitted", "polling"]
-        if st.button("Submit Batch Job", key="batch_file_submit_btn", disabled=submit_disabled):
-            api_key = GeminiAnalyzer.get_api_key()
-            if not api_key:
-                st.error("API Key required.")
-            else:
-                # Initialize manager
-                analyzer = GeminiAnalyzer(api_key)
-                manager = BatchFileJobManager(analyzer, observer)
-                st.session_state.batch_file_manager = manager
-                st.session_state.batch_file_logs = []
-                manager.observer.logs = st.session_state.batch_file_logs
-                
-                # Define Task Config
-                track_config = {
-                    "player_x": "Graphics_player_pos_x",
-                    "player_y": "Graphics_player_pos_y",
-                    "expert_x": "expert_optimal_player_pos_x",
-                    "expert_y": "expert_optimal_player_pos_y"
-                }
-                
-                # Prepare and submit
-                include_graphs = st.session_state.get("batch_include_graphs", True)
-                success = manager.prepare_and_submit(
-                    process_indices=process_indices,
-                    annotations=st.session_state.current_annotations,
-                    df=df,
-                    track_config=track_config,
-                    label_mapping=LABEL_MAPPING,
-                    label_name_to_id=LABEL_NAME_TO_ID,
-                    main_guidelines=MAIN_LABEL_GUIDELINES,
-                    label_categories=LABEL_CATEGORIES,
-                    include_graphs=include_graphs,
-                    context_padding=context_padding,
-                    overlay_config=overlay_config
-                )
-                
-                if success:
-                    st.success("Batch job submitted! Click 'Poll Status' to check progress.")
-                st.rerun()
-    
-    with col2:
-        # Poll button - only show when polling
-        poll_disabled = current_status not in ["polling", "submitted", "uploading"]
-        if st.button("Poll Status", key="batch_file_poll_btn", disabled=poll_disabled):
-            if manager:
-                status = manager.poll_status()
-                if status.get("finished"):
-                    if status.get("success"):
-                        st.success("Batch job completed!")
-                    else:
-                        st.error(f"Batch job failed: {status.get('error', 'Unknown error')}")
-                st.rerun()
-    
-    with col3:
-        # Cancel button - only show when running
-        cancel_disabled = current_status not in ["polling", "submitted", "uploading"]
-        if st.button("Cancel Job", key="batch_file_cancel_btn", disabled=cancel_disabled, type="secondary"):
-            if manager:
-                manager.cancel_job()
-                st.rerun()
-    
-    # Results section - show when completed
-    if current_status == "completed" and manager:
-        st.markdown("---")
-        st.markdown("##### Results")
-        
-        col_results1, col_results2 = st.columns([1, 1])
-        
-        with col_results1:
-            if st.button("Fetch & Apply Results", key="batch_file_apply_btn"):
-                results = manager.get_results()
-                
-                if results:
-                    skip_if_sublabels = st.session_state.get("batch_skip_sublabels", True)
-                    auto_update = st.session_state.get("batch_auto_update", True)
-                    main_labels_set = set(LABEL_CATEGORIES.get("Main Labels", []))
-                    
-                    success_count = 0
-                    error_count = 0
-                    
-                    for result in results:
-                        seg_idx = result.get("segment_index", -1)
-                        
-                        if seg_idx < 0 or seg_idx >= len(st.session_state.current_annotations):
-                            error_count += 1
-                            continue
-                        
-                        if result.get("error"):
-                            observer.on_log(f"⚠️ Segment #{seg_idx}: {result['error']}")
-                            error_count += 1
-                            continue
-                        
-                        # Process labels
-                        suggested_labels = result.get("parsed_labels", [])
-                        new_label_ids = []
-                        
-                        for sugg in suggested_labels:
-                            lname = sugg.get("label")
-                            lid = LABEL_NAME_TO_ID.get(lname)
-                            if not lid and lname in LABEL_MAPPING:
-                                lid = lname
-                            if lid:
-                                new_label_ids.append(lid)
-                        
-                        if auto_update and new_label_ids:
-                            ann = st.session_state.current_annotations[seg_idx]
-                            current_set = set(ann.labels)
-                            existing_sub_labels = [l for l in current_set if l not in main_labels_set]
-                            
-                            if skip_if_sublabels and len(existing_sub_labels) > 0:
-                                observer.on_log(f"⏭️ Segment #{seg_idx}: Skipped (existing sub-labels)")
-                                continue
-                            
-                            # Apply new labels
-                            kept_labels = [l for l in ann.labels if l in main_labels_set]
-                            updated_labels = list(set(kept_labels).union(set(new_label_ids)))
-                            ann.labels = updated_labels
-                            
-                            # Update notes
-                            summary = result.get("summary", "")
-                            if summary:
-                                timestamp = time.strftime("%H:%M:%S")
-                                new_note = f"[Batch API {timestamp}]:\n{summary}"
-                                ann.notes = new_note.strip()
-                            
-                            observer.on_log(f"✅ Segment #{seg_idx}: Applied {len(new_label_ids)} labels")
-                            success_count += 1
-                        else:
-                            observer.on_log(f"ℹ️ Segment #{seg_idx}: {len(new_label_ids)} labels found (not applied)")
-                    
-                    # Save all annotations
-                    if success_count > 0 and "last_session_id" in st.session_state:
-                        save_annotations(
-                            st.session_state.last_session_id,
-                            st.session_state.current_annotations,
-                            st.session_state.last_annotation_key,
-                            silent=False
-                        )
-                    
-                    observer.on_complete(success_count, error_count, "Results processed")
-                    st.success(f"Processed {success_count} segments, {error_count} errors.")
-                else:
-                    st.warning("No results available.")
-                
-                st.rerun()
-        
-        with col_results2:
-            if st.button("View Raw Results", key="batch_file_view_btn"):
-                results = manager.get_results()
-                if results:
-                    st.json(results)
-    
-    # Reset button
-    if current_status in ["completed", "failed", "cancelled"]:
-        if st.button("Reset / New Job", key="batch_file_reset_btn"):
-            st.session_state.batch_file_manager = None
-            st.session_state.batch_file_logs = []
-            st.rerun()
-    
-    # Auto-poll when waiting
-    if current_status == "polling":
-        st.info("Job is running... Click 'Poll Status' to check progress, or wait for auto-poll.")
-        # Optional: Auto-poll every 30 seconds
-        # time.sleep(30)
-        # st.rerun()
+    from app.models.segment_models import AnnotatedSegment
+    from .components._agent_annotation_shared import group_proposals_by_range
+
+    grouped = group_proposals_by_range(result)
+
+    new_children = []
+    for (gs, ge), anns in grouped:
+        if gs >= ge:
+            continue
+        label_ids = [a["label_id"] for a in anns if a.get("label_id") in LABEL_MAPPING]
+        if not label_ids:
+            continue
+        notes = "; ".join(a.get("reasoning", "") for a in anns if a.get("reasoning"))[:500]
+        new_children.append(AnnotatedSegment(
+            id=str(uuid.uuid4()),
+            labels=list(dict.fromkeys(label_ids)),
+            segment_length=int(ge) - int(gs),
+            start_index=int(gs),
+            end_index=int(ge),
+            notes=notes,
+            parent_id=parent.id,
+        ))
+
+    if not new_children:
+        return 0, 0
+
+    annotations = list(st.session_state.get("current_annotations", []))
+    before = len(annotations)
+    annotations = [
+        a for a in annotations
+        if getattr(a, "parent_id", None) != parent.id
+    ]
+    replaced = before - len(annotations)
+    annotations.extend(new_children)
+    st.session_state["current_annotations"] = annotations
+    save_annotations(session_id, annotations, selected_annotation_key, silent=True)
+    return len(new_children), replaced
 
 
 def render_batch_auto_annotation(df, selected_annotation_key):
-    """
-    Renders the Batch Auto-Annotation section using BatchAnnotationService.
-    Decoupled integration: UI controls service, observes progress.
-    Uses @st.fragment for efficient partial reruns without recursion issues.
-    """
-    st.header("Batch Auto-Annotation (Gemini/Service)")
-    st.write("Automatically analyze and update labels for a range of segments using AI Service.")
-    
-    # Ensure annotations exist
-    if not st.session_state.get("current_annotations"):
-            st.info("No segments available to process. Please create segments first.")
-            return
+    """Batch sub-segment discovery powered by Local VLM or Claude.
 
-    if not BatchAnnotationService:
-        st.error("BatchAnnotationService could not be imported.")
+    For each parent segment in the selected range, runs the same agent
+    pipeline used by the Detailed view's 🖥️ / ☁️ expanders and auto-saves
+    the discovered children under that parent. No staged review per parent.
+    """
+    st.header("Batch Auto-Annotation (Sub-Segment Discovery)")
+    st.write(
+        "For each segment in the selected range, run the **Sub-Segment Discovery** "
+        "agent and auto-save discovered children. Choose Local VLM or Claude."
+    )
+
+    if not st.session_state.get("current_annotations"):
+        st.info("No segments available to process. Please create segments first.")
         return
 
-    total_segments = len(st.session_state.current_annotations)
-    # Slider to select range of segments
+    annotations = st.session_state.current_annotations
+    total_segments = len(annotations)
     if total_segments > 1:
-        batch_range = st.slider("Select Segment Range", 0, total_segments-1, (0, total_segments-1), step=1)
+        batch_range = st.slider("Select Segment Range", 0, total_segments - 1,
+                                (0, total_segments - 1), step=1)
     else:
         batch_range = (0, 0)
         st.write("1 segment available.")
+    process_indices = list(range(batch_range[0], batch_range[1] + 1))
+    st.write(f"Selected {len(process_indices)} parent segment(s) for analysis.")
 
-    process_indices = list(range(batch_range[0], batch_range[1]+1))
-    st.write(f"Selected {len(process_indices)} segments for analysis.")
+    # --- Backend selector ---
+    backend_label = st.radio(
+        "Discovery backend",
+        options=["🖥️ Local VLM", "☁️ Claude"],
+        index=0,
+        horizontal=True,
+        key="batch_agent_backend",
+    )
+    backend_kind = "local" if backend_label.startswith("🖥️") else "claude"
 
-    if GeminiAnalyzer:
-        # Context Padding Input
-        context_padding_val = st.number_input(
-            "Context Padding (surrounding data points)", 
-            min_value=50, 
-            max_value=10000, 
-            value=2000, 
-            step=100,
-            key="batch_context_padding_input",
-            help="Controls how much track data around the segment is included in the context analysis."
-        )
-
-        # Track Map Overlay Controls
-        st.markdown("##### Track Map Overlay Settings")
-        st.info("💡 These settings will be applied consistently to all segments in the batch job.")
-        
-        overlay_config = None
-        
-        # Get track name to find reference image
-        track_name = None
-        if "Static_track" in df.columns and not df.empty:
-            track_name = df["Static_track"].iloc[0]
-        
-        if track_name:
-            # Try to find track map path
-            try:
-                from app.models.segment_models import LABEL_IMAGE_MAP
-                
-                track_map_filename = LABEL_IMAGE_MAP.get(track_name)
-                if track_map_filename:
-                    # Search for the file
-                    import os
-                    possible_paths = [
-                        os.path.join(os.getcwd(), "acla_ai_service/ui/source"),
-                        os.path.join(os.getcwd(), "ui/source"),
-                        os.path.join(os.path.dirname(__file__), "../source"),
-                        "ui/source",
-                        "source"
-                    ]
-                    
-                    track_map_path = None
-                    for base_path in possible_paths:
-                        full_path = os.path.join(base_path, track_map_filename)
-                        if os.path.exists(full_path):
-                            track_map_path = full_path
-                            break
-                    
-                    if track_map_path:
-                        st.success(f"Found track map: {track_name}")
-                        
-                        # Overlay adjustment controls
-                        col_ov1, col_ov2 = st.columns(2)
-                        
-                        with col_ov1:
-                            offset_x = st.slider(
-                                "Horizontal Offset", 
-                                min_value=-500, 
-                                max_value=500, 
-                                value=0,
-                                step=1,
-                                key="batch_overlay_x"
-                            )
-                            
-                            rotation = st.slider(
-                                "Rotation (degrees)", 
-                                min_value=-180, 
-                                max_value=180, 
-                                value=0,
-                                step=1,
-                                key="batch_overlay_rotation"
-                            )
-                        
-                        with col_ov2:
-                            offset_y = st.slider(
-                                "Vertical Offset", 
-                                min_value=-500, 
-                                max_value=500, 
-                                value=0,
-                                step=1,
-                                key="batch_overlay_y"
-                            )
-                            
-                            scale_x = st.slider(
-                                "Scale X", 
-                                min_value=0.01, 
-                                max_value=3.0, 
-                                value=1.0,
-                                step=0.01,
-                                key="batch_overlay_scale_x"
-                            )
-                            
-                            scale_y = st.slider(
-                                "Scale Y", 
-                                min_value=0.01, 
-                                max_value=3.0, 
-                                value=1.0,
-                                step=0.01,
-                                key="batch_overlay_scale_y"
-                            )
-                        
-                        overlay_config = {
-                            "enabled": True,
-                            "track_map_path": track_map_path,
-                            "offset_x": offset_x,
-                            "offset_y": offset_y,
-                            "rotation": rotation,
-                            "scale_x": scale_x,
-                            "scale_y": scale_y,
-                            "alpha": 0.8
-                        }
-                        
-                        st.caption("✅ Overlay configured. These settings will be used for all segments in the batch.")
-                        
-                        # Preview Section
-                        st.markdown("---")
-                        st.markdown("##### Preview Overlay")
-                        
-                        preview_col1, preview_col2 = st.columns([3, 1])
-                        
-                        with preview_col2:
-                            preview_auto = st.checkbox(
-                                "Auto-update preview",
-                                value=True,
-                                key="batch_overlay_auto_preview",
-                                help="Automatically update preview when sliders change"
-                            )
-                            
-                            import time
-                            if not preview_auto:
-                                if st.button("Update Preview", key="batch_overlay_preview_btn"):
-                                    st.session_state.batch_preview_trigger = time.time()
-                        
-                        # Generate preview
-                        should_preview = preview_auto or st.session_state.get("batch_preview_trigger", 0) > 0
-                        
-                        if should_preview:
-                            with st.spinner("Generating overlay preview..."):
-                                try:
-                                    import traceback
-                                    # Prepare data for preview
-                                    # Just use context padding amount of data from the beginning of the track
-                                    end_idx = min(len(df), int(context_padding_val))
-                                    analysis_df = df.iloc[0:end_idx]
-                                    preview_context_df = analysis_df # Uses same data for context
-                                    
-                                    # Track config
-                                    preview_track_config = {
-                                        "player_x": "Graphics_player_pos_x",
-                                        "player_y": "Graphics_player_pos_y",
-                                        "expert_x": "expert_optimal_player_pos_x",
-                                        "expert_y": "expert_optimal_player_pos_y"
-                                    }
-                                    
-                                    # Create analyzer instance just for preview
-                                    api_key = GeminiAnalyzer.get_api_key()
-                                    if not api_key:
-                                        st.warning("Please configure Gemini API key to see preview.")
-                                    else:
-                                        preview_analyzer = GeminiAnalyzer(api_key)
-                                        
-                                        # Generate overlay image
-                                        overlay_img = preview_analyzer.create_trajectory_overlay(
-                                            analysis_df,
-                                            preview_track_config,
-                                            context_df=preview_context_df,
-                                            track_map_path=track_map_path,
-                                            overlay_config=overlay_config
-                                        )
-                                        
-                                        if overlay_img:
-                                            with preview_col1:
-                                                st.image(overlay_img, caption="Trajectory Overlay Preview", width='stretch')
-                                                st.caption("💡 Adjust sliders to align trajectory with track layout")
-                                        else:
-                                            st.error("Failed to generate overlay preview")
-                                            
-                                except Exception as e:
-                                    st.error(f"Preview error: {str(e)}")
-                                    st.code(traceback.format_exc())
-                        
-                        st.markdown("---")
-                        
-                    else:
-                        st.warning(f"Track map file '{track_map_filename}' not found in source directories.")
-                else:
-                    st.info(f"No track map configured for '{track_name}'. Track map overlay is always needed for best analysis.")
-            except ImportError:
-                st.warning("Could not import LABEL_IMAGE_MAP")
-        else:
-            st.info("Track name not found in session data. Track map overlay is disabled.")
-
-        # Mode Selection: Sequential vs Batch API
-        st.markdown("---")
-        batch_mode = st.radio(
-            "Processing Mode",
-            options=["Sequential API", "Batch API File Job (50% cheaper)"],
-            index=0,
-            horizontal=True,
-            key="batch_processing_mode",
-            help="Sequential: Process one segment at a time with immediate results. "
-                 "Batch API: Upload JSONL file and submit as batch job, 50% discount, results available within 24h."
-        )
-        
-        # Service and State Initialization
-        if "batch_service_instance" not in st.session_state:
-            st.session_state.batch_service_instance = None
-        
-        # Checkbox for auto-update (outside fragment so it persists)
-        st.checkbox("Auto-update Labels & Notes", value=True, key="batch_auto_update")
-        st.checkbox("Skip if sub-labels exist", value=True, key="batch_skip_sublabels")
-        
-        if batch_mode == "Batch API File Job (50% cheaper)":
-            # Render Batch API File Job UI
-            render_batch_api_file_job_ui(df, selected_annotation_key, process_indices, context_padding=context_padding_val, overlay_config=overlay_config)
-        else:
-            # Render Sequential API UI (existing fragment-based approach)
-            # Use fragment for progress monitoring to avoid full script reruns
-            @st.fragment
-            def batch_progress_fragment():
-                """Fragment that handles progress updates with partial reruns."""
-                # UI Components for Progress
-                st.markdown("##### Batch Progress")
-                batch_progress_bar = st.progress(0.0)
-                batch_status_text = st.empty()
-                st.markdown("##### Batch Log")
-                with st.container(height=400):
-                    batch_log_area = st.empty()
-                
-                # Retrieve existing service if any
-                service = st.session_state.get("batch_service_instance")
-                
-                # Ensure service has logs attribute initialized (important for persistence)
-                initial_logs = []
-                if service:
-                     # Backward compatibility: initialize logs list on service if missing
-                     if not hasattr(service, "logs"):
-                         service.logs = []
-                         # Try to recover logs from old observer if it exists
-                         if hasattr(service, "observer") and service.observer and hasattr(service.observer, "logs"):
-                              try:
-                                  current_logs = service.observer.logs
-                                  if isinstance(current_logs, list):
-                                      service.logs.extend(current_logs)
-                              except: pass
-                     
-                     # Use the service's logs list as the source of truth
-                     initial_logs = service.logs
-
-                # Create Observer linked to these UI components
-                # Re-create observer on every run to bind to current st elements
-                # Pass persistent logs list so updates are synced
-                observer = StreamlitBatchObserver(batch_progress_bar, batch_status_text, batch_log_area, initial_logs)
-                
-                if service:
-                    # Restore state from previous observer attached to the service
-                    if hasattr(service, "observer") and service.observer:
-                        try:
-                            # prev_logs is service.logs because we linked it via reference.
-                            # We pass None to restore_state so it doesn't overwrite logs reference.
-                            prev_progress = getattr(service.observer, "current_progress", 0.0)
-                            prev_status = getattr(service.observer, "current_status", "")
-                            
-                            observer.restore_state(None, prev_progress, prev_status)
-                        except Exception as e:
-                            print(f"Error restoring batch observer state: {e}")
-
-                    # Update observer to point to new UI elements (important for re-renders)
-                    service.observer = observer 
-                    is_running = service.is_running
-                else:
-                    is_running = False
-
-                col_ctrl1, col_ctrl2 = st.columns([1, 4])
-                
-                with col_ctrl1:
-                    # Callback for Start Button
-                    def on_start_batch_click():
-                        st.session_state.start_batch_requested = True
-                    
-                    # Render Buttons based on state
-                    if not is_running:
-                        st.button("Start Batch Analysis", key="start_batch_gemini_svc_btn", on_click=on_start_batch_click)
-                    elif st.button("Stop Batch", key="stop_batch_gemini_svc_btn"):
-                        if service:
-                            service.stop()
-                            # Wait briefly?
-                            time.sleep(0.5)
-                            st.rerun(scope="fragment")
-                    
-                    # Check for Start Request (set via callback)
-                    if st.session_state.get("start_batch_requested", False) and not is_running:
-                        # Clear flag immediately
-                        st.session_state.start_batch_requested = False
-                        
-                        api_key = GeminiAnalyzer.get_api_key()
-                        if not api_key:
-                            st.error("API Key required.")
-                        else:
-                            # Initialize Service
-                            analyzer = GeminiAnalyzer(api_key)
-                            service = BatchAnnotationService(analyzer, observer)
-                            # Set running flag immediately to prevent race condition/UI flickering on rerun
-                            service.is_running = True
-                            st.session_state.batch_service_instance = service
-                            
-                            # Define Task Config
-                            track_config = {
-                                "player_x": "Graphics_player_pos_x",
-                                "player_y": "Graphics_player_pos_y",
-                                "expert_x": "expert_optimal_player_pos_x",
-                                "expert_y": "expert_optimal_player_pos_y"
-                            }
-                            
-                            # Add track name from Static_track for reference image loading
-                            if "Static_track" in df.columns:
-                                track_name = df["Static_track"].iloc[0] if not df.empty else None
-                                if track_name:
-                                    track_config["track_name"] = track_name
-
-                            # Capture the skip setting outside the thread
-                            skip_if_sublabels = st.session_state.get("batch_skip_sublabels", True)
-
-                            # Callback for Persisting Data (runs in worker thread)
-                            def persistence_callback(idx, new_label_ids, response_text):
-                                if not st.session_state.get("batch_auto_update", False):
-                                    print(f"[Batch] Auto-update disabled. Skipping persistence for segment {idx}")
-                                    return
-                                
-                                try:
-                                    # Verify index range
-                                    if idx < 0 or idx >= len(st.session_state.current_annotations):
-                                        print(f"[Batch] Index {idx} out of range for persistence.")
-                                        return
-
-                                    ann = st.session_state.current_annotations[idx]
-                                    
-                                    # IDENTIFY SUB-LABELS
-                                    # We consider Main Labels to be the top-level keys in LABEL_CATEGORIES['Main Labels']
-                                    # Everything else is a sub-label
-                                    main_labels_set = set(LABEL_CATEGORIES.get("Main Labels", []))
-                                    current_set = set(ann.labels)
-                                    
-                                    # Find existing sub-labels
-                                    existing_sub_labels = [l for l in current_set if l not in main_labels_set]
-                                    
-                                    if skip_if_sublabels and len(existing_sub_labels) > 0:
-                                        # Skip update for this segment
-                                        print(f"[Batch] Skipping segment {idx} due to existing sub-labels: {existing_sub_labels}")
-                                        return
-
-                                    # PREPARE NEW LABELS
-                                    # If we are NOT skipping, we must REMOVE existing sub-labels before adding new ones
-                                    # Keep only main labels from the original set
-                                    kept_labels = [l for l in ann.labels if l in main_labels_set]
-                                    
-                                    # Add the NEW labels from AI (which might be sub-labels or main labels)
-                                    # We use set to avoid duplicates, but we base it on kept_labels + new_label_ids
-                                    updated_labels = list(set(kept_labels).union(set(new_label_ids)))
-                                    
-                                    ann.labels = updated_labels
-                                    print(f"[Batch] Updating segment {idx} with labels: {updated_labels}")
-                                    
-                                    # Update Notes (Overwrite)
-                                    timestamp = time.strftime("%H:%M:%S")
-                                    new_note = f"[Auto-Analysis {timestamp}]:\n{response_text}"
-                                    
-                                    ann.notes = new_note.strip()
-                                    
-                                    # Save directly to store
-                                    if "last_session_id" in st.session_state and "last_annotation_key" in st.session_state:
-                                        save_annotations(
-                                            st.session_state.last_session_id,
-                                            st.session_state.current_annotations,
-                                            st.session_state.last_annotation_key,
-                                            silent=True
-                                        )
-                                        print(f"[Batch] Saved annotations for segment {idx}")
-                                except Exception as e:
-                                    print(f"Error in persistence_callback: {e}")
-                            
-                            # Start Thread
-                            thread = threading.Thread(
-                                target=service.run_batch,
-                                args=(
-                                    process_indices,
-                                    st.session_state.current_annotations,
-                                    df,
-                                    track_config,
-                                    LABEL_MAPPING,
-                                    LABEL_NAME_TO_ID,
-                                    MAIN_LABEL_GUIDELINES,
-                                    LABEL_CATEGORIES,
-                                    persistence_callback,
-                                    context_padding_val,
-                                    overlay_config
-                                )
-                            )
-                            # Attach script context so st.* calls in service (if any) or observer work
-                            add_script_run_ctx(thread)
-                            thread.start()
-                            st.rerun(scope="fragment")
-
-                # Auto-Rerun for Updates if running - using fragment scope to avoid recursion
-                if is_running:
-                    time.sleep(1)
-                    st.rerun(scope="fragment")
-                elif service and not is_running:
-                    # Clean up service reference or leave it for log viewing?
-                    # Reset button
-                    if st.button("Clear / Reset", key="reset_batch_svc"):
-                        st.session_state.batch_service_instance = None
-                        st.rerun(scope="fragment")
-            
-            # Call the fragment
-            batch_progress_fragment()
-            
+    st.markdown("---")
+    if backend_kind == "local":
+        build_config = _render_local_vlm_config()
     else:
-        st.warning("Gemini Analyzer unavailable. Check imports.")
+        build_config = _render_claude_config()
+
+    st.markdown("---")
+    skip_with_children = st.checkbox(
+        "Skip parents that already have child sub-segments",
+        value=True,
+        key="batch_agent_skip_with_children",
+        help=(
+            "Recommended — avoids re-running discovery on parents you've already annotated. "
+            "When unchecked, existing children of each parent are DELETED and replaced with "
+            "the new AI-discovered ones (clean re-run; old proposals are not used as hints)."
+        ),
+    )
+
+    session_id = st.session_state.get("last_session_id")
+
+    if "batch_agent_stop" not in st.session_state:
+        st.session_state["batch_agent_stop"] = False
+    if "batch_agent_logs" not in st.session_state:
+        st.session_state["batch_agent_logs"] = []
+
+    col_run, col_clear = st.columns([1, 1])
+    with col_run:
+        run_clicked = st.button(
+            "▶ Run Batch Sub-Segment Discovery",
+            key="batch_agent_run", type="primary",
+        )
+    with col_clear:
+        if st.button("Clear log", key="batch_agent_clear_log"):
+            st.session_state["batch_agent_logs"] = []
+            st.rerun()
+
+    progress_bar = st.progress(0.0)
+    status_text = st.empty()
+    log_area = st.empty()
+
+    def _flush_log():
+        if st.session_state["batch_agent_logs"]:
+            log_area.code(
+                "\n".join(st.session_state["batch_agent_logs"]),
+                language="text", line_numbers=True,
+            )
+
+    _flush_log()
+
+    if not run_clicked:
+        return
+
+    # Resolve pipeline entrypoint based on backend.
+    try:
+        if backend_kind == "claude":
+            from app.services.llm.claude_annotation_runner import (
+                run_claude_annotation as run_pipeline,
+            )
+        else:
+            from app.services.llm.annotation_agent_pipeline import (
+                run_annotation_pipeline as run_pipeline,
+            )
+    except ImportError as e:
+        st.error(
+            f"Missing dependency: {e}\n\n"
+            "Install with: `pip install langgraph langchain-core` "
+            "(or `pip install claude-agent-sdk` for the Claude backend)."
+        )
+        return
+
+    config = build_config()
+
+    # Pre-compute existing-children lookup keyed by parent.id so we can
+    # both decide whether to skip and pass dup-avoidance hints to the agent.
+    children_by_parent: dict[str, list[dict]] = {}
+    for ann in annotations:
+        pid = getattr(ann, "parent_id", None)
+        if not pid:
+            continue
+        children_by_parent.setdefault(pid, []).append({
+            "start_index": ann.start_index,
+            "end_index": ann.end_index,
+            "labels": list(ann.labels),
+        })
+
+    main_label_set = set(LABEL_CATEGORIES.get("Main Labels", []))
+    st.session_state["batch_agent_stop"] = False
+    logs = st.session_state["batch_agent_logs"]
+    total = len(process_indices)
+    success_parents = 0
+    total_children = 0
+    error_parents = 0
+
+    def log(msg: str):
+        ts = time.strftime("%H:%M:%S")
+        logs.append(f"[{ts}] {msg}")
+        if len(logs) > 1000:
+            del logs[: len(logs) - 1000]
+        _flush_log()
+
+    log(f"Starting batch sub-segment discovery: {total} parent(s), backend={backend_kind}")
+
+    for i, idx in enumerate(process_indices):
+        if st.session_state["batch_agent_stop"]:
+            log("Stopped by user.")
+            break
+
+        if idx < 0 or idx >= len(annotations):
+            log(f"Skipping invalid index {idx}.")
+            continue
+        parent = annotations[idx]
+
+        existing = children_by_parent.get(parent.id, [])
+        if skip_with_children and existing:
+            log(f"Parent #{idx}: skipped ({len(existing)} existing children).")
+            progress_bar.progress((i + 1) / total)
+            continue
+
+        # In replace mode we want the agent to re-explore from scratch — don't
+        # bias it with the prior boundaries we're about to delete.
+        existing_for_agent = [] if (existing and not skip_with_children) else existing
+
+        parent_main_labels = [l for l in parent.labels if l in main_label_set]
+        p_start = int(parent.start_index) if parent.start_index is not None else 0
+        p_end = int(parent.end_index) if parent.end_index is not None else len(df) - 1
+
+        status_text.markdown(
+            f"**Parent #{idx}** _({i + 1}/{total})_ — [{p_start}, {p_end}], "
+            f"running {backend_kind} pipeline…"
+        )
+        log(f"Parent #{idx}: running [{p_start}, {p_end}] "
+            f"main_labels={parent_main_labels or '∅'}")
+
+        try:
+            result = run_pipeline(
+                df=df,
+                start_index=p_start,
+                end_index=p_end,
+                session_id=session_id,
+                parent_main_labels=parent_main_labels,
+                existing_children=existing_for_agent,
+                config=config,
+            )
+        except Exception as e:
+            error_parents += 1
+            log(f"Parent #{idx}: ERROR — {e}")
+            log(traceback.format_exc().splitlines()[-1])
+            progress_bar.progress((i + 1) / total)
+            continue
+
+        try:
+            n_children, replaced = _persist_children_for_parent(
+                parent, result, session_id, selected_annotation_key,
+            )
+        except Exception as e:
+            error_parents += 1
+            log(f"Parent #{idx}: persistence ERROR — {e}")
+            progress_bar.progress((i + 1) / total)
+            continue
+
+        if n_children > 0:
+            success_parents += 1
+            total_children += n_children
+            if replaced:
+                log(f"Parent #{idx}: replaced {replaced} existing child(ren) with "
+                    f"{n_children} new sub-segment(s).")
+            else:
+                log(f"Parent #{idx}: saved {n_children} child sub-segment(s).")
+        else:
+            log(f"Parent #{idx}: pipeline produced no usable proposals "
+                f"(existing children left untouched).")
+
+        progress_bar.progress((i + 1) / total)
+
+    progress_bar.progress(1.0)
+    status_text.markdown(
+        f"**Done.** Parents updated: {success_parents}, "
+        f"new children: {total_children}, errors: {error_parents}."
+    )
+    log(f"Finished. {success_parents}/{total} parents updated, "
+        f"{total_children} children created, {error_parents} error(s).")
+
+    # Discovery is per-parent and doesn't leave staged-review state for the
+    # shared panel; clear any stale follow-up chat context from prior detailed
+    # runs so the next page render doesn't dangle.
+    st.session_state.pop("agent_annot_result", None)
+    st.session_state.pop("agent_annot_followup_ctx", None)
+    st.session_state.pop("agent_annot_followup_chat", None)
 
 
 def render_bulk_label_utils(selected_annotation_key):
