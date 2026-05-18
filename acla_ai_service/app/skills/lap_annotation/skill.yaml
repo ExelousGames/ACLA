@@ -1,0 +1,184 @@
+_skill:
+  name: lap_annotation
+  description: >
+    Per-label telemetry characteristics for the 8 candidate parent labels
+    (EA, MS, RM, PS, OV, MD + circuit) that the lap-to-segment excerpter
+    can attach to one circuit section. Each label declares its telemetry
+    signature (trajectory_offset, time_difference_to_expert slope, brake
+    overlap, etc.) and the global_rules block prescribes the per-section
+    detection procedure. Source of truth for "does this section qualify
+    as MS / RM / EA / ... at all?"
+  when_to_use:
+    - Lap excerpter assigning one parent label per circuit section.
+    - Building the system prompt for the lap-flow planner/synthesizer.
+    - Evaluator checks for parent-label justification against telemetry.
+  tags: [labels, lap_flow, parent_labels, telemetry, characteristics]
+
+# =============================================================================
+# Lap Annotation Skill — characteristic patterns for the 8 candidate parent
+# labels the lap-to-segment excerpter can attach to one circuit section.
+#
+# Annotation-flow split — read this before editing:
+#   - The main-label `characteristics` blocks here serve the **lap-to-
+#     segment flow** — "does this whole section qualify as MS at all?".
+#   - Sub-label discovery (drilling into an already-labelled MS section
+#     to pick MS1 / MS17 / ...) is the **detailed flow**'s job; its
+#     guidance lives in `sub_label_catalog.yaml` under each main-label
+#     entry's `annotation_guideline` field. Do NOT duplicate that here.
+#
+# Out of scope (handled outside this file):
+#   - circuit_section IDs (brands_hatch1, silverstone3, ...) — supplied by
+#     the splitter and verifiable via the `locate_circuit_section` tool +
+#     `sub_label_catalog.yaml`.
+#   - ST1–ST6 segment_type labels — descriptions live in the catalog;
+#     the agent picks one only when the shape is unambiguous (optional).
+#
+# Schema:
+#   labels.<id>
+#     name             — human-readable label
+#     applies_when     — eligibility precondition (e.g. circuit gating)
+#     characteristics  — telemetry signature that justifies attaching it
+#
+#   global_rules       — the per-section detection procedure: which graphs
+#                        to render, which queries to run, how to score the
+#                        characteristics against the rendered evidence.
+# =============================================================================
+
+labels:
+
+  brands_hatch:
+    name: "Brands Hatch"
+    applies_when: "lap recorded at Brands Hatch (Static_track resolves to brands_hatch)"
+    characteristics: >
+      Circuit parent label — mandatory on every section of a Brands Hatch
+      lap. No telemetry check needed beyond confirming the track ID.
+
+  silverstone:
+    name: "Silverstone"
+    applies_when: "lap recorded at Silverstone (Static_track resolves to silverstone)"
+    characteristics: >
+      Circuit parent label — mandatory on every section of a Silverstone
+      lap. No telemetry check needed beyond confirming the track ID.
+
+  EA:
+    name: "Expert Adherence"
+    characteristics: >
+      Player tracks the expert through the section.
+        - `trajectory_offset` stays within ±0.5 m of zero for the whole range.
+        - `time_difference_to_expert` slope is ≈ 0 (gap neither grows nor
+          shrinks) — confirm with `compute_slope`.
+        - Speed delta at sampled ilocs is small.
+      Mutually exclusive with MS and RM.
+
+  MS:
+    name: "Mistake"
+    characteristics: >
+      Player loses time or stability inside the section.
+        - `time_difference_to_expert` rises continuously (gap grows) — confirm
+          with `compute_slope` (positive) and `find_extremum` (max - min > 0).
+        - `trajectory_offset` exceeds the expert envelope: a spike outward
+          (ran wide) or inward (cut tight) that does NOT recover within the
+          section.
+      Mutually exclusive with EA and RM. The detailed-annotation flow refines
+      MS sub-ranges later — attach MS at the section level when the section
+      is dominated by the error.
+
+  RM:
+    name: "Recovery & Merge"
+    characteristics: >
+      Player recovering from a prior mistake inside this section.
+        - `time_difference_to_expert` slope is negative across the range
+          (gap shrinks, never grows) — confirm with `compute_slope`.
+        - `trajectory_offset` trends back toward zero from a non-zero start.
+      Often appears in the section immediately following an MS. Do NOT attach
+      when the player started at offset ≈ 0 — that's EA, not RM. Mutually
+      exclusive with EA and MS.
+
+  4:
+    name: "Pit Stop"
+    characteristics: >
+      Player entering, sitting in, or exiting the pit lane.
+        - Speed sustained near pit-limiter value for most of the section.
+        - `Graphics_normalized_car_position` falls inside the pit
+          `circuit_section`'s catalog range (brands_hatch17 ≈ [0.94, 1.0],
+          silverstone19 once measured).
+        - Trajectory offset is large and persistent (player off the
+          racing-line corridor).
+      Confirm with `locate_circuit_section` — the pit lane is its own catalog
+      section. Compatible with the circuit label only; do NOT combine with
+      EA / MS / RM / OV.
+
+  1:
+    name: "Overtaking"
+    characteristics: >
+      Player passes or is being passed inside the section.
+        - Late-brake signature on `brake` not present on the expert line.
+        - Line deviation that is NOT explained by MS / RM (player chose an
+          inside or outside line to pass).
+        - Speed differential vs. a nearby car when that data is available.
+      Rare without multi-car telemetry. Attach only when the signature is
+      unambiguous; otherwise leave OV off and let the detailed flow handle
+      sub-events.
+
+  2:
+    name: "Missing data"
+    characteristics: >
+      Section contains telemetry gaps, dropouts, or corrupted values.
+        - A signal that should be dynamic flatlines (e.g. speed = 0 mid-lap).
+        - Physically impossible values (negative speed, gear out of range).
+        - NaN runs inside the section.
+      Trigger: a `find_extremum` returns an impossible min/max, or a rendered
+      graph shows a flat plateau where motion should exist. Compatible with
+      every other label.
+
+# =============================================================================
+# Global rules — how to detect the characteristics above
+# =============================================================================
+
+global_rules: >
+  Per-section detection procedure:
+
+  1. **Anchor the circuit + section.** The circuit label comes from the lap
+     context (always attached). The splitter assigned a `circuit_section_id`;
+     call `locate_circuit_section(start, end)` once to confirm the rough
+     range still overlaps that section's `normalized_position_range`. Use
+     its `best_match` if you need to switch to a neighbouring section after
+     a `revise_segment_range` call.
+
+  2. **Render the two diagnostic graphs.** One `render_graph` each over the
+     section's iloc range:
+       - `trajectory_offset` — discriminates EA vs. MS vs. RM vs. PS.
+       - `time_difference_to_expert` — confirms gap direction (flat ⇒ EA,
+         rising ⇒ MS, falling ⇒ RM).
+     These two cover EA / MS / RM / PS detection. Add a third only when a
+     specific candidate (OV / MD) needs it.
+
+  3. **Score each candidate label against its `characteristics` block.**
+     Use `query_telemetry` for quantitative confirmation:
+       - `compute_slope` on `time_difference_to_expert` → sign and magnitude
+         of the gap trend.
+       - `find_extremum` on `trajectory_offset` → peak deviation from zero.
+       - `find_first_match` on `Physics_brake` / `Physics_gas` → onset ilocs
+         when OV needs late-brake evidence.
+     A section may attach at most ONE of {EA, MS, RM} (mutually exclusive)
+     plus optionally PS / OV / MD. Attaching none of {EA, MS, RM} is valid
+     when telemetry is too noisy to commit.
+
+  4. **Optionally pick one ST1–ST6** from the label catalog descriptions
+     when the trajectory shape is unambiguous. Use `compute_expert_phases`
+     to help: empty phases ⇒ straight (ST2), one arc ⇒ in/approach/exit
+     corner (ST1/ST3/ST4), multi-arc with no flat gap ⇒ ST6. Skip the ST
+     pick entirely when the shape is ambiguous.
+
+  5. **Submit** via `submit_lap_proposal` with
+     `label_ids = [circuit, circuit_section_id, ...optional ST, ...optional main labels]`
+     and a `reasoning` string citing the ilocs / slopes / offset peaks you
+     observed.
+
+  Hard rules:
+    - One proposal per agent run; the UI loops one section per click.
+    - Never invent label IDs — only IDs from the eligible list are accepted.
+    - EA + MS, EA + RM, MS + RM are all contradictions — pick at most one.
+    - PS is incompatible with EA / MS / RM / OV.
+    - Empty `label_ids` `[]` is the valid "drop this section" signal.
+    - Final iloc range must remain inside the lap and ≥ 3 ilocs.

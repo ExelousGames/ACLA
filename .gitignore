@@ -111,3 +111,19 @@ report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 /acla_ai_service/telemetry_data_cache
 /acla_ai_service/app/services/llm/agents/__pycache__
 /acla_ai_service/tests/__pycache__
+/acla_ai_service/app/services/llm/agent/__pycache__
+/acla_ai_service/app/services/llm/agent/backends/__pycache__
+/acla_ai_service/app/services/llm/agent/tools/__pycache__
+/acla_ai_service/app/services/llm/agent/sub_agents/__pycache__
+
+# Skill registry embedding cache (rebuilt on demand)
+/acla_ai_service/.cache/
+/acla_ai_service/app/services/llm/annotation/__pycache__
+/acla_ai_service/app/services/llm/annotation/flows/__pycache__
+/acla_ai_service/app/skills/__pycache__
+/acla_ai_service/app/skills/graph_analysis/__pycache__
+/acla_ai_service/app/skills/lap_annotation/__pycache__
+/acla_ai_service/app/skills/sub_label_catalog/__pycache__
+/acla_ai_service/app/services/llm/agent/runners/__pycache__
+/acla_ai_service/app/services/llm/annotation/agents/__pycache__
+/acla_ai_service/app/services/llm/annotation/tools/__pycache__

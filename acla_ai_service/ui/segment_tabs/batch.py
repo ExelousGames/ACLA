@@ -200,7 +200,7 @@ def _render_local_vlm_config():
     from the current widget values — deferring the import so the run path
     surfaces a clean error if the LangGraph deps are missing.
     """
-    from app.services.llm.annotation_agent_llm_service import QWEN25_VL_MODELS
+    from app.services.llm.agent.backends.local_vlm import QWEN25_VL_MODELS
 
     col_s1, col_s2 = st.columns(2)
     with col_s1:
@@ -277,7 +277,7 @@ def _render_local_vlm_config():
         )
 
     def build_config():
-        from app.services.llm.annotation_agent_pipeline import AnnotationPipelineConfig
+        from app.services.llm.annotation_pipeline import AnnotationPipelineConfig
         return AnnotationPipelineConfig(
             max_iterations=int(max_iterations),
             max_new_tokens=int(max_new_tokens),
@@ -295,7 +295,7 @@ def _render_local_vlm_config():
 
 def _render_claude_config():
     """Render Claude settings (mirrors detailed_agent_annotation_claude)."""
-    from app.services.llm.claude_agent_backend import CLAUDE_VLM_MODELS
+    from app.services.llm.agent.backends.claude_sdk import CLAUDE_VLM_MODELS
 
     max_iterations = st.number_input(
         "Tool-call budget (×10)",
@@ -321,7 +321,7 @@ def _render_claude_config():
     )
 
     def build_config():
-        from app.services.llm.annotation_agent_pipeline import AnnotationPipelineConfig
+        from app.services.llm.annotation_pipeline import AnnotationPipelineConfig
         return AnnotationPipelineConfig(
             max_iterations=int(max_iterations),
             backend="claude",
@@ -473,16 +473,9 @@ def render_batch_auto_annotation(df, selected_annotation_key):
     if not run_clicked:
         return
 
-    # Resolve pipeline entrypoint based on backend.
+    # Resolve pipeline entrypoint (one unified entry handles both backends).
     try:
-        if backend_kind == "claude":
-            from app.services.llm.claude_annotation_runner import (
-                run_claude_annotation as run_pipeline,
-            )
-        else:
-            from app.services.llm.annotation_agent_pipeline import (
-                run_annotation_pipeline as run_pipeline,
-            )
+        from app.services.llm.annotation_pipeline import run_annotation
     except ImportError as e:
         st.error(
             f"Missing dependency: {e}\n\n"
@@ -555,7 +548,8 @@ def render_batch_auto_annotation(df, selected_annotation_key):
             f"main_labels={parent_main_labels or '∅'}")
 
         try:
-            result = run_pipeline(
+            result = run_annotation(
+                flow="detailed",
                 df=df,
                 start_index=p_start,
                 end_index=p_end,

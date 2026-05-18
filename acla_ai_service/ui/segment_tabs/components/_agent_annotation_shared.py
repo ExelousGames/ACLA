@@ -298,19 +298,12 @@ def execute_pipeline_run(
     Caches the result under ``st.session_state['agent_annot_result']``
     so the shared staged-review panel below can pick it up.
     """
-    # Claude routes to its own agentic runner (one session, tools-based)
-    # instead of the LangGraph chain — see claude_annotation_runner.py for
-    # the rationale. Local VLM keeps using the chained pipeline.
+    # One unified entry dispatches on config.backend internally; the agent
+    # box picks the LangGraph runner for "local" and the agentic Claude
+    # runner for "claude" via run_agent.
     backend = getattr(config, "backend", "local")
     try:
-        if backend == "claude":
-            from app.services.llm.claude_annotation_runner import (
-                run_claude_annotation as run_pipeline,
-            )
-        else:
-            from app.services.llm.annotation_agent_pipeline import (
-                run_annotation_pipeline as run_pipeline,
-            )
+        from app.services.llm.annotation_pipeline import run_annotation
     except ImportError as e:
         st.error(
             f"Missing dependency: {e}\n\n"
@@ -333,7 +326,8 @@ def execute_pipeline_run(
     )
     try:
         with st.spinner(spinner_msg):
-            result = run_pipeline(
+            result = run_annotation(
+                flow="detailed",
                 df=df,
                 start_index=int(form_start),
                 end_index=int(form_end),
@@ -593,7 +587,7 @@ def render_followup_chat() -> None:
         st.markdown(user_question)
     chat.append({"role": "user", "content": user_question})
 
-    from app.services.llm.claude_annotation_runner import run_claude_followup
+    from app.services.llm.annotation_pipeline import run_claude_followup
 
     with st.chat_message("assistant"):
         text_placeholder = st.empty()

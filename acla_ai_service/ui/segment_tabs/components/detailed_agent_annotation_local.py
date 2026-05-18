@@ -54,7 +54,7 @@ def render_agent_annotation_local(
                 key="agent_annot_local_temp",
             )
 
-        from app.services.llm.annotation_agent_llm_service import (
+        from app.services.llm.agent.backends.local_vlm import (
             QWEN25_VL_MODELS,
         )
 
@@ -163,7 +163,7 @@ def render_agent_annotation_local(
             type="primary",
         ):
             try:
-                from app.services.llm.annotation_agent_pipeline import (
+                from app.services.llm.annotation_pipeline import (
                     AnnotationPipelineConfig,
                 )
             except ImportError as e:

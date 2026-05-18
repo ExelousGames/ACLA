@@ -47,7 +47,7 @@ def render_lap_agent_local(df, session_id, selected_annotation_key, circuit_id, 
                 value=0.3, step=0.1, key="lap_local_temp",
             )
 
-        from app.services.llm.annotation_agent_llm_service import (
+        from app.services.llm.agent.backends.local_vlm import (
             QWEN25_VL_MODELS,
         )
         model_options = list(QWEN25_VL_MODELS.keys())
@@ -123,9 +123,9 @@ def render_lap_agent_local(df, session_id, selected_annotation_key, circuit_id, 
             key="lap_local_run", type="primary",
         ):
             try:
-                from app.services.llm.annotation_agent_pipeline import (
+                from app.services.llm.annotation_pipeline import (
                     AnnotationPipelineConfig,
-                    run_lap_annotation_pipeline,
+                    run_annotation,
                 )
             except ImportError as e:
                 st.error(
@@ -147,16 +147,19 @@ def render_lap_agent_local(df, session_id, selected_annotation_key, circuit_id, 
                 quantization_type=quantization_type,
             )
 
+            def _run_lap(**kw):
+                return run_annotation(flow="lap", config=pipeline_cfg, **kw)
+
             lap_start, lap_end = st.session_state[KEY_LAP_RANGE]
             execute_lap_agent_run(
-                run_fn=run_lap_annotation_pipeline,
+                run_fn=_run_lap,
                 df=df,
                 lap_start=int(lap_start),
                 lap_end=int(lap_end),
                 head_segment=head,
                 circuit_id=st.session_state[KEY_LAP_CIRCUIT],
                 existing=existing,
-                extra_kwargs={"config": pipeline_cfg},
+                extra_kwargs={},
             )
 
 

@@ -9,10 +9,10 @@ from app.services.tire_grip_analysis_service import TireGripFeatureCatalog
 # Constants
 LABEL_MAPPING = {
     ################### Main Labels ###################
-    "1": "Overtaking",
-    "2": "Missing data",
+    "O": "Overtaking",
+    "MD": "Missing data",
     "EA": "Expert Adherence",
-    "4": "Pit Stop",
+    "PS": "Pit Stop",
     "RM": "Recovery & Merge",
     "MS" :"Mistake",
     ################### Detailed Expert Adherence Labels (for label EA) ###################
@@ -132,10 +132,10 @@ LABEL_MAPPING = {
 LABEL_NAME_TO_ID = {v: k for k, v in LABEL_MAPPING.items()}
 
 MAIN_LABEL_GUIDELINES = {
-    "1": "Overtaking: Analyze the driver's attempt to pass an opponent. Look for late braking, line deviation to find a gap, and speed differentials. Assess if the move was successful and safe.",
-    "2": "Missing Data: This segment contains gaps or corrupted telemetry. Identify if the sensor data drops to zero or becomes inconsistent unexpectedly.",
+    "O": "Overtaking: Analyze the driver's attempt to pass an opponent. Look for late braking, line deviation to find a gap, and speed differentials. Assess if the move was successful and safe.",
+    "MD": "Missing Data: This segment contains gaps or corrupted telemetry. Identify if the sensor data drops to zero or becomes inconsistent unexpectedly.",
     "EA": "Expert Adherence: The driver is following the optimal racing line and speed profile closely. nothing needs to be labeled right now.",
-    "4": "Pit Stop: The driver is entering, waiting in, or exiting the pit lane. Look for significant speed reduction and distinct trajectory deviation into the pit area.",
+    "PS": "Pit Stop: The driver is entering, waiting in, or exiting the pit lane. Look for significant speed reduction and distinct trajectory deviation into the pit area.",
     "RM": "Recovery & Merge: The driver is recovering from mistake such as slower speed. identify if driver is recovery from low speed, off-track, or merge back to expert line.",
     "MS": "Mistake Segment: The driver has committed a driving error resulting in time loss or instability. \n   - Step 1: Analyze the 'Time Difference to Expert' graph; a mistake normally causes this time gap to increase continuously without decreasing shortly after.\n   - Step 2: Examine the differences in 'throttle' and 'brake' between the player and the expert to find out why the player is slower.\n   - Step 3: Examine the 'push_limit' graph to find understeer or oversteer, which could lead to lower speed.\n   - Step 4: Check the 'Trajectory' map for mistakes caused by deviations from the optimal line.\n   - Step 5: Find the labels that describe the *root cause*.",
     "brands_hatch": "Circuit Feature (Brands Hatch):Look at the Trajectories Overlay and Identify specific named corners or straight sections of the Brands Hatch circuit. Also, identify the shape of the segment using labels ST1-6 ",
@@ -149,11 +149,11 @@ LABEL_IMAGE_MAP = {
 }
 
 LABEL_CATEGORIES = {
-    "Main Labels": ["1", "2","EA","4","RM","MS","brands_hatch","silverstone"],
-    "1":[],
-    "2":[],
+    "Main Labels": ["O", "MD","EA","PS","RM","MS","brands_hatch","silverstone"],
+    "O":[],
+    "MD":[],
     "EA":[],
-    "4":[],
+    "PS":[],
     "RM":["RM1", "RM2", "RM5","RM6","RM7","RM8","RM9","RM10","RM11"],
     "brands_hatch":["brands_hatch1","brands_hatch2","brands_hatch3","brands_hatch4","brands_hatch5","brands_hatch6","brands_hatch7","brands_hatch8","brands_hatch9","brands_hatch10","brands_hatch11","brands_hatch12","brands_hatch13","brands_hatch14","brands_hatch15","brands_hatch16","brands_hatch17","brands_hatch18","brands_hatch19"],
     "silverstone":["silverstone1","silverstone2","silverstone3","silverstone4","silverstone5","silverstone6","silverstone7","silverstone8","silverstone9","silverstone10","silverstone11","silverstone12","silverstone13","silverstone14","silverstone15","silverstone16","silverstone17","silverstone18","silverstone20","silverstone21","silverstone19"],

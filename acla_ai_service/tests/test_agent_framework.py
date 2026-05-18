@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.services.llm.agent_framework import (
+from app.services.llm.agent.framework import (
     AGENT_REGISTRY,
     AGENT_SPECS,
     Agent,
@@ -19,11 +19,11 @@ from app.services.llm.agent_framework import (
     renamespace,
     slice_pool_for,
 )
-from app.services.llm.agents.describe_graphs import (
+from app.services.llm.agent.sub_agents.describe_graphs import (
     MIN_ZOOM_SPAN,
     _parse_zoom_decision,
 )
-from app.services.llm.step_evaluator_agents import PipelineAttachment
+from app.services.llm.agent.evaluators import PipelineAttachment
 
 
 def _att(name: str, content: str = "x") -> PipelineAttachment:

@@ -50,7 +50,7 @@ def render_manual_annotation_manager(df, numeric_cols, session_id, selected_anno
         form_title = "Add New Annotation"
         default_start = 0
         default_end = min(100, len(df)-1)
-        default_labels = []
+        ann = None
         submit_label = "Add Annotation"
         is_edit = False
     else:
@@ -58,7 +58,6 @@ def render_manual_annotation_manager(df, numeric_cols, session_id, selected_anno
         ann = st.session_state.current_annotations[selected_option]
         default_start = ann.start_index
         default_end = ann.end_index
-        default_labels = [l for l in get_display_labels(ann.labels) if l in LABEL_MAPPING.values()]
         submit_label = "Update Annotation"
         is_edit = True
 
@@ -95,17 +94,51 @@ def render_manual_annotation_manager(df, numeric_cols, session_id, selected_anno
         on_click=copy_range_to_viz
     )
     
-    # Filter for Main Labels
+    # Two-step label selection: parent labels first, then sub-labels per parent.
     main_label_ids = LABEL_CATEGORIES.get("Main Labels", [])
-    main_label_options = [LABEL_MAPPING[lid] for lid in main_label_ids if lid in LABEL_MAPPING]
-    valid_defaults = [l for l in default_labels if l in main_label_options]
+    existing_label_ids = list(ann.labels) if is_edit else []
 
-    form_labels = st.multiselect(
-        "Labels", 
-        main_label_options, 
-        default=valid_defaults,
-        key=f"manual_form_labels_{selected_option}"
+    parent_options = [LABEL_MAPPING[lid] for lid in main_label_ids if lid in LABEL_MAPPING]
+    parent_defaults = [LABEL_MAPPING[lid] for lid in existing_label_ids
+                       if lid in main_label_ids and lid in LABEL_MAPPING]
+
+    selected_parent_names = st.multiselect(
+        "Parent Labels",
+        parent_options,
+        default=parent_defaults,
+        key=f"manual_form_parent_labels_{selected_option}"
     )
+
+    form_labels = list(selected_parent_names)
+    for parent_name in selected_parent_names:
+        parent_id = LABEL_NAME_TO_ID.get(parent_name)
+        sub_ids = LABEL_CATEGORIES.get(parent_id, []) if parent_id else []
+        if not sub_ids:
+            continue
+        sub_options = [LABEL_MAPPING[lid] for lid in sub_ids if lid in LABEL_MAPPING]
+        sub_defaults = [LABEL_MAPPING[lid] for lid in existing_label_ids
+                        if lid in sub_ids and lid in LABEL_MAPPING]
+        selected_sub_names = st.multiselect(
+            f"Sub-labels for {parent_name}",
+            sub_options,
+            default=sub_defaults,
+            key=f"manual_form_sub_labels_{parent_id}_{selected_option}"
+        )
+        form_labels.extend(selected_sub_names)
+
+    # Segment Type is always enabled (independent of parent selection)
+    segment_type_ids = LABEL_CATEGORIES.get("Segment Type", [])
+    if segment_type_ids:
+        segment_type_options = [LABEL_MAPPING[lid] for lid in segment_type_ids if lid in LABEL_MAPPING]
+        segment_type_defaults = [LABEL_MAPPING[lid] for lid in existing_label_ids
+                                 if lid in segment_type_ids and lid in LABEL_MAPPING]
+        selected_segment_type_names = st.multiselect(
+            "Segment Type",
+            segment_type_options,
+            default=segment_type_defaults,
+            key=f"manual_form_segment_type_{selected_option}"
+        )
+        form_labels.extend(selected_segment_type_names)
 
     # Feature Change Calculator
     render_feature_calculator(df, numeric_cols, form_start, form_end, selected_option)

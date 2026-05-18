@@ -42,7 +42,7 @@ def render_lap_agent_claude(df, session_id, selected_annotation_key, circuit_id,
             key="lap_claude_max_iter",
         )
 
-        from app.services.llm.claude_agent_backend import CLAUDE_VLM_MODELS
+        from app.services.llm.agent.backends.claude_sdk import CLAUDE_VLM_MODELS
         model_options = list(CLAUDE_VLM_MODELS.keys())
         claude_model = st.selectbox(
             "Claude model", options=model_options,
@@ -71,8 +71,9 @@ def render_lap_agent_claude(df, session_id, selected_annotation_key, circuit_id,
             key="lap_claude_run", type="primary",
         ):
             try:
-                from app.services.llm.claude_lap_annotation_runner import (
-                    run_claude_lap_annotation,
+                from app.services.llm.annotation_pipeline import (
+                    AnnotationPipelineConfig,
+                    run_annotation,
                 )
             except ImportError as e:
                 st.error(
@@ -81,20 +82,26 @@ def render_lap_agent_claude(df, session_id, selected_annotation_key, circuit_id,
                 )
                 return
 
+            config = AnnotationPipelineConfig(
+                backend="claude",
+                max_iterations=int(max_iterations),
+                claude_model=claude_model,
+                claude_use_thinking=bool(use_thinking),
+            )
+
+            def _run_lap(**kw):
+                return run_annotation(flow="lap", config=config, **kw)
+
             lap_start, lap_end = st.session_state[KEY_LAP_RANGE]
             execute_lap_agent_run(
-                run_fn=run_claude_lap_annotation,
+                run_fn=_run_lap,
                 df=df,
                 lap_start=int(lap_start),
                 lap_end=int(lap_end),
                 head_segment=head,
                 circuit_id=st.session_state[KEY_LAP_CIRCUIT],
                 existing=existing,
-                extra_kwargs={
-                    "claude_model": claude_model,
-                    "use_thinking": bool(use_thinking),
-                    "max_turns": int(max_iterations) * 10,
-                },
+                extra_kwargs={},
             )
 
 
