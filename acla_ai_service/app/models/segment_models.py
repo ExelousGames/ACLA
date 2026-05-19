@@ -3,8 +3,8 @@ from dataclasses import dataclass, field, asdict
 from typing import List, Dict, Any, Optional
 
 from app.models.telemetry_models import TelemetryFeatures
-from app.services.imitate_expert_learning_service import ExpertFeatureCatalog
-from app.services.tire_grip_analysis_service import TireGripFeatureCatalog
+from app.domain.expert_features import ExpertFeatureCatalog
+from app.domain.tire_grip_features import TireGripFeatureCatalog
 
 # Constants
 LABEL_MAPPING = {
