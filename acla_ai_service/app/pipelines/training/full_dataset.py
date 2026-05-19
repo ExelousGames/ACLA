@@ -98,10 +98,12 @@ class Full_dataset_TelemetryMLService:
         if models_directory:
             self.models_directory = Path(models_directory).resolve()
         else:
-            # Default to project_root/models
-            # This file is in app/services/full_dataset_ml_service.py
-            # Project root is ../../..
-            self.models_directory = Path(__file__).resolve().parents[2] / "models"
+            # Default to project_root/models.
+            # __file__ = app/pipelines/training/full_dataset.py → parents[3]
+            # is the project root. (Was parents[2] when this lived at
+            # app/services/full_dataset_ml_service.py — fixed in
+            # refactor/hexagonal-v2 Step 12 cleanup.)
+            self.models_directory = Path(__file__).resolve().parents[3] / "models"
 
         self.models_directory.mkdir(exist_ok=True)
         self.logger = logger or logging.getLogger(f"{__name__}.{self.__class__.__name__}")
