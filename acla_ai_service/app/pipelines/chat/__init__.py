@@ -8,7 +8,7 @@ import json
 import asyncio
 import logging
 from openai import AsyncOpenAI
-from app.services.full_dataset_ml_service import Full_dataset_TelemetryMLService
+from app.pipelines.training.full_dataset import Full_dataset_TelemetryMLService
 from app.core import settings
 from app.integrations.backend.client import BackendService
 from app.voice import get_kokoro_service

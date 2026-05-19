@@ -932,10 +932,10 @@ def render_classifier_auto_annotation(df, selected_annotation_key):
     st.warning("⚠️ Warning: Any existing segments within the selected range will be removed and replaced by the newly identified segments.")
 
     try:
-        from app.services.segment_classifier_service import segment_classifier
+        from app.ml.segment_classifier.service import segment_classifier
     except ImportError:
         try:
-            from acla_ai_service.app.services.segment_classifier_service import segment_classifier
+            from app.ml.segment_classifier.service import segment_classifier
         except ImportError:
             segment_classifier = None
 

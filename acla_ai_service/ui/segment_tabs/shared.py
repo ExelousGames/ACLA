@@ -41,7 +41,7 @@ try:
     importlib.reload(app.domain.segment)
     from app.domain.labels import LABEL_MAPPING, LABEL_NAME_TO_ID, LABEL_CATEGORIES, MAIN_LABEL_GUIDELINES, LABEL_IMAGE_MAP
     from app.domain.segment import AnnotatedSegment, SegmentFeatureCatalog
-    from app.services.segment_updater import SegmentUpdater
+    from app.pipelines.inference.segment_updater import SegmentUpdater
 
 except ImportError:
     # Fallback or error handling if needed, though mostly we expect this to work if running from root or with pythonpath setup

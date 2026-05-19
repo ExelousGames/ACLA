@@ -237,7 +237,7 @@ def render_manual_annotation_manager(df, numeric_cols, session_id, selected_anno
                     st.error("Start index must be less than end index.")
                 else:
                     with st.spinner("Running classifier..."):
-                        from app.services.segment_classifier_service import segment_classifier
+                        from app.ml.segment_classifier.service import segment_classifier
                         try:
                             # Slice the dataframe
                             scan_df = df.iloc[int(form_start):int(form_end)]
