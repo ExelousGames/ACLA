@@ -2,7 +2,7 @@
 Services module initialization
 """
 
-from .ai_service import AIService
+from app.pipelines.chat import AIService
 from app.integrations.backend.client import BackendService
 from .tire_grip_analysis_service import TireGripAnalysisService, tire_grip_analysis_service
 from .segment_classifier_service import SegmentClassifierService, segment_classifier

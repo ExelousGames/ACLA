@@ -277,7 +277,7 @@ def _render_local_vlm_config():
         )
 
     def build_config():
-        from app.services.llm.annotation_pipeline import AnnotationPipelineConfig
+        from app.pipelines.annotation import AnnotationPipelineConfig
         return AnnotationPipelineConfig(
             max_iterations=int(max_iterations),
             max_new_tokens=int(max_new_tokens),
@@ -321,7 +321,7 @@ def _render_claude_config():
     )
 
     def build_config():
-        from app.services.llm.annotation_pipeline import AnnotationPipelineConfig
+        from app.pipelines.annotation import AnnotationPipelineConfig
         return AnnotationPipelineConfig(
             max_iterations=int(max_iterations),
             backend="claude",
@@ -475,7 +475,7 @@ def render_batch_auto_annotation(df, selected_annotation_key):
 
     # Resolve pipeline entrypoint (one unified entry handles both backends).
     try:
-        from app.services.llm.annotation_pipeline import run_annotation
+        from app.pipelines.annotation import run_annotation
     except ImportError as e:
         st.error(
             f"Missing dependency: {e}\n\n"
@@ -721,7 +721,7 @@ def render_batch_lap_agent_claude(df, session_id, selected_annotation_key):
         return
 
     try:
-        from app.services.llm.annotation_pipeline import (
+        from app.pipelines.annotation import (
             AnnotationPipelineConfig, run_annotation,
         )
     except ImportError as e:

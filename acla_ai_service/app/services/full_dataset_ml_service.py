@@ -67,7 +67,7 @@ from app.config.pipeline_config import PipelineConfig
 
 # Prompt dataset builder and local LLM integration
 from app.llm.local_llm import LocalTelemetryLLM, LocalLLMConfig, GenerationRequest
-from .llm.telemetry_llm_orchestrator import TelemetryLLMOrchestrator
+from app.pipelines.chat.orchestrator import TelemetryLLMOrchestrator
 
 # Suppress sklearn warnings
 warnings.filterwarnings('ignore', category=UserWarning)
@@ -193,7 +193,7 @@ class Full_dataset_TelemetryMLService:
         try:
             import pandas as pd
             from .segment_classifier_service import segment_classifier
-            from .llm.classifier_prompt_generation import generate_llm_prompt_from_labels
+            from app.ml.prompts import generate_llm_prompt_from_labels
             
             driver_request = (user_request or "").strip()
 

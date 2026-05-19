@@ -105,7 +105,7 @@ def render_agent_annotation_claude(
             type="primary",
         ):
             try:
-                from app.services.llm.annotation_pipeline import (
+                from app.pipelines.annotation import (
                     AnnotationPipelineConfig,
                 )
             except ImportError as e:

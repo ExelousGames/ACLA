@@ -28,7 +28,7 @@ from app.agents import (
     BackendConfig,
 )
 from app.agents.contracts import AgentCallbacks, NoopCallbacks
-from app.services.llm.annotation.results import (
+from app.pipelines.annotation.results import (
     AnnotationResult,
     parse_json_response,
 )

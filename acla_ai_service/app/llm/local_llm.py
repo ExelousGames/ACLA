@@ -51,9 +51,11 @@ except ImportError as exc:  # pragma: no cover - guarding runtime deps
 
 LOGGER = logging.getLogger(__name__)
 
-# Determine persistent model cache directory
-# app/services/llm/local_llm_service.py -> ../../../models/huggingface_cache
-_SERVICE_ROOT = Path(__file__).resolve().parents[3]
+# Determine persistent model cache directory.
+# __file__ = app/llm/local_llm.py → parents[2] is the project root (was
+# parents[3] when the file lived at app/services/llm/local_llm_service.py,
+# fixed in refactor/hexagonal-v2 Step 10).
+_SERVICE_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_HF_CACHE = str(_SERVICE_ROOT / "models" / "huggingface_cache")
 
 
