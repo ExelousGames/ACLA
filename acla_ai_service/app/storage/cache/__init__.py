@@ -294,7 +294,7 @@ class ModelCacheService:
             return cached[0], cached[1]
 
         try:
-            from .backend_service import backend_service
+            from app.integrations.backend.client import backend_service
             model_data = await backend_service.getCompleteActiveModelData(modelType=model_type)
             if model_data and hasattr(model_data, 'modelData'):
                 deserializer_func(model_data.modelData)

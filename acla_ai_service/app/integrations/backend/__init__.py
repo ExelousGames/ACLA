@@ -1,1 +1,4 @@
-"""Scaffolded for the hexagonal refactor (refactor/hexagonal-v1, Step 1). Empty on purpose; real code lands in later steps."""
+"""Backend integration package — HTTP adapter to acla_backend (Node)."""
+from app.integrations.backend.client import BackendService, backend_service
+
+__all__ = ["BackendService", "backend_service"]

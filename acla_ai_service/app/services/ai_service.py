@@ -10,7 +10,7 @@ import logging
 from openai import AsyncOpenAI
 from app.services.full_dataset_ml_service import Full_dataset_TelemetryMLService
 from app.core import settings
-from app.services.backend_service import BackendService
+from app.integrations.backend.client import BackendService
 from app.services.voice import get_kokoro_service
 from app.services.voice.sentence_streamer import SentenceStreamer
 from app.services.voice.stream_events import (

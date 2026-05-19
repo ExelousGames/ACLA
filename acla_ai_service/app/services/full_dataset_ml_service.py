@@ -56,7 +56,7 @@ from app.domain.telemetry import (
 from .transformer_model import prepare_and_train_coach_transformer_model
 
 # Import backend service
-from .backend_service import backend_service
+from app.integrations.backend.client import backend_service
 
 # Import model cache service
 from app.storage.cache import model_cache_service

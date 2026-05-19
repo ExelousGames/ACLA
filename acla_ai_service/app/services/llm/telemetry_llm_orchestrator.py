@@ -16,7 +16,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 import traceback
 
 from app.integrations.backend.schemas import ActiveModelData
-from ..backend_service import backend_service
+from app.integrations.backend.client import backend_service
 from .local_llm_service import LocalLLMConfig, LocalTelemetryLLM
 from app.storage.cache import model_cache_service
 from app.storage.zarr import get_shared_zarr_store
