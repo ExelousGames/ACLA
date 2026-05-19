@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.services.llm.agent.evaluators import register_structured_formatter
+from app.agents.evaluators import register_structured_formatter
 
 
 def _format_parent_segment(content: Any) -> str:

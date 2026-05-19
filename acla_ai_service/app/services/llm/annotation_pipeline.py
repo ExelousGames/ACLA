@@ -38,8 +38,8 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, Union
 
-from app.services.llm.agent import AgentRequest, AgentResponse, run_agent
-from app.services.llm.agent.contracts import (
+from app.agents import AgentRequest, AgentResponse, run_agent
+from app.agents.contracts import (
     AgentCallbacks,
     BackendConfig,
     NoopCallbacks,

@@ -32,17 +32,17 @@ import logging
 import re
 from typing import Any, Callable, Dict, List, Optional
 
-from app.services.llm.agent.backends.local_vlm import (
+from app.agents.backends.local_vlm import (
     LocalVLMConfig,
     get_or_start_service,
 )
-from app.services.llm.agent.contracts import (
+from app.agents.contracts import (
     AgentRequest,
     AgentResponse,
     Attachment,
     StepEvent,
 )
-from app.services.llm.agent.evaluators import (
+from app.agents.evaluators import (
     AttachmentPool,
     EvalPipelineResult,
     PipelineAttachment,
@@ -55,13 +55,13 @@ from app.services.llm.agent.evaluators import (
     set_step_event_callback,
     set_vlm_chat_with_tools,
 )
-from app.services.llm.agent.framework import (
+from app.agents.framework import (
     AGENT_REGISTRY,
     AgentState,
 )
 
 # Side-effect import: registers describe_graphs and zoom with the framework.
-import app.services.llm.agent.sub_agents  # noqa: F401
+import app.agents.sub_agents  # noqa: F401
 
 LOGGER = logging.getLogger(__name__)
 
@@ -98,7 +98,7 @@ def _parse_planner_steps(plan_text: str) -> List[Dict[str, Any]]:
             "Could not parse planner steps; falling back to a trivial "
             "single describe_graphs step over all available graphs.",
         )
-        from app.services.llm.agent.tools import AGENT_GRAPH_DEFINITIONS
+        from app.agents.tools import AGENT_GRAPH_DEFINITIONS
         return [{
             "step_id": 1,
             "agent": "describe_graphs",
@@ -319,7 +319,7 @@ def _wire_local_vlm(
     cb = request.callbacks
 
     def vlm_generate(prompt: str, images: Optional[List[bytes]] = None) -> str:
-        from app.services.llm.agent.evaluators import get_active_stage
+        from app.agents.evaluators import get_active_stage
         if cb.vlm_prompt:
             cb.vlm_prompt(prompt, get_active_stage())
         return vlm_service.generate(
@@ -332,7 +332,7 @@ def _wire_local_vlm(
         )
 
     def llm_generate(prompt: str) -> str:
-        from app.services.llm.agent.evaluators import get_active_stage
+        from app.agents.evaluators import get_active_stage
         if cb.vlm_prompt:
             cb.vlm_prompt(prompt, get_active_stage())
         return vlm_service.generate(
@@ -350,7 +350,7 @@ def _wire_local_vlm(
         tool_handler: Callable[[str, Dict[str, Any]], str],
         images: Optional[List[bytes]] = None,
     ) -> str:
-        from app.services.llm.agent.evaluators import get_active_stage
+        from app.agents.evaluators import get_active_stage
         if cb.vlm_prompt:
             cb.vlm_prompt(prompt, get_active_stage())
         return vlm_service.chat_with_tools(

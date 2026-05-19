@@ -43,7 +43,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
-from app.services.llm.agent.contracts import (
+from app.agents.contracts import (
     AgentRequest,
     AgentResponse,
     Attachment,
@@ -220,7 +220,7 @@ class _ToolSurface:
             cb.step_event(msg, stage)
 
     def list_graphs(self) -> str:
-        from app.services.llm.agent.tools import AGENT_GRAPH_DEFINITIONS
+        from app.agents.tools import AGENT_GRAPH_DEFINITIONS
         out = [
             {"id": g["id"], "title": g["title"], "description": g["description"]}
             for g in AGENT_GRAPH_DEFINITIONS
@@ -228,7 +228,7 @@ class _ToolSurface:
         return json.dumps({"graphs": out}, indent=2)
 
     def get_circuit_id(self) -> str:
-        from app.services.llm.agent.tools import get_circuit_id
+        from app.agents.tools import get_circuit_id
         att = get_circuit_id(self.df)
         return json.dumps(att.content, default=str)
 
@@ -238,7 +238,7 @@ class _ToolSurface:
         return text or "(no guidance available for the requested graph(s))"
 
     def render_graph(self, graph_id: str, start: int, end: int) -> Dict[str, Any]:
-        from app.services.llm.agent.tools import build_graph, render_graph_builds
+        from app.agents.tools import build_graph, render_graph_builds
         s, e = self._clamp_to_window(start, end)
         table = build_graph(graph_id, self.df)
         if table is None or table.empty:
@@ -281,7 +281,7 @@ class _ToolSurface:
         Does NOT change the working range; cannot be used by
         ``submit_result`` to justify a label outside the section.
         """
-        from app.services.llm.agent.tools import build_graph, render_graph_builds
+        from app.agents.tools import build_graph, render_graph_builds
         s, e = self._clamp_to_lap(start, end)
         table = build_graph(graph_id, self.df)
         if table is None or table.empty:
@@ -321,7 +321,7 @@ class _ToolSurface:
         }
 
     def query_telemetry(self, query_id: str, params_json: str) -> str:
-        from app.services.llm.agent.tools import run_pipeline_query
+        from app.agents.tools import run_pipeline_query
         try:
             params = json.loads(params_json) if params_json else {}
         except json.JSONDecodeError as exc:
@@ -335,13 +335,13 @@ class _ToolSurface:
         return json.dumps(out, default=str)
 
     def compute_expert_phases(self, start: int, end: int) -> str:
-        from app.services.llm.agent.tools import compute_expert_phases
+        from app.agents.tools import compute_expert_phases
         s, e = self._clamp_to_window(start, end)
         att = compute_expert_phases(self.df, s, e)
         return json.dumps({"phases_range": [s, e], "data": att.content}, default=str)
 
     def locate_circuit_section(self, start: int, end: int) -> str:
-        from app.services.llm.agent.tools import locate_circuit_section
+        from app.agents.tools import locate_circuit_section
         s, e = self._clamp_to_window(start, end)
         att = locate_circuit_section(self.df, s, e)
         return json.dumps({"range": [s, e], "data": att.content}, default=str)

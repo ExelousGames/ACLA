@@ -21,13 +21,13 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from app.domain.labels import LABEL_MAPPING
 from app.skills.label_catalog import find_labels, get_label
-from app.services.llm.agent import (
+from app.agents import (
     AgentRequest,
     AgentResponse,
     Attachment,
     BackendConfig,
 )
-from app.services.llm.agent.contracts import AgentCallbacks, NoopCallbacks
+from app.agents.contracts import AgentCallbacks, NoopCallbacks
 from app.services.llm.annotation.results import (
     AnnotationResult,
     parse_json_response,
@@ -75,7 +75,7 @@ def _local_planner_prompt(
     existing_children: List[dict],
 ) -> str:
     """Planner prompt the local runner sends to the planner VLM."""
-    from app.services.llm.agent.tools import (
+    from app.agents.tools import (
         AGENT_GRAPH_DEFINITIONS,
         PIPELINE_TOOL_DEFINITIONS,
     )

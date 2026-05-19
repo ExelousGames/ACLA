@@ -42,7 +42,7 @@ def render_lap_agent_claude(df, session_id, selected_annotation_key, circuit_id,
             key="lap_claude_max_iter",
         )
 
-        from app.services.llm.agent.backends.claude_sdk import CLAUDE_VLM_MODELS
+        from app.agents.backends.claude_sdk import CLAUDE_VLM_MODELS
         model_options = list(CLAUDE_VLM_MODELS.keys())
         claude_model = st.selectbox(
             "Claude model", options=model_options,

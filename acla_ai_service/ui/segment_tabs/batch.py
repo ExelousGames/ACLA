@@ -200,7 +200,7 @@ def _render_local_vlm_config():
     from the current widget values — deferring the import so the run path
     surfaces a clean error if the LangGraph deps are missing.
     """
-    from app.services.llm.agent.backends.local_vlm import QWEN25_VL_MODELS
+    from app.agents.backends.local_vlm import QWEN25_VL_MODELS
 
     col_s1, col_s2 = st.columns(2)
     with col_s1:
@@ -295,7 +295,7 @@ def _render_local_vlm_config():
 
 def _render_claude_config():
     """Render Claude settings (mirrors detailed_agent_annotation_claude)."""
-    from app.services.llm.agent.backends.claude_sdk import CLAUDE_VLM_MODELS
+    from app.agents.backends.claude_sdk import CLAUDE_VLM_MODELS
 
     max_iterations = st.number_input(
         "Tool-call budget (×10)",
@@ -660,7 +660,7 @@ def render_batch_lap_agent_claude(df, session_id, selected_annotation_key):
         help="Caps the agent loop at this many tool calls × 10 per section.",
         key="batch_lap_claude_max_iter",
     )
-    from app.services.llm.agent.backends.claude_sdk import CLAUDE_VLM_MODELS
+    from app.agents.backends.claude_sdk import CLAUDE_VLM_MODELS
     claude_model = st.selectbox(
         "Claude model", options=list(CLAUDE_VLM_MODELS.keys()),
         format_func=lambda x: CLAUDE_VLM_MODELS[x]["label"],

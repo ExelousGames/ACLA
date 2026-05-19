@@ -17,8 +17,8 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
-from app.services.llm.agent.framework import Agent, AgentState, delegate_step
-from app.services.llm.agent.runners.local import (
+from app.agents.framework import Agent, AgentState, delegate_step
+from app.agents.runners.local import (
     default_planner_node,
     default_synth_node,
     default_eval_node,

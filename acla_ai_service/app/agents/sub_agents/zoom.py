@@ -28,8 +28,8 @@ import logging
 import re
 from typing import Any, Dict, List, Optional
 
-from app.services.llm.agent.framework import Agent, AgentState
-from app.services.llm.agent.evaluators import (
+from app.agents.framework import Agent, AgentState
+from app.agents.evaluators import (
     PipelineAttachment,
     _eval_llm_holder,
     emit_step_event,
@@ -166,7 +166,7 @@ def _unresolved_step(
 
 
 def _planner(state: AgentState) -> Dict[str, Any]:
-    from app.services.llm.agent.tools import (
+    from app.agents.tools import (
         render_graph_builds,
         render_query_catalog_for_prompt,
     )
@@ -422,7 +422,7 @@ def _planner(state: AgentState) -> Dict[str, Any]:
 
 
 def _executor(state: AgentState, step: Dict[str, Any], registry) -> Dict[str, Any]:
-    from app.services.llm.agent.tools import run_pipeline_query
+    from app.agents.tools import run_pipeline_query
 
     all_builds: Dict[str, Any] = state.get("graph_builds") or {}
     step_id = step.get("step_id", 1)

@@ -35,9 +35,9 @@ import logging
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
-from app.services.llm.agent.framework import Agent, AgentState, delegate_step
+from app.agents.framework import Agent, AgentState, delegate_step
 from app.skills.prompts import graph_analysis_prompt
-from app.services.llm.agent.evaluators import (
+from app.agents.evaluators import (
     AttachmentPool,
     EvalPipelineResult,
     PipelineAttachment,
@@ -89,7 +89,7 @@ _VLM_PIPELINE_TOOL_IDS = ("compute_expert_phases", "locate_circuit_section")
 
 def _build_pipeline_tool_schemas(parent_start: int, parent_end: int) -> List[Dict[str, Any]]:
     """OpenAI tool schemas for the pipeline-tool subset describe_graphs exposes."""
-    from app.services.llm.agent.tools import get_pipeline_tool
+    from app.agents.tools import get_pipeline_tool
 
     schemas: List[Dict[str, Any]] = []
     for tid in _VLM_PIPELINE_TOOL_IDS:
@@ -133,7 +133,7 @@ def _make_pipeline_tool_handler(
     pipeline_tool_attachments: Dict[str, PipelineAttachment],
 ) -> Any:
     """Build a tool handler closure that runs the pipeline callable + captures the attachment."""
-    from app.services.llm.agent.tools import get_pipeline_tool
+    from app.agents.tools import get_pipeline_tool
 
     def _handler(name: str, args: Dict[str, Any]) -> str:
         import json as _json
@@ -244,7 +244,7 @@ def _parse_zoom_decision(
 
 
 def _planner(state: AgentState) -> Dict[str, Any]:
-    from app.services.llm.agent.tools import (
+    from app.agents.tools import (
         build_graph,
         render_graph_builds,
     )

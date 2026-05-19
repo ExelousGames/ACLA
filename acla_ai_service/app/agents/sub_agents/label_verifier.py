@@ -22,8 +22,8 @@ from typing import Any, Dict, List, Tuple
 from app.domain.labels import LABEL_MAPPING
 from app.skills import embed
 from app.skills.label_catalog import find_labels, get_label
-from app.services.llm.agent.framework import Agent, AgentState
-from app.services.llm.agent.evaluators import (
+from app.agents.framework import Agent, AgentState
+from app.agents.evaluators import (
     AttachmentPool,
     PipelineAttachment,
 )

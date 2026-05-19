@@ -20,13 +20,13 @@ import json as _json
 from app.domain.labels import LABEL_MAPPING
 from app.skills.label_catalog import find_labels, get_label
 from app.skills.prompts import lap_annotation_prompt
-from app.services.llm.agent import (
+from app.agents import (
     AgentRequest,
     AgentResponse,
     Attachment,
     BackendConfig,
 )
-from app.services.llm.agent.contracts import AgentCallbacks, NoopCallbacks
+from app.agents.contracts import AgentCallbacks, NoopCallbacks
 from app.services.llm.annotation.results import (
     LapAnnotationResult,
     parse_json_response,
@@ -126,7 +126,7 @@ def _local_planner_prompt(
     circuit_id: str,
     existing_section_annotations: List[dict],
 ) -> str:
-    from app.services.llm.agent.tools import (
+    from app.agents.tools import (
         AGENT_GRAPH_DEFINITIONS,
         PIPELINE_TOOL_DEFINITIONS,
     )

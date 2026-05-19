@@ -63,7 +63,7 @@ def track_name_to_circuit_id(track_name: Optional[str]) -> Optional[str]:
 
 def run_split(df, start: int, end: int, circuit_id: Optional[str]) -> List[Dict[str, Any]]:
     """Run the deterministic splitter and return the segments list."""
-    from app.services.llm.agent.tools import split_lap_by_circuit_sections
+    from app.agents.tools import split_lap_by_circuit_sections
     att = split_lap_by_circuit_sections(df, int(start), int(end), circuit_id=circuit_id)
     content = att.content or {}
     return list(content.get("segments") or [])
