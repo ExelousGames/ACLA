@@ -1,28 +1,30 @@
-"""Annotation pipeline HTTP endpoint.
+"""Annotation pipeline HTTP endpoints.
 
-`POST /annotation/run` is the inbound boundary for kicking off an
-annotation run from outside the service. It replaces the in-process
-`from app.pipelines.annotation import run_annotation` import that the
-Streamlit researcher UI uses today — Step 13 of the hexagonal refactor.
+Two routes:
 
-The endpoint loads the requested DataFrame from the AI service's own
-Zarr telemetry store (the same store the UI uses today), so callers
-only need to send a `(cache_key, session_id)` reference rather than
-serialising several MB of telemetry per request.
+  - ``POST /annotation/run``         (blocking) — added in Step 13
+  - ``POST /annotation/run/stream``  (SSE)      — added in PR #5
 
-Streaming progress callbacks (the `progress_callback`, `vlm_stream_callback`,
-etc. the UI relies on for live VLM token rendering) are NOT yet exposed
-here; they require Server-Sent Events. A follow-up endpoint at
-`/annotation/run/stream` will add that surface.
+Both replace the in-process ``from app.pipelines.annotation import
+run_annotation`` import that the Streamlit researcher UI uses today.
+The streaming variant surfaces the agent's progress / VLM-token /
+step-event callbacks live so callers can render incremental output.
+
+Telemetry is referenced by ``(cache_key, session_id)`` — the AI service
+loads from its own Zarr store so requests stay small.
 """
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
+import threading
 from dataclasses import asdict, is_dataclass
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, AsyncIterator, Dict, List, Literal, Optional
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.pipelines.annotation import (
@@ -193,6 +195,164 @@ async def annotation_run(req: _AnnotationRunRequest) -> Dict[str, Any]:
         "backend": config.backend,
         "result": _result_to_dict(result),
     }
+
+
+# ─── Streaming variant ───────────────────────────────────────────────────────
+#
+# `run_annotation` is synchronous (the agent loop blocks). Its progress
+# callbacks (`progress_callback`, `vlm_stream_callback`, `vlm_prompt_callback`,
+# `vlm_reasoning_callback`, `step_event_callback`) fire from inside that
+# blocking call.
+#
+# To turn those into SSE events:
+#   1. Spawn a worker thread that calls `run_annotation` with the callbacks.
+#   2. Each callback pushes a formatted SSE string into an asyncio.Queue,
+#      crossing the thread→loop boundary via `loop.call_soon_threadsafe`.
+#   3. The route's async generator drains the queue and yields each event
+#      back to FastAPI's StreamingResponse.
+#   4. A None sentinel pushed in the worker's `finally` closes the stream.
+#
+# Callers wanting cancellation should drop the HTTP connection; the worker
+# thread can't be force-stopped, but its events become orphans and the
+# server-side garbage collector eventually frees them. For short-lived
+# annotation runs (seconds to a few minutes) that's an acceptable trade.
+
+
+def _sse(event_type: str, **payload: Any) -> str:
+    """Format one SSE frame. Matches the shape used by /naturallanguagequery/stream."""
+    body = {"type": event_type, **payload}
+    return f"data: {json.dumps(body, ensure_ascii=False, default=str)}\n\n"
+
+
+@router.post(
+    "/run/stream",
+    responses={
+        200: {
+            "content": {"text/event-stream": {}},
+            "description": (
+                "Server-Sent Events stream. Event types: progress, vlm_prompt, "
+                "vlm_stream, vlm_reasoning, step_event, done, error."
+            ),
+        }
+    },
+)
+async def annotation_run_stream(req: _AnnotationRunRequest) -> StreamingResponse:
+    """Streaming variant of `/annotation/run`.
+
+    Emits the same final result as the blocking endpoint, plus live events
+    as the agent executes. Useful for the Streamlit UI's live VLM-token
+    display (was driven by in-process callbacks pre-refactor).
+
+    Event payloads:
+      progress     {"node": str, "detail": str}
+      vlm_prompt   {"prompt": str, "stage": dict}
+      vlm_stream   {"chunk": str}            ← user-visible VLM tokens
+      vlm_reasoning{"chunk": str}            ← thinking blocks (claude only)
+      step_event   {"summary": str, "stage": dict}
+      done         {"flow": "detailed"|"lap", "backend": str, "result": dict}
+      error        {"message": str, "error_type": str}
+    """
+    df = _load_dataframe(req.cache_key, req.session_id)
+
+    config_body = req.config or _ConfigBody()
+    config = AnnotationPipelineConfig(
+        backend=config_body.backend,
+        max_new_tokens=config_body.max_new_tokens,
+        temperature=config_body.temperature,
+        gguf_path=config_body.gguf_path,
+        mmproj_path=config_body.mmproj_path,
+        context_size=config_body.context_size,
+        n_gpu_layers=config_body.n_gpu_layers,
+        hf_repo=config_body.hf_repo,
+        quantization_type=config_body.quantization_type,
+        claude_model=config_body.claude_model,
+        claude_use_thinking=config_body.claude_use_thinking,
+    )
+
+    queue: asyncio.Queue[Optional[str]] = asyncio.Queue()
+    loop = asyncio.get_running_loop()
+
+    def push(frame: Optional[str]) -> None:
+        """Thread-safe enqueue. The None sentinel closes the stream."""
+        loop.call_soon_threadsafe(queue.put_nowait, frame)
+
+    def on_progress(node: str, detail: str) -> None:
+        push(_sse("progress", node=node, detail=detail))
+
+    def on_vlm_prompt(prompt: str, stage: Dict[str, Any]) -> None:
+        push(_sse("vlm_prompt", prompt=prompt, stage=stage))
+
+    def on_vlm_stream(chunk: str) -> None:
+        push(_sse("vlm_stream", chunk=chunk))
+
+    def on_vlm_reasoning(chunk: str) -> None:
+        push(_sse("vlm_reasoning", chunk=chunk))
+
+    def on_step_event(summary: str, stage: Dict[str, Any]) -> None:
+        push(_sse("step_event", summary=summary, stage=stage))
+
+    def runner() -> None:
+        try:
+            result = run_annotation(
+                flow=req.flow,
+                df=df,
+                config=config,
+                session_id=req.session_label,
+                progress_callback=on_progress,
+                vlm_prompt_callback=on_vlm_prompt,
+                vlm_stream_callback=on_vlm_stream,
+                vlm_reasoning_callback=on_vlm_reasoning,
+                step_event_callback=on_step_event,
+                start_index=req.start_index,
+                end_index=req.end_index,
+                parent_main_labels=req.parent_main_labels,
+                existing_children=req.existing_children,
+                lap_start=req.lap_start,
+                lap_end=req.lap_end,
+                section_id=req.section_id,
+                section_start=req.section_start,
+                section_end=req.section_end,
+                circuit_id=req.circuit_id,
+                existing_section_annotations=req.existing_section_annotations,
+            )
+            push(_sse(
+                "done",
+                flow=req.flow,
+                backend=config.backend,
+                result=_result_to_dict(result),
+            ))
+        except ValueError as exc:
+            # run_annotation's own arg-validation errors
+            push(_sse("error", message=str(exc), error_type="ValueError"))
+        except Exception as exc:
+            LOGGER.exception("Streaming annotation run failed (flow=%s)", req.flow)
+            push(_sse(
+                "error",
+                message=f"{type(exc).__name__}: {exc}",
+                error_type=type(exc).__name__,
+            ))
+        finally:
+            push(None)
+
+    threading.Thread(target=runner, daemon=True, name=f"annotation-{req.flow}").start()
+
+    async def event_source() -> AsyncIterator[str]:
+        while True:
+            frame = await queue.get()
+            if frame is None:
+                return
+            yield frame
+
+    return StreamingResponse(
+        event_source(),
+        media_type="text/event-stream",
+        headers={
+            # Disable any reverse-proxy buffering so events flush immediately.
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
 
 
 __all__ = ["router"]
