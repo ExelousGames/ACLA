@@ -37,7 +37,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Optional
 
-from app.core import settings
+from app.infra.config import settings
 
 LOGGER = logging.getLogger(__name__)
 
@@ -200,7 +200,7 @@ async def build_voice_pipeline_task(
         FastAPIWebsocketTransport,
     )
 
-    from app.services.ai_service import AIService
+    from app.pipelines.chat import AIService
     from app.voice.pipecat_kokoro import build_kokoro_processor
 
     LOGGER.info(

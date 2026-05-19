@@ -71,7 +71,7 @@ def render_batch_ai_annotation_tab(
     if st.button("Start Batch Processing", key="btn_batch_start", disabled=len(filtered_segments) == 0):
         try:
             from app.llm.local_llm import LocalLLMConfig, GenerationRequest
-            from app.services.llm.telemetry_llm_orchestrator import TelemetryLLMOrchestrator
+            from app.pipelines.chat.orchestrator import TelemetryLLMOrchestrator
             
             with st.spinner(f"Loading/Using model {model_id} via hf_local..."):
                 llm_config = LocalLLMConfig(base_model=model_id, load_in_4bit=use_4bit, gguf_file=gguf_file if gguf_file else None)

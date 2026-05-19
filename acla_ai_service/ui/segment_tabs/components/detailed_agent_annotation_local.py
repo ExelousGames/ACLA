@@ -163,7 +163,7 @@ def render_agent_annotation_local(
             type="primary",
         ):
             try:
-                from app.services.llm.annotation_pipeline import (
+                from app.pipelines.annotation import (
                     AnnotationPipelineConfig,
                 )
             except ImportError as e:

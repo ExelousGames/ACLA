@@ -8,7 +8,7 @@ def render_classifier_probability_check(df: pd.DataFrame, form_start: float, for
                 with st.spinner("Analyzing segment with Classifier..."):
                     try:
                         # Import here to avoid circular dependencies during initial load
-                        from app.services.segment_classifier_service import segment_classifier
+                        from app.ml.segment_classifier.service import segment_classifier
                         
                         # Extract segment
                         snippet = df.iloc[int(form_start):int(form_end)]

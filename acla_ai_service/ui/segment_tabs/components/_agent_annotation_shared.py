@@ -301,7 +301,7 @@ def execute_pipeline_run(
     # runner for "claude" via run_agent.
     backend = getattr(config, "backend", "local")
     try:
-        from app.services.llm.annotation_pipeline import run_annotation
+        from app.pipelines.annotation import run_annotation
     except ImportError as e:
         st.error(
             f"Missing dependency: {e}\n\n"
@@ -585,7 +585,7 @@ def render_followup_chat() -> None:
         st.markdown(user_question)
     chat.append({"role": "user", "content": user_question})
 
-    from app.services.llm.annotation_pipeline import run_claude_followup
+    from app.pipelines.annotation import run_claude_followup
 
     with st.chat_message("assistant"):
         text_placeholder = st.empty()

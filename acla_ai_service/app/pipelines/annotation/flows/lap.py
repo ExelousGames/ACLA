@@ -27,11 +27,11 @@ from app.agents import (
     BackendConfig,
 )
 from app.agents.contracts import AgentCallbacks, NoopCallbacks
-from app.services.llm.annotation.results import (
+from app.pipelines.annotation.results import (
     LapAnnotationResult,
     parse_json_response,
 )
-from app.services.llm.annotation.tools import list_eligible_labels
+from app.pipelines.annotation.tools import list_eligible_labels
 
 
 def _verified_label_ids_from_state(state: Dict[str, Any]) -> List[str]:
