@@ -4,9 +4,11 @@ OpenAI generates the main answers while trained telemetry AI models provide supp
 """
 
 from fastapi import APIRouter, HTTPException, Body
+from fastapi.responses import StreamingResponse
 from typing import Dict, Any, Optional, List
 from pydantic import BaseModel
 from app.services.ai_service import AIService
+from app.services.llm.llama_health import check_llama_server
 
 router = APIRouter(tags=["query"])
 
@@ -54,6 +56,39 @@ async def process_query(request: QueryRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Query processing failed: {str(e)}")
 
+@router.post("/naturallanguagequery/stream")
+async def process_query_stream(request: QueryRequest):
+    """Phase 2.5 — Streaming variant of /naturallanguagequery.
+
+    Returns a Server-Sent Events stream. Each event's `data:` field is a
+    JSON object with a `type` discriminator. See
+    `app/services/voice/stream_events.py` for the protocol.
+
+    Event types: token, audio, tool_start, tool_end, done, error.
+
+    The frontend renders tokens into the chat bubble as they arrive and
+    queues audio events for gapless sentence-by-sentence playback. Total
+    time-to-first-audio target: ~500ms.
+    """
+    async def event_source():
+        async for sse_chunk in ai_service.stream_natural_language_query(
+            request.question,
+            request.context,
+        ):
+            yield sse_chunk
+
+    return StreamingResponse(
+        event_source(),
+        media_type="text/event-stream",
+        headers={
+            # Disable any reverse-proxy buffering so events flush immediately.
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
+
+
 @router.post("/query/predict")
 async def query_predict(request: PredictionQueryRequest):
     """
@@ -96,24 +131,28 @@ async def query_predict(request: PredictionQueryRequest):
 
 @router.get("/query/available-functions")
 async def get_available_functions():
-    """Get list of available functions that OpenAI can call"""
+    """Get list of available functions the active LLM can call"""
     try:
         functions = ai_service.get_available_functions()
-        
+
         return {
             "success": True,
             "available_functions": functions,
             "total_functions": len(functions),
-            "ai_model_functions": [f for f in functions if 
-                                 f["name"].startswith("train_") or 
-                                 f["name"].startswith("predict_") or 
+            "ai_model_functions": [f for f in functions if
+                                 f["name"].startswith("train_") or
+                                 f["name"].startswith("predict_") or
                                  f["name"].startswith("evaluate_") or
                                  f["name"].startswith("get_model_")],
-            "telemetry_functions": [f for f in functions if 
-                                  "telemetry" in f["name"] or 
-                                  "performance" in f["name"] or 
+            "telemetry_functions": [f for f in functions if
+                                  "telemetry" in f["name"] or
+                                  "performance" in f["name"] or
                                   "session" in f["name"]],
-            "openai_available": bool(ai_service.openai_client)
+            # Active LLM backend status (llama-server is canonical from Phase 1)
+            "llm_provider": ai_service.llm_provider,
+            "chat_model": ai_service.chat_model,
+            # Legacy fallback availability — kept for any consumers still reading it
+            "openai_available": bool(ai_service.openai_client),
         }
         
     except Exception as e:
@@ -139,12 +178,42 @@ async def delete_model(model_id: str, user_id: str = Body(...)):
 # Health check
 @router.get("/query/health")
 async def health_check():
-    """Health check for the query processing system"""
+    """Health check for the query processing system.
+
+    Reports whether each LLM backend is reachable:
+      - llama_server: local Qwen-via-llama.cpp sidecar (canonical, Phase 1+).
+      - openai_configured: legacy OpenAI client (being phased out).
+    Overall status is "healthy" if at least one backend is usable.
+    """
+    llama_health = await check_llama_server()
+
+    openai_configured = bool(ai_service.openai_client)
+
+    # The chat endpoint is "ready" iff the active provider's backend is up.
+    if ai_service.llm_provider == "llama":
+        active_backend_ready = llama_health.reachable
+    else:  # "openai"
+        active_backend_ready = openai_configured
+
     return {
-        "status": "healthy",
-        "openai_configured": bool(ai_service.openai_client),
+        "status": "healthy" if active_backend_ready else "degraded",
+        "llm_provider": ai_service.llm_provider,
+        "chat_model": ai_service.chat_model,
+        "llama_server": llama_health.to_dict(),
+        "openai_configured": openai_configured,
         "telemetry_service": "available",
         "ai_model_training": "enabled",
         "query_processing": "operational",
-        "integration_mode": "openai_with_ai_model_support"
+        "integration_mode": (
+            "llama_server" if ai_service.llm_provider == "llama" and llama_health.reachable
+            else "openai_legacy" if ai_service.llm_provider == "openai" and openai_configured
+            else "degraded"
+        ),
     }
+
+
+@router.get("/query/llama-health")
+async def llama_health_check():
+    """Dedicated llama-server reachability probe (also used by start scripts)."""
+    health = await check_llama_server()
+    return health.to_dict()

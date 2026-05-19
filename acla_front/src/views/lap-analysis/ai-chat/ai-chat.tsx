@@ -7,6 +7,10 @@ import { AnalysisContext } from 'views/lap-analysis/analysis-context';
 import { visualizationController } from 'views/lap-analysis/visualization/VisualizationRegistry';
 import { detectEnvironment } from 'utils/environment';
 import { createAiCommandRegistry, VISUALIZATION_COMMAND_FUNCTIONS } from './ai-command-registry';
+import { speakWithNeuralTts, NeuralTtsPlayback } from './neural-tts';
+import { streamChat, StreamingChatSession } from './streaming-chat';
+import { createAudioStreamQueue, AudioStreamQueue } from './audio-stream-queue';
+import { useVoiceConversation } from './use-voice-conversation';
 
 // Type declarations for Web Speech API
 declare global {
@@ -71,6 +75,10 @@ interface Message {
     functionCalls?: FunctionCall[];
     functionResults?: FunctionResult[];
     isVoiceInput?: boolean;
+    // Phase 2.5 — true when this AI response already streamed its own audio
+    // (Kokoro chunks via SSE). The auto-speak effect skips these so we don't
+    // re-synthesize the whole answer through window.speechSynthesis.
+    streamedAudio?: boolean;
 }
 
 interface FunctionCall {
@@ -180,8 +188,29 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
     const inputRef = useRef<HTMLInputElement>(null);
     const speechQueueRef = useRef<string[]>([]);
     const currentUtteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
+    // Active neural-TTS playback handle (Phase 2 — Kokoro via /voice-synthesize).
+    // When set, stopSpeaking() should stop this instead of (or in addition to)
+    // cancelling the browser's speechSynthesis.
+    const currentNeuralPlaybackRef = useRef<NeuralTtsPlayback | null>(null);
+    // Whether neural TTS is known to be unavailable for this session — set
+    // after the first failure so we stop retrying every message.
+    const neuralTtsDisabledRef = useRef<boolean>(false);
+    // Phase 2.5 — active streaming chat session + its audio queue.
+    // stopSpeaking() also tears these down.
+    const currentStreamRef = useRef<StreamingChatSession | null>(null);
+    const currentStreamAudioRef = useRef<AudioStreamQueue | null>(null);
+    // Same gate logic as neuralTtsDisabledRef: after one streaming failure
+    // we stop retrying it for the rest of the session.
+    const streamingDisabledRef = useRef<boolean>(false);
 
     const analysisContext = useContext(AnalysisContext);
+
+    // Phase 3 — Pipecat voice conversation. The hook owns mic, WS, and
+    // audio playback lifecycle. We just toggle start/stop from the UI.
+    const voiceConversation = useVoiceConversation({
+        trackName: analysisContext?.recordedSessioStaticsData?.track,
+        carName: analysisContext?.recordedSessioStaticsData?.car,
+    });
 
     const buildVisualizationAssistantContext = () => {
         const visualizationContext = visualizationController.getVisualizationAssistantContext();
@@ -266,7 +295,87 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
         return false;
     };
 
+    /**
+     * Strip markdown so the TTS engine doesn't read "asterisk-asterisk bold".
+     * Used by both the neural-TTS path and the speechSynthesis fallback.
+     */
+    const cleanTextForSpeech = (text: string): string => {
+        return text
+            .replace(/\*\*(.*?)\*\*/g, '$1') // Remove markdown bold
+            .replace(/\*(.*?)\*/g, '$1') // Remove markdown italic
+            .replace(/```[\s\S]*?```/g, '') // Remove code blocks
+            .replace(/`(.*?)`/g, '$1') // Remove inline code
+            .replace(/https?:\/\/[^\s]+/g, 'link') // Replace URLs with "link"
+            .replace(/[#]+\s*/g, '') // Remove markdown headers
+            .replace(/\n+/g, '. ') // Replace newlines with periods
+            .replace(/\s+/g, ' ') // Normalize whitespace
+            .trim();
+    };
+
+    /**
+     * Speak text using neural TTS (Kokoro via /voice-synthesize).
+     * Throws if unavailable; caller falls back to speechSynthesis.
+     */
+    const speakWithNeural = async (
+        cleanText: string,
+        options?: { isGuidance?: boolean },
+    ): Promise<void> => {
+        // Cancel anything currently speaking on either path.
+        if (currentNeuralPlaybackRef.current) {
+            currentNeuralPlaybackRef.current.stop();
+            currentNeuralPlaybackRef.current = null;
+        }
+        if (speechSynthesis && isSpeaking) {
+            speechSynthesis.cancel();
+        }
+
+        setIsSpeaking(true);
+        const playback = await speakWithNeuralTts(cleanText, {
+            // Slightly faster delivery for on-track guidance cues.
+            speed: options?.isGuidance ? 1.15 : 1.0,
+            volume: 0.9,
+        });
+        currentNeuralPlaybackRef.current = playback;
+
+        try {
+            await playback.ended;
+        } finally {
+            if (currentNeuralPlaybackRef.current === playback) {
+                currentNeuralPlaybackRef.current = null;
+            }
+            setIsSpeaking(false);
+        }
+    };
+
     const speakText = (text: string, options?: { isGuidance?: boolean }) => {
+        if (!isTextToSpeechEnabled) {
+            return;
+        }
+
+        const cleanText = cleanTextForSpeech(text);
+        if (!cleanText) return;
+
+        // Prefer neural TTS (Kokoro). Fall back to window.speechSynthesis on failure.
+        // After one failure we flip neuralTtsDisabledRef to skip the retry attempt
+        // for the rest of the session — avoids a per-message error storm.
+        if (!neuralTtsDisabledRef.current) {
+            speakWithNeural(cleanText, options).catch((err) => {
+                console.warn('[AI Chat] Neural TTS failed, falling back to speechSynthesis:', err);
+                neuralTtsDisabledRef.current = true;
+                speakWithFallback(text, options);
+            });
+            return;
+        }
+
+        speakWithFallback(text, options);
+    };
+
+    /**
+     * Legacy speakText body — uses the browser's window.speechSynthesis.
+     * Kept verbatim as the graceful-degradation path when neural TTS is
+     * unavailable (offline, AI service down, etc.).
+     */
+    const speakWithFallback = (text: string, options?: { isGuidance?: boolean }) => {
         if (!speechSynthesis || !isTextToSpeechEnabled || !selectedVoice) {
             return;
         }
@@ -278,16 +387,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
         }
 
         // Clean text for better speech synthesis
-        const cleanText = text
-            .replace(/\*\*(.*?)\*\*/g, '$1') // Remove markdown bold
-            .replace(/\*(.*?)\*/g, '$1') // Remove markdown italic
-            .replace(/```[\s\S]*?```/g, '') // Remove code blocks
-            .replace(/`(.*?)`/g, '$1') // Remove inline code
-            .replace(/https?:\/\/[^\s]+/g, 'link') // Replace URLs with "link"
-            .replace(/[#]+\s*/g, '') // Remove markdown headers
-            .replace(/\n+/g, '. ') // Replace newlines with periods
-            .replace(/\s+/g, ' ') // Normalize whitespace
-            .trim();
+        const cleanText = cleanTextForSpeech(text);
 
         if (!cleanText) return;
 
@@ -310,11 +410,13 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
                 speechQueueRef.current.push(currentChunk.trim() + '.');
             }
 
-            // Start speaking the first chunk
+            // Start speaking the first chunk via the fallback path directly —
+            // we're already inside speakWithFallback, so don't reroute back
+            // through speakText (which would try neural TTS again).
             if (speechQueueRef.current.length > 0) {
                 const firstChunk = speechQueueRef.current.shift();
                 if (firstChunk) {
-                    speakText(firstChunk, options);
+                    speakWithFallback(firstChunk, options);
                 }
             }
             return;
@@ -336,11 +438,12 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
             setIsSpeaking(false);
             currentUtteranceRef.current = null;
 
-            // Process queue if there are more messages
+            // Process queue if there are more messages — stay on the
+            // fallback path; we know neural TTS isn't available in this branch.
             if (speechQueueRef.current.length > 0) {
                 const nextText = speechQueueRef.current.shift();
                 if (nextText) {
-                    setTimeout(() => speakText(nextText), 100);
+                    setTimeout(() => speakWithFallback(nextText), 100);
                 }
             }
         };
@@ -355,12 +458,27 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
     };
 
     const stopSpeaking = () => {
-        if (speechSynthesis && isSpeaking) {
-            speechSynthesis.cancel();
-            setIsSpeaking(false);
-            currentUtteranceRef.current = null;
-            speechQueueRef.current = []; // Clear queue
+        // Phase 2.5 — active streaming chat session (LLM + per-sentence audio).
+        if (currentStreamRef.current) {
+            currentStreamRef.current.abort();
+            currentStreamRef.current = null;
         }
+        if (currentStreamAudioRef.current) {
+            currentStreamAudioRef.current.stop();
+            currentStreamAudioRef.current = null;
+        }
+        // Phase 2 — single-WAV neural TTS playback.
+        if (currentNeuralPlaybackRef.current) {
+            currentNeuralPlaybackRef.current.stop();
+            currentNeuralPlaybackRef.current = null;
+        }
+        // Browser speechSynthesis fallback path.
+        if (speechSynthesis) {
+            speechSynthesis.cancel();
+        }
+        setIsSpeaking(false);
+        currentUtteranceRef.current = null;
+        speechQueueRef.current = []; // Clear queue
     };
 
     const toggleTextToSpeech = () => {
@@ -383,6 +501,35 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
         scrollToBottom();
     }, [messages]);
 
+    /**
+     * Phase 4 — Speak an on-track guidance cue via Piper (Electron sidecar).
+     * <150ms target latency; no network hop. Falls through to the regular
+     * speakText path if Electron's piper IPC isn't available.
+     */
+    const speakGuidanceCue = async (text: string): Promise<boolean> => {
+        const api = window.electronAPI as any;
+        if (!api?.synthesizeCue) return false;
+        try {
+            // Cancel any currently-playing cue so the latest takes priority.
+            try { await api.cancelCue?.(); } catch { /* ignore */ }
+
+            const wavBuffer: ArrayBuffer | null = await api.synthesizeCue(text);
+            if (!wavBuffer || wavBuffer.byteLength === 0) return false;
+
+            const blob = new Blob([wavBuffer], { type: 'audio/wav' });
+            const url = URL.createObjectURL(blob);
+            const audio = new Audio(url);
+            audio.volume = 0.9;
+            audio.addEventListener('ended', () => URL.revokeObjectURL(url));
+            audio.addEventListener('error', () => URL.revokeObjectURL(url));
+            await audio.play();
+            return true;
+        } catch (err) {
+            console.warn('[ai-chat] Piper cue failed, falling back:', err);
+            return false;
+        }
+    };
+
     // Automatically speak new AI messages
     useEffect(() => {
         if (!isTextToSpeechEnabled || messages.length === 0) return;
@@ -394,11 +541,22 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
             // Don't speak the welcome message on first load
             if (lastMessage.id === 'welcome' && messages.length === 1) return;
 
+            // Phase 2.5 — streaming responses already played their own
+            // sentence-chunked audio via SSE. Don't double-speak.
+            if (lastMessage.streamedAudio) return;
+
             // Determine if this is a guidance message
             const isGuidanceMessage = lastMessage.id.includes('guidance');
 
             // Add a small delay to ensure the message is rendered
-            setTimeout(() => {
+            setTimeout(async () => {
+                // Phase 4 — On-track guidance cues prefer Piper-via-Electron-sidecar
+                // for lowest possible latency. Other AI responses use the regular
+                // (potentially network) TTS path.
+                if (isGuidanceMessage) {
+                    const ok = await speakGuidanceCue(lastMessage.content);
+                    if (ok) return;
+                }
                 speakText(lastMessage.content, { isGuidance: isGuidanceMessage });
             }, 300);
         }
@@ -991,82 +1149,249 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
             resetRecording();
         }
     };
-    const sendToAI = async (messageContent: string) => {
-        try {
-            let response;
+    /**
+     * Apply side-effects from the AI response that were previously handled
+     * after the non-streaming POST completed. Shared between the streaming
+     * `done` event handler and the non-streaming fallback.
+     */
+    const handleAIResponseSideEffects = (
+        responseData: any,
+    ): { addendum: string } => {
+        let addendum = '';
+        if (responseData?.payload?.side_products?.track_detail_for_guide
+            || responseData?.side_products?.track_detail_for_guide) {
+            try {
+                // Normalize: startTrackGuide expects the legacy non-streaming shape.
+                const wrapped = responseData?.payload ? responseData : { payload: responseData };
+                startTrackGuide(wrapped);
+                console.log('Track guidance enabled from AI response');
+            } catch (error) {
+                console.error('Error enabling track guidance:', error);
+                addendum += '\n\n*Note: Track guidance data was received but could not be processed properly.*';
+            }
+        }
+        return { addendum };
+    };
 
-            // Use openai general natural language ai query endpoint
-            response = await apiService.post('user-ai-model/ai-query', {
-                question: messageContent,
-                context: {
-                    session_id: sessionId || '',
-                    trackname: analysisContext?.recordedSessioStaticsData?.track || '',
-                    visualization_assistant: buildVisualizationAssistantContext()
+    /**
+     * Phase 2.5 streaming path.
+     * - Inserts a placeholder AI message immediately.
+     * - As `token` events arrive, appends to the bubble.
+     * - As `audio` events arrive, queues them for gapless playback.
+     * - On `done`, runs side-effects (track guide, etc.) and finalizes.
+     * - On any error, falls back to the non-streaming endpoint.
+     */
+    const sendToAIStreaming = async (
+        messageContent: string,
+        requestContext: Record<string, unknown>,
+    ): Promise<boolean> => {
+        const aiMessageId = generateUniqueId('ai');
+        let accumulatedContent = '';
+
+        // Tear down any previous stream/audio so we never overlap.
+        if (currentStreamRef.current) {
+            currentStreamRef.current.abort();
+            currentStreamRef.current = null;
+        }
+        if (currentStreamAudioRef.current) {
+            currentStreamAudioRef.current.stop();
+            currentStreamAudioRef.current = null;
+        }
+
+        // Set up the audio queue only if TTS is enabled — otherwise drop
+        // audio events on the floor.
+        const audioQueue = isTextToSpeechEnabled
+            ? createAudioStreamQueue({
+                volume: 0.9,
+                onStart: () => setIsSpeaking(true),
+                onIdle: () => setIsSpeaking(false),
+                onError: (err) => console.warn('[stream audio] playback error:', err),
+            })
+            : null;
+        currentStreamAudioRef.current = audioQueue;
+
+        // Insert the placeholder bubble. We replace `isLoading` messages in one shot.
+        setMessages(prev =>
+            prev
+                .filter(msg => !msg.id.includes('loading') && !msg.id.includes('executing'))
+                .concat({
+                    id: aiMessageId,
+                    content: '',
+                    isUser: false,
+                    timestamp: new Date(),
+                    streamedAudio: isTextToSpeechEnabled,
+                })
+        );
+
+        let streamSucceeded = false;
+        let sawAnyEvent = false;
+
+        const session = streamChat(
+            { question: messageContent, context: requestContext },
+            {
+                onToken: (text) => {
+                    sawAnyEvent = true;
+                    accumulatedContent += text;
+                    setMessages(prev =>
+                        prev.map(msg =>
+                            msg.id === aiMessageId
+                                ? { ...msg, content: accumulatedContent }
+                                : msg
+                        )
+                    );
                 },
-            });
-
-            const responseData = response.data as any;
-            let aiResponseContent = responseData?.payload?.answer || responseData?.answer || responseData?.response || "I'm sorry, I couldn't process your request.";
-            let functionCalls: FunctionCall[] = [];
-            let functionResults: FunctionResult[] = [];
-            console.log('AI response data:', responseData);
-
-            // Check if the response contains track guidance data in side_products
-            if (responseData?.payload?.side_products?.track_detail_for_guide) {
-                try {
-                    // Call startTrackGuide with the complete response data
-                    startTrackGuide(responseData);
-                    console.log('Track guidance enabled from AI response');
-                } catch (error) {
-                    console.error('Error enabling track guidance:', error);
-                    aiResponseContent += '\n\n*Note: Track guidance data was received but could not be processed properly.*';
-                }
-            }
-
-            // Check if the response contains function calls (legacy support)
-            if (responseData?.function_calls && Array.isArray(responseData.function_calls)) {
-
-                try {
-                    // Parse function calls from the response
-                    functionCalls = responseData.function_calls.map((fc: any) => ({
-                        function: fc.function || fc.name,
-                        arguments: typeof fc.arguments === 'string' ? JSON.parse(fc.arguments) : fc.arguments
-                    }));
-
-                    // Execute all function calls
-                    for (const functionCall of functionCalls) {
-                        const result = await executeFunctionCall(functionCall, responseData);
-                        functionResults.push(result);
+                onAudio: ({ wav_b64 }) => {
+                    sawAnyEvent = true;
+                    audioQueue?.enqueueBase64Wav(wav_b64);
+                },
+                onToolStart: ({ name }) => {
+                    sawAnyEvent = true;
+                    console.log('[stream] tool_start:', name);
+                },
+                onToolEnd: ({ name, ok, error }) => {
+                    if (!ok) console.warn('[stream] tool_end failed:', name, error);
+                },
+                onDone: (event) => {
+                    streamSucceeded = true;
+                    const { addendum } = handleAIResponseSideEffects({ payload: event });
+                    if (addendum) {
+                        accumulatedContent = (event.answer || accumulatedContent) + addendum;
+                        setMessages(prev =>
+                            prev.map(msg =>
+                                msg.id === aiMessageId
+                                    ? { ...msg, content: accumulatedContent }
+                                    : msg
+                            )
+                        );
+                    } else if (event.answer && event.answer !== accumulatedContent) {
+                        // The server's authoritative `answer` may differ slightly
+                        // from our token concatenation (whitespace) — sync to it.
+                        accumulatedContent = event.answer;
+                        setMessages(prev =>
+                            prev.map(msg =>
+                                msg.id === aiMessageId
+                                    ? { ...msg, content: accumulatedContent }
+                                    : msg
+                            )
+                        );
                     }
+                },
+                onError: ({ message, error_type }) => {
+                    console.warn('[stream] error event:', error_type, message);
+                },
+            },
+        );
+        currentStreamRef.current = session;
 
-                } catch (parseError) {
-                    console.error('Error parsing function calls:', parseError);
-                    aiResponseContent += '\n\n*Note: Function calls were detected but could not be parsed properly.*';
+        await session.done;
+
+        // Cleanup references regardless of outcome.
+        if (currentStreamRef.current === session) currentStreamRef.current = null;
+        // Don't stop the audio queue here — it may still be playing the last
+        // few sentences after the stream closes. It will fire onIdle when done.
+
+        // If we never saw a single event AND didn't get a done, treat it as failure
+        // so the fallback path runs.
+        return streamSucceeded || sawAnyEvent;
+    };
+
+    /**
+     * Legacy non-streaming POST. Used as a fallback when streaming fails.
+     */
+    const sendToAINonStreaming = async (
+        messageContent: string,
+        requestContext: Record<string, unknown>,
+    ): Promise<void> => {
+        const response = await apiService.post('user-ai-model/ai-query', {
+            question: messageContent,
+            context: requestContext,
+        });
+
+        const responseData = response.data as any;
+        let aiResponseContent =
+            responseData?.payload?.answer
+            || responseData?.answer
+            || responseData?.response
+            || "I'm sorry, I couldn't process your request.";
+        let functionCalls: FunctionCall[] = [];
+        let functionResults: FunctionResult[] = [];
+
+        const { addendum } = handleAIResponseSideEffects(responseData);
+        aiResponseContent += addendum;
+
+        // Legacy function_calls path (separate from OpenAI-style tool_calls).
+        if (responseData?.function_calls && Array.isArray(responseData.function_calls)) {
+            try {
+                functionCalls = responseData.function_calls.map((fc: any) => ({
+                    function: fc.function || fc.name,
+                    arguments: typeof fc.arguments === 'string' ? JSON.parse(fc.arguments) : fc.arguments
+                }));
+                for (const functionCall of functionCalls) {
+                    const result = await executeFunctionCall(functionCall, responseData);
+                    functionResults.push(result);
                 }
+            } catch (parseError) {
+                console.error('Error parsing function calls:', parseError);
+                aiResponseContent += '\n\n*Note: Function calls were detected but could not be parsed properly.*';
+            }
+        }
+
+        const aiResponse: Message = {
+            id: generateUniqueId('ai'),
+            content: aiResponseContent,
+            isUser: false,
+            timestamp: new Date(),
+            functionCalls: functionCalls.length > 0 ? functionCalls : undefined,
+            functionResults: functionResults.length > 0 ? functionResults : undefined,
+            // Non-streaming path — let the auto-speak effect handle audio.
+            streamedAudio: false,
+        };
+
+        setMessages(prev =>
+            prev
+                .filter(msg => !msg.id.includes('loading') && !msg.id.includes('executing'))
+                .concat(aiResponse)
+        );
+    };
+
+    const sendToAI = async (messageContent: string) => {
+        const requestContext = {
+            session_id: sessionId || '',
+            trackname: analysisContext?.recordedSessioStaticsData?.track || '',
+            visualization_assistant: buildVisualizationAssistantContext(),
+        };
+
+        try {
+            // Prefer streaming. After one failure, stick to non-streaming for
+            // the rest of the session to avoid retrying a broken pipe.
+            if (!streamingDisabledRef.current) {
+                try {
+                    const ok = await sendToAIStreaming(messageContent, requestContext);
+                    if (ok) return;
+                    // Stream produced no events — fall through to non-streaming.
+                    console.warn('[sendToAI] streaming produced no events; falling back');
+                } catch (streamErr) {
+                    console.warn('[sendToAI] streaming threw; falling back:', streamErr);
+                }
+                streamingDisabledRef.current = true;
+                // Clean up the half-finished streaming placeholder bubble.
+                setMessages(prev => prev.filter(msg => !msg.id.startsWith('ai-') || msg.content));
             }
 
-            const aiResponse: Message = {
-                id: generateUniqueId('ai'),
-                content: aiResponseContent,
-                isUser: false,
-                timestamp: new Date(),
-                functionCalls: functionCalls.length > 0 ? functionCalls : undefined,
-                functionResults: functionResults.length > 0 ? functionResults : undefined
-            };
-
-            // Remove loading messages and add AI response
-            setMessages(prev => prev.filter(msg => !msg.id.includes('loading') && !msg.id.includes('executing')).concat(aiResponse));
+            await sendToAINonStreaming(messageContent, requestContext);
         } catch (error) {
             console.error('Error sending message to AI:', error);
             const errorMessage: Message = {
                 id: generateUniqueId('error'),
                 content: "I'm sorry, I encountered an error while processing your request. Please try again.",
                 isUser: false,
-                timestamp: new Date()
+                timestamp: new Date(),
             };
-
-            // Remove loading messages and add error message
-            setMessages(prev => prev.filter(msg => !msg.id.includes('loading') && !msg.id.includes('executing')).concat(errorMessage));
+            setMessages(prev =>
+                prev
+                    .filter(msg => !msg.id.includes('loading') && !msg.id.includes('executing'))
+                    .concat(errorMessage)
+            );
         } finally {
             setIsLoading(false);
         }
@@ -1623,6 +1948,44 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
                                 {isSpeaking ? "🔇" : isTextToSpeechEnabled ? "🔊" : "🔇"}
                             </IconButton>
                         )}
+                        {/* Phase 3 — Talk to coach (full voice conversation via Pipecat). */}
+                        <IconButton
+                            onClick={() => {
+                                if (voiceConversation.state === 'idle' || voiceConversation.state === 'error') {
+                                    voiceConversation.start().catch((err) => {
+                                        console.error('Voice conversation failed to start:', err);
+                                    });
+                                } else {
+                                    voiceConversation.stop();
+                                }
+                            }}
+                            disabled={isLoading || voiceConversation.state === 'connecting'}
+                            size="2"
+                            variant={voiceConversation.state === 'idle' || voiceConversation.state === 'error' ? 'ghost' : 'solid'}
+                            color={
+                                voiceConversation.state === 'error'
+                                    ? 'orange'
+                                    : voiceConversation.state === 'speaking'
+                                        ? 'blue'
+                                        : voiceConversation.state === 'listening'
+                                            ? 'red'
+                                            : 'gray'
+                            }
+                            title={
+                                voiceConversation.state === 'error'
+                                    ? `Voice error: ${voiceConversation.error}. Click to retry.`
+                                    : voiceConversation.state === 'connecting'
+                                        ? 'Connecting to voice coach...'
+                                        : voiceConversation.state === 'listening'
+                                            ? 'Listening — click to end voice session'
+                                            : voiceConversation.state === 'speaking'
+                                                ? 'Coach speaking — click to end voice session'
+                                                : 'Talk to coach (full voice conversation)'
+                            }
+                        >
+                            {voiceConversation.state === 'idle' || voiceConversation.state === 'error' ? '💬' : '🎙️'}
+                        </IconButton>
+
                         {(speechRecognition || electronSpeechAvailable) && (
                             <IconButton
                                 onClick={isUninteractableState ? stopVoiceRecording : startVoiceRecording}

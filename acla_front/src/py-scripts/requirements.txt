@@ -21,3 +21,9 @@ pyannote-audio==3.1.1
 openai-whisper==20230314
 torch==2.0.1
 torchaudio==2.0.2
+
+# Phase 4 — Piper neural TTS for on-track guidance cues.
+# Runs as a persistent subprocess (piper_tts_daemon.py); kept-alive to avoid
+# the ~1s model-load tax per cue. CPU-friendly, ~30ms synth per short phrase.
+piper-tts==1.2.0
+huggingface-hub>=0.20.0

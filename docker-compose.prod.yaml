@@ -63,6 +63,10 @@ services:
       - GEMINI_BATCH_GCS_BUCKET=${GEMINI_BATCH_GCS_BUCKET}
     volumes:
       - ./acla_ai_service/service_src:/app/service_src:ro
+      # Persist the downloaded llama-server GGUF model across container restarts
+      - llama_models:/app/models/llama_server
+      # Persist the Kokoro TTS model files (~330MB) across container restarts
+      - kokoro_models:/app/models/kokoro
     ports:
       - '8000:8000'
     networks:
@@ -97,6 +101,10 @@ services:
 
 volumes:
   mongodb_data:
+    driver: local
+  llama_models:
+    driver: local
+  kokoro_models:
     driver: local
 
 networks:

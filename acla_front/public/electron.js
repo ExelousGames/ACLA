@@ -109,6 +109,203 @@ let speechRecognitionProcess = null;
 let speechRecognitionTempFile = null;
 let isSpeechRecognitionAvailable = false;
 
+// ---------------------------------------------------------------------------
+// Phase 4 — Piper TTS daemon for on-track guidance cues.
+//
+// One long-lived Python subprocess does Piper synthesis to avoid the ~1s
+// model-load tax per cue. Renderer calls electronAPI.synthesizeCue(text)
+// and gets back an ArrayBuffer of WAV bytes (or null on failure).
+// ---------------------------------------------------------------------------
+
+let piperProcess = null;
+let piperStartupPromise = null;
+let piperReadyResolve = null;
+let piperReadyReject = null;
+let piperNextRequestId = 0;
+// Map<id, { resolve(buffer|null), reject(err), timeout }>
+const piperPendingRequests = new Map();
+
+// Buffered stdout for length-prefixed binary frames.
+let piperReadBuffer = Buffer.alloc(0);
+
+function _piperHandleStdout(chunk) {
+  piperReadBuffer = Buffer.concat([piperReadBuffer, chunk]);
+
+  while (piperReadBuffer.length >= 4) {
+    const totalLen = piperReadBuffer.readUInt32BE(0);
+    if (piperReadBuffer.length < 4 + totalLen) return; // need more bytes
+
+    const payload = piperReadBuffer.slice(4, 4 + totalLen);
+    piperReadBuffer = piperReadBuffer.slice(4 + totalLen);
+
+    if (payload.length < 4) continue;
+    const headerLen = payload.readUInt32BE(0);
+    if (payload.length < 4 + headerLen) continue;
+
+    const headerJson = payload.slice(4, 4 + headerLen).toString('utf-8');
+    const body = payload.slice(4 + headerLen);
+
+    let header;
+    try { header = JSON.parse(headerJson); } catch (err) {
+      console.error('[piper] bad header JSON:', err, headerJson);
+      continue;
+    }
+
+    const pending = piperPendingRequests.get(header.id);
+    if (!pending) {
+      console.warn('[piper] response for unknown id:', header.id);
+      continue;
+    }
+    piperPendingRequests.delete(header.id);
+    clearTimeout(pending.timeout);
+
+    if (header.ok && body.length > 0) {
+      pending.resolve(body);
+    } else {
+      console.warn('[piper] synth failed:', header.error || 'no body');
+      pending.resolve(null);
+    }
+  }
+}
+
+function _piperHandleStderr(chunk) {
+  // Stderr is JSON-lines status output.
+  const text = chunk.toString('utf-8');
+  for (const line of text.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    try {
+      const status = JSON.parse(trimmed);
+      if (status.status === 'ready') {
+        console.log('[piper] daemon ready:', status.voice);
+        if (piperReadyResolve) piperReadyResolve();
+      } else if (status.status === 'starting' || status.status === 'downloading') {
+        console.log('[piper]', status);
+      } else if (status.status === 'error') {
+        console.warn('[piper] error:', status);
+        if (status.fatal && piperReadyReject) piperReadyReject(new Error(status.error));
+      }
+    } catch {
+      console.log('[piper stderr]', trimmed);
+    }
+  }
+}
+
+function _piperKill() {
+  if (piperProcess) {
+    try { piperProcess.kill(); } catch { /* ignore */ }
+  }
+  piperProcess = null;
+  piperStartupPromise = null;
+  piperReadyResolve = null;
+  piperReadyReject = null;
+  piperReadBuffer = Buffer.alloc(0);
+  for (const pending of piperPendingRequests.values()) {
+    clearTimeout(pending.timeout);
+    pending.resolve(null);
+  }
+  piperPendingRequests.clear();
+}
+
+function _piperEnsureRunning() {
+  if (piperStartupPromise) return piperStartupPromise;
+
+  piperStartupPromise = new Promise((resolve, reject) => {
+    piperReadyResolve = resolve;
+    piperReadyReject = reject;
+
+    const scriptPath = path.join(resolveScriptDirectory(), 'piper_tts_daemon.py');
+    if (!fs.existsSync(scriptPath)) {
+      reject(new Error(`piper_tts_daemon.py not found at ${scriptPath}`));
+      return;
+    }
+
+    const pythonExec = getPythonExecutable();
+    try {
+      piperProcess = spawn(pythonExec, [scriptPath], {
+        stdio: ['pipe', 'pipe', 'pipe'],
+        shell: false,
+        cwd: path.dirname(scriptPath),
+      });
+    } catch (spawnErr) {
+      reject(spawnErr);
+      return;
+    }
+
+    piperProcess.stdout.on('data', _piperHandleStdout);
+    piperProcess.stderr.on('data', _piperHandleStderr);
+    piperProcess.on('close', (code) => {
+      console.log(`[piper] daemon exited code=${code}`);
+      _piperKill();
+    });
+    piperProcess.on('error', (err) => {
+      console.error('[piper] spawn error:', err);
+      reject(err);
+      _piperKill();
+    });
+
+    // Ready timeout — first run downloads ~60MB of voice files.
+    setTimeout(() => {
+      if (piperReadyResolve) {
+        const err = new Error('Piper daemon did not become ready within 60s');
+        piperReadyResolve = null;
+        piperReadyReject = null;
+        reject(err);
+      }
+    }, 60000);
+  });
+
+  return piperStartupPromise;
+}
+
+// IPC: synthesize one cue. Returns ArrayBuffer of WAV bytes or null.
+ipcMain.handle('tts:synthesize-cue', async (event, text) => {
+  if (typeof text !== 'string' || !text.trim()) {
+    return null;
+  }
+  try {
+    await _piperEnsureRunning();
+  } catch (err) {
+    console.error('[piper] daemon failed to start:', err);
+    return null;
+  }
+  if (!piperProcess || piperProcess.killed) return null;
+
+  const id = String(piperNextRequestId++);
+  const result = await new Promise((resolve) => {
+    const timeout = setTimeout(() => {
+      piperPendingRequests.delete(id);
+      console.warn('[piper] synth request timed out:', id);
+      resolve(null);
+    }, 15000);
+    piperPendingRequests.set(id, { resolve, timeout });
+
+    try {
+      piperProcess.stdin.write(JSON.stringify({ cmd: 'synth', id, text }) + '\n');
+    } catch (err) {
+      piperPendingRequests.delete(id);
+      clearTimeout(timeout);
+      console.error('[piper] stdin write failed:', err);
+      resolve(null);
+    }
+  });
+
+  // result is a Buffer or null. Convert to ArrayBuffer for the renderer.
+  if (!result) return null;
+  return result.buffer.slice(result.byteOffset, result.byteOffset + result.byteLength);
+});
+
+// IPC: cancel any inflight cue (fire-and-forget).
+ipcMain.handle('tts:cancel-cue', async () => {
+  if (!piperProcess || piperProcess.killed) return { ok: false };
+  try {
+    piperProcess.stdin.write(JSON.stringify({ cmd: 'cancel' }) + '\n');
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
 // Function to check speech recognition availability
 async function checkSpeechRecognitionAvailability() {
   try {

@@ -22,6 +22,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     cmake \
     ninja-build \
+    curl \
+    bash \
     && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* \
     && update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1 \
     && update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1
@@ -54,10 +56,13 @@ RUN pip install --no-cache-dir llama-cpp-python
 # Copy application code and setup in single layer
 COPY . .
 ENV STREAMLIT_CONFIG_FILE=/app/.streamlit/config.toml
-RUN chmod +x /app/start-dev.sh
+# CPU-only inference: by default offload zero layers to the (nonexistent) GPU
+ENV LLAMA_N_GPU_LAYERS=0
+RUN chmod +x /app/start-dev.sh /app/scripts/start_llama_server.sh \
+    && mkdir -p /app/models/llama_server /app/models/kokoro
 
-# Expose port
-EXPOSE 8000 8501
+# Expose ports: 8000 = FastAPI, 8080 = llama-server, 8501 = streamlit UI
+EXPOSE 8000 8080 8501
 
 # Command to run the application in development mode with memory-efficient options
 CMD ["/app/start-dev.sh"]

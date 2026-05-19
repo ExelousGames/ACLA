@@ -9,11 +9,13 @@ from dotenv import load_dotenv
 
 from app.core import settings
 from app.services.backend_service import backend_service
+from app.services.llm.llama_health import check_llama_server
 from app.api import (
     health_router,
     racing_session_router,
 )
 from app.api.query import router as query_router
+from app.api.voice import router as voice_router
 
 
 # Load environment variables
@@ -27,8 +29,21 @@ async def lifespan(app: FastAPI):
     print("✅ Using new structured application")
     print(f"🏁 {settings.app_name} v{settings.app_version}")
     print(f"🔧 Backend URL: {settings.backend_server_ip}")
-    print(f"🤖 OpenAI API: {'Configured' if settings.openai_api_key else 'Not configured'}")
-    
+    print(f"🤖 OpenAI API: {'Configured (legacy)' if settings.openai_api_key else 'Not configured'}")
+
+    # Check the local llama-server sidecar (canonical LLM backend going forward)
+    llama_health = await check_llama_server()
+    if llama_health.reachable:
+        print(
+            f"🦙 llama-server: reachable at {llama_health.base_url} "
+            f"({len(llama_health.models)} model(s), {llama_health.latency_ms:.0f}ms)"
+        )
+    else:
+        print(
+            f"🦙 llama-server: NOT reachable at {llama_health.base_url} "
+            f"({llama_health.error}) — startup script may still be downloading the model"
+        )
+
     # Establish backend connection
     print("🔌 Establishing backend connection...")
     if await backend_service.establish_connection():
@@ -67,6 +82,7 @@ app.add_middleware(
 app.include_router(health_router)
 app.include_router(query_router)  # Main query endpoint
 app.include_router(racing_session_router)
+app.include_router(voice_router)  # Phase 2 — neural TTS (Kokoro)
 
 if __name__ == "__main__":
     import uvicorn

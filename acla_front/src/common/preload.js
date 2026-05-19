@@ -79,5 +79,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
         return () => {
             ipcRenderer.off('speech-recognition-complete', subscription);
         };
-    }
+    },
+
+    // Phase 4 — Piper TTS for on-track guidance cues. Synthesis runs in a
+    // persistent Python sidecar so cues stay under ~150ms after warmup.
+    // Returns ArrayBuffer of WAV bytes, or null on failure.
+    synthesizeCue: (text) => ipcRenderer.invoke('tts:synthesize-cue', text),
+    cancelCue: () => ipcRenderer.invoke('tts:cancel-cue'),
 });

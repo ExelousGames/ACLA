@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(Get-ChildItem -Path \"F:\\\\Git-Repo\\\\ACLA\" -Directory)",
+      "Bash(Select-Object Name)",
+      "Bash(ls -la \"F:/Git-Repo/ACLA\")",
+      "Bash(ls -la \"F:/Git-Repo/ACLA/\" | grep -E \"back|server|api\")"
+    ]
+  }
+}

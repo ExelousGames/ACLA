@@ -51,3 +51,15 @@ claude-agent-sdk>=0.1.0
 # which surfaces as a pydantic error in every tool call.
 mcp>=1.19
 mistral_common==1.5.5
+
+# Voice — Kokoro neural TTS (Phase 2). Apache-2.0, runs on CPU or GPU via ONNX.
+# `onnxruntime` (CPU) is in common; nvidia.txt overrides with onnxruntime-gpu.
+kokoro-onnx>=0.4.0
+onnxruntime>=1.18.0
+soundfile>=0.12.1
+
+# Voice — Pipecat pipeline + faster-whisper STT (Phase 3).
+# pipecat-ai pulls in its own deps for the silero VAD and websocket transport.
+# faster-whisper is the streaming STT backend; runs on CPU or GPU.
+pipecat-ai[silero,openai,websocket]>=0.0.50
+faster-whisper>=1.0.3

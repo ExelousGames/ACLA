@@ -1,6 +1,6 @@
 #!/bin/bash
-# Dev entrypoint: start llama-server as a background sidecar, then run
-# uvicorn in the foreground with hot reload.
+# Prod entrypoint: start llama-server as a background sidecar, then run
+# uvicorn in the foreground without hot reload.
 
 set -e
 
@@ -9,7 +9,7 @@ LLAMA_HOST="${LLAMA_HOST:-127.0.0.1}"
 LLAMA_WAIT_SECONDS="${LLAMA_WAIT_SECONDS:-300}"
 
 echo "=============================================="
-echo "ACLA AI Service - Dev Startup"
+echo "ACLA AI Service - Prod Startup"
 echo "=============================================="
 
 # Start llama-server in the background
@@ -24,8 +24,8 @@ cleanup() {
 }
 trap cleanup SIGINT SIGTERM
 
-# Wait for llama-server to become ready (first run includes model download).
-echo "Waiting up to ${LLAMA_WAIT_SECONDS}s for llama-server to become ready at http://${LLAMA_HOST}:${LLAMA_PORT}..."
+# Wait for llama-server to become ready
+echo "Waiting up to ${LLAMA_WAIT_SECONDS}s for llama-server at http://${LLAMA_HOST}:${LLAMA_PORT}..."
 READY=0
 for i in $(seq 1 "$LLAMA_WAIT_SECONDS"); do
     if curl -sf "http://${LLAMA_HOST}:${LLAMA_PORT}/v1/models" > /dev/null 2>&1; then
@@ -33,9 +33,8 @@ for i in $(seq 1 "$LLAMA_WAIT_SECONDS"); do
         READY=1
         break
     fi
-    # Bail if the background process has already died
     if ! kill -0 "$LLAMA_PID" 2>/dev/null; then
-        echo "ERROR: llama-server process exited during startup. Check logs above."
+        echo "ERROR: llama-server process exited during startup."
         exit 1
     fi
     sleep 1
@@ -43,10 +42,6 @@ done
 
 if [ "$READY" -ne 1 ]; then
     echo "WARNING: llama-server did not become ready within ${LLAMA_WAIT_SECONDS}s — starting uvicorn anyway."
-    echo "         The /query/health endpoint will report degraded status until llama-server is up."
 fi
 
-# Run uvicorn in the foreground with hot reload
-exec uvicorn main:app --host 0.0.0.0 --port 8000 --reload \
-    --reload-exclude "*__pycache__*" \
-    --reload-exclude "./models/*"
+exec uvicorn main:app --host 0.0.0.0 --port 8000

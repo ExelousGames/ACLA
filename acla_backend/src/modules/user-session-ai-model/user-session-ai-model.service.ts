@@ -4,7 +4,7 @@ import { Model, Types } from 'mongoose';
 import { UserACCTrackAIModel, SessionAIModelSchema } from 'src/schemas/session-ai-model.schema';
 import { UserInfo } from 'src/schemas/user-info.schema';
 import { CreateSeesionAIModelDto as CreateACCSeesionAIModelDto, UpdateAiModelDto as UpdateACCAiModelDto, GetAiModelDto as GetACCAiModelDto, IncrementalTrainingDto, ModelPredictionDto, AiModelResponseDto } from 'src/dto/ai-model.dto';
-import { AiServiceClient, QueryRequest } from '../../shared/ai/ai-service.client';
+import { AiServiceClient, QueryRequest, VoiceSynthesizeRequest } from '../../shared/ai/ai-service.client';
 import { RacingSessionService } from '../racing-session/racing-session.service';
 
 @Injectable()
@@ -136,5 +136,33 @@ export class UserSessionAiModelService {
     }
     async healthCheck() {
         return await this.aiServiceClient.checkHealth();
+    }
+
+    /**
+     * Phase 2 — Forwards a TTS request to the AI service and returns the
+     * raw WAV bytes. The controller wraps these as a streamed binary response.
+     */
+    async synthesizeVoice(request: VoiceSynthesizeRequest): Promise<Buffer> {
+        try {
+            return await this.aiServiceClient.synthesizeVoice(request);
+        } catch (error) {
+            throw new BadRequestException(`Voice synthesis failed: ${error.message}`);
+        }
+    }
+
+    async listVoices() {
+        return await this.aiServiceClient.listVoices();
+    }
+
+    /**
+     * Phase 2.5 — Returns a streaming SSE response from the AI service.
+     * The controller pipes this directly to the client.
+     */
+    async streamAIQuery(queryRequest: any): Promise<NodeJS.ReadableStream> {
+        try {
+            return await this.aiServiceClient.streamQuery(queryRequest);
+        } catch (error) {
+            throw new BadRequestException(`AI query streaming failed: ${error.message}`);
+        }
     }
 }

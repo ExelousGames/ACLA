@@ -2,3 +2,5 @@
 -r requirements.common.txt
 torch==2.0.1+cu118
 bitsandbytes==0.43.0
+# GPU-accelerated ONNX runtime for Kokoro TTS (Phase 2).
+onnxruntime-gpu>=1.18.0

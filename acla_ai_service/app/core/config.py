@@ -27,9 +27,36 @@ class Settings(BaseSettings):
     ai_service_username: Optional[str] = None
     ai_service_password: Optional[str] = None
     
-    # OpenAI Configuration
+    # OpenAI Configuration (legacy — being phased out in favor of local llama-server)
     openai_api_key: Optional[str] = None
-    
+
+    # Active chat backend selector. "llama" uses the local llama-server sidecar
+    # (canonical, Phase 1+). "openai" reverts to the legacy gpt-4o path — only
+    # useful as a rollback during Phase 1 rollout and requires OPENAI_API_KEY.
+    llm_provider: str = "llama"
+
+    # Local LLM (llama-server / llama-cpp-python) Configuration
+    # llama-server runs as a sidecar inside the ai_service container and exposes
+    # an OpenAI-compatible HTTP API at this URL. The chat code calls it as if it
+    # were OpenAI, just with a different base_url.
+    llama_server_url: str = "http://127.0.0.1:8080/v1"
+    llama_model_name: str = "qwen2.5-1.5b-instruct"
+    llama_model_repo: str = "Qwen/Qwen2.5-1.5B-Instruct-GGUF"
+    llama_model_file: str = "qwen2.5-1.5b-instruct-q4_k_m.gguf"
+    llama_n_ctx: int = 8192
+    llama_n_gpu_layers: int = 99  # 0 disables GPU offload; 99 = offload all layers
+    llama_health_timeout_seconds: float = 2.0
+
+    # Kokoro TTS Configuration (Phase 2)
+    # Neural TTS that replaces window.speechSynthesis in the frontend.
+    # Apache-2.0 ONNX model — downloaded on first run, persisted in a volume.
+    kokoro_model_dir: str = "/app/models/kokoro"
+    kokoro_model_repo: str = "onnx-community/Kokoro-82M-v1.0-ONNX"
+    kokoro_model_file: str = "onnx/model.onnx"
+    kokoro_voices_file: str = "voices-v1.0.bin"
+    kokoro_default_voice: str = "af_bella"
+    kokoro_sample_rate: int = 24000
+
     # Hugging Face Configuration
     hf_token: Optional[str] = None
     hf_username: Optional[str] = None

@@ -2,20 +2,71 @@
 AI Service for natural language processing and conversation
 """
 
-from typing import Dict, Any, Optional, List
+import base64
+from typing import Dict, Any, AsyncIterator, Optional, List
 import json
 import asyncio
+import logging
 from openai import AsyncOpenAI
 from app.services.full_dataset_ml_service import Full_dataset_TelemetryMLService
 from app.core import settings
 from app.services.backend_service import BackendService
+from app.services.voice import get_kokoro_service
+from app.services.voice.sentence_streamer import SentenceStreamer
+from app.services.voice.stream_events import (
+    event_audio,
+    event_done,
+    event_error,
+    event_token,
+    event_tool_end,
+    event_tool_start,
+)
+
+LOGGER = logging.getLogger(__name__)
 
 
 class AIService:
-    """Service for AI-powered analysis and conversation"""
-    
+    """Service for AI-powered analysis and conversation.
+
+    Phase 1: the canonical chat backend is the local llama-server sidecar
+    (Qwen2.5-1.5B-Instruct GGUF via llama-cpp-python), called through an
+    AsyncOpenAI client pointed at settings.llama_server_url. The legacy
+    OpenAI client is kept only as an emergency rollback path, selected
+    via the `LLM_PROVIDER=openai` env var.
+    """
+
     def __init__(self):
-        self.openai_client = AsyncOpenAI(api_key=settings.openai_api_key) if settings.openai_api_key else None
+        # Local llama-server (canonical chat backend going forward).
+        # llama-server does not authenticate, but the OpenAI client refuses
+        # to construct without an api_key — any non-empty string works.
+        self.llama_client = AsyncOpenAI(
+            base_url=settings.llama_server_url,
+            api_key="not-needed",
+        )
+
+        # Legacy OpenAI client. Kept for rollback (LLM_PROVIDER=openai) and
+        # for /query/health reporting. Constructed lazily so a missing
+        # api_key during normal llama-mode operation isn't an error.
+        self.openai_client = (
+            AsyncOpenAI(api_key=settings.openai_api_key)
+            if settings.openai_api_key else None
+        )
+
+        # Pick the active chat client based on settings.llm_provider.
+        # Default = "llama". Set LLM_PROVIDER=openai in env to revert.
+        if settings.llm_provider == "openai":
+            if not self.openai_client:
+                raise RuntimeError(
+                    "LLM_PROVIDER=openai requires OPENAI_API_KEY to be set"
+                )
+            self.llm_client = self.openai_client
+            self.chat_model = "gpt-4o"
+            self.llm_provider = "openai"
+        else:
+            self.llm_client = self.llama_client
+            self.chat_model = settings.llama_model_name
+            self.llm_provider = "llama"
+
         self.backend_service = BackendService()
         self.telemetryMLService = Full_dataset_TelemetryMLService()
     def get_available_functions(self) -> List[Dict[str, Any]]:
@@ -124,39 +175,46 @@ class AIService:
             context: Optional context information (track, car, etc.)
             conversation_history: Optional previous conversation messages to maintain context
         """
-        if not self.openai_client:
-            raise Exception("OpenAI API is not function properly.")
+        if not self.llm_client:
+            raise Exception(
+                f"LLM client is not available (provider={self.llm_provider})."
+            )
         
         try:
             # Prepare context information and conversation history
             try:
-                # Start with system message
+                # Start with system message — tightened for a 1.5B model.
+                # Lists ONLY the tools that actually exist in get_available_functions()
+                # and gives concrete trigger phrases for each.
+                track_name = context.get('track_name', 'Unknown') if context else 'Unknown'
+                car_name = context.get('car_name', 'Unknown') if context else 'Unknown'
                 system_message = {
                     "role": "system",
-                    "content": f"""You are an expert racing data analyst and AI assistant for sim racing. always stay in character.
-                    You help drivers understand their racing performance through telemetry analysis and personalized AI models.
-                    Also, user can ask you to perform some actions using the tools provided.
-
-                    user is on Track: {context.get('track_name', 'Unknown') if context else 'Unknown'} driving {context.get('car_name', 'Unknown') if context else 'Unknown'}
-
-                    IMPORTANT: You can call specialized functions which can extract useful data to answer user questions or perform some actions or enable some features requested by the user:
-                    
-                    AI MODEL FUNCTIONS (Personalized predictions using user's own driving data):
-                    - train_telemetry_ai_model: Train custom AI models on user's telemetry data
-                    - track_detail_for_guide: start the guiding process. after calling this function, you still need to generate some sentences for gas, brake, and throttle inputs. comboine the cornering analysis data with the simple guidance data to generate detailed driving guide and real-time driving guide on track display at specific points on the track. system will notice how to process the response
-
-                    PROCESS:
-                    1. Understand what the user wants to know or achieve
-                    2. Call appropriate functions to get data from telemetry systems and AI models, or perform actions
-                    3. Use your racing expertise to interpret the data
-                    4. Provide comprehensive, actionable advice based on actual data, or request the system to do something
-                    
-                    EXAMPLES:
-                    - "i want you guide me on track" → Call follow_expert_line
-                    
-                    Always base your answers on real data from the functions, not assumptions.
-                    The AI models learn from each user's unique driving style for personalized predictions.
-                    """
+                    "content": (
+                        "You are a racing telemetry coach for sim racing. Stay in character.\n"
+                        f"Current session: track={track_name}, car={car_name}\n"
+                        "\n"
+                        "Available tools (call only when the user asks something the tool answers):\n"
+                        "- check_car_limit(session_id, data_types?): "
+                        "Use when the user asks whether they are pushing the car to its limit, "
+                        "or about speed/braking/steering optimality.\n"
+                        "- track_detail_for_guide(track_name): "
+                        "Use when the user asks to be guided on the track or for a driving guide. "
+                        "After calling it, return a JSON object with keys "
+                        "throttle_guidance, brake_guidance, steering_guidance — each a list of "
+                        "exactly 4 short technique sentences. No prose around the JSON.\n"
+                        "\n"
+                        "Trigger phrases:\n"
+                        "- \"guide me on track\" / \"help me drive this track\" / \"start guiding\" "
+                        "→ call track_detail_for_guide.\n"
+                        "- \"am I at the limit\" / \"is this fast enough\" / \"how is my braking\" "
+                        "→ call check_car_limit.\n"
+                        "- General racing questions (\"how should I brake at high speed?\") "
+                        "→ answer directly in 2-3 sentences, do not call tools.\n"
+                        "\n"
+                        "Ground all answers in data the tools return. Be concise unless the user "
+                        "asks for detail."
+                    ),
                 }
                 
                 # Build messages array - use provided conversation history or start fresh
@@ -183,17 +241,19 @@ class AIService:
                 raise Exception(f"Tools preparation failed: {str(e)}") from e
 
             try:
-                response = await self.openai_client.chat.completions.create(
-                    model="gpt-4o",
+                response = await self.llm_client.chat.completions.create(
+                    model=self.chat_model,
                     messages=messages,
                     tools=tools,
                     tool_choice="auto",
-                temperature=0.7,
-                max_tokens=500
-            )
+                    temperature=0.7,
+                    max_tokens=500,
+                )
             except Exception as e:
-                print(f"[ERROR] OpenAI API call failed: {str(e)}")
-                raise Exception(f"OpenAI API call failed: {str(e)}") from e
+                print(f"[ERROR] LLM call failed ({self.llm_provider} / {self.chat_model}): {str(e)}")
+                raise Exception(
+                    f"LLM call failed ({self.llm_provider} / {self.chat_model}): {str(e)}"
+                ) from e
             
             try:
                 message = response.choices[0].message
@@ -273,17 +333,19 @@ class AIService:
                 except Exception as e:
                     raise Exception(f"Function execution loop failed: {str(e)}") from e
                 
-                print(f"[DEBUG] All functions executed, sending results back to OpenAI for final response")
-                # STEP 3: Send function results back to OpenAI for final comprehensive response
+                print(f"[DEBUG] All functions executed, sending results back to LLM for final response")
+                # STEP 3: Send function results back to the LLM for final comprehensive response
                 try:
-                    final_response = await self.openai_client.chat.completions.create(
-                        model="gpt-4o",
+                    final_response = await self.llm_client.chat.completions.create(
+                        model=self.chat_model,
                         messages=messages,
                         temperature=0.7,
-                        max_tokens=1500
+                        max_tokens=1500,
                     )
                 except Exception as e:
-                    raise Exception(f"Final OpenAI API call failed: {str(e)}") from e
+                    raise Exception(
+                        f"Final LLM call failed ({self.llm_provider} / {self.chat_model}): {str(e)}"
+                    ) from e
                 
                 try:
                     final_answer = final_response.choices[0].message.content
@@ -347,7 +409,272 @@ class AIService:
                 ],
                 "context": context
             })
-    
+
+    # ------------------------------------------------------------------
+    # Phase 2.5 — Streaming natural-language query
+    # ------------------------------------------------------------------
+
+    async def stream_natural_language_query(
+        self,
+        prompt: str,
+        context: Optional[Dict[str, Any]] = None,
+        conversation_history: Optional[List[Dict[str, Any]]] = None,
+    ) -> AsyncIterator[str]:
+        """Streaming variant of `process_natural_language_query`.
+
+        Yields pre-formatted SSE event strings (see voice.stream_events).
+        The caller wraps these in a FastAPI `StreamingResponse` with
+        media_type="text/event-stream".
+
+        Flow:
+            Stage 1 (non-streaming, fast): decide whether to call a tool.
+            Tool path:
+                emit tool_start → execute → emit tool_end → stream stage 2
+                with token + sentence-chunked audio events.
+            No-tool path:
+                emit the stage 1 content as a single token event, then
+                synthesize each sentence and emit audio events.
+            Always:
+                terminate with a `done` event carrying answer + side_products
+                + messages so the frontend can run post-response hooks.
+
+            On any unhandled exception: emit one `error` event and return.
+        """
+        try:
+            async for chunk in self._stream_impl(prompt, context, conversation_history):
+                yield chunk
+        except Exception as exc:
+            LOGGER.exception("stream_natural_language_query failed")
+            yield event_error(str(exc), error_type=type(exc).__name__)
+
+    async def _stream_impl(
+        self,
+        prompt: str,
+        context: Optional[Dict[str, Any]],
+        conversation_history: Optional[List[Dict[str, Any]]],
+    ) -> AsyncIterator[str]:
+        if not self.llm_client:
+            yield event_error(
+                f"LLM client is not available (provider={self.llm_provider})",
+                error_type="LLMUnavailable",
+            )
+            return
+
+        # --- Build messages (shared with process_natural_language_query) ---
+        track_name = context.get("track_name", "Unknown") if context else "Unknown"
+        car_name = context.get("car_name", "Unknown") if context else "Unknown"
+        system_message = {
+            "role": "system",
+            "content": (
+                "You are a racing telemetry coach for sim racing. Stay in character.\n"
+                f"Current session: track={track_name}, car={car_name}\n"
+                "\n"
+                "Available tools (call only when the user asks something the tool answers):\n"
+                "- check_car_limit(session_id, data_types?): "
+                "Use when the user asks whether they are pushing the car to its limit, "
+                "or about speed/braking/steering optimality.\n"
+                "- track_detail_for_guide(track_name): "
+                "Use when the user asks to be guided on the track or for a driving guide. "
+                "After calling it, return a JSON object with keys "
+                "throttle_guidance, brake_guidance, steering_guidance — each a list of "
+                "exactly 4 short technique sentences. No prose around the JSON.\n"
+                "\n"
+                "Trigger phrases:\n"
+                "- \"guide me on track\" / \"help me drive this track\" / \"start guiding\" "
+                "→ call track_detail_for_guide.\n"
+                "- \"am I at the limit\" / \"is this fast enough\" / \"how is my braking\" "
+                "→ call check_car_limit.\n"
+                "- General racing questions (\"how should I brake at high speed?\") "
+                "→ answer directly in 2-3 sentences, do not call tools.\n"
+                "\n"
+                "Ground all answers in data the tools return. Be concise unless the user "
+                "asks for detail."
+            ),
+        }
+
+        if conversation_history and len(conversation_history) > 0:
+            messages = conversation_history.copy()
+            messages.append({"role": "user", "content": prompt})
+        else:
+            messages = [system_message, {"role": "user", "content": prompt}]
+
+        tools = [
+            {"type": "function", "function": func}
+            for func in self.get_available_functions()
+        ]
+
+        # --- Stage 1: non-streaming tool routing ---
+        # Keep this non-streaming so we have the complete tool_call (if any)
+        # before deciding how to handle the response. Stage 1 is fast (<500ms).
+        try:
+            stage1 = await self.llm_client.chat.completions.create(
+                model=self.chat_model,
+                messages=messages,
+                tools=tools,
+                tool_choice="auto",
+                temperature=0.7,
+                max_tokens=500,
+            )
+        except Exception as exc:
+            yield event_error(
+                f"Stage 1 LLM call failed: {exc}",
+                error_type=type(exc).__name__,
+            )
+            return
+
+        stage1_msg = stage1.choices[0].message
+        side_products: Dict[str, Any] = {}
+
+        # --- Branch A: no tool — emit stage 1 content directly with TTS ---
+        if not stage1_msg.tool_calls:
+            answer_text = stage1_msg.content or ""
+            messages.append({"role": "assistant", "content": answer_text})
+
+            # Single token event with the full answer; client renders immediately.
+            # (Token-by-token streaming on the no-tool path would require
+            # stream=True in stage 1, which complicates tool_call detection.
+            # The audio still streams sentence-by-sentence below.)
+            if answer_text:
+                yield event_token(answer_text)
+                async for audio_evt in self._synth_text_to_audio_events(answer_text):
+                    yield audio_evt
+
+            yield event_done(
+                answer=answer_text,
+                side_products=side_products if side_products else None,
+                context=context,
+                messages=messages,
+            )
+            return
+
+        # --- Branch B: tool call(s) — execute, then stream stage 2 ---
+        LOGGER.debug("Stream: stage 1 produced %d tool_call(s)", len(stage1_msg.tool_calls))
+
+        messages.append({
+            "role": "assistant",
+            "content": stage1_msg.content,
+            "tool_calls": stage1_msg.tool_calls,
+        })
+
+        for tool_call in stage1_msg.tool_calls:
+            try:
+                fn_name = tool_call.function.name
+                fn_args = json.loads(tool_call.function.arguments or "{}")
+            except Exception as exc:
+                yield event_tool_end(
+                    name=getattr(tool_call.function, "name", "unknown"),
+                    ok=False,
+                    error=f"Argument parse failed: {exc}",
+                )
+                continue
+
+            yield event_tool_start(fn_name, fn_args)
+
+            try:
+                result = await self._execute_function(fn_name, fn_args, context)
+                if isinstance(result, dict):
+                    public = {k: v for k, v in result.items() if not k.startswith("_")}
+                    private = {k: v for k, v in result.items() if k.startswith("_")}
+                    if private:
+                        side_products[fn_name] = private
+                    tool_payload = public if public else result
+                else:
+                    tool_payload = result
+                yield event_tool_end(fn_name, ok=True)
+            except Exception as exc:
+                LOGGER.exception("Tool %s failed", fn_name)
+                tool_payload = {"error": str(exc)}
+                yield event_tool_end(fn_name, ok=False, error=str(exc))
+
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tool_call.id,
+                "content": json.dumps(tool_payload),
+            })
+
+        # Stage 2: final answer, streamed token-by-token with audio per sentence.
+        accumulated_answer: List[str] = []
+        try:
+            stage2_stream = await self.llm_client.chat.completions.create(
+                model=self.chat_model,
+                messages=messages,
+                temperature=0.7,
+                max_tokens=1500,
+                stream=True,
+            )
+        except Exception as exc:
+            yield event_error(
+                f"Stage 2 LLM call failed: {exc}",
+                error_type=type(exc).__name__,
+            )
+            return
+
+        streamer = SentenceStreamer(min_words=6)
+        async for chunk in stage2_stream:
+            try:
+                delta_text = chunk.choices[0].delta.content
+            except (AttributeError, IndexError):
+                continue
+            if not delta_text:
+                continue
+
+            accumulated_answer.append(delta_text)
+            yield event_token(delta_text)
+
+            streamer.feed(delta_text)
+            for sentence in list(streamer.drain_sentences()):
+                async for audio_evt in self._synth_sentence_to_audio_event(sentence):
+                    yield audio_evt
+
+        # Flush any trailing partial sentence at end-of-stream.
+        for sentence in list(streamer.flush()):
+            async for audio_evt in self._synth_sentence_to_audio_event(sentence):
+                yield audio_evt
+
+        final_answer = "".join(accumulated_answer)
+        messages.append({"role": "assistant", "content": final_answer})
+
+        yield event_done(
+            answer=final_answer,
+            side_products=side_products if side_products else None,
+            context=context,
+            messages=messages,
+        )
+
+    # ------------------------------------------------------------------
+    # Streaming helpers
+    # ------------------------------------------------------------------
+
+    async def _synth_text_to_audio_events(self, text: str) -> AsyncIterator[str]:
+        """Split `text` into sentences and emit an `audio` event per sentence.
+
+        Used on the no-tool path where we already have the full answer.
+        """
+        streamer = SentenceStreamer(min_words=6)
+        streamer.feed(text)
+        # Force trailing partial through too — we already have the whole text.
+        for sentence in list(streamer.drain_sentences()):
+            async for evt in self._synth_sentence_to_audio_event(sentence):
+                yield evt
+        for sentence in list(streamer.flush()):
+            async for evt in self._synth_sentence_to_audio_event(sentence):
+                yield evt
+
+    async def _synth_sentence_to_audio_event(self, sentence: str) -> AsyncIterator[str]:
+        """Synthesize one sentence via Kokoro and yield one `audio` event.
+
+        Failures are logged and swallowed — the user still sees the text,
+        just without spoken audio for that sentence.
+        """
+        try:
+            kokoro = await get_kokoro_service()
+            wav_bytes = await kokoro.synthesize(sentence)
+            wav_b64 = base64.b64encode(wav_bytes).decode("ascii")
+            yield event_audio(sentence, wav_b64)
+        except Exception as exc:
+            LOGGER.warning("Kokoro synth failed for sentence: %s", exc)
+            # No event emitted — let the text stream continue without audio for this sentence.
+
     async def _execute_function(self, function_name: str, arguments: Dict[str, Any], context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Execute the called function to retrieve data from local AI models and telemetry systems
         

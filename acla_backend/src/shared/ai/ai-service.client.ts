@@ -94,6 +94,14 @@ export interface ImitationLearningGuidanceResponse {
     confidence_score?: number;
 }
 
+// Phase 2 — text-to-speech via Kokoro
+export interface VoiceSynthesizeRequest {
+    text: string;
+    voice?: string;       // e.g. "af_bella"; defaults to AI service's kokoro_default_voice
+    speed?: number;       // 0.5..2.0
+    language?: string;    // e.g. "en-us"
+}
+
 @Injectable()
 export class AiServiceClient {
     private readonly aiServiceUrl: string;
@@ -162,6 +170,68 @@ export class AiServiceClient {
         } catch (error) {
             throw new HttpException(
                 `AI Service imitation learning guidance failed: ${error.message}`,
+                HttpStatus.SERVICE_UNAVAILABLE
+            );
+        }
+    }
+
+    /**
+     * Phase 2 — Neural text-to-speech via Kokoro.
+     * Returns raw WAV bytes (audio/wav). The controller forwards these
+     * to the browser, which plays them via HTMLAudioElement, replacing
+     * the robotic window.speechSynthesis output.
+     */
+    async synthesizeVoice(request: VoiceSynthesizeRequest): Promise<Buffer> {
+        try {
+            const response = await axios.post(
+                `${this.aiServiceUrl}/voice/synthesize`,
+                request,
+                { responseType: 'arraybuffer' },
+            );
+            return Buffer.from(response.data);
+        } catch (error) {
+            throw new HttpException(
+                `AI Service voice synthesis failed: ${error.message}`,
+                HttpStatus.SERVICE_UNAVAILABLE
+            );
+        }
+    }
+
+    /**
+     * Phase 2.5 — Streaming version of processQuery.
+     * Returns the raw axios stream so the controller can pipe SSE bytes
+     * straight through to the browser without parsing them. Caller is
+     * responsible for setting SSE response headers and ending the response.
+     */
+    async streamQuery(query: QueryRequest): Promise<NodeJS.ReadableStream> {
+        try {
+            const response = await axios.post(
+                `${this.aiServiceUrl}/naturallanguagequery/stream`,
+                query,
+                {
+                    responseType: 'stream',
+                    // No timeout — the stream is long-lived by design.
+                    timeout: 0,
+                    headers: { Accept: 'text/event-stream' },
+                },
+            );
+            return response.data as NodeJS.ReadableStream;
+        } catch (error) {
+            throw new HttpException(
+                `AI Service stream query failed: ${error.message}`,
+                HttpStatus.SERVICE_UNAVAILABLE
+            );
+        }
+    }
+
+    /** Phase 2 — list available Kokoro voices. */
+    async listVoices(): Promise<{ voices: string[]; count: number }> {
+        try {
+            const response = await axios.get(`${this.aiServiceUrl}/voice/voices`);
+            return response.data;
+        } catch (error) {
+            throw new HttpException(
+                `AI Service voice listing failed: ${error.message}`,
                 HttpStatus.SERVICE_UNAVAILABLE
             );
         }

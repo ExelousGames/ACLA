@@ -30,6 +30,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libcurl4-openssl-dev \
     curl \
     ca-certificates \
+    bash \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Node.js 20 + Claude Code CLI (driven by claude-agent-sdk for the
@@ -51,9 +52,11 @@ RUN git clone https://github.com/ROCm/llama.cpp /opt/llama.cpp \
 
 # Copy the rest of the application
 COPY . .
+RUN chmod +x /app/start-dev.sh /app/scripts/start_llama_server.sh \
+    && mkdir -p /app/models/llama_server /app/models/kokoro
 
-# Expose ports
-EXPOSE 8000 8501
+# Expose ports: 8000 = FastAPI, 8080 = llama-server, 8501 = streamlit UI
+EXPOSE 8000 8080 8501
 
 # Start the application
 CMD ["./start-dev.sh"]

@@ -18,6 +18,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     g++ \
     git \
+    curl \
+    bash \
     && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* \
     && update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1 \
     && update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1
@@ -52,10 +54,11 @@ RUN CMAKE_ARGS="-DGGML_CUDA=on" pip install --no-cache-dir llama-cpp-python
 # Copy application code and setup in single layer
 COPY . .
 ENV STREAMLIT_CONFIG_FILE=/app/.streamlit/config.toml
-RUN chmod +x /app/start-dev.sh
+RUN chmod +x /app/start-dev.sh /app/scripts/start_llama_server.sh \
+    && mkdir -p /app/models/llama_server /app/models/kokoro
 
-# Expose port
-EXPOSE 8000
+# Expose ports: 8000 = FastAPI, 8080 = llama-server (internal sidecar; host network in dev compose)
+EXPOSE 8000 8080
 
 # Command to run the application in development mode with memory-efficient options
 CMD ["/app/start-dev.sh"]
