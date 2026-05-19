@@ -119,11 +119,19 @@ def _build_system_prompt(request: AgentRequest) -> str:
         "- `get_graph_guidance(graph_ids)` — per-graph `how_to_analyze` + "
         "glossary blocks for the subset you actually want to inspect.\n"
         "- `render_graph(graph_id, start, end)` — PNG image + one-line "
-        "descriptor over an iloc window. You can see the image natively.\n"
+        "descriptor over an iloc window. You can see the image natively. "
+        "Range must lie inside the working section.\n"
+        "- `peek_graph(graph_id, start, end)` — same as `render_graph` but "
+        "the range may extend outside the working section, up to the full "
+        "lap. Use to inspect adjacent telemetry for disambiguation (e.g. "
+        "pit-limiter speed just before the section). Does NOT change the "
+        "working range; you cannot label outside the section.\n"
         "- `query_telemetry(query_id, params_json)` — deterministic numeric "
         "queries on the raw DataFrame. Returns exact ilocs / values — "
         "prefer this over estimating from images. `params_json` must "
-        "include `range: [start_iloc, end_iloc]`.\n"
+        "include `range: [start_iloc, end_iloc]`; the range may extend "
+        "outside the working section for context (same envelope as "
+        "`peek_graph`).\n"
         "- `compute_expert_phases(start, end)` — corner entry/apex/exit "
         "ilocs derived from expert telemetry.\n"
         "- `locate_circuit_section(start, end)` — named-section match "
@@ -144,8 +152,11 @@ def _build_system_prompt(request: AgentRequest) -> str:
         "\n"
         "### Working range\n"
         f"Initial range: [{request.parent_start}, {request.parent_end}].\n"
-        "All iloc arguments must lie inside this range unless `revise_range` "
-        "has narrowed/widened it.\n"
+        "Iloc arguments to `render_graph`, `compute_expert_phases`, and "
+        "`locate_circuit_section` must lie inside this range unless "
+        "`revise_range` has moved it. `peek_graph` and `query_telemetry` "
+        "may use any range inside the full lap for context, but the "
+        "submission stays anchored to the working section.\n"
         "\n"
         "### Hard rules\n"
         "- Do not invent identifiers. Use only the IDs / labels / "
@@ -181,6 +192,14 @@ class _ToolSurface:
             e2 = min(hi, s2 + 1)
         return s2, e2
 
+    def _clamp_to_lap(self, s: int, e: int) -> tuple[int, int]:
+        n = len(self.df)
+        s2 = max(0, int(s))
+        e2 = min(n, int(e))
+        if e2 <= s2:
+            e2 = min(n, s2 + 1)
+        return s2, e2
+
     def _emit_tool_event(self, name: str, inp: Dict[str, Any], summary: str) -> None:
         inp_str = json.dumps(inp, default=str)
         if len(inp_str) > 400:
@@ -214,8 +233,8 @@ class _ToolSurface:
         return json.dumps(att.content, default=str)
 
     def get_graph_guidance(self, graph_ids: List[str]) -> str:
-        from app.skills import skills
-        text = skills.render("graph_analysis", graph_ids=list(graph_ids))
+        from app.services.llm.skill_prompts import graph_analysis_prompt
+        text = graph_analysis_prompt(graph_ids=list(graph_ids))
         return text or "(no guidance available for the requested graph(s))"
 
     def render_graph(self, graph_id: str, start: int, end: int) -> Dict[str, Any]:
@@ -255,6 +274,52 @@ class _ToolSurface:
             ],
         }
 
+    def peek_graph(self, graph_id: str, start: int, end: int) -> Dict[str, Any]:
+        """Like ``render_graph`` but clamped to the LAP envelope, not the
+        working section. Use to inspect telemetry just before / after the
+        section for context (e.g. pit-limiter speed in the prior ilocs).
+        Does NOT change the working range; cannot be used by
+        ``submit_result`` to justify a label outside the section.
+        """
+        from app.services.llm.agent.tools import build_graph, render_graph_builds
+        s, e = self._clamp_to_lap(start, end)
+        table = build_graph(graph_id, self.df)
+        if table is None or table.empty:
+            return {
+                "content": [{
+                    "type": "text",
+                    "text": (
+                        f"Cannot peek `{graph_id}` over [{s}, {e}]: the "
+                        f"underlying telemetry columns are not present."
+                    ),
+                }],
+                "is_error": True,
+            }
+        rendered = render_graph_builds({graph_id: table}, s, e)
+        if not rendered:
+            return {
+                "content": [{
+                    "type": "text",
+                    "text": f"`{graph_id}` produced no image for [{s}, {e}].",
+                }],
+                "is_error": True,
+            }
+        img, desc = rendered[0]
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        png_bytes = buf.getvalue()
+        self.capture.rendered_images.append(png_bytes)
+        encoded = base64.b64encode(png_bytes).decode("ascii")
+        return {
+            "content": [
+                {"type": "image", "data": encoded, "mimeType": "image/png"},
+                {"type": "text", "text": (
+                    f"{desc} (peek — context only, working range unchanged, "
+                    f"rendered over [{s}, {e}])"
+                )},
+            ],
+        }
+
     def query_telemetry(self, query_id: str, params_json: str) -> str:
         from app.services.llm.agent.tools import run_pipeline_query
         try:
@@ -291,10 +356,10 @@ class _ToolSurface:
                 "ok": False,
                 "error": f"new range [{s}, {e}] requires start < end",
             })
-        if (e - s) < 1:
+        if (e - s) < 5:
             return json.dumps({
                 "ok": False,
-                "error": "new range too short — at least 1 iloc required",
+                "error": f"new range too short ({e - s} ilocs) — minimum 5 required",
             })
         self.capture.cur_start = s
         self.capture.cur_end = e
@@ -390,12 +455,37 @@ def _build_tool_set(surface: _ToolSurface):
         return result
 
     @tool(
+        "peek_graph",
+        "Render ONE telemetry graph over an iloc window that may extend "
+        "OUTSIDE the working section, up to the full lap envelope. Same "
+        "PNG + descriptor shape as `render_graph`. Use to inspect telemetry "
+        "just before / after the section for disambiguation (e.g. "
+        "pit-limiter speed in the prior ilocs). Does NOT change the working "
+        "range — `submit_result` is still constrained to the section. "
+        "`query_telemetry` already accepts arbitrary ranges, so this tool "
+        "exists specifically for image-based context.",
+        {"graph_id": str, "start": int, "end": int},
+    )
+    async def peek_graph(args):
+        result = surface.peek_graph(
+            str(args["graph_id"]), int(args["start"]), int(args["end"]),
+        )
+        surface._emit_tool_event(
+            "peek_graph",
+            {"graph_id": args.get("graph_id"), "start": args.get("start"), "end": args.get("end")},
+            "image returned (peek)" if not result.get("is_error") else "peek failed",
+        )
+        return result
+
+    @tool(
         "query_telemetry",
         "Run a deterministic numeric query on the raw telemetry DataFrame. "
         "`query_id` is one of: find_extremum, find_first_match, "
         "read_values_at_indices, compute_slope, find_dips_on_main_slope, "
         "find_threshold_crossing. `params_json` is a JSON-encoded object that "
-        "must include `range: [start_iloc, end_iloc]` plus per-query fields.",
+        "must include `range: [start_iloc, end_iloc]` plus per-query fields. "
+        "The `range` may extend outside the working section for context "
+        "(same envelope as `peek_graph`).",
         {"query_id": str, "params_json": str},
     )
     async def query_telemetry(args):
@@ -473,7 +563,7 @@ def _build_tool_set(surface: _ToolSurface):
         return {"content": [{"type": "text", "text": text}]}
 
     tools_list = [
-        list_graphs, get_graph_guidance, render_graph, query_telemetry,
+        list_graphs, get_graph_guidance, render_graph, peek_graph, query_telemetry,
         compute_expert_phases, locate_circuit_section,
         get_circuit_id,
         revise_range, submit_result,
@@ -482,6 +572,7 @@ def _build_tool_set(surface: _ToolSurface):
         "mcp__agent__list_graphs",
         "mcp__agent__get_graph_guidance",
         "mcp__agent__render_graph",
+        "mcp__agent__peek_graph",
         "mcp__agent__query_telemetry",
         "mcp__agent__compute_expert_phases",
         "mcp__agent__locate_circuit_section",

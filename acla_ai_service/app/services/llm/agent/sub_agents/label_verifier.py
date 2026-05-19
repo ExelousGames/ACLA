@@ -20,7 +20,8 @@ import logging
 from typing import Any, Dict, List, Tuple
 
 from app.models.segment_models import LABEL_MAPPING
-from app.skills import embed, skills
+from app.skill_manager import embed
+from app.services.llm.label_catalog import find_labels, get_label
 from app.services.llm.agent.framework import Agent, AgentState
 from app.services.llm.agent.evaluators import (
     AttachmentPool,
@@ -41,9 +42,9 @@ def _shortlist_candidate_ids(parent_main_labels: List[str]) -> List[str]:
     """Return the deduplicated candidate label IDs the filter scores."""
     candidate_ids: List[str] = []
     for pid in parent_main_labels:
-        for entry in skills.find("sub_label_catalog.labels", parent=pid):
+        for entry in find_labels(parent=pid):
             candidate_ids.append(entry["id"])
-    for entry in skills.find("sub_label_catalog.labels", type="segment_type"):
+    for entry in find_labels(type="segment_type"):
         candidate_ids.append(entry["id"])
 
     seen: set = set()
@@ -56,7 +57,7 @@ def _shortlist_candidate_ids(parent_main_labels: List[str]) -> List[str]:
 
 
 def _entry_to_payload(lid: str, similarity: Any) -> Dict[str, Any]:
-    entry = skills.get(f"sub_label_catalog.labels.{lid}")
+    entry = get_label(lid)
     return {
         "label_id": lid,
         "name": entry["name"] if entry else LABEL_MAPPING.get(lid, lid),
@@ -88,7 +89,7 @@ def compute_verified_labels(
 
     label_texts: List[str] = []
     for lid in shortlisted:
-        entry = skills.get(f"sub_label_catalog.labels.{lid}")
+        entry = get_label(lid)
         if entry:
             desc = entry.get("description", "")
             text = f"{entry['name']}: {desc}" if desc else entry["name"]

@@ -605,6 +605,272 @@ def render_batch_auto_annotation(df, selected_annotation_key):
     st.session_state.pop("agent_annot_followup_chat", None)
 
 
+def render_batch_lap_agent_claude(df, session_id, selected_annotation_key):
+    """Batch Claude Lap-to-Segment Excerpter.
+
+    Picks a lap range, rough-splits it via ``split_lap_by_circuit_sections``,
+    then runs the Claude `flow="lap"` pipeline on every section in order.
+    Each result is auto-saved as a new ``AnnotatedSegment``. When the agent
+    revises a boundary, the downstream tail is re-split from the new end
+    so the next iteration sees the shifted partition.
+    """
+    from .components._lap_agent_shared import (
+        track_name_to_circuit_id, run_split, rebuild_remaining_segments,
+    )
+    from app.models.segment_models import AnnotatedSegment
+
+    st.header("Batch Lap-to-Segment Excerpter (☁️ Claude)")
+    st.write(
+        "Pick a lap range; the deterministic splitter partitions it into "
+        "per-`circuit_section` sub-ranges, then Claude annotates **every** "
+        "section automatically and auto-saves each result as a new segment."
+    )
+
+    track_name = (
+        df["Static_track"].iloc[0]
+        if "Static_track" in df.columns and not df.empty else None
+    )
+    circuit_id = track_name_to_circuit_id(track_name)
+    if not circuit_id:
+        st.warning(
+            "Cannot detect the circuit from `Static_track`. The lap "
+            "excerpter needs a recognised circuit. Skipping."
+        )
+        return
+    st.caption(f"Detected circuit: `{circuit_id}`")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        lap_start = st.number_input(
+            "Lap start index", min_value=0, max_value=max(len(df) - 1, 0),
+            value=0, key="batch_lap_claude_start",
+        )
+    with col2:
+        lap_end = st.number_input(
+            "Lap end index", min_value=1, max_value=len(df),
+            value=min(len(df), 5000), key="batch_lap_claude_end",
+        )
+
+    if lap_end - lap_start < 3:
+        st.warning(f"Lap range too short — pick at least 3 ilocs (currently {lap_end - lap_start}).")
+        return
+
+    st.markdown("---")
+    max_iterations = st.number_input(
+        "Tool-call budget (×10)", min_value=1, max_value=10, value=3,
+        help="Caps the agent loop at this many tool calls × 10 per section.",
+        key="batch_lap_claude_max_iter",
+    )
+    from app.services.llm.agent.backends.claude_sdk import CLAUDE_VLM_MODELS
+    claude_model = st.selectbox(
+        "Claude model", options=list(CLAUDE_VLM_MODELS.keys()),
+        format_func=lambda x: CLAUDE_VLM_MODELS[x]["label"],
+        index=0, key="batch_lap_claude_model",
+    )
+    use_thinking = st.checkbox(
+        "Use extended thinking", value=False, key="batch_lap_claude_thinking",
+    )
+    st.caption(
+        "ℹ️ Routed through `claude-agent-sdk` → your local `claude` CLI login. "
+        "Subject to Max-plan rate limits — heavy batches may stall."
+    )
+
+    st.markdown("---")
+    skip_overlap = st.checkbox(
+        "Skip sections that overlap existing annotations",
+        value=True, key="batch_lap_claude_skip_overlap",
+        help=(
+            "Recommended — avoids re-annotating sections you've already "
+            "labelled. When unchecked, the agent runs on every section "
+            "and creates duplicate annotations on top of existing ones."
+        ),
+    )
+
+    if "batch_lap_claude_logs" not in st.session_state:
+        st.session_state["batch_lap_claude_logs"] = []
+
+    col_run, col_clear = st.columns([1, 1])
+    with col_run:
+        run_clicked = st.button(
+            "▶ Run Batch Lap Excerpter",
+            key="batch_lap_claude_run", type="primary",
+        )
+    with col_clear:
+        if st.button("Clear log", key="batch_lap_claude_clear_log"):
+            st.session_state["batch_lap_claude_logs"] = []
+            st.rerun()
+
+    progress_bar = st.progress(0.0)
+    status_text = st.empty()
+    log_area = st.empty()
+    logs = st.session_state["batch_lap_claude_logs"]
+
+    def _flush_log():
+        if logs:
+            log_area.code("\n".join(logs), language="text", line_numbers=True)
+
+    def log(msg: str):
+        ts = time.strftime("%H:%M:%S")
+        logs.append(f"[{ts}] {msg}")
+        if len(logs) > 1000:
+            del logs[: len(logs) - 1000]
+        _flush_log()
+
+    _flush_log()
+
+    if not run_clicked:
+        return
+
+    try:
+        from app.services.llm.annotation_pipeline import (
+            AnnotationPipelineConfig, run_annotation,
+        )
+    except ImportError as e:
+        st.error(
+            f"Missing dependency: {e}\n\nInstall with `pip install claude-agent-sdk`."
+        )
+        return
+
+    config = AnnotationPipelineConfig(
+        backend="claude",
+        max_iterations=int(max_iterations),
+        claude_model=claude_model,
+        claude_use_thinking=bool(use_thinking),
+    )
+
+    segments = run_split(df, int(lap_start), int(lap_end), circuit_id)
+    if not segments:
+        st.info(
+            "The splitter produced zero sections — the circuit's "
+            "`normalized_position_range` values may not cover the picked range."
+        )
+        return
+
+    log(f"Starting batch lap excerpter: {len(segments)} section(s), "
+        f"lap=[{int(lap_start)}, {int(lap_end)}], circuit={circuit_id}")
+
+    saved_count = 0
+    skipped_count = 0
+    error_count = 0
+    i = 0
+    while i < len(segments):
+        seg = segments[i]
+        sec_id = seg["circuit_section_id"]
+        sec_start = int(seg["start_index"])
+        sec_end = int(seg["end_index"])
+
+        if skip_overlap and _section_overlaps_existing(sec_start, sec_end):
+            log(f"Section #{i} `{sec_id}` [{sec_start}, {sec_end}]: skipped (overlaps existing annotation).")
+            skipped_count += 1
+            i += 1
+            progress_bar.progress((i) / len(segments))
+            continue
+
+        existing = _collect_existing_lap_annotations(int(lap_start), int(lap_end))
+
+        status_text.markdown(
+            f"**Section #{i + 1}/{len(segments)}** `{sec_id}` — [{sec_start}, {sec_end}], running Claude…"
+        )
+        log(f"Section #{i} `{sec_id}`: running [{sec_start}, {sec_end}]")
+
+        try:
+            result = run_annotation(
+                flow="lap",
+                df=df,
+                config=config,
+                session_id=session_id,
+                lap_start=int(lap_start),
+                lap_end=int(lap_end),
+                section_id=sec_id,
+                section_start=sec_start,
+                section_end=sec_end,
+                circuit_id=circuit_id,
+                existing_section_annotations=existing,
+            )
+        except Exception as e:
+            error_count += 1
+            log(f"Section #{i} `{sec_id}`: ERROR — {e}")
+            log(traceback.format_exc().splitlines()[-1])
+            i += 1
+            progress_bar.progress(i / len(segments))
+            continue
+
+        label_ids = [l for l in result.label_ids if l in LABEL_MAPPING]
+        if not label_ids:
+            log(f"Section #{i} `{sec_id}`: no valid labels resolved — skipped.")
+            error_count += 1
+            i += 1
+            progress_bar.progress(i / len(segments))
+            continue
+
+        new_ann = AnnotatedSegment(
+            id=str(uuid.uuid4()),
+            labels=label_ids,
+            segment_length=int(result.end_index) - int(result.start_index),
+            start_index=int(result.start_index),
+            end_index=int(result.end_index),
+            notes=(result.reasoning or "")[:1500],
+        )
+        annotations = list(st.session_state.get("current_annotations", []))
+        annotations.append(new_ann)
+        st.session_state["current_annotations"] = annotations
+        save_annotations(session_id, annotations, selected_annotation_key, silent=True)
+        saved_count += 1
+
+        if result.revised:
+            tail = rebuild_remaining_segments(
+                df, int(lap_start), int(lap_end), circuit_id, int(result.end_index),
+            )
+            segments = segments[: i + 1] + tail
+            segments[i] = {
+                **segments[i],
+                "start_index": int(result.start_index),
+                "end_index": int(result.end_index),
+                "circuit_section_id": result.section_id,
+            }
+            log(f"Section #{i} `{sec_id}`: saved (revised → "
+                f"[{result.start_index}, {result.end_index}]); tail rebuilt → "
+                f"{len(tail)} downstream section(s).")
+        else:
+            log(f"Section #{i} `{sec_id}`: saved [{result.start_index}, {result.end_index}] "
+                f"with {len(label_ids)} label(s).")
+
+        i += 1
+        progress_bar.progress(i / len(segments))
+
+    progress_bar.progress(1.0)
+    status_text.markdown(
+        f"**Done.** Saved: {saved_count}, skipped: {skipped_count}, errors: {error_count}."
+    )
+    log(f"Finished. {saved_count} saved, {skipped_count} skipped, {error_count} error(s).")
+
+
+def _section_overlaps_existing(sec_start: int, sec_end: int) -> bool:
+    """True if any current annotation overlaps the section range."""
+    for ann in st.session_state.get("current_annotations", []) or []:
+        s = int(getattr(ann, "start_index", 0) or 0)
+        e = int(getattr(ann, "end_index", 0) or 0)
+        if e > sec_start and s < sec_end:
+            return True
+    return False
+
+
+def _collect_existing_lap_annotations(lap_start: int, lap_end: int):
+    """Annotations overlapping the lap range — passed as dup-avoidance hints."""
+    out = []
+    for ann in st.session_state.get("current_annotations", []) or []:
+        s = int(getattr(ann, "start_index", 0) or 0)
+        e = int(getattr(ann, "end_index", 0) or 0)
+        if e <= lap_start or s >= lap_end:
+            continue
+        out.append({
+            "start_index": s,
+            "end_index": e,
+            "labels": list(getattr(ann, "labels", [])),
+        })
+    return out
+
+
 def render_bulk_label_utils(selected_annotation_key):
     """
     Renders bulk utilities like removing a specific label from all segments.
@@ -835,3 +1101,4 @@ def render_batch_view(selected_annotation_key, selected_session_key, available_s
     render_rule_based_annotation(df, selected_annotation_key)
     render_classifier_auto_annotation(df, selected_annotation_key)
     render_batch_auto_annotation(df, selected_annotation_key)
+    render_batch_lap_agent_claude(df, session_id, selected_annotation_key)

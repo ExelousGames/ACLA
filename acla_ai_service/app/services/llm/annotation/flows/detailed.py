@@ -19,8 +19,8 @@ import json
 import logging
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from app.skills import skills
 from app.models.segment_models import LABEL_MAPPING
+from app.services.llm.label_catalog import find_labels, get_label
 from app.services.llm.agent import (
     AgentRequest,
     AgentResponse,
@@ -93,7 +93,7 @@ def _local_planner_prompt(
     label_descriptions: List[str] = []
     annotation_guidelines: List[str] = []
     for label_id in parent_main_labels:
-        label_def = skills.get(f"sub_label_catalog.labels.{label_id}")
+        label_def = get_label(label_id)
         if not label_def:
             continue
         desc = label_def.get("description")
@@ -299,7 +299,7 @@ def _claude_task_prompt(
     seen: set = set()
     parent_label_blocks: List[str] = []
     for pid in parent_main_labels:
-        entry = skills.get(f"sub_label_catalog.labels.{pid}")
+        entry = get_label(pid)
         if entry is None:
             parent_label_blocks.append(
                 f"  - `{pid}` ({LABEL_MAPPING.get(pid, pid)})"
@@ -314,7 +314,7 @@ def _claude_task_prompt(
 
     sub_label_blocks: List[str] = []
     for pid in parent_main_labels:
-        for entry in skills.find("sub_label_catalog.labels", parent=pid):
+        for entry in find_labels(parent=pid):
             if entry["id"] in seen:
                 continue
             seen.add(entry["id"])
@@ -325,7 +325,7 @@ def _claude_task_prompt(
             sub_label_blocks.append(
                 f"  - `{entry['id']}` ({entry['name']}): {desc}{guideline}"
             )
-    for entry in skills.find("sub_label_catalog.labels", type="segment_type"):
+    for entry in find_labels(type="segment_type"):
         if entry["id"] in seen:
             continue
         seen.add(entry["id"])

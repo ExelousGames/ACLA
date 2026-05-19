@@ -17,8 +17,9 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import json as _json
 
-from app.skills import skills
 from app.models.segment_models import LABEL_MAPPING
+from app.services.llm.label_catalog import find_labels, get_label
+from app.services.llm.skill_prompts import lap_annotation_prompt
 from app.services.llm.agent import (
     AgentRequest,
     AgentResponse,
@@ -94,20 +95,18 @@ def _eligible_lap_labels_lines(circuit_id: str) -> List[str]:
     that needs the list inlined in its prompt.
     """
     lines: List[str] = []
-    circuit_entry = skills.get(f"sub_label_catalog.labels.{circuit_id}")
+    circuit_entry = get_label(circuit_id)
     if circuit_entry is not None:
         lines.append(f"  - `{circuit_entry['id']}` ({circuit_entry['name']})")
-    for entry in skills.find(
-        "sub_label_catalog.labels", type="circuit_section", parent=circuit_id,
-    ):
+    for entry in find_labels(type="circuit_section", parent=circuit_id):
         rng = entry.get("normalized_position_range")
         rng_str = (
             f"[{rng[0]:.3f}, {rng[1]:.3f}]" if rng is not None else "[null, null]"
         )
         lines.append(f"  - `{entry['id']}` ({entry['name']}) — range {rng_str}")
-    for entry in skills.find("sub_label_catalog.labels", type="segment_type"):
+    for entry in find_labels(type="segment_type"):
         lines.append(f"  - `{entry['id']}` ({entry['name']})")
-    for entry in skills.find("sub_label_catalog.labels", type="main"):
+    for entry in find_labels(type="main"):
         lines.append(f"  - `{entry['id']}` ({entry['name']})")
     return lines
 
@@ -132,9 +131,7 @@ def _local_planner_prompt(
         PIPELINE_TOOL_DEFINITIONS,
     )
 
-    section_entry = (
-        skills.get(f"sub_label_catalog.labels.{section_id}") if section_id else None
-    )
+    section_entry = get_label(section_id) if section_id else None
     section_name = section_entry["name"] if section_entry else section_id
     section_desc = (
         (section_entry.get("description") or "").strip() if section_entry else ""
@@ -156,7 +153,7 @@ def _local_planner_prompt(
         for t in PIPELINE_TOOL_DEFINITIONS
     ]
 
-    lap_skill_block = skills.render("lap_annotation", circuit_id=circuit_id)
+    lap_skill_block = lap_annotation_prompt(circuit_id=circuit_id)
 
     existing_block = ""
     if existing_section_annotations:
@@ -258,7 +255,7 @@ def _local_synth_prompts(
     circuit_id: str,
     verified_labels: List[str],
 ) -> Tuple[str, str]:
-    lap_skill_block = skills.render("lap_annotation", circuit_id=circuit_id)
+    lap_skill_block = lap_annotation_prompt(circuit_id=circuit_id)
     eligible_lines = _eligible_lap_labels_lines(circuit_id)
     verified_inline = (
         ", ".join(verified_labels) if verified_labels
@@ -330,7 +327,7 @@ def _claude_task_prompt(
     section_end: int,
     existing_section_annotations: List[dict],
 ) -> str:
-    lap_skill_block = skills.render("lap_annotation", circuit_id=None)
+    lap_skill_block = lap_annotation_prompt(circuit_id=None)
 
     existing_block = ""
     if existing_section_annotations:
@@ -370,8 +367,15 @@ def _claude_task_prompt(
         "the returned `circuit_id` (e.g. `brands_hatch`) for subsequent "
         "tool calls.\n"
         "2. **Resolve the named circuit_section.** Call "
-        "`locate_circuit_section(start, end)` on the rough boundary. Its "
-        "`best_match.label_id` is the `circuit_section_id` you'll attach.\n"
+        "`locate_circuit_section(start, end)` on the rough boundary. When "
+        "`is_ambiguous` is false, attach `best_match.label_id`. When it's "
+        "true, two or more sections share the position range (pit lane vs. "
+        "main straight is the canonical case) — enumerate `top_matches` "
+        "and disambiguate with a second signal (pit-limiter speed, "
+        "persistent ~lane-width lateral offset, brake/throttle pattern) "
+        "before picking the `circuit_section_id`. Reach for `peek_graph` "
+        "or out-of-range `query_telemetry` when the disambiguating signal "
+        "lives just before or after the section.\n"
         "3. **Learn the top-tier eligible labels.** Call "
         "`list_eligible_labels(circuit_id=<from step 1>)` once. The "
         "returned `groups` enumerate every circuit / circuit_section / "
@@ -389,10 +393,12 @@ def _claude_task_prompt(
         "partial-fit cases stay in the detailed-annotation flow.\n"
         "7. **Submit.** Call `submit_result` with the chosen IDs.\n"
         "\n"
-        "Call `revise_range` only if `locate_circuit_section` shows the "
-        "rough range straddles two catalog sections — boundary mechanics "
-        "are not the goal of this flow. After `submit_result` returns "
-        "`ok: true`, stop.\n"
+        "Call `revise_range` when one main-label signature does not hold "
+        "uniformly across the rough range — shrink to the ilocs where ONE "
+        "characteristic block fits cleanly, or extend outward (within the "
+        "lap range) when the signature clearly continues past the rough "
+        "end. Re-render the diagnostic graphs on the new range before "
+        "submitting. After `submit_result` returns `ok: true`, stop.\n"
         "\n"
         "### Submit payload shape\n"
         "`payload_json` must be a JSON object of this shape:\n"
@@ -440,9 +446,7 @@ def build_request(
     config = config or BackendConfig()
     callbacks = callbacks or NoopCallbacks()
 
-    section_entry = (
-        skills.get(f"sub_label_catalog.labels.{section_id}") if section_id else None
-    )
+    section_entry = get_label(section_id) if section_id else None
     section_name = section_entry["name"] if section_entry else section_id
 
     parent_segment = Attachment(
@@ -582,10 +586,10 @@ def _parse_local(
             f"lap flow (local): revised_range [{new_start}, {new_end}] "
             f"outside lap [{lap_start}, {lap_end}] or start >= end"
         )
-    if (new_end - new_start) < 3:
+    if (new_end - new_start) < 5:
         raise RuntimeError(
             f"lap flow (local): revised_range too short "
-            f"({new_end - new_start} ilocs) — minimum 3"
+            f"({new_end - new_start} ilocs) — minimum 5"
         )
 
     raw_label_ids = parsed.get("label_ids") or []
@@ -651,10 +655,10 @@ def _parse_claude(
             f"lap flow (claude): final range [{new_start}, {new_end}] "
             f"outside lap [{lap_start}, {lap_end}]"
         )
-    if (new_end - new_start) < 3:
+    if (new_end - new_start) < 5:
         raise RuntimeError(
             f"lap flow (claude): final range too short "
-            f"({new_end - new_start} ilocs) — minimum 3"
+            f"({new_end - new_start} ilocs) — minimum 5"
         )
 
     # Prefer the submission summary as headline reasoning if present.

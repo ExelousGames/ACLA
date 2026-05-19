@@ -1178,9 +1178,14 @@ labels:
   brands_hatch17:
     name: "Pit"
     type: circuit_section
-    description: "Pit lane section at Brands Hatch. Close to the Brabham Straight,
-     driver may divert into the pit lane here instead of continuing on the main Brabham 
-     Straight."
+    description: "Pit lane section at Brands Hatch. Shares its
+     `normalized_position_range` with the adjacent Brabham Straight
+     (brands_hatch1), so `locate_circuit_section` returns both with
+     `is_ambiguous: true`. Disambiguate by `distance_to_expert_line`:
+     persistently large (≥ ~5 m) and NOT trending toward zero ⇒ pit
+     (player diverted off the racing line); offset small or trending
+     toward zero ⇒ the player is on the main straight (or merging
+     back from the pit exit, which is brands_hatch1)."
     parent: brands_hatch
     children: []
     exclusive_with: []
@@ -1373,7 +1378,14 @@ labels:
   silverstone19:
     name: "Pit"
     type: circuit_section
-    description: "Pit lane section at Silverstone."
+    description: "Pit lane section at Silverstone. When its
+     `normalized_position_range` is filled in, expect it to share that
+     range with the adjacent main straight (silverstone16), so
+     `locate_circuit_section` returns both with `is_ambiguous: true`.
+     Disambiguate by `distance_to_expert_line`: persistently large
+     (≥ ~5 m) and NOT trending toward zero ⇒ pit; offset small or
+     trending toward zero ⇒ the main straight (or merging back from
+     the pit exit, which is silverstone16)."
     parent: silverstone
     children: []
     exclusive_with: []

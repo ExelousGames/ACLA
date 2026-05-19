@@ -49,7 +49,7 @@ def list_eligible_labels(
         }
     """
     from app.services.llm.agent.evaluators import PipelineAttachment
-    from app.skills import skills
+    from app.services.llm.label_catalog import find_labels, get_label
 
     def _attach(groups: List[Dict[str, Any]]) -> "PipelineAttachment":
         return PipelineAttachment(
@@ -65,7 +65,7 @@ def list_eligible_labels(
 
     if parent_id:
         sub_entries: List[Dict[str, Any]] = []
-        for entry in skills.find("sub_label_catalog.labels", parent=parent_id):
+        for entry in find_labels(parent=parent_id):
             row: Dict[str, Any] = {
                 "id": entry["id"],
                 "name": entry["name"],
@@ -85,7 +85,7 @@ def list_eligible_labels(
     groups: List[Dict[str, Any]] = []
 
     if circuit_id:
-        circuit_entry = skills.get(f"sub_label_catalog.labels.{circuit_id}")
+        circuit_entry = get_label(circuit_id)
         circuit_rows: List[Dict[str, Any]] = []
         if circuit_entry is not None:
             circuit_rows.append({
@@ -95,9 +95,7 @@ def list_eligible_labels(
         groups.append({"tier": "circuit", "entries": circuit_rows})
 
         section_rows: List[Dict[str, Any]] = []
-        for entry in skills.find(
-            "sub_label_catalog.labels", type="circuit_section", parent=circuit_id,
-        ):
+        for entry in find_labels(type="circuit_section", parent=circuit_id):
             row: Dict[str, Any] = {"id": entry["id"], "name": entry["name"]}
             rng = entry.get("normalized_position_range")
             if rng is not None:
@@ -108,7 +106,7 @@ def list_eligible_labels(
         groups.append({"tier": "circuit_section", "entries": section_rows})
 
     st_rows: List[Dict[str, Any]] = []
-    for entry in skills.find("sub_label_catalog.labels", type="segment_type"):
+    for entry in find_labels(type="segment_type"):
         row: Dict[str, Any] = {"id": entry["id"], "name": entry["name"]}
         desc = (entry.get("description") or "").strip()
         if desc:
@@ -117,7 +115,7 @@ def list_eligible_labels(
     groups.append({"tier": "segment_type", "entries": st_rows})
 
     main_rows: List[Dict[str, Any]] = []
-    for entry in skills.find("sub_label_catalog.labels", type="main"):
+    for entry in find_labels(type="main"):
         row = {"id": entry["id"], "name": entry["name"]}
         ex_with = entry.get("exclusive_with") or []
         if ex_with:

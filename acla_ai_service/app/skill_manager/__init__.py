@@ -1,32 +1,34 @@
-"""All-in-one skill folder — document-store interface.
+"""Skill manager — orchestrator code separated from skill data.
 
-Layout: ``app/skills/<name>/{skill.yaml, data.py?, render.py?}``.
+Layout::
 
-All callers use the ``skills`` singleton with five verbs:
+    app/skill_manager/                 (this package — code)
+      __init__.py, _registry.py, _query.py, _embedder.py
+      skills/<name>.yaml               (data — drop a yaml in, restart)
+
+Skills are single yaml files; no Python escape hatches. Filtering,
+formatting, or merging skill data with non-skill state is done on the
+caller side.
+
+All callers use the ``skills`` singleton with four verbs:
 
   * ``skills.get(path)``               — dotted-path lookup
   * ``skills.find(path, **filters)``   — Mongo-style filter over a collection
   * ``skills.iter(path)``              — yield every document in a collection
-  * ``skills.render(name, **params)``  — call the skill's renderer
   * ``skills.search(query, top_k)``    — embedding similarity over discovery headers
-
-There is no skill-specific import surface (no ``LabelCatalog`` /
-``LapAnnotationSkill`` / ``GraphAnalysisSkill``). The renderer for each
-skill, if any, lives at ``app/skills/<name>/render.py`` and itself
-uses the query verbs internally.
 
 Sub-agents that need to embed text directly (e.g. label_verifier
 scoring observations against label descriptions) import ``embed`` /
-``cosine_sim`` from :mod:`app.skills._embedder` — same model singleton
-as the registry's discovery index.
+``cosine_sim`` from :mod:`app.skill_manager._embedder` — same model
+singleton as the registry's discovery index.
 """
 
 from __future__ import annotations
 
 from typing import Any, Dict, List
 
-from app.skills._embedder import cosine_sim, embed
-from app.skills._registry import (
+from app.skill_manager._embedder import cosine_sim, embed
+from app.skill_manager._registry import (
     Skill,
     SkillMatch,
     SkillRegistry,
@@ -52,9 +54,6 @@ class _SkillsProxy:
 
     def iter(self, collection_path: str) -> List[Dict[str, Any]]:
         return get_registry().iter(collection_path)
-
-    def render(self, skill_name: str, **params: Any) -> str:
-        return get_registry().render(skill_name, **params)
 
     def search(
         self,

@@ -36,7 +36,7 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.services.llm.agent.framework import Agent, AgentState, delegate_step
-from app.skills import skills
+from app.services.llm.skill_prompts import graph_analysis_prompt
 from app.services.llm.agent.evaluators import (
     AttachmentPool,
     EvalPipelineResult,
@@ -332,7 +332,7 @@ def _planner(state: AgentState) -> Dict[str, Any]:
         content=overview_descriptions,
     )
 
-    skill_prompt = skills.render("graph_analysis", graph_ids=requested_graphs)
+    skill_prompt = graph_analysis_prompt(graph_ids=requested_graphs)
     graphs_list = ", ".join(f"`{g}`" for g in requested_graphs)
 
     tool_schemas = _build_pipeline_tool_schemas(parent_start, parent_end)
@@ -566,7 +566,7 @@ def _synthesizer(state: AgentState) -> Dict[str, Any]:
         "",
     ]
     if requested_graphs:
-        skill_prompt = skills.render("graph_analysis", graph_ids=requested_graphs)
+        skill_prompt = graph_analysis_prompt(graph_ids=requested_graphs)
         if skill_prompt:
             prompt_parts.append(skill_prompt)
             prompt_parts.append("")

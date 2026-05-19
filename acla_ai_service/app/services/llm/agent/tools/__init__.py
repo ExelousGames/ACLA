@@ -32,11 +32,6 @@ from PIL import Image
 
 LOGGER = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Graph definitions — subset of the graphs used in the UI / Gemini workflow.
-# Keep IDs in sync with ui/gemini_analyzer.GRAPH_DEFINITIONS.
-# ---------------------------------------------------------------------------
-
 AGENT_GRAPH_DEFINITIONS: List[Dict[str, Any]] = [
     {
         "id": "throttle",
@@ -454,7 +449,7 @@ def split_lap_by_circuit_sections(
     crossed in/out at the boundary.
     """
     from app.services.llm.agent.evaluators import PipelineAttachment
-    from app.skills import skills
+    from app.services.llm.label_catalog import find_labels
 
     s, e = int(start_index), int(end_index)
 
@@ -489,7 +484,7 @@ def split_lap_by_circuit_sections(
     if circuit_id is not None:
         section_filter["parent"] = circuit_id
     candidates: List[Dict[str, Any]] = []
-    for entry in skills.find("sub_label_catalog.labels", **section_filter):
+    for entry in find_labels(**section_filter):
         rng = entry.get("normalized_position_range")
         if rng is None:
             continue
@@ -605,15 +600,20 @@ def locate_circuit_section(
                  "overlap_fraction": 0.0..1.0},
                 ...
             ],
-            "best_match": <first entry of top_matches, or None>,
+            "is_ambiguous": <bool>,
+            "best_match": <top entry, or None when ambiguous / empty>,
         }
 
     ``top_matches`` is empty when the column is missing, all values are
     non-finite, or no circuit_section in the catalog has its range filled
-    in yet. ``best_match`` is the agent's recommended label.
+    in yet. ``best_match`` is set ONLY when the leading entry's
+    ``overlap_fraction`` clears the runner-up by ``AMBIGUOUS_MARGIN``;
+    otherwise ``is_ambiguous`` is true and the caller must disambiguate
+    using a second telemetry signal (pit-limiter speed, lateral offset,
+    brake pattern, etc.).
     """
     from app.services.llm.agent.evaluators import PipelineAttachment
-    from app.skills import skills
+    from app.services.llm.label_catalog import find_labels
 
     s, e = int(start_index), int(end_index)
 
@@ -629,6 +629,7 @@ def locate_circuit_section(
         return _attach({
             "error": f"column '{NORMALIZED_POSITION_COLUMN}' missing from telemetry",
             "top_matches": [],
+            "is_ambiguous": False,
             "best_match": None,
         })
 
@@ -638,6 +639,7 @@ def locate_circuit_section(
         return _attach({
             "error": "no finite values in normalized position over the segment",
             "top_matches": [],
+            "is_ambiguous": False,
             "best_match": None,
         })
 
@@ -645,7 +647,7 @@ def locate_circuit_section(
     seg_span = max(seg_hi - seg_lo, 1e-6)
 
     matches: List[Dict[str, Any]] = []
-    for entry in skills.find("sub_label_catalog.labels", type="circuit_section"):
+    for entry in find_labels(type="circuit_section"):
         rng = entry.get("normalized_position_range")
         if rng is None:
             continue
@@ -670,10 +672,22 @@ def locate_circuit_section(
 
     matches.sort(key=lambda m: m["overlap_fraction"], reverse=True)
     top = matches[:3]
+
+    # Pit lanes and adjacent straights frequently share a normalized_position
+    # range (e.g. brands_hatch1 and brands_hatch17 both at [0.94, 1]), so the
+    # leader can tie the runner-up at the same overlap_fraction. Refuse to
+    # name a single best_match in that case — force the caller to pick.
+    AMBIGUOUS_MARGIN = 0.05
+    is_ambiguous = (
+        len(top) >= 2
+        and (top[0]["overlap_fraction"] - top[1]["overlap_fraction"]) < AMBIGUOUS_MARGIN
+    )
+    best = None if is_ambiguous or not top else top[0]
     return _attach({
         "segment_position_range": [seg_lo, seg_hi],
         "top_matches": top,
-        "best_match": top[0] if top else None,
+        "is_ambiguous": is_ambiguous,
+        "best_match": best,
     })
 
 
@@ -762,9 +776,15 @@ PIPELINE_TOOL_DEFINITIONS: List[Dict[str, Any]] = [
             "and matches it against every `circuit_section` label's "
             "`normalized_position_range`. Produces a "
             "'circuit_section_match' attachment with 'top_matches' "
-            "(ranked by overlap fraction) and a 'best_match' suggestion. "
-            "Use whenever you need to label which named corner / straight "
-            "the segment is on — never guess from telemetry shape alone."
+            "(ranked by overlap fraction), an 'is_ambiguous' flag, and "
+            "a 'best_match' that is non-null ONLY when the leader clears "
+            "the runner-up by a clear margin. When 'is_ambiguous' is true "
+            "(e.g. pit lane and the adjacent straight share a normalized "
+            "position range), enumerate 'top_matches' and disambiguate "
+            "with a second signal (pit-limiter speed, persistent lateral "
+            "offset, brake pattern). Use whenever you need to label which "
+            "named corner / straight the segment is on — never guess from "
+            "telemetry shape alone."
         ),
         "callable": locate_circuit_section,
     },

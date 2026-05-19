@@ -76,6 +76,8 @@ labels:
       Player loses time or stability inside the section.
         - `time_difference_to_expert` rises continuously (gap grows) — confirm
           with `compute_slope` (positive) and `find_extremum` (max - min > 0).
+        - 'time_difference_to_expert' slope rises at the end of the corner exit, this
+          may indicate a mistake.
         - `trajectory_offset` exceeds the expert envelope: a spike outward
           (ran wide) or inward (cut tight) that does NOT recover within the
           section.
@@ -94,21 +96,19 @@ labels:
       when the player started at offset ≈ 0 — that's EA, not RM. Mutually
       exclusive with EA and MS.
 
-  4:
+  PS:
     name: "Pit Stop"
     characteristics: >
-      Player entering, sitting in, or exiting the pit lane.
-        - Speed sustained near pit-limiter value for most of the section.
-        - `Graphics_normalized_car_position` falls inside the pit
-          `circuit_section`'s catalog range (brands_hatch17 ≈ [0.94, 1.0],
-          silverstone19 once measured).
-        - Trajectory offset is large and persistent (player off the
-          racing-line corridor).
-      Confirm with `locate_circuit_section` — the pit lane is its own catalog
-      section. Compatible with the circuit label only; do NOT combine with
-      EA / MS / RM / OV.
+      Player entering or sitting in the pit lane. Merging back out
+      from the pit toward the expert line is RM, not PS.
+        - `distance_to_expert_line` magnitude persistently large
+          (≥ ~5 m) AND NOT trending toward zero (a decreasing offset
+          ⇒ merging out ⇒ RM, not PS).
+      Picking which named catalog section to attach is a sub-label
+      decision — see `sub_label_catalog`. Compatible with the circuit
+      label only; do NOT combine with EA / MS / RM / OV.
 
-  1:
+  O:
     name: "Overtaking"
     characteristics: >
       Player passes or is being passed inside the section.
@@ -120,7 +120,7 @@ labels:
       unambiguous; otherwise leave OV off and let the detailed flow handle
       sub-events.
 
-  2:
+  MS:
     name: "Missing data"
     characteristics: >
       Section contains telemetry gaps, dropouts, or corrupted values.
@@ -141,9 +141,13 @@ global_rules: >
   1. **Anchor the circuit + section.** The circuit label comes from the lap
      context (always attached). The splitter assigned a `circuit_section_id`;
      call `locate_circuit_section(start, end)` once to confirm the rough
-     range still overlaps that section's `normalized_position_range`. Use
-     its `best_match` if you need to switch to a neighbouring section after
-     a `revise_segment_range` call.
+     range still overlaps that section's `normalized_position_range`. When
+     the response has `is_ambiguous: false`, attach `best_match.label_id`.
+     When `is_ambiguous: true`, enumerate `top_matches` and read each
+     entry's `description` — the catalog carries any per-section
+     disambiguation tell. Use `peek_graph` or out-of-range
+     `query_telemetry` if the disambiguating evidence sits just before
+     or after the section.
 
   2. **Render the two diagnostic graphs.** One `render_graph` each over the
      section's iloc range:
@@ -164,13 +168,22 @@ global_rules: >
      plus optionally PS / OV / MD. Attaching none of {EA, MS, RM} is valid
      when telemetry is too noisy to commit.
 
-  4. **Optionally pick one ST1–ST6** from the label catalog descriptions
+  4. **Refine the boundary for parent-label fit.** The characteristics
+     blocks assert their signature across the WHOLE range. If the picked
+     main label fits only part of the rough window (offset clean for the
+     first half then spikes, gap rises only late, etc.), or the signature
+     clearly continues past the rough end, call `revise_segment_range`
+     to shrink or extend so ONE signature holds uniformly. The working
+     envelope is the lap range, so outward extension is allowed. Re-render
+     the diagnostic graphs on the new range before scoring again.
+
+  5. **Optionally pick one ST1–ST6** from the label catalog descriptions
      when the trajectory shape is unambiguous. Use `compute_expert_phases`
      to help: empty phases ⇒ straight (ST2), one arc ⇒ in/approach/exit
      corner (ST1/ST3/ST4), multi-arc with no flat gap ⇒ ST6. Skip the ST
      pick entirely when the shape is ambiguous.
 
-  5. **Submit** via `submit_lap_proposal` with
+  6. **Submit** via `submit_lap_proposal` with
      `label_ids = [circuit, circuit_section_id, ...optional ST, ...optional main labels]`
      and a `reasoning` string citing the ilocs / slopes / offset peaks you
      observed.

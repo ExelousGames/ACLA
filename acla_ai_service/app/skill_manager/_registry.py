@@ -2,50 +2,49 @@
 
 Layout::
 
-    app/skills/<name>/
-      skill.yaml      _skill: discovery header + raw body
-      data.py         (optional) COLLECTIONS = {name: callable(raw_body) -> dict|list}
-      render.py       (optional) render(skills, **params) -> str
+    app/skill_manager/                 (this package — orchestrator code)
+      __init__.py, _registry.py, _query.py, _embedder.py
+      skills/<name>.yaml               (pure data — drop a yaml in, restart)
 
-The registry exposes five verbs, uniform across every skill:
+A skill is a single yaml file. No Python escape hatches — filtering,
+formatting, or merging with non-skill state belong to the caller.
+
+The registry exposes four verbs, uniform across every skill:
 
   * ``get(path)``               — dotted-path lookup into any skill's document tree
   * ``find(path, **filters)``   — Mongo-style filter over a collection at *path*
   * ``iter(path)``              — yield every document in a collection
-  * ``render(skill, **params)`` — call the skill's renderer (prompt fragment)
   * ``search(query, top_k)``    — embedding similarity over discovery headers
 
-Discovery headers are still indexed as cached embeddings for ``search``;
+Discovery headers are indexed as cached embeddings for ``search``;
 only headers whose YAML hash changed are re-embedded on startup.
 """
 
 from __future__ import annotations
 
 import hashlib
-import importlib
 import json
 import logging
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 import yaml
 
-from app.skills._query import (
-    OPERATORS,
+from app.skill_manager._query import (
     _split_path,
     find as _filter,
     get_path,
     iter_collection,
-    matches,
 )
 
 LOGGER = logging.getLogger(__name__)
 
-_SKILLS_ROOT = Path(__file__).resolve().parent
-_CACHE_DIR = _SKILLS_ROOT.parent.parent / ".cache" / "skills"
+_PACKAGE_ROOT = Path(__file__).resolve().parent
+_SKILLS_ROOT = _PACKAGE_ROOT / "skills"
+_CACHE_DIR = _PACKAGE_ROOT.parent.parent / ".cache" / "skills"
 _EMBEDDINGS_FILE = _CACHE_DIR / "embeddings.npz"
 _MANIFEST_FILE = _CACHE_DIR / "manifest.json"
 
@@ -75,49 +74,16 @@ class Skill:
     spec: SkillSpec
     raw_body: Dict[str, Any]
     yaml_path: Path
-    collection_providers: Dict[str, Callable[[Dict[str, Any]], Any]] = field(default_factory=dict)
-    renderer: Optional[Callable[..., str]] = None
-    _collections_cache: Dict[str, Any] = field(default_factory=dict)
 
     @property
     def name(self) -> str:
         return self.spec.name
-
-    def collection(self, name: str) -> Any:
-        """Materialise a collection by name; cache it.
-
-        Resolution order: declared provider (data.py) → raw YAML body key.
-        Returns ``None`` if neither has the name.
-        """
-        if name in self._collections_cache:
-            return self._collections_cache[name]
-        if name in self.collection_providers:
-            result = self.collection_providers[name](self.raw_body)
-        elif name in self.raw_body:
-            result = self.raw_body[name]
-        else:
-            result = None
-        self._collections_cache[name] = result
-        return result
 
 
 @dataclass
 class SkillMatch:
     skill: Skill
     score: float
-
-
-# ---------------------------------------------------------------------------
-# Auto-discovery helpers
-# ---------------------------------------------------------------------------
-
-def _load_optional_module(folder_name: str, module_name: str):
-    """Import ``app.skills.<folder>.<module>`` if it exists. Return module or None."""
-    qualified = f"app.skills.{folder_name}.{module_name}"
-    try:
-        return importlib.import_module(qualified)
-    except ImportError:
-        return None
 
 
 # ---------------------------------------------------------------------------
@@ -140,11 +106,8 @@ class SkillRegistry:
     # ------------------------------------------------------------------
 
     def _load_skills(self) -> None:
-        for sub in sorted(self._root.iterdir()):
-            if not sub.is_dir() or sub.name.startswith("_") or sub.name.startswith("."):
-                continue
-            yaml_path = sub / "skill.yaml"
-            if not yaml_path.exists():
+        for yaml_path in sorted(self._root.glob("*.yaml")):
+            if yaml_path.name.startswith("_") or yaml_path.name.startswith("."):
                 continue
             with open(yaml_path, "r", encoding="utf-8") as fh:
                 raw = yaml.safe_load(fh) or {}
@@ -155,26 +118,16 @@ class SkillRegistry:
                 )
                 continue
             spec = SkillSpec(
-                name=str(header.get("name", sub.name)),
+                name=str(header.get("name", yaml_path.stem)),
                 description=str(header.get("description", "")).strip(),
                 when_to_use=list(header.get("when_to_use") or []),
                 tags=list(header.get("tags") or []),
             )
 
-            data_mod = _load_optional_module(sub.name, "data")
-            collections: Dict[str, Callable[[Dict[str, Any]], Any]] = {}
-            if data_mod and hasattr(data_mod, "COLLECTIONS"):
-                collections = dict(data_mod.COLLECTIONS)
-
-            render_mod = _load_optional_module(sub.name, "render")
-            renderer = getattr(render_mod, "render", None) if render_mod else None
-
             self._skills[spec.name] = Skill(
                 spec=spec,
                 raw_body=raw,
                 yaml_path=yaml_path,
-                collection_providers=collections,
-                renderer=renderer,
             )
         LOGGER.info("SkillRegistry loaded %d skill(s): %s",
                     len(self._skills), sorted(self._skills.keys()))
@@ -213,7 +166,7 @@ class SkillRegistry:
                 to_embed.append(name)
 
         if to_embed:
-            from app.skills._embedder import embed
+            from app.skill_manager._embedder import embed
             texts = [discovery_texts[n] for n in to_embed]
             vecs = embed(texts)
             if vecs.ndim == 1:
@@ -255,7 +208,7 @@ class SkillRegistry:
     # ------------------------------------------------------------------
 
     def _resolve(self, path: str, default: Any = None) -> Any:
-        """Resolve a dotted path of the form ``<skill>.<collection_or_key>[.<sub>...]``."""
+        """Resolve a dotted path of the form ``<skill>.<key>[.<sub>...]``."""
         segments = _split_path(path)
         if not segments:
             return default
@@ -266,14 +219,10 @@ class SkillRegistry:
         if len(segments) == 1:
             return skill.raw_body
         second = segments[1]
-        rest = segments[2:]
-        # Collections take priority over raw keys for the second segment
-        if second in skill.collection_providers:
-            base = skill.collection(second)
-        elif second in skill.raw_body:
-            base = skill.raw_body[second]
-        else:
+        if second not in skill.raw_body:
             return default
+        base = skill.raw_body[second]
+        rest = segments[2:]
         if not rest:
             return base
         return get_path(base, rest, default)
@@ -298,14 +247,6 @@ class SkillRegistry:
         """Yield every document in a collection (with ``id`` injected from key)."""
         return iter_collection(self._resolve(collection_path))
 
-    def render(self, skill_name: str, **params: Any) -> str:
-        """Call the skill's renderer. Empty string if no renderer is registered."""
-        skill = self.skill(skill_name)
-        if skill.renderer is None:
-            LOGGER.warning("Skill '%s' has no renderer — returning empty string.", skill_name)
-            return ""
-        return skill.renderer(self, **params)
-
     def search(
         self,
         query: str,
@@ -315,7 +256,7 @@ class SkillRegistry:
         """Embedding-similarity search over discovery headers."""
         if self._embeddings is None or not self._names:
             return []
-        from app.skills._embedder import embed
+        from app.skill_manager._embedder import embed
         q = embed(query)
         scores = self._embeddings @ q
         order = np.argsort(-scores)[: max(0, top_k)]

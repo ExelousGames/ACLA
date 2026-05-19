@@ -28,8 +28,9 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
-from app.skills import skills
 from app.models.segment_models import LABEL_MAPPING
+from app.services.llm.label_catalog import find_labels, get_label
+from app.services.llm.skill_prompts import graph_analysis_prompt
 
 LOGGER = logging.getLogger(__name__)
 
@@ -60,6 +61,14 @@ class _ToolSurface:
             e2 = min(self.parent_end, s2 + 1)
         return s2, e2
 
+    def _clamp_to_lap(self, s: int, e: int) -> tuple[int, int]:
+        n = len(self.df)
+        s2 = max(0, int(s))
+        e2 = min(n, int(e))
+        if e2 <= s2:
+            e2 = min(n, s2 + 1)
+        return s2, e2
+
     def list_graphs(self) -> str:
         from app.services.llm.agent.tools import AGENT_GRAPH_DEFINITIONS
         out = [
@@ -69,7 +78,7 @@ class _ToolSurface:
         return json.dumps({"graphs": out}, indent=2)
 
     def get_graph_guidance(self, graph_ids: List[str]) -> str:
-        text = skills.render("graph_analysis", graph_ids=list(graph_ids))
+        text = graph_analysis_prompt(graph_ids=list(graph_ids))
         return text or "(no guidance available for the requested graph(s))"
 
     def render_graph(self, graph_id: str, start: int, end: int) -> Dict[str, Any]:
@@ -97,6 +106,36 @@ class _ToolSurface:
             "content": [
                 {"type": "image", "data": encoded, "mimeType": "image/png"},
                 {"type": "text", "text": f"{desc} (rendered over [{s}, {e}])"},
+            ],
+        }
+
+    def peek_graph(self, graph_id: str, start: int, end: int) -> Dict[str, Any]:
+        from app.services.llm.agent.tools import build_graph, render_graph_builds
+        s, e = self._clamp_to_lap(start, end)
+        table = build_graph(graph_id, self.df)
+        if table is None or table.empty:
+            return {
+                "content": [{"type": "text", "text": f"Cannot peek `{graph_id}` over [{s}, {e}]."}],
+                "is_error": True,
+            }
+        rendered = render_graph_builds({graph_id: table}, s, e)
+        if not rendered:
+            return {
+                "content": [{"type": "text", "text": f"`{graph_id}` produced no image for [{s}, {e}]."}],
+                "is_error": True,
+            }
+        img, desc = rendered[0]
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        png = buf.getvalue()
+        self.capture.rendered_images.append(png)
+        encoded = base64.b64encode(png).decode("ascii")
+        return {
+            "content": [
+                {"type": "image", "data": encoded, "mimeType": "image/png"},
+                {"type": "text", "text": (
+                    f"{desc} (peek — context only, rendered over [{s}, {e}])"
+                )},
             ],
         }
 
@@ -161,6 +200,19 @@ def _build_tool_set(surface: _ToolSurface):
         )
 
     @tool(
+        "peek_graph",
+        "Render ONE telemetry graph over an iloc window that may extend "
+        "outside the working section, up to the full lap envelope. Same "
+        "shape as `render_graph`. Use for context only; does NOT change the "
+        "working range.",
+        {"graph_id": str, "start": int, "end": int},
+    )
+    async def peek_graph(args):
+        return surface.peek_graph(
+            str(args["graph_id"]), int(args["start"]), int(args["end"]),
+        )
+
+    @tool(
         "query_telemetry",
         "Run a deterministic numeric query on the raw telemetry DataFrame. "
         "`query_id` is one of: find_extremum, find_first_match, "
@@ -193,11 +245,11 @@ def _build_tool_set(surface: _ToolSurface):
         return {"content": [{"type": "text", "text": text}]}
 
     tools_list = [
-        list_graphs, get_graph_guidance, render_graph, query_telemetry,
+        list_graphs, get_graph_guidance, render_graph, peek_graph, query_telemetry,
         compute_expert_phases, locate_circuit_section,
     ]
     tool_names = [f"mcp__followup__{t}" for t in [
-        "list_graphs", "get_graph_guidance", "render_graph",
+        "list_graphs", "get_graph_guidance", "render_graph", "peek_graph",
         "query_telemetry", "compute_expert_phases", "locate_circuit_section",
     ]]
 
@@ -242,7 +294,7 @@ def _build_system_prompt(
 ) -> str:
     parent_label_blocks: List[str] = []
     for pid in parent_main_labels:
-        entry = skills.get(f"sub_label_catalog.labels.{pid}")
+        entry = get_label(pid)
         if entry is None:
             parent_label_blocks.append(f"  - `{pid}` ({LABEL_MAPPING.get(pid, pid)})")
             continue
@@ -256,7 +308,7 @@ def _build_system_prompt(
     sub_label_blocks: List[str] = []
     seen: set = set()
     for pid in parent_main_labels:
-        for entry in skills.find("sub_label_catalog.labels", parent=pid):
+        for entry in find_labels(parent=pid):
             if entry["id"] in seen:
                 continue
             seen.add(entry["id"])

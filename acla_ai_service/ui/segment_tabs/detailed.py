@@ -19,16 +19,6 @@ from .shared import (
     LABEL_CATEGORIES, MAIN_LABEL_GUIDELINES
 )
 
-try:
-    from ..services.batch_annotation_service import BatchAnnotationService, StreamlitBatchObserver
-except ImportError:
-    try:
-        from ui.services.batch_annotation_service import BatchAnnotationService, StreamlitBatchObserver
-    except ImportError:
-        BatchAnnotationService = None
-        StreamlitBatchObserver = None
-
-
 def render_detailed_labeling(selected_annotation_key, selected_session_key, available_sessions):
     """
     Renders the Telemetry Segment Annotation tab.
