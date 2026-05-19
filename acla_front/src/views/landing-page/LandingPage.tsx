@@ -4,6 +4,7 @@ import Preloader from './components/Preloader';
 import HeroSection from './components/HeroSection';
 import TimelineSection from './components/TimelineSection';
 import LapSection from './components/LapSection';
+import ConversationSection from './components/ConversationSection';
 import MetricsBar from './components/MetricsBar';
 import CTASection from './components/CTASection';
 import LoginModal from './components/LoginModal';
@@ -45,6 +46,7 @@ const LandingPage: React.FC = () => {
       <HeroSection onLoginClick={() => setLoginModalOpen(true)} />
       <TimelineSection />
       <LapSection />
+      <ConversationSection />
       <MetricsBar />
       <CTASection />
 
