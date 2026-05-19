@@ -62,7 +62,7 @@ async def process_query_stream(request: QueryRequest):
 
     Returns a Server-Sent Events stream. Each event's `data:` field is a
     JSON object with a `type` discriminator. See
-    `app/services/voice/stream_events.py` for the protocol.
+    `app/voice/stream_events.py` for the protocol.
 
     Event types: token, audio, tool_start, tool_end, done, error.
 

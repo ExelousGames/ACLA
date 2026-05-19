@@ -1,1 +1,5 @@
-"""Scaffolded for the hexagonal refactor (refactor/hexagonal-v1, Step 1). Empty on purpose; real code lands in later steps."""
+"""Voice synthesis and conversation services (Phase 2+)."""
+
+from app.voice.kokoro_service import KokoroService, get_kokoro_service
+
+__all__ = ["KokoroService", "get_kokoro_service"]

@@ -201,7 +201,7 @@ async def build_voice_pipeline_task(
     )
 
     from app.services.ai_service import AIService
-    from app.services.voice.pipecat_kokoro import build_kokoro_processor
+    from app.voice.pipecat_kokoro import build_kokoro_processor
 
     LOGGER.info(
         "Building voice pipeline (track=%s car=%s user=%s)",

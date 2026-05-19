@@ -24,8 +24,8 @@ from typing import AsyncGenerator
 # still boot even when pipecat-ai isn't fully installed (e.g. AMD env where
 # pip resolution is tricky).
 
-from app.services.voice import get_kokoro_service
-from app.services.voice.sentence_streamer import SentenceStreamer
+from app.voice import get_kokoro_service
+from app.voice.sentence_streamer import SentenceStreamer
 
 LOGGER = logging.getLogger(__name__)
 
