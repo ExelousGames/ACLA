@@ -77,7 +77,7 @@ interface Message {
     isVoiceInput?: boolean;
     // Phase 2.5 — true when this AI response already streamed its own audio
     // (Kokoro chunks via SSE). The auto-speak effect skips these so we don't
-    // re-synthesize the whole answer through window.speechSynthesis.
+    // re-synthesize the whole answer.
     streamedAudio?: boolean;
 }
 
@@ -120,12 +120,12 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
     const [speechRecognition, setSpeechRecognition] = useState<SpeechRecognition | null>(null);
     const [electronSpeechAvailable, setElectronSpeechAvailable] = useState(false);
 
-    // Text-to-speech states
-    const [speechSynthesis, setSpeechSynthesis] = useState<SpeechSynthesis | null>(null);
+    // Text-to-speech states. Neural TTS (Kokoro) is the only path; we
+    // optimistically assume it's available and flip this to false on first
+    // failure so the UI can show "not available" instead of retrying.
+    const [neuralTtsAvailable, setNeuralTtsAvailable] = useState(true);
     const [isTextToSpeechEnabled, setIsTextToSpeechEnabled] = useState(false);
     const [isSpeaking, setIsSpeaking] = useState(false);
-    const [selectedVoice, setSelectedVoice] = useState<SpeechSynthesisVoice | null>(null);
-    const [availableVoices, setAvailableVoices] = useState<SpeechSynthesisVoice[]>([]);
 
     // Helper functions for recording state management
     const isUninteractableState = recording.status === 'initing' || recording.status === 'processing' || recording.status === 'listening';
@@ -186,14 +186,10 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
     const lastStartAttemptRef = useRef<number>(0);
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const inputRef = useRef<HTMLInputElement>(null);
-    const speechQueueRef = useRef<string[]>([]);
-    const currentUtteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
     // Active neural-TTS playback handle (Phase 2 — Kokoro via /voice-synthesize).
-    // When set, stopSpeaking() should stop this instead of (or in addition to)
-    // cancelling the browser's speechSynthesis.
     const currentNeuralPlaybackRef = useRef<NeuralTtsPlayback | null>(null);
-    // Whether neural TTS is known to be unavailable for this session — set
-    // after the first failure so we stop retrying every message.
+    // Mirrors neuralTtsAvailable for read access inside async closures that
+    // would otherwise see a stale state value.
     const neuralTtsDisabledRef = useRef<boolean>(false);
     // Phase 2.5 — active streaming chat session + its audio queue.
     // stopSpeaking() also tears these down.
@@ -261,43 +257,8 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
         messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
     };
 
-    // Text-to-speech utility functions
-    const initializeTextToSpeech = () => {
-        if ('speechSynthesis' in window) {
-            const synth = window.speechSynthesis;
-            setSpeechSynthesis(synth);
-
-            // Load available voices
-            const loadVoices = () => {
-                const voices = synth.getVoices();
-                setAvailableVoices(voices);
-
-                // Select a default voice (prefer English voices)
-                const englishVoices = voices.filter(voice => voice.lang.startsWith('en'));
-                const defaultVoice = englishVoices.find(voice => voice.default) ||
-                    englishVoices.find(voice => voice.name.includes('Google')) ||
-                    englishVoices[0] ||
-                    voices[0];
-
-                if (defaultVoice) {
-                    setSelectedVoice(defaultVoice);
-                }
-            };
-
-            // Load voices immediately
-            loadVoices();
-
-            // Also load voices when they become available (some browsers load them asynchronously)
-            synth.onvoiceschanged = loadVoices;
-
-            return true;
-        }
-        return false;
-    };
-
     /**
      * Strip markdown so the TTS engine doesn't read "asterisk-asterisk bold".
-     * Used by both the neural-TTS path and the speechSynthesis fallback.
      */
     const cleanTextForSpeech = (text: string): string => {
         return text
@@ -314,19 +275,15 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
 
     /**
      * Speak text using neural TTS (Kokoro via /voice-synthesize).
-     * Throws if unavailable; caller falls back to speechSynthesis.
+     * Throws if unavailable; caller marks TTS unavailable for the session.
      */
     const speakWithNeural = async (
         cleanText: string,
         options?: { isGuidance?: boolean },
     ): Promise<void> => {
-        // Cancel anything currently speaking on either path.
         if (currentNeuralPlaybackRef.current) {
             currentNeuralPlaybackRef.current.stop();
             currentNeuralPlaybackRef.current = null;
-        }
-        if (speechSynthesis && isSpeaking) {
-            speechSynthesis.cancel();
         }
 
         setIsSpeaking(true);
@@ -348,113 +305,19 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
     };
 
     const speakText = (text: string, options?: { isGuidance?: boolean }) => {
-        if (!isTextToSpeechEnabled) {
+        if (!isTextToSpeechEnabled || neuralTtsDisabledRef.current) {
             return;
         }
 
         const cleanText = cleanTextForSpeech(text);
         if (!cleanText) return;
 
-        // Prefer neural TTS (Kokoro). Fall back to window.speechSynthesis on failure.
-        // After one failure we flip neuralTtsDisabledRef to skip the retry attempt
-        // for the rest of the session — avoids a per-message error storm.
-        if (!neuralTtsDisabledRef.current) {
-            speakWithNeural(cleanText, options).catch((err) => {
-                console.warn('[AI Chat] Neural TTS failed, falling back to speechSynthesis:', err);
-                neuralTtsDisabledRef.current = true;
-                speakWithFallback(text, options);
-            });
-            return;
-        }
-
-        speakWithFallback(text, options);
-    };
-
-    /**
-     * Legacy speakText body — uses the browser's window.speechSynthesis.
-     * Kept verbatim as the graceful-degradation path when neural TTS is
-     * unavailable (offline, AI service down, etc.).
-     */
-    const speakWithFallback = (text: string, options?: { isGuidance?: boolean }) => {
-        if (!speechSynthesis || !isTextToSpeechEnabled || !selectedVoice) {
-            return;
-        }
-
-        // Stop current speech if speaking
-        if (isSpeaking) {
-            speechSynthesis.cancel();
+        speakWithNeural(cleanText, options).catch((err) => {
+            console.warn('[AI Chat] Neural TTS failed; marking unavailable for this session:', err);
+            neuralTtsDisabledRef.current = true;
+            setNeuralTtsAvailable(false);
             setIsSpeaking(false);
-        }
-
-        // Clean text for better speech synthesis
-        const cleanText = cleanTextForSpeech(text);
-
-        if (!cleanText) return;
-
-        // Split very long messages into chunks to prevent browser timeout
-        const maxLength = 200;
-        if (cleanText.length > maxLength) {
-            const sentences = cleanText.split(/[.!?]+/).filter(s => s.trim().length > 0);
-            let currentChunk = '';
-
-            for (const sentence of sentences) {
-                if ((currentChunk + sentence).length > maxLength && currentChunk) {
-                    speechQueueRef.current.push(currentChunk.trim() + '.');
-                    currentChunk = sentence;
-                } else {
-                    currentChunk += (currentChunk ? '. ' : '') + sentence;
-                }
-            }
-
-            if (currentChunk.trim()) {
-                speechQueueRef.current.push(currentChunk.trim() + '.');
-            }
-
-            // Start speaking the first chunk via the fallback path directly —
-            // we're already inside speakWithFallback, so don't reroute back
-            // through speakText (which would try neural TTS again).
-            if (speechQueueRef.current.length > 0) {
-                const firstChunk = speechQueueRef.current.shift();
-                if (firstChunk) {
-                    speakWithFallback(firstChunk, options);
-                }
-            }
-            return;
-        }
-
-        const utterance = new SpeechSynthesisUtterance(cleanText);
-        currentUtteranceRef.current = utterance;
-
-        utterance.voice = selectedVoice;
-        utterance.rate = options?.isGuidance ? 1.1 : 0.9; // Slightly faster for guidance
-        utterance.pitch = options?.isGuidance ? 1.1 : 1.0; // Slightly higher pitch for guidance
-        utterance.volume = 0.8;
-
-        utterance.onstart = () => {
-            setIsSpeaking(true);
-        };
-
-        utterance.onend = () => {
-            setIsSpeaking(false);
-            currentUtteranceRef.current = null;
-
-            // Process queue if there are more messages — stay on the
-            // fallback path; we know neural TTS isn't available in this branch.
-            if (speechQueueRef.current.length > 0) {
-                const nextText = speechQueueRef.current.shift();
-                if (nextText) {
-                    setTimeout(() => speakWithFallback(nextText), 100);
-                }
-            }
-        };
-
-        utterance.onerror = (event) => {
-            console.error('Speech synthesis error:', event);
-            setIsSpeaking(false);
-            currentUtteranceRef.current = null;
-        };
-
-        speechSynthesis.speak(utterance);
+        });
     };
 
     const stopSpeaking = () => {
@@ -472,13 +335,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
             currentNeuralPlaybackRef.current.stop();
             currentNeuralPlaybackRef.current = null;
         }
-        // Browser speechSynthesis fallback path.
-        if (speechSynthesis) {
-            speechSynthesis.cancel();
-        }
         setIsSpeaking(false);
-        currentUtteranceRef.current = null;
-        speechQueueRef.current = []; // Clear queue
     };
 
     const toggleTextToSpeech = () => {
@@ -501,35 +358,6 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
         scrollToBottom();
     }, [messages]);
 
-    /**
-     * Phase 4 — Speak an on-track guidance cue via Piper (Electron sidecar).
-     * <150ms target latency; no network hop. Falls through to the regular
-     * speakText path if Electron's piper IPC isn't available.
-     */
-    const speakGuidanceCue = async (text: string): Promise<boolean> => {
-        const api = window.electronAPI as any;
-        if (!api?.synthesizeCue) return false;
-        try {
-            // Cancel any currently-playing cue so the latest takes priority.
-            try { await api.cancelCue?.(); } catch { /* ignore */ }
-
-            const wavBuffer: ArrayBuffer | null = await api.synthesizeCue(text);
-            if (!wavBuffer || wavBuffer.byteLength === 0) return false;
-
-            const blob = new Blob([wavBuffer], { type: 'audio/wav' });
-            const url = URL.createObjectURL(blob);
-            const audio = new Audio(url);
-            audio.volume = 0.9;
-            audio.addEventListener('ended', () => URL.revokeObjectURL(url));
-            audio.addEventListener('error', () => URL.revokeObjectURL(url));
-            await audio.play();
-            return true;
-        } catch (err) {
-            console.warn('[ai-chat] Piper cue failed, falling back:', err);
-            return false;
-        }
-    };
-
     // Automatically speak new AI messages
     useEffect(() => {
         if (!isTextToSpeechEnabled || messages.length === 0) return;
@@ -549,14 +377,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
             const isGuidanceMessage = lastMessage.id.includes('guidance');
 
             // Add a small delay to ensure the message is rendered
-            setTimeout(async () => {
-                // Phase 4 — On-track guidance cues prefer Piper-via-Electron-sidecar
-                // for lowest possible latency. Other AI responses use the regular
-                // (potentially network) TTS path.
-                if (isGuidanceMessage) {
-                    const ok = await speakGuidanceCue(lastMessage.content);
-                    if (ok) return;
-                }
+            setTimeout(() => {
                 speakText(lastMessage.content, { isGuidance: isGuidanceMessage });
             }, 300);
         }
@@ -657,18 +478,11 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
         const currentEnvironment = detectEnvironment();
         setEnvironment(currentEnvironment);
 
-        // Initialize text-to-speech
-        const ttsAvailable = initializeTextToSpeech();
-        if (ttsAvailable) {
-            console.log('Text-to-speech initialized successfully');
-
-            // Load saved TTS preference
-            const savedTtsEnabled = localStorage.getItem('ai-chat-tts-enabled');
-            if (savedTtsEnabled === 'true') {
-                setIsTextToSpeechEnabled(true);
-            }
-        } else {
-            console.warn('Text-to-speech not available in this environment');
+        // Load saved TTS preference — neural TTS availability is determined
+        // lazily on the first speak attempt, not up front.
+        const savedTtsEnabled = localStorage.getItem('ai-chat-tts-enabled');
+        if (savedTtsEnabled === 'true') {
+            setIsTextToSpeechEnabled(true);
         }
 
         let cleanup: (() => void) | undefined;
@@ -1738,9 +1552,9 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
                                 Voice input not supported
                             </Badge>
                         )}
-                        {!speechSynthesis && (
+                        {!neuralTtsAvailable && (
                             <Badge variant="soft" color="orange" size="1">
-                                Text-to-speech not supported
+                                Text-to-speech not available
                             </Badge>
                         )}
                         {recording.error && (
@@ -1750,7 +1564,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
                         )}
                         {isTextToSpeechEnabled && (
                             <Badge variant="soft" color="green" size="1">
-                                TTS On ({selectedVoice?.name?.split(' ')[0] || 'Default'})
+                                TTS On
                             </Badge>
                         )}
                     </Flex>
@@ -1826,7 +1640,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
                                             </Text>
 
                                             {/* Individual message speech control for AI messages */}
-                                            {!message.isUser && speechSynthesis && !message.isLoading && (
+                                            {!message.isUser && neuralTtsAvailable && !message.isLoading && (
                                                 <Flex justify="end" mt="1">
                                                     <Button
                                                         variant="ghost"
@@ -1930,7 +1744,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
                             style={{ flex: 1 }}
                         />
                         {/* Text-to-speech controls next to microphone */}
-                        {speechSynthesis && (
+                        {neuralTtsAvailable && (
                             <IconButton
                                 onClick={isSpeaking ? stopSpeaking : toggleTextToSpeech}
                                 disabled={isLoading}
