@@ -63,7 +63,7 @@ from app.storage.cache import model_cache_service
 
 # Import hybrid data cache service
 from app.storage.zarr import get_shared_zarr_store
-from app.config.pipeline_config import PipelineConfig
+from app.infra.config.pipeline import PipelineConfig
 
 # Prompt dataset builder and local LLM integration.
 # TelemetryLLMOrchestrator imported lazily inside __init__ to break the

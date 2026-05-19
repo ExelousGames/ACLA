@@ -37,7 +37,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Optional
 
-from app.core import settings
+from app.infra.config import settings
 
 LOGGER = logging.getLogger(__name__)
 

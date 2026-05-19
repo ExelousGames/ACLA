@@ -15,7 +15,7 @@ faulthandler.enable()
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.pipelines.training.full_dataset import Full_dataset_TelemetryMLService
-from app.config.pipeline_config import PipelineConfig
+from app.infra.config.pipeline import PipelineConfig
 from app.ml.segment_classifier.service import segment_classifier
 
 logger = logging.getLogger("run_full_pipeline")

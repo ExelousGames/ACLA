@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 from collections.abc import Mapping
 
-from app.core.config import settings
+from app.infra.config.settings import settings
 
 import torch
 from torch.utils.data import Dataset

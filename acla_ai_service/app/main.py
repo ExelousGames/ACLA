@@ -7,7 +7,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
-from app.core import settings
+from app.infra.config import settings
 from app.integrations.backend.client import backend_service
 from app.llm.health import check_llama_server
 from app.api import (

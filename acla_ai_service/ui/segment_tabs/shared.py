@@ -33,7 +33,7 @@ _ensure_app_module_on_path()
 
 try:
     from app.storage.zarr import get_shared_zarr_store
-    from app.config.pipeline_config import PipelineConfig
+    from app.infra.config.pipeline import PipelineConfig
     import app.domain.labels
     import app.domain.segment
     # Force reload to pick up model changes (e.g. new fields)
