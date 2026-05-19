@@ -8,7 +8,7 @@ from fastapi.responses import StreamingResponse
 from typing import Dict, Any, Optional, List
 from pydantic import BaseModel
 from app.services.ai_service import AIService
-from app.services.llm.llama_health import check_llama_server
+from app.llm.health import check_llama_server
 
 router = APIRouter(tags=["query"])
 

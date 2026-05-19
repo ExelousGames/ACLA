@@ -14,7 +14,7 @@ project_root = Path(__file__).resolve().parent.parent
 sys.path.append(str(project_root))
 
 from app.services.llm.telemetry_llm_orchestrator import TelemetryLLMOrchestrator
-from app.services.llm.local_llm_service import LocalLLMConfig
+from app.llm.local_llm import LocalLLMConfig
 
 async def main():
     parser = argparse.ArgumentParser(description="Train a local LLM adapter using the telemetry orchestrator.")
@@ -93,7 +93,7 @@ async def main():
         print(f"Adapter Output Directory: {result.get('adapter_directory')}")
         print("\n=== Running Final Evaluation ===")
         try:
-            from app.services.llm.local_llm_service import GenerationRequest
+            from app.llm.local_llm import GenerationRequest
             
             print(f"Loading adapter {result.get('adapter_directory')} for evaluation...")
             # Note: For evaluation, simply evaluate on up to 3 eval examples

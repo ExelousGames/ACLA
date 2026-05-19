@@ -66,7 +66,7 @@ from app.storage.zarr import get_shared_zarr_store
 from app.config.pipeline_config import PipelineConfig
 
 # Prompt dataset builder and local LLM integration
-from .llm.local_llm_service import LocalTelemetryLLM, LocalLLMConfig, GenerationRequest
+from app.llm.local_llm import LocalTelemetryLLM, LocalLLMConfig, GenerationRequest
 from .llm.telemetry_llm_orchestrator import TelemetryLLMOrchestrator
 
 # Suppress sklearn warnings
@@ -125,7 +125,7 @@ class Full_dataset_TelemetryMLService:
         )
         
         # LLM configuration
-        from .llm.local_llm_service import ModelConfig, TrainingConfig
+        from app.llm.local_llm import ModelConfig, TrainingConfig
         
         self.llm_config = LocalLLMConfig(
             model=ModelConfig(

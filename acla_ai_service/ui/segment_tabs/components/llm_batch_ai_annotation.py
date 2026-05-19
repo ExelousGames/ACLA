@@ -70,7 +70,7 @@ def render_batch_ai_annotation_tab(
 
     if st.button("Start Batch Processing", key="btn_batch_start", disabled=len(filtered_segments) == 0):
         try:
-            from app.services.llm.local_llm_service import LocalLLMConfig, GenerationRequest
+            from app.llm.local_llm import LocalLLMConfig, GenerationRequest
             from app.services.llm.telemetry_llm_orchestrator import TelemetryLLMOrchestrator
             
             with st.spinner(f"Loading/Using model {model_id} via hf_local..."):
