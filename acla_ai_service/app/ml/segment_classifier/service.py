@@ -27,156 +27,16 @@ from collections import defaultdict
 from app.storage.zarr import get_shared_zarr_store
 from app.domain.labels import LABEL_MAPPING
 from app.domain.segment import AnnotatedSegment, PredictedSegment, SegmentFeatureCatalog
-def compute_derived_features(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Computes derived features for telemetry data.
-    Adds first-order differences (deltas) for all columns.
-    """
-    # Calculate difference
-    # We use fillna(0) for the first element
-    df_diff = df.diff().fillna(0).add_suffix('_diff')
-    
-    # Concatenate
-    df_combined = pd.concat([df, df_diff], axis=1)
-    return df_combined
 
-class FocalLoss(nn.Module):
-    def __init__(self, alpha=1.0, gamma=2.0, reduction='none', pos_weight=None):
-        super(FocalLoss, self).__init__()
-        self.alpha = alpha
-        self.gamma = gamma
-        self.reduction = reduction
-        self.pos_weight = pos_weight
+# Extracted in refactor/hexagonal-v4 — Page 5 of the architecture diagram.
+# Model classes are pure (no I/O); dataset + derived-features helper own I/O.
+# Re-imported here so SegmentClassifierService keeps the same internal API.
+from app.ml.segment_classifier.model import CNN1DModel, FocalLoss
+from app.storage.datasets.segment_dataset import (
+    StreamingSegmentDataset,
+    compute_derived_features,
+)
 
-    def forward(self, inputs, targets):
-        bce_loss = F.binary_cross_entropy_with_logits(
-            inputs, targets, reduction='none', pos_weight=self.pos_weight
-        )
-        pt = torch.exp(-bce_loss)
-        focal_loss = self.alpha * (1 - pt) ** self.gamma * bce_loss
-
-        if self.reduction == 'mean':
-            return focal_loss.mean()
-        elif self.reduction == 'sum':
-            return focal_loss.sum()
-        else:
-            return focal_loss
-
-class CNN1DModel(nn.Module):
-    def __init__(self, input_dim, hidden_dim, output_dim, num_layers=3):
-        super(CNN1DModel, self).__init__()
-        
-        layers = []
-        in_channels = input_dim
-        
-        # Using padding='same' to keep sequence length equal
-        for _ in range(num_layers):
-            layers.append(nn.Conv1d(in_channels, hidden_dim, kernel_size=3, padding='same'))
-            layers.append(nn.BatchNorm1d(hidden_dim))
-            layers.append(nn.ReLU())
-            layers.append(nn.Dropout(0.2))
-            in_channels = hidden_dim
-            
-        self.features = nn.Sequential(*layers)
-        self.fc = nn.Linear(hidden_dim, output_dim)
-
-    def forward(self, x, hidden=None):
-        # x: (batch, seq_len, input_dim)
-        # Conv1d expects (batch, channels, seq_len)
-        x = x.transpose(1, 2)
-        
-        out = self.features(x)
-        
-        # out: (batch, channels, seq_len) -> (batch, seq_len, channels)
-        out = out.transpose(1, 2)
-        out = self.fc(out)
-        
-        return out, None
-
-class StreamingSegmentDataset(IterableDataset):
-    def __init__(self, store, cache_key, mlb, scaler, max_length, expected_features):
-        self.store = store
-        self.cache_key = cache_key
-        self.mlb = mlb
-        self.scaler = scaler
-        self.max_length = max_length
-        self.expected_features = expected_features
-
-    def __iter__(self):
-        chunks = self.store.get_cached_data_chunks(self.cache_key)
-
-        for chunk in chunks:
-            chunk_data = []
-            if isinstance(chunk, list):
-                chunk_data = chunk
-            elif isinstance(chunk, dict) and "data" in chunk:
-                 chunk_data = chunk["data"]
-            elif isinstance(chunk, dict) and "payload" in chunk:
-                 chunk_data = [chunk["payload"]]
-            else:
-                 chunk_data = [chunk]
-            
-            for d in chunk_data:
-                if not isinstance(d, dict):
-                    continue
-
-                try:
-                    ann = AnnotatedSegment.from_dict(d)
-                except Exception:
-                    continue
-
-                if not ann.telemetry_data:
-                    continue
-
-                df = pd.DataFrame(ann.telemetry_data)
-                
-                # Fast path if columns match
-                current_cols = df.columns.tolist()
-                if current_cols != self.expected_features:
-                     # Add missing
-                     for f in self.expected_features:
-                         if f not in df.columns:
-                             df[f] = 0
-                     # Drop extra and reorder
-                     df = df[self.expected_features]
-                
-                # Ensure numeric
-                df = df.apply(pd.to_numeric, errors='coerce').fillna(0)
-                
-                # Compute derived features (deltas)
-                df = compute_derived_features(df)
-
-                if df.empty:
-                    continue
-                
-                seg_X = df.values
-                
-                # Use labels directly (IDs)
-                mapped_labels = ann.labels
-                
-                # Create target
-                label_vec = self.mlb.transform([mapped_labels])[0]
-                seg_y = np.tile(label_vec, (len(seg_X), 1))
-                
-                # Scale
-                scaled_X = self.scaler.transform(seg_X)
-                
-                # Create mask
-                mask = np.ones((len(scaled_X), 1))
-                
-                # Pad
-                pad_len = self.max_length - len(scaled_X)
-                if pad_len > 0:
-                    scaled_X = np.pad(scaled_X, ((0, pad_len), (0, 0)), 'constant')
-                    seg_y = np.pad(seg_y, ((0, pad_len), (0, 0)), 'constant')
-                    mask = np.pad(mask, ((0, pad_len), (0, 0)), 'constant')
-                elif pad_len < 0:
-                    # Truncate
-                    scaled_X = scaled_X[:self.max_length]
-                    seg_y = seg_y[:self.max_length]
-                    mask = mask[:self.max_length]
-                
-                yield torch.FloatTensor(scaled_X), torch.FloatTensor(seg_y), torch.FloatTensor(mask)
 
 class SegmentClassifierService:
     def __init__(self, models_directory: str = "models", max_length: int = 100):
