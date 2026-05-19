@@ -225,6 +225,7 @@ class Full_dataset_TelemetryMLService:
                     model_subtype="imitation_model_data",
                     service_instance=self._expert_service,
                     deserializer_func=self._expert_service.deserialize_imitation_model,
+                    backend_fetcher=self.backend_service.getCompleteActiveModelData,
                 )
                 chunk_imitation_features = expert_service.extract_expert_state_for_telemetry(
                     [processed_telemetry_dict]
@@ -238,6 +239,7 @@ class Full_dataset_TelemetryMLService:
                 model_subtype="tire_grip_model_data",
                 service_instance=self._tire_grip_service,
                 deserializer_func=self._tire_grip_service.deserialize_tire_grip_model,
+                backend_fetcher=self.backend_service.getCompleteActiveModelData,
             )
             chunk_grip_features = await tire_grip_service.extract_tire_grip_features(
                 [processed_telemetry_dict]
