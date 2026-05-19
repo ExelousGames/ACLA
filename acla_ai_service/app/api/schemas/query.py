@@ -1,9 +1,15 @@
-"""
-Pydantic models for the ACLA AI Service
+"""HTTP request / response DTOs.
+
+These shapes are the public HTTP boundary of the AI service — they cross
+the wire between React and FastAPI. They are NOT used for internal
+function-to-function calls; for that, use the domain types in app/domain/.
+
+Moved from app/models/api_models.py in refactor/hexagonal-v1, Step 3.
 """
 
+from typing import Any, Dict, List, Optional
+
 from pydantic import BaseModel
-from typing import List, Dict, Any, Optional
 
 
 class DatasetInfo(BaseModel):
@@ -45,19 +51,12 @@ class HealthResponse(BaseModel):
     version: str
     timestamp: str
     backend_connection: Optional[Dict[str, Any]] = None
- 
-    
-class AiModelDto(BaseModel):
-    """Payload used when persisting AI models to the backend."""
-    modelType: str
-    modelData: Dict[str, Any]
-    metadata: Optional[Dict[str, Any]] = None
-    isActive: bool
 
 
-class ActiveModelData(BaseModel):
-    """Complete active model data structure returned by getCompleteActiveModelData"""
-    modelType: str
-    isActive: bool
-    metadata: Dict[str, Any]
-    modelData: Dict[str, Any]
+__all__ = [
+    "DatasetInfo",
+    "QueryRequest",
+    "AnalysisResult",
+    "BackendCallRequest",
+    "HealthResponse",
+]

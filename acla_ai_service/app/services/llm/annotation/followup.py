@@ -28,7 +28,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
-from app.models.segment_models import LABEL_MAPPING
+from app.domain.labels import LABEL_MAPPING
 from app.services.llm.label_catalog import find_labels, get_label
 from app.services.llm.skill_prompts import graph_analysis_prompt
 

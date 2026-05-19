@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple
 
-from app.models.segment_models import LABEL_CATEGORIES, LABEL_MAPPING
+from app.domain.labels import LABEL_CATEGORIES, LABEL_MAPPING
 from app.skill_manager import skills
 from app.skill_manager._query import matches
 

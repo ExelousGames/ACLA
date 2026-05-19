@@ -344,7 +344,7 @@ def _persist_children_for_parent(parent, result, session_id, selected_annotation
     usable proposals we keep the old children intact rather than wiping
     them out for a no-op.
     """
-    from app.models.segment_models import AnnotatedSegment
+    from app.domain.segment import AnnotatedSegment
     from .components._agent_annotation_shared import group_proposals_by_range
 
     grouped = group_proposals_by_range(result)
@@ -617,8 +617,7 @@ def render_batch_lap_agent_claude(df, session_id, selected_annotation_key):
     from .components._lap_agent_shared import (
         track_name_to_circuit_id, run_split, rebuild_remaining_segments,
     )
-    from app.models.segment_models import AnnotatedSegment
-
+    from app.domain.segment import AnnotatedSegment
     st.header("Batch Lap-to-Segment Excerpter (☁️ Claude)")
     st.write(
         "Pick a lap range; the deterministic splitter partitions it into "
@@ -976,8 +975,7 @@ def render_classifier_auto_annotation(df, selected_annotation_key):
                     filtered_labels = [lbl for lbl in seg.labels if str(lbl) in main_labels_set]
                     
                     if filtered_labels:
-                        from app.models.segment_models import AnnotatedSegment
-                        
+                        from app.domain.segment import AnnotatedSegment
                         new_ann = AnnotatedSegment(
                             labels=filtered_labels,
                             segment_length=end_idx - start_idx + 1,

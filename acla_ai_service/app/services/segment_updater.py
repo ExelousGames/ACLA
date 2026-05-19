@@ -2,7 +2,7 @@
 import pandas as pd
 import logging
 from typing import List, Dict, Any
-from app.models.segment_models import AnnotatedSegment
+from app.domain.segment import AnnotatedSegment
 from app.services.zarr_telemetry_store import get_shared_zarr_store
 import json
 import zarr

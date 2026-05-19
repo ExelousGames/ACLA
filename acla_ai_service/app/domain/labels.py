@@ -1,13 +1,14 @@
-import uuid
-from dataclasses import dataclass, field, asdict
-from typing import List, Dict, Any, Optional
+"""Behavioural label catalog (ID → display name) and grouping metadata.
 
-from app.models.telemetry_models import TelemetryFeatures
-from app.domain.expert_features import ExpertFeatureCatalog
-from app.domain.tire_grip_features import TireGripFeatureCatalog
+Pure data: dicts indexed by short label ID. No behaviour, no imports
+from any framework or service. Moved from app/models/segment_models.py
+in refactor/hexagonal-v1, Step 3.
+"""
 
-# Constants
-LABEL_MAPPING = {
+from typing import Dict, List
+
+
+LABEL_MAPPING: Dict[str, str] = {
     ################### Main Labels ###################
     "O": "Overtaking",
     "MD": "Missing data",
@@ -93,7 +94,7 @@ LABEL_MAPPING = {
     "brands_hatch13":"Sheene Curve",
     "brands_hatch14":"Stirlings",
     "brands_hatch15":"Clearways",
-    "brands_hatch16":"Clark Curve",  
+    "brands_hatch16":"Clark Curve",
     "brands_hatch17":"Pit",
     "brands_hatch18":"Graham Hill",
     "brands_hatch19":"Hailwoods Hill",
@@ -129,9 +130,9 @@ LABEL_MAPPING = {
     "ST5": "Between consecutive corners",
     "ST6": "Consecutive corners with no straight in between",
 }
-LABEL_NAME_TO_ID = {v: k for k, v in LABEL_MAPPING.items()}
+LABEL_NAME_TO_ID: Dict[str, str] = {v: k for k, v in LABEL_MAPPING.items()}
 
-MAIN_LABEL_GUIDELINES = {
+MAIN_LABEL_GUIDELINES: Dict[str, str] = {
     "O": "Overtaking: Analyze the driver's attempt to pass an opponent. Look for late braking, line deviation to find a gap, and speed differentials. Assess if the move was successful and safe.",
     "MD": "Missing Data: This segment contains gaps or corrupted telemetry. Identify if the sensor data drops to zero or becomes inconsistent unexpectedly.",
     "EA": "Expert Adherence: The driver is following the optimal racing line and speed profile closely. nothing needs to be labeled right now.",
@@ -143,12 +144,12 @@ MAIN_LABEL_GUIDELINES = {
     "Segment Type": "Segment Type: if the segment contains a corner, label the shape as in the corner. if the segment is on the straight, label as on the straight. if the segment is approaching a corner but not yet in it, label as approach to corner. if the segment is exiting a corner, label as exit corner. if the segment is between corners and hasnt be name yet, label as between corners."
 }
 
-LABEL_IMAGE_MAP = {
+LABEL_IMAGE_MAP: Dict[str, str] = {
     "brands_hatch": "Brands_Hatch_2003.jpg",
     "silverstone": "Silverstone_Circuit_2020.jpg"
 }
 
-LABEL_CATEGORIES = {
+LABEL_CATEGORIES: Dict[str, List[str]] = {
     "Main Labels": ["O", "MD","EA","PS","RM","MS","brands_hatch","silverstone"],
     "O":[],
     "MD":[],
@@ -161,64 +162,11 @@ LABEL_CATEGORIES = {
     "Segment Type": ["ST1", "ST2", "ST3", "ST4", "ST5", "ST6"]
 }
 
-@dataclass
-class AnnotatedSegment:
-    labels: List[str]
-    segment_length: int
-    id: str = field(default_factory=lambda: str(uuid.uuid4()))
-    start_index: Optional[int] = None
-    end_index: Optional[int] = None
-    chunk_index: Optional[int] = None
-    telemetry_data: List[Dict[str, Any]] = field(default_factory=list)
-    notes: Optional[str] = None
-    parent_id: Optional[str] = None
 
-    def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
-
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> 'AnnotatedSegment':
-        return cls(
-            id=data.get("id", str(uuid.uuid4())),
-            labels=data.get("labels", []),
-            segment_length=data.get("segment_length", 0),
-            start_index=data.get("start_index"),
-            end_index=data.get("end_index"),
-            chunk_index=data.get("chunk_index"),
-            telemetry_data=data.get("telemetry_data", []),
-            notes=data.get("notes"),
-            parent_id=data.get("parent_id")
-        )
-
-@dataclass
-class PredictedSegment:
-    labels: List[str]
-    id: str = field(default_factory=lambda: str(uuid.uuid4()))
-    telemetry_data: List[Dict[str, Any]] = field(default_factory=list)
-    start_index: Optional[int] = None
-    end_index: Optional[int] = None
-
-    def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
-
-
-class SegmentFeatureCatalog:
-    """
-    Centralized catalog for all features used in segment analysis and modeling.
-    Aggregates features from various services and models.
-    """
-
-    @staticmethod
-    def get_all_available_features() -> List[str]:
-        """
-        Returns a unique list of all features available for segment analysis.
-        Combines base telemetry, expert optimal, expert context, and tire grip context.
-        """
-        features = []
-        features.extend(TelemetryFeatures.get_features_for_learning_expert())
-        features.extend([f.value for f in ExpertFeatureCatalog.ExpertFeatures])
-        features.extend([f.value for f in TireGripFeatureCatalog.ContextFeature])
-
-        # Use dict.fromkeys to remove duplicates while preserving insertion order
-        return list(dict.fromkeys(features))
-
+__all__ = [
+    "LABEL_MAPPING",
+    "LABEL_NAME_TO_ID",
+    "MAIN_LABEL_GUIDELINES",
+    "LABEL_IMAGE_MAP",
+    "LABEL_CATEGORIES",
+]

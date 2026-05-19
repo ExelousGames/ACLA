@@ -426,7 +426,7 @@ class AlgorithmConfiguration:
             List of recommended feature categories (now returns actual feature names)
         """
         # Import here to avoid circular imports
-        from app.models.telemetry_models import TelemetryFeatures
+        from app.domain.telemetry import TelemetryFeatures
         
         return TelemetryFeatures.get_features_for_model_type(model_type)
     

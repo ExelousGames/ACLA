@@ -19,7 +19,7 @@ import json
 import logging
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from app.models.segment_models import LABEL_MAPPING
+from app.domain.labels import LABEL_MAPPING
 from app.services.llm.label_catalog import find_labels, get_label
 from app.services.llm.agent import (
     AgentRequest,

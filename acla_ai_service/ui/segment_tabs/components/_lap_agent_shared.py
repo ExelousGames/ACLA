@@ -26,7 +26,7 @@ from typing import Any, Callable, Dict, List, Optional
 import streamlit as st
 from PIL import Image
 
-from app.models.segment_models import AnnotatedSegment
+from app.domain.segment import AnnotatedSegment
 from ..shared import (
     LABEL_MAPPING, LABEL_NAME_TO_ID, save_annotations,
 )

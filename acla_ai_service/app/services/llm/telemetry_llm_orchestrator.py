@@ -15,8 +15,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 import traceback
 
-from app.models import ActiveModelData
-
+from app.integrations.backend.schemas import ActiveModelData
 from ..backend_service import backend_service
 from .local_llm_service import LocalLLMConfig, LocalTelemetryLLM
 from ..model_cache_service import model_cache_service

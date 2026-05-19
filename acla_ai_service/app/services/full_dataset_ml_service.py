@@ -30,10 +30,8 @@ from collections import Counter
 from typing import Dict, List, Any, Optional, Tuple, Union, Iterator, AsyncIterator
 from datetime import datetime
 from pathlib import Path
-from app.models import AiModelDto, ActiveModelData
-from app.models.segment_models import PredictedSegment, AnnotatedSegment
-
-# Scikit-learn imports
+from app.integrations.backend.schemas import AiModelDto, ActiveModelData
+from app.domain.segment import PredictedSegment, AnnotatedSegment  # Scikit-learn imports
 from sklearn.model_selection import train_test_split, cross_val_score, GridSearchCV, StratifiedKFold
 from sklearn.preprocessing import StandardScaler, LabelEncoder, RobustScaler
 from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier, GradientBoostingRegressor, GradientBoostingClassifier
@@ -49,7 +47,7 @@ from sklearn.pipeline import Pipeline
 from sklearn.compose import ColumnTransformer
 
 # Import your telemetry models
-from ..models.telemetry_models import (
+from app.domain.telemetry import (
     TelemetryFeatures,
     FeatureProcessor,
     _safe_float,

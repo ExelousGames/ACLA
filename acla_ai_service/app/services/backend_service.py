@@ -15,8 +15,7 @@ import re
 import numpy as np
 from pathlib import Path
 from app.core import settings
-from app.models.api_models import ActiveModelData
-
+from app.integrations.backend.schemas import ActiveModelData
 logger = logging.getLogger(__name__)
 
 

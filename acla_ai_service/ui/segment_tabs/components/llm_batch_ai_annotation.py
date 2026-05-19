@@ -6,8 +6,7 @@ from typing import List, Dict, Any, Callable
 
 from segment_tabs.components.llm_training_data_generation import generate_training_prompt
 from segment_tabs.shared import _run_async
-from app.models.segment_models import LABEL_MAPPING
-
+from app.domain.labels import LABEL_MAPPING
 def render_batch_ai_annotation_tab(
     segments: List[Dict[str, Any]], 
     existing_annotations: Dict[str, List[Dict[str, Any]]],
