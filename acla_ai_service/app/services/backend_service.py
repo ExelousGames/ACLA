@@ -214,7 +214,7 @@ class BackendService:
         """
         if not data_cache:
             # Import shared Zarr store here to avoid circular imports
-            from .zarr_telemetry_store import get_shared_zarr_store
+            from app.storage.zarr import get_shared_zarr_store
             data_cache = get_shared_zarr_store()
 
         # Ensure we always start with a clean cache entry for this key

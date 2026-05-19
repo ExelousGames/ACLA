@@ -32,7 +32,7 @@ def _ensure_app_module_on_path() -> None:
 _ensure_app_module_on_path()
 
 try:
-    from app.services.zarr_telemetry_store import get_shared_zarr_store
+    from app.storage.zarr import get_shared_zarr_store
     from app.config.pipeline_config import PipelineConfig
     import app.domain.labels
     import app.domain.segment

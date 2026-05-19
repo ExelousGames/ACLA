@@ -461,7 +461,7 @@ class ExpertImitateLearningService:
     
     def get_shared_data_cache(self):
         """Get shared data cache instance"""
-        from .zarr_telemetry_store import get_shared_zarr_store
+        from app.storage.zarr import get_shared_zarr_store
         return get_shared_zarr_store()
 
     async def train_ai_model(self, top_laps_cache_key: str) -> Dict[str, Any]:

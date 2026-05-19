@@ -18,8 +18,8 @@ import traceback
 from app.integrations.backend.schemas import ActiveModelData
 from ..backend_service import backend_service
 from .local_llm_service import LocalLLMConfig, LocalTelemetryLLM
-from ..model_cache_service import model_cache_service
-from ..zarr_telemetry_store import get_shared_zarr_store
+from app.storage.cache import model_cache_service
+from app.storage.zarr import get_shared_zarr_store
 
 
 class TelemetryLLMOrchestrator:

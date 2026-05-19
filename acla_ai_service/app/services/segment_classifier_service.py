@@ -24,7 +24,7 @@ import hashlib
 import copy
 from collections import defaultdict
 
-from .zarr_telemetry_store import get_shared_zarr_store
+from app.storage.zarr import get_shared_zarr_store
 from app.domain.labels import LABEL_MAPPING
 from app.domain.segment import AnnotatedSegment, PredictedSegment, SegmentFeatureCatalog
 def compute_derived_features(df: pd.DataFrame) -> pd.DataFrame:

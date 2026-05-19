@@ -59,10 +59,10 @@ from .transformer_model import prepare_and_train_coach_transformer_model
 from .backend_service import backend_service
 
 # Import model cache service
-from .model_cache_service import model_cache_service
+from app.storage.cache import model_cache_service
 
 # Import hybrid data cache service
-from .zarr_telemetry_store import get_shared_zarr_store
+from app.storage.zarr import get_shared_zarr_store
 from app.config.pipeline_config import PipelineConfig
 
 # Prompt dataset builder and local LLM integration
