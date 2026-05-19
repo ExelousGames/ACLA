@@ -153,9 +153,18 @@ def test_budget_total_spawn_limit() -> None:
 # ---------------------------------------------------------------------------
 
 
+# `_parse_zoom_decision` filters zoom requests against an `available_graph_ids`
+# list (added when the planner started selecting per-zoom graph subsets).
+# When a request omits `requested_graphs`, the function defaults to ALL
+# available ones — so passing an empty list does NOT silently keep every
+# range; tests below pass an explicit non-empty list when they care about
+# survivors and an empty list when they expect everything to drop anyway.
+_TEST_GRAPHS = ["graph_a", "graph_b"]
+
+
 def test_parse_zoom_decision_no_zoom() -> None:
     text = '{"zoom": false}'
-    zoom, ranges = _parse_zoom_decision(text, 0, 1000)
+    zoom, ranges = _parse_zoom_decision(text, 0, 1000, _TEST_GRAPHS)
     assert zoom is False
     assert ranges == []
 
@@ -165,11 +174,11 @@ def test_parse_zoom_decision_fenced_json() -> None:
         "Some prose.\n"
         "```json\n"
         '{"zoom": true, "ranges": ['
-        f'{{"start": 100, "end": {100 + MIN_ZOOM_SPAN + 5}, "reason": "x"}}'
+        f'{{"start": 100, "end": {100 + MIN_ZOOM_SPAN + 5}, "question": "x"}}'
         "]}\n"
         "```\n"
     )
-    zoom, ranges = _parse_zoom_decision(text, 0, 1000)
+    zoom, ranges = _parse_zoom_decision(text, 0, 1000, _TEST_GRAPHS)
     assert zoom is True
     assert len(ranges) == 1
     assert ranges[0]["start"] == 100
@@ -179,10 +188,10 @@ def test_parse_zoom_decision_drops_short_span() -> None:
     short = MIN_ZOOM_SPAN - 1
     text = (
         '{"zoom": true, "ranges": [{'
-        f'"start": 10, "end": {10 + short}, "reason": "x"'
+        f'"start": 10, "end": {10 + short}, "question": "x"'
         "}]}"
     )
-    zoom, ranges = _parse_zoom_decision(text, 0, 1000)
+    zoom, ranges = _parse_zoom_decision(text, 0, 1000, _TEST_GRAPHS)
     assert ranges == []
     assert zoom is False    # no valid ranges → effectively no zoom
 
@@ -190,41 +199,43 @@ def test_parse_zoom_decision_drops_short_span() -> None:
 def test_parse_zoom_decision_drops_outside_parent_range() -> None:
     text = (
         '{"zoom": true, "ranges": [{'
-        f'"start": 5000, "end": 5100, "reason": "out of range"'
+        f'"start": 5000, "end": 5100, "question": "out of range"'
         "}]}"
     )
-    zoom, ranges = _parse_zoom_decision(text, 0, 1000)
+    zoom, ranges = _parse_zoom_decision(text, 0, 1000, _TEST_GRAPHS)
     assert ranges == []
     assert zoom is False
 
 
-def test_parse_zoom_decision_caps_count() -> None:
+def test_parse_zoom_decision_keeps_all_valid() -> None:
+    """Three valid ranges all survive — `_parse_zoom_decision` no longer
+    caps; capping is the planner's responsibility now, not the parser's."""
     text = (
         '{"zoom": true, "ranges": ['
-        f'{{"start": 0, "end": {MIN_ZOOM_SPAN}, "reason": "a"}},'
-        f'{{"start": 100, "end": {100 + MIN_ZOOM_SPAN}, "reason": "b"}},'
-        f'{{"start": 200, "end": {200 + MIN_ZOOM_SPAN}, "reason": "c"}}'
+        f'{{"start": 0, "end": {MIN_ZOOM_SPAN}, "question": "a"}},'
+        f'{{"start": 100, "end": {100 + MIN_ZOOM_SPAN}, "question": "b"}},'
+        f'{{"start": 200, "end": {200 + MIN_ZOOM_SPAN}, "question": "c"}}'
         "]}"
     )
-    zoom, ranges = _parse_zoom_decision(text, 0, 1000)
+    zoom, ranges = _parse_zoom_decision(text, 0, 1000, _TEST_GRAPHS)
     assert zoom is True
-    assert len(ranges) == 2     # capped at MAX_ZOOM_STEPS
+    assert len(ranges) == 3
 
 
 def test_parse_zoom_decision_drops_invalid_types() -> None:
     text = (
         '{"zoom": true, "ranges": [{'
-        '"start": "80", "end": 130, "reason": "bad start type"'
+        '"start": "80", "end": 130, "question": "bad start type"'
         "}]}"
     )
-    zoom, ranges = _parse_zoom_decision(text, 0, 1000)
+    zoom, ranges = _parse_zoom_decision(text, 0, 1000, _TEST_GRAPHS)
     assert ranges == []
     assert zoom is False
 
 
 def test_parse_zoom_decision_no_json_returns_no_zoom() -> None:
     text = "Just prose, no JSON object here."
-    zoom, ranges = _parse_zoom_decision(text, 0, 1000)
+    zoom, ranges = _parse_zoom_decision(text, 0, 1000, _TEST_GRAPHS)
     assert zoom is False
     assert ranges == []
 
