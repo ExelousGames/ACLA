@@ -8,7 +8,7 @@ from fastapi.responses import StreamingResponse
 from typing import Dict, Any, Optional, List
 from pydantic import BaseModel
 from app.services.ai_service import AIService
-from app.services.llm.llama_health import check_llama_server
+from app.llm.health import check_llama_server
 
 router = APIRouter(tags=["query"])
 
@@ -62,7 +62,7 @@ async def process_query_stream(request: QueryRequest):
 
     Returns a Server-Sent Events stream. Each event's `data:` field is a
     JSON object with a `type` discriminator. See
-    `app/services/voice/stream_events.py` for the protocol.
+    `app/voice/stream_events.py` for the protocol.
 
     Event types: token, audio, tool_start, tool_end, done, error.
 

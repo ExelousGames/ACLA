@@ -27,9 +27,9 @@ def render_ai_assisted_annotation_tab(
     if st.button("Generate Draft", key=f"generate_ai_{st.session_state.current_index}"):
         try:
             from segment_tabs.shared import _run_async
-            from app.services.llm.local_llm_service import LocalLLMConfig
+            from app.llm.local_llm import LocalLLMConfig
             from app.services.llm.telemetry_llm_orchestrator import TelemetryLLMOrchestrator
-            from app.services.llm.local_llm_service import GenerationRequest
+            from app.llm.local_llm import GenerationRequest
             
             with st.spinner(f"Loading/Using model {model_id} via hf_local..."):
                 llm_config = LocalLLMConfig(base_model=model_id, load_in_4bit=use_4bit, gguf_file=gguf_file if gguf_file else None)

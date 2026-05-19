@@ -4,8 +4,8 @@ Health check endpoints
 
 from fastapi import APIRouter
 from datetime import datetime
-from app.models import HealthResponse
-from app.services.backend_service import backend_service
+from app.api.schemas.query import HealthResponse
+from app.integrations.backend.client import backend_service
 from app.core import settings
 
 router = APIRouter(tags=["health"])

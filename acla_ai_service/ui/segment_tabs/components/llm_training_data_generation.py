@@ -1,6 +1,5 @@
 from typing import List, Any
-from app.models.segment_models import LABEL_MAPPING
-
+from app.domain.labels import LABEL_MAPPING
 MAIN_EVENT_LABELS = [
     "1", "2", "EA", "4", "RM", "MS"
 ]

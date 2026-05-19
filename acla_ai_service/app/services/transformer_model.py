@@ -18,13 +18,9 @@ from sklearn.preprocessing import StandardScaler, MinMaxScaler
 from sklearn.metrics import mean_squared_error, mean_absolute_error
 
 # Import contextual feature catalogs for quality weighting
-from .tire_grip_analysis_service import TireGripFeatureCatalog
-from .imitate_expert_learning_service import (
-    ExpertFeatureCatalog,
-)
-from ..models.telemetry_models import TelemetryFeatures, _safe_float
-
-# Force unbuffered output for real-time print statements
+from app.domain.tire_grip_features import TireGripFeatureCatalog
+from app.domain.expert_features import ExpertFeatureCatalog
+from app.domain.telemetry import TelemetryFeatures, _safe_float  # Force unbuffered output for real-time print statements
 import os
 os.environ['PYTHONUNBUFFERED'] = '1'
 sys.stdout.reconfigure(line_buffering=True)

@@ -1,5 +1,5 @@
 import streamlit as st
-from app.models.segment_models import LABEL_MAPPING
+from app.domain.labels import LABEL_MAPPING
 from typing import List
 
 def render_segment_labels_section(labels: List[str], sub_segment_count: int = 0):

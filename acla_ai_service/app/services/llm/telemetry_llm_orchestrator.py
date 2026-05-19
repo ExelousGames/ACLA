@@ -15,12 +15,11 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 import traceback
 
-from app.models import ActiveModelData
-
-from ..backend_service import backend_service
-from .local_llm_service import LocalLLMConfig, LocalTelemetryLLM
-from ..model_cache_service import model_cache_service
-from ..zarr_telemetry_store import get_shared_zarr_store
+from app.integrations.backend.schemas import ActiveModelData
+from app.integrations.backend.client import backend_service
+from app.llm.local_llm import LocalLLMConfig, LocalTelemetryLLM
+from app.storage.cache import model_cache_service
+from app.storage.zarr import get_shared_zarr_store
 
 
 class TelemetryLLMOrchestrator:
@@ -340,7 +339,7 @@ class TelemetryLLMOrchestrator:
 			if hasattr(llm, "generate"):
 				# Convert to native generation request if the LocalLLM expects it
 				if provider == "hf_local":
-					from .local_llm_service import GenerationRequest
+					from app.llm.local_llm import GenerationRequest
 					if isinstance(request_data, dict):
 						request_data.pop("system_prompt", None)
 						req = GenerationRequest(**request_data)

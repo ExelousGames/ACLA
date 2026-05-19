@@ -47,7 +47,7 @@ def render_lap_agent_local(df, session_id, selected_annotation_key, circuit_id, 
                 value=0.3, step=0.1, key="lap_local_temp",
             )
 
-        from app.services.llm.agent.backends.local_vlm import (
+        from app.agents.backends.local_vlm import (
             QWEN25_VL_MODELS,
         )
         model_options = list(QWEN25_VL_MODELS.keys())

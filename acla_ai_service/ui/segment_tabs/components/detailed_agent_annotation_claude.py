@@ -58,7 +58,7 @@ def render_agent_annotation_claude(
             key="agent_annot_claude_max_iter",
         )
 
-        from app.services.llm.agent.backends.claude_sdk import CLAUDE_VLM_MODELS
+        from app.agents.backends.claude_sdk import CLAUDE_VLM_MODELS
 
         claude_model_options = list(CLAUDE_VLM_MODELS.keys())
         claude_model = st.selectbox(

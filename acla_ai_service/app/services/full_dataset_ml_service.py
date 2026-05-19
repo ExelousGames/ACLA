@@ -30,10 +30,8 @@ from collections import Counter
 from typing import Dict, List, Any, Optional, Tuple, Union, Iterator, AsyncIterator
 from datetime import datetime
 from pathlib import Path
-from app.models import AiModelDto, ActiveModelData
-from app.models.segment_models import PredictedSegment, AnnotatedSegment
-
-# Scikit-learn imports
+from app.integrations.backend.schemas import AiModelDto, ActiveModelData
+from app.domain.segment import PredictedSegment, AnnotatedSegment  # Scikit-learn imports
 from sklearn.model_selection import train_test_split, cross_val_score, GridSearchCV, StratifiedKFold
 from sklearn.preprocessing import StandardScaler, LabelEncoder, RobustScaler
 from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier, GradientBoostingRegressor, GradientBoostingClassifier
@@ -49,7 +47,7 @@ from sklearn.pipeline import Pipeline
 from sklearn.compose import ColumnTransformer
 
 # Import your telemetry models
-from ..models.telemetry_models import (
+from app.domain.telemetry import (
     TelemetryFeatures,
     FeatureProcessor,
     _safe_float,
@@ -58,17 +56,17 @@ from ..models.telemetry_models import (
 from .transformer_model import prepare_and_train_coach_transformer_model
 
 # Import backend service
-from .backend_service import backend_service
+from app.integrations.backend.client import backend_service
 
 # Import model cache service
-from .model_cache_service import model_cache_service
+from app.storage.cache import model_cache_service
 
 # Import hybrid data cache service
-from .zarr_telemetry_store import get_shared_zarr_store
+from app.storage.zarr import get_shared_zarr_store
 from app.config.pipeline_config import PipelineConfig
 
 # Prompt dataset builder and local LLM integration
-from .llm.local_llm_service import LocalTelemetryLLM, LocalLLMConfig, GenerationRequest
+from app.llm.local_llm import LocalTelemetryLLM, LocalLLMConfig, GenerationRequest
 from .llm.telemetry_llm_orchestrator import TelemetryLLMOrchestrator
 
 # Suppress sklearn warnings
@@ -127,7 +125,7 @@ class Full_dataset_TelemetryMLService:
         )
         
         # LLM configuration
-        from .llm.local_llm_service import ModelConfig, TrainingConfig
+        from app.llm.local_llm import ModelConfig, TrainingConfig
         
         self.llm_config = LocalLLMConfig(
             model=ModelConfig(

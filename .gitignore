@@ -3,6 +3,12 @@
 /node_modules
 /build
 
+# Python bytecode (added in refactor/hexagonal-v1 — replaces dozens of
+# per-directory __pycache__ entries below, most now obsolete).
+__pycache__/
+*.pyc
+*.pyo
+
 # Logs
 logs
 *.log

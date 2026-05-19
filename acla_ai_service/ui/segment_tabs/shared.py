@@ -32,12 +32,15 @@ def _ensure_app_module_on_path() -> None:
 _ensure_app_module_on_path()
 
 try:
-    from app.services.zarr_telemetry_store import get_shared_zarr_store
+    from app.storage.zarr import get_shared_zarr_store
     from app.config.pipeline_config import PipelineConfig
-    import app.models.segment_models
+    import app.domain.labels
+    import app.domain.segment
     # Force reload to pick up model changes (e.g. new fields)
-    importlib.reload(app.models.segment_models)
-    from app.models.segment_models import AnnotatedSegment, LABEL_MAPPING, LABEL_NAME_TO_ID, LABEL_CATEGORIES, MAIN_LABEL_GUIDELINES, LABEL_IMAGE_MAP, SegmentFeatureCatalog
+    importlib.reload(app.domain.labels)
+    importlib.reload(app.domain.segment)
+    from app.domain.labels import LABEL_MAPPING, LABEL_NAME_TO_ID, LABEL_CATEGORIES, MAIN_LABEL_GUIDELINES, LABEL_IMAGE_MAP
+    from app.domain.segment import AnnotatedSegment, SegmentFeatureCatalog
     from app.services.segment_updater import SegmentUpdater
 
 except ImportError:

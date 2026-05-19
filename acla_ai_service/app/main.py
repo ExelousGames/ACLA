@@ -8,8 +8,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
 from app.core import settings
-from app.services.backend_service import backend_service
-from app.services.llm.llama_health import check_llama_server
+from app.integrations.backend.client import backend_service
+from app.llm.health import check_llama_server
 from app.api import (
     health_router,
     racing_session_router,

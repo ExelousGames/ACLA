@@ -54,7 +54,7 @@ def render_agent_annotation_local(
                 key="agent_annot_local_temp",
             )
 
-        from app.services.llm.agent.backends.local_vlm import (
+        from app.agents.backends.local_vlm import (
             QWEN25_VL_MODELS,
         )
 

@@ -27,7 +27,7 @@ _ensure_app_module_on_path()
 
 try:
     from segment_tabs.shared import get_store, PipelineConfig, get_available_sessions, load_annotations, _run_async
-    from app.models.segment_models import LABEL_MAPPING
+    from app.domain.labels import LABEL_MAPPING
     from segment_tabs.components.llm_ai_annotation import render_ai_assisted_annotation_tab
     from segment_tabs.components.llm_dataset_editor import render_dataset_editor_tab
     from segment_tabs.components.llm_segment_labels import render_segment_labels_section

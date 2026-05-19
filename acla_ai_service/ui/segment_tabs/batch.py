@@ -200,7 +200,7 @@ def _render_local_vlm_config():
     from the current widget values — deferring the import so the run path
     surfaces a clean error if the LangGraph deps are missing.
     """
-    from app.services.llm.agent.backends.local_vlm import QWEN25_VL_MODELS
+    from app.agents.backends.local_vlm import QWEN25_VL_MODELS
 
     col_s1, col_s2 = st.columns(2)
     with col_s1:
@@ -295,7 +295,7 @@ def _render_local_vlm_config():
 
 def _render_claude_config():
     """Render Claude settings (mirrors detailed_agent_annotation_claude)."""
-    from app.services.llm.agent.backends.claude_sdk import CLAUDE_VLM_MODELS
+    from app.agents.backends.claude_sdk import CLAUDE_VLM_MODELS
 
     max_iterations = st.number_input(
         "Tool-call budget (×10)",
@@ -344,7 +344,7 @@ def _persist_children_for_parent(parent, result, session_id, selected_annotation
     usable proposals we keep the old children intact rather than wiping
     them out for a no-op.
     """
-    from app.models.segment_models import AnnotatedSegment
+    from app.domain.segment import AnnotatedSegment
     from .components._agent_annotation_shared import group_proposals_by_range
 
     grouped = group_proposals_by_range(result)
@@ -617,8 +617,7 @@ def render_batch_lap_agent_claude(df, session_id, selected_annotation_key):
     from .components._lap_agent_shared import (
         track_name_to_circuit_id, run_split, rebuild_remaining_segments,
     )
-    from app.models.segment_models import AnnotatedSegment
-
+    from app.domain.segment import AnnotatedSegment
     st.header("Batch Lap-to-Segment Excerpter (☁️ Claude)")
     st.write(
         "Pick a lap range; the deterministic splitter partitions it into "
@@ -661,7 +660,7 @@ def render_batch_lap_agent_claude(df, session_id, selected_annotation_key):
         help="Caps the agent loop at this many tool calls × 10 per section.",
         key="batch_lap_claude_max_iter",
     )
-    from app.services.llm.agent.backends.claude_sdk import CLAUDE_VLM_MODELS
+    from app.agents.backends.claude_sdk import CLAUDE_VLM_MODELS
     claude_model = st.selectbox(
         "Claude model", options=list(CLAUDE_VLM_MODELS.keys()),
         format_func=lambda x: CLAUDE_VLM_MODELS[x]["label"],
@@ -976,8 +975,7 @@ def render_classifier_auto_annotation(df, selected_annotation_key):
                     filtered_labels = [lbl for lbl in seg.labels if str(lbl) in main_labels_set]
                     
                     if filtered_labels:
-                        from app.models.segment_models import AnnotatedSegment
-                        
+                        from app.domain.segment import AnnotatedSegment
                         new_ann = AnnotatedSegment(
                             labels=filtered_labels,
                             segment_length=end_idx - start_idx + 1,

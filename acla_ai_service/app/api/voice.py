@@ -17,7 +17,7 @@ from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconn
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
-from app.services.voice import get_kokoro_service
+from app.voice import get_kokoro_service
 
 LOGGER = logging.getLogger(__name__)
 
@@ -156,7 +156,7 @@ async def voice_stream(
     # Deferred imports — keeps the rest of the API importable even when
     # pipecat isn't installed in the running container.
     try:
-        from app.services.voice.pipecat_pipeline import (
+        from app.voice.pipecat_pipeline import (
             VoiceSessionConfig,
             run_voice_session,
         )
