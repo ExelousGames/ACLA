@@ -53,7 +53,7 @@ from app.domain.telemetry import (
     _safe_float,
 )
 # Transformer model utilities
-from app.ml.transformer.model import prepare_and_train_coach_transformer_model
+from app.pipelines.training.transformer_trainer import prepare_and_train_coach_transformer_model
 
 # Import backend service
 from app.integrations.backend.client import backend_service
