@@ -109,10 +109,12 @@ class ZarrTelemetryStore:
         if store_directory:
             self.store_dir = Path(store_directory)
         else:
-            # Default to acla_ai_service/telemetry_zarr_store relative to this file
-            # This ensures consistent location regardless of CWD.
-            # __file__ is app/storage/zarr/__init__.py — parents[3] is the project root.
-            self.store_dir = Path(__file__).resolve().parents[3] / "telemetry_zarr_store"
+            # Default to acla_ai_service/app/storage/telemetry_zarr_store/ — the
+            # data sits one band over from this code module, both under
+            # app/storage/. Moved here from the project root in PR #5 so the
+            # storage band owns its own data physically as well as logically.
+            # __file__ is app/storage/zarr/__init__.py — parents[1] is app/storage/.
+            self.store_dir = Path(__file__).resolve().parents[1] / "telemetry_zarr_store"
 
         self.store_dir.mkdir(parents=True, exist_ok=True)
         self.compressor = compressor or Blosc(cname="zstd", clevel=5, shuffle=Blosc.BITSHUFFLE)
