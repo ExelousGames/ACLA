@@ -1,0 +1,613 @@
+<mxfile host="65bd71144e">
+    <diagram name="1. System Overview" id="page1">
+        <mxGraphModel dx="1024" dy="826" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1400" pageHeight="900" math="0" shadow="0">
+            <root>
+                <mxCell id="0"/>
+                <mxCell id="1" parent="0"/>
+                <mxCell id="p1_title" value="Page 1 — System Overview:  Clients → Inbound API → Application Pipelines" style="text;html=1;align=center;verticalAlign=middle;fontSize=18;fontStyle=1;fillColor=#23445d;strokeColor=#23445d;fontColor=#ffffff;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="20" width="1320" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="p1_nav" value="Pages:  ① Overview  ·  ② Agent &amp; Domain  ·  ③ Providers, Storage &amp; External  ·  ④ Migration &amp; Principles  ·  ⑤ Services Split  ·  ⑥ models/ Split" style="text;html=1;align=center;verticalAlign=middle;fontSize=11;fontStyle=2;fontColor=#666666;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="60" width="1320" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="p1_band_clients" value="" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;verticalAlign=top;align=left;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="100" width="1320" height="120" as="geometry"/>
+                </mxCell>
+                <mxCell id="p1_clients_lbl" value="CLIENTS" style="text;html=1;align=center;verticalAlign=middle;fontSize=14;fontStyle=1;fontColor=#7f6000;" parent="1" vertex="1">
+                    <mxGeometry x="50" y="140" width="120" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="p1_react" value="React Frontend&#xa;(acla_front, :3000)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#7f6000;fontSize=12;" parent="1" vertex="1">
+                    <mxGeometry x="200" y="135" width="220" height="70" as="geometry"/>
+                </mxCell>
+                <mxCell id="p1_streamlit" value="Streamlit Researcher UI&#xa;(separate container, dev)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#7f6000;fontSize=12;" parent="1" vertex="1">
+                    <mxGeometry x="450" y="135" width="240" height="70" as="geometry"/>
+                </mxCell>
+                <mxCell id="p1_acc" value="ACC Sim&#xa;(telemetry source)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#7f6000;fontSize=12;" parent="1" vertex="1">
+                    <mxGeometry x="720" y="135" width="200" height="70" as="geometry"/>
+                </mxCell>
+                <mxCell id="p1_clients_note" value="Production: React + sim.&#xa;Researcher UI is a separate dev tool." style="text;html=1;align=left;verticalAlign=middle;fontSize=11;fontStyle=2;fontColor=#7f6000;" parent="1" vertex="1">
+                    <mxGeometry x="950" y="135" width="390" height="70" as="geometry"/>
+                </mxCell>
+                <mxCell id="p1_band_api" value="" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;verticalAlign=top;align=left;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="250" width="1320" height="160" as="geometry"/>
+                </mxCell>
+                <mxCell id="p1_api_lbl" value="INBOUND&#xa;ADAPTERS&#xa;app/api/" style="text;html=1;align=center;verticalAlign=middle;fontSize=13;fontStyle=1;fontColor=#23445d;" parent="1" vertex="1">
+                    <mxGeometry x="50" y="290" width="120" height="80" as="geometry"/>
+                </mxCell>
+                <mxCell id="p1_query" value="POST /query&#xa;POST /query/stream (SSE)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#23445d;fontSize=11;" parent="1" vertex="1">
+                    <mxGeometry x="200" y="280" width="220" height="80" as="geometry"/>
+                </mxCell>
+                <mxCell id="p1_voice" value="POST /voice/synthesize&#xa;GET  /voice/voices" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#23445d;fontSize=11;" parent="1" vertex="1">
+                    <mxGeometry x="440" y="280" width="220" height="80" as="geometry"/>
+                </mxCell>
+                <mxCell id="p1_voice_ws" value="WS /voice/stream&#xa;(Pipecat bidirectional)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#23445d;fontSize=11;fontStyle=1;" parent="1" vertex="1">
+                    <mxGeometry x="680" y="280" width="220" height="80" as="geometry"/>
+                </mxCell>
+                <mxCell id="p1_session" value="POST /racing_session&#xa;(live telemetry events)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#23445d;fontSize=11;" parent="1" vertex="1">
+                    <mxGeometry x="920" y="280" width="220" height="80" as="geometry"/>
+                </mxCell>
+                <mxCell id="p1_annot" value="POST /annotation/run&#xa;(new — replaces direct&#xa;in-UI imports)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#23445d;fontSize=11;dashed=1;" parent="1" vertex="1">
+                    <mxGeometry x="200" y="370" width="220" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="p1_health" value="GET /health  ·  /query/health  ·  /query/llama-health" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#23445d;fontSize=11;" parent="1" vertex="1">
+                    <mxGeometry x="440" y="370" width="700" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="p1_api_note" value="HTTP, SSE, WS.&#xa;Pure inbound: parse, validate,&#xa;hand off to a pipeline." style="text;html=1;align=left;verticalAlign=top;fontSize=10;fontStyle=2;fontColor=#23445d;" parent="1" vertex="1">
+                    <mxGeometry x="1160" y="290" width="180" height="100" as="geometry"/>
+                </mxCell>
+                <mxCell id="p1_band_app" value="" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;verticalAlign=top;align=left;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="440" width="1320" height="160" as="geometry"/>
+                </mxCell>
+                <mxCell id="p1_app_lbl" value="APPLICATION&#xa;app/pipelines/&#xa;(use-case orchestrators)" style="text;html=1;align=center;verticalAlign=middle;fontSize=13;fontStyle=1;fontColor=#2d5e2d;" parent="1" vertex="1">
+                    <mxGeometry x="50" y="480" width="120" height="80" as="geometry"/>
+                </mxCell>
+                <mxCell id="p1_chat" value="ChatService&#xa;NL query + function calling" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#2d5e2d;fontSize=11;" parent="1" vertex="1">
+                    <mxGeometry x="200" y="470" width="220" height="100" as="geometry"/>
+                </mxCell>
+                <mxCell id="p1_voice_session" value="VoiceSession&#xa;STT → LLM → TTS turn loop" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#2d5e2d;fontSize=11;" parent="1" vertex="1">
+                    <mxGeometry x="440" y="470" width="220" height="100" as="geometry"/>
+                </mxCell>
+                <mxCell id="p1_annot_pipe" value="AnnotationPipeline&#xa;detailed flow / lap flow" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#2d5e2d;fontSize=11;fontStyle=1;" parent="1" vertex="1">
+                    <mxGeometry x="680" y="470" width="220" height="100" as="geometry"/>
+                </mxCell>
+                <mxCell id="p1_train" value="TrainingPipeline&#xa;transformer + imitation&#xa;+ segment classifier" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#2d5e2d;fontSize=11;" parent="1" vertex="1">
+                    <mxGeometry x="920" y="470" width="220" height="100" as="geometry"/>
+                </mxCell>
+                <mxCell id="p1_infer" value="InferencePipeline&#xa;classify / predict / visualize" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#2d5e2d;fontSize=11;" parent="1" vertex="1">
+                    <mxGeometry x="1160" y="470" width="180" height="100" as="geometry"/>
+                </mxCell>
+                <mxCell id="p1_next" value="↓  Pipelines consume the Agent Capability Box  —  see Page 2  ↓" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=13;fontStyle=1;fontColor=#5d3b6f;align=center;verticalAlign=middle;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="630" width="1320" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="p1_next2" value="↓  Pipelines also use Outbound Adapters (Voice, ML, …) directly  —  see Page 3  ↓" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=13;fontStyle=1;fontColor=#7a2e2c;align=center;verticalAlign=middle;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="680" width="1320" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="p1_legend" value="What this page shows:  the OUTER ring of the hexagon — how the system is entered.&#xa;Each pipeline is the ONLY place callers compose work; APIs never reach past pipelines.&#xa;Dashed = new endpoint to be added (replaces in-UI Streamlit imports of pipeline code)." style="text;html=1;align=left;verticalAlign=middle;fontSize=11;fontColor=#23445d;fillColor=#f5f5f5;strokeColor=#23445d;rounded=1;spacingLeft=12;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="740" width="1320" height="80" as="geometry"/>
+                </mxCell>
+                <mxCell id="p1_e1" style="endArrow=classic;html=1;rounded=0;strokeColor=#23445d;strokeWidth=2;" parent="1" source="p1_react" target="p1_query" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="p1_e2" style="endArrow=classic;html=1;rounded=0;strokeColor=#23445d;strokeWidth=2;dashed=1;" parent="1" source="p1_react" target="p1_voice_ws" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="p1_e3" style="endArrow=classic;html=1;rounded=0;strokeColor=#23445d;strokeWidth=1;" parent="1" source="p1_react" target="p1_session" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="p1_e4" style="endArrow=classic;html=1;rounded=0;strokeColor=#7f6000;strokeWidth=2;dashed=1;" parent="1" source="p1_streamlit" target="p1_annot" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="p1_e5" style="endArrow=classic;html=1;rounded=0;strokeColor=#7f6000;strokeWidth=1;" parent="1" source="p1_acc" target="p1_session" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="p1_e6" style="endArrow=classic;html=1;rounded=0;strokeColor=#23445d;strokeWidth=2;" parent="1" source="p1_query" target="p1_chat" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="p1_e7" style="endArrow=classic;html=1;rounded=0;strokeColor=#23445d;strokeWidth=2;" parent="1" source="p1_voice_ws" target="p1_voice_session" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="p1_e8" style="endArrow=classic;html=1;rounded=0;strokeColor=#23445d;strokeWidth=2;" parent="1" source="p1_annot" target="p1_annot_pipe" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="p1_e9" style="endArrow=classic;html=1;rounded=0;strokeColor=#23445d;strokeWidth=1;" parent="1" source="p1_session" target="p1_infer" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+            </root>
+        </mxGraphModel>
+    </diagram>
+    <diagram name="2. Agent &amp; Domain" id="page2">
+        <mxGraphModel dx="1024" dy="826" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1500" pageHeight="1100" math="0" shadow="0">
+            <root>
+                <mxCell id="0"/>
+                <mxCell id="1" parent="0"/>
+                <mxCell id="p2_title" value="Page 2 — Agent Capability Box · Domain · Features" style="text;html=1;align=center;verticalAlign=middle;fontSize=18;fontStyle=1;fillColor=#23445d;strokeColor=#23445d;fontColor=#ffffff;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="20" width="1420" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="p2_nav" value="Pages:  ① Overview  ·  ② Agent &amp; Domain  ·  ③ Providers, Storage &amp; External  ·  ④ Migration &amp; Principles  ·  ⑤ Services Split  ·  ⑥ models/ Split" style="text;html=1;align=center;verticalAlign=middle;fontSize=11;fontStyle=2;fontColor=#666666;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="60" width="1420" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="p2_callers" value="↑ Callers (from Page 1):  AnnotationPipeline   ·   ChatService   ·   VoiceSession   ·   InferencePipeline" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=12;fontColor=#2d5e2d;align=center;verticalAlign=middle;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="100" width="1420" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="p2_band_agent" value="" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;verticalAlign=top;align=left;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="170" width="1420" height="420" as="geometry"/>
+                </mxCell>
+                <mxCell id="p2_agent_lbl" value="AGENT CAPABILITY BOX&#xa;app/agents/&#xa;&#xa;Domain-free.&#xa;Accepts AgentRequest,&#xa;returns AgentResponse." style="text;html=1;align=center;verticalAlign=middle;fontSize=12;fontStyle=1;fontColor=#5d3b6f;" parent="1" vertex="1">
+                    <mxGeometry x="60" y="220" width="180" height="180" as="geometry"/>
+                </mxCell>
+                <mxCell id="p2_framework" value="FRAMEWORK  (LangGraph)&#xa;app/agents/framework.py&#xa;&#xa;planner ──► executor ──► synthesizer ──► evaluator&#xa;&#xa;• AttachmentPool (state passing between nodes)&#xa;• AgentBudget (recursion cap)&#xa;• Cycle detection on (name, parent_start, parent_end)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#5d3b6f;fontSize=11;fontStyle=1;align=center;verticalAlign=middle;" parent="1" vertex="1">
+                    <mxGeometry x="270" y="200" width="540" height="150" as="geometry"/>
+                </mxCell>
+                <mxCell id="p2_runners" value="RUNNERS&#xa;app/agents/runners/&#xa;&#xa;• local.py — local VLM (llama-server)&#xa;• claude.py — claude-agent-sdk subprocess" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#5d3b6f;fontSize=11;align=left;verticalAlign=top;spacingLeft=10;spacingTop=8;" parent="1" vertex="1">
+                    <mxGeometry x="840" y="200" width="290" height="150" as="geometry"/>
+                </mxCell>
+                <mxCell id="p2_subs" value="SUB-AGENTS&#xa;app/agents/sub_agents/&#xa;&#xa;• describe_graphs.py — VLM observation pass&#xa;• label_verifier.py — score observations vs catalog&#xa;• zoom.py — drill into sub-ranges" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#5d3b6f;fontSize=11;align=left;verticalAlign=top;spacingLeft=10;spacingTop=8;" parent="1" vertex="1">
+                    <mxGeometry x="1160" y="200" width="290" height="150" as="geometry"/>
+                </mxCell>
+                <mxCell id="p2_tools" value="TOOL REGISTRY  app/agents/tools/&#xa;&#xa;split_lap_by_sections · list_eligible_labels · render_graph&#xa;predict_telemetry · query_backend · classify_segment · …&#xa;&#xa;Tools are pure functions the runner exposes to the LLM (function calling /  claude-sdk MCP)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#5d3b6f;fontSize=11;align=left;verticalAlign=top;spacingLeft=10;spacingTop=8;" parent="1" vertex="1">
+                    <mxGeometry x="270" y="370" width="540" height="120" as="geometry"/>
+                </mxCell>
+                <mxCell id="p2_flows" value="FLOWS  app/agents/flows/&#xa;&#xa;build_request(domain context)  →  AgentRequest&#xa;parse(AgentResponse, domain context)  →  typed result&#xa;&#xa;• annotation/detailed.py  · annotation/lap.py · chat/* · contracts.py" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f4ecf7;strokeColor=#9673a6;fontSize=11;align=left;verticalAlign=top;spacingLeft=10;spacingTop=8;fontStyle=2;" parent="1" vertex="1">
+                    <mxGeometry x="840" y="370" width="610" height="120" as="geometry"/>
+                </mxCell>
+                <mxCell id="p2_contract" value="contracts.py:   AgentRequest  ·  AgentResponse  ·  Attachment  ·  AgentCallbacks  ·  BackendConfig&#xa;Boundary contract — domain stays OUT of the agent box. Callers pre-build prompts and attachments; runners ferry them to providers." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#5d3b6f;fontSize=11;align=center;fontStyle=2;" parent="1" vertex="1">
+                    <mxGeometry x="270" y="510" width="1180" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="p2_band_domain" value="" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;verticalAlign=top;align=left;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="620" width="1420" height="350" as="geometry"/>
+                </mxCell>
+                <mxCell id="p2_domain_lbl" value="DOMAIN&#xa;FEATURES&#xa;&amp; SKILLS&#xa;&#xa;app/domain/&#xa;app/features/&#xa;app/skills/" style="text;html=1;align=center;verticalAlign=middle;fontSize=12;fontStyle=1;fontColor=#8a4a00;" parent="1" vertex="1">
+                    <mxGeometry x="60" y="710" width="180" height="140" as="geometry"/>
+                </mxCell>
+                <mxCell id="p2_d_types" value="Domain Types  app/domain/&#xa;&#xa;Telemetry · Segment · Lap · Label&#xa;Session · Circuit · CarSetup&#xa;&#xa;+ feature catalogs:&#xa;ExpertFeatureCatalog · TireGripFeatureCatalog&#xa;SegmentImprovementConfig · …" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#8a4a00;fontSize=11;align=left;verticalAlign=top;spacingLeft=10;spacingTop=8;" parent="1" vertex="1">
+                    <mxGeometry x="270" y="650" width="370" height="140" as="geometry"/>
+                </mxCell>
+                <mxCell id="p2_d_features" value="Feature Library  app/features/  (NEW)&#xa;&#xa;Stateless feature engineering — no I/O, no model state.&#xa;&#xa;• tire_grip.py — friction-circle calc (was tire_grip_analysis_service)&#xa;• derived.py — derived telemetry features used by classifiers&#xa;&#xa;Used by both training and inference pipelines. Not ML." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#8a4a00;fontSize=11;align=left;verticalAlign=top;spacingLeft=10;spacingTop=8;fontStyle=1;" parent="1" vertex="1">
+                    <mxGeometry x="660" y="650" width="380" height="140" as="geometry"/>
+                </mxCell>
+                <mxCell id="p2_d_skills" value="Skill Registry  app/skills/&#xa;&#xa;• _registry.py — load yaml, build index&#xa;• _embedder.py — sentence-transformers&#xa;• _query.py — search / find / iter / get&#xa;&#xa;Lazy proxy: skills.get(path), skills.search(q)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#8a4a00;fontSize=11;align=left;verticalAlign=top;spacingLeft=10;spacingTop=8;" parent="1" vertex="1">
+                    <mxGeometry x="1060" y="650" width="380" height="140" as="geometry"/>
+                </mxCell>
+                <mxCell id="p2_d_catalog" value="Skill Definitions  app/skills/&lt;name&gt;.yaml  —  tells the agent HOW to do something&#xa;&#xa;• lap_annotation.yaml — main-label rules &amp; instructions (cross-circuit)&#xa;• sub_label_catalog.yaml — sub-label descriptions used by the verifier sub-agent&#xa;• graph_analysis.yaml — VLM image-analysis prompts&#xa;&#xa;⚠  Not the same as &quot;feature catalogs&quot; in app/domain/ (left). Those enumerate feature NAMES for data enrichment.&#xa;     A skill = agent instructions / prompts / rules.   A feature catalog = lookup of column names.&#xa;Drop a yaml file in, restart, skill is available." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff8e8;strokeColor=#8a4a00;fontSize=11;align=left;verticalAlign=top;spacingLeft=10;spacingTop=8;" parent="1" vertex="1">
+                    <mxGeometry x="270" y="810" width="1170" height="140" as="geometry"/>
+                </mxCell>
+                <mxCell id="p2_next" value="↓  Runners hand prompts &amp; images to Provider Adapters (LLM/VLM)  —  see Page 3  ↓" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=13;fontStyle=1;fontColor=#7a2e2c;align=center;verticalAlign=middle;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="1000" width="1420" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="p2_legend" value="Three different things — DON&#39;T confuse them:&#xa;     • Domain TYPES — pydantic / dataclass definitions including feature catalogs (lists of column names).&#xa;     • FEATURES — stateless math (e.g. friction-circle) that enriches raw data with derived columns.&#xa;     • SKILL DEFINITIONS — yaml that tells the AGENT how to behave (prompts, rules, label descriptions).&#xa;None of these import a framework or talk to a network. Pipelines, agents, and ML models all consume from here — never the reverse." style="text;html=1;align=left;verticalAlign=middle;fontSize=11;fontColor=#8a4a00;fillColor=#fff8e8;strokeColor=#d79b00;rounded=1;spacingLeft=12;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="1050" width="1420" height="90" as="geometry"/>
+                </mxCell>
+                <mxCell id="p2_e1" style="endArrow=classic;html=1;rounded=0;strokeColor=#5d3b6f;strokeWidth=2;" parent="1" source="p2_framework" target="p2_runners" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="p2_e2" style="endArrow=classic;html=1;rounded=0;strokeColor=#5d3b6f;strokeWidth=1;" parent="1" source="p2_framework" target="p2_subs" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="p2_e3" style="endArrow=classic;html=1;rounded=0;strokeColor=#5d3b6f;strokeWidth=1;" parent="1" source="p2_framework" target="p2_tools" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="p2_e4" style="endArrow=classic;html=1;rounded=0;strokeColor=#5d3b6f;strokeWidth=1;" parent="1" source="p2_subs" target="p2_tools" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="p2_e5" style="endArrow=classic;html=1;rounded=0;strokeColor=#5d3b6f;strokeWidth=1;dashed=1;" parent="1" source="p2_subs" target="p2_d_skills" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="p2_e6" style="endArrow=classic;html=1;rounded=0;strokeColor=#5d3b6f;strokeWidth=1;dashed=1;" parent="1" source="p2_tools" target="p2_d_catalog" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="p2_e7" style="endArrow=classic;html=1;rounded=0;strokeColor=#8a4a00;strokeWidth=1;" parent="1" source="p2_d_skills" target="p2_d_catalog" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+            </root>
+        </mxGraphModel>
+    </diagram>
+    <diagram name="3. Providers, Storage &amp; External" id="page3">
+        <mxGraphModel dx="1024" dy="826" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1500" pageHeight="1000" math="0" shadow="0">
+            <root>
+                <mxCell id="0"/>
+                <mxCell id="1" parent="0"/>
+                <mxCell id="p3_title" value="Page 3 — Outbound Adapters · Local Storage · External Services" style="text;html=1;align=center;verticalAlign=middle;fontSize=18;fontStyle=1;fillColor=#23445d;strokeColor=#23445d;fontColor=#ffffff;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="20" width="1420" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="p3_nav" value="Pages:  ① Overview  ·  ② Agent &amp; Domain  ·  ③ Providers, Storage &amp; External  ·  ④ Migration &amp; Principles  ·  ⑤ Services Split  ·  ⑥ models/ Split" style="text;html=1;align=center;verticalAlign=middle;fontSize=11;fontStyle=2;fontColor=#666666;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="60" width="1420" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="p3_callers" value="↑ Callers:  Agent Runners (Page 2)   ·   VoiceSession (Page 1)   ·   TrainingPipeline (Page 1)   ·   ChatService (Page 1)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=12;fontColor=#5d3b6f;align=center;verticalAlign=middle;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="100" width="1420" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="p3_band_prov" value="" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;verticalAlign=top;align=left;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="170" width="1420" height="280" as="geometry"/>
+                </mxCell>
+                <mxCell id="p3_prov_lbl" value="OUTBOUND ADAPTERS&#xa;app/llm/  ·  app/voice/&#xa;app/ml/  ·  app/integrations/&#xa;&#xa;In-app code that owns I/O&#xa;to providers and integrations." style="text;html=1;align=center;verticalAlign=middle;fontSize=12;fontStyle=1;fontColor=#7a2e2c;" parent="1" vertex="1">
+                    <mxGeometry x="60" y="230" width="180" height="160" as="geometry"/>
+                </mxCell>
+                <mxCell id="p3_llm" value="LLM Clients&#xa;app/llm/&#xa;&#xa;llama_client&#xa;(OpenAI-compat)&#xa;&#xa;claude_client&#xa;(Anthropic SDK)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#7a2e2c;fontSize=11;align=center;verticalAlign=middle;" parent="1" vertex="1">
+                    <mxGeometry x="270" y="200" width="200" height="160" as="geometry"/>
+                </mxCell>
+                <mxCell id="p3_vlm" value="VLM&#xa;app/llm/vlm_local&#xa;&#xa;Qwen2.5-VL&#xa;+ mmproj projector" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#7a2e2c;fontSize=11;align=center;verticalAlign=middle;" parent="1" vertex="1">
+                    <mxGeometry x="490" y="200" width="170" height="160" as="geometry"/>
+                </mxCell>
+                <mxCell id="p3_stt" value="STT&#xa;app/voice/stt/&#xa;&#xa;faster-whisper" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#7a2e2c;fontSize=11;align=center;verticalAlign=middle;" parent="1" vertex="1">
+                    <mxGeometry x="680" y="200" width="130" height="160" as="geometry"/>
+                </mxCell>
+                <mxCell id="p3_tts" value="TTS&#xa;app/voice/tts/&#xa;&#xa;Kokoro-ONNX" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#7a2e2c;fontSize=11;align=center;verticalAlign=middle;" parent="1" vertex="1">
+                    <mxGeometry x="830" y="200" width="130" height="160" as="geometry"/>
+                </mxCell>
+                <mxCell id="p3_pipecat" value="Voice Pipeline&#xa;app/voice/pipeline.py&#xa;&#xa;Pipecat factory:&#xa;VAD ▸ STT ▸ LLM ▸ TTS" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#7a2e2c;fontSize=11;align=center;verticalAlign=middle;" parent="1" vertex="1">
+                    <mxGeometry x="980" y="200" width="180" height="160" as="geometry"/>
+                </mxCell>
+                <mxCell id="p3_ml" value="ML Model Code&#xa;app/ml/&#xa;&#xa;transformer/ · imitation/&#xa;segment_classifier/&#xa;(see Page 5)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#7a2e2c;fontSize=11;align=center;verticalAlign=middle;" parent="1" vertex="1">
+                    <mxGeometry x="1180" y="200" width="200" height="160" as="geometry"/>
+                </mxCell>
+                <mxCell id="p3_backend" value="Backend HTTP Adapter&#xa;app/integrations/backend/&#xa;&#xa;JWT auth · retry · timeout&#xa;Calls Node service" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#7a2e2c;fontSize=11;align=center;verticalAlign=middle;fontStyle=1;" parent="1" vertex="1">
+                    <mxGeometry x="270" y="370" width="280" height="70" as="geometry"/>
+                </mxCell>
+                <mxCell id="p3_prov_note" value="Rule of thumb:&#xa;everything in this band is IN our app but reaches OUTSIDE.&#xa;Timeouts, retries, auth, error mapping live here — never in pipelines." style="text;html=1;align=left;verticalAlign=top;fontSize=11;fontStyle=2;fontColor=#7a2e2c;" parent="1" vertex="1">
+                    <mxGeometry x="570" y="370" width="810" height="70" as="geometry"/>
+                </mxCell>
+                <mxCell id="p3_band_storage" value="" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#e8e8e8;strokeColor=#666666;verticalAlign=top;align=left;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="480" width="1420" height="160" as="geometry"/>
+                </mxCell>
+                <mxCell id="p3_storage_lbl" value="STORAGE&#xa;app/storage/&#xa;&#xa;Local FS owned by us.&#xa;No network." style="text;html=1;align=center;verticalAlign=middle;fontSize=12;fontStyle=1;fontColor=#333333;" parent="1" vertex="1">
+                    <mxGeometry x="60" y="520" width="180" height="90" as="geometry"/>
+                </mxCell>
+                <mxCell id="p3_zarr" value="Zarr Telemetry Store&#xa;app/storage/zarr/&#xa;&#xa;Chunked + compressed" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#333333;fontSize=11;align=center;verticalAlign=middle;" parent="1" vertex="1">
+                    <mxGeometry x="270" y="510" width="220" height="110" as="geometry"/>
+                </mxCell>
+                <mxCell id="p3_datasets" value="Datasets&#xa;app/storage/datasets/&#xa;&#xa;TelemetryActionDataset&#xa;StreamingSegmentDataset&#xa;(PyTorch IterableDatasets)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#333333;fontSize=11;align=center;verticalAlign=middle;" parent="1" vertex="1">
+                    <mxGeometry x="510" y="510" width="240" height="110" as="geometry"/>
+                </mxCell>
+                <mxCell id="p3_checkpoints" value="Model Cache + Checkpoints&#xa;app/storage/cache/&#xa;app/storage/checkpoints/&#xa;&#xa;Trained model + scaler I/O" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#333333;fontSize=11;align=center;verticalAlign=middle;" parent="1" vertex="1">
+                    <mxGeometry x="770" y="510" width="260" height="110" as="geometry"/>
+                </mxCell>
+                <mxCell id="p3_ggufvol" value="GGUF / Kokoro Volumes&#xa;docker volume mounts&#xa;&#xa;Downloaded weights only" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#333333;fontSize=11;align=center;verticalAlign=middle;" parent="1" vertex="1">
+                    <mxGeometry x="1050" y="510" width="240" height="110" as="geometry"/>
+                </mxCell>
+                <mxCell id="p3_storage_note" value="4 purposes:&#xa;raw data · loaders · cache · weights" style="text;html=1;align=left;verticalAlign=middle;fontSize=10;fontStyle=2;fontColor=#333333;" parent="1" vertex="1">
+                    <mxGeometry x="1310" y="510" width="140" height="110" as="geometry"/>
+                </mxCell>
+                <mxCell id="p3_band_ext" value="" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f4cccc;strokeColor=#7a2e2c;verticalAlign=top;align=left;dashed=1;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="670" width="1420" height="180" as="geometry"/>
+                </mxCell>
+                <mxCell id="p3_ext_lbl" value="EXTERNAL&#xa;SERVICES&#xa;&#xa;Out-of-process.&#xa;Untrusted boundary.&#xa;Not our source code." style="text;html=1;align=center;verticalAlign=middle;fontSize=12;fontStyle=1;fontColor=#7a2e2c;" parent="1" vertex="1">
+                    <mxGeometry x="60" y="710" width="180" height="100" as="geometry"/>
+                </mxCell>
+                <mxCell id="p3_ext_llama" value="llama-server sidecar&#xa;localhost:8080&#xa;&#xa;GGUF: Qwen2.5-VL&#xa;(separate process,&#xa;same container)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#7a2e2c;fontSize=11;align=center;verticalAlign=middle;dashed=1;" parent="1" vertex="1">
+                    <mxGeometry x="270" y="700" width="240" height="120" as="geometry"/>
+                </mxCell>
+                <mxCell id="p3_ext_backend" value="acla_backend (Node, :7001)&#xa;&#xa;↓&#xa;&#xa;MongoDB (:27017)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#7a2e2c;fontSize=11;align=center;verticalAlign=middle;dashed=1;" parent="1" vertex="1">
+                    <mxGeometry x="530" y="700" width="280" height="120" as="geometry"/>
+                </mxCell>
+                <mxCell id="p3_ext_anthropic" value="api.anthropic.com&#xa;&#xa;Claude API&#xa;via SDK subprocess&#xa;(spawns `claude` CLI)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#7a2e2c;fontSize=11;align=center;verticalAlign=middle;dashed=1;" parent="1" vertex="1">
+                    <mxGeometry x="830" y="700" width="240" height="120" as="geometry"/>
+                </mxCell>
+                <mxCell id="p3_ext_note" value="No source code lives in this band.&#xa;Adapters above are the ONLY way in.&#xa;Network errors map to typed exceptions&#xa;at the adapter layer." style="text;html=1;align=left;verticalAlign=top;fontSize=11;fontStyle=2;fontColor=#7a2e2c;" parent="1" vertex="1">
+                    <mxGeometry x="1090" y="700" width="290" height="120" as="geometry"/>
+                </mxCell>
+                <mxCell id="p3_legend" value="TOP band = in-app code (outbound adapters).  MIDDLE band = local disk.  BOTTOM band = network boundary.&#xa;An adapter NEVER short-circuits into storage; storage NEVER reaches the network. Each band has exactly one job." style="text;html=1;align=left;verticalAlign=middle;fontSize=11;fontColor=#23445d;fillColor=#f5f5f5;strokeColor=#23445d;rounded=1;spacingLeft=12;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="870" width="1420" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="p3_e1" style="endArrow=classic;html=1;rounded=0;strokeColor=#7a2e2c;strokeWidth=1;" parent="1" source="p3_pipecat" target="p3_stt" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="p3_e2" style="endArrow=classic;html=1;rounded=0;strokeColor=#7a2e2c;strokeWidth=1;" parent="1" source="p3_pipecat" target="p3_llm" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="p3_e3" style="endArrow=classic;html=1;rounded=0;strokeColor=#7a2e2c;strokeWidth=1;" parent="1" source="p3_pipecat" target="p3_tts" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="p3_e4" style="endArrow=classic;html=1;rounded=0;strokeColor=#666666;strokeWidth=1;" parent="1" source="p3_ml" target="p3_datasets" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="p3_e5" style="endArrow=classic;html=1;rounded=0;strokeColor=#666666;strokeWidth=1;" parent="1" source="p3_ml" target="p3_checkpoints" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="p3_e_ds_zarr" style="endArrow=classic;html=1;rounded=0;strokeColor=#666666;strokeWidth=1;" parent="1" source="p3_datasets" target="p3_zarr" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="p3_e6" style="endArrow=classic;html=1;rounded=0;strokeColor=#666666;strokeWidth=1;dashed=1;" parent="1" source="p3_tts" target="p3_ggufvol" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="p3_e7" style="endArrow=classic;html=1;rounded=0;strokeColor=#7a2e2c;strokeWidth=2;" parent="1" source="p3_llm" target="p3_ext_llama" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="p3_e8" style="endArrow=classic;html=1;rounded=0;strokeColor=#7a2e2c;strokeWidth=1;" parent="1" source="p3_vlm" target="p3_ext_llama" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="p3_e9" style="endArrow=classic;html=1;rounded=0;strokeColor=#7a2e2c;strokeWidth=1;" parent="1" source="p3_llm" target="p3_ext_anthropic" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="p3_e10" style="endArrow=classic;html=1;rounded=0;strokeColor=#7a2e2c;strokeWidth=2;" parent="1" source="p3_backend" target="p3_ext_backend" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+            </root>
+        </mxGraphModel>
+    </diagram>
+    <diagram name="4. Migration &amp; Principles" id="page4">
+        <mxGraphModel grid="1" page="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" pageScale="1" pageWidth="1500" pageHeight="1100" math="0" shadow="0">
+            <root>
+                <mxCell id="0"/>
+                <mxCell id="1" parent="0"/>
+                <mxCell id="p4_title" value="Page 4 — Migration Plan &amp; Architecture Principles" style="text;html=1;align=center;verticalAlign=middle;fontSize=18;fontStyle=1;fillColor=#23445d;strokeColor=#23445d;fontColor=#ffffff;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="20" width="1420" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="p4_nav" value="Pages:  ① Overview  ·  ② Agent &amp; Domain  ·  ③ Providers, Storage &amp; External  ·  ④ Migration &amp; Principles  ·  ⑤ Services Split  ·  ⑥ models/ Split" style="text;html=1;align=center;verticalAlign=middle;fontSize=11;fontStyle=2;fontColor=#666666;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="60" width="1420" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="p4_oss_h" value="Open-Source Inspirations" style="text;html=1;align=center;verticalAlign=middle;fontSize=14;fontStyle=1;fillColor=#23445d;fontColor=#ffffff;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="100" width="700" height="32" as="geometry"/>
+                </mxCell>
+                <mxCell id="p4_oss_hex" value="Hexagonal (Ports &amp; Adapters)&#xa;Domain in the center; inbound and outbound adapters at the edges. Pipelines = inbound ports. Providers / storage = outbound. External systems sit OUTSIDE the hexagon." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#23445d;fontSize=11;align=left;verticalAlign=top;spacingLeft=10;spacingTop=8;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="140" width="340" height="110" as="geometry"/>
+                </mxCell>
+                <mxCell id="p4_oss_langgraph" value="LangGraph (already used)&#xa;planner → executor → synthesizer → evaluator state machine. Keep — move it under app/agents/framework.py." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#23445d;fontSize=11;align=left;verticalAlign=top;spacingLeft=10;spacingTop=8;" parent="1" vertex="1">
+                    <mxGeometry x="400" y="140" width="340" height="110" as="geometry"/>
+                </mxCell>
+                <mxCell id="p4_oss_pipecat" value="Pipecat&#xa;Reference voice pipeline. Already wired in voice/pipecat_pipeline.py. Wrap as VoiceSession use-case." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#23445d;fontSize=11;align=left;verticalAlign=top;spacingLeft=10;spacingTop=8;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="260" width="340" height="100" as="geometry"/>
+                </mxCell>
+                <mxCell id="p4_oss_vercel" value="Vercel AI SDK / OpenAI client&#xa;Unified LLM interface under app/llm/ with swappable providers — llama / claude / future. AsyncOpenAI already abstracts this; formalize." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#23445d;fontSize=11;align=left;verticalAlign=top;spacingLeft=10;spacingTop=8;" parent="1" vertex="1">
+                    <mxGeometry x="400" y="260" width="340" height="100" as="geometry"/>
+                </mxCell>
+                <mxCell id="p4_oss_claudesdk" value="Anthropic claude-agent-sdk&#xa;Subagents + tool registration model is the reference for the agent box. Already used by the Claude runner." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#23445d;fontSize=11;align=left;verticalAlign=top;spacingLeft=10;spacingTop=8;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="370" width="340" height="100" as="geometry"/>
+                </mxCell>
+                <mxCell id="p4_oss_modmono" value="Modular monolith (Backstage)&#xa;One deployable, but strict package boundaries enforced by import rules — no service may import a peer in a lower band." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#23445d;fontSize=11;align=left;verticalAlign=top;spacingLeft=10;spacingTop=8;" parent="1" vertex="1">
+                    <mxGeometry x="400" y="370" width="340" height="100" as="geometry"/>
+                </mxCell>
+                <mxCell id="p4_rules_h" value="Layering Rules (enforce with import-linter)" style="text;html=1;align=center;verticalAlign=middle;fontSize=14;fontStyle=1;fillColor=#23445d;fontColor=#ffffff;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="490" width="700" height="32" as="geometry"/>
+                </mxCell>
+                <mxCell id="p4_rules" value="1.  Imports flow downward only:&#xa;     api → pipelines → agents → ml → llm/voice/integrations → storage&#xa;     (domain · features · skills are pure leaves; everyone imports them, they import nothing.)&#xa;&#xa;2.  Domain has zero framework dependencies (no FastAPI, no LangGraph, no anthropic SDK).&#xa;&#xa;3.  Pipelines own orchestration. Agents own LLM capability. Outbound adapters own I/O.&#xa;&#xa;4.  UI never imports a provider directly. It calls a pipeline through the API band.&#xa;&#xa;5.  app/skills/ holds skill DEFINITIONS (yaml = agent instructions / prompts / rules). NOT the same as the feature CATALOGS in app/domain/ (column-name enums for data enrichment). Different words on purpose.&#xa;&#xa;6.  Storage = LOCAL filesystem owned by us. External = network endpoints we don&#39;t own. Never mix.&#xa;&#xa;7.  app/features/ holds STATELESS computation (e.g. tire grip math). No I/O, no state. Not ML.&#xa;&#xa;8.  One source of truth for config: app/infra/config/. Delete app/core/ vs app/config/ duplication." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#23445d;fontSize=11;align=left;verticalAlign=top;spacingLeft=12;spacingTop=10;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="530" width="700" height="320" as="geometry"/>
+                </mxCell>
+                <mxCell id="p4_pain_h" value="Today&#39;s Pain Points" style="text;html=1;align=center;verticalAlign=middle;fontSize=14;fontStyle=1;fillColor=#7a2e2c;fontColor=#ffffff;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="870" width="700" height="32" as="geometry"/>
+                </mxCell>
+                <mxCell id="p4_pain" value="× services/ is a junk drawer: ML, LLM, voice, backend HTTP, storage all in one folder.&#xa;× The 5 ML-named files mix model code, dataset loading, training loops, and orchestration in single files — see Page 5.&#xa;× models/ mixes Pydantic DTOs and heavy ML model code (transformer_model.py).&#xa;× core/ and config/ both hold settings — unclear which wins.&#xa;× analyzers/ is empty (vestigial).&#xa;× LLM concerns split across services/llm/agent, services/llm/annotation, services/llm/local_llm at the same depth.&#xa;× UI imports pipelines in-process (Streamlit ↔ app code coupled — only works in the dev container).&#xa;× tire_grip_analysis_service.py is misnamed: it is physics math, not ML." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fdebec;strokeColor=#7a2e2c;fontSize=11;align=left;verticalAlign=top;spacingLeft=12;spacingTop=10;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="910" width="700" height="170" as="geometry"/>
+                </mxCell>
+                <mxCell id="p4_mig_h" value="Migration Map  (today → target)" style="text;html=1;align=center;verticalAlign=middle;fontSize=14;fontStyle=1;fillColor=#2d5e2d;fontColor=#ffffff;" parent="1" vertex="1">
+                    <mxGeometry x="760" y="100" width="700" height="32" as="geometry"/>
+                </mxCell>
+                <mxCell id="p4_mig" value="services/ai_service.py                    → pipelines/chat/&#xa;services/voice/*                          → voice/&#xa;services/llm/agent/*                      → agents/&#xa;services/llm/annotation/*                 → pipelines/annotation/&#xa;                                            + agents/flows/&#xa;services/llm/local_llm_service.py         → llm/llama_client&#xa;                                            + llm/vlm_local&#xa;services/llm/llama_health.py              → llm/health.py&#xa;services/llm/skill_prompts.py             → skills/prompts.py&#xa;services/llm/label_catalog.py             → domain/labels.py&#xa;services/llm/telemetry_llm_orchestrator   → pipelines/chat/&#xa;services/llm/classifier_prompt_generation → ml/prompts.py&#xa;services/llm/annotation_pipeline.py       → pipelines/annotation/__init__.py&#xa;&#xa;------------------------------------&#xa;See Page 5 for the FIVE ML-named services:&#xa;  transformer_model.py, imitate_expert_learning_service.py,&#xa;  segment_classifier_service.py, tire_grip_analysis_service.py,&#xa;  full_dataset_ml_service.py&#xa;------------------------------------&#xa;&#xa;services/telemetry_segment_visualizer     → pipelines/inference/visualizer.py&#xa;services/segment_updater.py               → pipelines/inference/updater.py&#xa;&#xa;services/zarr_telemetry_store.py          → storage/zarr/&#xa;services/model_cache_service.py           → storage/cache/&#xa;services/backend_service.py               → integrations/backend/&#xa;&#xa;skill_manager/                            → skills/  (code: _registry, _embedder, _query)&#xa;skill_manager/skills/*.yaml               → skills/*.yaml  (skill DEFINITIONS, not &quot;catalog&quot;)&#xa;&#xa;config/cache_config.py                    → infra/config/cache.py&#xa;config/pipeline_config.py                 → infra/config/pipeline.py&#xa;core/config.py                            → infra/config/settings.py&#xa;&#xa;------------------------------------&#xa;See Page 6 for the FOUR files in models/:&#xa;  api_models.py, ml_algorithms.py,&#xa;  segment_models.py, telemetry_models.py&#xa;------------------------------------&#xa;&#xa;analyzers/                                → DELETE (empty)&#xa;ui/                                       → standalone repo (later)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#2d5e2d;fontSize=10;align=left;verticalAlign=top;spacingLeft=12;spacingTop=10;fontFamily=Courier New;" parent="1" vertex="1">
+                    <mxGeometry x="760" y="140" width="700" height="940" as="geometry"/>
+                </mxCell>
+            </root>
+        </mxGraphModel>
+    </diagram>
+    <diagram name="5. ML File Split" id="page5">
+        <mxGraphModel dx="1024" dy="826" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1700" pageHeight="1300" math="0" shadow="0">
+            <root>
+                <mxCell id="0"/>
+                <mxCell id="1" parent="0"/>
+                <mxCell id="p5_title" value="Page 5 — ML / Service File Split:  5 files in services/  →  domain + features + ml + storage + pipelines" style="text;html=1;align=center;verticalAlign=middle;fontSize=18;fontStyle=1;fillColor=#23445d;strokeColor=#23445d;fontColor=#ffffff;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="20" width="1620" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="p5_nav" value="Pages:  ① Overview  ·  ② Agent &amp; Domain  ·  ③ Providers, Storage &amp; External  ·  ④ Migration &amp; Principles  ·  ⑤ Services Split  ·  ⑥ models/ Split" style="text;html=1;align=center;verticalAlign=middle;fontSize=11;fontStyle=2;fontColor=#666666;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="60" width="1620" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="p5_legend" value="Color = source file.   Each target file on the right inherits its source file&#39;s color (the bar on its left)." style="text;html=1;align=center;verticalAlign=middle;fontSize=11;fontStyle=2;fontColor=#23445d;fillColor=#f5f5f5;strokeColor=#23445d;rounded=1;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="90" width="1620" height="28" as="geometry"/>
+                </mxCell>
+                <mxCell id="p5_lg_t" value="transformer_model.py  (2740)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#1f6091;strokeWidth=4;fontSize=11;align=center;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="125" width="290" height="28" as="geometry"/>
+                </mxCell>
+                <mxCell id="p5_lg_i" value="imitate_expert_learning_service.py  (1121)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#2d5e2d;strokeWidth=4;fontSize=11;align=center;" parent="1" vertex="1">
+                    <mxGeometry x="350" y="125" width="320" height="28" as="geometry"/>
+                </mxCell>
+                <mxCell id="p5_lg_s" value="segment_classifier_service.py  (996)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#5d3b6f;strokeWidth=4;fontSize=11;align=center;" parent="1" vertex="1">
+                    <mxGeometry x="690" y="125" width="290" height="28" as="geometry"/>
+                </mxCell>
+                <mxCell id="p5_lg_tg" value="tire_grip_analysis_service.py  (186)  ★ NOT ML" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#b35900;strokeWidth=4;fontSize=11;align=center;" parent="1" vertex="1">
+                    <mxGeometry x="1000" y="125" width="320" height="28" as="geometry"/>
+                </mxCell>
+                <mxCell id="p5_lg_fd" value="full_dataset_ml_service.py  (1209)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#7a2e2c;strokeWidth=4;fontSize=11;align=center;" parent="1" vertex="1">
+                    <mxGeometry x="1340" y="125" width="320" height="28" as="geometry"/>
+                </mxCell>
+                <mxCell id="p5_src_h" value="TODAY  —  services/" style="text;html=1;align=center;verticalAlign=middle;fontSize=14;fontStyle=1;fillColor=#23445d;fontColor=#ffffff;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="170" width="460" height="32" as="geometry"/>
+                </mxCell>
+                <mxCell id="p5_src_t" value="transformer_model.py  (2740 LOC)&#xa;&#xa;5 concerns mixed in one file:&#xa;• ML architecture (PositionalEncoding, ExpertActionTransformer)&#xa;• Feature scaler (PerFeatureScaler, _RunningFeatureStats)&#xa;• Streaming dataset (TelemetryActionDataset)&#xa;• Training loop (ExpertActionTrainer — AMP, checkpoints)&#xa;• Async entry function (prepare_and_train_coach_…)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#1f6091;strokeWidth=3;fontSize=11;align=left;verticalAlign=top;spacingLeft=10;spacingTop=8;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="210" width="460" height="160" as="geometry"/>
+                </mxCell>
+                <mxCell id="p5_src_i" value="imitate_expert_learning_service.py  (1121 LOC)&#xa;&#xa;3 concerns:&#xa;• Domain types (ExpertFeatureCatalog, SegmentImprovementConfig,&#xa;  SegmentImprovementSummary, ExpertModelTrainingConfig)&#xa;• ML model (TrackExpertModel, ExpertPositionLearner +&#xa;  serialize / deserialize helpers)&#xa;• Orchestrator service (ExpertImitateLearningService.train_ai_model)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#2d5e2d;strokeWidth=3;fontSize=11;align=left;verticalAlign=top;spacingLeft=10;spacingTop=8;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="380" width="460" height="160" as="geometry"/>
+                </mxCell>
+                <mxCell id="p5_src_s" value="segment_classifier_service.py  (996 LOC)&#xa;&#xa;5 concerns:&#xa;• ML model (FocalLoss, CNN1DModel — small, ~50 lines)&#xa;• Dataset + derived features (StreamingSegmentDataset)&#xa;• Model + scaler I/O (torch.save, joblib.dump/load)&#xa;• Training pipeline (prepare_training_data, train_model)&#xa;• Inference (load_model, predict_segment, scan_session)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#5d3b6f;strokeWidth=3;fontSize=11;align=left;verticalAlign=top;spacingLeft=10;spacingTop=8;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="550" width="460" height="160" as="geometry"/>
+                </mxCell>
+                <mxCell id="p5_src_tg" value="tire_grip_analysis_service.py  (186 LOC)  ★ NOT ML&#xa;&#xa;Physics formula. No fit / predict / torch.&#xa;&#xa;2 concerns:&#xa;• Domain types (TireGripFeatureCatalog, SlipEnvelopeConfig)&#xa;• Stateless feature engineering (extract_tire_grip_features,&#xa;  friction-circle math)&#xa;&#xa;The no-op train stubs at lines 102–134 should be deleted." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#b35900;strokeWidth=3;fontSize=11;align=left;verticalAlign=top;spacingLeft=10;spacingTop=8;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="720" width="460" height="170" as="geometry"/>
+                </mxCell>
+                <mxCell id="p5_src_fd" value="full_dataset_ml_service.py  (1209 LOC)&#xa;&#xa;Pure orchestrator. NO model code lives here.&#xa;&#xa;3 concerns:&#xa;• Training orchestration (prepare_training_data,&#xa;  run_transformer_guidance_training, process_lap_sessions_efficiently)&#xa;• Inference (predict_expert_actions)&#xa;• Direct module imports of the 4 sibling services + LLM + backend&#xa;  ⚠ these should become injected dependencies, not imports" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#7a2e2c;strokeWidth=3;fontSize=11;align=left;verticalAlign=top;spacingLeft=10;spacingTop=8;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="900" width="460" height="180" as="geometry"/>
+                </mxCell>
+                <mxCell id="p5_tgt_h" value="TARGET  —  app/" style="text;html=1;align=center;verticalAlign=middle;fontSize=14;fontStyle=1;fillColor=#2d5e2d;fontColor=#ffffff;" parent="1" vertex="1">
+                    <mxGeometry x="540" y="170" width="1120" height="32" as="geometry"/>
+                </mxCell>
+                <mxCell id="p5_band_domain" value="app/domain/   —   feature catalogs &amp; config dataclasses (typed leaves, no behavior)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=12;fontStyle=1;fontColor=#8a4a00;verticalAlign=top;align=left;spacingLeft=10;spacingTop=6;" parent="1" vertex="1">
+                    <mxGeometry x="540" y="210" width="1120" height="90" as="geometry"/>
+                </mxCell>
+                <mxCell id="p5_dom_expert" value="expert_features.py&#xa;ExpertFeatureCatalog · SegmentImprovementConfig · SegmentImprovementSummary · ExpertModelTrainingConfig" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#2d5e2d;strokeWidth=4;fontSize=10;align=left;verticalAlign=middle;spacingLeft=10;" parent="1" vertex="1">
+                    <mxGeometry x="560" y="240" width="540" height="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="p5_dom_grip" value="tire_grip_features.py&#xa;TireGripFeatureCatalog · SlipEnvelopeConfig" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#b35900;strokeWidth=4;fontSize=10;align=left;verticalAlign=middle;spacingLeft=10;" parent="1" vertex="1">
+                    <mxGeometry x="1110" y="240" width="280" height="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="p5_dom_seg" value="segment_features.py&#xa;LABEL_MAPPING · feature names" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#5d3b6f;strokeWidth=4;fontSize=10;align=left;verticalAlign=middle;spacingLeft=10;" parent="1" vertex="1">
+                    <mxGeometry x="1400" y="240" width="240" height="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="p5_band_feat" value="app/features/   —   stateless feature engineering (NOT ML, no I/O, no state)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=12;fontStyle=1;fontColor=#7f6000;verticalAlign=top;align=left;spacingLeft=10;spacingTop=6;" parent="1" vertex="1">
+                    <mxGeometry x="540" y="310" width="1120" height="80" as="geometry"/>
+                </mxCell>
+                <mxCell id="p5_feat_grip" value="tire_grip.py&#xa;extract_tire_grip_features(df, config) → DataFrame   (friction-circle math)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#b35900;strokeWidth=4;fontSize=10;align=left;verticalAlign=middle;spacingLeft=10;" parent="1" vertex="1">
+                    <mxGeometry x="560" y="340" width="540" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="p5_feat_note" value="( derived.py — later, if needed for the segment classifier&#39;s compute_derived_features )" style="text;html=1;align=left;verticalAlign=middle;fontSize=10;fontStyle=2;fontColor=#7f6000;" parent="1" vertex="1">
+                    <mxGeometry x="1110" y="340" width="530" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="p5_band_ml" value="app/ml/   —   pure model code: architecture · forward pass · serialization. No I/O, no orchestration." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=12;fontStyle=1;fontColor=#7a2e2c;verticalAlign=top;align=left;spacingLeft=10;spacingTop=6;" parent="1" vertex="1">
+                    <mxGeometry x="540" y="400" width="1120" height="180" as="geometry"/>
+                </mxCell>
+                <mxCell id="p5_ml_t_model" value="ml/transformer/model.py&#xa;PositionalEncoding · ExpertActionTransformer · serialize_model · deserialize_transformer_model" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#1f6091;strokeWidth=4;fontSize=10;align=left;verticalAlign=middle;spacingLeft=10;" parent="1" vertex="1">
+                    <mxGeometry x="560" y="430" width="540" height="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="p5_ml_t_scaler" value="ml/transformer/scaler.py&#xa;PerFeatureScaler · _RunningFeatureStats" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#1f6091;strokeWidth=4;fontSize=10;align=left;verticalAlign=middle;spacingLeft=10;" parent="1" vertex="1">
+                    <mxGeometry x="1110" y="430" width="280" height="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="p5_ml_i_model" value="ml/imitation/model.py&#xa;TrackExpertModel · ExpertPositionLearner · serialize / deserialize" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#2d5e2d;strokeWidth=4;fontSize=10;align=left;verticalAlign=middle;spacingLeft=10;" parent="1" vertex="1">
+                    <mxGeometry x="560" y="490" width="540" height="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="p5_ml_s_model" value="ml/segment_classifier/model.py&#xa;FocalLoss · CNN1DModel  (just the model — ~50 lines)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#5d3b6f;strokeWidth=4;fontSize=10;align=left;verticalAlign=middle;spacingLeft=10;" parent="1" vertex="1">
+                    <mxGeometry x="1110" y="490" width="530" height="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="p5_band_store" value="app/storage/   —   data loaders &amp; checkpoint I/O" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e8e8e8;strokeColor=#666666;fontSize=12;fontStyle=1;fontColor=#333333;verticalAlign=top;align=left;spacingLeft=10;spacingTop=6;" parent="1" vertex="1">
+                    <mxGeometry x="540" y="590" width="1120" height="130" as="geometry"/>
+                </mxCell>
+                <mxCell id="p5_st_t_ds" value="storage/datasets/telemetry_dataset.py&#xa;TelemetryActionDataset  (streams from Zarr)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#1f6091;strokeWidth=4;fontSize=10;align=left;verticalAlign=middle;spacingLeft=10;" parent="1" vertex="1">
+                    <mxGeometry x="560" y="620" width="540" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="p5_st_s_ds" value="storage/datasets/segment_dataset.py&#xa;StreamingSegmentDataset · compute_derived_features" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#5d3b6f;strokeWidth=4;fontSize=10;align=left;verticalAlign=middle;spacingLeft=10;" parent="1" vertex="1">
+                    <mxGeometry x="1110" y="620" width="530" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="p5_st_chkpt" value="storage/checkpoints/segment_classifier_io.py&#xa;torch.save / joblib for model + scaler artifacts" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#5d3b6f;strokeWidth=4;fontSize=10;align=left;verticalAlign=middle;spacingLeft=10;" parent="1" vertex="1">
+                    <mxGeometry x="560" y="670" width="1080" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="p5_band_train" value="app/pipelines/training/   —   load data → call ml/ → save artifact" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=12;fontStyle=1;fontColor=#2d5e2d;verticalAlign=top;align=left;spacingLeft=10;spacingTop=6;" parent="1" vertex="1">
+                    <mxGeometry x="540" y="730" width="1120" height="240" as="geometry"/>
+                </mxCell>
+                <mxCell id="p5_tr_t_trainer" value="pipelines/training/transformer_trainer.py&#xa;ExpertActionTrainer  (epoch loop, AMP, validation, LR scheduling)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#1f6091;strokeWidth=4;fontSize=10;align=left;verticalAlign=middle;spacingLeft=10;" parent="1" vertex="1">
+                    <mxGeometry x="560" y="760" width="540" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="p5_tr_t_entry" value="pipelines/training/transformer_entry.py&#xa;prepare_and_train_coach_transformer_model  (async)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#1f6091;strokeWidth=4;fontSize=10;align=left;verticalAlign=middle;spacingLeft=10;" parent="1" vertex="1">
+                    <mxGeometry x="1110" y="760" width="530" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="p5_tr_i" value="pipelines/training/imitation_training.py&#xa;ExpertImitateLearningService.train_ai_model  (thin orchestrator)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#2d5e2d;strokeWidth=4;fontSize=10;align=left;verticalAlign=middle;spacingLeft=10;" parent="1" vertex="1">
+                    <mxGeometry x="560" y="810" width="540" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="p5_tr_s" value="pipelines/training/segment_classifier_training.py&#xa;prepare_training_data · fit_preprocessors · train_model" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#5d3b6f;strokeWidth=4;fontSize=10;align=left;verticalAlign=middle;spacingLeft=10;" parent="1" vertex="1">
+                    <mxGeometry x="1110" y="810" width="530" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="p5_tr_fd" value="pipelines/training/full_dataset_orchestrator.py&#xa;prepare_training_data · run_transformer_guidance_training · process_lap_sessions_efficiently · enriched_contextual_data&#xa;⚠ depends on the other 4 pipelines + skills + backend adapter — pass them as constructor args, do NOT module-import" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#7a2e2c;strokeWidth=4;fontSize=10;align=left;verticalAlign=middle;spacingLeft=10;spacingTop=6;" parent="1" vertex="1">
+                    <mxGeometry x="560" y="860" width="1080" height="80" as="geometry"/>
+                </mxCell>
+                <mxCell id="p5_band_infer" value="app/pipelines/inference/   —   load artifact → call ml/ → return result" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=12;fontStyle=1;fontColor=#2d5e2d;verticalAlign=top;align=left;spacingLeft=10;spacingTop=6;" parent="1" vertex="1">
+                    <mxGeometry x="540" y="980" width="1120" height="100" as="geometry"/>
+                </mxCell>
+                <mxCell id="p5_inf_pred" value="pipelines/inference/expert_action_predictor.py&#xa;predict_expert_actions  (was on full_dataset_ml_service)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#7a2e2c;strokeWidth=4;fontSize=10;align=left;verticalAlign=middle;spacingLeft=10;" parent="1" vertex="1">
+                    <mxGeometry x="560" y="1010" width="540" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="p5_inf_seg" value="pipelines/inference/segment_predictor.py&#xa;load_model · predict_segment · predict_segment_probabilities · scan_telemetry_data · scan_session" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#5d3b6f;strokeWidth=4;fontSize=10;align=left;verticalAlign=middle;spacingLeft=10;" parent="1" vertex="1">
+                    <mxGeometry x="1110" y="1010" width="530" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="p5_summary" value="Summary of the split:   1 file × ML model (kept)   ·   1 file × physics features (renamed, demoted from ML)   ·   2 files × dataclasses/enums (moved to domain)   ·   2 files × dataset loaders (moved to storage)   ·   5 files × training orchestrators   ·   2 files × inference orchestrators&#xa;Net effect: 5 monolithic services (6 252 LOC) become ~17 focused files. The full_dataset orchestrator stops module-importing siblings — dependencies become explicit constructor args." style="text;html=1;align=left;verticalAlign=middle;fontSize=11;fontColor=#23445d;fillColor=#f5f5f5;strokeColor=#23445d;rounded=1;spacingLeft=12;spacingTop=8;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="1100" width="1620" height="80" as="geometry"/>
+                </mxCell>
+            </root>
+        </mxGraphModel>
+    </diagram>
+
+  <diagram name="6. models/ Split" id="page6">
+    <mxGraphModel dx="2200" dy="1100" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1700" pageHeight="950" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <mxCell id="p6_title" value="Page 6 — models/ Folder Split:  4 files in models/  →  api/schemas + integrations + domain + ml" style="text;html=1;align=center;verticalAlign=middle;fontSize=18;fontStyle=1;fillColor=#23445d;strokeColor=#23445d;fontColor=#ffffff;" vertex="1" parent="1">
+          <mxGeometry x="40" y="20" width="1620" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="p6_nav" value="Pages:  ① Overview  ·  ② Agent &amp; Domain  ·  ③ Providers, Storage &amp; External  ·  ④ Migration &amp; Principles  ·  ⑤ Services Split  ·  ⑥ models/ Split" style="text;html=1;align=center;verticalAlign=middle;fontSize=11;fontStyle=2;fontColor=#666666;" vertex="1" parent="1">
+          <mxGeometry x="40" y="60" width="1620" height="20" as="geometry" />
+        </mxCell>
+
+        <mxCell id="p6_legend" value="The word &quot;model&quot; was overloaded — it meant Pydantic DTOs, ML algorithm registry, and domain types all at once.  Color = source file." style="text;html=1;align=center;verticalAlign=middle;fontSize=11;fontStyle=2;fontColor=#23445d;fillColor=#f5f5f5;strokeColor=#23445d;rounded=1;" vertex="1" parent="1">
+          <mxGeometry x="40" y="90" width="1620" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="p6_lg_a" value="api_models.py  (64 LOC)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#1f6091;strokeWidth=4;fontSize=11;align=center;" vertex="1" parent="1">
+          <mxGeometry x="40" y="125" width="370" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="p6_lg_m" value="ml_algorithms.py  (~24 KB)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#b35900;strokeWidth=4;fontSize=11;align=center;" vertex="1" parent="1">
+          <mxGeometry x="430" y="125" width="380" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="p6_lg_s" value="segment_models.py  (~11 KB)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#2d5e2d;strokeWidth=4;fontSize=11;align=center;" vertex="1" parent="1">
+          <mxGeometry x="830" y="125" width="380" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="p6_lg_t" value="telemetry_models.py  (~53 KB)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#5d3b6f;strokeWidth=4;fontSize=11;align=center;" vertex="1" parent="1">
+          <mxGeometry x="1230" y="125" width="430" height="28" as="geometry" />
+        </mxCell>
+
+        <mxCell id="p6_src_h" value="TODAY  —  app/models/" style="text;html=1;align=center;verticalAlign=middle;fontSize=14;fontStyle=1;fillColor=#23445d;fontColor=#ffffff;" vertex="1" parent="1">
+          <mxGeometry x="40" y="170" width="460" height="32" as="geometry" />
+        </mxCell>
+
+        <mxCell id="p6_src_a" value="api_models.py  (64 LOC)&#10;&#10;Pure Pydantic HTTP DTOs:&#10;• QueryRequest · AnalysisResult · HealthResponse · DatasetInfo · BackendCallRequest&#10;• AiModelDto · ActiveModelData  (these two are wire formats for the Node backend, not HTTP)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#1f6091;strokeWidth=3;fontSize=11;align=left;verticalAlign=top;spacingLeft=10;spacingTop=8;" vertex="1" parent="1">
+          <mxGeometry x="40" y="210" width="460" height="140" as="geometry" />
+        </mxCell>
+        <mxCell id="p6_src_m" value="ml_algorithms.py  (~24 KB)&#10;&#10;AlgorithmConfiguration class — a registry / lookup table mapping prediction task names → River algorithm choices.&#10;Imports the `river` online-learning library.&#10;&#10;It is a CONFIG file, not actual model code. No fit / predict implementations." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#b35900;strokeWidth=3;fontSize=11;align=left;verticalAlign=top;spacingLeft=10;spacingTop=8;" vertex="1" parent="1">
+          <mxGeometry x="40" y="360" width="460" height="140" as="geometry" />
+        </mxCell>
+        <mxCell id="p6_src_s" value="segment_models.py  (~11 KB)&#10;&#10;Domain dataclasses + the master LABEL_MAPPING dict (~150 entries: O, MD, EA, PS, RM, MS, RM1–RM11, MS1–MS52, …).&#10;&#10;⚠  IMPORTS FROM services/ — domain code importing service code violates the layering rule. Must be reversed before this file can move cleanly to domain/." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#2d5e2d;strokeWidth=3;fontSize=11;align=left;verticalAlign=top;spacingLeft=10;spacingTop=8;" vertex="1" parent="1">
+          <mxGeometry x="40" y="510" width="460" height="170" as="geometry" />
+        </mxCell>
+        <mxCell id="p6_src_t" value="telemetry_models.py  (~53 KB — the biggest file)&#10;&#10;TelemetryFeatures Pydantic model — the canonical ACC telemetry shape.&#10;+ safe-parsing helpers: _safe_float, _parse_car_coordinates&#10;&#10;Pure domain type. No I/O, no framework, no ML." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#5d3b6f;strokeWidth=3;fontSize=11;align=left;verticalAlign=top;spacingLeft=10;spacingTop=8;" vertex="1" parent="1">
+          <mxGeometry x="40" y="690" width="460" height="140" as="geometry" />
+        </mxCell>
+
+        <mxCell id="p6_tgt_h" value="TARGET  —  app/" style="text;html=1;align=center;verticalAlign=middle;fontSize=14;fontStyle=1;fillColor=#2d5e2d;fontColor=#ffffff;" vertex="1" parent="1">
+          <mxGeometry x="540" y="170" width="1120" height="32" as="geometry" />
+        </mxCell>
+
+        <mxCell id="p6_band_api" value="app/api/schemas/   —   HTTP request &amp; response DTOs (lives next to the routes that emit them)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=12;fontStyle=1;fontColor=#23445d;verticalAlign=top;align=left;spacingLeft=10;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="540" y="210" width="1120" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="p6_api_query" value="api/schemas/query.py&#10;QueryRequest · AnalysisResult · DatasetInfo · BackendCallRequest · HealthResponse" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#1f6091;strokeWidth=4;fontSize=10;align=left;verticalAlign=middle;spacingLeft=10;" vertex="1" parent="1">
+          <mxGeometry x="560" y="240" width="1080" height="40" as="geometry" />
+        </mxCell>
+
+        <mxCell id="p6_band_int" value="app/integrations/backend/   —   wire formats for talking to the Node backend (not the HTTP boundary)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=12;fontStyle=1;fontColor=#7a2e2c;verticalAlign=top;align=left;spacingLeft=10;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="540" y="300" width="1120" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="p6_int_be" value="integrations/backend/schemas.py&#10;AiModelDto · ActiveModelData  (payloads exchanged with acla_backend, not with our React client)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#1f6091;strokeWidth=4;fontSize=10;align=left;verticalAlign=middle;spacingLeft=10;" vertex="1" parent="1">
+          <mxGeometry x="560" y="325" width="1080" height="40" as="geometry" />
+        </mxCell>
+
+        <mxCell id="p6_band_dom" value="app/domain/   —   pure types: dataclasses, pydantic models, label dicts (the leaves; no imports of services)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=12;fontStyle=1;fontColor=#8a4a00;verticalAlign=top;align=left;spacingLeft=10;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="540" y="380" width="1120" height="220" as="geometry" />
+        </mxCell>
+        <mxCell id="p6_dom_seg" value="domain/segment.py&#10;AnnotatedSegment dataclass (+ children)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#2d5e2d;strokeWidth=4;fontSize=10;align=left;verticalAlign=middle;spacingLeft=10;" vertex="1" parent="1">
+          <mxGeometry x="560" y="410" width="540" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="p6_dom_labels" value="domain/labels.py&#10;LABEL_MAPPING dict (O · MD · EA · PS · RM · MS · …)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#2d5e2d;strokeWidth=4;fontSize=10;align=left;verticalAlign=middle;spacingLeft=10;" vertex="1" parent="1">
+          <mxGeometry x="1110" y="410" width="530" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="p6_dom_tel" value="domain/telemetry.py&#10;TelemetryFeatures pydantic model (the canonical ACC telemetry shape)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#5d3b6f;strokeWidth=4;fontSize=10;align=left;verticalAlign=middle;spacingLeft=10;" vertex="1" parent="1">
+          <mxGeometry x="560" y="460" width="1080" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="p6_dom_parse" value="domain/_parsing.py&#10;_safe_float · _parse_car_coordinates  (small helpers — can also stay inline in telemetry.py)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#5d3b6f;strokeWidth=4;fontSize=10;align=left;verticalAlign=middle;spacingLeft=10;" vertex="1" parent="1">
+          <mxGeometry x="560" y="510" width="1080" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="p6_dom_note" value="Domain is a LEAF. After moving expert/tire-grip feature catalogs out of services/ (see Page 5), segment_models.py can drop its service-imports and land here cleanly." style="text;html=1;align=left;verticalAlign=middle;fontSize=10;fontStyle=2;fontColor=#8a4a00;spacingLeft=10;" vertex="1" parent="1">
+          <mxGeometry x="560" y="555" width="1080" height="40" as="geometry" />
+        </mxCell>
+
+        <mxCell id="p6_band_ml" value="app/ml/online/   —   online-learning algorithm registry (River wrappers)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=12;fontStyle=1;fontColor=#7f6000;verticalAlign=top;align=left;spacingLeft=10;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="540" y="610" width="1120" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="p6_ml_reg" value="ml/online/algorithm_registry.py&#10;AlgorithmConfiguration  —  prediction-task → River-algorithm lookup. Sibling to ml/transformer/, ml/imitation/, ml/segment_classifier/." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#b35900;strokeWidth=4;fontSize=10;align=left;verticalAlign=middle;spacingLeft=10;" vertex="1" parent="1">
+          <mxGeometry x="560" y="640" width="1080" height="40" as="geometry" />
+        </mxCell>
+
+        <mxCell id="p6_warning" value="⚠ Order of operations:   the feature-catalog moves on Page 5 (ExpertFeatureCatalog · TireGripFeatureCatalog → app/domain/) must happen BEFORE segment_models.py can move.&#10;Today segment_models.py imports those catalogs from services/, which crosses layers. Move the catalogs first → segment_models.py's imports become legal → then ship it to domain/." style="text;html=1;align=left;verticalAlign=middle;fontSize=11;fontColor=#7a2e2c;fillColor=#fdebec;strokeColor=#7a2e2c;rounded=1;spacingLeft=12;spacingTop=8;" vertex="1" parent="1">
+          <mxGeometry x="40" y="710" width="1620" height="80" as="geometry" />
+        </mxCell>
+
+        <mxCell id="p6_summary" value="Net effect of the models/ split:   1 file (api_models) splits into 2 destinations · 1 file (segment_models) splits into 2 destinations · 1 file (telemetry_models) → 1 destination · 1 file (ml_algorithms) → 1 destination.&#10;app/models/ ends up empty and is deleted. Nothing called &quot;model&quot; survives — each file lands in a band named after what it actually IS." style="text;html=1;align=left;verticalAlign=middle;fontSize=11;fontColor=#23445d;fillColor=#f5f5f5;strokeColor=#23445d;rounded=1;spacingLeft=12;spacingTop=8;" vertex="1" parent="1">
+          <mxGeometry x="40" y="800" width="1620" height="80" as="geometry" />
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+
+</mxfile>
