@@ -449,7 +449,7 @@ def split_lap_by_circuit_sections(
     crossed in/out at the boundary.
     """
     from app.services.llm.agent.evaluators import PipelineAttachment
-    from app.services.llm.label_catalog import find_labels
+    from app.skills.label_catalog import find_labels
 
     s, e = int(start_index), int(end_index)
 
@@ -613,7 +613,7 @@ def locate_circuit_section(
     brake pattern, etc.).
     """
     from app.services.llm.agent.evaluators import PipelineAttachment
-    from app.services.llm.label_catalog import find_labels
+    from app.skills.label_catalog import find_labels
 
     s, e = int(start_index), int(end_index)
 

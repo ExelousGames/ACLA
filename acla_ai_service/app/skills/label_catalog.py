@@ -22,8 +22,8 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.domain.labels import LABEL_CATEGORIES, LABEL_MAPPING
-from app.skill_manager import skills
-from app.skill_manager._query import matches
+from app.skills import skills
+from app.skills._query import matches
 
 _CIRCUIT_PARENTS = {"brands_hatch", "silverstone"}
 _MAIN_KEY = "Main Labels"

@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Sequence
 
-from app.skill_manager import skills
+from app.skills import skills
 
 # ---------------------------------------------------------------------------
 # lap_annotation

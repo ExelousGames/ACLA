@@ -18,8 +18,8 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import json as _json
 
 from app.domain.labels import LABEL_MAPPING
-from app.services.llm.label_catalog import find_labels, get_label
-from app.services.llm.skill_prompts import lap_annotation_prompt
+from app.skills.label_catalog import find_labels, get_label
+from app.skills.prompts import lap_annotation_prompt
 from app.services.llm.agent import (
     AgentRequest,
     AgentResponse,
