@@ -7,7 +7,7 @@ from typing import Dict, Any, List, Optional
 from httpx import request
 from pydantic import BaseModel
 import asyncio
-from app.services.full_dataset_ml_service import Full_dataset_TelemetryMLService
+from app.pipelines.training.full_dataset import Full_dataset_TelemetryMLService
 
 
 router = APIRouter(prefix="/racing-session", tags=["racing-session"])

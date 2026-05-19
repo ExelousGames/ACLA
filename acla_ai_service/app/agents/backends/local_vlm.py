@@ -24,8 +24,10 @@ import requests
 
 LOGGER = logging.getLogger(__name__)
 
-# Default model directory — climb out of agent/backends/ back to repo root.
-_MODELS_DIR = Path(__file__).resolve().parents[5] / "models"
+# Default model directory — climb out of agents/backends/ back to project root.
+# __file__ = app/agents/backends/local_vlm.py → parents[3] is the project root.
+# (Previously parents[5] when the file lived at services/llm/agent/backends/.)
+_MODELS_DIR = Path(__file__).resolve().parents[3] / "models"
 
 
 # ---------------------------------------------------------------------------

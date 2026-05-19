@@ -1,1 +1,8 @@
-"""Scaffolded for the hexagonal refactor (refactor/hexagonal-v1, Step 1). Empty on purpose; real code lands in later steps."""
+"""Configuration: settings, cache config, pipeline config.
+
+Single source of truth — replaces app/core/ and app/config/, which
+were collapsed in refactor/hexagonal-v2 Step 12.
+"""
+from app.infra.config.settings import settings
+
+__all__ = ["settings"]

@@ -13,7 +13,7 @@ from pathlib import Path
 project_root = Path(__file__).resolve().parent.parent
 sys.path.append(str(project_root))
 
-from app.services.llm.telemetry_llm_orchestrator import TelemetryLLMOrchestrator
+from app.pipelines.chat.orchestrator import TelemetryLLMOrchestrator
 from app.llm.local_llm import LocalLLMConfig
 
 async def main():

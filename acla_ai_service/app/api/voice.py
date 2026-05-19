@@ -179,13 +179,20 @@ async def voice_stream(
         user_id=user_id,
     )
 
+    # Construct the tool executor here, in the inbound-adapter band, so
+    # app/voice/ never imports from app/pipelines/ (see .importlinter
+    # contract voice-no-pipeline-or-api).
+    from app.pipelines.chat import AIService
+    ai_service = AIService()
+    tool_executor = ai_service._execute_function
+
     LOGGER.info(
         "Voice WS connected (track=%s car=%s user=%s)",
         track_name, car_name, user_id,
     )
 
     try:
-        await run_voice_session(websocket, config)
+        await run_voice_session(websocket, config, tool_executor)
     except WebSocketDisconnect:
         LOGGER.info("Voice WS client disconnected (user=%s)", user_id)
     except Exception:

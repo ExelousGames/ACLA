@@ -7,7 +7,7 @@ from fastapi import APIRouter, HTTPException, Body
 from fastapi.responses import StreamingResponse
 from typing import Dict, Any, Optional, List
 from pydantic import BaseModel
-from app.services.ai_service import AIService
+from app.pipelines.chat import AIService
 from app.llm.health import check_llama_server
 
 router = APIRouter(tags=["query"])

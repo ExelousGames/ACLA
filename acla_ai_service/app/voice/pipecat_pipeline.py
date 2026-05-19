@@ -37,7 +37,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Optional
 
-from app.core import settings
+from app.infra.config import settings
 
 LOGGER = logging.getLogger(__name__)
 
@@ -130,8 +130,11 @@ def _build_tool_schemas():
     return [check_car_limit_schema, track_detail_schema]
 
 
-def _make_tool_handler(ai_service, session_config: "VoiceSessionConfig"):
-    """Build a per-session async handler that delegates to AIService._execute_function.
+def _make_tool_handler(tool_executor, session_config: "VoiceSessionConfig"):
+    """Build a per-session async handler that delegates to ``tool_executor``.
+    The executor is injected by the caller (api/voice.py wires
+    AIService._execute_function into this slot) so app/voice/ stays out
+    of app/pipelines/ — see .importlinter contract voice-no-pipeline-or-api.
 
     Closes over `session_config` so per-session context (track/car) is
     forwarded to the existing tool implementations exactly as the HTTP
@@ -148,7 +151,7 @@ def _make_tool_handler(ai_service, session_config: "VoiceSessionConfig"):
         }
 
         try:
-            result = await ai_service._execute_function(function_name, arguments, context)
+            result = await tool_executor(function_name, arguments, context)
         except Exception as exc:
             LOGGER.exception("Voice tool %s failed", function_name)
             await params.result_callback({"error": str(exc)})
@@ -177,6 +180,7 @@ def _make_tool_handler(ai_service, session_config: "VoiceSessionConfig"):
 async def build_voice_pipeline_task(
     websocket: Any,
     session_config: VoiceSessionConfig,
+    tool_executor: Any,
 ):
     """Build a Pipecat PipelineTask bound to the given WebSocket.
 
@@ -200,7 +204,6 @@ async def build_voice_pipeline_task(
         FastAPIWebsocketTransport,
     )
 
-    from app.services.ai_service import AIService
     from app.voice.pipecat_kokoro import build_kokoro_processor
 
     LOGGER.info(
@@ -258,14 +261,14 @@ async def build_voice_pipeline_task(
     )
 
     # --- Tool calling (Phase 3b) ---
-    # Build schemas + register handlers that delegate to the existing
-    # AIService._execute_function. Voice and text paths share the same tool
-    # implementations, so behavior stays consistent.
-    ai_service = AIService()
+    # Build schemas + register handlers that delegate to the caller-provided
+    # `tool_executor` (typically AIService._execute_function, bound by
+    # api/voice.py). Voice and text paths share the same tool implementations,
+    # so behaviour stays consistent.
     tool_schemas = _build_tool_schemas()
     tools = ToolsSchema(standard_tools=tool_schemas)
 
-    tool_handler = _make_tool_handler(ai_service, session_config)
+    tool_handler = _make_tool_handler(tool_executor, session_config)
     for schema in tool_schemas:
         llm.register_function(schema.name, tool_handler)
 
@@ -306,16 +309,21 @@ async def build_voice_pipeline_task(
     return task
 
 
-async def run_voice_session(websocket: Any, session_config: VoiceSessionConfig) -> None:
+async def run_voice_session(
+    websocket: Any,
+    session_config: VoiceSessionConfig,
+    tool_executor: Any,
+) -> None:
     """Bind a Pipecat pipeline to `websocket` and run it to completion.
 
     Returns when the WS closes or the pipeline exits. Caller is responsible
-    for any auth/lifecycle concerns around `websocket`.
+    for any auth/lifecycle concerns around `websocket` and for supplying a
+    ``tool_executor`` (typically AIService._execute_function).
     """
     # Deferred import.
     from pipecat.pipeline.runner import PipelineRunner
 
-    task = await build_voice_pipeline_task(websocket, session_config)
+    task = await build_voice_pipeline_task(websocket, session_config, tool_executor)
     runner = PipelineRunner()
     try:
         await runner.run(task)

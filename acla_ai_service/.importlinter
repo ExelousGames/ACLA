@@ -1,0 +1,168 @@
+[importlinter]
+root_package = app
+
+# Hexagonal layering: imports flow downward only.
+#
+#   api  ──►  pipelines  ──►  agents  ──►  ml/llm/voice/integrations  ──►  storage
+#                                              │
+#                                              ▼
+#                          domain / features / skills / infra  (pure leaves)
+#
+# Contracts target the boundaries that REGRESSION would damage. Same-band
+# imports (e.g. one pipeline calling another) are allowed deliberately.
+# See acla-ai-service-architecture.drawio Page 4 for the source-of-truth diagram.
+
+# ─── Leaves: must not depend on anything else in the app ──────────────────────
+
+[importlinter:contract:domain-is-leaf]
+name = app/domain is a leaf (no upward dependencies)
+type = forbidden
+source_modules =
+    app.domain
+forbidden_modules =
+    app.agents
+    app.api
+    app.integrations
+    app.llm
+    app.main
+    app.ml
+    app.pipelines
+    app.storage
+    app.voice
+    app.features
+
+[importlinter:contract:features-is-leaf]
+name = app/features is a leaf (stateless math, no upward dependencies)
+type = forbidden
+source_modules =
+    app.features
+forbidden_modules =
+    app.agents
+    app.api
+    app.integrations
+    app.llm
+    app.main
+    app.ml
+    app.pipelines
+    app.storage
+    app.voice
+
+[importlinter:contract:skills-may-only-touch-domain]
+name = app/skills only reaches into app.domain (for label lookups)
+type = forbidden
+source_modules =
+    app.skills
+forbidden_modules =
+    app.agents
+    app.api
+    app.integrations
+    app.llm
+    app.main
+    app.ml
+    app.pipelines
+    app.storage
+    app.voice
+    app.features
+
+[importlinter:contract:infra-is-leaf]
+name = app/infra (config + observability) imports nothing from app
+type = forbidden
+source_modules =
+    app.infra
+forbidden_modules =
+    app.agents
+    app.api
+    app.domain
+    app.features
+    app.integrations
+    app.llm
+    app.main
+    app.ml
+    app.pipelines
+    app.skills
+    app.storage
+    app.voice
+
+# ─── Storage: bottom of the stack, no upward edges ────────────────────────────
+
+[importlinter:contract:storage-no-upward]
+name = app/storage does not import from any band above
+type = forbidden
+source_modules =
+    app.storage
+forbidden_modules =
+    app.agents
+    app.api
+    app.integrations
+    app.llm
+    app.main
+    app.ml
+    app.pipelines
+    app.voice
+
+# ─── Outbound adapters: don't reach into orchestration or API ─────────────────
+
+[importlinter:contract:llm-no-pipeline-or-api]
+name = app/llm never imports pipelines, agents, or api
+type = forbidden
+source_modules =
+    app.llm
+forbidden_modules =
+    app.agents
+    app.api
+    app.main
+    app.pipelines
+
+[importlinter:contract:voice-no-pipeline-or-api]
+name = app/voice never imports pipelines or api (voice is an outbound adapter)
+type = forbidden
+source_modules =
+    app.voice
+forbidden_modules =
+    app.api
+    app.main
+    app.pipelines
+
+[importlinter:contract:integrations-no-pipeline-or-api]
+name = app/integrations never imports pipelines or api
+type = forbidden
+source_modules =
+    app.integrations
+forbidden_modules =
+    app.agents
+    app.api
+    app.main
+    app.pipelines
+
+[importlinter:contract:ml-no-pipeline-or-api]
+name = app/ml never imports pipelines, agents, or api (model code is pure)
+type = forbidden
+source_modules =
+    app.ml
+forbidden_modules =
+    app.agents
+    app.api
+    app.main
+    app.pipelines
+
+# ─── Agent box: domain-free; never reaches into pipelines or api ──────────────
+
+[importlinter:contract:agents-stays-pure]
+name = agent capability box never reaches into pipelines, api, or main
+type = forbidden
+source_modules =
+    app.agents
+forbidden_modules =
+    app.api
+    app.main
+    app.pipelines
+
+# ─── API: thin inbound adapter; never reaches into main/__init__ recursively ──
+
+[importlinter:contract:api-stays-thin]
+name = app/api never imports main (api is reached FROM main, not the reverse)
+type = forbidden
+source_modules =
+    app.api
+forbidden_modules =
+    app.main

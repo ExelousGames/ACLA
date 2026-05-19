@@ -14,7 +14,7 @@ from typing import List, Optional
 
 import httpx
 
-from app.core import settings
+from app.infra.config import settings
 
 LOGGER = logging.getLogger(__name__)
 

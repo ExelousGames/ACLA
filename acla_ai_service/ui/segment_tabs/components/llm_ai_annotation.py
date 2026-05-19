@@ -28,7 +28,7 @@ def render_ai_assisted_annotation_tab(
         try:
             from segment_tabs.shared import _run_async
             from app.llm.local_llm import LocalLLMConfig
-            from app.services.llm.telemetry_llm_orchestrator import TelemetryLLMOrchestrator
+            from app.pipelines.chat.orchestrator import TelemetryLLMOrchestrator
             from app.llm.local_llm import GenerationRequest
             
             with st.spinner(f"Loading/Using model {model_id} via hf_local..."):

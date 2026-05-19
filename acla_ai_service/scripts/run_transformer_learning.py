@@ -44,7 +44,7 @@ current_dir = Path(__file__).parent
 parent_dir = current_dir.parent
 sys.path.insert(0, str(parent_dir))
 
-from app.services.full_dataset_ml_service import Full_dataset_TelemetryMLService
+from app.pipelines.training.full_dataset import Full_dataset_TelemetryMLService
 
 # Configuration
 DEFAULT_TRACK = 'brands_hatch'

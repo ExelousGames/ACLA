@@ -30,7 +30,7 @@ import os
 from pathlib import Path
 from typing import Optional
 
-from app.core import settings
+from app.infra.config import settings
 
 LOGGER = logging.getLogger(__name__)
 

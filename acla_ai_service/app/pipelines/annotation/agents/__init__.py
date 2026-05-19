@@ -8,4 +8,4 @@ reference these by name when they build their AgentRequest.
 ``agent/sub_agents/`` — registered there on import of ``run_local``.
 """
 
-from app.services.llm.annotation.agents import annotation_root  # noqa: F401
+from app.pipelines.annotation.agents import annotation_root  # noqa: F401

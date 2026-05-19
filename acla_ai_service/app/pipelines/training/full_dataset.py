@@ -12,10 +12,10 @@ from dataclasses import dataclass
 import pandas as pd
 import concurrent.futures
 from concurrent.futures import ProcessPoolExecutor
-from .tire_grip_analysis_service import TireGripAnalysisService
-from .imitate_expert_learning_service import ExpertImitateLearningService
-from .segment_classifier_service import segment_classifier
-from .telemetry_segment_visualizer import (
+from app.features.tire_grip import TireGripAnalysisService
+from app.ml.imitation.service import ExpertImitateLearningService
+from app.ml.segment_classifier.service import segment_classifier
+from app.pipelines.inference.visualizer import (
     visualize_optimal_segments,
     visualize_segment_position_coverage,
 )
@@ -53,7 +53,7 @@ from app.domain.telemetry import (
     _safe_float,
 )
 # Transformer model utilities
-from .transformer_model import prepare_and_train_coach_transformer_model
+from app.pipelines.training.transformer_trainer import prepare_and_train_coach_transformer_model
 
 # Import backend service
 from app.integrations.backend.client import backend_service
@@ -63,11 +63,16 @@ from app.storage.cache import model_cache_service
 
 # Import hybrid data cache service
 from app.storage.zarr import get_shared_zarr_store
-from app.config.pipeline_config import PipelineConfig
+from app.infra.config.pipeline import PipelineConfig
 
-# Prompt dataset builder and local LLM integration
+# Prompt dataset builder and local LLM integration.
+# TelemetryLLMOrchestrator imported lazily inside __init__ to break the
+# pipelines.chat ↔ pipelines.training circle: pipelines.chat.__init__
+# imports Full_dataset_TelemetryMLService, while
+# pipelines.chat.orchestrator is a sibling module — loading it requires
+# the package's __init__ to finish. (Pre-refactor these lived in
+# different packages so the cycle didn't exist.)
 from app.llm.local_llm import LocalTelemetryLLM, LocalLLMConfig, GenerationRequest
-from .llm.telemetry_llm_orchestrator import TelemetryLLMOrchestrator
 
 # Suppress sklearn warnings
 warnings.filterwarnings('ignore', category=UserWarning)
@@ -93,10 +98,12 @@ class Full_dataset_TelemetryMLService:
         if models_directory:
             self.models_directory = Path(models_directory).resolve()
         else:
-            # Default to project_root/models
-            # This file is in app/services/full_dataset_ml_service.py
-            # Project root is ../../..
-            self.models_directory = Path(__file__).resolve().parents[2] / "models"
+            # Default to project_root/models.
+            # __file__ = app/pipelines/training/full_dataset.py → parents[3]
+            # is the project root. (Was parents[2] when this lived at
+            # app/services/full_dataset_ml_service.py — fixed in
+            # refactor/hexagonal-v2 Step 12 cleanup.)
+            self.models_directory = Path(__file__).resolve().parents[3] / "models"
 
         self.models_directory.mkdir(exist_ok=True)
         self.logger = logger or logging.getLogger(f"{__name__}.{self.__class__.__name__}")
@@ -148,6 +155,8 @@ class Full_dataset_TelemetryMLService:
         self.llm_dataset_directory = self.models_directory / "llm_datasets"
         self.llm_dataset_directory.mkdir(parents=True, exist_ok=True)
 
+        # Deferred to break the chat ↔ training import cycle (see top of file).
+        from app.pipelines.chat.orchestrator import TelemetryLLMOrchestrator
         self.llm_orchestrator = TelemetryLLMOrchestrator(
             llm_config=self.llm_config,
             adapter_directory=self.llm_adapter_directory,
@@ -192,8 +201,8 @@ class Full_dataset_TelemetryMLService:
 
         try:
             import pandas as pd
-            from .segment_classifier_service import segment_classifier
-            from .llm.classifier_prompt_generation import generate_llm_prompt_from_labels
+            from app.ml.segment_classifier.service import segment_classifier
+            from app.ml.prompts import generate_llm_prompt_from_labels
             
             driver_request = (user_request or "").strip()
 
@@ -216,6 +225,7 @@ class Full_dataset_TelemetryMLService:
                     model_subtype="imitation_model_data",
                     service_instance=self._expert_service,
                     deserializer_func=self._expert_service.deserialize_imitation_model,
+                    backend_fetcher=self.backend_service.getCompleteActiveModelData,
                 )
                 chunk_imitation_features = expert_service.extract_expert_state_for_telemetry(
                     [processed_telemetry_dict]
@@ -229,6 +239,7 @@ class Full_dataset_TelemetryMLService:
                 model_subtype="tire_grip_model_data",
                 service_instance=self._tire_grip_service,
                 deserializer_func=self._tire_grip_service.deserialize_tire_grip_model,
+                backend_fetcher=self.backend_service.getCompleteActiveModelData,
             )
             chunk_grip_features = await tire_grip_service.extract_tire_grip_features(
                 [processed_telemetry_dict]
@@ -981,7 +992,7 @@ class Full_dataset_TelemetryMLService:
         del top_laps_list
         
         # Train tire grip analysis model using full sessions (streaming)
-        from .tire_grip_analysis_service import TireGripAnalysisService
+        from app.features.tire_grip import TireGripAnalysisService
         tire_service = TireGripAnalysisService()
 
         print("[INFO] Streaming cached session telemetry to train tire grip model")

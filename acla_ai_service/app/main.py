@@ -7,10 +7,11 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
-from app.core import settings
+from app.infra.config import settings
 from app.integrations.backend.client import backend_service
 from app.llm.health import check_llama_server
 from app.api import (
+    annotation_router,
     health_router,
     racing_session_router,
 )
@@ -83,6 +84,7 @@ app.include_router(health_router)
 app.include_router(query_router)  # Main query endpoint
 app.include_router(racing_session_router)
 app.include_router(voice_router)  # Phase 2 — neural TTS (Kokoro)
+app.include_router(annotation_router)  # Step 13 — replaces Streamlit's in-process import
 
 if __name__ == "__main__":
     import uvicorn

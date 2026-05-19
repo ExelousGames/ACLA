@@ -71,7 +71,7 @@ def render_lap_agent_claude(df, session_id, selected_annotation_key, circuit_id,
             key="lap_claude_run", type="primary",
         ):
             try:
-                from app.services.llm.annotation_pipeline import (
+                from app.pipelines.annotation import (
                     AnnotationPipelineConfig,
                     run_annotation,
                 )

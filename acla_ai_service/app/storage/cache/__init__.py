@@ -9,7 +9,7 @@ import os
 import threading
 import time
 from collections import OrderedDict
-from typing import Dict, Any, Optional, Tuple, List
+from typing import Any, Callable, Dict, List, Optional, Tuple
 from datetime import datetime, timedelta
 from dataclasses import dataclass, field
 import hashlib
@@ -287,15 +287,22 @@ class ModelCacheService:
         model_subtype: str,
         service_instance: Any,
         deserializer_func: callable,
+        backend_fetcher: Optional[Callable[[str], Any]] = None,
     ) -> Tuple[Any, Dict[str, Any]]:
-        """Fetch model from cache or backend if missing"""
+        """Fetch model from cache; fall back to ``backend_fetcher(model_type)``
+        if missing. The fetcher is injected by the caller (e.g.
+        ``backend_service.getCompleteActiveModelData``) so this storage band
+        stays independent of app.integrations — see .importlinter contract
+        ``storage-no-upward``."""
         cached = self.get(model_type=model_type, model_subtype=model_subtype)
         if cached:
             return cached[0], cached[1]
 
+        if backend_fetcher is None:
+            return service_instance, {}
+
         try:
-            from app.integrations.backend.client import backend_service
-            model_data = await backend_service.getCompleteActiveModelData(modelType=model_type)
+            model_data = await backend_fetcher(model_type)
             if model_data and hasattr(model_data, 'modelData'):
                 deserializer_func(model_data.modelData)
                 metadata = getattr(model_data, 'metrics', {})
@@ -307,7 +314,7 @@ class ModelCacheService:
                 )
                 return service_instance, metadata
         except Exception as e:
-            logger.warning(f"Failed to fetch model {model_type} from backend: {e}")
+            logger.warning(f"Failed to fetch model {model_type} via backend_fetcher: {e}")
 
         return service_instance, {}
     
