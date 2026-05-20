@@ -28,7 +28,7 @@ def list_eligible_labels(
     - ``parent_id=None`` (default) — returns the top tiers: circuit
       (gated by ``circuit_id`` when supplied), circuit_sections belonging
       to that circuit, segment types (ST1-ST6), and the main labels
-      (EA / MS / RM / PS / OV / MD).
+      (EA / MS / RM / PS / O / MD).
     - ``parent_id="MS"`` (or any main label) — returns the sub-labels
       whose ``parent`` matches, each with its ``description`` so the
       agent can decide whether the section's telemetry matches the

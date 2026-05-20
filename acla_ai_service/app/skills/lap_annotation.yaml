@@ -2,7 +2,7 @@ _skill:
   name: lap_annotation
   description: >
     Per-label telemetry characteristics for the 8 candidate parent labels
-    (EA, MS, RM, PS, OV, MD + circuit) that the lap-to-segment excerpter
+    (EA, MS, RM, PS, O, MD + circuit) that the lap-to-segment excerpter
     can attach to one circuit section. Each label declares its telemetry
     signature (trajectory_offset, time_difference_to_expert slope, brake
     overlap, etc.) and the global_rules block prescribes the per-section
@@ -106,7 +106,7 @@ labels:
           ⇒ merging out ⇒ RM, not PS).
       Picking which named catalog section to attach is a sub-label
       decision — see `sub_label_catalog`. Compatible with the circuit
-      label only; do NOT combine with EA / MS / RM / OV.
+      label only; do NOT combine with EA / MS / RM / O.
 
   O:
     name: "Overtaking"
@@ -117,10 +117,10 @@ labels:
           inside or outside line to pass).
         - Speed differential vs. a nearby car when that data is available.
       Rare without multi-car telemetry. Attach only when the signature is
-      unambiguous; otherwise leave OV off and let the detailed flow handle
+      unambiguous; otherwise leave O off and let the detailed flow handle
       sub-events.
 
-  MS:
+  MD:
     name: "Missing data"
     characteristics: >
       Section contains telemetry gaps, dropouts, or corrupted values.
@@ -155,7 +155,7 @@ global_rules: >
        - `time_difference_to_expert` — confirms gap direction (flat ⇒ EA,
          rising ⇒ MS, falling ⇒ RM).
      These two cover EA / MS / RM / PS detection. Add a third only when a
-     specific candidate (OV / MD) needs it.
+     specific candidate (O / MD) needs it.
 
   3. **Score each candidate label against its `characteristics` block.**
      Use `query_telemetry` for quantitative confirmation:
@@ -163,9 +163,9 @@ global_rules: >
          of the gap trend.
        - `find_extremum` on `trajectory_offset` → peak deviation from zero.
        - `find_first_match` on `Physics_brake` / `Physics_gas` → onset ilocs
-         when OV needs late-brake evidence.
+         when O needs late-brake evidence.
      A section may attach at most ONE of {EA, MS, RM} (mutually exclusive)
-     plus optionally PS / OV / MD. Attaching none of {EA, MS, RM} is valid
+     plus optionally PS / O / MD. Attaching none of {EA, MS, RM} is valid
      when telemetry is too noisy to commit.
 
   4. **Refine the boundary for parent-label fit.** The characteristics
@@ -192,6 +192,6 @@ global_rules: >
     - One proposal per agent run; the UI loops one section per click.
     - Never invent label IDs — only IDs from the eligible list are accepted.
     - EA + MS, EA + RM, MS + RM are all contradictions — pick at most one.
-    - PS is incompatible with EA / MS / RM / OV.
+    - PS is incompatible with EA / MS / RM / O.
     - Empty `label_ids` `[]` is the valid "drop this section" signal.
     - Final iloc range must remain inside the lap and ≥ 3 ilocs.

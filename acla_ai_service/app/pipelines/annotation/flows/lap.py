@@ -18,8 +18,8 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import json as _json
 
 from app.domain.labels import LABEL_MAPPING
+from app.skills import skills
 from app.skills.label_catalog import find_labels, get_label
-from app.skills.prompts import lap_annotation_prompt
 from app.agents import (
     AgentRequest,
     AgentResponse,
@@ -32,6 +32,55 @@ from app.pipelines.annotation.results import (
     parse_json_response,
 )
 from app.pipelines.annotation.tools import list_eligible_labels
+
+
+# ---------------------------------------------------------------------------
+# lap_annotation skill — prompt rendering
+# ---------------------------------------------------------------------------
+
+_LAP_CIRCUIT_LABELS = {"brands_hatch", "silverstone"}
+
+
+def lap_annotation_prompt(circuit_id: Optional[str] = None) -> str:
+    """Per-label `characteristics` block for the lap-flow planner / synthesizer.
+
+    When ``circuit_id`` is given, the other circuit's parent label is
+    excluded; ``None`` keeps both circuit entries.
+    """
+    labels = skills.iter("lap_annotation.labels")
+    global_rules = skills.get("lap_annotation.global_rules", "")
+
+    lines: List[str] = [
+        "#### Lap Annotation Skill — Candidate Label Characteristics",
+        "",
+        "Each candidate parent label below lists the telemetry pattern "
+        "that justifies attaching it. The `global_rules` block at the "
+        "end is the per-section detection procedure.",
+        "",
+    ]
+
+    for entry in labels:
+        lid = entry["id"]
+        if lid in _LAP_CIRCUIT_LABELS and circuit_id is not None and lid != circuit_id:
+            continue
+        name = entry.get("name", lid)
+        applies_when = str(entry.get("applies_when", "")).strip()
+        characteristics = str(entry.get("characteristics", "")).strip()
+
+        lines.append(f"##### `{lid}` — {name}")
+        if applies_when:
+            lines.append(f"_Applies when:_ {applies_when}")
+        if characteristics:
+            lines.append(characteristics)
+        lines.append("")
+
+    if global_rules:
+        lines.append("##### Global rules — how to find each label")
+        for ln in str(global_rules).rstrip("\n").split("\n"):
+            lines.append(ln)
+        lines.append("")
+
+    return "\n".join(lines)
 
 
 def _verified_label_ids_from_state(state: Dict[str, Any]) -> List[str]:
@@ -209,7 +258,7 @@ def _local_planner_prompt(
         "",
         "#### Task",
         "Plan describe_graphs steps gathering evidence to:",
-        "  1. score each main label (EA / MS / RM / PS / OV / MD) against "
+        "  1. score each main label (EA / MS / RM / PS / O / MD) against "
         "its `characteristics` block in the skill, and",
         "  2. optionally identify the trajectory shape if an ST1-ST6 pick "
         "would be unambiguous.",
@@ -285,7 +334,7 @@ def _local_synth_prompts(
         "Only IDs from this list will be accepted. Always include the "
         "circuit and the section. An ST1-ST6 pick is OPTIONAL — include "
         "one only when the trajectory shape is unambiguous. Main labels "
-        "(EA / MS / RM / PS / OV / MD) follow the skill's `characteristics` "
+        "(EA / MS / RM / PS / O / MD) follow the skill's `characteristics` "
         "blocks; at most ONE of {EA, MS, RM} may be attached. "
         f"The verified shortlist from label_verifier is: {verified_inline}. "
         "Treat verified IDs as the primary candidates; fall back to the "
@@ -381,7 +430,7 @@ def _claude_task_prompt(
         "returned `groups` enumerate every circuit / circuit_section / "
         "segment_type / main label you may attach. Only IDs from this "
         "response are accepted.\n"
-        "4. **Pick ONE parent main label** (EA / MS / RM / PS / OV / MD), "
+        "4. **Pick ONE parent main label** (EA / MS / RM / PS / O / MD), "
         "or none when telemetry is too noisy to commit. At most one of "
         "{EA, MS, RM} may be attached.\n"
         "5. **Maybe pick ONE segment type** (ST1-ST6) when the trajectory "

@@ -1,118 +1,122 @@
 import streamlit as st
 import json
 import time
-from typing import List, Any
-from segment_tabs.components.llm_training_data_generation import generate_training_prompt, get_human_readable_labels, get_available_prompts
+from typing import Any, Callable, Dict
+
+from app.pipelines.training.dataset_builder import render_labels_text
+
 
 def render_dataset_editor_tab(
-    labels: List[Any],
-    existing_record: dict,
-    prompt_widget_key: str,
-    desc_widget_key: str,
-    segment_id: str,
+    unit: Dict[str, Any],
+    existing_record: Dict[str, Any],
+    crit_widget_key: str,
+    guide_widget_key: str,
     output_path: str,
-    total_segments: int,
-    save_training_pair_fn,
-    load_all_annotations_df_fn
+    total_units: int,
+    save_training_unit_fn: Callable,
+    load_all_annotations_df_fn: Callable,
 ):
     st.subheader("Manual Annotation")
-    
-    available_prompts = get_available_prompts(labels)
-    
-    def on_template_change():
-        idx = st.session_state[f"template_select_{segment_id}"]
-        st.session_state[prompt_widget_key] = generate_training_prompt(labels, idx)
 
-    st.selectbox(
-        "Select Prompt Template:", 
-        range(len(available_prompts)), 
-        format_func=lambda x: f"Template {x+1}",
-        key=f"template_select_{segment_id}",
-        on_change=on_template_change
-    )
-    
-    default_prompt = generate_training_prompt(labels, st.session_state.get(f"template_select_{segment_id}", 0))
-    
-    if f"pending_{desc_widget_key}" in st.session_state:
-        st.session_state[desc_widget_key] = st.session_state.pop(f"pending_{desc_widget_key}")
-    
-    if prompt_widget_key not in st.session_state:
-        if existing_record:
-            st.session_state[prompt_widget_key] = existing_record.get("prompt", default_prompt)
-        else:
-            st.session_state[prompt_widget_key] = default_prompt
-
-    if desc_widget_key not in st.session_state:
-        if existing_record:
-            st.session_state[desc_widget_key] = existing_record.get("completion", "")
-        else:
-            st.session_state[desc_widget_key] = ""
-
-    prompt_text = st.text_area(
-        "Input Prompt (Instruction):",
-        value=st.session_state[prompt_widget_key],
-        height=100,
-        key=prompt_widget_key
+    labels_text = render_labels_text(
+        unit["parent_label_ids"], unit["children_label_ids"],
     )
 
-    description = st.text_area(
-        "Target Output (Description):", 
-        value=st.session_state[desc_widget_key],
+    st.text_area(
+        "System prompt — critique mode (preview)",
+        value=f"critique user, {labels_text}",
+        height=80,
+        disabled=True,
+    )
+    st.text_area(
+        "System prompt — guide mode (preview)",
+        value=f"guide user, {labels_text}",
+        height=80,
+        disabled=True,
+    )
+
+    # Pending drafts injected by the AI tab
+    for pending_key, target_key in (
+        (f"pending_{crit_widget_key}", crit_widget_key),
+        (f"pending_{guide_widget_key}", guide_widget_key),
+    ):
+        if pending_key in st.session_state:
+            st.session_state[target_key] = st.session_state.pop(pending_key)
+
+    if crit_widget_key not in st.session_state:
+        st.session_state[crit_widget_key] = (
+            existing_record.get("completion_critique", "") if existing_record else ""
+        )
+    if guide_widget_key not in st.session_state:
+        st.session_state[guide_widget_key] = (
+            existing_record.get("completion_guide", "") if existing_record else ""
+        )
+
+    completion_critique = st.text_area(
+        "Critique completion (Assistant response, critique mode)",
+        value=st.session_state[crit_widget_key],
         height=150,
-        key=desc_widget_key
+        key=crit_widget_key,
     )
-    
-    if st.button("Save Training Pair", type="primary"):
-        current_label_ids = [str(l) for l in labels]
-        human_readable_labels = get_human_readable_labels(labels)
-        save_training_pair_fn(segment_id, prompt_text, description, human_readable_labels, current_label_ids, str(output_path))
-        st.success("Saved!")
-        time.sleep(0.5)
-        st.session_state.current_index = min(total_segments - 1, st.session_state.current_index + 1)
-        st.rerun()
+    completion_guide = st.text_area(
+        "Guide completion (Assistant response, guide mode)",
+        value=st.session_state[guide_widget_key],
+        height=150,
+        key=guide_widget_key,
+    )
+
+    if st.button("Save Unit Annotation", type="primary"):
+        if not completion_critique.strip() or not completion_guide.strip():
+            st.error("Both critique and guide completions are required.")
+        else:
+            save_training_unit_fn(
+                unit, completion_critique, completion_guide, str(output_path),
+            )
+            st.success("Saved!")
+            time.sleep(0.5)
+            st.session_state.current_index = min(
+                total_units - 1, st.session_state.current_index + 1,
+            )
+            st.rerun()
 
     st.divider()
 
     st.subheader("Dataset Editor")
-    st.markdown("Edit existing training pairs. Changes are saved when you click 'Save Dataset Changes'.")
-    
+    st.markdown("Edit or delete saved unit annotations.")
+
     df = load_all_annotations_df_fn(str(output_path))
-    if not df.empty and "segment_id" in df.columns:
-        segment_df = df[df["segment_id"] == segment_id].copy()
-        
-        if not segment_df.empty:
-            segment_df.insert(0, "Delete", False)
-            edited_segment_df = st.data_editor(
-                segment_df,
-                num_rows="dynamic",
-                width="stretch",
-                height=500,
-                key=f"dataset_editor_{segment_id}",
-                disabled=("segment_id", "labels", "label_ids", "timestamp")
-            )
-            if st.button("Save Dataset Changes", type="secondary"):
-                other_segments_df = df[df["segment_id"] != segment_id].copy()
-                
-                with open(output_path, "w") as f:
-                    # Write back other segments
-                    for _, row in other_segments_df.iterrows():
-                        row_dict = row.dropna().to_dict()
-                        f.write(json.dumps(row_dict) + "\n")
-                    
-                    # Write updated segment data
-                    for _, row in edited_segment_df.iterrows():
-                        if row.get("Delete", False):
-                            continue
-                        # Remove Delete column before saving
-                        if "Delete" in row:
-                            row = row.drop("Delete")
-                        row_dict = row.dropna().to_dict()
-                        f.write(json.dumps(row_dict) + "\n")
-                        
-                st.success("Successfully updated dataset!")
-                time.sleep(1)
-                st.rerun()
-        else:
-            st.info("No annotations found for this segment yet.")
-    else:
-        st.info("The dataset is currently empty. Add pairs using the above form.")
+    if df.empty or "unit_id" not in df.columns:
+        st.info("The dataset is currently empty.")
+        return
+
+    unit_df = df[df["unit_id"] == unit["unit_id"]].copy()
+    if unit_df.empty:
+        st.info("No annotation saved for this unit yet.")
+        return
+
+    unit_df.insert(0, "Delete", False)
+    edited_df = st.data_editor(
+        unit_df,
+        num_rows="dynamic",
+        width="stretch",
+        height=300,
+        key=f"dataset_editor_{unit['unit_id']}",
+        disabled=(
+            "unit_id", "kind", "parent_label_ids",
+            "children_label_ids", "timestamp",
+        ),
+    )
+    if st.button("Save Dataset Changes", type="secondary"):
+        other_df = df[df["unit_id"] != unit["unit_id"]].copy()
+        with open(output_path, "w") as f:
+            for _, row in other_df.iterrows():
+                f.write(json.dumps(row.dropna().to_dict()) + "\n")
+            for _, row in edited_df.iterrows():
+                if row.get("Delete", False):
+                    continue
+                if "Delete" in row:
+                    row = row.drop("Delete")
+                f.write(json.dumps(row.dropna().to_dict()) + "\n")
+        st.success("Successfully updated dataset!")
+        time.sleep(1)
+        st.rerun()

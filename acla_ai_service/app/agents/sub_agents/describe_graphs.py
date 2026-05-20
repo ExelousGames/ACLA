@@ -36,7 +36,7 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.agents.framework import Agent, AgentState, delegate_step
-from app.skills.prompts import graph_analysis_prompt
+from app.agents.tools import graph_analysis_prompt
 from app.agents.evaluators import (
     AttachmentPool,
     EvalPipelineResult,

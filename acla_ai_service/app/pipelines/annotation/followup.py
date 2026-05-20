@@ -30,7 +30,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from app.domain.labels import LABEL_MAPPING
 from app.skills.label_catalog import find_labels, get_label
-from app.skills.prompts import graph_analysis_prompt
+from app.agents.tools import graph_analysis_prompt
 
 LOGGER = logging.getLogger(__name__)
 

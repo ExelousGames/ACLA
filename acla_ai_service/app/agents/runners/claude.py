@@ -233,7 +233,7 @@ class _ToolSurface:
         return json.dumps(att.content, default=str)
 
     def get_graph_guidance(self, graph_ids: List[str]) -> str:
-        from app.skills.prompts import graph_analysis_prompt
+        from app.agents.tools import graph_analysis_prompt
         text = graph_analysis_prompt(graph_ids=list(graph_ids))
         return text or "(no guidance available for the requested graph(s))"
 
