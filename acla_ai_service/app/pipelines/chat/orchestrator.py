@@ -19,7 +19,7 @@ from app.integrations.backend.schemas import ActiveModelData
 from app.integrations.backend.client import backend_service
 from app.llm.local_llm import LocalLLMConfig, LocalTelemetryLLM
 from app.storage.cache import model_cache_service
-from app.storage.zarr import get_shared_zarr_store
+from app.storage import get_shared_telemetry_store
 
 
 class TelemetryLLMOrchestrator:
@@ -37,7 +37,7 @@ class TelemetryLLMOrchestrator:
 		self.dataset_directory = Path(dataset_directory)
 		self.backend_service = backend_service
 		self.model_cache = model_cache_service
-		self.data_cache = get_shared_zarr_store()
+		self.data_cache = get_shared_telemetry_store()
 
 		self.adapter_directory.mkdir(parents=True, exist_ok=True)
 		self.dataset_directory.mkdir(parents=True, exist_ok=True)

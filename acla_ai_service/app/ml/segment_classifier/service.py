@@ -24,7 +24,7 @@ import hashlib
 import copy
 from collections import defaultdict
 
-from app.storage.zarr import get_shared_zarr_store
+from app.storage import get_shared_telemetry_store
 from app.domain.labels import LABEL_MAPPING
 from app.domain.segment import AnnotatedSegment, PredictedSegment, SegmentFeatureCatalog
 
@@ -46,7 +46,7 @@ class SegmentClassifierService:
         self.mlb_path = self.models_directory / "segment_labels.joblib"
         self.scaler_path = self.models_directory / "segment_scaler.joblib"
         self.pos_weight_path = self.models_directory / "segment_pos_weight.pt"
-        self.store = get_shared_zarr_store()
+        self.store = get_shared_telemetry_store()
         self.model = None
         self.mlb = None 
         self.scaler = None
@@ -123,9 +123,7 @@ class SegmentClassifierService:
         
         # Clear existing keys
         for key in [train_cache_key, val_cache_key]:
-            group_path = self.store._group_path(key)
-            if group_path.exists():
-                shutil.rmtree(group_path)
+            self.store.clear_cache(key)
         
         # PASS 1: Collect label statistics
         print("Pass 1: Collecting label statistics...")
@@ -364,7 +362,7 @@ class SegmentClassifierService:
             SegmentFeatureCatalog.get_all_available_features()
         )
         
-        # num_workers=0 to avoid multiprocessing issues with Zarr/Pickle
+        # num_workers=0 — avoids subprocess Lance reader complications.
         train_loader = DataLoader(train_dataset, batch_size=batch_size)
         val_loader = DataLoader(val_dataset, batch_size=batch_size)
         

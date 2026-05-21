@@ -37,5 +37,5 @@ def render_list_view(session_id, selected_annotation_key):
         else:
             st.info("No annotations added yet.")
         
-    if st.button("Force Save All to Zarr", key="detailed_force_save_zarr"):
+    if st.button("Force Save All", key="detailed_force_save"):
         save_annotations(session_id, st.session_state.current_annotations, selected_annotation_key)

@@ -9,7 +9,6 @@ import numpy as np
 import asyncio
 import json
 import re
-import zarr
 import sys
 import os
 import time
@@ -32,7 +31,7 @@ def _ensure_app_module_on_path() -> None:
 _ensure_app_module_on_path()
 
 try:
-    from app.storage.zarr import get_shared_zarr_store
+    from app.storage import get_shared_telemetry_store
     from app.infra.config.pipeline import PipelineConfig
     import app.domain.labels
     import app.domain.segment
@@ -104,62 +103,39 @@ def _run_async(func, *args, **kwargs):
 
 @st.cache_resource
 def get_store():
-    return get_shared_zarr_store()
+    return get_shared_telemetry_store()
 
 def get_available_sessions(cache_key: str) -> List[str]:
     """Get list of available session IDs from the store."""
     store = get_store()
-    group_path = store._group_path(cache_key)
-    if not group_path.exists():
-        return []
     try:
-        group = zarr.open_group(str(group_path), mode="r")
-        # Filter out metadata chunk
-        sessions = [k for k in group.array_keys() if k != "chunk_000000"]
-        return sorted(sessions)
+        return store.list_chunk_ids(cache_key)
     except Exception:
         return []
 
 @st.cache_data(max_entries=1, show_spinner=False)
 def load_session_data(cache_key: str, session_id: str) -> pd.DataFrame:
-    """Load a specific session of data from Zarr."""
+    """Load a specific session of data from the telemetry store."""
     store = get_store()
-    # Accessing internal method _group_path to avoid iterating all chunks
-    group_path = store._group_path(cache_key)
-    
-    if not group_path.exists():
-        return pd.DataFrame()
-        
     try:
-        # Open in read-only mode
-        group = zarr.open_group(str(group_path), mode="r")
-        chunk_name = session_id
-        
-        if chunk_name not in group:
-            return pd.DataFrame()
-            
-        raw_bytes = bytes(group[chunk_name][:])
-        chunk = json.loads(raw_bytes.decode("utf-8"))
-        
-        # Robust DataFrame creation
-        if isinstance(chunk, list):
-            df = pd.DataFrame(chunk)
-        elif isinstance(chunk, dict):
-            if "data" in chunk and isinstance(chunk["data"], list):
-                df = pd.DataFrame(chunk["data"])
-            else:
-                try:
-                    df = pd.DataFrame(chunk)
-                except ValueError:
-                    df = pd.DataFrame([chunk])
-        else:
-            return pd.DataFrame()
-            
-        return df
-        
+        chunk = store.get_chunk(cache_key, session_id)
     except Exception as e:
         print(f"Error loading session {session_id}: {e}")
         return pd.DataFrame()
+
+    if chunk is None:
+        return pd.DataFrame()
+
+    if isinstance(chunk, list):
+        return pd.DataFrame(chunk)
+    if isinstance(chunk, dict):
+        if "data" in chunk and isinstance(chunk["data"], list):
+            return pd.DataFrame(chunk["data"])
+        try:
+            return pd.DataFrame(chunk)
+        except ValueError:
+            return pd.DataFrame([chunk])
+    return pd.DataFrame()
 
 def load_annotations(session_id: str, annotation_key: str) -> List[AnnotatedSegment]:
     """Load annotations for a specific session."""
@@ -181,7 +157,7 @@ def load_annotations(session_id: str, annotation_key: str) -> List[AnnotatedSegm
     return segments
 
 def save_annotations(session_id: str, annotations: List[AnnotatedSegment], annotation_key: str, silent: bool = False):
-    """Save annotations to Zarr store."""
+    """Save annotations to the telemetry store."""
     store = get_store()
     
     # Save to specific chunk index

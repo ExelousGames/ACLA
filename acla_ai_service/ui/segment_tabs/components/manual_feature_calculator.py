@@ -44,7 +44,7 @@ def render_feature_calculator(df, numeric_cols, form_start, form_end, selected_o
                 avg_abs_rate = diffs.abs().mean() if not diffs.empty else 0
                 
                 # Integral (Area under curve approximation)
-                area = np.trapz(calc_slice.values)
+                area = np.trapezoid(calc_slice.values)
                 
                 # Total Change
                 total_change = calc_slice.iloc[-1] - calc_slice.iloc[0]

@@ -213,9 +213,9 @@ class BackendService:
             Dictionary with metadata only (no session data in memory)
         """
         if not data_cache:
-            # Import shared Zarr store here to avoid circular imports
-            from app.storage.zarr import get_shared_zarr_store
-            data_cache = get_shared_zarr_store()
+            # Deferred import to avoid circular imports.
+            from app.storage import get_shared_telemetry_store
+            data_cache = get_shared_telemetry_store()
 
         # Ensure we always start with a clean cache entry for this key
         if hasattr(data_cache, "has_cached_data") and data_cache.has_cached_data(cache_key):

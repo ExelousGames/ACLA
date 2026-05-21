@@ -16,7 +16,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.pipelines.training.full_dataset import Full_dataset_TelemetryMLService
 from app.infra.config.pipeline import PipelineConfig
-from app.ml.segment_classifier.service import segment_classifier
 
 logger = logging.getLogger("run_full_pipeline")
 
@@ -59,8 +58,8 @@ def confirm_step(step_name):
             log_message("Invalid input. Please enter 'y' or 'n'.", level=logging.WARNING)
 
 async def main():
-    steps = ["prepare_data", "annotate", "train_classifier", "train_transformer"]
-    
+    steps = ["prepare_data", "annotate"]
+
     log_message("\nSelect start step:")
     for i, step in enumerate(steps):
         log_message(f"{i + 1}. {step}")
@@ -85,15 +84,9 @@ async def main():
     log_message("Initializing services...")
     
     pipeline_config = PipelineConfig()
-    
+
     # Pass pipeline_config to service so they share the same cache keys
     service = Full_dataset_TelemetryMLService(logger=logger, pipeline_config=pipeline_config)
-    
-    # Default keys
-    processed_sessions_cache_key = pipeline_config.processed_session_data_cache_key
-    enriched_sessions_cache_key = pipeline_config.enriched_sessions_cache_key
-    annotation_cache_key = pipeline_config.annotation_cache_key
-    max_segment_length = 20 # Default from prepare_training_data
 
     try:
         start_index = steps.index(start_step)
@@ -112,30 +105,28 @@ async def main():
             if not result.get("success"):
                 log_message(f"Error in prepare_training_data: {result.get('error')}", level=logging.ERROR)
                 return
-            
-            # Update keys from result if available
-            if result.get("max_segment_length"):
-                max_segment_length = result.get("max_segment_length")
-                
+
             log_message("Step 1 completed successfully.")
         else:
             log_message("Skipping Step 1.")
 
-    # Step 2: Run Segment Annotation App
+    # Step 2: Run Segment Annotation App (also hosts the Training tab)
     if start_index <= 1:
         if confirm_step("Step 2: Run Segment Annotation App"):
             log_message("\n" + "="*50)
             log_message(" Step 2: Run Segment Annotation App")
             log_message("="*50)
-            log_message("Launching Streamlit app for segment annotation...")
-            log_message("Please perform your annotations in the browser.")
-            log_message("When finished, close the Streamlit app (Ctrl+C in terminal) to continue to the next step.")
-            
+            log_message("Launching Streamlit app for annotation + training...")
+            log_message("Use the 'LLM Pipeline (Claude)' tab to draft/approve LLM data,")
+            log_message("then the '🏋️ Training' tab to train the classifier, transformer,")
+            log_message("and LLM (individually or via 'Run all').")
+            log_message("Close the Streamlit app (Ctrl+C in terminal) when finished.")
+
             # Locate the annotation app script
             # We are in acla_ai_service/scripts/run_full_pipeline.py
             # App is in acla_ai_service/ui/segment_annotation_app.py
             app_path = Path(__file__).resolve().parents[1] / "ui" / "segment_annotation_app.py"
-            
+
             if not app_path.exists():
                 log_message(f"Error: Could not find segment_annotation_app.py at {app_path}", level=logging.ERROR)
                 return
@@ -151,45 +142,14 @@ async def main():
             except subprocess.CalledProcessError as e:
                 # Streamlit might exit with non-zero if killed, but we want to continue if user is done
                 log_message(f"\nStreamlit app exited with code {e.returncode}. Continuing...", level=logging.WARNING)
-                
+
             log_message("Step 2 completed.")
         else:
             log_message("Skipping Step 2.")
 
-    # Step 3: Train Segment Classifier
-    if start_index <= 2:
-        if confirm_step("Step 3: Train Segment Classifier"):
-            log_message("\n" + "="*50)
-            log_message(" Step 3: Train Segment Classifier")
-            log_message("="*50)
-            await segment_classifier.train_model()
-            log_message("Step 3 completed successfully.")
-        else:
-            log_message("Skipping Step 3.")
-
-    # Step 4: Run Transformer Guidance Training
-    if start_index <= 3:
-        if confirm_step("Step 4: Run Transformer Guidance Training"):
-            log_message("\n" + "="*50)
-            log_message(" Step 4: Run Transformer Guidance Training")
-            log_message("="*50)
-            
-            log_message(f"Using annotated data from: {annotation_cache_key}")
-            
-            result = await service.run_transformer_guidance_training(
-                annotation_cache_key=annotation_cache_key,
-                processed_sessions_cache_key=processed_sessions_cache_key,
-                max_segment_length=max_segment_length
-            )
-            if not result.get("success"):
-                log_message(f"Error in run_transformer_guidance_training: {result.get('error')}", level=logging.ERROR)
-                return
-            log_message("Step 4 completed successfully.")
-        else:
-            log_message("Skipping Step 4.")
-        
     log_message("\n" + "="*50)
-    log_message(" Full Pipeline Execution Completed")
+    log_message(" Pipeline Execution Completed")
+    log_message(" (Training now lives in the Streamlit '🏋️ Training' tab.)")
     log_message("="*50)
 
 if __name__ == "__main__":

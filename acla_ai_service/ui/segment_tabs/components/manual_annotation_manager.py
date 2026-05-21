@@ -326,5 +326,5 @@ def render_manual_annotation_manager(df, numeric_cols, session_id, selected_anno
         else:
             st.info("No annotations added yet.")
         
-    if st.button("Force Save All to Zarr"):
+    if st.button("Force Save All"):
         save_annotations(session_id, st.session_state.current_annotations, selected_annotation_key)

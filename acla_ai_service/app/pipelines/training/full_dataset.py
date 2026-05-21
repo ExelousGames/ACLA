@@ -62,7 +62,7 @@ from app.integrations.backend.client import backend_service
 from app.storage.cache import model_cache_service
 
 # Import hybrid data cache service
-from app.storage.zarr import get_shared_zarr_store
+from app.storage import get_shared_telemetry_store
 from app.infra.config.pipeline import PipelineConfig
 
 # Prompt dataset builder and local LLM integration.
@@ -124,10 +124,11 @@ class Full_dataset_TelemetryMLService:
         # Model cache service integration
         self.model_cache_service = model_cache_service
         
-        # Use shared Zarr-backed telemetry store for large datasets
-        self.telemetry_store = get_shared_zarr_store()
+        # Telemetry store backed by Lance; see app/storage/__init__.py.
+        self.telemetry_store = get_shared_telemetry_store()
         self.logger.info(
-            "Using Zarr-based telemetry store for large dataset processing (store: %s)",
+            "Using %s telemetry store for large dataset processing (store: %s)",
+            type(self.telemetry_store).__name__,
             self.telemetry_store.store_dir,
         )
         

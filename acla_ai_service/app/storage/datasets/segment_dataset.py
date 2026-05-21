@@ -8,13 +8,14 @@ Two pieces sit here:
     callers later.
 
   - ``StreamingSegmentDataset``: PyTorch ``IterableDataset`` that
-    streams ``AnnotatedSegment`` records from a Zarr cache, applies
-    scaling + label binarisation + padding, and yields
-    ``(X, y, mask)`` tensors. Used by training (full pass) and by
-    inference flows that need lazy iteration over a large dataset.
+    streams ``AnnotatedSegment`` records from the shared telemetry
+    store (Lance-backed), applies scaling + label binarisation +
+    padding, and yields ``(X, y, mask)`` tensors. Used by training
+    (full pass) and by inference flows that need lazy iteration over
+    a large dataset.
 
 Lives in ``app/storage/datasets/`` because it owns I/O (reading from
-the Zarr store) — not pure ML model code. Extracted from
+the telemetry store) — not pure ML model code. Extracted from
 ``app/ml/segment_classifier/service.py`` in refactor/hexagonal-v4
 (Page 5 of acla-ai-service-architecture.drawio).
 """

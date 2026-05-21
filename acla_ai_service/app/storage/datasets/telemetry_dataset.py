@@ -1,14 +1,17 @@
 """Streaming chunked telemetry dataset for transformer training.
 
-Loads one chunk at a time from the Zarr training cache and yields
-sequence batches sized for GPU training. The dataset owns its own
-feature scaler (``PerFeatureScaler``), built either at init from
-hints or fitted in a streaming first-pass via
+Loads one chunk at a time from the shared telemetry store (Lance under
+the hood) and yields sequence batches sized for GPU training. The
+dataset owns its own feature scaler (``PerFeatureScaler``), built
+either at init from hints or fitted in a streaming first-pass via
 ``_RunningFeatureStats``.
 
 Lives in app/storage/datasets/ alongside the segment-classifier
 dataset — both are I/O-bound chunk iterators owned by the storage
-band, not pure model code.
+band, not pure model code. The Lance-native fast path lives next door
+in :mod:`app.storage.datasets.lance_telemetry_dataset`; this class is
+kept as the dict-list reference implementation and the fallback when
+the Phase-2 typed migration hasn't been run for a given cache_key.
 
 Extracted from app/ml/transformer/model.py in refactor/hexagonal-v4
 (Page 5 of acla-ai-service-architecture.drawio).

@@ -3,9 +3,7 @@ import pandas as pd
 import logging
 from typing import List, Dict, Any
 from app.domain.segment import AnnotatedSegment
-from app.storage.zarr import get_shared_zarr_store
-import json
-import zarr
+from app.storage import get_shared_telemetry_store
 
 logger = logging.getLogger(__name__)
 
@@ -15,7 +13,7 @@ class SegmentUpdater:
     """
 
     def __init__(self):
-        self.store = get_shared_zarr_store()
+        self.store = get_shared_telemetry_store()
 
     def update_segments(self, source_session_key: str, segments: List[AnnotatedSegment]) -> List[AnnotatedSegment]:
         """
@@ -78,35 +76,23 @@ class SegmentUpdater:
         return updated_segments
 
     def _load_session_data(self, cache_key: str, session_id: str) -> pd.DataFrame:
-        """Helper to load session data, similar to the UI app logic."""
-        group_path = self.store._group_path(cache_key)
-        
-        if not group_path.exists():
-            return pd.DataFrame()
-            
+        """Helper to load session data through the public store API."""
         try:
-            group = zarr.open_group(str(group_path), mode="r")
-            if session_id not in group:
-                return pd.DataFrame()
-                
-            raw_bytes = bytes(group[session_id][:])
-            chunk = json.loads(raw_bytes.decode("utf-8"))
-            
-            if isinstance(chunk, list):
-                df = pd.DataFrame(chunk)
-            elif isinstance(chunk, dict):
-                if "data" in chunk and isinstance(chunk["data"], list):
-                    df = pd.DataFrame(chunk["data"])
-                else:
-                    try:
-                        df = pd.DataFrame(chunk)
-                    except ValueError:
-                        df = pd.DataFrame([chunk])
-            else:
-                return pd.DataFrame()
-                
-            return df
-            
+            chunk = self.store.get_chunk(cache_key, session_id)
         except Exception as e:
             logger.error(f"Error loading session {session_id}: {e}")
             return pd.DataFrame()
+
+        if chunk is None:
+            return pd.DataFrame()
+
+        if isinstance(chunk, list):
+            return pd.DataFrame(chunk)
+        if isinstance(chunk, dict):
+            if "data" in chunk and isinstance(chunk["data"], list):
+                return pd.DataFrame(chunk["data"])
+            try:
+                return pd.DataFrame(chunk)
+            except ValueError:
+                return pd.DataFrame([chunk])
+        return pd.DataFrame()

@@ -48,6 +48,8 @@ from segment_tabs.shared import (
 from segment_tabs.manual import render_manual_annotation
 from segment_tabs.detailed import render_detailed_labeling
 from segment_tabs.batch import render_batch_view
+from segment_tabs.llm_pipeline import render_llm_pipeline
+from segment_tabs.training import render_training
 
 def main():
     
@@ -188,38 +190,44 @@ def main():
         return
 
     st.info(f"Using Annotation Dataset: **{selected_annotation_key}**")
-    
+
+    selected_view = st.radio(
+        "Select View",
+        ["Telemetry Segment Annotation", "Detailed Labeling",
+         "Batch Auto-Annotation (Gemini/Service)", "LLM Pipeline (Claude)",
+         "🏋️ Training"],
+        horizontal=True,
+        label_visibility="collapsed",
+    )
+
+    # LLM Pipeline and Training tabs only need the annotation key — they
+    # bypass the session-data gate the other tabs depend on.
+    if selected_view == "LLM Pipeline (Claude)":
+        render_llm_pipeline(selected_annotation_key)
+        return
+    if selected_view == "🏋️ Training":
+        render_training(selected_annotation_key)
+        return
+
     selected_session_key = pipeline_config.enriched_sessions_cache_key
 
     if selected_session_key not in store.list_cache_keys():
         st.error(f"Data key '{selected_session_key}' not found. Please run the data preparation pipeline first.")
         return
-    
+
     st.info(f"Annotating data from: {selected_session_key}")
-    
-    if selected_session_key:
-        # Check sessions availability
-        available_sessions = get_available_sessions(selected_session_key)
-        
-        if not available_sessions:
-             st.warning("Selected session key has no data.")
-             return
 
-        # --- Top Level Tabs (Implemented as Radio to avoid double rendering) ---
-        # Using radio button as tabs to prevent loading both heavy views simultaneously
-        selected_view = st.radio(
-            "Select View", 
-            ["Telemetry Segment Annotation", "Detailed Labeling", "Batch Auto-Annotation (Gemini/Service)"], 
-            horizontal=True,
-            label_visibility="collapsed"
-        )
+    available_sessions = get_available_sessions(selected_session_key)
+    if not available_sessions:
+        st.warning("Selected session key has no data.")
+        return
 
-        if selected_view == "Telemetry Segment Annotation":
-            render_manual_annotation(selected_annotation_key, selected_session_key, available_sessions)
-        elif selected_view == "Detailed Labeling":
-            render_detailed_labeling(selected_annotation_key, selected_session_key, available_sessions)
-        elif selected_view == "Batch Auto-Annotation (Gemini/Service)":
-            render_batch_view(selected_annotation_key, selected_session_key, available_sessions)
+    if selected_view == "Telemetry Segment Annotation":
+        render_manual_annotation(selected_annotation_key, selected_session_key, available_sessions)
+    elif selected_view == "Detailed Labeling":
+        render_detailed_labeling(selected_annotation_key, selected_session_key, available_sessions)
+    elif selected_view == "Batch Auto-Annotation (Gemini/Service)":
+        render_batch_view(selected_annotation_key, selected_session_key, available_sessions)
 
 if __name__ == "__main__":
     main()

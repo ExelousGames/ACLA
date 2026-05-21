@@ -96,24 +96,30 @@ def render_manual_annotation(selected_annotation_key, selected_session_key, avai
         st.session_state.manual_global_viz_start_input = val[0]
         st.session_state.manual_global_viz_end_input = val[1]
 
+    if "manual_global_viz_range" not in st.session_state:
+        st.session_state.manual_global_viz_range = (0, min(len(df), 5000))
+    if "manual_global_viz_start_input" not in st.session_state:
+        st.session_state.manual_global_viz_start_input = st.session_state.manual_global_viz_range[0]
+    if "manual_global_viz_end_input" not in st.session_state:
+        st.session_state.manual_global_viz_end_input = st.session_state.manual_global_viz_range[1]
+
     col_global_slider, col_global_inputs = st.columns([3, 1])
     with col_global_slider:
         viz_start_idx, viz_end_idx = st.slider(
             "Select Range",
             min_value=0,
             max_value=len(df),
-            value=(0, min(len(df), 5000)),
             key="manual_global_viz_range",
             label_visibility="collapsed",
             on_change=update_global_inputs_from_slider
         )
-    
+
     with col_global_inputs:
          c_input1, c_input2 = st.columns(2)
          with c_input1:
-             st.number_input("Start", min_value=0, max_value=len(df), value=viz_start_idx, key="manual_global_viz_start_input", on_change=update_global_slider_range)
+             st.number_input("Start", min_value=0, max_value=len(df), key="manual_global_viz_start_input", on_change=update_global_slider_range)
          with c_input2:
-             st.number_input("End", min_value=0, max_value=len(df), value=viz_end_idx, key="manual_global_viz_end_input", on_change=update_global_slider_range)
+             st.number_input("End", min_value=0, max_value=len(df), key="manual_global_viz_end_input", on_change=update_global_slider_range)
 
     # Feature selection for visualization
     render_feature_visualization(df, numeric_cols, viz_start_idx, viz_end_idx, session_id)

@@ -11,7 +11,7 @@ The streaming variant surfaces the agent's progress / VLM-token /
 step-event callbacks live so callers can render incremental output.
 
 Telemetry is referenced by ``(cache_key, session_id)`` — the AI service
-loads from its own Zarr store so requests stay small.
+loads from its own Lance-backed telemetry store so requests stay small.
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ from app.pipelines.annotation import (
     LapAnnotationResult,
     run_annotation,
 )
-from app.storage.zarr import get_shared_zarr_store
+from app.storage import get_shared_telemetry_store
 
 LOGGER = logging.getLogger(__name__)
 
@@ -72,12 +72,12 @@ class _AnnotationRunRequest(BaseModel):
     """Body for `POST /annotation/run`.
 
     The dataframe is referenced by `(cache_key, session_id)` so the AI
-    service loads it from its own Zarr store — clients don't have to
+    service loads it from its own telemetry store — clients don't have to
     serialise telemetry payloads.
     """
 
     flow: Flow
-    cache_key: str = Field(..., description="Zarr cache key (group path) for the dataset")
+    cache_key: str = Field(..., description="Telemetry store cache key for the dataset")
     session_id: str = Field(..., description="Chunk / session ID within the cache key")
     session_label: str = Field("", description="Forwarded to AgentResponse.session_id for audit")
     config: Optional[_ConfigBody] = None
@@ -109,8 +109,8 @@ def _result_to_dict(result: Any) -> Dict[str, Any]:
 
 
 def _load_dataframe(cache_key: str, session_id: str):
-    """Pull the DataFrame for ``(cache_key, session_id)`` from the Zarr store."""
-    store = get_shared_zarr_store()
+    """Pull the DataFrame for ``(cache_key, session_id)`` from the telemetry store."""
+    store = get_shared_telemetry_store()
     chunk = store.get_chunk(cache_key, session_id)
     if not chunk:
         raise HTTPException(

@@ -837,6 +837,8 @@ async def prepare_and_train_coach_transformer_model(
     data_cache: Any,
     segments_cache_key: str,
     segment_length_hint: Optional[int] = 50,
+    *,
+    use_lance_dataloader: bool = False,
 ) -> Dict[str, Any]:
     """Train the ExpertActionTransformer using cached telemetry segments.
 
@@ -844,6 +846,11 @@ async def prepare_and_train_coach_transformer_model(
         data_cache: Cache service that provides telemetry segments via ``get_cached_data_chunks``.
         segments_cache_key: Cache key that identifies the prepared telemetry segments.
         segment_length_hint: Optional hint for typical segment length, used to size positional encoding.
+        use_lance_dataloader: When True, drive training from the Lance-native dataset
+            (:class:`LanceTelemetryActionDataset`) which reads columnar telemetry
+            straight from the Phase-2 typed Lance store. Default ``False`` keeps the
+            legacy dict-list path; flip after running the parity script in
+            ``scripts/parity_test_transformer_dataloader.py``.
 
     Returns:
         Dictionary containing training history, evaluation metrics, and serialized model payload.
@@ -852,13 +859,35 @@ async def prepare_and_train_coach_transformer_model(
     try:
         print(f"[INFO] Creating streaming dataset from segments cache key: {segments_cache_key}")
 
-        dataset = TelemetryActionDataset(
-            data_cache=data_cache,
-            segments_cache_key=segments_cache_key,
-            segment_length_hint=segment_length_hint,
-            batch_size=32,
-            min_sequence_length=3,
-        )
+        if use_lance_dataloader:
+            # Lance-native path: requires data_cache to be a LanceTelemetryStore
+            # whose cache_key is registered with SegmentsStrategy (i.e. the
+            # Phase-2 migration has been run for this key).
+            from app.storage.datasets.lance_telemetry_dataset import (
+                LanceTelemetryActionDataset,
+            )
+            from app.storage.lance import LanceTelemetryStore
+
+            if not isinstance(data_cache, LanceTelemetryStore):
+                raise TypeError(
+                    "use_lance_dataloader=True requires data_cache to be a "
+                    f"LanceTelemetryStore; got {type(data_cache).__name__}."
+                )
+            dataset = LanceTelemetryActionDataset(
+                store=data_cache,
+                segments_cache_key=segments_cache_key,
+                segment_length_hint=segment_length_hint,
+                batch_size=32,
+                min_sequence_length=3,
+            )
+        else:
+            dataset = TelemetryActionDataset(
+                data_cache=data_cache,
+                segments_cache_key=segments_cache_key,
+                segment_length_hint=segment_length_hint,
+                batch_size=32,
+                min_sequence_length=3,
+            )
 
         use_cuda = torch.cuda.is_available()
         if use_cuda:
