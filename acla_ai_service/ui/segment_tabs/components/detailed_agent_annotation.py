@@ -39,5 +39,6 @@ def render_agent_annotation(
     parent_id, _, _ = collect_parent_info(form_labels)
     render_staged_review(
         parent_id, session_id, selected_annotation_key, form_start, form_end,
+        df=df,
     )
     render_followup_chat()

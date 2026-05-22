@@ -5,7 +5,7 @@ import plotly.express as px
 from .manual_classifier_check import render_classifier_probability_check
 from .manual_feature_calculator import render_feature_calculator
 from ..shared import (
-    save_annotations, get_display_labels,
+    save_annotations, get_display_labels, build_segment,
     LABEL_MAPPING, LABEL_NAME_TO_ID, AnnotatedSegment,
     LABEL_CATEGORIES
 )
@@ -159,29 +159,23 @@ def render_manual_annotation_manager(df, numeric_cols, session_id, selected_anno
             return
         
         label_ids = [LABEL_NAME_TO_ID[l] for l in s_labels if l in LABEL_NAME_TO_ID]
-        
-        # Extract telemetry data
-        segment_df = df.iloc[int(s_start):int(s_end)]
-        telemetry_data = segment_df.to_dict(orient="records")
 
         if is_edit:
-            # Update existing
+            # Update existing — keep the same id so downstream refs stay stable.
             ann = st.session_state.current_annotations[selected_option]
-            ann.start_index = int(s_start)
-            ann.end_index = int(s_end)
-            ann.segment_length = int(s_end - s_start)
-            ann.labels = label_ids
-            ann.telemetry_data = telemetry_data
+            updated = build_segment(
+                df,
+                start=int(s_start), end=int(s_end), label_ids=label_ids,
+                notes=ann.notes, parent_id=ann.parent_id,
+                chunk_index=ann.chunk_index, id=ann.id,
+            )
+            st.session_state.current_annotations[selected_option] = updated
             st.session_state.temp_success = "Annotation updated!"
         else:
-            # Create new
-            annotation = AnnotatedSegment(
-                labels=label_ids,
-                segment_length=int(s_end - s_start),
-                start_index=int(s_start),
-                end_index=int(s_end),
+            annotation = build_segment(
+                df,
+                start=int(s_start), end=int(s_end), label_ids=label_ids,
                 chunk_index=session_id,
-                telemetry_data=telemetry_data
             )
             st.session_state.current_annotations.append(annotation)
             st.session_state.temp_success = "Annotation added!"

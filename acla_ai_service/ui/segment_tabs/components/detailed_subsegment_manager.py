@@ -1,7 +1,9 @@
 import streamlit as st
-import uuid
 import copy
-from ..shared import save_annotations, AnnotatedSegment, get_display_labels, LABEL_MAPPING, MAIN_LABEL_GUIDELINES
+from ..shared import (
+    save_annotations, build_segment,
+    get_display_labels, LABEL_MAPPING, MAIN_LABEL_GUIDELINES,
+)
 
 def render_subsegment_manager(df, session_id, selected_annotation_key):
     """
@@ -79,26 +81,22 @@ def render_subsegment_manager(df, session_id, selected_annotation_key):
                 return
                 
             if is_new:
-                new_sub_id = str(uuid.uuid4())
-                new_sub_seg = AnnotatedSegment(
-                    id=new_sub_id,
-                    labels=s_labels,
-                    segment_length=s_end - s_start,
-                    start_index=s_start,
-                    end_index=s_end,
-                    notes=s_notes,
-                    parent_id=parent_id
+                new_sub_seg = build_segment(
+                    df,
+                    start=int(s_start), end=int(s_end), label_ids=s_labels,
+                    notes=s_notes, parent_id=parent_id,
                 )
                 st.session_state.current_annotations.append(new_sub_seg)
                 st.toast("Sub-segment added successfully!", icon="✅")
             else:
                 for idx, ann in enumerate(st.session_state.current_annotations):
                     if ann.id == selected_sub_seg.id:
-                        st.session_state.current_annotations[idx].start_index = s_start
-                        st.session_state.current_annotations[idx].end_index = s_end
-                        st.session_state.current_annotations[idx].labels = s_labels
-                        st.session_state.current_annotations[idx].notes = s_notes
-                        st.session_state.current_annotations[idx].segment_length = s_end - s_start
+                        st.session_state.current_annotations[idx] = build_segment(
+                            df,
+                            start=int(s_start), end=int(s_end), label_ids=s_labels,
+                            notes=s_notes, parent_id=ann.parent_id,
+                            chunk_index=ann.chunk_index, id=ann.id,
+                        )
                         break
                 st.toast("Sub-segment updated successfully!", icon="✅")
             

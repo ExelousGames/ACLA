@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import json
 import time
+import uuid
 from dataclasses import dataclass, asdict, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
@@ -315,3 +316,189 @@ def export_annotation_jsonl(
 def build_chat_dataset(annotation_jsonl: Path, chat_jsonl: Path) -> int:
     """Fan the exported annotation JSONL into the trainer's chat JSONL."""
     return build_dataset(annotation_jsonl, chat_jsonl)
+
+
+# ---------------------------------------------------------------------------
+# Templated multi-turn entries (Foundry-style string-concatenation UI)
+# ---------------------------------------------------------------------------
+#
+# A ``TrainingEntry`` is one full chat conversation authored by the human
+# for a single training unit. Each ``Turn`` is one message (system / user /
+# assistant) whose text is a template with ``{var}`` placeholders that get
+# resolved against the unit's labels at export time. Labels are embedded
+# directly into the message text — there is no implicit system message.
+
+VALID_ROLES = ("system", "user", "assistant")
+
+
+@dataclass
+class Turn:
+    role: str
+    template: str
+
+    def to_dict(self) -> dict:
+        return {"role": self.role, "template": self.template}
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "Turn":
+        role = str(data.get("role", "user"))
+        if role not in VALID_ROLES:
+            role = "user"
+        return cls(role=role, template=str(data.get("template", "")))
+
+
+@dataclass
+class TrainingEntry:
+    entry_id: str
+    turns: List[Turn] = field(default_factory=list)
+
+    def to_dict(self) -> dict:
+        return {"entry_id": self.entry_id, "turns": [t.to_dict() for t in self.turns]}
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "TrainingEntry":
+        return cls(
+            entry_id=str(data.get("entry_id") or uuid.uuid4().hex[:8]),
+            turns=[Turn.from_dict(t) for t in data.get("turns", [])],
+        )
+
+    @staticmethod
+    def new() -> "TrainingEntry":
+        return TrainingEntry(entry_id=uuid.uuid4().hex[:8], turns=[])
+
+
+@dataclass
+class UnitEntries:
+    entries: List[TrainingEntry] = field(default_factory=list)
+    approved: bool = False
+    updated_at: float = field(default_factory=time.time)
+
+    def to_dict(self) -> dict:
+        return {
+            "entries": [e.to_dict() for e in self.entries],
+            "approved": self.approved,
+            "updated_at": self.updated_at,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "UnitEntries":
+        return cls(
+            entries=[TrainingEntry.from_dict(e) for e in data.get("entries", [])],
+            approved=bool(data.get("approved", False)),
+            updated_at=float(data.get("updated_at", time.time())),
+        )
+
+    def is_empty(self) -> bool:
+        return not any(t.template.strip() for e in self.entries for t in e.turns)
+
+
+def entries_cache_key(annotation_key: str) -> str:
+    return f"{annotation_key}_llm_entries"
+
+
+def load_entries(annotation_key: str, unit_id: str) -> Optional[UnitEntries]:
+    from app.storage import get_shared_telemetry_store
+
+    store = get_shared_telemetry_store()
+    key = entries_cache_key(annotation_key)
+    if not store.has_cached_data(key):
+        return None
+    payload = store.get_chunk(key, unit_id)
+    if not payload:
+        return None
+    return UnitEntries.from_dict(payload)
+
+
+def save_entries(annotation_key: str, unit_id: str, entries: UnitEntries) -> None:
+    from app.storage import get_shared_telemetry_store
+
+    store = get_shared_telemetry_store()
+    entries.updated_at = time.time()
+    store.save_chunk(entries_cache_key(annotation_key), unit_id, entries.to_dict())
+
+
+def delete_entries(annotation_key: str, unit_id: str) -> bool:
+    from app.storage import get_shared_telemetry_store
+
+    store = get_shared_telemetry_store()
+    return store.delete_chunk(entries_cache_key(annotation_key), unit_id)
+
+
+def all_entries(annotation_key: str) -> Dict[str, UnitEntries]:
+    from app.storage import get_shared_telemetry_store
+
+    store = get_shared_telemetry_store()
+    key = entries_cache_key(annotation_key)
+    if not store.has_cached_data(key):
+        return {}
+    out: Dict[str, UnitEntries] = {}
+    for payload, unit_id in store.get_cached_data_chunks(key, include_ids=True):
+        if isinstance(payload, dict):
+            out[unit_id] = UnitEntries.from_dict(payload)
+    return out
+
+
+def template_variables(unit: TrainingUnit) -> Dict[str, str]:
+    """Resolved variables available inside an entry's templates.
+
+    Keys are the placeholder names (without braces); values are the
+    substituted text. Used both by the resolver and by the UI palette.
+    """
+    out: Dict[str, str] = {
+        "parent": unit.parent_names(),
+        "children": unit.children_names() or "(none)",
+        "labels": unit.labels_text(),
+        "session": unit.session_id,
+        "unit_id": unit.unit_id,
+    }
+    for i, lid in enumerate(unit.parent_label_ids, 1):
+        out[f"parent_{i}"] = LABEL_MAPPING.get(lid, lid)
+    for i, cids in enumerate(unit.children_label_ids, 1):
+        out[f"child_{i}"] = ", ".join(LABEL_MAPPING.get(l, l) for l in cids) or "(none)"
+    return out
+
+
+def resolve_template(template: str, unit: TrainingUnit) -> str:
+    vars_ = template_variables(unit)
+    out = template
+    for k, v in vars_.items():
+        out = out.replace("{" + k + "}", v)
+    return out
+
+
+def export_entries_chat_jsonl(
+    annotation_key: str,
+    output_path: Path,
+    only_approved: bool = True,
+) -> int:
+    """Write one chat row per training entry, resolving all templates.
+
+    Each entry becomes a single ``{"messages": [...]}`` line. Empty
+    templates and entries with no non-empty turns are skipped. There is
+    no implicit system message — turns are written verbatim in order.
+    Returns the number of chat rows written.
+    """
+    units = {u.unit_id: u for u in collect_training_units(annotation_key)}
+    stored = all_entries(annotation_key)
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    written = 0
+    with output_path.open("w", encoding="utf-8") as fh:
+        for unit_id, ue in stored.items():
+            if only_approved and not ue.approved:
+                continue
+            unit = units.get(unit_id)
+            if unit is None:
+                continue
+            for entry in ue.entries:
+                messages = []
+                for turn in entry.turns:
+                    content = resolve_template(turn.template, unit).strip()
+                    if not content:
+                        continue
+                    messages.append({"role": turn.role, "content": content})
+                if not messages:
+                    continue
+                fh.write(json.dumps({"messages": messages}, ensure_ascii=False) + "\n")
+                written += 1
+    return written

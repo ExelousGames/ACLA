@@ -16,7 +16,6 @@ staged-review panel is last-run-wins.
 import io
 import time
 import traceback
-import uuid
 
 import streamlit as st
 from PIL import Image
@@ -441,6 +440,7 @@ def render_staged_review(
     selected_annotation_key,
     form_start,
     form_end,
+    df=None,
 ) -> None:
     """Editable per-row review panel for the most recent pipeline result.
 
@@ -529,6 +529,7 @@ def render_staged_review(
                 parent_id=parent_id,
                 session_id=session_id,
                 selected_annotation_key=selected_annotation_key,
+                df=df,
             )
     with col_btn2:
         if st.button(
@@ -673,8 +674,11 @@ def _persist_staged_subsegments(
     parent_id: str | None,
     session_id: str,
     selected_annotation_key: str,
+    df=None,
 ) -> None:
     """Validate every staged segment, then persist them all atomically."""
+    from ..shared import build_segment
+
     new_children: list[AnnotatedSegment] = []
     errors: list[str] = []
 
@@ -700,14 +704,10 @@ def _persist_staged_subsegments(
             errors.append(f"Sub-segment {i}: no valid labels resolved.")
             continue
 
-        new_children.append(AnnotatedSegment(
-            id=str(uuid.uuid4()),
-            labels=label_ids,
-            segment_length=end - start,
-            start_index=start,
-            end_index=end,
-            notes=seg.get("notes", ""),
-            parent_id=parent_id,
+        new_children.append(build_segment(
+            df,
+            start=int(start), end=int(end), label_ids=label_ids,
+            notes=seg.get("notes", ""), parent_id=parent_id,
         ))
 
     if errors:

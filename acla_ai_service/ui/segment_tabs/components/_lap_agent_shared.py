@@ -20,15 +20,13 @@ from __future__ import annotations
 import io
 import time
 import traceback
-import uuid
 from typing import Any, Callable, Dict, List, Optional
 
 import streamlit as st
 from PIL import Image
 
-from app.domain.segment import AnnotatedSegment
 from ..shared import (
-    LABEL_MAPPING, LABEL_NAME_TO_ID, save_annotations,
+    LABEL_MAPPING, LABEL_NAME_TO_ID, build_segment, save_annotations,
 )
 
 
@@ -389,8 +387,14 @@ def render_lap_panel(df, circuit_id: Optional[str]) -> Optional[Dict[str, Any]]:
 # Staged review (post-agent)
 # ---------------------------------------------------------------------------
 
-def render_lap_staged_review(session_id: str, selected_annotation_key: str) -> None:
-    """Editable staged-review panel for the last agent run."""
+def render_lap_staged_review(
+    session_id: str, selected_annotation_key: str, df=None,
+) -> None:
+    """Editable staged-review panel for the last agent run.
+
+    ``df`` is the source telemetry the agent ran against. When provided,
+    the saved segment carries its own slice as ``telemetry_data``.
+    """
     staged = st.session_state.get(KEY_LAP_STAGED)
     if not staged:
         return
@@ -463,6 +467,7 @@ def render_lap_staged_review(session_id: str, selected_annotation_key: str) -> N
                 label_names=seg_labels, notes=seg_notes,
                 session_id=session_id,
                 selected_annotation_key=selected_annotation_key,
+                df=df,
             )
     with col_btn2:
         if st.button("⏭ Skip & advance (don't save)", key="lap_staged_skip"):
@@ -476,6 +481,7 @@ def render_lap_staged_review(session_id: str, selected_annotation_key: str) -> N
 def _persist_lap_annotation(
     *, start: int, end: int, label_names: List[str], notes: str,
     session_id: str, selected_annotation_key: str,
+    df=None,
 ) -> None:
     if start >= end:
         st.error("Start must be less than end.")
@@ -485,13 +491,8 @@ def _persist_lap_annotation(
         st.error("No valid labels resolved.")
         return
 
-    new_ann = AnnotatedSegment(
-        id=str(uuid.uuid4()),
-        labels=label_ids,
-        segment_length=end - start,
-        start_index=start,
-        end_index=end,
-        notes=notes,
+    new_ann = build_segment(
+        df, start=start, end=end, label_ids=label_ids, notes=notes,
     )
     annotations = list(st.session_state.get("current_annotations", []))
     annotations.append(new_ann)

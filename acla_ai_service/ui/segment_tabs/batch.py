@@ -1,13 +1,12 @@
 import streamlit as st
 import time
-import uuid
 import traceback
 import pandas as pd
 import copy
 
 from .shared import (
     load_session_data, load_annotations, save_annotations,
-    get_available_sessions,
+    get_available_sessions, build_segment,
     LABEL_MAPPING, LABEL_NAME_TO_ID,
     LABEL_CATEGORIES, MAIN_LABEL_GUIDELINES
 )
@@ -331,7 +330,7 @@ def _render_claude_config():
     return build_config
 
 
-def _persist_children_for_parent(parent, result, session_id, selected_annotation_key):
+def _persist_children_for_parent(parent, result, session_id, selected_annotation_key, df):
     """Auto-save AI-discovered children under ``parent``.
 
     Replaces any prior children of this parent atomically: removes every
@@ -344,7 +343,6 @@ def _persist_children_for_parent(parent, result, session_id, selected_annotation
     usable proposals we keep the old children intact rather than wiping
     them out for a no-op.
     """
-    from app.domain.segment import AnnotatedSegment
     from .components._agent_annotation_shared import group_proposals_by_range
 
     grouped = group_proposals_by_range(result)
@@ -357,12 +355,11 @@ def _persist_children_for_parent(parent, result, session_id, selected_annotation
         if not label_ids:
             continue
         notes = "; ".join(a.get("reasoning", "") for a in anns if a.get("reasoning"))[:500]
-        new_children.append(AnnotatedSegment(
-            id=str(uuid.uuid4()),
-            labels=list(dict.fromkeys(label_ids)),
-            segment_length=int(ge) - int(gs),
-            start_index=int(gs),
-            end_index=int(ge),
+        new_children.append(build_segment(
+            df,
+            start=int(gs),
+            end=int(ge),
+            label_ids=list(dict.fromkeys(label_ids)),
             notes=notes,
             parent_id=parent.id,
         ))
@@ -567,7 +564,7 @@ def render_batch_auto_annotation(df, selected_annotation_key):
 
         try:
             n_children, replaced = _persist_children_for_parent(
-                parent, result, session_id, selected_annotation_key,
+                parent, result, session_id, selected_annotation_key, df,
             )
         except Exception as e:
             error_parents += 1
@@ -617,7 +614,6 @@ def render_batch_lap_agent_claude(df, session_id, selected_annotation_key):
     from .components._lap_agent_shared import (
         track_name_to_circuit_id, run_split, rebuild_remaining_segments,
     )
-    from app.domain.segment import AnnotatedSegment
     st.header("Batch Lap-to-Segment Excerpter (☁️ Claude)")
     st.write(
         "Pick a lap range; the deterministic splitter partitions it into "
@@ -653,6 +649,9 @@ def render_batch_lap_agent_claude(df, session_id, selected_annotation_key):
     if lap_end - lap_start < 3:
         st.warning(f"Lap range too short — pick at least 3 ilocs (currently {lap_end - lap_start}).")
         return
+
+    coverage_slot = st.empty()
+    _render_lap_coverage_bar(coverage_slot, int(lap_start), int(lap_end))
 
     st.markdown("---")
     max_iterations = st.number_input(
@@ -802,12 +801,11 @@ def render_batch_lap_agent_claude(df, session_id, selected_annotation_key):
             progress_bar.progress(i / len(segments))
             continue
 
-        new_ann = AnnotatedSegment(
-            id=str(uuid.uuid4()),
-            labels=label_ids,
-            segment_length=int(result.end_index) - int(result.start_index),
-            start_index=int(result.start_index),
-            end_index=int(result.end_index),
+        new_ann = build_segment(
+            df,
+            start=int(result.start_index),
+            end=int(result.end_index),
+            label_ids=label_ids,
             notes=(result.reasoning or "")[:1500],
         )
         annotations = list(st.session_state.get("current_annotations", []))
@@ -843,6 +841,8 @@ def render_batch_lap_agent_claude(df, session_id, selected_annotation_key):
     )
     log(f"Finished. {saved_count} saved, {skipped_count} skipped, {error_count} error(s).")
 
+    _render_lap_coverage_bar(coverage_slot, int(lap_start), int(lap_end))
+
 
 def _section_overlaps_existing(sec_start: int, sec_end: int) -> bool:
     """True if any current annotation overlaps the section range."""
@@ -852,6 +852,87 @@ def _section_overlaps_existing(sec_start: int, sec_end: int) -> bool:
         if e > sec_start and s < sec_end:
             return True
     return False
+
+
+def _compute_lap_coverage(lap_start: int, lap_end: int):
+    """Merge saved annotations overlapping the lap range into (covered, gaps)."""
+    raw = []
+    for ann in st.session_state.get("current_annotations", []) or []:
+        s = int(getattr(ann, "start_index", 0) or 0)
+        e = int(getattr(ann, "end_index", 0) or 0)
+        if e <= lap_start or s >= lap_end:
+            continue
+        raw.append((max(s, lap_start), min(e, lap_end)))
+    raw.sort()
+    covered: list[tuple[int, int]] = []
+    for s, e in raw:
+        if covered and s <= covered[-1][1]:
+            covered[-1] = (covered[-1][0], max(covered[-1][1], e))
+        else:
+            covered.append((s, e))
+    gaps: list[tuple[int, int]] = []
+    pos = lap_start
+    for s, e in covered:
+        if s > pos:
+            gaps.append((pos, s))
+        pos = e
+    if pos < lap_end:
+        gaps.append((pos, lap_end))
+    return covered, gaps
+
+
+def _render_lap_coverage_bar(slot, lap_start: int, lap_end: int) -> None:
+    """Horizontal coverage strip over the lap range — red = uncovered, green = annotated."""
+    import plotly.graph_objects as go
+
+    if lap_end <= lap_start:
+        slot.empty()
+        return
+
+    covered, gaps = _compute_lap_coverage(lap_start, lap_end)
+    total = lap_end - lap_start
+    covered_len = sum(e - s for s, e in covered)
+    gap_len = total - covered_len
+    coverage_pct = (covered_len / total * 100) if total else 0.0
+    longest_gap = max((e - s for s, e in gaps), default=0)
+
+    fig = go.Figure()
+    fig.add_shape(
+        type="rect", x0=lap_start, x1=lap_end, y0=0, y1=1,
+        fillcolor="rgba(220, 53, 69, 0.75)", line=dict(width=0), layer="below",
+    )
+    for s, e in covered:
+        fig.add_shape(
+            type="rect", x0=s, x1=e, y0=0, y1=1,
+            fillcolor="rgba(40, 167, 69, 0.9)", line=dict(width=0), layer="below",
+        )
+    # Invisible hover trace per gap so the user can read exact gap ranges/lengths.
+    if gaps:
+        fig.add_trace(go.Scatter(
+            x=[(s + e) / 2 for s, e in gaps],
+            y=[0.5] * len(gaps),
+            mode="markers",
+            marker=dict(size=12, color="rgba(0,0,0,0)"),
+            hovertext=[f"gap [{s}, {e}] · {e - s} iloc(s)" for s, e in gaps],
+            hoverinfo="text",
+            showlegend=False,
+        ))
+    fig.update_layout(
+        height=110,
+        margin=dict(l=10, r=10, t=10, b=30),
+        xaxis=dict(range=[lap_start, lap_end], title="iloc index", fixedrange=True),
+        yaxis=dict(visible=False, range=[0, 1], fixedrange=True),
+        showlegend=False,
+    )
+
+    with slot.container():
+        st.caption(
+            f"**Annotation coverage:** {coverage_pct:.1f}% covered · "
+            f"{len(gaps)} gap(s) · {gap_len} iloc(s) uncovered · "
+            f"longest gap {longest_gap} iloc(s)  "
+            "(🟩 annotated · 🟥 not yet reached)"
+        )
+        st.plotly_chart(fig, use_container_width=True)
 
 
 def _collect_existing_lap_annotations(lap_start: int, lap_end: int):
@@ -976,12 +1057,18 @@ def render_classifier_auto_annotation(df, selected_annotation_key):
                     
                     if filtered_labels:
                         from app.domain.segment import AnnotatedSegment
+                        # Classifier emits inclusive-end indices; the slice is
+                        # df.iloc[start_idx : end_idx + 1] to match. Stored
+                        # end_index stays inclusive to align with the rule-based
+                        # reader, which already adds +1 when slicing by it.
+                        seg_rows = df.iloc[start_idx:end_idx + 1].to_dict(orient="records")
                         new_ann = AnnotatedSegment(
                             labels=filtered_labels,
                             segment_length=end_idx - start_idx + 1,
                             start_index=start_idx,
                             end_index=end_idx,
-                            notes="Auto-identified by Segment Classifier"
+                            notes="Auto-identified by Segment Classifier",
+                            telemetry_data=seg_rows,
                         )
                         new_annotations.append(new_ann)
                         count_added += 1
@@ -1026,77 +1113,94 @@ def render_classifier_auto_annotation(df, selected_annotation_key):
                 st.error(f"Error classifying segments: {str(e)}")
 
 
-def render_batch_view(selected_annotation_key, selected_session_key, available_sessions):
+def _load_batch_session(selected_annotation_key, selected_session_key, available_sessions):
+    """Shared session selector + dataframe load for every batch page.
+
+    Returns ``(df, session_id)`` or ``(None, None)`` if the page should
+    short-circuit (no data / nothing selected).
     """
-    Renders the Batch Annotation Tab View (including session selection).
-    """
-    
-    # Shared helper for formatting session options
     annotated_sessions = set(get_available_sessions(selected_annotation_key))
 
     def format_session_option(s):
         status = "✅" if s in annotated_sessions else "⭕"
         return f"{status} {s}"
 
-    # Calculate index to maintain selection across reruns
+    current_session = st.session_state.get("detailed_session_selector")
     index = 0
-    # Re-use the same session selector key as detailed view if we want to sync them?
-    # Or separate? Let's use separate or shared? 
-    # The detailed view uses "detailed_session_selector".
-    # User might want to switch tabs and keep session.
-    # Let's try to sync by initializing from session_state if available.
-    
-    current_session = st.session_state.get("detailed_session_selector") 
-    # If not set, try shared or default
-    
     if current_session and current_session in available_sessions:
         index = available_sessions.index(current_session)
-        
-    col_sel1, col_sel2 = st.columns([1, 3])
+
+    col_sel1, _ = st.columns([1, 3])
     with col_sel1:
         session_id = st.selectbox(
-            "Select Session for Batch Analysis", 
+            "Select Session for Batch Analysis",
             options=available_sessions,
             format_func=format_session_option,
             index=index,
-            key="batch_session_selector" 
-            # Note: Using different key than detailed view, 
-            # but we could sync them manually if needed.
-            # Ideally tabs share session selection context but Streamlit tabs re-run.
+            key="batch_session_selector",
         )
-    
-    # Sync logic: if batch session changes, maybe we want to update other views?
-    # For now, let's just load data.
 
     with st.spinner(f"Loading session {session_id}..."):
         df = load_session_data(selected_session_key, session_id)
-        
-        # Load existing annotations for this session if we switched sessions
-        # We reuse the same state variables as detailed view for annotations: 
-        # "current_annotations", "last_session_id"
-        if ("last_session_id" not in st.session_state or 
-            st.session_state.last_session_id != session_id or 
+        if ("last_session_id" not in st.session_state or
+            st.session_state.last_session_id != session_id or
             "last_annotation_key" not in st.session_state or
             st.session_state.last_annotation_key != selected_annotation_key):
-            
-                st.session_state.current_annotations = load_annotations(session_id, selected_annotation_key)
-                st.session_state.last_session_id = session_id
-                st.session_state.last_annotation_key = selected_annotation_key
-    
+            st.session_state.current_annotations = load_annotations(session_id, selected_annotation_key)
+            st.session_state.last_session_id = session_id
+            st.session_state.last_annotation_key = selected_annotation_key
+
     if df.empty:
         st.warning("Selected session has no data.")
-        return
+        return None, None
 
-    from .shared import get_store
-    store = get_store()
-    metadata = store.get_cache_metadata(selected_session_key)
-    
     if "Static_track" in df.columns:
-         track_name = df["Static_track"].iloc[0]
-         st.markdown(f"**Track:** {track_name}")
+        track_name = df["Static_track"].iloc[0]
+        st.markdown(f"**Track:** {track_name}")
 
+    return df, session_id
+
+
+def render_batch_bulk_label(selected_annotation_key, selected_session_key, available_sessions):
+    df, session_id = _load_batch_session(
+        selected_annotation_key, selected_session_key, available_sessions,
+    )
+    if df is None:
+        return
     render_bulk_label_utils(selected_annotation_key)
+
+
+def render_batch_rule_based(selected_annotation_key, selected_session_key, available_sessions):
+    df, session_id = _load_batch_session(
+        selected_annotation_key, selected_session_key, available_sessions,
+    )
+    if df is None:
+        return
     render_rule_based_annotation(df, selected_annotation_key)
+
+
+def render_batch_classifier(selected_annotation_key, selected_session_key, available_sessions):
+    df, session_id = _load_batch_session(
+        selected_annotation_key, selected_session_key, available_sessions,
+    )
+    if df is None:
+        return
     render_classifier_auto_annotation(df, selected_annotation_key)
+
+
+def render_batch_subseg(selected_annotation_key, selected_session_key, available_sessions):
+    df, session_id = _load_batch_session(
+        selected_annotation_key, selected_session_key, available_sessions,
+    )
+    if df is None:
+        return
     render_batch_auto_annotation(df, selected_annotation_key)
+
+
+def render_batch_lap(selected_annotation_key, selected_session_key, available_sessions):
+    df, session_id = _load_batch_session(
+        selected_annotation_key, selected_session_key, available_sessions,
+    )
+    if df is None:
+        return
     render_batch_lap_agent_claude(df, session_id, selected_annotation_key)

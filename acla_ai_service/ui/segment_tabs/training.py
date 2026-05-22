@@ -39,6 +39,11 @@ def render_training(annotation_key: Optional[str]) -> None:
         "as a background subprocess; logs persist across browser refreshes."
     )
 
+    # If we were routed here from a Pipeline graph node, highlight which.
+    routed_node = st.session_state.pop("pipeline_training_node", None)
+    if routed_node:
+        st.info(f"Configuring training node `{routed_node}` from the active pipeline.")
+
     cfg = PipelineConfig()
     default_ann_key = annotation_key or cfg.annotation_cache_key
     default_proc_key = cfg.processed_session_data_cache_key

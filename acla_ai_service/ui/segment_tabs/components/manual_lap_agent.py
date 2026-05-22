@@ -40,4 +40,4 @@ def render_manual_lap_agent(df, session_id, selected_annotation_key):
     render_lap_agent_local(df, session_id, selected_annotation_key, circuit_id, head)
     render_lap_agent_claude(df, session_id, selected_annotation_key, circuit_id, head)
 
-    render_lap_staged_review(session_id, selected_annotation_key)
+    render_lap_staged_review(session_id, selected_annotation_key, df=df)
