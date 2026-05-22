@@ -33,6 +33,7 @@ from app.agents.contracts import (
     BackendConfig,
     StepEvent,
 )
+from app.agents.runners.claude import ClaudeUsageExhausted
 
 __all__ = [
     "AgentCallbacks",
@@ -40,6 +41,7 @@ __all__ = [
     "AgentResponse",
     "Attachment",
     "BackendConfig",
+    "ClaudeUsageExhausted",
     "StepEvent",
     "run_agent",
 ]

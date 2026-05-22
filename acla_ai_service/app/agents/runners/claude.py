@@ -55,6 +55,30 @@ LOGGER = logging.getLogger(__name__)
 _CLAUDE_NODE = "claude_agent"
 
 
+class ClaudeUsageExhausted(RuntimeError):
+    """The Claude CLI / Agent SDK reported the account is out of usage —
+    Max-plan quota hit, 5-hour window, or API credit balance depleted.
+    Batch callers should halt and let the user retry later."""
+
+
+_USAGE_EXHAUSTED_PATTERNS = (
+    "usage limit reached",
+    "usage limit",
+    "5-hour limit",
+    "credit balance",
+    "out of credits",
+    "rate limit",
+    "rate_limit",
+    "quota exceeded",
+    "quota_exceeded",
+)
+
+
+def _is_usage_exhausted_error(exc: BaseException) -> bool:
+    msg = str(exc).lower()
+    return any(p in msg for p in _USAGE_EXHAUSTED_PATTERNS)
+
+
 def _stage(phase: str, **extra) -> Dict[str, Any]:
     return {"node_name": _CLAUDE_NODE, "phase": phase, **extra}
 
@@ -744,7 +768,14 @@ def run_claude(request: AgentRequest) -> AgentResponse:
         cur_end=int(request.parent_end),
     )
 
-    asyncio.run(_run_session_async(request, capture))
+    try:
+        asyncio.run(_run_session_async(request, capture))
+    except ClaudeUsageExhausted:
+        raise
+    except Exception as exc:
+        if _is_usage_exhausted_error(exc):
+            raise ClaudeUsageExhausted(str(exc)) from exc
+        raise
 
     # The synth-equivalent output is the JSON Claude submitted. If the
     # session ended without submit_result, raw_response is empty and the

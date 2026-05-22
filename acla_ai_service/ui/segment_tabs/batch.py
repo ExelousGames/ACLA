@@ -10,6 +10,12 @@ from .shared import (
     LABEL_MAPPING, LABEL_NAME_TO_ID,
     LABEL_CATEGORIES, MAIN_LABEL_GUIDELINES
 )
+from app.agents import ClaudeUsageExhausted
+
+_USAGE_EXHAUSTED_WARNING = (
+    "⚠️ Claude usage is exhausted (Max-plan quota / 5-hour window / "
+    "credit balance). Batch halted — try again later."
+)
 
 def render_rule_based_annotation(df, selected_annotation_key):
     """
@@ -555,6 +561,11 @@ def render_batch_auto_annotation(df, selected_annotation_key):
                 existing_children=existing_for_agent,
                 config=config,
             )
+        except ClaudeUsageExhausted as e:
+            log(f"Parent #{idx}: HALTED — Claude usage exhausted: {e}")
+            st.warning(_USAGE_EXHAUSTED_WARNING)
+            progress_bar.progress((i + 1) / total)
+            break
         except Exception as e:
             error_parents += 1
             log(f"Parent #{idx}: ERROR — {e}")
@@ -785,6 +796,12 @@ def render_batch_lap_agent_claude(df, session_id, selected_annotation_key):
                 circuit_id=circuit_id,
                 existing_section_annotations=existing,
             )
+        except ClaudeUsageExhausted as e:
+            log(f"Section #{i} `{sec_id}`: HALTED — Claude usage exhausted: {e}")
+            st.warning(_USAGE_EXHAUSTED_WARNING)
+            i += 1
+            progress_bar.progress(i / len(segments))
+            break
         except Exception as e:
             error_count += 1
             log(f"Section #{i} `{sec_id}`: ERROR — {e}")

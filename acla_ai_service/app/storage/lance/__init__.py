@@ -20,7 +20,7 @@ from __future__ import annotations
 import shutil
 from datetime import datetime
 from pathlib import Path
-from typing import Any, AsyncIterator, Iterable, Iterator, List, Optional, Union
+from typing import Any, AsyncIterator, Dict, Iterable, Iterator, List, Optional, Union
 
 from app.storage.cache_metadata import CacheMetadata, ChunkPayload
 from app.storage.lance.strategies import (
@@ -74,6 +74,33 @@ class LanceTelemetryStore:
 
         self.store_dir.mkdir(parents=True, exist_ok=True)
         self.chunk_max_bytes = max(1024, int(chunk_max_mb * 1024 * 1024))
+        # Per-cache-key directory overrides. When set, that cache_key's
+        # lance dataset + sidecar live in the registered directory instead
+        # of ``self.store_dir``. Populated by the pipeline UI when an
+        # annotation node opts its output dataset into a custom filesystem
+        # path via the first-time output picker.
+        self._key_dirs: Dict[str, Path] = {}
+
+    # ------------------------------------------------------------------
+    # Per-cache-key directory routing
+    # ------------------------------------------------------------------
+    def register_directory(self, cache_key: str, directory: Optional[str]) -> None:
+        """Record (or clear) the on-disk directory for ``cache_key``.
+
+        Passing ``None``/empty clears any prior registration so the store
+        falls back to ``self.store_dir`` for that key.
+        """
+        if not cache_key:
+            return
+        if directory:
+            path = Path(directory)
+            path.mkdir(parents=True, exist_ok=True)
+            self._key_dirs[cache_key] = path
+        else:
+            self._key_dirs.pop(cache_key, None)
+
+    def _dir(self, cache_key: str) -> Path:
+        return self._key_dirs.get(cache_key, self.store_dir)
 
     # ------------------------------------------------------------------
     # Strategy plumbing
@@ -84,7 +111,8 @@ class LanceTelemetryStore:
     def _load_metadata(self, cache_key: str) -> Optional[CacheMetadata]:
         """Read CacheMetadata from the sidecar, falling back to the legacy
         in-dataset metadata row used by Phase-1 blob datasets."""
-        sidecar = load_sidecar_metadata(self.store_dir, cache_key)
+        directory = self._dir(cache_key)
+        sidecar = load_sidecar_metadata(directory, cache_key)
         if sidecar is not None:
             return sidecar
 
@@ -100,7 +128,7 @@ class LanceTelemetryStore:
 
             import lance
 
-            path = self.store_dir / f"{cache_key}.lance"
+            path = self._dir(cache_key) / f"{cache_key}.lance"
             if not path.exists():
                 return None
             dataset = lance.dataset(str(path))
@@ -126,7 +154,7 @@ class LanceTelemetryStore:
         return CacheMetadata(cache_key=cache_key)
 
     def _persist_metadata(self, metadata: CacheMetadata) -> None:
-        write_sidecar_metadata(self.store_dir, metadata)
+        write_sidecar_metadata(self._dir(metadata.cache_key), metadata)
 
     @staticmethod
     def _ensure_async_iterator(iterator: Any) -> AsyncIterator[Any]:
@@ -173,7 +201,7 @@ class LanceTelemetryStore:
 
             try:
                 size_estimate = strategy.write_chunk(
-                    self.store_dir, cache_key, chunk_id, entry.payload
+                    self._dir(cache_key), cache_key, chunk_id, entry.payload
                 )
             except Exception as exc:
                 print(f"[WARNING] Failed to write chunk '{chunk_id}' for {cache_key}: {exc}")
@@ -191,7 +219,7 @@ class LanceTelemetryStore:
 
         chunk_id = _format_chunk_name(chunk_index)
         try:
-            size_estimate = strategy.write_chunk(self.store_dir, cache_key, chunk_id, payload)
+            size_estimate = strategy.write_chunk(self._dir(cache_key), cache_key, chunk_id, payload)
         except Exception as exc:
             print(f"[WARNING] Failed to write chunk '{chunk_id}' for {cache_key}: {exc}")
             return False
@@ -206,7 +234,7 @@ class LanceTelemetryStore:
     def delete_chunk(self, cache_key: str, chunk_index: Union[int, str]) -> bool:
         strategy = self._strategy(cache_key)
         chunk_id = _format_chunk_name(chunk_index)
-        deleted = strategy.delete_chunk(self.store_dir, cache_key, chunk_id)
+        deleted = strategy.delete_chunk(self._dir(cache_key), cache_key, chunk_id)
 
         metadata = self._load_or_init_metadata(cache_key)
         if isinstance(chunk_index, int):
@@ -218,18 +246,18 @@ class LanceTelemetryStore:
 
     def get_cached_data_chunks(self, cache_key: str, include_ids: bool = False) -> Iterator[Any]:
         strategy = self._strategy(cache_key)
-        return strategy.iter_chunks(self.store_dir, cache_key, include_ids)
+        return strategy.iter_chunks(self._dir(cache_key), cache_key, include_ids)
 
     def get_chunk(self, cache_key: str, chunk_index: Union[int, str]) -> Optional[Any]:
         strategy = self._strategy(cache_key)
         chunk_id = _format_chunk_name(chunk_index)
-        return strategy.read_chunk(self.store_dir, cache_key, chunk_id)
+        return strategy.read_chunk(self._dir(cache_key), cache_key, chunk_id)
 
     def get_cache_metadata(self, cache_key: str) -> Optional[CacheMetadata]:
         return self._load_metadata(cache_key)
 
     def has_cached_data(self, cache_key: str) -> bool:
-        return self._strategy(cache_key).has_data(self.store_dir, cache_key)
+        return self._strategy(cache_key).has_data(self._dir(cache_key), cache_key)
 
     def list_cache_keys(self) -> List[str]:
         """Return cache_keys that have actual chunk data on disk.
@@ -254,7 +282,7 @@ class LanceTelemetryStore:
         return sorted(keys)
 
     def list_chunk_ids(self, cache_key: str) -> List[str]:
-        return self._strategy(cache_key).list_chunk_ids(self.store_dir, cache_key)
+        return self._strategy(cache_key).list_chunk_ids(self._dir(cache_key), cache_key)
 
     def clear_cache(self, cache_key: Optional[str] = None) -> None:
         if cache_key is None:
@@ -262,8 +290,9 @@ class LanceTelemetryStore:
                 shutil.rmtree(self.store_dir)
             self.store_dir.mkdir(parents=True, exist_ok=True)
             return
-        self._strategy(cache_key).clear(self.store_dir, cache_key)
-        delete_sidecar_metadata(self.store_dir, cache_key)
+        directory = self._dir(cache_key)
+        self._strategy(cache_key).clear(directory, cache_key)
+        delete_sidecar_metadata(directory, cache_key)
 
     def get_cache_info(self) -> dict:
         entries = []

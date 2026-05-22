@@ -43,16 +43,6 @@ QWEN25_VL_MODELS: dict[str, dict] = {
         "max_context": 131072,
         "max_new_tokens": 8192,
     },
-    "Qwen/Qwen3-VL-30B-A3B-Instruct": {
-        "label": "Qwen3-VL-30B-A3B-Instruct",
-        "max_context": 262144,
-        "max_new_tokens": 8192,
-    },
-    "Qwen/Qwen3-VL-30B-A3B-Thinking": {
-        "label": "Qwen3-VL-30B-A3B-Thinking",
-        "max_context": 262144,
-        "max_new_tokens": 32768,
-    },
 }
 
 

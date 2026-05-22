@@ -29,11 +29,9 @@ from app.pipelines.training.training_unit_store import (
     save_entries,
     template_variables,
 )
+from segment_tabs.shared import chat_jsonl_path_for
 from ui.custom_components.llm_entry_editor import llm_entry_editor
 
-
-_AI_SERVICE_DIR = Path(__file__).resolve().parents[2]  # acla_ai_service/
-_DEFAULT_CHAT = _AI_SERVICE_DIR / "models" / "llm_datasets" / "telemetry_descriptions_v1.chat.jsonl"
 
 _STATE_KEY = "llm_pipeline_state"
 
@@ -130,12 +128,8 @@ def render_llm_pipeline(selected_annotation_key: str) -> None:
     c5.metric("Σ entries", total_entries)
 
     # ── Export ─────────────────────────────────────────────────────────────
-    chat_path = st.session_state.get("llm_chat_path", str(_DEFAULT_CHAT))
-    with st.expander("Output path", expanded=False):
-        st.session_state["llm_chat_path"] = st.text_input(
-            "Chat-format JSONL (trainer input)", value=chat_path,
-        )
-        chat_path = st.session_state["llm_chat_path"]
+    chat_path = chat_jsonl_path_for(selected_annotation_key)
+    st.caption(f"Trainer input: `{chat_path}`")
 
     e1, e2 = st.columns(2)
     with e1:
@@ -145,7 +139,7 @@ def render_llm_pipeline(selected_annotation_key: str) -> None:
             disabled=totals["approved"] == 0,
         ):
             n = export_entries_chat_jsonl(
-                selected_annotation_key, Path(chat_path), only_approved=True,
+                selected_annotation_key, chat_path, only_approved=True,
             )
             st.success(f"Wrote {n} chat row(s) → {chat_path}")
     with e2:
@@ -155,7 +149,7 @@ def render_llm_pipeline(selected_annotation_key: str) -> None:
             disabled=(totals["approved"] + totals["draft"]) == 0,
         ):
             n = export_entries_chat_jsonl(
-                selected_annotation_key, Path(chat_path), only_approved=False,
+                selected_annotation_key, chat_path, only_approved=False,
             )
             st.success(f"Wrote {n} chat row(s) → {chat_path}")
 

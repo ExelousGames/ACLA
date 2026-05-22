@@ -138,9 +138,8 @@ def render_agent_annotation_local(
                 step=128,
                 help=(
                     f"Maximum for {model_spec['label']}: {model_max_new_tokens:,} tokens. "
-                    "Bump higher for reasoning models (e.g. Qwen3-VL-Thinking) — "
-                    "they spend most of their budget in the thinking phase "
-                    "before emitting the final answer."
+                    "Bump higher for reasoning models — they spend most of their "
+                    "budget in the thinking phase before emitting the final answer."
                 ),
                 key="agent_annot_local_max_new_tokens",
             )

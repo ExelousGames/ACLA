@@ -106,6 +106,73 @@ def _run_async(func, *args, **kwargs):
 def get_store():
     return get_shared_telemetry_store()
 
+
+def register_output_dir(cache_key: str, directory: Optional[str]) -> None:
+    """Tell the shared store that ``cache_key`` lives in ``directory``.
+
+    Custom output directories — picked via the first-time annotation
+    popup — get registered here so every consumer that goes through
+    ``get_shared_telemetry_store()`` (annotation pages, training-unit
+    store, etc.) reads/writes the cache_key from the right path on
+    disk. Pass ``directory=None`` to clear the override.
+    """
+    if not cache_key:
+        return
+    get_store().register_directory(cache_key, directory)
+
+
+def chat_jsonl_path_for(annotation_key: str) -> Path:
+    """Canonical chat-format JSONL path for an LLM annotation node.
+
+    Resolves against the active pipeline manifest: finds the annotation
+    node whose ``output_key`` matches ``annotation_key`` and returns
+    ``<node.output_dir>/<output_key>.chat.jsonl``. When the node has no
+    ``output_dir`` override, falls back to the default Lance store dir.
+    """
+    from app.pipelines.manifest.registry import load as load_pipeline
+    from segment_tabs.pipeline_sidebar import get_active_pipeline_id
+
+    base_dir: Path = Path(get_store().store_dir)
+    filename = f"{annotation_key}.chat.jsonl"
+
+    active_id = get_active_pipeline_id()
+    if active_id:
+        pipeline = load_pipeline(active_id)
+        if pipeline is not None:
+            for node in pipeline.annotations:
+                if node.output_key == annotation_key:
+                    if node.output_dir:
+                        base_dir = Path(node.output_dir)
+                    break
+    return base_dir / filename
+
+
+def active_pipeline_llm_chat_path() -> Optional[Path]:
+    """Chat-format JSONL path for the active pipeline's LLM training input.
+
+    Resolves the active pipeline's first ``llm_training`` node's
+    ``input_ref`` to an annotation node, then returns that annotation's
+    canonical chat JSONL path via :func:`chat_jsonl_path_for`. Returns
+    ``None`` when no pipeline is active or no LLM training node exists.
+    """
+    from app.pipelines.manifest.registry import load as load_pipeline
+    from segment_tabs.pipeline_sidebar import get_active_pipeline_id
+
+    active_id = get_active_pipeline_id()
+    if not active_id:
+        return None
+    pipeline = load_pipeline(active_id)
+    if pipeline is None:
+        return None
+    for t in pipeline.trainings:
+        if t.kind == "llm_training":
+            ann_key = pipeline.resolve_source_key(t.input_ref)
+            if ann_key:
+                return chat_jsonl_path_for(ann_key)
+            return None
+    return None
+
+
 def get_available_sessions(cache_key: str) -> List[str]:
     """Get list of available session IDs from the store."""
     store = get_store()
