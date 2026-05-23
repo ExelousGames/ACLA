@@ -370,6 +370,7 @@ async def build_voice_pipeline_task(
     from pipecat.processors.aggregators.llm_response_universal import (
         LLMContextAggregatorPair,
     )
+    from pipecat.processors.audio.vad_processor import VADProcessor
     from pipecat.services.openai.llm import OpenAILLMService
     from pipecat.services.whisper.stt import WhisperSTTService
     from pipecat.transports.websocket.fastapi import (
@@ -378,6 +379,7 @@ async def build_voice_pipeline_task(
     )
 
     from app.voice.pipecat_kokoro import build_kokoro_processor
+    from app.voice.raw_pcm_serializer import RawPCMSerializer
     from app.voice.tool_relay import get_relay
 
     LOGGER.info(
@@ -390,13 +392,21 @@ async def build_voice_pipeline_task(
     # send, close) inside our existing endpoint.
     #
     # WIRE FORMAT (must match the frontend in use-voice-conversation.ts):
-    #   - serializer=None: client sends/receives raw PCM16 mono bytes.
-    #     The browser AudioWorklet posts Int16Array.buffer over the WS,
-    #     and we play received PCM16 via a 24kHz AudioContext.
+    #   - serializer=RawPCMSerializer(): client sends/receives raw PCM16 mono
+    #     bytes. Pipecat 1.2.1's input transport silently drops every inbound
+    #     frame when serializer is None (see RawPCMSerializer docstring), so
+    #     we need a trivial pass-through serializer to actually feed mic bytes
+    #     into the pipeline as InputAudioRawFrame.
     #   - audio_in_sample_rate=16000: frontend captures at 16kHz to match
     #     Whisper's preferred rate. AudioContext({ sampleRate: 16000 }).
     #   - audio_out_sample_rate=24000: Kokoro's native rate. The frontend's
     #     playback AudioContext uses 24kHz so no client-side resampling needed.
+    #
+    # NOTE: VAD is NOT configured on the transport in Pipecat 1.2.1 — the
+    # `vad_enabled / vad_analyzer / vad_audio_passthrough` fields were removed
+    # from TransportParams (Pydantic silently drops unknown kwargs, which
+    # masked this for a while). VAD now lives as a dedicated VADProcessor
+    # inserted into the pipeline below.
     transport = FastAPIWebsocketTransport(
         websocket=websocket,
         params=FastAPIWebsocketParams(
@@ -405,12 +415,14 @@ async def build_voice_pipeline_task(
             audio_in_sample_rate=16000,
             audio_out_sample_rate=settings.kokoro_sample_rate,
             add_wav_header=False,
-            vad_enabled=True,
-            vad_analyzer=SileroVADAnalyzer(),
-            vad_audio_passthrough=True,
-            serializer=None,
+            serializer=RawPCMSerializer(),
         ),
     )
+
+    # --- VAD (Silero, in-pipeline) ---
+    # Emits VADUserStartedSpeakingFrame / VADUserStoppedSpeakingFrame which
+    # the downstream STT uses to gate Whisper inference.
+    vad_processor = VADProcessor(vad_analyzer=SileroVADAnalyzer())
 
     # --- STT (faster-whisper) ---
     # Phase 3 starting point: small English model on whichever device is
@@ -458,8 +470,12 @@ async def build_voice_pipeline_task(
     tts = KokoroProcessor(sample_rate=settings.kokoro_sample_rate)
 
     # --- Pipeline composition ---
+    # VAD sits between the transport input and STT so Whisper only runs
+    # on actual speech windows (gated by VADUserStartedSpeakingFrame /
+    # VADUserStoppedSpeakingFrame from the VADProcessor).
     pipeline = Pipeline([
         transport.input(),
+        vad_processor,
         stt,
         context_aggregator.user(),
         llm,

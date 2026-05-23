@@ -37,11 +37,11 @@ def build_kokoro_processor():
     """
     import numpy as np
     from pipecat.frames.frames import (
-        AudioRawFrame,
         EndFrame,
         Frame,
         LLMFullResponseEndFrame,
         LLMFullResponseStartFrame,
+        OutputAudioRawFrame,
         TextFrame,
         TTSStartedFrame,
         TTSStoppedFrame,
@@ -56,7 +56,10 @@ def build_kokoro_processor():
           - Buffers via SentenceStreamer until a complete sentence is ready
             (same logic the Phase 2.5 SSE path uses).
           - On `LLMFullResponseEndFrame`, flushes remaining buffer.
-          - For each ready sentence, calls Kokoro and emits an AudioRawFrame.
+          - For each ready sentence, calls Kokoro and emits an
+            OutputAudioRawFrame (Pipecat 1.2.x requires the Output* subclass —
+            the bare AudioRawFrame is missing pipeline-tracking attrs like
+            ``id`` / ``transport_destination`` and trips observer errors).
         """
 
         def __init__(self, sample_rate: int = 24000) -> None:
@@ -121,7 +124,7 @@ def build_kokoro_processor():
                 return
 
             await self.push_frame(
-                AudioRawFrame(
+                OutputAudioRawFrame(
                     audio=pcm16,
                     sample_rate=self._sample_rate,
                     num_channels=1,
