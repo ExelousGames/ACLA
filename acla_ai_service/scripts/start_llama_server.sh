@@ -1,5 +1,5 @@
 #!/bin/bash
-# Start llama-server hosting the local chat model (Qwen2.5-1.5B-Instruct GGUF
+# Start llama-server hosting the local chat model (Qwen2.5-32B-Instruct GGUF
 # by default) and expose an OpenAI-compatible HTTP API on $LLAMA_PORT.
 #
 # Auto-detects whether the standalone `llama-server` binary is on PATH
@@ -13,8 +13,8 @@ set -e
 # --- Configuration -----------------------------------------------------------
 
 MODEL_DIR="${LLAMA_MODEL_DIR:-/app/models/llama_server}"
-MODEL_REPO="${LLAMA_MODEL_REPO:-Qwen/Qwen2.5-1.5B-Instruct-GGUF}"
-MODEL_FILE="${LLAMA_MODEL_FILE:-qwen2.5-1.5b-instruct-q4_k_m.gguf}"
+MODEL_REPO="${LLAMA_MODEL_REPO:-Qwen/Qwen2.5-32B-Instruct-GGUF}"
+MODEL_FILE="${LLAMA_MODEL_FILE:-qwen2.5-32b-instruct-q5_k_m-00001-of-00006.gguf}"
 LLAMA_HOST="${LLAMA_HOST:-127.0.0.1}"
 LLAMA_PORT="${LLAMA_PORT:-8080}"
 N_GPU_LAYERS="${LLAMA_N_GPU_LAYERS:-99}"
@@ -30,21 +30,37 @@ if [ ! -f "$MODEL_PATH" ]; then
     MODEL_REPO="$MODEL_REPO" MODEL_FILE="$MODEL_FILE" MODEL_DIR="$MODEL_DIR" \
     python - <<'PY'
 import os
-from huggingface_hub import hf_hub_download
+import re
+from huggingface_hub import hf_hub_download, snapshot_download
 
 repo = os.environ["MODEL_REPO"]
 filename = os.environ["MODEL_FILE"]
 local_dir = os.environ["MODEL_DIR"]
 token = os.environ.get("HF_TOKEN")
 
-print(f"[llama-server] Downloading {filename} from {repo} into {local_dir} ...")
-path = hf_hub_download(
-    repo_id=repo,
-    filename=filename,
-    local_dir=local_dir,
-    token=token,
-)
-print(f"[llama-server] Downloaded to {path}")
+# Large GGUFs are sharded into "<base>-00001-of-NNNNN.gguf" parts.
+# llama-server auto-loads sibling shards when given the first one, so we
+# just need to pull every "<base>-*.gguf" file in one shot.
+shard = re.match(r"^(.*)-\d{5}-of-\d{5}\.gguf$", filename)
+if shard:
+    pattern = f"{shard.group(1)}-*.gguf"
+    print(f"[llama-server] Downloading sharded {pattern} from {repo} into {local_dir} ...")
+    snapshot_download(
+        repo_id=repo,
+        allow_patterns=[pattern],
+        local_dir=local_dir,
+        token=token,
+    )
+    print(f"[llama-server] Sharded download complete.")
+else:
+    print(f"[llama-server] Downloading {filename} from {repo} into {local_dir} ...")
+    path = hf_hub_download(
+        repo_id=repo,
+        filename=filename,
+        local_dir=local_dir,
+        token=token,
+    )
+    print(f"[llama-server] Downloaded to {path}")
 PY
 fi
 

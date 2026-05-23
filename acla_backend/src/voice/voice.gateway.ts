@@ -31,11 +31,9 @@ export class VoiceGateway implements OnGatewayConnection {
     constructor(private readonly jwt: JwtService) {}
 
     handleConnection(client: WsClient, req: IncomingMessage): void {
-        this.logger.log(`handleConnection: incoming WS url=${req.url}`);
         const parsed = new URL(req.url || '', 'http://localhost');
         const token = parsed.searchParams.get('token');
         if (!token) {
-            this.logger.warn('handleConnection: no token — closing 1008');
             client.close(1008, 'Unauthorized');
             return;
         }
@@ -43,8 +41,7 @@ export class VoiceGateway implements OnGatewayConnection {
         let payload: any;
         try {
             payload = this.jwt.verify(token);
-        } catch (err) {
-            this.logger.warn(`handleConnection: jwt verify failed — ${(err as Error).message}`);
+        } catch {
             client.close(1008, 'Unauthorized');
             return;
         }
@@ -53,7 +50,6 @@ export class VoiceGateway implements OnGatewayConnection {
         // Mongo user _id. JwtStrategy.validate() reads the same field.
         const userId: string | undefined = payload?.id;
         if (!userId) {
-            this.logger.warn('handleConnection: jwt has no id claim — closing 1008');
             client.close(1008, 'Unauthorized');
             return;
         }
@@ -62,7 +58,6 @@ export class VoiceGateway implements OnGatewayConnection {
         // the text path forwards `context`. Not used for authorization.
         const sessionId = parsed.searchParams.get('session_id') || '';
 
-        this.logger.log(`handleConnection: authorized user=${userId} session=${sessionId} — bridging`);
         this.bridge(client, userId, sessionId);
     }
 
@@ -78,7 +73,6 @@ export class VoiceGateway implements OnGatewayConnection {
         if (sessionId) params.set('session_id', sessionId);
         const upstreamUrl = `${this.aiServiceWsBase()}/voice/stream?${params.toString()}`;
 
-        this.logger.log(`bridge: opening upstream ${upstreamUrl}`);
         const upstream = new WsClient(upstreamUrl);
 
         // Hold client → upstream messages until upstream finishes opening —
@@ -91,10 +85,8 @@ export class VoiceGateway implements OnGatewayConnection {
             try { upstream.close(code, reason); } catch { /* ignore */ }
         };
 
-        let upstreamMessages = 0;
         upstream.on('open', () => {
             upstreamOpen = true;
-            this.logger.log(`bridge: upstream OPEN — flushing ${queue.length} queued client frames`);
             while (queue.length > 0) {
                 const m = queue.shift()!;
                 upstream.send(m.data, { binary: m.isBinary });
@@ -102,22 +94,14 @@ export class VoiceGateway implements OnGatewayConnection {
         });
 
         upstream.on('message', (data, isBinary) => {
-            upstreamMessages++;
-            if (upstreamMessages <= 3 || upstreamMessages % 50 === 0) {
-                this.logger.log(
-                    `bridge: upstream → client #${upstreamMessages} binary=${isBinary} ` +
-                    `bytes=${(data as Buffer).length ?? 'n/a'}`,
-                );
-            }
             if (client.readyState === WsClient.OPEN) {
                 client.send(data, { binary: isBinary });
             }
         });
 
-        upstream.on('close', (code, reason) => {
-            this.logger.log(`bridge: upstream CLOSE code=${code} reason=${reason.toString()}`);
-            closeBoth(code, reason.toString());
-        });
+        upstream.on('close', (code, reason) =>
+            closeBoth(code, reason.toString()),
+        );
         upstream.on('error', (err) => {
             this.logger.warn(`upstream error: ${err.message}`);
             closeBoth(1011, 'upstream error');

@@ -19,8 +19,6 @@ this serializer only ever sees binary payloads.
 
 from __future__ import annotations
 
-import logging
-
 from pipecat.frames.frames import (
     Frame,
     InputAudioRawFrame,
@@ -28,8 +26,6 @@ from pipecat.frames.frames import (
     StartFrame,
 )
 from pipecat.serializers.base_serializer import FrameSerializer
-
-LOGGER = logging.getLogger(__name__)
 
 
 class RawPCMSerializer(FrameSerializer):
@@ -41,27 +37,15 @@ class RawPCMSerializer(FrameSerializer):
         # Pipecat propagates the real StartFrame rates.
         self._in_sample_rate = 16000
         self._out_sample_rate = 24000
-        self._in_count = 0
-        self._out_count = 0
 
     async def setup(self, frame: StartFrame) -> None:
         self._in_sample_rate = frame.audio_in_sample_rate
         self._out_sample_rate = frame.audio_out_sample_rate
-        LOGGER.info(
-            "RawPCMSerializer setup: in_sr=%d out_sr=%d",
-            self._in_sample_rate, self._out_sample_rate,
-        )
 
     async def serialize(self, frame: Frame) -> str | bytes | None:
         # We only forward TTS audio. Everything else (control frames,
         # transcripts, etc.) stays inside the pipeline.
         if isinstance(frame, OutputAudioRawFrame):
-            self._out_count += 1
-            if self._out_count <= 3 or self._out_count % 50 == 0:
-                LOGGER.info(
-                    "RawPCMSerializer.serialize: TTS frame #%d bytes=%d",
-                    self._out_count, len(frame.audio),
-                )
             return frame.audio
         return None
 
@@ -70,12 +54,6 @@ class RawPCMSerializer(FrameSerializer):
         # before reaching here, but be defensive.
         if not isinstance(data, (bytes, bytearray)):
             return None
-        self._in_count += 1
-        if self._in_count <= 3 or self._in_count % 200 == 0:
-            LOGGER.info(
-                "RawPCMSerializer.deserialize: mic frame #%d bytes=%d",
-                self._in_count, len(data),
-            )
         return InputAudioRawFrame(
             audio=bytes(data),
             sample_rate=self._in_sample_rate,
