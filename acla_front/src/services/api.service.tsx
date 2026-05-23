@@ -129,6 +129,39 @@ export class ApiService {
         }
     }
 
+    /**
+     * Open an authenticated WebSocket to the backend.
+     *
+     * Same auth + addressing model as the REST methods: hits the same
+     * baseURL host:port (just `ws://` instead of `http://`) and attaches
+     * the JWT from localStorage. Browsers can't set custom headers on
+     * `new WebSocket()`, so the token rides as a `?token=…` query param;
+     * the backend verifies it at the upgrade boundary.
+     */
+    public openWebSocket(
+        path: string,
+        params?: Record<string, string | undefined>,
+    ): WebSocket {
+        const wsProto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const host = process.env.REACT_APP_BACKEND_SERVER_IP;
+        const port = process.env.REACT_APP_BACKEND_PROXY_PORT;
+
+        const qs = new URLSearchParams();
+        if (params) {
+            for (const [k, v] of Object.entries(params)) {
+                if (v !== undefined && v !== '') qs.set(k, v);
+            }
+        }
+        const token = localStorage.getItem('token');
+        if (token) qs.set('token', token);
+
+        const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+        const tail = qs.toString();
+        return new WebSocket(
+            `${wsProto}//${host}:${port}${normalizedPath}${tail ? `?${tail}` : ''}`,
+        );
+    }
+
 
     // Add other HTTP methods as needed (PUT, DELETE, etc.)
 };

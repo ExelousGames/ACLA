@@ -26,7 +26,9 @@
     "@nestjs/mongoose": "^11.0.3",
     "@nestjs/passport": "^11.0.5",
     "@nestjs/platform-express": "^11.0.1",
+    "@nestjs/platform-ws": "^11.1.23",
     "@nestjs/throttler": "^6.4.0",
+    "@nestjs/websockets": "^11.1.23",
     "@types/bcrypt": "^6.0.0",
     "axios": "^1.9.0",
     "bcrypt": "^6.0.0",
@@ -36,7 +38,8 @@
     "passport-local": "^1.0.0",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1",
-    "uuid": "^11.1.0"
+    "uuid": "^11.1.0",
+    "ws": "^8.21.0"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3.2.0",
@@ -52,6 +55,7 @@
     "@types/passport-jwt": "^4.0.1",
     "@types/passport-local": "^1.0.38",
     "@types/supertest": "^6.0.2",
+    "@types/ws": "^8.18.1",
     "eslint": "^9.18.0",
     "eslint-config-prettier": "^10.0.1",
     "eslint-plugin-prettier": "^5.2.2",

@@ -17,6 +17,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import apiService from 'services/api.service';
 
 export type VoiceConversationState =
     | 'idle'           // not connected
@@ -47,8 +48,6 @@ export interface VoiceConversationOptions {
     /** User id — required for backend tools that key off the logged-in
      *  user (e.g. saved preferences, history). */
     userId?: string;
-    /** Override base URL — defaults to the AI service env config. */
-    baseUrl?: string;
     /** Map of frontend tool name → handler. The LLM picks which tools to
      *  call from its system prompt; the backend routes the call to this
      *  hook over the WS via a `tool_call` text frame; we dispatch by
@@ -80,27 +79,15 @@ export function useVoiceConversation(
     const playbackQueueTimeRef = useRef<number>(0);
 
     /**
-     * Resolve the AI service WS URL. In dev the AI service is on
-     * REACT_APP_AI_SERVICE_URL or falls back to REACT_APP_BACKEND_SERVER_IP:8000.
-     *
-     * Only `session_id` + `user_id` are passed at connect time — anything
-     * else the LLM wants (track, car, lap, telemetry) flows through the
-     * tool-relay text channel on demand.
+     * Open the backend voice WS through apiService — same baseURL + JWT
+     * source as every REST call. `user_id` is derived server-side from
+     * the JWT claim and isn't sent from here.
      */
-    const resolveWsUrl = useCallback((): string => {
-        if (options.baseUrl) return options.baseUrl;
-        const explicit = process.env.REACT_APP_AI_SERVICE_WS_URL;
-        if (explicit) return explicit;
-
-        const host = process.env.REACT_APP_BACKEND_SERVER_IP || 'localhost';
-        const port = process.env.REACT_APP_AI_SERVICE_PORT || '8000';
-        const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const params = new URLSearchParams();
-        if (options.sessionId) params.set('session_id', options.sessionId);
-        if (options.userId) params.set('user_id', options.userId);
-        const qs = params.toString();
-        return `${proto}//${host}:${port}/voice/stream${qs ? '?' + qs : ''}`;
-    }, [options.baseUrl, options.sessionId, options.userId]);
+    const openWs = useCallback((): WebSocket => {
+        return apiService.openWebSocket('/voice/stream', {
+            session_id: options.sessionId,
+        });
+    }, [options.sessionId]);
 
     // Always-fresh handler registry — updated as options.toolHandlers changes
     // without forcing the WS to reopen.
@@ -186,7 +173,7 @@ export function useVoiceConversation(
             // would echo the mic back to the speakers.
 
             // --- 3. Open WebSocket ---
-            const ws = new WebSocket(resolveWsUrl());
+            const ws = openWs();
             ws.binaryType = 'arraybuffer';
             wsRef.current = ws;
 
@@ -295,7 +282,7 @@ export function useVoiceConversation(
             setState('error');
             stop();
         }
-    }, [state, resolveWsUrl, stop]);
+    }, [state, openWs, stop]);
 
     /**
      * Schedule a PCM16 chunk for gapless playback on the playback AudioContext.
