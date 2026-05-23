@@ -46,23 +46,47 @@ LOGGER = logging.getLogger(__name__)
 # System prompt for the voice coach
 # ----------------------------------------------------------------------
 
-_VOICE_COACH_PROMPT_TEMPLATE = """You are a racing telemetry coach for sim racing. Stay in character.
-Current session: track={track_name}, car={car_name}
+_VOICE_COACH_PROMPT_TEMPLATE = """You are a race engineer speaking to your driver over the radio. Stay in character.
 
-You are speaking to the driver over voice. Keep responses CONCISE — usually
-1-2 sentences. Use natural spoken English: short, direct, no markdown,
-no bullet points, no headings. Pronounce numbers as words where it sounds
-natural (say "one-thirty-two five" not "1.32.5") but normal numbers are fine.
+Speak like a real engineer: short radio-style sentences, 1–3 max per turn
+unless asked to elaborate. Natural spoken English — no markdown, no bullet
+points, no headings. Use racing vocabulary freely: apex, trail-brake,
+understeer at entry, throttle pickup, traction-limited exit, slip balance,
+kerb, kerb-strike, brake bias, weight transfer.
 
-Available tools (call only when the driver explicitly asks for them):
-- check_car_limit: when the driver asks "am I at the limit", "is this fast
-  enough", "how is my braking", etc.
-- track_detail_for_guide: when the driver asks to be guided on the track
-  or for a driving guide. After calling, summarize the guidance in 1-2
-  spoken sentences — do not list everything verbatim.
+Tools (call only when the question requires data you don't have):
+- analyze_recent_segment: canonical "what just happened" tool. One call
+  bundles recent telemetry + classified actions + their engineer-voice
+  descriptions. Use for "what just happened", "why did I go wide", "did I
+  brake too late", "what was wrong with that corner".
+- analyze_lap: same one-shot bundle but for a specific completed lap.
+  Use for "how was lap 12", "any mistakes on lap 3", "walk me through my
+  best lap". Defaults to most recent completed lap if no number given.
+- get_session_info: returns current track and car. Call ONCE per session
+  if you need to mention them; cache the answer mentally.
+- get_recent_telemetry / get_lap_telemetry / classify_segment: primitives
+  for unusual asks where a composite doesn't fit.
+- explain_label: definition + remedies for a specific labelled action,
+  by id or natural name.
+- start_per_turn_coaching / stop_per_turn_coaching: activate / deactivate
+  the per-corner monitoring agent. While active, the system pushes
+  observations as "[OBSERVATION]" user turns describing each completed
+  segment — respond to each with one short suggestion.
 
-For general racing questions, answer briefly and confidently without
-calling tools.
+When a composite returns labels with definitions and remedies, do NOT
+read every field aloud. Pick the one or two that matter most for THIS
+corner and weave them into a natural 1–3 sentence engineer comment.
+The driver wants advice, not a catalog.
+
+Rules:
+- If a tool returns an error or the link is down, say so plainly ("can't
+  see your telemetry right now"). Never fabricate numbers or label names.
+- Translate any label codes in tool output to natural English before
+  speaking. The driver should never hear "MS44" — say "oversteer at entry".
+- For general racing questions ("what is trail braking?"), answer directly
+  in 2-3 sentences without calling any tool.
+- Don't repeat the same advice across turns. If the driver makes the same
+  mistake twice, escalate ("again — this is the third time on this corner").
 """
 
 
@@ -73,99 +97,240 @@ calling tools.
 
 @dataclass
 class VoiceSessionConfig:
-    """Per-WS-session configuration."""
+    """Per-WS-session configuration.
 
-    track_name: str = "Unknown"
-    car_name: str = "Unknown"
+    The WS connection takes only ``session_id`` and ``user_id`` as query
+    params — anything else the LLM wants (current track/car, lap data,
+    recent telemetry, etc.) is fetched on demand via tool calls. See the
+    plan's "everything is pulled on demand" principle.
+    """
+
+    session_id: Optional[str] = None
     user_id: Optional[str] = None
     voice: Optional[str] = None  # Kokoro voice override
 
 
+# Tool names whose execution goes through the frontend WS relay (see
+# app/voice/tool_relay.py). Everything else routes to the server-side
+# AIService._execute_function dispatcher.
+FRONTEND_TOOLS: frozenset[str] = frozenset({
+    "get_session_info",
+    "get_recent_telemetry",
+    "get_lap_telemetry",
+    "start_per_turn_coaching",
+    "stop_per_turn_coaching",
+})
+
+
 def _build_tool_schemas():
-    """Return Pipecat FunctionSchemas for the racing-coach tools.
+    """Return Pipecat FunctionSchemas for the racing-engineer tools.
 
-    Mirrors the schemas in AIService.get_available_functions() so the voice
-    and text paths advertise the same capabilities to the LLM.
-
-    Deferred import — only loaded when a voice session is actually built.
+    Mirrors AIService.get_available_functions() so the voice and HTTP-style
+    paths advertise the same capabilities to the LLM. Deferred import — only
+    loaded when a voice session is actually built.
     """
     from pipecat.adapters.schemas.function_schema import FunctionSchema
 
-    check_car_limit_schema = FunctionSchema(
-        name="check_car_limit",
-        description=(
-            "Check whether the driver is pushing the car within its optimal limits "
-            "based on telemetry. Call when the driver asks 'am I at the limit', "
-            "'is this fast enough', 'how is my braking', etc."
+    schemas = [
+        # ── Server-side composite (canonical "what just happened" flow) ─────
+        FunctionSchema(
+            name="analyze_recent_segment",
+            description=(
+                "ONE-SHOT analysis of the most recent driving segment. Fetches "
+                "recent telemetry from the frontend, runs the classifier, looks "
+                "up the racing-engineer concept for each detected action, and "
+                "returns a bundled payload. Prefer this over chaining "
+                "get_recent_telemetry + classify_segment + explain_label."
+            ),
+            properties={
+                "seconds": {
+                    "type": "integer",
+                    "description": "How many seconds of recent telemetry to analyze. Default 8.",
+                },
+            },
+            required=[],
         ),
-        properties={
-            "session_id": {
-                "type": "string",
-                "description": "Session ID for telemetry analysis.",
+        FunctionSchema(
+            name="analyze_lap",
+            description=(
+                "ONE-SHOT analysis of a specific completed lap. Fetches the "
+                "lap's telemetry from the frontend, runs the classifier, looks "
+                "up the racing-engineer concept for each detected action, and "
+                "returns a bundled payload. Use for 'how was lap 12?', "
+                "'any mistakes on lap 3?', 'walk me through my best lap'."
+            ),
+            properties={
+                "lap": {
+                    "type": "integer",
+                    "description": "Lap number to analyze. Defaults to the most recently completed lap.",
+                },
             },
-            "data_types": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "Telemetry channels to analyze (speed, acceleration, braking, steering).",
-            },
-        },
-        required=["session_id"],
-    )
-
-    track_detail_schema = FunctionSchema(
-        name="track_detail_for_guide",
-        description=(
-            "Start the on-track guidance flow. Call when the driver asks to be "
-            "guided on the track, 'guide me', 'help me drive this track', etc."
+            required=[],
         ),
-        properties={
-            "track_name": {
-                "type": "string",
-                "description": "Name of the track to retrieve data for.",
+        # ── Server-side primitives (corpus + ML) ────────────────────────────
+        FunctionSchema(
+            name="explain_label",
+            description=(
+                "Return the racing-engineer concept for a single action label "
+                "(definition, engineer interpretation, common remedies). Use "
+                "when the driver asks 'what does <action> mean?' or after a "
+                "classifier call to deepen one specific finding."
+            ),
+            properties={
+                "label_id": {
+                    "type": "string",
+                    "description": "Label id like 'MS44' or its natural name like 'Oversteering at entry'.",
+                },
             },
-        },
-        required=["track_name"],
-    )
+            required=["label_id"],
+        ),
+        FunctionSchema(
+            name="classify_segment",
+            description=(
+                "Run the segment classifier over a window of telemetry rows and "
+                "return the action labels present (translated to natural names). "
+                "Use for unusual asks where analyze_recent_segment doesn't fit."
+            ),
+            properties={
+                "telemetry_rows": {
+                    "type": "array",
+                    "description": "List of telemetry row dicts (as returned by get_recent_telemetry).",
+                    "items": {"type": "object"},
+                },
+            },
+            required=["telemetry_rows"],
+        ),
+        # ── Frontend data accessors (relayed via WS) ────────────────────────
+        FunctionSchema(
+            name="get_session_info",
+            description=(
+                "Return current track / car / user identity from the live "
+                "session. Call once if you need to reference the track or car "
+                "by name; the answer doesn't change during a session."
+            ),
+            properties={},
+            required=[],
+        ),
+        FunctionSchema(
+            name="get_recent_telemetry",
+            description=(
+                "Return the last N seconds of raw telemetry rows from the live "
+                "in-memory buffer. Optional channel filter narrows to specific "
+                "columns. No classification — returns raw data only."
+            ),
+            properties={
+                "seconds": {
+                    "type": "integer",
+                    "description": "How many seconds back from now. Default 8.",
+                },
+                "channels": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional list of channel names to include.",
+                },
+            },
+            required=[],
+        ),
+        FunctionSchema(
+            name="get_lap_telemetry",
+            description=(
+                "Return raw telemetry rows for one completed lap. Optional "
+                "channel filter narrows to specific columns. No classification "
+                "— returns raw data only. Defaults to the most recently "
+                "completed lap if no number is given."
+            ),
+            properties={
+                "lap": {
+                    "type": "integer",
+                    "description": "Lap number. Defaults to most recent completed lap.",
+                },
+                "channels": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional list of channel names to include.",
+                },
+            },
+            required=[],
+        ),
+        # ── Frontend monitoring activators ──────────────────────────────────
+        FunctionSchema(
+            name="start_per_turn_coaching",
+            description=(
+                "Activate the background monitoring agent that watches for "
+                "corner-end events and pushes an observation after each one. "
+                "Returns immediately; subsequent observations arrive as "
+                "'[OBSERVATION]' user turns. Use when the driver asks to be "
+                "coached every corner / through the rest of the session."
+            ),
+            properties={},
+            required=[],
+        ),
+        FunctionSchema(
+            name="stop_per_turn_coaching",
+            description=(
+                "Stop the per-corner monitoring agent. Use when the driver "
+                "says 'stop coaching', 'quiet for a bit', or asks to be left "
+                "alone."
+            ),
+            properties={},
+            required=[],
+        ),
+    ]
+    return schemas
 
-    return [check_car_limit_schema, track_detail_schema]
 
+def _make_tool_handler(tool_executor, session_config: "VoiceSessionConfig", conn: Any):
+    """Build a per-session async handler with two-bucket dispatch.
 
-def _make_tool_handler(tool_executor, session_config: "VoiceSessionConfig"):
-    """Build a per-session async handler that delegates to ``tool_executor``.
-    The executor is injected by the caller (api/voice.py wires
-    AIService._execute_function into this slot) so app/voice/ stays out
-    of app/pipelines/ — see .importlinter contract voice-no-pipeline-or-api.
+    * Tool names in :data:`FRONTEND_TOOLS` → forwarded to the frontend over
+      the WS via :func:`app.voice.tool_relay.get_relay().dispatch`. The
+      ``conn`` arg identifies which WS connection to send the call on.
+    * Everything else → forwarded to ``tool_executor`` (server-side path,
+      typically ``AIService._execute_function``).
 
-    Closes over `session_config` so per-session context (track/car) is
-    forwarded to the existing tool implementations exactly as the HTTP
-    path does.
+    Both paths share the side-product filter (underscore-prefixed keys are
+    logged but not sent back to the LLM) so server-side and frontend-side
+    tools behave consistently from the LLM's perspective.
     """
+    from app.voice.tool_relay import get_relay
+
+    relay = get_relay()
+
     async def handle_tool_call(params):
         function_name = params.function_name
         arguments = params.arguments or {}
-        # Build the same `context` dict the HTTP path passes.
-        context = {
-            "track_name": session_config.track_name,
-            "car_name": session_config.car_name,
-            "user_id": session_config.user_id,
-        }
 
         try:
-            result = await tool_executor(function_name, arguments, context)
+            if function_name in FRONTEND_TOOLS:
+                # Relayed to the Electron app over the same WS as audio.
+                # dispatch() never raises — failures come back as {"error": ...}.
+                result = await relay.dispatch(conn, function_name, arguments)
+            else:
+                # Server-side path. Context carries the connect-time IDs;
+                # track/car are intentionally absent (LLM fetches via tool).
+                # ``_conn`` is an opaque handle that server-side composite
+                # tools (e.g. analyze_recent_segment) use to relay back to
+                # the frontend via the same WS — underscore-prefixed because
+                # it's a server-internal channel, not part of the OpenAI
+                # context schema.
+                context = {
+                    "session_id": session_config.session_id,
+                    "user_id": session_config.user_id,
+                    "_conn": conn,
+                }
+                result = await tool_executor(function_name, arguments, context)
         except Exception as exc:
             LOGGER.exception("Voice tool %s failed", function_name)
             await params.result_callback({"error": str(exc)})
             return
 
-        # Split public vs side-product keys (underscore-prefixed). Send only
-        # the public ones back to the LLM. Side products would normally drive
-        # UI features in the text-chat path; voice has no UI side-channel today.
+        # Side-product filter — underscore-prefixed keys never reach the LLM.
         if isinstance(result, dict):
             public = {k: v for k, v in result.items() if not k.startswith("_")}
             side_products = {k: v for k, v in result.items() if k.startswith("_")}
             if side_products:
                 LOGGER.info(
-                    "Voice tool %s produced side products (not forwarded to client): %s",
+                    "Voice tool %s produced side products (not forwarded to LLM): %s",
                     function_name, list(side_products.keys()),
                 )
             payload = public if public else result
@@ -187,28 +352,37 @@ async def build_voice_pipeline_task(
     Returns the task; caller is responsible for running it via
     `PipelineRunner.run(task)`.
 
+    Side effect: registers the WebSocket with :mod:`app.voice.tool_relay`
+    so frontend tool calls and observation pushes routed via text frames
+    reach this session's LLM context. The caller (api/voice.py) is
+    responsible for unbinding on session end.
+
     Raises ImportError if pipecat-ai or faster-whisper aren't available
     — the caller should map this to an explicit error frame to the WS.
     """
     # Deferred imports — see module docstring.
-    from openai import AsyncOpenAI
+    import asyncio
     from pipecat.adapters.schemas.tools_schema import ToolsSchema
     from pipecat.audio.vad.silero import SileroVADAnalyzer
     from pipecat.pipeline.pipeline import Pipeline
     from pipecat.pipeline.task import PipelineParams, PipelineTask
-    from pipecat.processors.aggregators.openai_llm_context import OpenAILLMContext
+    from pipecat.processors.aggregators.llm_context import LLMContext
+    from pipecat.processors.aggregators.llm_response_universal import (
+        LLMContextAggregatorPair,
+    )
     from pipecat.services.openai.llm import OpenAILLMService
     from pipecat.services.whisper.stt import WhisperSTTService
-    from pipecat.transports.network.fastapi_websocket import (
+    from pipecat.transports.websocket.fastapi import (
         FastAPIWebsocketParams,
         FastAPIWebsocketTransport,
     )
 
     from app.voice.pipecat_kokoro import build_kokoro_processor
+    from app.voice.tool_relay import get_relay
 
     LOGGER.info(
-        "Building voice pipeline (track=%s car=%s user=%s)",
-        session_config.track_name, session_config.car_name, session_config.user_id,
+        "Building voice pipeline (session=%s user=%s)",
+        session_config.session_id, session_config.user_id,
     )
 
     # --- Transport ---
@@ -247,16 +421,13 @@ async def build_voice_pipeline_task(
     )
 
     # --- LLM (local llama-server via OpenAI-compatible client) ---
-    llama_client = AsyncOpenAI(
+    llm = OpenAILLMService(
         base_url=settings.llama_server_url,
         api_key="not-needed",
-    )
-    llm = OpenAILLMService(
-        client=llama_client,
-        model=settings.llama_model_name,
-        params=OpenAILLMService.InputParams(
+        settings=OpenAILLMService.Settings(
+            model=settings.llama_model_name,
             temperature=0.7,
-            max_tokens=300,  # Voice responses are short — discourage rambling.
+            max_tokens=600,  # Engineer-voice answers can run a few sentences; Pipecat still stops at end-of-turn.
         ),
     )
 
@@ -268,20 +439,19 @@ async def build_voice_pipeline_task(
     tool_schemas = _build_tool_schemas()
     tools = ToolsSchema(standard_tools=tool_schemas)
 
-    tool_handler = _make_tool_handler(tool_executor, session_config)
+    tool_handler = _make_tool_handler(tool_executor, session_config, conn=websocket)
     for schema in tool_schemas:
         llm.register_function(schema.name, tool_handler)
 
-    # System message + context object (Pipecat's history aggregator).
-    system_message = _VOICE_COACH_PROMPT_TEMPLATE.format(
-        track_name=session_config.track_name,
-        car_name=session_config.car_name,
-    )
-    context = OpenAILLMContext(
-        messages=[{"role": "system", "content": system_message}],
+    # System message + context object (Pipecat's history aggregator). The
+    # engineer prompt has no {track}/{car} placeholders — the LLM fetches
+    # those on demand via get_session_info if it actually needs to mention
+    # them.
+    context = LLMContext(
+        messages=[{"role": "system", "content": _VOICE_COACH_PROMPT_TEMPLATE}],
         tools=tools,
     )
-    context_aggregator = llm.create_context_aggregator(context)
+    context_aggregator = LLMContextAggregatorPair(context)
 
     # --- TTS (Kokoro via custom Pipecat processor) ---
     KokoroProcessor = build_kokoro_processor()
@@ -306,7 +476,65 @@ async def build_voice_pipeline_task(
         ),
     )
 
+    # --- Observation sink (frontend monitoring-agent pushes) ----------------
+    # When the frontend WS sends {"type":"observation","data":{...}}, the
+    # relay calls this sink. We format the observation as a synthetic user
+    # turn, append it to the live LLMContext, and trigger the LLM to
+    # respond. Same conversation context as voice turns — the LLM doesn't
+    # know an observation came from a different path than STT.
+    loop = asyncio.get_running_loop()
+
+    def observation_sink(data: dict) -> None:
+        text = _format_observation_for_llm(data)
+        context.add_message({"role": "user", "content": f"[OBSERVATION] {text}"})
+        # Trigger the LLM to generate a response now (don't wait for the
+        # next spoken user turn). Best-effort across Pipecat versions:
+        # LLMRunFrame is the canonical trigger; fall back to a transcription
+        # frame which the user-aggregator forwards.
+        try:
+            from pipecat.frames.frames import LLMRunFrame
+            loop.create_task(task.queue_frame(LLMRunFrame()))
+        except ImportError:
+            try:
+                from pipecat.frames.frames import TranscriptionFrame
+                loop.create_task(task.queue_frame(
+                    TranscriptionFrame(text="", user_id="observation", timestamp="")
+                ))
+            except Exception:
+                LOGGER.exception(
+                    "observation_sink: could not push trigger frame; "
+                    "message appended to context but LLM won't fire until "
+                    "the next spoken user turn"
+                )
+
+    async def _send_text(payload: str) -> None:
+        await websocket.send_text(payload)
+
+    get_relay().bind(websocket, send_text=_send_text, observation_sink=observation_sink)
+
     return task
+
+
+def _format_observation_for_llm(data: dict) -> str:
+    """Turn an observation payload into a one-line prompt for the LLM.
+
+    Observations come in raw from the frontend monitoring agent — they
+    carry an ``event`` name plus arbitrary context (telemetry rows, lap
+    number, etc.). We compress them to a short prompt so the LLM has
+    something concrete to respond to without re-classifying every channel.
+    Classification is still on the LLM to invoke (via classify_segment or
+    analyze_recent_segment) if it decides the observation warrants it.
+    """
+    event = data.get("event", "event")
+    bits = [event]
+    for k in ("section", "lap", "lap_number"):
+        v = data.get(k)
+        if v is not None:
+            bits.append(f"{k}={v}")
+    n_rows = len(data.get("telemetry_rows") or [])
+    if n_rows:
+        bits.append(f"telemetry_rows={n_rows}")
+    return " ".join(bits) + ". Respond with one short engineer suggestion."
 
 
 async def run_voice_session(
@@ -319,13 +547,18 @@ async def run_voice_session(
     Returns when the WS closes or the pipeline exits. Caller is responsible
     for any auth/lifecycle concerns around `websocket` and for supplying a
     ``tool_executor`` (typically AIService._execute_function).
+
+    Also unbinds the WebSocket from :mod:`app.voice.tool_relay` on exit so
+    in-flight tool-call futures are cancelled cleanly.
     """
-    # Deferred import.
+    # Deferred imports.
     from pipecat.pipeline.runner import PipelineRunner
+    from app.voice.tool_relay import get_relay
 
     task = await build_voice_pipeline_task(websocket, session_config, tool_executor)
     runner = PipelineRunner()
     try:
         await runner.run(task)
     finally:
+        get_relay().unbind(websocket)
         LOGGER.info("Voice session ended (user=%s)", session_config.user_id)

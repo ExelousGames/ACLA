@@ -40,10 +40,13 @@ class Settings(BaseSettings):
     # an OpenAI-compatible HTTP API at this URL. The chat code calls it as if it
     # were OpenAI, just with a different base_url.
     llama_server_url: str = "http://127.0.0.1:8080/v1"
-    llama_model_name: str = "qwen2.5-1.5b-instruct"
-    llama_model_repo: str = "Qwen/Qwen2.5-1.5B-Instruct-GGUF"
-    llama_model_file: str = "qwen2.5-1.5b-instruct-q4_k_m.gguf"
-    llama_n_ctx: int = 8192
+    # Default targets the racing-engineer's brain: Qwen2.5-32B-Instruct. Override
+    # via LLAMA_MODEL_NAME / LLAMA_MODEL_REPO / LLAMA_MODEL_FILE env vars for
+    # local iteration on a smaller GGUF.
+    llama_model_name: str = "qwen2.5-32b-instruct"
+    llama_model_repo: str = "Qwen/Qwen2.5-32B-Instruct-GGUF"
+    llama_model_file: str = "qwen2.5-32b-instruct-q5_k_m.gguf"
+    llama_n_ctx: int = 16384
     llama_n_gpu_layers: int = 99  # 0 disables GPU offload; 99 = offload all layers
     llama_health_timeout_seconds: float = 2.0
 

@@ -137,19 +137,28 @@ async def voice_health() -> dict:
 @router.websocket("/stream")
 async def voice_stream(
     websocket: WebSocket,
-    track_name: str = Query("Unknown"),
-    car_name: str = Query("Unknown"),
+    session_id: Optional[str] = Query(None),
     user_id: Optional[str] = Query(None),
 ):
     """WebSocket endpoint for full bidirectional voice conversation.
 
-    The client sends mic audio frames (PCM16 mono, raw — Pipecat handles
-    the wire framing via its Protobuf serializer). The server runs:
-        VAD → Whisper STT → llama-server LLM → Kokoro TTS
-    and streams audio back over the same connection.
+    Single chat surface for the racing engineer. The connection carries
+    BOTH:
 
-    Query parameters provide per-session context (track/car/user) without
-    requiring an initial message protocol.
+    * **Binary frames** — raw PCM16 mono audio (mic in / Kokoro TTS out).
+      Consumed by Pipecat's transport unchanged.
+    * **Text frames** — JSON tool-relay messages (``tool_call`` /
+      ``tool_result`` / ``tool_error`` / ``observation``) — see
+      :mod:`app.voice.tool_relay`. Routed off the audio path before
+      Pipecat sees them.
+
+    Pipeline (binary frames only):
+        VAD → Whisper STT → llama-server LLM → Kokoro TTS
+
+    Query params kept minimal — only what the relay needs at connect
+    time. ``track_name`` / ``car_name`` are no longer query params; the
+    LLM fetches them on demand via the ``get_session_info`` frontend
+    tool. See the plan's "everything is pulled on demand" principle.
     """
     await websocket.accept()
 
@@ -174,8 +183,7 @@ async def voice_stream(
         return
 
     config = VoiceSessionConfig(
-        track_name=track_name,
-        car_name=car_name,
+        session_id=session_id,
         user_id=user_id,
     )
 
@@ -186,13 +194,18 @@ async def voice_stream(
     ai_service = AIService()
     tool_executor = ai_service._execute_function
 
+    # Wrap the WS so inbound text frames go to the tool relay and only
+    # binary frames reach Pipecat. The relay singleton is bound to the
+    # underlying ``websocket`` (identity is keyed by id(websocket)) inside
+    # ``build_voice_pipeline_task``.
+    filtered_ws = _TextFilteringWebSocket(websocket)
+
     LOGGER.info(
-        "Voice WS connected (track=%s car=%s user=%s)",
-        track_name, car_name, user_id,
+        "Voice WS connected (session=%s user=%s)", session_id, user_id,
     )
 
     try:
-        await run_voice_session(websocket, config, tool_executor)
+        await run_voice_session(filtered_ws, config, tool_executor)
     except WebSocketDisconnect:
         LOGGER.info("Voice WS client disconnected (user=%s)", user_id)
     except Exception:
@@ -201,3 +214,88 @@ async def voice_stream(
             await websocket.close(code=1011, reason="voice session error")
         except Exception:
             pass
+
+
+class _TextFilteringWebSocket:
+    """Proxy around a Starlette WebSocket that re-routes inbound text frames
+    to :mod:`app.voice.tool_relay` while letting binary frames pass through
+    to Pipecat unchanged.
+
+    Pipecat's :class:`FastAPIWebsocketTransport` runs its own ``receive``
+    loop over the WS. By interposing this proxy we keep Pipecat's audio
+    contract intact (it only ever sees binary frames) and turn the same
+    connection into a JSON RPC channel for tool relay traffic.
+
+    Identity is preserved via :py:meth:`__hash__` / :py:meth:`__eq__` so
+    callers can use either the proxy or the underlying WS as a dict key
+    interchangeably (the relay binds against the proxy; downstream code
+    that compares identity still works).
+    """
+
+    def __init__(self, ws: WebSocket) -> None:
+        self._ws = ws
+
+    # Delegate everything we don't override (send_bytes, send_text, accept,
+    # close, headers, query_params, state, etc.).
+    def __getattr__(self, name: str):
+        return getattr(self._ws, name)
+
+    def __hash__(self) -> int:  # so id(proxy) is stable and unique per WS
+        return id(self)
+
+    def __eq__(self, other: object) -> bool:
+        return other is self
+
+    # ---- receive path: route text frames into the relay --------------------
+
+    async def receive(self) -> dict:
+        """Return the next inbound frame, swallowing any text frames the
+        upstream is already routed elsewhere."""
+        import json as _json
+        from app.voice.tool_relay import get_relay
+        relay = get_relay()
+        while True:
+            msg = await self._ws.receive()
+            text = msg.get("text")
+            if text is not None:
+                try:
+                    payload = _json.loads(text)
+                except Exception:
+                    LOGGER.exception("voice WS: bad JSON text frame")
+                    continue
+                # Pass ``self`` (the proxy) — the relay binds against this
+                # same identity inside build_voice_pipeline_task, so the
+                # call_id-to-future map and observation_sink find it.
+                relay.handle_text_frame(self, payload)
+                continue
+            return msg
+
+    async def receive_bytes(self) -> bytes:
+        msg = await self.receive()
+        if "bytes" in msg:
+            return msg["bytes"]
+        # Disconnect or unexpected — re-raise via the underlying WS so
+        # Pipecat sees the normal Starlette failure path.
+        return await self._ws.receive_bytes()
+
+    async def receive_text(self) -> str:
+        # Defensive — Pipecat is configured for binary frames, so this
+        # should rarely fire. If it does, route the same way as receive().
+        msg = await self.receive()
+        if "text" in msg:
+            return msg["text"]
+        return await self._ws.receive_text()
+
+    async def iter_bytes(self):
+        try:
+            while True:
+                yield await self.receive_bytes()
+        except Exception:
+            return
+
+    async def iter_text(self):
+        try:
+            while True:
+                yield await self.receive_text()
+        except Exception:
+            return

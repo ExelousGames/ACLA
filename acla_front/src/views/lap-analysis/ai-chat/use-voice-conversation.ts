@@ -1,18 +1,19 @@
 /**
- * Voice conversation hook (Phase 3).
+ * Voice conversation hook — racing engineer (Phase 1 of the racing-engineer
+ * rebuild). Opens a WebSocket to the AI service's `/voice/stream` and runs
+ * BOTH channels over the same connection:
  *
- * Opens a WebSocket to the AI service's /voice/stream, captures mic
- * audio via AudioWorklet, sends PCM16 frames upstream, and plays
- * incoming PCM16 audio frames via Web Audio.
+ * - **Binary frames** — raw PCM16 mic in / Kokoro TTS out. Same protocol
+ *   as before.
+ * - **Text frames** — JSON tool-relay messages. The backend LLM emits
+ *   `{type:"tool_call",id,name,arguments}` frames; this hook dispatches
+ *   them through a caller-supplied handler registry and replies with
+ *   `{type:"tool_result",...}` or `{type:"tool_error",...}`. Long-running
+ *   handlers (e.g. per-turn coaching) can also push
+ *   `{type:"observation",data}` frames any time via `ctx.sendObservation`.
  *
- * Phase 3a scope: this hook talks directly to the AI service WebSocket.
- * Auth-gated NestJS proxying is deferred to Phase 3b — acceptable for
- * an Electron desktop app where the renderer is already on the same
- * trust boundary as the backend.
- *
- * Wire format: this hook speaks Pipecat's protobuf frame protocol. The
- * server uses `ProtobufFrameSerializer`. We keep the wire-format details
- * inside this module so consumers see a simple "start/stop" API.
+ * See `acla_ai_service/app/voice/tool_relay.py` for the backend half of
+ * this protocol.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -24,15 +25,35 @@ export type VoiceConversationState =
     | 'speaking'       // server is sending us audio
     | 'error';
 
+/** Context passed to every frontend tool handler. */
+export interface ToolHandlerContext {
+    /** Push an `observation` frame on the open WS. Safe to call from a
+     *  background monitoring agent at any time. Becomes a synthetic user
+     *  turn in the LLM's context on the backend. */
+    sendObservation: (data: Record<string, unknown>) => void;
+}
+
+/** One frontend tool handler. Return value becomes the `tool_result`. Throw
+ *  to emit a `tool_error`. */
+export type FrontendToolHandler = (
+    args: Record<string, unknown>,
+    ctx: ToolHandlerContext,
+) => Promise<unknown> | unknown;
+
 export interface VoiceConversationOptions {
-    /** Track name passed to the server as session context. */
-    trackName?: string;
-    /** Car name passed to the server as session context. */
-    carName?: string;
-    /** User ID (optional — server logs only for now). */
+    /** Driving session id — required for backend tools that look up
+     *  recent telemetry / lap data by session. */
+    sessionId?: string;
+    /** User id — required for backend tools that key off the logged-in
+     *  user (e.g. saved preferences, history). */
     userId?: string;
     /** Override base URL — defaults to the AI service env config. */
     baseUrl?: string;
+    /** Map of frontend tool name → handler. The LLM picks which tools to
+     *  call from its system prompt; the backend routes the call to this
+     *  hook over the WS via a `tool_call` text frame; we dispatch by
+     *  name. Missing handler → automatic `tool_error`. */
+    toolHandlers?: Record<string, FrontendToolHandler>;
 }
 
 export interface VoiceConversation {
@@ -61,6 +82,10 @@ export function useVoiceConversation(
     /**
      * Resolve the AI service WS URL. In dev the AI service is on
      * REACT_APP_AI_SERVICE_URL or falls back to REACT_APP_BACKEND_SERVER_IP:8000.
+     *
+     * Only `session_id` + `user_id` are passed at connect time — anything
+     * else the LLM wants (track, car, lap, telemetry) flows through the
+     * tool-relay text channel on demand.
      */
     const resolveWsUrl = useCallback((): string => {
         if (options.baseUrl) return options.baseUrl;
@@ -71,12 +96,20 @@ export function useVoiceConversation(
         const port = process.env.REACT_APP_AI_SERVICE_PORT || '8000';
         const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
         const params = new URLSearchParams();
-        if (options.trackName) params.set('track_name', options.trackName);
-        if (options.carName) params.set('car_name', options.carName);
+        if (options.sessionId) params.set('session_id', options.sessionId);
         if (options.userId) params.set('user_id', options.userId);
         const qs = params.toString();
         return `${proto}//${host}:${port}/voice/stream${qs ? '?' + qs : ''}`;
-    }, [options.baseUrl, options.trackName, options.carName, options.userId]);
+    }, [options.baseUrl, options.sessionId, options.userId]);
+
+    // Always-fresh handler registry — updated as options.toolHandlers changes
+    // without forcing the WS to reopen.
+    const toolHandlersRef = useRef<Record<string, FrontendToolHandler>>(
+        options.toolHandlers || {},
+    );
+    useEffect(() => {
+        toolHandlersRef.current = options.toolHandlers || {};
+    }, [options.toolHandlers]);
 
     const stop = useCallback(() => {
         // Tear down in reverse order of construction. All steps are idempotent.
@@ -179,7 +212,58 @@ export function useVoiceConversation(
                 setState('listening');
             };
 
+            // ── Tool-relay text channel ────────────────────────────────────
+            // Helpers that wrap the WS for tool handlers. Defined here so
+            // they capture the live `ws` instance; not exposed externally.
+            const sendText = (payload: object) => {
+                if (ws.readyState !== WebSocket.OPEN) return;
+                try { ws.send(JSON.stringify(payload)); }
+                catch (err) { console.warn('[voice/tool-relay] send failed:', err); }
+            };
+            const toolCtx: ToolHandlerContext = {
+                sendObservation: (data) => sendText({ type: 'observation', data }),
+            };
+
+            const handleToolCall = async (msg: {
+                id?: string; name?: string; arguments?: Record<string, unknown>;
+            }) => {
+                const id = msg.id;
+                const name = msg.name;
+                if (!id || !name) {
+                    console.warn('[voice/tool-relay] bad tool_call frame:', msg);
+                    return;
+                }
+                const handler = toolHandlersRef.current[name];
+                if (!handler) {
+                    sendText({ type: 'tool_error', id, error: `no handler for '${name}'` });
+                    return;
+                }
+                try {
+                    const result = await handler(msg.arguments || {}, toolCtx);
+                    sendText({
+                        type: 'tool_result',
+                        id,
+                        result: result && typeof result === 'object' ? result : { value: result },
+                    });
+                } catch (err) {
+                    const message = (err as Error)?.message || String(err);
+                    sendText({ type: 'tool_error', id, error: message });
+                }
+            };
+
             ws.onmessage = (event) => {
+                // Text frame → tool-relay channel. Binary frame → PCM audio.
+                if (typeof event.data === 'string') {
+                    let parsed: any;
+                    try { parsed = JSON.parse(event.data); }
+                    catch { console.warn('[voice/tool-relay] non-JSON text frame'); return; }
+                    if (parsed?.type === 'tool_call') {
+                        void handleToolCall(parsed);
+                    } else {
+                        console.warn('[voice/tool-relay] unknown text frame:', parsed?.type);
+                    }
+                    return;
+                }
                 if (!(event.data instanceof ArrayBuffer)) return;
                 // Server sent raw PCM16 mono at the kokoro sample rate.
                 queuePlayback(event.data, playbackContext);

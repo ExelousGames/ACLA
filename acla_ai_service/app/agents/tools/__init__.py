@@ -30,7 +30,7 @@ import numpy as np
 import pandas as pd
 from PIL import Image
 
-from app.skills import skills
+from app.skills.annotation import skills
 
 LOGGER = logging.getLogger(__name__)
 
@@ -451,7 +451,7 @@ def split_lap_by_circuit_sections(
     crossed in/out at the boundary.
     """
     from app.agents.evaluators import PipelineAttachment
-    from app.skills.label_catalog import find_labels
+    from app.skills.annotation.label_catalog import find_labels
 
     s, e = int(start_index), int(end_index)
 
@@ -615,7 +615,7 @@ def locate_circuit_section(
     brake pattern, etc.).
     """
     from app.agents.evaluators import PipelineAttachment
-    from app.skills.label_catalog import find_labels
+    from app.skills.annotation.label_catalog import find_labels
 
     s, e = int(start_index), int(end_index)
 

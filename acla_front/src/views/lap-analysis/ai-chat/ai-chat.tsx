@@ -1,16 +1,13 @@
 import React, { useState, useRef, useEffect, useContext } from 'react';
 import { Box, Button, Card, Flex, Text, TextField, ScrollArea, Separator, Badge, Spinner, IconButton } from '@radix-ui/themes';
 import { PaperPlaneIcon, ChatBubbleIcon, PersonIcon } from '@radix-ui/react-icons';
-import apiService from 'services/api.service';
 import './ai-chat.css';
 import { AnalysisContext } from 'views/lap-analysis/analysis-context';
 import { visualizationController } from 'views/lap-analysis/visualization/VisualizationRegistry';
 import { detectEnvironment } from 'utils/environment';
 import { createAiCommandRegistry, VISUALIZATION_COMMAND_FUNCTIONS } from './ai-command-registry';
 import { speakWithNeuralTts, NeuralTtsPlayback } from './neural-tts';
-import { streamChat, StreamingChatSession } from './streaming-chat';
-import { createAudioStreamQueue, AudioStreamQueue } from './audio-stream-queue';
-import { useVoiceConversation } from './use-voice-conversation';
+import { useVoiceConversation, FrontendToolHandler } from './use-voice-conversation';
 
 // Type declarations for Web Speech API
 declare global {
@@ -191,21 +188,42 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
     // Mirrors neuralTtsAvailable for read access inside async closures that
     // would otherwise see a stale state value.
     const neuralTtsDisabledRef = useRef<boolean>(false);
-    // Phase 2.5 — active streaming chat session + its audio queue.
-    // stopSpeaking() also tears these down.
-    const currentStreamRef = useRef<StreamingChatSession | null>(null);
-    const currentStreamAudioRef = useRef<AudioStreamQueue | null>(null);
-    // Same gate logic as neuralTtsDisabledRef: after one streaming failure
-    // we stop retrying it for the rest of the session.
-    const streamingDisabledRef = useRef<boolean>(false);
-
     const analysisContext = useContext(AnalysisContext);
 
-    // Phase 3 — Pipecat voice conversation. The hook owns mic, WS, and
-    // audio playback lifecycle. We just toggle start/stop from the UI.
+    // Racing engineer voice conversation. The hook owns mic, WS, and
+    // audio playback; it ALSO multiplexes the tool-relay text channel on
+    // the same WS — frontend tools listed below are reachable from the
+    // backend LLM via JSON text frames.
+    //
+    // What each handler does:
+    //   - get_session_info: returns whatever track/car the analysis view
+    //     has cached. Returned to the LLM whenever it asks (it never sees
+    //     these from connect-time params anymore).
+    //   - get_recent_telemetry / start_per_turn_coaching: this view
+    //     reviews recorded sessions rather than live ones, so the live
+    //     buffer is empty. We return a clean "no live telemetry in this
+    //     view" error — the engineer's anti-hallucination rule then
+    //     verbalizes "I can't see your telemetry right now" rather than
+    //     fabricating numbers. A future live-driving view can plug in
+    //     real implementations without touching the backend.
     const voiceConversation = useVoiceConversation({
-        trackName: analysisContext?.recordedSessioStaticsData?.track,
-        carName: analysisContext?.recordedSessioStaticsData?.car,
+        sessionId,
+        toolHandlers: {
+            get_session_info: ((): FrontendToolHandler => async () => ({
+                track: analysisContext?.recordedSessioStaticsData?.track || '',
+                car: analysisContext?.recordedSessioStaticsData?.car || '',
+                user_id: sessionId || '',
+            }))(),
+            get_recent_telemetry: ((): FrontendToolHandler => async () => ({
+                error: 'no_live_telemetry_in_this_view',
+            }))(),
+            start_per_turn_coaching: ((): FrontendToolHandler => async () => ({
+                error: 'no_live_telemetry_in_this_view',
+            }))(),
+            stop_per_turn_coaching: ((): FrontendToolHandler => async () => ({
+                status: 'stopped',
+            }))(),
+        },
     });
 
     const buildVisualizationAssistantContext = () => {
@@ -321,16 +339,9 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
     };
 
     const stopSpeaking = () => {
-        // Phase 2.5 — active streaming chat session (LLM + per-sentence audio).
-        if (currentStreamRef.current) {
-            currentStreamRef.current.abort();
-            currentStreamRef.current = null;
-        }
-        if (currentStreamAudioRef.current) {
-            currentStreamAudioRef.current.stop();
-            currentStreamAudioRef.current = null;
-        }
-        // Phase 2 — single-WAV neural TTS playback.
+        // Phase 2 — single-WAV neural TTS playback. (The Phase 2.5 SSE
+        // streaming refs were removed in the racing-engineer rebuild —
+        // voice WS audio is owned by useVoiceConversation now.)
         if (currentNeuralPlaybackRef.current) {
             currentNeuralPlaybackRef.current.stop();
             currentNeuralPlaybackRef.current = null;
@@ -964,251 +975,30 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
         }
     };
     /**
-     * Apply side-effects from the AI response that were previously handled
-     * after the non-streaming POST completed. Shared between the streaming
-     * `done` event handler and the non-streaming fallback.
+     * Text-chat submission path. Removed in the racing-engineer rebuild:
+     * the legacy `/naturallanguagequery` and `/user-ai-model/ai-query`
+     * endpoints (and the SSE flow that consumed them) were deleted along
+     * with this client logic. The voice WS is now the single chat surface;
+     * the text input below shows a hint pointing users at the mic button.
+     *
+     * A future change can re-enable text input by sending it as a
+     * synthetic user message over the voice WS text channel.
      */
-    const handleAIResponseSideEffects = (
-        responseData: any,
-    ): { addendum: string } => {
-        let addendum = '';
-        if (responseData?.payload?.side_products?.track_detail_for_guide
-            || responseData?.side_products?.track_detail_for_guide) {
-            try {
-                // Normalize: startTrackGuide expects the legacy non-streaming shape.
-                const wrapped = responseData?.payload ? responseData : { payload: responseData };
-                startTrackGuide(wrapped);
-                console.log('Track guidance enabled from AI response');
-            } catch (error) {
-                console.error('Error enabling track guidance:', error);
-                addendum += '\n\n*Note: Track guidance data was received but could not be processed properly.*';
-            }
-        }
-        return { addendum };
-    };
-
-    /**
-     * Phase 2.5 streaming path.
-     * - Inserts a placeholder AI message immediately.
-     * - As `token` events arrive, appends to the bubble.
-     * - As `audio` events arrive, queues them for gapless playback.
-     * - On `done`, runs side-effects (track guide, etc.) and finalizes.
-     * - On any error, falls back to the non-streaming endpoint.
-     */
-    const sendToAIStreaming = async (
-        messageContent: string,
-        requestContext: Record<string, unknown>,
-    ): Promise<boolean> => {
-        const aiMessageId = generateUniqueId('ai');
-        let accumulatedContent = '';
-
-        // Tear down any previous stream/audio so we never overlap.
-        if (currentStreamRef.current) {
-            currentStreamRef.current.abort();
-            currentStreamRef.current = null;
-        }
-        if (currentStreamAudioRef.current) {
-            currentStreamAudioRef.current.stop();
-            currentStreamAudioRef.current = null;
-        }
-
-        // Set up the audio queue only if TTS is enabled — otherwise drop
-        // audio events on the floor.
-        const audioQueue = isTextToSpeechEnabled
-            ? createAudioStreamQueue({
-                volume: 0.9,
-                onStart: () => setIsSpeaking(true),
-                onIdle: () => setIsSpeaking(false),
-                onError: (err) => console.warn('[stream audio] playback error:', err),
-            })
-            : null;
-        currentStreamAudioRef.current = audioQueue;
-
-        // Insert the placeholder bubble. We replace `isLoading` messages in one shot.
-        setMessages(prev =>
-            prev
-                .filter(msg => !msg.id.includes('loading') && !msg.id.includes('executing'))
-                .concat({
-                    id: aiMessageId,
-                    content: '',
-                    isUser: false,
-                    timestamp: new Date(),
-                    streamedAudio: isTextToSpeechEnabled,
-                })
-        );
-
-        let streamSucceeded = false;
-        let sawAnyEvent = false;
-
-        const session = streamChat(
-            { question: messageContent, context: requestContext },
-            {
-                onToken: (text) => {
-                    sawAnyEvent = true;
-                    accumulatedContent += text;
-                    setMessages(prev =>
-                        prev.map(msg =>
-                            msg.id === aiMessageId
-                                ? { ...msg, content: accumulatedContent }
-                                : msg
-                        )
-                    );
-                },
-                onAudio: ({ wav_b64 }) => {
-                    sawAnyEvent = true;
-                    audioQueue?.enqueueBase64Wav(wav_b64);
-                },
-                onToolStart: ({ name }) => {
-                    sawAnyEvent = true;
-                    console.log('[stream] tool_start:', name);
-                },
-                onToolEnd: ({ name, ok, error }) => {
-                    if (!ok) console.warn('[stream] tool_end failed:', name, error);
-                },
-                onDone: (event) => {
-                    streamSucceeded = true;
-                    const { addendum } = handleAIResponseSideEffects({ payload: event });
-                    if (addendum) {
-                        accumulatedContent = (event.answer || accumulatedContent) + addendum;
-                        setMessages(prev =>
-                            prev.map(msg =>
-                                msg.id === aiMessageId
-                                    ? { ...msg, content: accumulatedContent }
-                                    : msg
-                            )
-                        );
-                    } else if (event.answer && event.answer !== accumulatedContent) {
-                        // The server's authoritative `answer` may differ slightly
-                        // from our token concatenation (whitespace) — sync to it.
-                        accumulatedContent = event.answer;
-                        setMessages(prev =>
-                            prev.map(msg =>
-                                msg.id === aiMessageId
-                                    ? { ...msg, content: accumulatedContent }
-                                    : msg
-                            )
-                        );
-                    }
-                },
-                onError: ({ message, error_type }) => {
-                    console.warn('[stream] error event:', error_type, message);
-                },
-            },
-        );
-        currentStreamRef.current = session;
-
-        await session.done;
-
-        // Cleanup references regardless of outcome.
-        if (currentStreamRef.current === session) currentStreamRef.current = null;
-        // Don't stop the audio queue here — it may still be playing the last
-        // few sentences after the stream closes. It will fire onIdle when done.
-
-        // If we never saw a single event AND didn't get a done, treat it as failure
-        // so the fallback path runs.
-        return streamSucceeded || sawAnyEvent;
-    };
-
-    /**
-     * Legacy non-streaming POST. Used as a fallback when streaming fails.
-     */
-    const sendToAINonStreaming = async (
-        messageContent: string,
-        requestContext: Record<string, unknown>,
-    ): Promise<void> => {
-        const response = await apiService.post('user-ai-model/ai-query', {
-            question: messageContent,
-            context: requestContext,
-        });
-
-        const responseData = response.data as any;
-        let aiResponseContent =
-            responseData?.payload?.answer
-            || responseData?.answer
-            || responseData?.response
-            || "I'm sorry, I couldn't process your request.";
-        let functionCalls: FunctionCall[] = [];
-        let functionResults: FunctionResult[] = [];
-
-        const { addendum } = handleAIResponseSideEffects(responseData);
-        aiResponseContent += addendum;
-
-        // Legacy function_calls path (separate from OpenAI-style tool_calls).
-        if (responseData?.function_calls && Array.isArray(responseData.function_calls)) {
-            try {
-                functionCalls = responseData.function_calls.map((fc: any) => ({
-                    function: fc.function || fc.name,
-                    arguments: typeof fc.arguments === 'string' ? JSON.parse(fc.arguments) : fc.arguments
-                }));
-                for (const functionCall of functionCalls) {
-                    const result = await executeFunctionCall(functionCall, responseData);
-                    functionResults.push(result);
-                }
-            } catch (parseError) {
-                console.error('Error parsing function calls:', parseError);
-                aiResponseContent += '\n\n*Note: Function calls were detected but could not be parsed properly.*';
-            }
-        }
-
-        const aiResponse: Message = {
+    const sendToAI = async (_messageContent: string): Promise<void> => {
+        const notice: Message = {
             id: generateUniqueId('ai'),
-            content: aiResponseContent,
+            content:
+                "Text chat is being migrated to the voice WS — click the " +
+                "mic button to talk to the engineer for now.",
             isUser: false,
             timestamp: new Date(),
-            functionCalls: functionCalls.length > 0 ? functionCalls : undefined,
-            functionResults: functionResults.length > 0 ? functionResults : undefined,
-            // Non-streaming path — let the auto-speak effect handle audio.
-            streamedAudio: false,
         };
-
-        setMessages(prev =>
+        setMessages((prev) =>
             prev
-                .filter(msg => !msg.id.includes('loading') && !msg.id.includes('executing'))
-                .concat(aiResponse)
+                .filter((msg) => !msg.id.includes('loading') && !msg.id.includes('executing'))
+                .concat(notice),
         );
-    };
-
-    const sendToAI = async (messageContent: string) => {
-        const requestContext = {
-            session_id: sessionId || '',
-            trackname: analysisContext?.recordedSessioStaticsData?.track || '',
-            visualization_assistant: buildVisualizationAssistantContext(),
-        };
-
-        try {
-            // Prefer streaming. After one failure, stick to non-streaming for
-            // the rest of the session to avoid retrying a broken pipe.
-            if (!streamingDisabledRef.current) {
-                try {
-                    const ok = await sendToAIStreaming(messageContent, requestContext);
-                    if (ok) return;
-                    // Stream produced no events — fall through to non-streaming.
-                    console.warn('[sendToAI] streaming produced no events; falling back');
-                } catch (streamErr) {
-                    console.warn('[sendToAI] streaming threw; falling back:', streamErr);
-                }
-                streamingDisabledRef.current = true;
-                // Clean up the half-finished streaming placeholder bubble.
-                setMessages(prev => prev.filter(msg => !msg.id.startsWith('ai-') || msg.content));
-            }
-
-            await sendToAINonStreaming(messageContent, requestContext);
-        } catch (error) {
-            console.error('Error sending message to AI:', error);
-            const errorMessage: Message = {
-                id: generateUniqueId('error'),
-                content: "I'm sorry, I encountered an error while processing your request. Please try again.",
-                isUser: false,
-                timestamp: new Date(),
-            };
-            setMessages(prev =>
-                prev
-                    .filter(msg => !msg.id.includes('loading') && !msg.id.includes('executing'))
-                    .concat(errorMessage)
-            );
-        } finally {
-            setIsLoading(false);
-        }
+        setIsLoading(false);
     };
 
     const handleSendMessage = async () => {

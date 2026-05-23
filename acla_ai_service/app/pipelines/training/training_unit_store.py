@@ -40,7 +40,7 @@ from app.pipelines.training.dataset_builder import (
     build_dataset,
     render_labels_text,
 )
-from app.skills import skills
+from app.skills.annotation import skills
 
 
 # ---------------------------------------------------------------------------

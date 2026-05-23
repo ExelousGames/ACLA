@@ -2,13 +2,6 @@ import { Injectable, HttpException, HttpStatus } from '@nestjs/common';
 import axios from 'axios';
 import { UserACCTrackAIModel } from 'src/schemas/session-ai-model.schema';
 
-export interface QueryRequest {
-    question: string;
-    user_id?: string;
-    context?: any;
-}
-
-
 export interface TrainModelRequest {
     session_id: string;
     telemetry_data: any[];
@@ -137,19 +130,6 @@ export class AiServiceClient {
     }
 
 
-    async processQuery(query: QueryRequest): Promise<any> {
-        try {
-            const response = await axios.post(`${this.aiServiceUrl}/naturallanguagequery`, query);
-            return response.data;
-        } catch (error) {
-            throw new HttpException(
-                `AI Service query failed: ${error.message}`,
-                HttpStatus.SERVICE_UNAVAILABLE
-            );
-        }
-    }
-
-
     async checkHealth(): Promise<any> {
         try {
             const response = await axios.get(`${this.aiServiceUrl}/health`);
@@ -192,33 +172,6 @@ export class AiServiceClient {
         } catch (error) {
             throw new HttpException(
                 `AI Service voice synthesis failed: ${error.message}`,
-                HttpStatus.SERVICE_UNAVAILABLE
-            );
-        }
-    }
-
-    /**
-     * Phase 2.5 — Streaming version of processQuery.
-     * Returns the raw axios stream so the controller can pipe SSE bytes
-     * straight through to the browser without parsing them. Caller is
-     * responsible for setting SSE response headers and ending the response.
-     */
-    async streamQuery(query: QueryRequest): Promise<NodeJS.ReadableStream> {
-        try {
-            const response = await axios.post(
-                `${this.aiServiceUrl}/naturallanguagequery/stream`,
-                query,
-                {
-                    responseType: 'stream',
-                    // No timeout — the stream is long-lived by design.
-                    timeout: 0,
-                    headers: { Accept: 'text/event-stream' },
-                },
-            );
-            return response.data as NodeJS.ReadableStream;
-        } catch (error) {
-            throw new HttpException(
-                `AI Service stream query failed: ${error.message}`,
                 HttpStatus.SERVICE_UNAVAILABLE
             );
         }

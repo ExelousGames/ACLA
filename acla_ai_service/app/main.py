@@ -15,7 +15,6 @@ from app.api import (
     health_router,
     racing_session_router,
 )
-from app.api.query import router as query_router
 from app.api.voice import router as voice_router
 
 
@@ -81,9 +80,8 @@ app.add_middleware(
 
 # Include API routers
 app.include_router(health_router)
-app.include_router(query_router)  # Main query endpoint
 app.include_router(racing_session_router)
-app.include_router(voice_router)  # Phase 2 — neural TTS (Kokoro)
+app.include_router(voice_router)  # voice WS = single chat surface (audio + tool-relay)
 app.include_router(annotation_router)  # Step 13 — replaces Streamlit's in-process import
 
 if __name__ == "__main__":

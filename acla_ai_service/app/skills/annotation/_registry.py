@@ -33,7 +33,7 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 import yaml
 
-from app.skills._query import (
+from app.skills.annotation._query import (
     _split_path,
     find as _filter,
     get_path,
@@ -43,10 +43,13 @@ from app.skills._query import (
 LOGGER = logging.getLogger(__name__)
 
 _PACKAGE_ROOT = Path(__file__).resolve().parent
-# Yamls live FLAT under app/skills/<name>.yaml (no subdir) — see
-# refactor/hexagonal-v1 Step 8 and feedback_skill_is_data_only.md.
+# Annotation yamls live under app/skills/annotation/<name>.yaml. The racing-
+# engineer corpus lives in the sibling app/skills/racing_engineer/ subpackage
+# and is loaded by its own module — see app/skills/__init__.py.
 _SKILLS_ROOT = _PACKAGE_ROOT
-_CACHE_DIR = _PACKAGE_ROOT.parent.parent / ".cache" / "skills"
+# Cache lives at <project root>/.cache/skills — three levels up from
+# app/skills/annotation/_registry.py.
+_CACHE_DIR = _PACKAGE_ROOT.parent.parent.parent / ".cache" / "skills"
 _EMBEDDINGS_FILE = _CACHE_DIR / "embeddings.npz"
 _MANIFEST_FILE = _CACHE_DIR / "manifest.json"
 
@@ -168,7 +171,7 @@ class SkillRegistry:
                 to_embed.append(name)
 
         if to_embed:
-            from app.skills._embedder import embed
+            from app.skills.annotation._embedder import embed
             texts = [discovery_texts[n] for n in to_embed]
             vecs = embed(texts)
             if vecs.ndim == 1:
@@ -258,7 +261,7 @@ class SkillRegistry:
         """Embedding-similarity search over discovery headers."""
         if self._embeddings is None or not self._names:
             return []
-        from app.skills._embedder import embed
+        from app.skills.annotation._embedder import embed
         q = embed(query)
         scores = self._embeddings @ q
         order = np.argsort(-scores)[: max(0, top_k)]

@@ -4,7 +4,7 @@ import { Model, Types } from 'mongoose';
 import { UserACCTrackAIModel, SessionAIModelSchema } from 'src/schemas/session-ai-model.schema';
 import { UserInfo } from 'src/schemas/user-info.schema';
 import { CreateSeesionAIModelDto as CreateACCSeesionAIModelDto, UpdateAiModelDto as UpdateACCAiModelDto, GetAiModelDto as GetACCAiModelDto, IncrementalTrainingDto, ModelPredictionDto, AiModelResponseDto } from 'src/dto/ai-model.dto';
-import { AiServiceClient, QueryRequest, VoiceSynthesizeRequest } from '../../shared/ai/ai-service.client';
+import { AiServiceClient, VoiceSynthesizeRequest } from '../../shared/ai/ai-service.client';
 import { RacingSessionService } from '../racing-session/racing-session.service';
 
 @Injectable()
@@ -125,15 +125,6 @@ export class UserSessionAiModelService {
         );
     }
 
-    async processAIQuery(queryRequest: any): Promise<any> {
-        try {
-            // Forward the AI query to the AI service
-            const result = await this.aiServiceClient.processQuery(queryRequest);
-            return result;
-        } catch (error) {
-            throw new BadRequestException(`AI query processing failed: ${error.message}`);
-        }
-    }
     async healthCheck() {
         return await this.aiServiceClient.checkHealth();
     }
@@ -152,17 +143,5 @@ export class UserSessionAiModelService {
 
     async listVoices() {
         return await this.aiServiceClient.listVoices();
-    }
-
-    /**
-     * Phase 2.5 — Returns a streaming SSE response from the AI service.
-     * The controller pipes this directly to the client.
-     */
-    async streamAIQuery(queryRequest: any): Promise<NodeJS.ReadableStream> {
-        try {
-            return await this.aiServiceClient.streamQuery(queryRequest);
-        } catch (error) {
-            throw new BadRequestException(`AI query streaming failed: ${error.message}`);
-        }
     }
 }

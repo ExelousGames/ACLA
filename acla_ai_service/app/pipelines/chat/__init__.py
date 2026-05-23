@@ -70,32 +70,134 @@ class AIService:
         self.backend_service = BackendService()
         self.telemetryMLService = Full_dataset_TelemetryMLService()
     def get_available_functions(self) -> List[Dict[str, Any]]:
-        """Define available functions for OpenAI function calling,
-        if OpenAI decides to call a function, it executes it"""
+        """Tool schemas advertised to the LLM (OpenAI function-calling format).
+
+        Mirrored from :func:`app.voice.pipecat_pipeline._build_tool_schemas`
+        — voice and any future HTTP-style path must advertise the same
+        capabilities so the LLM behaves consistently across surfaces. Tools
+        whose execution lives on the frontend (relayed over the voice WS)
+        are listed here too; they're routed at dispatch time by the voice
+        tool handler, not by ``_execute_function``.
+        """
         return [
+            # ── Server-side composites ─────────────────────────────────────
             {
-                "name": "check_car_limit",
-                "description": "Check if the car is within the optimal limits based on telemetry data",
+                "name": "analyze_recent_segment",
+                "description": (
+                    "ONE-SHOT analysis of the most recent driving segment. "
+                    "Fetches recent telemetry from the frontend, runs the "
+                    "classifier, looks up each detected action in the "
+                    "racing-engineer corpus, and returns a bundled payload. "
+                    "Prefer this over chaining get_recent_telemetry + "
+                    "classify_segment + explain_label."
+                ),
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "session_id": {"type": "string", "description": "Session ID for telemetry analysis"},
-                        "data_types": {"type": "array", "items": {"type": "string"}, "description": "Types of telemetry data to analyze (speed, acceleration, braking, steering)"}
+                        "seconds": {
+                            "type": "integer",
+                            "description": "How many seconds back to analyze. Default 8.",
+                        },
                     },
-                    "required": ["session_id"]
-                }
+                },
             },
             {
-                "name": "track_detail_for_guide",
-                "description": "Start the guiding process. After calling this function, you still need to generate some sentences for gas, brake, and throttle inputs.",
+                "name": "analyze_lap",
+                "description": (
+                    "ONE-SHOT analysis of a specific completed lap. Same "
+                    "shape as analyze_recent_segment but scoped to one lap "
+                    "by number. Use for 'how was lap 12', 'any mistakes on "
+                    "lap 3', 'walk me through my best lap'."
+                ),
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "track_name": {"type": "string", "description": "Name of the track to retrieve data"}
+                        "lap": {
+                            "type": "integer",
+                            "description": "Lap number. Defaults to most recent completed lap.",
+                        },
                     },
-                    "required": ["track_name"]
-                }
-            }
+                },
+            },
+            # ── Server-side primitives ─────────────────────────────────────
+            {
+                "name": "explain_label",
+                "description": (
+                    "Return the racing-engineer concept (definition, "
+                    "engineer interpretation, remedies) for one action "
+                    "label, by id (e.g. 'MS44') or natural name."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "label_id": {"type": "string"},
+                    },
+                    "required": ["label_id"],
+                },
+            },
+            {
+                "name": "classify_segment",
+                "description": (
+                    "Run the segment classifier over a window of telemetry "
+                    "rows and return the action labels present (translated "
+                    "to natural names)."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "telemetry_rows": {
+                            "type": "array",
+                            "items": {"type": "object"},
+                            "description": "Telemetry row dicts (e.g. from get_recent_telemetry).",
+                        },
+                    },
+                    "required": ["telemetry_rows"],
+                },
+            },
+            # ── Frontend-relayed (dispatched at the voice tool handler) ───
+            {
+                "name": "get_session_info",
+                "description": "Return current track / car / user identity from the live session.",
+                "parameters": {"type": "object", "properties": {}},
+            },
+            {
+                "name": "get_recent_telemetry",
+                "description": "Return the last N seconds of raw telemetry rows from the live in-memory buffer.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "seconds": {"type": "integer", "description": "Seconds back. Default 8."},
+                        "channels": {"type": "array", "items": {"type": "string"}},
+                    },
+                },
+            },
+            {
+                "name": "get_lap_telemetry",
+                "description": (
+                    "Return raw telemetry rows for one completed lap. "
+                    "Defaults to the most recently completed lap."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "lap": {"type": "integer", "description": "Lap number."},
+                        "channels": {"type": "array", "items": {"type": "string"}},
+                    },
+                },
+            },
+            {
+                "name": "start_per_turn_coaching",
+                "description": (
+                    "Activate the background monitoring agent that pushes an "
+                    "observation after every completed corner."
+                ),
+                "parameters": {"type": "object", "properties": {}},
+            },
+            {
+                "name": "stop_per_turn_coaching",
+                "description": "Stop the per-corner monitoring agent.",
+                "parameters": {"type": "object", "properties": {}},
+            },
         ]
     
     async def process_natural_language_query(
@@ -696,7 +798,27 @@ class AIService:
         └─────────────────────────────────────────────────────────────────┘
         """
         try:
-            # Handle different function types (sync vs async)
+            # ── Phase 1 racing-engineer server-side tools ──────────────────
+            if function_name == "analyze_recent_segment":
+                return await self._composite_analyze_recent_segment(
+                    seconds=int(arguments.get("seconds") or 8),
+                    conn=(context or {}).get("_conn"),
+                )
+            if function_name == "analyze_lap":
+                return await self._composite_analyze_lap(
+                    lap=arguments.get("lap"),
+                    conn=(context or {}).get("_conn"),
+                )
+            if function_name == "explain_label":
+                return await self._explain_label_impl(
+                    label_id=str(arguments.get("label_id") or "").strip(),
+                )
+            if function_name == "classify_segment":
+                return await self._classify_segment_impl(
+                    telemetry_rows=arguments.get("telemetry_rows") or [],
+                )
+
+            # ── Legacy ──────────────────────────────────────────────────────
             if function_name == "track_detail_for_guide":
                 return await self.track_detail_for_guide()
             elif function_name == "compare_sessions":
@@ -704,12 +826,187 @@ class AIService:
                     arguments.get("session_ids"),
                     arguments.get("comparison_metrics", ["lap_times"])
                 )
-            else:
-                print(f"[ERROR] Unknown function: {function_name}")
-                return {"error": f"Unknown function: {function_name}"}
+
+            print(f"[ERROR] Unknown function: {function_name}")
+            return {"error": f"Unknown function: {function_name}"}
 
         except Exception as e:
             return {"error": f"Function {function_name} execution failed: {str(e)}"}
+
+    # ------------------------------------------------------------------
+    # Phase 1 racing-engineer tool implementations
+    # ------------------------------------------------------------------
+
+    @property
+    def segment_classifier(self):
+        """Lazy-loaded singleton — defers PyTorch + model load until first use."""
+        svc = getattr(self, "_segment_classifier_instance", None)
+        if svc is None:
+            from app.ml.segment_classifier.service import SegmentClassifierService
+            svc = SegmentClassifierService()
+            self._segment_classifier_instance = svc
+        return svc
+
+    async def _classify_segment_impl(self, telemetry_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Run :py:meth:`SegmentClassifierService.predict_segment` over rows.
+
+        Returns labels with both raw ids (under ``_label_ids`` — side product)
+        and natural-language names (under ``labels`` — what the LLM sees) so
+        the LLM never speaks codes aloud.
+        """
+        if not telemetry_rows:
+            return {"labels": [], "_label_ids": []}
+        import asyncio as _asyncio
+        import pandas as _pd
+        from app.domain.labels import LABEL_MAPPING
+
+        def _run() -> List[str]:
+            df = _pd.DataFrame(telemetry_rows)
+            return list(self.segment_classifier.predict_segment(df) or [])
+
+        try:
+            label_ids = await _asyncio.to_thread(_run)
+        except Exception as exc:
+            return {"error": f"classifier failed: {exc}"}
+
+        names = [LABEL_MAPPING.get(lid, lid) for lid in label_ids]
+        return {"labels": names, "_label_ids": label_ids}
+
+    async def _explain_label_impl(self, label_id: str) -> Dict[str, Any]:
+        """Phase 1 stub. Phase 2 populates this against the racing-engineer
+        Markdown corpus at ``app/skills/racing_engineer/labels/<ID>.md``.
+
+        Accepts either a raw id ("MS44") or a natural name ("Oversteering at
+        entry") — looks the natural name up in ``LABEL_NAME_TO_ID`` first.
+        """
+        from app.domain.labels import LABEL_MAPPING, LABEL_NAME_TO_ID
+
+        if not label_id:
+            return {"error": "label_id is required"}
+
+        # Normalise: prefer raw id; fall back to name → id lookup.
+        normalised = label_id if label_id in LABEL_MAPPING else LABEL_NAME_TO_ID.get(label_id, label_id)
+        name = LABEL_MAPPING.get(normalised, label_id)
+
+        try:
+            from app.skills.racing_engineer import label as _label_lookup
+            entry = _label_lookup(normalised)
+        except Exception:
+            entry = None
+
+        if entry is None:
+            return {
+                "name": name,
+                "definition": (
+                    "Concept doc not authored yet — racing-engineer corpus "
+                    "ships in Phase 2. Rely on your base-model knowledge of "
+                    f"'{name}' for now."
+                ),
+                "_label_id": normalised,
+            }
+
+        return {
+            "name": entry.get("name", name),
+            "definition": entry.get("definition", ""),
+            "engineer_interpretation": entry.get("engineer_interpretation", ""),
+            "remedies": entry.get("remedies", []),
+            "_label_id": normalised,
+        }
+
+    async def _composite_analyze_recent_segment(self, seconds: int, conn: Any) -> Dict[str, Any]:
+        """Canonical "what just happened" flow as one server-side tool.
+
+        Steps: relay get_recent_telemetry over the WS → classify in-process
+        → resolve each detected label against the racing-engineer corpus.
+        Returns one bundled payload so the LLM sees a single tool call and
+        the voice path takes only one WS round-trip instead of three.
+        """
+        return await self._composite_analyze(
+            conn=conn,
+            frontend_tool="get_recent_telemetry",
+            frontend_args={"seconds": int(seconds)},
+            scope_summary={"seconds": int(seconds)},
+        )
+
+    async def _composite_analyze_lap(self, lap: Any, conn: Any) -> Dict[str, Any]:
+        """Per-lap variant of :py:meth:`_composite_analyze_recent_segment`.
+
+        Same chain (relay → classify → corpus lookup → bundle), scoped to
+        one completed lap rather than a sliding seconds window. Passing
+        ``lap=None`` lets the frontend pick the most recently completed
+        lap.
+        """
+        try:
+            lap_n = int(lap) if lap is not None else None
+        except (TypeError, ValueError):
+            return {"error": f"bad lap value: {lap!r}"}
+        args: Dict[str, Any] = {}
+        if lap_n is not None:
+            args["lap"] = lap_n
+        return await self._composite_analyze(
+            conn=conn,
+            frontend_tool="get_lap_telemetry",
+            frontend_args=args,
+            scope_summary={"lap": lap_n},
+        )
+
+    async def _composite_analyze(
+        self,
+        *,
+        conn: Any,
+        frontend_tool: str,
+        frontend_args: Dict[str, Any],
+        scope_summary: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Shared chain backing the analyze_* composites.
+
+        relay the named frontend tool → unwrap ``rows`` → classify → look
+        up each detected label in the racing-engineer corpus → return the
+        bundled payload. Errors at any step return ``{"error": ...}`` so
+        the LLM can verbalize cleanly via the system prompt's "if the
+        link is down, say so" rule.
+        """
+        if conn is None:
+            return {"error": "no_connection_bound"}
+
+        from app.voice.tool_relay import get_relay
+        relay = get_relay()
+
+        telemetry_resp = await relay.dispatch(conn, frontend_tool, frontend_args)
+        if not isinstance(telemetry_resp, dict) or "error" in telemetry_resp:
+            return {
+                "error": (telemetry_resp or {}).get("error", "telemetry_unavailable"),
+            }
+
+        rows = telemetry_resp.get("rows") or telemetry_resp.get("telemetry_rows") or []
+        if not rows:
+            return {
+                "telemetry_summary": {"rows": 0, **scope_summary},
+                "labels": [],
+            }
+
+        classify_result = await self._classify_segment_impl(rows)
+        if "error" in classify_result:
+            return classify_result
+
+        from app.domain.labels import LABEL_NAME_TO_ID
+
+        labels_out: List[Dict[str, Any]] = []
+        for name in classify_result.get("labels", []):
+            label_id = LABEL_NAME_TO_ID.get(name, name)
+            entry = await self._explain_label_impl(label_id)
+            labels_out.append({
+                "name": entry.get("name", name),
+                "definition": entry.get("definition", ""),
+                "engineer_interpretation": entry.get("engineer_interpretation", ""),
+                "remedies": entry.get("remedies", []),
+            })
+
+        return {
+            "telemetry_summary": {"rows": len(rows), **scope_summary},
+            "labels": labels_out,
+            "_label_ids": classify_result.get("_label_ids", []),
+        }
 
     async def track_detail_for_guide(self, trackName: str = None) -> Dict[str, Any]:
         
