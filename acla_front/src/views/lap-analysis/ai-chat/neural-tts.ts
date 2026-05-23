@@ -1,10 +1,9 @@
 /**
  * Neural TTS client (Phase 2).
  *
- * Calls the backend's `/user-ai-model/voice-synthesize` endpoint (which
- * forwards to the AI service's Kokoro engine) and plays the returned
- * WAV via an `HTMLAudioElement`. Replaces the browser-native
- * `window.speechSynthesis` for AI chat responses.
+ * Calls the backend's `/user-ai-model/voice-synthesize` endpoint and
+ * plays the returned WAV via an `HTMLAudioElement`. Replaces the
+ * browser-native `window.speechSynthesis` for chat responses.
  *
  * Designed to coexist with the existing speechSynthesis path:
  *   - On success: returns a NeuralTtsPlayback whose `.ended` resolves on
@@ -51,7 +50,7 @@ export async function speakWithNeuralTts(
         throw new Error('speakWithNeuralTts: text is empty');
     }
 
-    // Hits NestJS → AI service → Kokoro. Returns audio/wav bytes.
+    // Hits the NestJS backend. Returns audio/wav bytes.
     const wavBuffer = await apiService.postBinary(
         'user-ai-model/voice-synthesize',
         {

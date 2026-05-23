@@ -1,19 +1,16 @@
 /**
  * Voice conversation hook — racing engineer (Phase 1 of the racing-engineer
- * rebuild). Opens a WebSocket to the AI service's `/voice/stream` and runs
+ * rebuild). Opens a WebSocket to the backend's `/voice/stream` and runs
  * BOTH channels over the same connection:
  *
- * - **Binary frames** — raw PCM16 mic in / Kokoro TTS out. Same protocol
+ * - **Binary frames** — raw PCM16 mic in / TTS audio out. Same protocol
  *   as before.
- * - **Text frames** — JSON tool-relay messages. The backend LLM emits
+ * - **Text frames** — JSON tool-relay messages. The backend emits
  *   `{type:"tool_call",id,name,arguments}` frames; this hook dispatches
  *   them through a caller-supplied handler registry and replies with
  *   `{type:"tool_result",...}` or `{type:"tool_error",...}`. Long-running
  *   handlers (e.g. per-turn coaching) can also push
  *   `{type:"observation",data}` frames any time via `ctx.sendObservation`.
- *
- * See `acla_ai_service/app/voice/tool_relay.py` for the backend half of
- * this protocol.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -99,6 +96,7 @@ export function useVoiceConversation(
     }, [options.toolHandlers]);
 
     const stop = useCallback(() => {
+        console.log('[voice] stop() called — tearing down');
         // Tear down in reverse order of construction. All steps are idempotent.
         try { workletNodeRef.current?.disconnect(); } catch { /* ignore */ }
         workletNodeRef.current = null;
@@ -128,13 +126,19 @@ export function useVoiceConversation(
     }, []);
 
     const start = useCallback(async () => {
-        if (state !== 'idle' && state !== 'error') return;
+        console.log('[voice] start() called — current state:', state);
+        if (state !== 'idle' && state !== 'error') {
+            console.log('[voice] start() ignored — already active');
+            return;
+        }
 
         setError(null);
         setState('connecting');
+        console.log('[voice] state → connecting');
 
         try {
             // --- 1. Request mic permission ---
+            console.log('[voice] requesting mic permission…');
             const micStream = await navigator.mediaDevices.getUserMedia({
                 audio: {
                     channelCount: 1,
@@ -145,6 +149,7 @@ export function useVoiceConversation(
                 video: false,
             });
             micStreamRef.current = micStream;
+            console.log('[voice] mic permission granted — tracks:', micStream.getAudioTracks().length);
 
             // --- 2. Set up capture AudioContext + worklet ---
             // Capture at 16kHz mono to match the server's expected input rate
@@ -163,7 +168,15 @@ export function useVoiceConversation(
                 captureContext = new AudioContext();
             }
             audioContextRef.current = captureContext;
-            await captureContext.audioWorklet.addModule('/pcm-capture-worklet.js');
+            console.log('[voice] capture AudioContext created — sampleRate:', captureContext.sampleRate, 'state:', captureContext.state);
+
+            try {
+                await captureContext.audioWorklet.addModule('/pcm-capture-worklet.js');
+                console.log('[voice] pcm-capture-worklet loaded');
+            } catch (err) {
+                console.error('[voice] failed to load pcm-capture-worklet.js — check that /pcm-capture-worklet.js is reachable:', err);
+                throw err;
+            }
 
             const source = captureContext.createMediaStreamSource(micStream);
             const workletNode = new AudioWorkletNode(captureContext, 'pcm-capture');
@@ -173,18 +186,27 @@ export function useVoiceConversation(
             // would echo the mic back to the speakers.
 
             // --- 3. Open WebSocket ---
+            console.log('[voice] opening WebSocket /voice/stream …');
             const ws = openWs();
             ws.binaryType = 'arraybuffer';
             wsRef.current = ws;
+            console.log('[voice] WebSocket URL:', ws.url);
 
             // Hook up the worklet → WS pipe. We send raw PCM16 ArrayBuffers.
             // The Pipecat server's ProtobufFrameSerializer expects framed
             // protobuf, so this RAW PCM mode will only work if the server is
             // configured for it — see Phase 3 known limitations.
+            let micChunksSent = 0;
             workletNode.port.onmessage = (event) => {
                 if (ws.readyState !== WebSocket.OPEN) return;
                 try {
                     ws.send(event.data as ArrayBuffer);
+                    micChunksSent++;
+                    if (micChunksSent === 1) {
+                        console.log('[voice] first mic chunk sent (' + (event.data as ArrayBuffer).byteLength + ' bytes)');
+                    } else if (micChunksSent % 100 === 0) {
+                        console.log('[voice] sent', micChunksSent, 'mic chunks so far');
+                    }
                 } catch (err) {
                     console.warn('[voice] send failed:', err);
                 }
@@ -194,8 +216,10 @@ export function useVoiceConversation(
             const playbackContext = new AudioContext({ sampleRate: 24000 });
             playbackContextRef.current = playbackContext;
             playbackQueueTimeRef.current = playbackContext.currentTime;
+            console.log('[voice] playback AudioContext created — sampleRate:', playbackContext.sampleRate, 'state:', playbackContext.state);
 
             ws.onopen = () => {
+                console.log('[voice] WebSocket open → state listening');
                 setState('listening');
             };
 
@@ -238,20 +262,33 @@ export function useVoiceConversation(
                 }
             };
 
+            let audioFramesReceived = 0;
             ws.onmessage = (event) => {
                 // Text frame → tool-relay channel. Binary frame → PCM audio.
                 if (typeof event.data === 'string') {
                     let parsed: any;
                     try { parsed = JSON.parse(event.data); }
-                    catch { console.warn('[voice/tool-relay] non-JSON text frame'); return; }
+                    catch { console.warn('[voice/tool-relay] non-JSON text frame:', event.data); return; }
+                    console.log('[voice] ← text frame:', parsed?.type, parsed);
                     if (parsed?.type === 'tool_call') {
                         void handleToolCall(parsed);
+                    } else if (parsed?.type === 'error') {
+                        // Backend explicit error (e.g. pipecat / faster-whisper
+                        // not installed — see acla_ai_service/app/api/voice.py).
+                        const msg = parsed.message || parsed.error_type || 'backend error';
+                        console.error('[voice] backend error frame:', msg);
+                        setError(msg);
+                        setState('error');
                     } else {
                         console.warn('[voice/tool-relay] unknown text frame:', parsed?.type);
                     }
                     return;
                 }
                 if (!(event.data instanceof ArrayBuffer)) return;
+                audioFramesReceived++;
+                if (audioFramesReceived === 1) {
+                    console.log('[voice] first audio frame received from server (' + event.data.byteLength + ' bytes) → state speaking');
+                }
                 // Server sent raw PCM16 mono at the kokoro sample rate.
                 queuePlayback(event.data, playbackContext);
                 // Always set 'speaking' — setState is idempotent and the
@@ -260,12 +297,13 @@ export function useVoiceConversation(
             };
 
             ws.onerror = (event) => {
-                console.error('[voice] WS error:', event);
+                console.error('[voice] WS error event:', event);
                 setError('Voice connection error');
                 setState('error');
             };
 
             ws.onclose = (event) => {
+                console.log('[voice] WS closed — code:', event.code, 'reason:', event.reason || '(empty)', 'wasClean:', event.wasClean);
                 // closure-captured `state` is stale; use the setter form.
                 setState((prev) => {
                     if (prev === 'idle') return prev;
