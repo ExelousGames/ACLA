@@ -55,6 +55,10 @@ export interface VoiceConversationOptions {
 export interface VoiceConversation {
     state: VoiceConversationState;
     error: string | null;
+    /** Current mic input level in [0, 1] — peak amplitude over the last
+     *  ~66ms window. 0 while not capturing. Updates ~15Hz. Use this to
+     *  render a volume meter so the user can confirm the mic is hot. */
+    micLevel: number;
     /** Start the session — opens mic + WS. Throws if user denies mic. */
     start: () => Promise<void>;
     /** Stop the session — closes mic, WS, audio playback. Idempotent. */
@@ -66,6 +70,7 @@ export function useVoiceConversation(
 ): VoiceConversation {
     const [state, setState] = useState<VoiceConversationState>('idle');
     const [error, setError] = useState<string | null>(null);
+    const [micLevel, setMicLevel] = useState<number>(0);
 
     // Hold refs to all the resources we need to tear down on stop().
     const wsRef = useRef<WebSocket | null>(null);
@@ -122,6 +127,7 @@ export function useVoiceConversation(
         }
         wsRef.current = null;
 
+        setMicLevel(0);
         setState('idle');
     }, []);
 
@@ -192,18 +198,27 @@ export function useVoiceConversation(
             wsRef.current = ws;
             console.log('[voice] WebSocket URL:', ws.url);
 
-            // Hook up the worklet → WS pipe. We send raw PCM16 ArrayBuffers.
-            // The Pipecat server's ProtobufFrameSerializer expects framed
-            // protobuf, so this RAW PCM mode will only work if the server is
-            // configured for it — see Phase 3 known limitations.
+            // Hook up the worklet → WS pipe. The worklet posts two kinds of
+            // messages: { type:'pcm', buffer } (forwarded over the WS) and
+            // { type:'level', rms, peak } (used to drive the mic meter so
+            // the user can see whether their voice is registering).
             let micChunksSent = 0;
             workletNode.port.onmessage = (event) => {
+                const data = event.data;
+                if (data && data.type === 'level') {
+                    // Prefer peak — it's what the user perceives as "am I
+                    // talking right now". RMS is averaged and looks sleepy.
+                    const lvl = typeof data.peak === 'number' ? data.peak : 0;
+                    setMicLevel(lvl > 1 ? 1 : lvl < 0 ? 0 : lvl);
+                    return;
+                }
+                if (!data || data.type !== 'pcm' || !data.buffer) return;
                 if (ws.readyState !== WebSocket.OPEN) return;
                 try {
-                    ws.send(event.data as ArrayBuffer);
+                    ws.send(data.buffer as ArrayBuffer);
                     micChunksSent++;
                     if (micChunksSent === 1) {
-                        console.log('[voice] first mic chunk sent (' + (event.data as ArrayBuffer).byteLength + ' bytes)');
+                        console.log('[voice] first mic chunk sent (' + (data.buffer as ArrayBuffer).byteLength + ' bytes)');
                     } else if (micChunksSent % 100 === 0) {
                         console.log('[voice] sent', micChunksSent, 'mic chunks so far');
                     }
@@ -353,5 +368,5 @@ export function useVoiceConversation(
         return () => stop();
     }, [stop]);
 
-    return { state, error, start, stop };
+    return { state, error, micLevel, start, stop };
 }
