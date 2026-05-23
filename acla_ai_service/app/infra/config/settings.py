@@ -53,10 +53,17 @@ class Settings(BaseSettings):
     # Kokoro TTS Configuration (Phase 2)
     # Neural TTS that replaces window.speechSynthesis in the frontend.
     # Apache-2.0 ONNX model — downloaded on first run, persisted in a volume.
+    # URLs match kokoro-onnx upstream's documented setup (examples/save.py):
+    # https://github.com/thewh1teagle/kokoro-onnx#getting-started
     kokoro_model_dir: str = "/app/models/kokoro"
-    kokoro_model_repo: str = "onnx-community/Kokoro-82M-v1.0-ONNX"
-    kokoro_model_file: str = "onnx/model.onnx"
-    kokoro_voices_file: str = "voices-v1.0.bin"
+    kokoro_model_url: str = (
+        "https://github.com/thewh1teagle/kokoro-onnx/releases/download/"
+        "model-files-v1.0/kokoro-v1.0.onnx"
+    )
+    kokoro_voices_url: str = (
+        "https://github.com/thewh1teagle/kokoro-onnx/releases/download/"
+        "model-files-v1.0/voices-v1.0.bin"
+    )
     kokoro_default_voice: str = "af_bella"
     kokoro_sample_rate: int = 24000
 

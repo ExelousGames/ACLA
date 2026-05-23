@@ -4,9 +4,10 @@ Phase 2 of the voice plan. Replaces the browser's `window.speechSynthesis`
 (which falls back to robotic SAPI voices on Windows) with the open-source
 Kokoro-82M model, served from this AI service over HTTP.
 
-The model and voice pack are downloaded from the Hugging Face Hub on first
-use and cached at `settings.kokoro_model_dir` — mounted as a Docker volume
-so the ~330MB doesn't redownload on every container restart.
+The model and voice pack are downloaded from kokoro-onnx's GitHub Releases
+on first use (per upstream's documented workflow) and cached at
+`settings.kokoro_model_dir` — mounted as a Docker volume so the ~330MB
+doesn't redownload on every container restart.
 
 Usage:
     service = await get_kokoro_service()
@@ -26,7 +27,8 @@ from __future__ import annotations
 import asyncio
 import io
 import logging
-import os
+import shutil
+import urllib.request
 from pathlib import Path
 from typing import Optional
 
@@ -57,43 +59,34 @@ class KokoroService:
             if self._kokoro is not None:
                 return
 
-            # Imports deferred so the rest of the AI service still starts
-            # cleanly even if kokoro-onnx isn't installed in some envs.
-            from huggingface_hub import hf_hub_download
+            # Deferred so the rest of the AI service still starts cleanly
+            # even if kokoro-onnx isn't installed in some envs.
             from kokoro_onnx import Kokoro
 
             model_dir = Path(settings.kokoro_model_dir)
             model_dir.mkdir(parents=True, exist_ok=True)
 
-            LOGGER.info(
-                "Loading Kokoro TTS — repo=%s model=%s voices=%s",
-                settings.kokoro_model_repo,
-                settings.kokoro_model_file,
-                settings.kokoro_voices_file,
-            )
+            model_path = model_dir / Path(settings.kokoro_model_url).name
+            voices_path = model_dir / Path(settings.kokoro_voices_url).name
 
-            # hf_hub_download is sync; run in a thread so we don't block
-            # the event loop while the (potentially large) files download.
-            def _download(filename: str) -> str:
-                return hf_hub_download(
-                    repo_id=settings.kokoro_model_repo,
-                    filename=filename,
-                    local_dir=str(model_dir),
-                    token=settings.hf_token,
-                )
+            LOGGER.info(
+                "Loading Kokoro TTS — model=%s voices=%s",
+                model_path.name,
+                voices_path.name,
+            )
 
             loop = asyncio.get_event_loop()
-            model_path = await loop.run_in_executor(
-                None, _download, settings.kokoro_model_file
+            await loop.run_in_executor(
+                None, _download_if_missing, settings.kokoro_model_url, model_path
             )
-            voices_path = await loop.run_in_executor(
-                None, _download, settings.kokoro_voices_file
+            await loop.run_in_executor(
+                None, _download_if_missing, settings.kokoro_voices_url, voices_path
             )
 
             # Engine construction itself is fast; building the inference
             # session may not be — still run in a thread to be safe.
             def _build() -> "Kokoro":
-                return Kokoro(model_path, voices_path)
+                return Kokoro(str(model_path), str(voices_path))
 
             self._kokoro = await loop.run_in_executor(None, _build)
             LOGGER.info("Kokoro TTS ready (model=%s)", model_path)
@@ -162,6 +155,17 @@ def _samples_to_wav_bytes(samples, sample_rate: int) -> bytes:
     buffer = io.BytesIO()
     sf.write(buffer, samples, sample_rate, format="WAV", subtype="PCM_16")
     return buffer.getvalue()
+
+
+def _download_if_missing(url: str, dest: Path) -> None:
+    """Stream `url` to `dest` if not already cached. Atomic via .tmp + rename."""
+    if dest.exists() and dest.stat().st_size > 0:
+        return
+    tmp = dest.with_suffix(dest.suffix + ".tmp")
+    LOGGER.info("Kokoro: downloading %s -> %s", url, dest)
+    with urllib.request.urlopen(url) as resp, open(tmp, "wb") as f:
+        shutil.copyfileobj(resp, f)
+    tmp.replace(dest)
 
 
 # ----------------------------------------------------------------------
