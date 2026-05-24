@@ -45,10 +45,17 @@ class Settings(BaseSettings):
     # local iteration on a smaller GGUF.
     llama_model_name: str = "qwen2.5-32b-instruct"
     llama_model_repo: str = "Qwen/Qwen2.5-32B-Instruct-GGUF"
-    llama_model_file: str = "qwen2.5-32b-instruct-q5_k_m.gguf"
-    llama_n_ctx: int = 16384
+    llama_model_file: str = "qwen2.5-32b-instruct-q5_k_m-00001-of-00006.gguf"
+    llama_model_dir: str = "/app/models/llama_server"
+    llama_host: str = "127.0.0.1"
+    llama_port: int = 8080
+    llama_n_ctx: int = 8192
     llama_n_gpu_layers: int = 99  # 0 disables GPU offload; 99 = offload all layers
     llama_health_timeout_seconds: float = 2.0
+    # Seconds to wait for the chat sidecar to come up on first boot (model
+    # download can take many minutes). Matches the LLAMA_WAIT_SECONDS default
+    # used by the previous bash bootstrap.
+    llama_startup_timeout_seconds: int = 300
 
     # Kokoro TTS Configuration (Phase 2)
     # Neural TTS that replaces window.speechSynthesis in the frontend.

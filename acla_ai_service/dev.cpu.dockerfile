@@ -58,7 +58,7 @@ COPY . .
 ENV STREAMLIT_CONFIG_FILE=/app/.streamlit/config.toml
 # CPU-only inference: by default offload zero layers to the (nonexistent) GPU
 ENV LLAMA_N_GPU_LAYERS=0
-RUN chmod +x /app/start-dev.sh /app/scripts/start_llama_server.sh \
+RUN chmod +x /app/start-dev.sh \
     && mkdir -p /app/models/llama_server /app/models/kokoro
 
 # Expose ports: 8000 = FastAPI, 8080 = llama-server, 8501 = streamlit UI

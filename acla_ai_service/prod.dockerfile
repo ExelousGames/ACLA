@@ -44,15 +44,14 @@ RUN CMAKE_ARGS="-DGGML_CUDA=on" pip install --no-cache-dir llama-cpp-python
 # Copy application code and set ownership
 COPY . .
 ENV STREAMLIT_CONFIG_FILE=/app/.streamlit/config.toml
-RUN chmod +x /app/start-prod.sh /app/scripts/start_llama_server.sh \
+RUN chmod +x /app/start-prod.sh \
     && mkdir -p /app/models/llama_server /app/models/kokoro \
     && chown -R appuser:appuser /app
 
 # Switch to non-root user for security
 USER appuser
 
-# Expose ports: 8000 = FastAPI, 8080 = llama-server (internal sidecar)
+# Expose ports: 8000 = FastAPI, 8080 = llama-server (spawned by app lifespan)
 EXPOSE 8000
 
-# Run llama-server (background) + uvicorn (foreground)
 CMD ["/app/start-prod.sh"]

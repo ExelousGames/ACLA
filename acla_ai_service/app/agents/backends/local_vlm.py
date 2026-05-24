@@ -1,9 +1,13 @@
 """
-Local VLM backend — manages a llama-server subprocess.
+Local VLM backend — VLM-specific HTTP wrapper around a llama-server.
 
 Uses llama.cpp's OpenAI-compatible ``/v1/chat/completions`` endpoint for
 multimodal (text + image) inference. Mirrors the ``generate()`` contract
 of the Claude backend so the runner can swap them with one config flag.
+
+Process lifecycle (spawn/health/stop) is delegated to
+``app.llm.process.LlamaServerProcess`` — the single owner of any
+``llama-server`` process in the service.
 """
 
 from __future__ import annotations
@@ -11,16 +15,16 @@ from __future__ import annotations
 import base64
 import json
 import logging
-import socket
 import subprocess
 import sys
 import threading
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, List, Optional
 
 import requests
+
+from app.llm.process import LlamaServerConfig, LlamaServerProcess
 
 LOGGER = logging.getLogger(__name__)
 
@@ -74,12 +78,20 @@ AnnotationAgentLLMConfig = LocalVLMConfig
 # ---------------------------------------------------------------------------
 
 class LocalVLMService:
-    """Manages a single llama-server process for VLM inference."""
+    """VLM-specific HTTP wrapper around a llama-server process.
+
+    Process lifecycle is owned by ``LlamaServerProcess``; this class adds
+    OpenAI-format chat-completion, tool-call loop, and streaming helpers
+    on top.
+    """
 
     def __init__(self, config: LocalVLMConfig) -> None:
         self._config = config
-        self._process: Optional[subprocess.Popen] = None
-        self._base_url: Optional[str] = None
+        self._proc: Optional[LlamaServerProcess] = None
+
+    @property
+    def _base_url(self) -> Optional[str]:
+        return self._proc.base_url if self._proc is not None and self._proc.is_running() else None
 
     def start(self) -> None:
         if self.is_running():
@@ -88,57 +100,29 @@ class LocalVLMService:
 
         gguf_path = self._resolve_gguf()
         mmproj_path = self._resolve_mmproj()
-        port = self._config.port or _pick_free_port()
 
-        cmd: list[str] = [
-            "llama-server",
-            "-m", str(gguf_path),
-            "-c", str(self._config.context_size),
-            "--port", str(port),
-            "-ngl", str(self._config.n_gpu_layers),
-            "--host", self._config.host,
-        ]
-        if mmproj_path:
-            cmd += ["--mmproj", str(mmproj_path)]
-        if self._config.flash_attention:
-            cmd += ["-fa", "on"]
-
-        LOGGER.info("Starting llama-server: %s", " ".join(cmd))
-        self._process = subprocess.Popen(
-            cmd, stdout=sys.stdout, stderr=sys.stderr,
-        )
-        self._base_url = f"http://{self._config.host}:{port}"
-
-        if not self._wait_for_health():
-            self.stop()
-            raise RuntimeError(
-                f"llama-server failed to become healthy within "
-                f"{self._config.startup_timeout}s.  Check logs above."
+        self._proc = LlamaServerProcess(
+            LlamaServerConfig(
+                model_path=gguf_path,
+                mmproj_path=mmproj_path,
+                host=self._config.host,
+                port=self._config.port,
+                n_ctx=self._config.context_size,
+                n_gpu_layers=self._config.n_gpu_layers,
+                flash_attention=self._config.flash_attention,
+                startup_timeout_seconds=self._config.startup_timeout,
             )
-        LOGGER.info("llama-server ready at %s", self._base_url)
+        )
+        self._proc.start_or_attach()
 
     def stop(self) -> None:
-        if self._process is None:
+        if self._proc is None:
             return
-        LOGGER.info("Stopping llama-server (pid %d)", self._process.pid)
-        self._process.terminate()
-        try:
-            self._process.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            LOGGER.warning("llama-server did not exit, sending SIGKILL")
-            self._process.kill()
-            self._process.wait(timeout=5)
-        self._process = None
-        self._base_url = None
+        self._proc.stop()
+        self._proc = None
 
     def is_running(self) -> bool:
-        if self._process is None or self._process.poll() is not None:
-            return False
-        try:
-            r = requests.get(f"{self._base_url}/health", timeout=3)
-            return r.status_code == 200
-        except requests.RequestException:
-            return False
+        return self._proc is not None and self._proc.is_running()
 
     def __enter__(self) -> "LocalVLMService":
         self.start()
@@ -531,25 +515,6 @@ class LocalVLMService:
 
         return final_gguf, mmproj_gguf
 
-    def _wait_for_health(self) -> bool:
-        deadline = time.monotonic() + self._config.startup_timeout
-        url = f"{self._base_url}/health"
-        while time.monotonic() < deadline:
-            if self._process and self._process.poll() is not None:
-                LOGGER.error(
-                    "llama-server exited with code %d during startup",
-                    self._process.returncode,
-                )
-                return False
-            try:
-                r = requests.get(url, timeout=2)
-                if r.status_code == 200:
-                    return True
-            except requests.RequestException:
-                pass
-            time.sleep(2)
-        return False
-
 
 # Backwards-compatible alias.
 AnnotationAgentLLMService = LocalVLMService
@@ -608,9 +573,3 @@ def stop_service() -> None:
         if _service_instance is not None:
             _service_instance.stop()
             _service_instance = None
-
-
-def _pick_free_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("", 0))
-        return s.getsockname()[1]

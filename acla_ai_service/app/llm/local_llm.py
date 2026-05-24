@@ -488,56 +488,25 @@ class LocalTelemetryLLM:
             if for_training:
                 raise ValueError("The 'llama_cpp' provider cannot be used for training. Use 'transformers'.")
             gguf_path = self._resolve_llama_cpp_model_path(adapter_path)
-            
-            LOGGER.info("Starting native llama-server from %s", gguf_path)
-            
-            import subprocess
-            import socket
-            import time
-            import requests
 
-            # Find an available port
-            sock = socket.socket()
-            sock.bind(('', 0))
-            port = sock.getsockname()[1]
-            sock.close()
-            
-            n_gpu_layers = "-1" if torch.cuda.is_available() else "0"
-                
-            cmd = [
-                "llama-server",
-                "-m", str(gguf_path),
-                "-c", str(self.config.training.max_seq_length),
-                "--port", str(port),
-                "-ngl", n_gpu_layers,
-                "--host", "127.0.0.1",
-            ]
-            
-            import sys
-            process = subprocess.Popen(cmd, stdout=sys.stdout, stderr=sys.stderr)
-            
-            # Save these so generate() can use it
-            self.llama_url = f"http://127.0.0.1:{port}"
-            self.llama_process = process
-            
-            # Wait for the server to be ready
-            url = f"{self.llama_url}/health"
-            ready = False
-            for _ in range(60):
-                try:
-                    r = requests.get(url, timeout=1)
-                    if r.status_code == 200:
-                        ready = True
-                        break
-                except requests.RequestException:
-                    pass
-                time.sleep(1)
-                
-            if not ready:
-                process.terminate()
-                raise RuntimeError("Failed to start native llama-server. Check logs or local test.")
-                
-            return process
+            from app.llm.process import LlamaServerConfig, LlamaServerProcess
+
+            n_gpu_layers = -1 if torch.cuda.is_available() else 0
+            proc = LlamaServerProcess(
+                LlamaServerConfig(
+                    model_path=gguf_path,
+                    n_ctx=self.config.training.max_seq_length,
+                    n_gpu_layers=n_gpu_layers,
+                    startup_timeout_seconds=60,
+                )
+            )
+            proc.start_or_attach()
+
+            # Stored for generate() — keep .llama_url/.llama_process names so
+            # any existing callers keep working.
+            self.llama_url = proc.base_url
+            self.llama_process = proc
+            return proc
 
         self._ensure_tokenizer()
 

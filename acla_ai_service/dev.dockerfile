@@ -54,7 +54,7 @@ RUN CMAKE_ARGS="-DGGML_CUDA=on" pip install --no-cache-dir llama-cpp-python
 # Copy application code and setup in single layer
 COPY . .
 ENV STREAMLIT_CONFIG_FILE=/app/.streamlit/config.toml
-RUN chmod +x /app/start-dev.sh /app/scripts/start_llama_server.sh \
+RUN chmod +x /app/start-dev.sh \
     && mkdir -p /app/models/llama_server /app/models/kokoro
 
 # Expose ports: 8000 = FastAPI, 8080 = llama-server (internal sidecar; host network in dev compose)

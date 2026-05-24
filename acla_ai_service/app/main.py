@@ -2,6 +2,7 @@
 ACLA AI Service - Main application entry point
 """
 
+import asyncio
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -9,7 +10,9 @@ from dotenv import load_dotenv
 
 from app.infra.config import settings
 from app.integrations.backend.client import backend_service
+from app.llm.chat_model import ensure_chat_gguf
 from app.llm.health import check_llama_server
+from app.llm.process import LlamaServerConfig, LlamaServerProcess
 from app.api import (
     annotation_router,
     health_router,
@@ -22,6 +25,29 @@ from app.api.voice import router as voice_router
 load_dotenv()
 
 
+def _start_chat_sidecar() -> LlamaServerProcess:
+    """Resolve the chat GGUF (downloading on first boot) and launch llama-server."""
+    gguf_path = ensure_chat_gguf(
+        model_dir=settings.llama_model_dir,
+        model_repo=settings.llama_model_repo,
+        model_file=settings.llama_model_file,
+        hf_token=settings.hf_token,
+    )
+    sidecar = LlamaServerProcess(
+        LlamaServerConfig(
+            model_path=gguf_path,
+            host=settings.llama_host,
+            port=settings.llama_port,
+            n_ctx=settings.llama_n_ctx,
+            n_gpu_layers=settings.llama_n_gpu_layers,
+            jinja=True,
+            startup_timeout_seconds=settings.llama_startup_timeout_seconds,
+        )
+    )
+    sidecar.start_or_attach()
+    return sidecar
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager"""
@@ -31,7 +57,19 @@ async def lifespan(app: FastAPI):
     print(f"🔧 Backend URL: {settings.backend_server_ip}")
     print(f"🤖 OpenAI API: {'Configured (legacy)' if settings.openai_api_key else 'Not configured'}")
 
-    # Check the local llama-server sidecar (canonical LLM backend going forward)
+    # Bring up the chat sidecar (downloads model on first boot — may take minutes).
+    # Run in an executor so the event loop isn't blocked during the wait.
+    chat_sidecar: LlamaServerProcess | None = None
+    try:
+        chat_sidecar = await asyncio.get_running_loop().run_in_executor(
+            None, _start_chat_sidecar,
+        )
+    except Exception as exc:  # noqa: BLE001 — we want uvicorn to keep starting
+        print(
+            f"⚠️  llama-server failed to start: {exc} — continuing without it. "
+            f"/query/health will report degraded status."
+        )
+
     llama_health = await check_llama_server()
     if llama_health.reachable:
         print(
@@ -41,7 +79,7 @@ async def lifespan(app: FastAPI):
     else:
         print(
             f"🦙 llama-server: NOT reachable at {llama_health.base_url} "
-            f"({llama_health.error}) — startup script may still be downloading the model"
+            f"({llama_health.error})"
         )
 
     # Establish backend connection
@@ -53,11 +91,13 @@ async def lifespan(app: FastAPI):
         print("   Check your backend credentials in environment variables:")
         print("   - AI_SERVICE_USERNAME")
         print("   - AI_SERVICE_PASSWORD")
-    
+
     yield
-    
+
     # Shutdown
     print(f"🏁 {settings.app_name} shutting down...")
+    if chat_sidecar is not None:
+        chat_sidecar.stop()
 
 
 # Create FastAPI application with lifespan manager
