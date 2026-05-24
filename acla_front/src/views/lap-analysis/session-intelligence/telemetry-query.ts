@@ -46,7 +46,7 @@ function expandFields(fields: string[]): string[] {
 
 // ── Scope resolver ────────────────────────────────────────────────────────────
 
-function resolveScope(
+export function resolveScope(
     scope: QueryScope,
     buffer: TelemetryBuffer,
     log: EventLog,

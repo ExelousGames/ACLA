@@ -51,19 +51,31 @@ export const createAiCommandRegistry = (context: AiCommandRegistryContext): Reco
 
     // ── Telemetry ─────────────────────────────────────────────────────────────
 
-    async get_recent_telemetry(args) {
-        const si = context.sessionIntelligence;
-        if (!si) return { error: 'no_live_session' };
-        // Backend composite (_composite_analyze) reads `rows`; wrap the array
-        // so it survives the tool_relay marshaling (JS arrays are objects but
-        // not Python dicts, so the relay would otherwise wrap as {result:[...]}).
-        return { rows: si.getRecentTelemetry(args.seconds ?? 8, args.channels) };
-    },
-
     async query_telemetry(args) {
         const si = context.sessionIntelligence;
         if (!si) return { error: 'no_live_session' };
         return si.query(args as any);
+    },
+
+    // Constrained-reduce variant exposed to the LLM. The schema enforces
+    // reduce ∈ {avg,min,max,stats}; we defensively swap any other value
+    // (incl. legacy 'raw') for 'stats' so a stale prompt can't leak rows.
+    async query_telemetry_metric(args) {
+        const si = context.sessionIntelligence;
+        if (!si) return { error: 'no_live_session' };
+        const allowed = new Set(['avg', 'min', 'max', 'stats']);
+        const reduce = allowed.has(args.reduce) ? args.reduce : 'stats';
+        return si.query({ fields: args.fields, scope: args.scope, reduce } as any);
+    },
+
+    // Server-internal: backs analyze_telemetry. Returns raw rows over the
+    // WS relay so the server-side classifier can consume them. NOT exposed
+    // to the LLM (absent from the voice tool schema) — rows must never
+    // enter the LLM context.
+    async _get_telemetry_for_scope(args) {
+        const si = context.sessionIntelligence;
+        if (!si) return { error: 'no_live_session' };
+        return { rows: si.getRowsForScope(args.scope) };
     },
 
     async get_telemetry_schema() {

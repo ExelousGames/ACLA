@@ -60,17 +60,28 @@ understeer at entry, throttle pickup, traction-limited exit, slip balance,
 kerb, kerb-strike, brake bias, weight transfer.
 
 Tools (call only when the question requires data you don't have):
-- analyze_recent_segment: canonical "what just happened" tool. One call
-  bundles recent telemetry + classified actions + their engineer-voice
-  descriptions. Use for "what just happened", "why did I go wide", "did I
-  brake too late", "what was wrong with that corner".
-- analyze_lap: same one-shot bundle but for a specific completed lap.
-  Use for "how was lap 12", "any mistakes on lap 3", "walk me through my
-  best lap". Defaults to most recent completed lap if no number given.
+- analyze_telemetry: canonical "what just happened" / "how did that go"
+  tool. One call bundles classified driving actions + their engineer-voice
+  descriptions for any scope. Pass a scope object:
+    {type:"last_seconds", seconds:N}                                — recent window
+    {type:"event", eventType:"CORNER"|"CRASHED"|"OVERTAKE", which:"last"|"current"}
+    {type:"lap", lap:"current"|"last"|N}
+    {type:"range", start:N, end:N}                                  — sample-index range
+  Use for "what just happened", "why did I go wide", "how was that
+  corner", "how was lap 12", "any mistakes on lap 3".
+- query_telemetry_metric: single metric or stats for any scope. Use for
+  "what's my tyre pressure", "average brake temp last lap", "peak speed
+  on lap 3". fields = field group names (speed, throttle, brake, gear,
+  steering, rpm, tyre_pressure, tyre_temp, brake_temp, tyre_slip,
+  g_force, suspension, fuel, lap_delta, position, race_position) or raw
+  Physics_* names. scope = same shape as analyze_telemetry. reduce ∈
+  avg|min|max|stats. Call get_telemetry_schema if unsure which fields exist.
+- get_event_log: list racing events (corners, crashes, overtakes) with
+  their sample-index ranges. Use to find when something happened before
+  asking analyze_telemetry or query_telemetry_metric about it.
 - get_session_info: returns current track and car. Call ONCE per session
   if you need to mention them; cache the answer mentally.
-- get_recent_telemetry / get_lap_telemetry / classify_segment: primitives
-  for unusual asks where a composite doesn't fit.
+- get_next_corner: name and distance of the corner ahead.
 - explain_label: definition + remedies for a specific labelled action,
   by id or natural name.
 - start_per_turn_coaching / stop_per_turn_coaching: activate / deactivate
@@ -78,9 +89,9 @@ Tools (call only when the question requires data you don't have):
   observations as "[OBSERVATION]" user turns describing each completed
   segment — respond to each with one short suggestion.
 
-When a composite returns labels with definitions and remedies, do NOT
-read every field aloud. Pick the one or two that matter most for THIS
-corner and weave them into a natural 1–3 sentence engineer comment.
+When analyze_telemetry returns labels with definitions and remedies, do
+NOT read every field aloud. Pick the one or two that matter most for
+THIS corner and weave them into a natural 1–3 sentence engineer comment.
 The driver wants advice, not a catalog.
 
 Rules:
@@ -120,11 +131,9 @@ class VoiceSessionConfig:
 # AIService._execute_function dispatcher.
 FRONTEND_TOOLS: frozenset[str] = frozenset({
     "get_session_info",
-    "get_recent_telemetry",
-    "get_lap_telemetry",
     "start_per_turn_coaching",
     "stop_per_turn_coaching",
-    "query_telemetry",
+    "query_telemetry_metric",
     "get_event_log",
     "get_next_corner",
     "get_telemetry_schema",
@@ -135,16 +144,12 @@ FRONTEND_TOOLS: frozenset[str] = frozenset({
 # sees these in a "tool box" while the LLM is calling the function — they
 # should read like a brief status line, not the raw function name.
 _TOOL_TITLES: Dict[str, str] = {
-    "analyze_recent_segment": "Analyzing the last few seconds",
-    "analyze_lap": "Analyzing the lap",
+    "analyze_telemetry": "Analyzing telemetry",
     "explain_label": "Looking up the term",
-    "classify_segment": "Classifying the segment",
     "get_session_info": "Checking session info",
-    "get_recent_telemetry": "Reading recent telemetry",
-    "get_lap_telemetry": "Reading lap telemetry",
     "start_per_turn_coaching": "Starting per-turn coaching",
     "stop_per_turn_coaching": "Stopping per-turn coaching",
-    "query_telemetry": "Querying telemetry",
+    "query_telemetry_metric": "Querying telemetry",
     "get_event_log": "Searching event log",
     "get_next_corner": "Looking up next corner",
     "get_telemetry_schema": "Checking available telemetry fields",
@@ -166,50 +171,73 @@ def _build_tool_schemas():
     """
     from pipecat.adapters.schemas.function_schema import FunctionSchema
 
+    # Shared scope description — both telemetry tools take the same shape so
+    # the LLM only learns one query language.
+    _SCOPE_DESC = (
+        "Time/event window. One of: "
+        "{type:'last_seconds', seconds:N}, "
+        "{type:'event', eventType:'CORNER'|'CRASHED'|'OVERTAKE', which:'last'|'current'}, "
+        "{type:'lap', lap:'current'|'last'|N}, "
+        "{type:'range', start:N, end:N}"
+    )
+
     schemas = [
-        # ── Server-side composite (canonical "what just happened" flow) ─────
+        # ── Telemetry surface (two tools, same scope language) ──────────────
         FunctionSchema(
-            name="analyze_recent_segment",
+            name="analyze_telemetry",
             description=(
-                "ONE-SHOT analysis of the most recent driving segment. Fetches "
-                "recent telemetry from the frontend, runs the classifier, looks "
-                "up the racing-engineer concept for each detected action, and "
-                "returns a bundled payload. Prefer this over chaining "
-                "get_recent_telemetry + classify_segment + explain_label."
+                "Classify driving actions over a scope and return the engineer "
+                "concept (definition, interpretation, remedies) for each. The "
+                "server fetches the rows, runs the classifier, and bundles "
+                "labels — rows never enter this conversation. Use for "
+                "'what just happened', 'why did I go wide', 'how was lap 12', "
+                "'walk me through my best lap', 'any mistakes on lap 3'."
             ),
             properties={
-                "seconds": {
-                    "type": "integer",
-                    "description": "How many seconds of recent telemetry to analyze. Default 8.",
+                "scope": {
+                    "type": "object",
+                    "description": _SCOPE_DESC,
                 },
             },
-            required=[],
+            required=["scope"],
         ),
         FunctionSchema(
-            name="analyze_lap",
+            name="query_telemetry_metric",
             description=(
-                "ONE-SHOT analysis of a specific completed lap. Fetches the "
-                "lap's telemetry from the frontend, runs the classifier, looks "
-                "up the racing-engineer concept for each detected action, and "
-                "returns a bundled payload. Use for 'how was lap 12?', "
-                "'any mistakes on lap 3?', 'walk me through my best lap'."
+                "Aggregate a telemetry metric over a scope. Use for "
+                "'what's my tyre pressure', 'average brake temp last lap', "
+                "'peak speed on lap 3'. Call get_telemetry_schema if unsure "
+                "which fields exist. Field groups: speed, throttle, brake, "
+                "gear, steering, rpm, tyre_pressure, tyre_temp, brake_temp, "
+                "tyre_slip, g_force, suspension, fuel, lap_delta, position, "
+                "race_position."
             ),
             properties={
-                "lap": {
-                    "type": "integer",
-                    "description": "Lap number to analyze. Defaults to the most recently completed lap.",
+                "fields": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Field group names or raw Physics_* field names.",
+                },
+                "scope": {
+                    "type": "object",
+                    "description": _SCOPE_DESC,
+                },
+                "reduce": {
+                    "type": "string",
+                    "enum": ["avg", "min", "max", "stats"],
+                    "description": "avg/min/max=single value, stats={avg,min,max,stddev}.",
                 },
             },
-            required=[],
+            required=["fields", "scope", "reduce"],
         ),
-        # ── Server-side primitives (corpus + ML) ────────────────────────────
+        # ── Concept lookup ──────────────────────────────────────────────────
         FunctionSchema(
             name="explain_label",
             description=(
                 "Return the racing-engineer concept for a single action label "
                 "(definition, engineer interpretation, common remedies). Use "
-                "when the driver asks 'what does <action> mean?' or after a "
-                "classifier call to deepen one specific finding."
+                "when the driver asks 'what does <action> mean?' or after an "
+                "analyze_telemetry call to deepen one specific finding."
             ),
             properties={
                 "label_id": {
@@ -219,23 +247,7 @@ def _build_tool_schemas():
             },
             required=["label_id"],
         ),
-        FunctionSchema(
-            name="classify_segment",
-            description=(
-                "Run the segment classifier over a window of telemetry rows and "
-                "return the action labels present (translated to natural names). "
-                "Use for unusual asks where analyze_recent_segment doesn't fit."
-            ),
-            properties={
-                "telemetry_rows": {
-                    "type": "array",
-                    "description": "List of telemetry row dicts (as returned by get_recent_telemetry).",
-                    "items": {"type": "object"},
-                },
-            },
-            required=["telemetry_rows"],
-        ),
-        # ── Frontend data accessors (relayed via WS) ────────────────────────
+        # ── Session info ────────────────────────────────────────────────────
         FunctionSchema(
             name="get_session_info",
             description=(
@@ -244,47 +256,6 @@ def _build_tool_schemas():
                 "by name; the answer doesn't change during a session."
             ),
             properties={},
-            required=[],
-        ),
-        FunctionSchema(
-            name="get_recent_telemetry",
-            description=(
-                "Return the last N seconds of raw telemetry rows from the live "
-                "in-memory buffer. Optional channel filter narrows to specific "
-                "columns. No classification — returns raw data only."
-            ),
-            properties={
-                "seconds": {
-                    "type": "integer",
-                    "description": "How many seconds back from now. Default 8.",
-                },
-                "channels": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Optional list of channel names to include.",
-                },
-            },
-            required=[],
-        ),
-        FunctionSchema(
-            name="get_lap_telemetry",
-            description=(
-                "Return raw telemetry rows for one completed lap. Optional "
-                "channel filter narrows to specific columns. No classification "
-                "— returns raw data only. Defaults to the most recently "
-                "completed lap if no number is given."
-            ),
-            properties={
-                "lap": {
-                    "type": "integer",
-                    "description": "Lap number. Defaults to most recent completed lap.",
-                },
-                "channels": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Optional list of channel names to include.",
-                },
-            },
             required=[],
         ),
         # ── Frontend monitoring activators ──────────────────────────────────
@@ -310,47 +281,7 @@ def _build_tool_schemas():
             properties={},
             required=[],
         ),
-        # ── Session intelligence queries (relayed via WS) ───────────────────
-        FunctionSchema(
-            name="query_telemetry",
-            description=(
-                "Query the live telemetry buffer with a structured spec. Use for "
-                "any metric question: tyre pressure, speed, brake temp, etc. "
-                "Call get_telemetry_schema first if unsure which field names to use. "
-                "Available field groups: speed, throttle, brake, gear, steering, rpm, "
-                "tyre_pressure, tyre_temp, brake_temp, tyre_slip, g_force, "
-                "suspension, fuel, lap_delta, position, race_position."
-            ),
-            properties={
-                "fields": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": (
-                        "Field group names (e.g. 'tyre_pressure', 'speed') or "
-                        "raw Physics_* field names."
-                    ),
-                },
-                "scope": {
-                    "type": "object",
-                    "description": (
-                        "Time/event window. One of: "
-                        "{type:'last_seconds', seconds:N}, "
-                        "{type:'event', eventType:'CORNER'|'CRASHED'|'OVERTAKE', which:'last'|'current'}, "
-                        "{type:'lap', lap:'current'|'last'|N}, "
-                        "{type:'range', start:N, end:N}"
-                    ),
-                },
-                "reduce": {
-                    "type": "string",
-                    "enum": ["raw", "avg", "min", "max", "stats"],
-                    "description": (
-                        "How to aggregate: raw=all samples, avg/min/max=single value, "
-                        "stats={avg, min, max, stddev}."
-                    ),
-                },
-            },
-            required=["fields", "scope", "reduce"],
-        ),
+        # ── Event log & geometry ────────────────────────────────────────────
         FunctionSchema(
             name="get_event_log",
             description=(
@@ -390,8 +321,8 @@ def _build_tool_schemas():
             name="get_telemetry_schema",
             description=(
                 "List all available telemetry field group names and raw Physics_* "
-                "field names that can be used in query_telemetry. Call this when "
-                "unsure which field names to request."
+                "field names that can be used in query_telemetry_metric. Call "
+                "this when unsure which field names to request."
             ),
             properties={},
             required=[],
@@ -451,8 +382,8 @@ def _make_tool_handler(tool_executor, session_config: "VoiceSessionConfig", conn
                 # Server-side path. Context carries the connect-time IDs;
                 # track/car are intentionally absent (LLM fetches via tool).
                 # ``_conn`` is an opaque handle that server-side composite
-                # tools (e.g. analyze_recent_segment) use to relay back to
-                # the frontend via the same WS — underscore-prefixed because
+                # tools (e.g. analyze_telemetry) use to relay back to the
+                # frontend via the same WS — underscore-prefixed because
                 # it's a server-internal channel, not part of the OpenAI
                 # context schema.
                 context = {
@@ -895,8 +826,8 @@ def _format_observation_for_llm(data: dict) -> str:
     carry an ``event`` name plus arbitrary context (telemetry rows, lap
     number, etc.). We compress them to a short prompt so the LLM has
     something concrete to respond to without re-classifying every channel.
-    Classification is still on the LLM to invoke (via classify_segment or
-    analyze_recent_segment) if it decides the observation warrants it.
+    Classification is still on the LLM to invoke (via analyze_telemetry)
+    if it decides the observation warrants it.
     """
     event = data.get("event", "event")
     bits = [event]

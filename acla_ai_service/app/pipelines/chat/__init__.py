@@ -79,47 +79,58 @@ class AIService:
         are listed here too; they're routed at dispatch time by the voice
         tool handler, not by ``_execute_function``.
         """
+        _SCOPE_DESC = (
+            "One of: {type:'last_seconds', seconds:N}, "
+            "{type:'event', eventType:'CORNER'|'CRASHED'|'OVERTAKE', which:'last'|'current'}, "
+            "{type:'lap', lap:'current'|'last'|N}, "
+            "{type:'range', start:N, end:N}"
+        )
         return [
-            # ── Server-side composites ─────────────────────────────────────
+            # ── Telemetry surface (two tools, same scope language) ─────────
             {
-                "name": "analyze_recent_segment",
+                "name": "analyze_telemetry",
                 "description": (
-                    "ONE-SHOT analysis of the most recent driving segment. "
-                    "Fetches recent telemetry from the frontend, runs the "
-                    "classifier, looks up each detected action in the "
-                    "racing-engineer corpus, and returns a bundled payload. "
-                    "Prefer this over chaining get_recent_telemetry + "
-                    "classify_segment + explain_label."
+                    "Classify driving actions over a scope and return the "
+                    "engineer concept for each. Server fetches rows, runs "
+                    "the classifier, bundles labels — rows never enter "
+                    "this conversation."
                 ),
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "seconds": {
-                            "type": "integer",
-                            "description": "How many seconds back to analyze. Default 8.",
-                        },
+                        "scope": {"type": "object", "description": _SCOPE_DESC},
                     },
+                    "required": ["scope"],
                 },
             },
             {
-                "name": "analyze_lap",
+                "name": "query_telemetry_metric",
                 "description": (
-                    "ONE-SHOT analysis of a specific completed lap. Same "
-                    "shape as analyze_recent_segment but scoped to one lap "
-                    "by number. Use for 'how was lap 12', 'any mistakes on "
-                    "lap 3', 'walk me through my best lap'."
+                    "Aggregate a telemetry metric over a scope. Field "
+                    "groups: speed, throttle, brake, gear, steering, rpm, "
+                    "tyre_pressure, tyre_temp, brake_temp, tyre_slip, "
+                    "g_force, suspension, fuel, lap_delta, position, "
+                    "race_position."
                 ),
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "lap": {
-                            "type": "integer",
-                            "description": "Lap number. Defaults to most recent completed lap.",
+                        "fields": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Field group names or raw Physics_* field names.",
+                        },
+                        "scope": {"type": "object", "description": _SCOPE_DESC},
+                        "reduce": {
+                            "type": "string",
+                            "enum": ["avg", "min", "max", "stats"],
+                            "description": "avg/min/max=single value, stats={avg,min,max,stddev}.",
                         },
                     },
+                    "required": ["fields", "scope", "reduce"],
                 },
             },
-            # ── Server-side primitives ─────────────────────────────────────
+            # ── Concept lookup ─────────────────────────────────────────────
             {
                 "name": "explain_label",
                 "description": (
@@ -135,55 +146,11 @@ class AIService:
                     "required": ["label_id"],
                 },
             },
-            {
-                "name": "classify_segment",
-                "description": (
-                    "Run the segment classifier over a window of telemetry "
-                    "rows and return the action labels present (translated "
-                    "to natural names)."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "telemetry_rows": {
-                            "type": "array",
-                            "items": {"type": "object"},
-                            "description": "Telemetry row dicts (e.g. from get_recent_telemetry).",
-                        },
-                    },
-                    "required": ["telemetry_rows"],
-                },
-            },
             # ── Frontend-relayed (dispatched at the voice tool handler) ───
             {
                 "name": "get_session_info",
                 "description": "Return current track / car / user identity from the live session.",
                 "parameters": {"type": "object", "properties": {}},
-            },
-            {
-                "name": "get_recent_telemetry",
-                "description": "Return the last N seconds of raw telemetry rows from the live in-memory buffer.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "seconds": {"type": "integer", "description": "Seconds back. Default 8."},
-                        "channels": {"type": "array", "items": {"type": "string"}},
-                    },
-                },
-            },
-            {
-                "name": "get_lap_telemetry",
-                "description": (
-                    "Return raw telemetry rows for one completed lap. "
-                    "Defaults to the most recently completed lap."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "lap": {"type": "integer", "description": "Lap number."},
-                        "channels": {"type": "array", "items": {"type": "string"}},
-                    },
-                },
             },
             {
                 "name": "start_per_turn_coaching",
@@ -197,41 +164,6 @@ class AIService:
                 "name": "stop_per_turn_coaching",
                 "description": "Stop the per-corner monitoring agent.",
                 "parameters": {"type": "object", "properties": {}},
-            },
-            {
-                "name": "query_telemetry",
-                "description": (
-                    "Query the live telemetry buffer with a structured spec. Use for "
-                    "metric questions: tyre pressure, speed, brake temp, etc. "
-                    "Field groups: speed, throttle, brake, gear, steering, rpm, "
-                    "tyre_pressure, tyre_temp, brake_temp, tyre_slip, g_force, "
-                    "suspension, fuel, lap_delta, position, race_position."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "fields": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": "Field group names or raw Physics_* field names.",
-                        },
-                        "scope": {
-                            "type": "object",
-                            "description": (
-                                "One of: {type:'last_seconds', seconds:N}, "
-                                "{type:'event', eventType:'CORNER'|'CRASHED'|'OVERTAKE', which:'last'|'current'}, "
-                                "{type:'lap', lap:'current'|'last'|N}, "
-                                "{type:'range', start:N, end:N}"
-                            ),
-                        },
-                        "reduce": {
-                            "type": "string",
-                            "enum": ["raw", "avg", "min", "max", "stats"],
-                            "description": "raw=all samples, avg/min/max=single value, stats={avg,min,max,stddev}.",
-                        },
-                    },
-                    "required": ["fields", "scope", "reduce"],
-                },
             },
             {
                 "name": "get_event_log",
@@ -864,24 +796,15 @@ class AIService:
         └─────────────────────────────────────────────────────────────────┘
         """
         try:
-            # ── Phase 1 racing-engineer server-side tools ──────────────────
-            if function_name == "analyze_recent_segment":
-                return await self._composite_analyze_recent_segment(
-                    seconds=int(arguments.get("seconds") or 8),
-                    conn=(context or {}).get("_conn"),
-                )
-            if function_name == "analyze_lap":
-                return await self._composite_analyze_lap(
-                    lap=arguments.get("lap"),
+            # ── Racing-engineer server-side tools ──────────────────────────
+            if function_name == "analyze_telemetry":
+                return await self._composite_analyze_scope(
+                    scope=arguments.get("scope") or {},
                     conn=(context or {}).get("_conn"),
                 )
             if function_name == "explain_label":
                 return await self._explain_label_impl(
                     label_id=str(arguments.get("label_id") or "").strip(),
-                )
-            if function_name == "classify_segment":
-                return await self._classify_segment_impl(
-                    telemetry_rows=arguments.get("telemetry_rows") or [],
                 )
 
             # ── Legacy ──────────────────────────────────────────────────────
@@ -979,41 +902,21 @@ class AIService:
             "_label_id": normalised,
         }
 
-    async def _composite_analyze_recent_segment(self, seconds: int, conn: Any) -> Dict[str, Any]:
-        """Canonical "what just happened" flow as one server-side tool.
+    async def _composite_analyze_scope(self, scope: Dict[str, Any], conn: Any) -> Dict[str, Any]:
+        """Canonical analyze flow for any QueryScope shape.
 
-        Steps: relay get_recent_telemetry over the WS → classify in-process
-        → resolve each detected label against the racing-engineer corpus.
-        Returns one bundled payload so the LLM sees a single tool call and
-        the voice path takes only one WS round-trip instead of three.
+        Relays the server-internal ``_get_telemetry_for_scope`` frontend
+        handler to fetch rows for the scope, classifies in-process, then
+        resolves each detected label against the racing-engineer corpus.
+        Rows never re-enter the LLM context — only the labels do.
         """
+        if not isinstance(scope, dict) or "type" not in scope:
+            return {"error": "scope must be an object with a 'type' field"}
         return await self._composite_analyze(
             conn=conn,
-            frontend_tool="get_recent_telemetry",
-            frontend_args={"seconds": int(seconds)},
-            scope_summary={"seconds": int(seconds)},
-        )
-
-    async def _composite_analyze_lap(self, lap: Any, conn: Any) -> Dict[str, Any]:
-        """Per-lap variant of :py:meth:`_composite_analyze_recent_segment`.
-
-        Same chain (relay → classify → corpus lookup → bundle), scoped to
-        one completed lap rather than a sliding seconds window. Passing
-        ``lap=None`` lets the frontend pick the most recently completed
-        lap.
-        """
-        try:
-            lap_n = int(lap) if lap is not None else None
-        except (TypeError, ValueError):
-            return {"error": f"bad lap value: {lap!r}"}
-        args: Dict[str, Any] = {}
-        if lap_n is not None:
-            args["lap"] = lap_n
-        return await self._composite_analyze(
-            conn=conn,
-            frontend_tool="get_lap_telemetry",
-            frontend_args=args,
-            scope_summary={"lap": lap_n},
+            frontend_tool="_get_telemetry_for_scope",
+            frontend_args={"scope": scope},
+            scope_summary={"scope": scope},
         )
 
     async def _composite_analyze(

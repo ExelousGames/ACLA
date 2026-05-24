@@ -1,7 +1,7 @@
 """Racing-engineer knowledge corpus loader.
 
 The racing engineer's brain (Qwen2.5-32B) reaches into this corpus via the
-``explain_label`` / ``analyze_recent_segment`` server-side tools. The corpus
+``explain_label`` / ``analyze_telemetry`` server-side tools. The corpus
 itself is plain Markdown files with YAML frontmatter — one file per label,
 per main-label family, or per telemetry feature.
 

@@ -1,8 +1,8 @@
-import { SessionEvent, TelemetrySample, TelemetryQuery, QueryResult, CornerLookahead } from './types';
+import { SessionEvent, TelemetrySample, TelemetryQuery, QueryResult, QueryScope, CornerLookahead } from './types';
 import { TelemetryBuffer } from './TelemetryBuffer';
 import { EventLog, EventSearchParams } from './EventLog';
 import { SensorManager } from './SensorManager';
-import { executeQuery, getSchemaInfo } from './telemetry-query';
+import { executeQuery, getSchemaInfo, resolveScope } from './telemetry-query';
 import { getCornersForTrack, getNextCorner } from './track-corners';
 
 export class SessionIntelligence {
@@ -67,14 +67,8 @@ export class SessionIntelligence {
         return getSchemaInfo();
     }
 
-    getRecentTelemetry(seconds: number, channels?: string[]): TelemetrySample[] {
-        const samples = this.buffer.sliceByTime(seconds * 1000);
-        if (!channels || channels.length === 0) return samples;
-        return samples.map(s => {
-            const filtered: TelemetrySample = {};
-            channels.forEach(c => { if (c in s) filtered[c] = s[c]; });
-            return filtered;
-        });
+    getRowsForScope(scope: QueryScope): TelemetrySample[] {
+        return resolveScope(scope, this.buffer, this.log, this.currentLap);
     }
 
     reset(): void {
