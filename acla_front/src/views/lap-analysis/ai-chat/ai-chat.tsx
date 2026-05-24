@@ -7,7 +7,9 @@ import { visualizationController } from 'views/lap-analysis/visualization/Visual
 import { detectEnvironment } from 'utils/environment';
 import { createAiCommandRegistry, VISUALIZATION_COMMAND_FUNCTIONS } from './ai-command-registry';
 import { speakWithNeuralTts, NeuralTtsPlayback } from './neural-tts';
-import { useVoiceConversation, FrontendToolHandler } from './use-voice-conversation';
+import { useVoiceConversation, FrontendToolHandler, VoiceEvent } from './use-voice-conversation';
+
+type MessageKind = 'chat' | 'tool';
 
 interface Message {
     id: string;
@@ -21,6 +23,17 @@ interface Message {
     // (Kokoro chunks via SSE). The auto-speak effect skips these so we don't
     // re-synthesize the whole answer.
     streamedAudio?: boolean;
+    /** Default 'chat' — text bubble. 'tool' renders the distinct
+     *  tool-call box (different background + readable title). */
+    kind?: MessageKind;
+    /** Tool-call metadata when kind === 'tool'. */
+    tool?: {
+        name: string;
+        title: string;
+        status: 'started' | 'completed';
+        ok?: boolean;
+        error?: string | null;
+    };
 }
 
 interface FunctionCall {
@@ -83,8 +96,76 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
     //     verbalizes "I can't see your telemetry right now" rather than
     //     fabricating numbers. A future live-driving view can plug in
     //     real implementations without touching the backend.
+    const handleVoiceEvent = (event: VoiceEvent) => {
+        if (event.kind === 'user_transcript') {
+            setMessages(prev => prev
+                .filter(m => !m.isLoading)
+                .concat({
+                    id: generateUniqueId('user-voice'),
+                    content: event.text,
+                    isUser: true,
+                    timestamp: new Date(),
+                    kind: 'chat',
+                }));
+            return;
+        }
+        if (event.kind === 'assistant_transcript') {
+            setMessages(prev => prev
+                .filter(m => !m.isLoading)
+                .concat({
+                    id: generateUniqueId('ai-voice'),
+                    content: event.text,
+                    isUser: false,
+                    timestamp: new Date(),
+                    kind: 'chat',
+                    streamedAudio: true, // audio already played via WS PCM
+                }));
+            return;
+        }
+        if (event.kind === 'tool_event') {
+            setMessages(prev => {
+                // If this tool started recently and is now completed, update
+                // the existing row rather than appending a new one.
+                if (event.status === 'completed') {
+                    for (let i = prev.length - 1; i >= 0; i--) {
+                        const m = prev[i];
+                        if (m.kind === 'tool' && m.tool?.name === event.name && m.tool?.status === 'started') {
+                            const next = prev.slice();
+                            next[i] = {
+                                ...m,
+                                tool: {
+                                    ...m.tool,
+                                    status: 'completed',
+                                    ok: event.ok,
+                                    error: event.error ?? null,
+                                },
+                            };
+                            return next;
+                        }
+                    }
+                }
+                return prev.concat({
+                    id: generateUniqueId('tool'),
+                    content: event.title,
+                    isUser: false,
+                    timestamp: new Date(),
+                    kind: 'tool',
+                    tool: {
+                        name: event.name,
+                        title: event.title,
+                        status: event.status,
+                        ok: event.ok,
+                        error: event.error ?? null,
+                    },
+                });
+            });
+            return;
+        }
+    };
+
     const voiceConversation = useVoiceConversation({
         sessionId,
+        onEvent: handleVoiceEvent,
         toolHandlers: {
             get_session_info: ((): FrontendToolHandler => async () => ({
                 track: analysisContext?.recordedSessioStaticsData?.track || '',
@@ -370,59 +451,26 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
         return () => document.removeEventListener('keydown', handleKeyDown);
     }, [isSpeaking]);
 
-    /**
-     * Text-chat submission path. Removed in the racing-engineer rebuild:
-     * the legacy `/naturallanguagequery` and `/user-ai-model/ai-query`
-     * endpoints (and the SSE flow that consumed them) were deleted along
-     * with this client logic. The voice WS is now the single chat surface;
-     * the text input below shows a hint pointing users at the mic button.
-     *
-     * A future change can re-enable text input by sending it as a
-     * synthetic user message over the voice WS text channel.
-     */
-    const sendToAI = async (_messageContent: string): Promise<void> => {
-        const notice: Message = {
-            id: generateUniqueId('ai'),
-            content:
-                "Text chat is being migrated to the voice WS — click the " +
-                "mic button to talk to the engineer for now.",
-            isUser: false,
-            timestamp: new Date(),
-        };
-        setMessages((prev) =>
-            prev
-                .filter((msg) => !msg.id.includes('loading') && !msg.id.includes('executing'))
-                .concat(notice),
-        );
-        setIsLoading(false);
-    };
-
     const handleSendMessage = async () => {
-        if (!inputValue.trim() || isLoading) return;
+        const text = inputValue.trim();
+        if (!text || isLoading) return;
 
-        const userMessage: Message = {
-            id: generateUniqueId('user'),
-            content: inputValue.trim(),
-            isUser: true,
-            timestamp: new Date(),
-        };
-
-        setMessages(prev => [...prev, userMessage]);
-        const messageContent = inputValue.trim();
+        // The voice WS is the single chat surface. Backend echoes a
+        // user_transcript frame for typed input, so we don't append the
+        // user message locally — handleVoiceEvent will when the echo
+        // arrives. This keeps voice and text turns rendered identically.
+        const sent = voiceConversation.sendUserText(text);
+        if (!sent) {
+            setMessages(prev => prev.concat({
+                id: generateUniqueId('ai'),
+                content: 'Click the mic to start a voice session first — text chat runs on the same connection.',
+                isUser: false,
+                timestamp: new Date(),
+                kind: 'chat',
+            }));
+            return;
+        }
         setInputValue('');
-
-        setIsLoading(true);
-
-        const loadingMessage: Message = {
-            id: generateUniqueId('loading'),
-            content: 'Thinking...',
-            isUser: false,
-            timestamp: new Date(),
-            isLoading: true
-        };
-        setMessages(prev => [...prev, loadingMessage]);
-
-        await sendToAI(messageContent);
     };
 
     const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -719,7 +767,52 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
                 {/* Messages Area */}
                 <ScrollArea className="ai-chat-messages" style={{ flex: 1 }}>
                     <Flex direction="column" gap="3" p="3">
-                        {messages.map((message) => (
+                        {messages.map((message) => {
+                            // Tool-call messages get their own distinct box.
+                            if (message.kind === 'tool' && message.tool) {
+                                const t = message.tool;
+                                const isError = t.status === 'completed' && t.ok === false;
+                                const isRunning = t.status === 'started';
+                                const bg = isError ? 'var(--red-2)' : isRunning ? 'var(--amber-2)' : 'var(--blue-2)';
+                                const bd = isError ? 'var(--red-7)' : isRunning ? 'var(--amber-7)' : 'var(--blue-7)';
+                                const fg = isError ? 'var(--red-12)' : isRunning ? 'var(--amber-12)' : 'var(--blue-12)';
+                                return (
+                                    <Flex key={message.id} direction="column" align="start" gap="1">
+                                        <Flex align="center" gap="2">
+                                            <Text size="1" color="gray">Tool</Text>
+                                            <Text size="1" color="gray">
+                                                {message.timestamp.toLocaleTimeString()}
+                                            </Text>
+                                        </Flex>
+                                        <Box
+                                            style={{
+                                                maxWidth: '80%',
+                                                padding: '8px 12px',
+                                                borderRadius: '8px',
+                                                backgroundColor: bg,
+                                                color: fg,
+                                                border: `1px dashed ${bd}`,
+                                            }}
+                                        >
+                                            <Flex align="center" gap="2">
+                                                {isRunning && <Spinner size="1" />}
+                                                <Text size="2" weight="medium">{t.title}</Text>
+                                            </Flex>
+                                            {isError && t.error && (
+                                                <Text size="1" color="red" style={{ display: 'block', marginTop: 4 }}>
+                                                    {t.error}
+                                                </Text>
+                                            )}
+                                            {debugMode && (
+                                                <Text size="1" color="gray" style={{ display: 'block', marginTop: 4 }}>
+                                                    {t.name}
+                                                </Text>
+                                            )}
+                                        </Box>
+                                    </Flex>
+                                );
+                            }
+                            return (
                             <Flex
                                 key={message.id}
                                 direction="column"
@@ -857,7 +950,8 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
                                     )}
                                 </Box>
                             </Flex>
-                        ))}
+                            );
+                        })}
                         <div ref={messagesEndRef} />
                     </Flex>
                 </ScrollArea>
@@ -867,7 +961,11 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
                 <Box p="3">
                     <Flex gap="2">
                         <TextField.Root
-                            placeholder="Ask me anything about your racing session..."
+                            placeholder={
+                                voiceConversation.state === 'listening' || voiceConversation.state === 'speaking'
+                                    ? 'Type a message to the engineer…'
+                                    : 'Click the mic to start a session, then type or talk.'
+                            }
                             value={inputValue}
                             onChange={handleInputChange}
                             onKeyPress={handleKeyPress}

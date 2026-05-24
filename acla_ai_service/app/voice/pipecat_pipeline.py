@@ -35,7 +35,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any, Dict, Optional
 
 from app.infra.config import settings
 
@@ -120,6 +120,28 @@ FRONTEND_TOOLS: frozenset[str] = frozenset({
     "start_per_turn_coaching",
     "stop_per_turn_coaching",
 })
+
+
+# Human-readable titles shown in the chat UI for each tool. The driver
+# sees these in a "tool box" while the LLM is calling the function — they
+# should read like a brief status line, not the raw function name.
+_TOOL_TITLES: Dict[str, str] = {
+    "analyze_recent_segment": "Analyzing the last few seconds",
+    "analyze_lap": "Analyzing the lap",
+    "explain_label": "Looking up the term",
+    "classify_segment": "Classifying the segment",
+    "get_session_info": "Checking session info",
+    "get_recent_telemetry": "Reading recent telemetry",
+    "get_lap_telemetry": "Reading lap telemetry",
+    "start_per_turn_coaching": "Starting per-turn coaching",
+    "stop_per_turn_coaching": "Stopping per-turn coaching",
+}
+
+
+def _tool_title(name: str) -> str:
+    """Return the chat-visible title for a tool name, falling back to a
+    prettified version of the raw name."""
+    return _TOOL_TITLES.get(name) or name.replace("_", " ").strip().capitalize()
 
 
 def _build_tool_schemas():
@@ -291,15 +313,36 @@ def _make_tool_handler(tool_executor, session_config: "VoiceSessionConfig", conn
     Both paths share the side-product filter (underscore-prefixed keys are
     logged but not sent back to the LLM) so server-side and frontend-side
     tools behave consistently from the LLM's perspective.
+
+    Each call also emits ``tool_event`` text frames (started + completed)
+    on the same WS so the chat UI can render a "tool box" with the
+    human-readable title from :data:`_TOOL_TITLES`.
     """
+    import json as _json
     from app.voice.tool_relay import get_relay
 
     relay = get_relay()
 
+    async def _emit_tool_event(payload: Dict[str, Any]) -> None:
+        try:
+            await conn.send_text(_json.dumps({"type": "tool_event", **payload}))
+        except Exception:
+            LOGGER.debug("tool_event emit failed (WS likely closed)", exc_info=True)
+
     async def handle_tool_call(params):
         function_name = params.function_name
         arguments = params.arguments or {}
+        title = _tool_title(function_name)
 
+        await _emit_tool_event({
+            "name": function_name,
+            "title": title,
+            "status": "started",
+            "arguments": arguments,
+        })
+
+        ok = True
+        error_msg: Optional[str] = None
         try:
             if function_name in FRONTEND_TOOLS:
                 # Relayed to the Electron app over the same WS as audio.
@@ -321,7 +364,16 @@ def _make_tool_handler(tool_executor, session_config: "VoiceSessionConfig", conn
                 result = await tool_executor(function_name, arguments, context)
         except Exception as exc:
             LOGGER.exception("Voice tool %s failed", function_name)
-            await params.result_callback({"error": str(exc)})
+            ok = False
+            error_msg = str(exc)
+            await _emit_tool_event({
+                "name": function_name,
+                "title": title,
+                "status": "completed",
+                "ok": False,
+                "error": error_msg,
+            })
+            await params.result_callback({"error": error_msg})
             return
 
         # Side-product filter — underscore-prefixed keys never reach the LLM.
@@ -334,12 +386,86 @@ def _make_tool_handler(tool_executor, session_config: "VoiceSessionConfig", conn
                     function_name, list(side_products.keys()),
                 )
             payload = public if public else result
+            if isinstance(payload, dict) and "error" in payload:
+                ok = False
+                error_msg = str(payload.get("error"))
         else:
             payload = result
 
+        await _emit_tool_event({
+            "name": function_name,
+            "title": title,
+            "status": "completed",
+            "ok": ok,
+            "error": error_msg,
+        })
         await params.result_callback(payload)
 
     return handle_tool_call
+
+
+def _build_transcript_observer():
+    """Construct a pass-through FrameProcessor that emits transcript text
+    frames over the bound WebSocket.
+
+    Two roles:
+      * ``role="user"`` — emits ``user_transcript`` on each final
+        :class:`TranscriptionFrame` from STT.
+      * ``role="assistant"`` — buffers :class:`TextFrame` chunks between
+        ``LLMFullResponseStartFrame`` and ``LLMFullResponseEndFrame`` and
+        emits one ``assistant_transcript`` per turn.
+
+    All frames pass through unchanged — this processor is observation-only.
+    """
+    import json as _json
+    from pipecat.frames.frames import (
+        Frame,
+        LLMFullResponseEndFrame,
+        LLMFullResponseStartFrame,
+        TextFrame,
+        TranscriptionFrame,
+    )
+    from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
+
+    class TranscriptObserver(FrameProcessor):
+        def __init__(self, send_text, role: str) -> None:
+            super().__init__()
+            self._send_text = send_text
+            self._role = role
+            self._assistant_buf: list[str] = []
+
+        async def process_frame(self, frame: "Frame", direction: "FrameDirection") -> None:
+            await super().process_frame(frame, direction)
+
+            try:
+                if self._role == "user" and isinstance(frame, TranscriptionFrame):
+                    text = (getattr(frame, "text", "") or "").strip()
+                    if text:
+                        await self._emit("user_transcript", text)
+                elif self._role == "assistant":
+                    if isinstance(frame, LLMFullResponseStartFrame):
+                        self._assistant_buf = []
+                    elif isinstance(frame, TextFrame):
+                        chunk = getattr(frame, "text", "") or ""
+                        if chunk:
+                            self._assistant_buf.append(chunk)
+                    elif isinstance(frame, LLMFullResponseEndFrame):
+                        text = "".join(self._assistant_buf).strip()
+                        self._assistant_buf = []
+                        if text:
+                            await self._emit("assistant_transcript", text)
+            except Exception:
+                LOGGER.exception("TranscriptObserver: emit failed (role=%s)", self._role)
+
+            await self.push_frame(frame, direction)
+
+        async def _emit(self, kind: str, text: str) -> None:
+            try:
+                await self._send_text(_json.dumps({"type": kind, "text": text}))
+            except Exception:
+                LOGGER.debug("%s emit failed (WS likely closed)", kind, exc_info=True)
+
+    return TranscriptObserver
 
 
 async def build_voice_pipeline_task(
@@ -362,6 +488,7 @@ async def build_voice_pipeline_task(
     """
     # Deferred imports — see module docstring.
     import asyncio
+    import json as _json
     from pipecat.adapters.schemas.tools_schema import ToolsSchema
     from pipecat.audio.vad.silero import SileroVADAnalyzer
     from pipecat.pipeline.pipeline import Pipeline
@@ -381,6 +508,8 @@ async def build_voice_pipeline_task(
     from app.voice.pipecat_kokoro import build_kokoro_processor
     from app.voice.raw_pcm_serializer import RawPCMSerializer
     from app.voice.tool_relay import get_relay
+
+    TranscriptObserver = _build_transcript_observer()
 
     LOGGER.info(
         "Building voice pipeline (session=%s user=%s)",
@@ -469,16 +598,33 @@ async def build_voice_pipeline_task(
     KokoroProcessor = build_kokoro_processor()
     tts = KokoroProcessor(sample_rate=settings.kokoro_sample_rate)
 
+    # --- Transcript observers ---
+    # Two pass-through processors that emit `user_transcript` /
+    # `assistant_transcript` text frames on the same WS so the chat UI
+    # can display the conversation as text alongside the audio.
+    async def _send_text(payload: str) -> None:
+        await websocket.send_text(payload)
+
+    user_transcript_observer = TranscriptObserver(send_text=_send_text, role="user")
+    assistant_transcript_observer = TranscriptObserver(send_text=_send_text, role="assistant")
+
     # --- Pipeline composition ---
     # VAD sits between the transport input and STT so Whisper only runs
     # on actual speech windows (gated by VADUserStartedSpeakingFrame /
     # VADUserStoppedSpeakingFrame from the VADProcessor).
+    #
+    # user_transcript_observer sits AFTER stt so it sees the final
+    # TranscriptionFrame before context_aggregator.user() consumes it.
+    # assistant_transcript_observer sits AFTER llm so it sees the LLM
+    # text chunks before tts converts them to audio.
     pipeline = Pipeline([
         transport.input(),
         vad_processor,
         stt,
+        user_transcript_observer,
         context_aggregator.user(),
         llm,
+        assistant_transcript_observer,
         tts,
         transport.output(),
         context_aggregator.assistant(),
@@ -523,10 +669,39 @@ async def build_voice_pipeline_task(
                     "the next spoken user turn"
                 )
 
-    async def _send_text(payload: str) -> None:
-        await websocket.send_text(payload)
+    def user_text_sink(text: str) -> None:
+        """Inject a typed chat message as a synthetic user turn.
 
-    get_relay().bind(websocket, send_text=_send_text, observation_sink=observation_sink)
+        Same path as observation_sink minus the [OBSERVATION] framing —
+        the LLM treats it as if the driver had spoken it. We also echo a
+        ``user_transcript`` text frame back so the UI shows the typed
+        message immediately, even before the LLM responds.
+        """
+        context.add_message({"role": "user", "content": text})
+        try:
+            loop.create_task(_send_text(_json.dumps({
+                "type": "user_transcript", "text": text, "source": "typed",
+            })))
+        except Exception:
+            LOGGER.exception("user_text_sink: failed to echo user_transcript")
+        try:
+            from pipecat.frames.frames import LLMRunFrame
+            loop.create_task(task.queue_frame(LLMRunFrame()))
+        except ImportError:
+            try:
+                from pipecat.frames.frames import TranscriptionFrame
+                loop.create_task(task.queue_frame(
+                    TranscriptionFrame(text="", user_id="user_text", timestamp="")
+                ))
+            except Exception:
+                LOGGER.exception("user_text_sink: could not trigger LLM run")
+
+    get_relay().bind(
+        websocket,
+        send_text=_send_text,
+        observation_sink=observation_sink,
+        user_text_sink=user_text_sink,
+    )
 
     return task
 

@@ -38,6 +38,21 @@ export type FrontendToolHandler = (
     ctx: ToolHandlerContext,
 ) => Promise<unknown> | unknown;
 
+/** One event surfaced to the chat UI off the voice WS. The hook fires
+ *  these via `onEvent` so the caller can append them to a message list. */
+export type VoiceEvent =
+    | { kind: 'user_transcript'; text: string; source?: 'voice' | 'typed' }
+    | { kind: 'assistant_transcript'; text: string }
+    | {
+        kind: 'tool_event';
+        name: string;
+        title: string;
+        status: 'started' | 'completed';
+        arguments?: Record<string, unknown>;
+        ok?: boolean;
+        error?: string | null;
+    };
+
 export interface VoiceConversationOptions {
     /** Driving session id — required for backend tools that look up
      *  recent telemetry / lap data by session. */
@@ -50,6 +65,9 @@ export interface VoiceConversationOptions {
      *  hook over the WS via a `tool_call` text frame; we dispatch by
      *  name. Missing handler → automatic `tool_error`. */
     toolHandlers?: Record<string, FrontendToolHandler>;
+    /** Fires for each transcript / tool event the backend sends. The
+     *  caller is responsible for appending to its own message list. */
+    onEvent?: (event: VoiceEvent) => void;
 }
 
 export interface VoiceConversation {
@@ -63,6 +81,10 @@ export interface VoiceConversation {
     start: () => Promise<void>;
     /** Stop the session — closes mic, WS, audio playback. Idempotent. */
     stop: () => void;
+    /** Send a typed chat message over the WS. Returns false if no WS is
+     *  open. The backend treats it as a synthetic user turn and runs
+     *  the LLM (same path as a spoken turn). */
+    sendUserText: (text: string) => boolean;
 }
 
 export function useVoiceConversation(
@@ -99,6 +121,14 @@ export function useVoiceConversation(
     useEffect(() => {
         toolHandlersRef.current = options.toolHandlers || {};
     }, [options.toolHandlers]);
+
+    // Same pattern for onEvent — keeps closures fresh without re-opening WS.
+    const onEventRef = useRef<((event: VoiceEvent) => void) | undefined>(
+        options.onEvent,
+    );
+    useEffect(() => {
+        onEventRef.current = options.onEvent;
+    }, [options.onEvent]);
 
     const stop = useCallback(() => {
         console.log('[voice] stop() called — tearing down');
@@ -287,6 +317,35 @@ export function useVoiceConversation(
                     console.log('[voice] ← text frame:', parsed?.type, parsed);
                     if (parsed?.type === 'tool_call') {
                         void handleToolCall(parsed);
+                    } else if (parsed?.type === 'user_transcript') {
+                        const text = String(parsed.text || '').trim();
+                        if (text) {
+                            onEventRef.current?.({
+                                kind: 'user_transcript',
+                                text,
+                                source: parsed.source === 'typed' ? 'typed' : 'voice',
+                            });
+                        }
+                    } else if (parsed?.type === 'assistant_transcript') {
+                        const text = String(parsed.text || '').trim();
+                        if (text) {
+                            onEventRef.current?.({ kind: 'assistant_transcript', text });
+                        }
+                    } else if (parsed?.type === 'tool_event') {
+                        const name = String(parsed.name || '');
+                        if (name) {
+                            onEventRef.current?.({
+                                kind: 'tool_event',
+                                name,
+                                title: String(parsed.title || name),
+                                status: parsed.status === 'completed' ? 'completed' : 'started',
+                                arguments: parsed.arguments && typeof parsed.arguments === 'object'
+                                    ? parsed.arguments
+                                    : undefined,
+                                ok: typeof parsed.ok === 'boolean' ? parsed.ok : undefined,
+                                error: typeof parsed.error === 'string' ? parsed.error : null,
+                            });
+                        }
                     } else if (parsed?.type === 'error') {
                         // Backend explicit error (e.g. pipecat / faster-whisper
                         // not installed — see acla_ai_service/app/api/voice.py).
@@ -363,10 +422,29 @@ export function useVoiceConversation(
         playbackQueueTimeRef.current = startAt + audioBuffer.duration;
     };
 
+    /**
+     * Send a typed chat message over the open voice WS. Backend treats it
+     * as a synthetic user turn (same path as a spoken turn after STT).
+     * Returns false if there's no open WS to send on.
+     */
+    const sendUserText = useCallback((text: string): boolean => {
+        const ws = wsRef.current;
+        if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+        const trimmed = text.trim();
+        if (!trimmed) return false;
+        try {
+            ws.send(JSON.stringify({ type: 'user_text', text: trimmed }));
+            return true;
+        } catch (err) {
+            console.warn('[voice] sendUserText failed:', err);
+            return false;
+        }
+    }, []);
+
     // Auto-cleanup on unmount.
     useEffect(() => {
         return () => stop();
     }, [stop]);
 
-    return { state, error, micLevel, start, stop };
+    return { state, error, micLevel, start, stop, sendUserText };
 }

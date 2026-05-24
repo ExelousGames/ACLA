@@ -55,16 +55,23 @@ LOGGER = logging.getLogger(__name__)
 
 SendText = Callable[[str], Awaitable[None]]
 ObservationSink = Callable[[Dict[str, Any]], Any]
+UserTextSink = Callable[[str], Any]
 
 
 class _ConnectionState:
     """Per-connection state held by the relay."""
 
-    __slots__ = ("send_text", "observation_sink", "in_flight")
+    __slots__ = ("send_text", "observation_sink", "user_text_sink", "in_flight")
 
-    def __init__(self, send_text: SendText, observation_sink: ObservationSink) -> None:
+    def __init__(
+        self,
+        send_text: SendText,
+        observation_sink: ObservationSink,
+        user_text_sink: Optional[UserTextSink] = None,
+    ) -> None:
         self.send_text = send_text
         self.observation_sink = observation_sink
+        self.user_text_sink = user_text_sink
         self.in_flight: Dict[str, asyncio.Future] = {}
 
 
@@ -81,12 +88,16 @@ class ToolRelay:
         conn: Any,
         send_text: SendText,
         observation_sink: ObservationSink,
+        user_text_sink: Optional[UserTextSink] = None,
     ) -> None:
         """Register a connection. ``conn`` is any hashable identifier (we use
         ``id(websocket)``). ``send_text`` writes one text frame; the
         ``observation_sink`` receives the ``data`` payload of each inbound
-        ``observation`` frame."""
-        self._by_conn[id(conn)] = _ConnectionState(send_text, observation_sink)
+        ``observation`` frame; the optional ``user_text_sink`` receives the
+        ``text`` of each inbound ``user_text`` frame (typed chat input)."""
+        self._by_conn[id(conn)] = _ConnectionState(
+            send_text, observation_sink, user_text_sink,
+        )
 
     def unbind(self, conn: Any) -> None:
         """Drop the registration and cancel every in-flight call so awaiters
@@ -183,6 +194,19 @@ class ToolRelay:
                 state.observation_sink(data)
             except Exception:
                 LOGGER.exception("tool_relay: observation_sink raised")
+            return
+
+        if frame_type == "user_text":
+            if state.user_text_sink is None:
+                LOGGER.warning("tool_relay: user_text frame received but no sink bound")
+                return
+            text = str(payload.get("text") or "").strip()
+            if not text:
+                return
+            try:
+                state.user_text_sink(text)
+            except Exception:
+                LOGGER.exception("tool_relay: user_text_sink raised")
             return
 
         LOGGER.warning("tool_relay: unknown frame type %r", frame_type)
