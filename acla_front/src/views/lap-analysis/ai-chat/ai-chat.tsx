@@ -7,7 +7,7 @@ import { createAiCommandRegistry } from './ai-command-registry';
 import { speakWithNeuralTts, NeuralTtsPlayback } from './neural-tts';
 import { useVoiceConversation, VoiceEvent } from './use-voice-conversation';
 
-const EMOTIONS = ['sad', 'vibing', 'scared', 'waiting', 'hearing'] as const;
+const EMOTIONS = ['idle', 'sad', 'vibing', 'scared', 'waiting', 'hearing'] as const;
 type Emotion = typeof EMOTIONS[number];
 const EMOTION_GIFS_KEY = 'acla-emotion-gifs';
 const EMOTION_TAG_RE = /^\[([a-z]+)\]\s*/;
@@ -158,6 +158,14 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
             return;
         }
         if (event.kind === 'tool_event') {
+            console.log(`[ai-tool] tool_event ${event.status}`, {
+                name: event.name,
+                title: event.title,
+                status: event.status,
+                arguments: event.arguments,
+                ok: event.ok,
+                error: event.error,
+            });
             setMessages(prev => {
                 if (event.status === 'completed') {
                     for (let i = prev.length - 1; i >= 0; i--) {
@@ -353,6 +361,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
         if (!lastMessage.isUser && !lastMessage.isLoading && lastMessage.content) {
             if (lastMessage.id === 'welcome' && messages.length === 1) return;
             if (lastMessage.streamedAudio) return;
+            if (lastMessage.kind === 'tool') return;
 
             const isGuidanceMessage = lastMessage.id.includes('guidance');
 

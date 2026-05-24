@@ -1044,7 +1044,14 @@ class AIService:
                 "error": (telemetry_resp or {}).get("error", "telemetry_unavailable"),
             }
 
-        rows = telemetry_resp.get("rows") or telemetry_resp.get("telemetry_rows") or []
+        # `result` fallback: tool_relay wraps non-dict frontend returns
+        # (e.g. a bare list) as {"result": [...]} — accept that shape too.
+        _result = telemetry_resp.get("result")
+        rows = (
+            telemetry_resp.get("rows")
+            or telemetry_resp.get("telemetry_rows")
+            or (_result if isinstance(_result, list) else [])
+        )
         if not rows:
             return {
                 "telemetry_summary": {"rows": 0, **scope_summary},

@@ -755,14 +755,15 @@ async def build_voice_pipeline_task(
     # those on demand via get_session_info if it actually needs to mention
     # them.
     #
-    # Append the emotion-signaling behavior spec loaded from the skills corpus
-    # so the instruction lives in an editable .md file, not in Python code.
+    # Append behavior specs loaded from the skills corpus so the instructions
+    # live in editable .md files, not in Python code.
     from app.skills.racing_engineer import behavior as _skill_behavior
-    _emotion_skill = _skill_behavior("emotion")
-    _emotion_section = _emotion_skill.get("_raw_body", "") if _emotion_skill else ""
     system_prompt = _VOICE_COACH_PROMPT_TEMPLATE
-    if _emotion_section:
-        system_prompt = f"{system_prompt.rstrip()}\n\n{_emotion_section}"
+    for _behavior_name in ("emotion", "transcript_resilience"):
+        _skill = _skill_behavior(_behavior_name)
+        _section = _skill.get("_raw_body", "") if _skill else ""
+        if _section:
+            system_prompt = f"{system_prompt.rstrip()}\n\n{_section}"
 
     context = LLMContext(
         messages=[{"role": "system", "content": system_prompt}],

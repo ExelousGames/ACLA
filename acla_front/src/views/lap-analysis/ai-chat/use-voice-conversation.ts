@@ -267,16 +267,27 @@ export function useVoiceConversation(
                 const id = msg.id;
                 const name = msg.name;
                 if (!id || !name) {
-                    console.warn('[voice/tool-relay] bad tool_call frame:', msg);
+                    console.warn('[ai-tool] bad tool_call frame:', msg);
                     return;
                 }
                 const handler = toolHandlersRef.current[name];
+                console.log('[ai-tool] ◀ tool_call received', {
+                    id,
+                    name,
+                    arguments: msg.arguments,
+                    handlerRegistered: !!handler,
+                });
                 if (!handler) {
+                    console.warn(
+                        '[ai-tool] no handler for', name,
+                        '— available handlers:', Object.keys(toolHandlersRef.current),
+                    );
                     sendText({ type: 'tool_error', id, error: `no handler for '${name}'` });
                     return;
                 }
                 try {
                     const result = await handler(msg.arguments || {}, toolCtx);
+                    console.log('[ai-tool] ▶ tool_result', { id, name, result });
                     sendText({
                         type: 'tool_result',
                         id,
@@ -284,6 +295,7 @@ export function useVoiceConversation(
                     });
                 } catch (err) {
                     const message = (err as Error)?.message || String(err);
+                    console.error('[ai-tool] ▶ tool_error', { id, name, error: message, err });
                     sendText({ type: 'tool_error', id, error: message });
                 }
             };

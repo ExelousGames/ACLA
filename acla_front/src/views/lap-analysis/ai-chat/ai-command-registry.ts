@@ -54,7 +54,10 @@ export const createAiCommandRegistry = (context: AiCommandRegistryContext): Reco
     async get_recent_telemetry(args) {
         const si = context.sessionIntelligence;
         if (!si) return { error: 'no_live_session' };
-        return si.getRecentTelemetry(args.seconds ?? 8, args.channels);
+        // Backend composite (_composite_analyze) reads `rows`; wrap the array
+        // so it survives the tool_relay marshaling (JS arrays are objects but
+        // not Python dicts, so the relay would otherwise wrap as {result:[...]}).
+        return { rows: si.getRecentTelemetry(args.seconds ?? 8, args.channels) };
     },
 
     async query_telemetry(args) {

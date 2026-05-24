@@ -17,6 +17,7 @@ const SHARED_KEY = 'acla-pill-msg';
 const EMOTION_GIFS_KEY = 'acla-emotion-gifs';
 const TYPE_INTERVAL_MS = 28;
 const POST_TYPE_HOLD_MS = 3800;
+const EMOTE_HOLD_MS = 3000;
 const MIN_W = 220;
 const MAX_W = 620;
 // Match the source prototype's measurement: pill-height (72 = left-pad +
@@ -71,6 +72,7 @@ const FloatingChat: React.FC = () => {
     const hideTimerRef = useRef<number | null>(null);
     const typeTimerRef = useRef<number | null>(null);
     const caretTimerRef = useRef<number | null>(null);
+    const emoteRevertTimerRef = useRef<number | null>(null);
     const lastTsRef = useRef<number>(0);
 
     const clearTimers = () => {
@@ -85,6 +87,10 @@ const FloatingChat: React.FC = () => {
         if (caretTimerRef.current !== null) {
             window.clearTimeout(caretTimerRef.current);
             caretTimerRef.current = null;
+        }
+        if (emoteRevertTimerRef.current !== null) {
+            window.clearTimeout(emoteRevertTimerRef.current);
+            emoteRevertTimerRef.current = null;
         }
     };
 
@@ -129,6 +135,12 @@ const FloatingChat: React.FC = () => {
         clearTimers();
         setName(displayName || 'ACLA');
         setCurrentEmotion(emotion ?? null);
+        if (emotion && emotion !== 'idle') {
+            emoteRevertTimerRef.current = window.setTimeout(() => {
+                setCurrentEmotion(null);
+                emoteRevertTimerRef.current = null;
+            }, EMOTE_HOLD_MS);
+        }
         setTargetWidth(measure(text));
         setOpen(true);
         setDisplayText('');
@@ -229,10 +241,11 @@ const FloatingChat: React.FC = () => {
                 aria-live="polite"
             >
                 <div className="avatar" aria-hidden="true">
-                    {currentEmotion && emotionGifs[currentEmotion]
-                        ? <img src={emotionGifs[currentEmotion]} alt={currentEmotion} />
-                        : 'AI'
-                    }
+                    {(() => {
+                        const key = currentEmotion ?? 'idle';
+                        const gif = emotionGifs[key] ?? emotionGifs['idle'];
+                        return gif ? <img src={gif} alt={key} /> : 'AI';
+                    })()}
                 </div>
                 <div className="body">
                     <div className="name">{name}</div>
