@@ -1,6 +1,110 @@
+/* Login page — dark surface, ACLA design language */
+
 .center {
     display: flex;
     justify-content: center;
     align-items: center;
-    height: 200px;
+    min-height: 100vh;
+    padding: 2rem;
+    background:
+        radial-gradient(ellipse 60% 50% at 50% 0%, rgba(0, 230, 118, 0.06), transparent 70%),
+        var(--lp-bg);
+    color: var(--lp-white);
+    font-family: var(--lp-sans);
+    position: relative;
+}
+
+.center::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background-image:
+        linear-gradient(rgba(0, 230, 118, 0.035) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(0, 230, 118, 0.035) 1px, transparent 1px);
+    background-size: 56px 56px;
+    mask-image: radial-gradient(ellipse 60% 50% at 50% 40%, #000 30%, transparent 80%);
+    -webkit-mask-image: radial-gradient(ellipse 60% 50% at 50% 40%, #000 30%, transparent 80%);
+    pointer-events: none;
+}
+
+.center > * { position: relative; z-index: 1; }
+
+/* Card */
+.center .rt-Card {
+    background: var(--lp-bg-panel) !important;
+    border: 1px solid var(--lp-border) !important;
+    border-radius: var(--lp-radius) !important;
+    backdrop-filter: blur(14px);
+    padding: 36px 32px !important;
+    color: var(--lp-white) !important;
+    box-shadow: 0 24px 64px rgba(0, 0, 0, 0.5);
+}
+
+/* Heading */
+.center .rt-Heading {
+    color: var(--lp-white);
+    font-family: var(--lp-sans);
+    letter-spacing: -0.01em;
+    font-weight: 800;
+}
+
+/* Labels */
+.center .rt-Text {
+    color: var(--lp-white);
+    font-family: var(--lp-sans);
+}
+.center .rt-Text[data-accent-color='gray'],
+.center .rt-Text.rt-r-color-gray {
+    color: var(--lp-gray) !important;
+}
+
+/* Form inputs */
+.center .rt-TextFieldRoot,
+.center .rt-TextFieldInput {
+    background: rgba(14, 14, 24, 0.7) !important;
+    border: 1px solid var(--lp-border-strong) !important;
+    border-radius: var(--lp-radius-sm) !important;
+    color: var(--lp-white) !important;
+    box-shadow: none !important;
+}
+.center .rt-TextFieldInput::placeholder { color: var(--lp-gray) !important; }
+.center .rt-TextFieldRoot:focus-within {
+    border-color: var(--lp-green) !important;
+    box-shadow: 0 0 0 3px var(--lp-green-dim) !important;
+}
+
+/* Primary submit button */
+.center button[type='submit'],
+.center .rt-Button:not([data-variant='outline']):not([data-variant='soft']):not([data-variant='ghost']) {
+    background: var(--lp-green-dim);
+    border: 1px solid var(--lp-green);
+    color: var(--lp-green);
+    font-family: var(--lp-mono);
+    font-size: 12px;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    border-radius: var(--lp-radius-sm);
+    padding: 0 18px;
+    transition: all 0.15s;
+}
+.center button[type='submit']:hover,
+.center .rt-Button:not([data-variant='outline']):not([data-variant='soft']):not([data-variant='ghost']):hover {
+    background: rgba(0, 230, 118, 0.18);
+    box-shadow: 0 0 16px var(--lp-green-dim);
+}
+
+/* Outline button (Create account / Back to login) */
+.center .rt-Button[data-variant='outline'] {
+    background: transparent !important;
+    border: 1px solid var(--lp-border-strong) !important;
+    color: var(--lp-white) !important;
+    font-family: var(--lp-mono);
+    font-size: 12px;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    border-radius: var(--lp-radius-sm) !important;
+    box-shadow: none !important;
+}
+.center .rt-Button[data-variant='outline']:hover {
+    border-color: var(--lp-white) !important;
 }

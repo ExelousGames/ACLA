@@ -71,6 +71,7 @@ def build_kokoro_processor():
             await super().process_frame(frame, direction)
 
             if isinstance(frame, TextFrame):
+                LOGGER.info("[STREAM-DIAG] TextFrame: %r", frame.text)
                 # LLM token / partial answer chunk.
                 self._streamer.feed(frame.text)
                 async for sentence in self._drain():
@@ -86,6 +87,7 @@ def build_kokoro_processor():
                 return
 
             if isinstance(frame, LLMFullResponseEndFrame):
+                LOGGER.info("[STREAM-DIAG] LLMFullResponseEndFrame (LLM done)")
                 # Flush trailing partial sentence at end of LLM stream.
                 async for sentence in self._flush():
                     await self._synth_and_push(sentence)
@@ -112,6 +114,9 @@ def build_kokoro_processor():
                 yield sentence
 
         async def _synth_and_push(self, sentence: str) -> None:
+            import time
+            t0 = time.monotonic()
+            LOGGER.info("[STREAM-DIAG] synth START: %r", sentence[:80])
             try:
                 kokoro = await get_kokoro_service()
                 # KokoroService.synthesize returns WAV bytes. For Pipecat we
@@ -122,6 +127,7 @@ def build_kokoro_processor():
             except Exception as exc:  # noqa: BLE001
                 LOGGER.warning("Pipecat Kokoro synth failed: %s", exc)
                 return
+            LOGGER.info("[STREAM-DIAG] synth DONE in %.0fms, pushing %d pcm bytes", (time.monotonic() - t0) * 1000, len(pcm16))
 
             await self.push_frame(
                 OutputAudioRawFrame(

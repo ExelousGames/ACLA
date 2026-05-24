@@ -1,41 +1,61 @@
-import React, { useContext } from 'react';
-import { Box, Flex, Card, Separator } from '@radix-ui/themes';
+import React, { useContext, useState } from 'react';
 import AiChat from '../ai-chat/ai-chat';
 import { AnalysisContext } from '../analysis-context';
 import DynamicVisualizationManager from '../visualization/DynamicVisualizationManager';
 import '../visualization/VisualizationRegistry'; // Initialize visualizations
 import './session-analysis-split.css';
 
+type SplitTab = 'visualizations' | 'chat';
+
 const SessionAnalysisSplit: React.FC = () => {
     const analysisContext = useContext(AnalysisContext);
+    const [activeTab, setActiveTab] = useState<SplitTab>('chat');
 
     const handleVisualizationLayoutChange = (instances: any[]) => {
         analysisContext.setActiveVisualizations(instances);
     };
 
+    const sessionLabel = analysisContext.sessionSelected?.session_name || 'Session';
+
     return (
-        <div className="session-analysis-split-container">
-            <Flex gap="3" style={{ height: '100%' }}>
+        <div className="sas-container">
+            <div className="sas-tablist" role="tablist" aria-label="Session view">
+                <button
+                    type="button"
+                    role="tab"
+                    aria-selected={activeTab === 'chat'}
+                    className={`sas-tab ${activeTab === 'chat' ? 'sas-tab--active' : ''}`}
+                    onClick={() => setActiveTab('chat')}
+                >
+                    <span className="sas-tab__dot" />
+                    AI Assistant
+                </button>
+                <button
+                    type="button"
+                    role="tab"
+                    aria-selected={activeTab === 'visualizations'}
+                    className={`sas-tab ${activeTab === 'visualizations' ? 'sas-tab--active' : ''}`}
+                    onClick={() => setActiveTab('visualizations')}
+                >
+                    <span className="sas-tab__dot" />
+                    Visualizations
+                </button>
+                <span className="sas-tablist__spacer" />
+                <span className="sas-tablist__meta">{sessionLabel}</span>
+            </div>
 
-                {/* Dynamic Visualization Section - takes up 60% of total width */}
-                <Box className="visualization-section" style={{ flex: '0 0 60%' }}>
-                    <Card style={{ height: '100%' }}>
-                        <DynamicVisualizationManager
-                            onLayoutChange={handleVisualizationLayoutChange}
-                        />
-                    </Card>
-                </Box>
-
-                <Separator orientation="vertical" />
-
-                {/* AI Chat Section - takes up 40% of total width */}
-                <Box className="chat-section" style={{ flex: '0 0 calc(40% - 24px)' }}>
+            <div className="sas-panel" role="tabpanel">
+                {activeTab === 'visualizations' ? (
+                    <DynamicVisualizationManager
+                        onLayoutChange={handleVisualizationLayoutChange}
+                    />
+                ) : (
                     <AiChat
                         sessionId={analysisContext.sessionSelected?.SessionId}
-                        title={`AI Assistant- ${analysisContext.sessionSelected?.session_name || 'Session'}`}
+                        title={`AI Assistant — ${sessionLabel}`}
                     />
-                </Box>
-            </Flex>
+                )}
+            </div>
         </div>
     );
 };

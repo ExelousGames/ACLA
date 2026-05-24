@@ -9,6 +9,7 @@ import MainDashboard from 'views/dashboard/MainDashboard'
 import UserProfile from 'views/user-profile/user-profile'
 import EnvironmentProvider from 'contexts/EnvironmentContext'
 import LandingPage from 'views/landing-page/LandingPage'
+import FloatingChat from 'views/floating-chat/FloatingChat'
 import { useAuth } from 'hooks/AuthProvider'
 
 /* Redirects authenticated users away from public pages to dashboard */
@@ -19,6 +20,17 @@ const PublicRoute = ({ children }) => {
 };
 
 function App() {
+  // Short-circuit for the always-on-top Electron overlay window. It loads the
+  // same React bundle under hash route #/floating-chat. We render it BEFORE
+  // AuthProvider so its mount-time auth check (which navigates to "/" when
+  // localStorage is incomplete) can't redirect the overlay away. The floating
+  // chat reads the JWT directly from localStorage via apiService.
+  if (typeof window !== 'undefined' && window.location.hash.startsWith('#/floating-chat')) {
+    // Render bare — no .App wrapper, since .App paints a full-viewport
+    // background that would defeat the Electron window's transparency.
+    return <FloatingChat />;
+  }
+
   return (
     <div className="App">
       <Router>

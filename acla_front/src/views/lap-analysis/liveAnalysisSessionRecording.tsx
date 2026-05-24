@@ -1,6 +1,7 @@
 import { Card, Flex, Box, IconButton, Heading, Grid, Text, Spinner, AlertDialog, Button } from '@radix-ui/themes';
 import { useContext, useEffect, useRef, useState, useMemo, useCallback, JSX } from 'react';
 import { AnalysisContext } from './analysis-context';
+import './liveAnalysisSessionRecording.css';
 import { UploadReacingSessionInitDto, UploadRacingSessionInitReturnDto, RacingSessionDetailedInfoDto } from 'data/live-analysis/live-analysis-type';
 import { ACC_STATUS } from 'data/live-analysis/live-map-data';
 import { useAuth } from 'hooks/AuthProvider';
@@ -44,6 +45,13 @@ const UploadIcon = ({ size = 16 }: { size?: number }) => (
 const PauseBadgeIcon = ({ size = 16 }: { size?: number }) => (
     <svg width={size} height={size} viewBox="0 0 15 15" fill="none" xmlns="http://www.w3.org/2000/svg">
         <path d="M5 3C4.44772 3 4 3.44772 4 4V11C4 11.5523 4.44772 12 5 12C5.55228 12 6 11.5523 6 11V4C6 3.44772 5.55228 3 5 3ZM10 3C9.44772 3 9 3.44772 9 4V11C9 11.5523 9.44772 12 10 12C10.5523 12 11 11.5523 11 11V4C11 3.44772 10.5523 3 10 3Z" fill="currentColor" />
+    </svg>
+);
+
+const OverlayIcon = ({ size = 14 }: { size?: number }) => (
+    <svg width={size} height={size} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <rect x="1.5" y="3.5" width="9" height="9" rx="1.5" stroke="currentColor" strokeWidth="1.3" />
+        <rect x="5.5" y="6.5" width="9" height="6" rx="1.5" stroke="currentColor" strokeWidth="1.3" fill="currentColor" fillOpacity="0.18" />
     </svg>
 );
 
@@ -139,6 +147,40 @@ export default function LiveAnalysisSessionRecording() {
     const [uploadError, setUploadError] = useState<string | null>(null);
     const [showRetryButton, setShowRetryButton] = useState(false);
     const [uploadDialogOpen, setUploadDialogOpen] = useState(false);
+    const [floatingChatOpen, setFloatingChatOpen] = useState(false);
+
+    const canOpenFloatingChat = typeof window !== 'undefined'
+        && Boolean((window as any).electronAPI?.openFloatingChat);
+
+    const toggleFloatingChat = useCallback(async () => {
+        const api = (window as any).electronAPI;
+        if (!api?.openFloatingChat) return;
+        try {
+            if (floatingChatOpen) {
+                await api.closeFloatingChat();
+                setFloatingChatOpen(false);
+            } else {
+                await api.openFloatingChat();
+                setFloatingChatOpen(true);
+            }
+        } catch (err) {
+            console.warn('Failed to toggle floating chat:', err);
+        }
+    }, [floatingChatOpen]);
+
+    // Keep the toggle in sync if the user closes the overlay via its × button,
+    // and reconcile on mount in case the window is already open from a prior run.
+    useEffect(() => {
+        const api = (window as any).electronAPI;
+        if (!api?.onFloatingChatClosed) return;
+        const unsubscribe = api.onFloatingChatClosed(() => setFloatingChatOpen(false));
+        if (api.isFloatingChatOpen) {
+            api.isFloatingChatOpen()
+                .then((open: boolean) => setFloatingChatOpen(Boolean(open)))
+                .catch(() => undefined);
+        }
+        return () => { try { unsubscribe?.(); } catch { /* ignore */ } };
+    }, []);
     const uploadInFlightRef = useRef(false);
     const hasRecordedData = analysisContext.recordedTelemetryDataCount > 0 && Boolean(analysisContext.recordedSessionDataFilePath);
 
@@ -705,12 +747,50 @@ export default function LiveAnalysisSessionRecording() {
         }
     }, [state, canRecord, startRecording, stopRecordingProcess, TelemetryDataLiveStatus, hasRecordedData, isUploading, openUploadDialog, handleCancelUpload, closeUploadDialog]);
 
+    const isRecording = state === RecordingState.RECORDING;
+    const isPaused = state === RecordingState.HOLDING || state === RecordingState.RESUME_READY;
+    const channelLabel =
+        state === RecordingState.CHECKING ? 'TELEMETRY · SCANNING' :
+        state === RecordingState.READY ? 'TELEMETRY · LIVE' :
+        state === RecordingState.RECORDING ? 'REC · LIVE' :
+        state === RecordingState.HOLDING ? 'REC · PAUSED' :
+        state === RecordingState.RESUME_READY ? 'REC · STANDBY' :
+        state === RecordingState.UPLOAD_READY ? 'REC · STOPPED' :
+        'TELEMETRY';
+    const channelMod =
+        isRecording ? 'live-recording-bar__channel--rec' :
+        isPaused ? 'live-recording-bar__channel--paused' :
+        state === RecordingState.READY ? 'live-recording-bar__channel--live' :
+        state === RecordingState.UPLOAD_READY ? 'live-recording-bar__channel--stopped' :
+        '';
+
     return (
-        <Box position="absolute" left="0" right="0" bottom="0" mb="5" height="64px" style={{ borderRadius: '100px', boxShadow: 'var(--shadow-6)', marginLeft: 'max(24px, 10%)', marginRight: 'max(24px, 10%)' }}>
-            <Flex height="100%" align="center" position="relative" overflow="hidden" style={{ borderRadius: '100px' }}>
-                <Flex gap="4" align="center" p="3" style={{ minWidth: 0, flex: 1 }}>
+        <Box className={`live-recording-bar ${isRecording ? 'live-recording-bar--rec' : ''}`} position="absolute" left="0" right="0" bottom="0" mb="5" height="64px" style={{ marginLeft: 'max(24px, 10%)', marginRight: 'max(24px, 10%)' }}>
+            <Flex height="100%" align="center" position="relative" overflow="hidden" className="live-recording-bar__inner">
+                <Flex gap="3" align="center" p="3" style={{ minWidth: 0, flex: 1 }}>
+
+                    <div className={`live-recording-bar__channel ${channelMod}`}>
+                        <span className="live-recording-bar__channel-dot" />
+                        {channelLabel}
+                    </div>
 
                     {controlButtons}
+                    {canOpenFloatingChat && (
+                        <Button
+                            radius="full"
+                            variant={floatingChatOpen ? 'solid' : 'outline'}
+                            color={floatingChatOpen ? 'green' : 'gray'}
+                            onClick={() => { void toggleFloatingChat(); }}
+                            title={floatingChatOpen
+                                ? 'Close the always-on-top AI chat overlay'
+                                : 'Open the always-on-top AI chat overlay (visible over the game in borderless windowed mode)'}
+                        >
+                            <Flex align="center" gap="2">
+                                <OverlayIcon size={14} />
+                                <span>{floatingChatOpen ? 'Overlay On' : 'AI Overlay'}</span>
+                            </Flex>
+                        </Button>
+                    )}
                     <AlertDialog.Root open={uploadDialogOpen} onOpenChange={handleDialogOpenChange}>
                         <AlertDialog.Content maxWidth="450px" onEscapeKeyDown={(e) => { if (isUploading) e.preventDefault(); }}>
                             <AlertDialog.Title>Upload Racing Session</AlertDialog.Title>
@@ -760,20 +840,18 @@ export default function LiveAnalysisSessionRecording() {
                     </AlertDialog.Root>
 
                 </Flex>
-                <Flex align="center" justify="center" gap="3" p="3" style={{ flexShrink: 0, width: 280 }}>
-                    <Box style={{ minWidth: 0, flex: 1 }}>
-                        <Text size="1" as="div" weight="medium" style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>Racing Map Name Here</Text>
-                        <Flex justify="between" align="center" gap="2" mb="2">
-                            <Text size="1" as="span" color="gray" style={{ whiteSpace: 'nowrap' }}>Practice Session</Text>
-                            <Text size="1" as="span" color="gray" style={{ whiteSpace: 'nowrap' }}>0:58 / Lap 2</Text>
-                        </Flex>
-                        <Box position="relative" height="4px" width="100%" style={{ backgroundColor: 'var(--gray-a5)', borderRadius: 'var(--radius-1)' }}>
-                            <Box position="absolute" height="4px" width="64px" style={{ borderRadius: 'var(--radius-1)', backgroundColor: 'var(--gray-a9)' }} />
-                        </Box>
-                    </Box>
-                </Flex>
-                {/* Spacer to balance the left controls and keep center content centered */}
-                <Box style={{ flex: 1 }} />
+                <div className="live-recording-bar__status">
+                    <div className="live-recording-bar__status-row">
+                        <span className="live-recording-bar__status-label">MAP</span>
+                        <span className="live-recording-bar__status-value">{analysisContext.mapSelected || '—'}</span>
+                    </div>
+                    <div className="live-recording-bar__status-row">
+                        <span className="live-recording-bar__status-label">SAMPLES</span>
+                        <span className="live-recording-bar__status-value live-recording-bar__status-value--mono">
+                            {analysisContext.recordedTelemetryDataCount.toLocaleString()}
+                        </span>
+                    </div>
+                </div>
 
             </Flex>
         </Box>

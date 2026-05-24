@@ -1,6 +1,4 @@
-import React, { useState, useRef, useEffect, useContext } from 'react';
-import { Box, Button, Card, Flex, Text, TextField, ScrollArea, Separator, Badge, Spinner, IconButton } from '@radix-ui/themes';
-import { PaperPlaneIcon, ChatBubbleIcon, PersonIcon } from '@radix-ui/react-icons';
+import React, { useState, useRef, useEffect, useContext, useMemo } from 'react';
 import './ai-chat.css';
 import { AnalysisContext } from 'views/lap-analysis/analysis-context';
 import { visualizationController } from 'views/lap-analysis/visualization/VisualizationRegistry';
@@ -54,6 +52,17 @@ interface AiChatProps {
     title?: string;
 }
 
+const QUICK_PROMPTS = [
+    "How's my fuel?",
+    "Best line through T3?",
+    "Pit or stay out?",
+    "Who's behind me?",
+    "Bring it home safe",
+];
+
+const formatClock = (d: Date) =>
+    `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`;
+
 const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) => {
     const [messages, setMessages] = useState<Message[]>([]);
     const [inputValue, setInputValue] = useState('');
@@ -72,7 +81,15 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
     const [isTextToSpeechEnabled, setIsTextToSpeechEnabled] = useState(false);
     const [isSpeaking, setIsSpeaking] = useState(false);
 
+    // Live clock for the transcript header (matches landing page vibe).
+    const [clock, setClock] = useState(formatClock(new Date()));
+    useEffect(() => {
+        const id = setInterval(() => setClock(formatClock(new Date())), 1000);
+        return () => clearInterval(id);
+    }, []);
+
     const messagesEndRef = useRef<HTMLDivElement>(null);
+    const messagesScrollRef = useRef<HTMLDivElement>(null);
     // Active neural-TTS playback handle (Phase 2 — Kokoro via /voice-synthesize).
     const currentNeuralPlaybackRef = useRef<NeuralTtsPlayback | null>(null);
     // Mirrors neuralTtsAvailable for read access inside async closures that
@@ -84,18 +101,6 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
     // audio playback; it ALSO multiplexes the tool-relay text channel on
     // the same WS — frontend tools listed below are reachable from the
     // backend LLM via JSON text frames.
-    //
-    // What each handler does:
-    //   - get_session_info: returns whatever track/car the analysis view
-    //     has cached. Returned to the LLM whenever it asks (it never sees
-    //     these from connect-time params anymore).
-    //   - get_recent_telemetry / start_per_turn_coaching: this view
-    //     reviews recorded sessions rather than live ones, so the live
-    //     buffer is empty. We return a clean "no live telemetry in this
-    //     view" error — the engineer's anti-hallucination rule then
-    //     verbalizes "I can't see your telemetry right now" rather than
-    //     fabricating numbers. A future live-driving view can plug in
-    //     real implementations without touching the backend.
     const handleVoiceEvent = (event: VoiceEvent) => {
         if (event.kind === 'user_transcript') {
             setMessages(prev => prev
@@ -118,14 +123,30 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
                     isUser: false,
                     timestamp: new Date(),
                     kind: 'chat',
-                    streamedAudio: true, // audio already played via WS PCM
+                    streamedAudio: true,
                 }));
+            // Broadcast to the floating pill overlay (separate Electron window).
+            // 'storage' events fire in other same-origin BrowserWindows but not
+            // in the window that writes — perfect one-way fanout.
+            try {
+                const pillText = event.text
+                    .replace(/\*\*(.*?)\*\*/g, '$1')
+                    .replace(/\*(.*?)\*/g, '$1')
+                    .replace(/`(.*?)`/g, '$1')
+                    .replace(/\s+/g, ' ')
+                    .trim()
+                    .slice(0, 280);
+                if (pillText) {
+                    localStorage.setItem('acla-pill-msg', JSON.stringify({
+                        text: pillText,
+                        ts: Date.now(),
+                    }));
+                }
+            } catch { /* ignore storage write failures */ }
             return;
         }
         if (event.kind === 'tool_event') {
             setMessages(prev => {
-                // If this tool started recently and is now completed, update
-                // the existing row rather than appending a new one.
                 if (event.status === 'completed') {
                     for (let i = prev.length - 1; i >= 0; i--) {
                         const m = prev[i];
@@ -184,17 +205,9 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
         },
     });
 
-    const buildVisualizationAssistantContext = () => {
-        const visualizationContext = visualizationController.getVisualizationAssistantContext();
-        return {
-            ...visualizationContext,
-            commandFunctions: VISUALIZATION_COMMAND_FUNCTIONS
-        };
-    };
-
     // Utility function to generate unique message IDs
     const generateUniqueId = (prefix: string = 'msg') => {
-        return `${prefix}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+        return `${prefix}-${Date.now()}-${Math.random().toString(36).substring(2, 11)}`;
     };
 
     const addStatusMessage = (type: string, content: string) => {
@@ -216,14 +229,14 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
      */
     const cleanTextForSpeech = (text: string): string => {
         return text
-            .replace(/\*\*(.*?)\*\*/g, '$1') // Remove markdown bold
-            .replace(/\*(.*?)\*/g, '$1') // Remove markdown italic
-            .replace(/```[\s\S]*?```/g, '') // Remove code blocks
-            .replace(/`(.*?)`/g, '$1') // Remove inline code
-            .replace(/https?:\/\/[^\s]+/g, 'link') // Replace URLs with "link"
-            .replace(/[#]+\s*/g, '') // Remove markdown headers
-            .replace(/\n+/g, '. ') // Replace newlines with periods
-            .replace(/\s+/g, ' ') // Normalize whitespace
+            .replace(/\*\*(.*?)\*\*/g, '$1')
+            .replace(/\*(.*?)\*/g, '$1')
+            .replace(/```[\s\S]*?```/g, '')
+            .replace(/`(.*?)`/g, '$1')
+            .replace(/https?:\/\/[^\s]+/g, 'link')
+            .replace(/[#]+\s*/g, '')
+            .replace(/\n+/g, '. ')
+            .replace(/\s+/g, ' ')
             .trim();
     };
 
@@ -242,7 +255,6 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
 
         setIsSpeaking(true);
         const playback = await speakWithNeuralTts(cleanText, {
-            // Slightly faster delivery for on-track guidance cues.
             speed: options?.isGuidance ? 1.15 : 1.0,
             volume: 0.9,
         });
@@ -275,9 +287,6 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
     };
 
     const stopSpeaking = () => {
-        // Phase 2 — single-WAV neural TTS playback. (The Phase 2.5 SSE
-        // streaming refs were removed in the racing-engineer rebuild —
-        // voice WS audio is owned by useVoiceConversation now.)
         if (currentNeuralPlaybackRef.current) {
             currentNeuralPlaybackRef.current.stop();
             currentNeuralPlaybackRef.current = null;
@@ -289,14 +298,12 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
         const newState = !isTextToSpeechEnabled;
         setIsTextToSpeechEnabled(newState);
 
-        // Save preference to localStorage
         localStorage.setItem('ai-chat-tts-enabled', newState.toString());
 
         if (!newState && isSpeaking) {
             stopSpeaking();
         }
 
-        // Show feedback message
         const statusMessage = newState ? 'Text-to-speech enabled' : 'Text-to-speech disabled';
         addStatusMessage('tts-toggle', statusMessage);
     };
@@ -311,19 +318,12 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
 
         const lastMessage = messages[messages.length - 1];
 
-        // Only speak AI messages (not user messages) and not loading messages
         if (!lastMessage.isUser && !lastMessage.isLoading && lastMessage.content) {
-            // Don't speak the welcome message on first load
             if (lastMessage.id === 'welcome' && messages.length === 1) return;
-
-            // Phase 2.5 — streaming responses already played their own
-            // sentence-chunked audio via SSE. Don't double-speak.
             if (lastMessage.streamedAudio) return;
 
-            // Determine if this is a guidance message
             const isGuidanceMessage = lastMessage.id.includes('guidance');
 
-            // Add a small delay to ensure the message is rendered
             setTimeout(() => {
                 speakText(lastMessage.content, { isGuidance: isGuidanceMessage });
             }, 300);
@@ -337,7 +337,6 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
         if (analysisContext?.latestGuidanceMessage &&
             analysisContext.latestGuidanceMessage !== lastProcessedGuidanceRef.current) {
 
-            // Throttle guidance messages to avoid spam (max 1 per 2 seconds)
             const now = Date.now();
             if (now - lastGuidanceTimestampRef.current < 2000) {
                 return;
@@ -356,7 +355,6 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
     }, [analysisContext?.latestGuidanceMessage]);
 
     useEffect(() => {
-        // Add welcome message when component mounts
         if (messages.length === 0) {
             const welcomeMessage: Message = {
                 id: 'welcome',
@@ -373,9 +371,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
     useEffect(() => {
         const fetchImitationLearningGuidance = async () => {
             if (!analysisContext?.liveData || !TrackGuideEnabled) return;
-
             try {
-
                 // Handle the response here if needed
             } catch (error) {
                 console.error('Error fetching imitation learning guidance:', error);
@@ -388,7 +384,6 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
     // Auto-manage imitation guidance chart visibility
     useEffect(() => {
         if (!TrackGuideEnabled) {
-            // Remove all auto-managed imitation guidance charts when disabled
             const existingCharts = visualizationController.getCurrentInstances();
             existingCharts.forEach(chart => {
                 if (chart.type === 'imitation-guidance-chart' && chart.data?.autoManaged) {
@@ -396,16 +391,13 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
                         action: 'remove',
                         id: chart.id
                     });
-                    console.log('Auto-manage: removed imitation guidance chart:', chart.id);
                 }
             });
         }
     }, [TrackGuideEnabled, sessionId]);
 
-    // Cleanup auto-managed charts when component unmounts
     useEffect(() => {
         return () => {
-            // Remove auto-managed imitation guidance charts on unmount
             const existingCharts = visualizationController.getCurrentInstances();
             existingCharts.forEach(chart => {
                 if (chart.type === 'imitation-guidance-chart' && chart.data?.autoManaged) {
@@ -413,16 +405,11 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
                         action: 'remove',
                         id: chart.id
                     });
-                    console.log('Cleanup: removed auto-managed imitation guidance chart:', chart.id);
                 }
             });
         };
     }, []);
 
-
-    // One-time setup: detect environment for the Desktop Mode badge and
-    // restore the user's TTS-enabled preference. Neural TTS availability is
-    // determined lazily on the first speak attempt, not up front.
     useEffect(() => {
         setEnvironment(detectEnvironment());
 
@@ -436,8 +423,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
         };
     }, []);
 
-    // Ctrl+Space (or Cmd+Space) — stop ongoing TTS playback. The voice WS
-    // is closed via the dedicated mic toggle in the toolbar, not a hotkey.
+    // Ctrl+Space (or Cmd+Space) — stop ongoing TTS playback.
     useEffect(() => {
         const handleKeyDown = (event: KeyboardEvent) => {
             if ((event.ctrlKey || event.metaKey) && event.code === 'Space' && isSpeaking) {
@@ -451,14 +437,13 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
         return () => document.removeEventListener('keydown', handleKeyDown);
     }, [isSpeaking]);
 
-    const handleSendMessage = async () => {
-        const text = inputValue.trim();
+    const handleSendMessage = async (override?: string) => {
+        const text = (override ?? inputValue).trim();
         if (!text || isLoading) return;
 
         // The voice WS is the single chat surface. Backend echoes a
         // user_transcript frame for typed input, so we don't append the
-        // user message locally — handleVoiceEvent will when the echo
-        // arrives. This keeps voice and text turns rendered identically.
+        // user message locally — handleVoiceEvent will when the echo arrives.
         const sent = voiceConversation.sendUserText(text);
         if (!sent) {
             setMessages(prev => prev.concat({
@@ -477,39 +462,30 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
         setInputValue(e.target.value);
     };
 
-    const handleKeyPress = (e: React.KeyboardEvent) => {
+    const handleKeyDown = (e: React.KeyboardEvent) => {
         if (e.key === 'Enter' && !e.shiftKey) {
             e.preventDefault();
             handleSendMessage();
         }
     };
 
-    // Function execution system
+    // Function execution system — preserved for future code paths that still
+    // call into the registry (function-call indicators in messages).
     const executeFunctionCall = async (functionCall: FunctionCall, responseData: any): Promise<FunctionResult> => {
         try {
-            console.log(`Executing function: ${functionCall.function} with args:`, functionCall.arguments);
-
             const result = await findAndExecuteFunction(functionCall.function, functionCall.arguments, responseData);
-
-            return {
-                function: functionCall.function,
-                arguments: functionCall.arguments,
-                result,
-                success: true
-            };
+            return { function: functionCall.function, arguments: functionCall.arguments, result, success: true };
         } catch (error) {
-            console.error(`Error executing function ${functionCall.function}:`, error);
             return {
                 function: functionCall.function,
                 arguments: functionCall.arguments,
                 result: null,
                 success: false,
-                error: error instanceof Error ? error.message : 'Unknown error'
+                error: error instanceof Error ? error.message : 'Unknown error',
             };
         }
     };
 
-    // Define available functions that can be called
     const findAndExecuteFunction = async (functionName: string, args: Record<string, any>, responseData: any): Promise<any> => {
         const registry = createAiCommandRegistry({
             sessionId,
@@ -522,529 +498,397 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
         if (!handler) {
             throw new Error(`Unknown function: ${functionName}`);
         }
-
         return await handler(args, responseData);
     };
 
     const startTrackGuide = (responseData: any) => {
-
-
-        // Add imitation guidance chart with the track data
-
         visualizationController.openVisualization('imitation-guidance-chart', {}, {
             title: 'AI Track Guidance',
             autoUpdate: true
         });
-
-
         setTrackGuideEnabled(true);
-    }
-
+    };
 
     const formatFunctionArgs = (args: Record<string, any>): string => {
         return Object.entries(args).map(([key, value]) => {
-            if (typeof value === 'object') {
-                return `${key}: ${JSON.stringify(value)}`;
-            }
+            if (typeof value === 'object') return `${key}: ${JSON.stringify(value)}`;
             return `${key}: ${value}`;
         }).join(', ');
     };
 
+    // ── Voice state → mic panel display ─────────────────────────────
+    const vState = voiceConversation.state;
+    const voiceActive = vState === 'listening' || vState === 'speaking';
+    const channelLabel =
+        vState === 'idle' ? 'CH-1 · OFFLINE' :
+        vState === 'connecting' ? 'CH-1 · CONNECTING' :
+        vState === 'error' ? 'CH-1 · ERROR' :
+        'CH-1 · OPEN';
+    const channelMod =
+        vState === 'idle' ? 'ai-chat__mic-channel--idle' :
+        vState === 'error' ? 'ai-chat__mic-channel--error' :
+        '';
+    const coreMod =
+        vState === 'idle' || vState === 'connecting' ? 'ai-chat__mic-core--idle' :
+        vState === 'error' ? 'ai-chat__mic-core--error' :
+        '';
+    const statusTop =
+        vState === 'idle' ? 'TAP MIC' :
+        vState === 'connecting' ? 'CONNECTING' :
+        vState === 'speaking' ? 'ACLA' :
+        vState === 'listening' ? 'DRIVER' :
+        'VOICE';
+    const statusBottom =
+        vState === 'idle' ? 'TO START' :
+        vState === 'connecting' ? '…' :
+        vState === 'speaking' ? 'RESPONDING' :
+        vState === 'listening' ? 'LISTENING' :
+        vState === 'error' ? 'RETRY' :
+        'IDLE';
+    const statusMod =
+        vState === 'idle' || vState === 'connecting' ? 'ai-chat__mic-status--idle' :
+        vState === 'error' ? 'ai-chat__mic-status--error' :
+        '';
 
-    // Mic input level meter — five vertical bars driven by
-    // voiceConversation.micLevel (0..1). Visible only while the voice
-    // session is open so the user gets immediate feedback that the mic is
-    // actually picking up their voice.
-    const MicMeter: React.FC<{ level: number; active: boolean }> = ({ level, active }) => {
-        if (!active) return null;
-        const segments = 5;
-        // Apply a small visual gain — most quiet-but-audible speech sits
-        // around peak 0.2-0.4, so a 1:1 mapping would feel dead.
-        const lit = Math.max(0, Math.min(segments, Math.round(level * segments * 1.8)));
-        return (
-            <Flex gap="1" align="end" style={{ height: 24, paddingInline: 4 }} title={`Mic level: ${Math.round(level * 100)}%`}>
-                {Array.from({ length: segments }, (_, i) => {
-                    const isLit = i < lit;
-                    const color = i >= segments - 1
-                        ? 'var(--red-9)'
-                        : i >= segments - 2
-                            ? 'var(--amber-9)'
-                            : 'var(--green-9)';
-                    return (
-                        <Box
-                            key={i}
-                            style={{
-                                width: 3,
-                                height: 6 + i * 3,
-                                borderRadius: 1,
-                                backgroundColor: isLit ? color : 'var(--gray-6)',
-                                transition: 'background-color 80ms linear',
-                            }}
-                        />
-                    );
-                })}
-            </Flex>
-        );
+    const toggleVoice = () => {
+        if (vState === 'idle' || vState === 'error') {
+            voiceConversation.start().catch((err) => {
+                console.error('Voice conversation failed to start:', err);
+            });
+        } else {
+            voiceConversation.stop();
+        }
     };
 
-    // Speaker Icon Component
-    const SpeakerIcon = () => (
-        <svg
-            width="12"
-            height="12"
-            viewBox="0 0 24 24"
-            fill="currentColor"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-        >
-            <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
-            <path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07" />
-        </svg>
+    // Wave bars: driver real mic level when listening so the bars visually
+    // confirm we're picking up audio; otherwise CSS-only decorative animation.
+    const waveBars = useMemo(
+        () => Array.from({ length: 24 }, (_, i) => ({
+            delay: `${(i % 6) * 0.08}s`,
+            duration: `${0.7 + (i % 5) * 0.1}s`,
+        })),
+        []
     );
-
-    /**
-     * Extracts JSON object from a string that may contain markdown code blocks or other text
-     * @param text - The string that may contain JSON
-     * @returns Parsed JSON object or null if no valid JSON found
-     */
-    const extractJsonFromString = (text: string): any => {
-        if (!text || typeof text !== 'string') {
-            return null;
-        }
-
-        try {
-            // First, try to parse the entire string as JSON (handles case where it's just {})
-            return JSON.parse(text.trim());
-        } catch {
-            // If that fails, look for JSON within the string
-        }
-
-        // Remove markdown code blocks (```json ... ``` or ``` ... ```
-        let cleanedText = text.replace(/```(?:json)?\s*([\s\S]*?)\s*```/gi, '$1');
-
-        // Try to find JSON object boundaries
-        const jsonPatterns = [
-            // Look for objects starting with { and ending with }
-            /\{[\s\S]*\}/,
-            // Look for arrays starting with [ and ending with ]
-            /\[[\s\S]*\]/
-        ];
-
-        for (const pattern of jsonPatterns) {
-            const match = cleanedText.match(pattern);
-            if (match) {
-                try {
-                    const jsonStr = match[0].trim();
-                    return JSON.parse(jsonStr);
-                } catch (parseError) {
-                    console.warn('Failed to parse extracted JSON:', parseError);
-                    continue;
-                }
-            }
-        }
-
-        // Try to find multiple JSON objects in the string
-        const lines = cleanedText.split('\n');
-        let jsonStart = -1;
-        let braceCount = 0;
-        let jsonContent = '';
-
-        for (let i = 0; i < lines.length; i++) {
-            const line = lines[i].trim();
-
-            for (let j = 0; j < line.length; j++) {
-                const char = line[j];
-
-                if (char === '{') {
-                    if (jsonStart === -1) {
-                        jsonStart = i;
-                        jsonContent = '';
-                    }
-                    braceCount++;
-                    jsonContent += char;
-                } else if (char === '}' && jsonStart !== -1) {
-                    braceCount--;
-                    jsonContent += char;
-
-                    if (braceCount === 0) {
-                        // Found complete JSON object
-                        try {
-                            return JSON.parse(jsonContent);
-                        } catch (parseError) {
-                            console.warn('Failed to parse found JSON object:', parseError);
-                            jsonStart = -1;
-                            jsonContent = '';
-                        }
-                    }
-                } else if (jsonStart !== -1) {
-                    jsonContent += char;
-                }
-            }
-
-            if (jsonStart !== -1 && i < lines.length - 1) {
-                jsonContent += '\n';
-            }
-        }
-
-        console.warn('No valid JSON found in string:', text);
-        return null;
-    };
-
-    // Add this helper function to validate and structure guidance data
-    const parseGuidanceData = (text: string): { throttle_guidance?: string[], brake_guidance?: string[], steering_guidance?: string[] } | null => {
-        const jsonData = extractJsonFromString(text);
-
-        if (!jsonData || typeof jsonData !== 'object') {
-            return null;
-        }
-
-        // Validate the structure matches expected guidance format
-        const guidanceData: any = {};
-
-        if (Array.isArray(jsonData.throttle_guidance)) {
-            guidanceData.throttle_guidance = jsonData.throttle_guidance;
-        }
-
-        if (Array.isArray(jsonData.brake_guidance)) {
-            guidanceData.brake_guidance = jsonData.brake_guidance;
-        }
-
-        if (Array.isArray(jsonData.steering_guidance)) {
-            guidanceData.steering_guidance = jsonData.steering_guidance;
-        }
-
-        // Return null if no valid guidance arrays found
-        if (Object.keys(guidanceData).length === 0) {
-            return null;
-        }
-        return guidanceData;
-    };
+    const liveLevels = useMemo(() => {
+        // Stable per-bar response curve so adjacent bars don't all jump in sync.
+        return Array.from({ length: 24 }, (_, i) => {
+            const phase = (i / 24) * Math.PI * 2;
+            return 0.55 + 0.45 * Math.abs(Math.sin(phase + Date.now() / 200));
+        });
+    }, [voiceConversation.micLevel]);
+    const useLiveBars = vState === 'listening';
 
     return (
-        <Card className="ai-chat-container">
-            <Flex direction="column" height="100%">
-                {/* Header */}
-                <Flex align="center" justify="between" p="3" style={{ borderBottom: '1px solid var(--gray-6)' }}>
-                    <Flex align="center" gap="2">
-                        <ChatBubbleIcon />
-                        <Text size="4" weight="medium">{title}</Text>
-                        {sessionId && <Badge variant="soft" color="blue">Session Analysis</Badge>}
-                        {environment === 'electron' && (
-                            <Badge variant="soft" color="green" size="1">
-                                Desktop Mode
-                            </Badge>
-                        )}
-                    </Flex>
-                    <Flex align="center" gap="2">
-                        <Button
-                            variant="ghost"
-                            size="1"
-                            onClick={() => setDebugMode(!debugMode)}
-                            color={debugMode ? "blue" : "gray"}
-                        >
-                            Debug
-                        </Button>
-                        {!neuralTtsAvailable && (
-                            <Badge variant="soft" color="orange" size="1">
-                                Text-to-speech not available
-                            </Badge>
-                        )}
-                        {voiceConversation.error && (
-                            <Badge variant="soft" color="red" size="1">
-                                Voice error
-                            </Badge>
-                        )}
-                        {isTextToSpeechEnabled && (
-                            <Badge variant="soft" color="green" size="1">
-                                TTS On
-                            </Badge>
-                        )}
-                    </Flex>
-                </Flex>
+        <div className="ai-chat">
+            <div className="ai-chat__grid-bg" aria-hidden="true" />
 
-                {/* Messages Area */}
-                <ScrollArea className="ai-chat-messages" style={{ flex: 1 }}>
-                    <Flex direction="column" gap="3" p="3">
+            {/* Header */}
+            <div className="ai-chat__header">
+                <span className="ai-chat__eyebrow">
+                    <span className="ai-chat__eyebrow-dot" />
+                    {title}
+                </span>
+                <div className="ai-chat__header-meta">
+                    {sessionId && <span className="ai-chat__chip ai-chat__chip--blue">Session</span>}
+                    {environment === 'electron' && (
+                        <span className="ai-chat__chip ai-chat__chip--green">Desktop</span>
+                    )}
+                    {!neuralTtsAvailable && (
+                        <span className="ai-chat__chip ai-chat__chip--amber">TTS Unavailable</span>
+                    )}
+                    {voiceConversation.error && (
+                        <span className="ai-chat__chip ai-chat__chip--red" title={voiceConversation.error}>
+                            Voice Error
+                        </span>
+                    )}
+                    {isTextToSpeechEnabled && (
+                        <span className="ai-chat__chip ai-chat__chip--green">TTS On</span>
+                    )}
+                    <button
+                        type="button"
+                        className="ai-chat__chip-btn"
+                        onClick={() => setDebugMode(!debugMode)}
+                        aria-pressed={debugMode}
+                    >
+                        Debug
+                    </button>
+                </div>
+            </div>
+
+            {/* Stage: mic panel + transcript */}
+            <div className="ai-chat__stage">
+                <aside className="ai-chat__mic-panel">
+                    <div className="ai-chat__mic-head">
+                        <span className={`ai-chat__mic-channel ${channelMod}`}>
+                            <span className="ai-chat__eyebrow-dot" />
+                            {channelLabel}
+                        </span>
+                        <span>VOICE LINK</span>
+                    </div>
+
+                    <div className="ai-chat__mic-visual">
+                        {voiceActive && (
+                            <>
+                                <span className="ai-chat__mic-ring" />
+                                <span className="ai-chat__mic-ring" />
+                                <span className="ai-chat__mic-ring" />
+                            </>
+                        )}
+                        <button
+                            type="button"
+                            className={`ai-chat__mic-core ${coreMod}`}
+                            onClick={toggleVoice}
+                            disabled={vState === 'connecting'}
+                            title={
+                                vState === 'error' ? `Voice error: ${voiceConversation.error}. Click to retry.` :
+                                vState === 'connecting' ? 'Connecting…' :
+                                voiceActive ? 'Click to end voice session' :
+                                'Click to start voice session'
+                            }
+                            aria-label="Toggle voice session"
+                        >
+                            <svg viewBox="0 0 48 48" width="36" height="36" fill="none">
+                                <rect x="18" y="6" width="12" height="22" rx="6"
+                                    stroke="var(--lp-green)" strokeWidth="2" fill="rgba(0,230,118,0.08)" />
+                                <path d="M10 22c0 7.7 6.3 14 14 14s14-6.3 14-14"
+                                    stroke="var(--lp-green)" strokeWidth="2" strokeLinecap="round" />
+                                <line x1="24" y1="36" x2="24" y2="42" stroke="var(--lp-green)" strokeWidth="2" />
+                                <line x1="17" y1="42" x2="31" y2="42"
+                                    stroke="var(--lp-green)" strokeWidth="2" strokeLinecap="round" />
+                            </svg>
+                        </button>
+                    </div>
+
+                    <div className={`ai-chat__mic-status ${statusMod}`}>
+                        {statusTop}
+                        <b>{statusBottom}</b>
+                    </div>
+
+                    <div
+                        className={`ai-chat__mic-wave ${useLiveBars ? 'ai-chat__mic-wave--live' : vState === 'idle' ? 'ai-chat__mic-wave--idle' : ''}`}
+                        aria-hidden="true"
+                    >
+                        {waveBars.map((b, i) => {
+                            if (useLiveBars) {
+                                const lvl = Math.min(1, voiceConversation.micLevel * 1.8 * liveLevels[i]);
+                                return (
+                                    <span
+                                        key={i}
+                                        className="ai-chat__mic-wave-bar"
+                                        style={{ height: `${Math.max(8, lvl * 100)}%`, transition: 'height 80ms linear' }}
+                                    />
+                                );
+                            }
+                            return (
+                                <span
+                                    key={i}
+                                    className="ai-chat__mic-wave-bar"
+                                    style={{ animationDelay: b.delay, animationDuration: b.duration }}
+                                />
+                            );
+                        })}
+                    </div>
+
+                    <div className="ai-chat__mic-hint">
+                        Push <kbd>PTT</kbd> or say <kbd>&ldquo;Hey ACLA&rdquo;</kbd><br />
+                        No menus. No screens. Just talk.
+                    </div>
+
+                    <div className="ai-chat__mic-controls">
+                        {neuralTtsAvailable && (
+                            <button
+                                type="button"
+                                className={`ai-chat__btn ${isTextToSpeechEnabled ? 'ai-chat__btn--primary' : ''} ${isSpeaking ? 'ai-chat__btn--danger' : ''}`}
+                                onClick={isSpeaking ? stopSpeaking : toggleTextToSpeech}
+                                disabled={isLoading}
+                                title={
+                                    isSpeaking ? 'Stop speaking' :
+                                    isTextToSpeechEnabled ? 'Disable auto text-to-speech' :
+                                    'Enable auto text-to-speech'
+                                }
+                                style={{ padding: '6px 12px', fontSize: '10px' }}
+                            >
+                                {isSpeaking ? 'STOP TTS' : isTextToSpeechEnabled ? 'TTS ON' : 'TTS OFF'}
+                            </button>
+                        )}
+                    </div>
+                </aside>
+
+                <section className="ai-chat__transcript">
+                    <div className="ai-chat__transcript-head">
+                        <span className="ai-chat__transcript-title">
+                            <span className="ai-chat__eyebrow-dot" />
+                            LIVE TRANSCRIPT
+                        </span>
+                        <span className="ai-chat__transcript-time">{clock}</span>
+                    </div>
+
+                    <div className="ai-chat__msgs" ref={messagesScrollRef}>
                         {messages.map((message) => {
-                            // Tool-call messages get their own distinct box.
+                            // Tool-call messages
                             if (message.kind === 'tool' && message.tool) {
                                 const t = message.tool;
                                 const isError = t.status === 'completed' && t.ok === false;
                                 const isRunning = t.status === 'started';
-                                const bg = isError ? 'var(--red-2)' : isRunning ? 'var(--amber-2)' : 'var(--blue-2)';
-                                const bd = isError ? 'var(--red-7)' : isRunning ? 'var(--amber-7)' : 'var(--blue-7)';
-                                const fg = isError ? 'var(--red-12)' : isRunning ? 'var(--amber-12)' : 'var(--blue-12)';
+                                const mod = isError ? 'ai-chat__tool--error'
+                                    : isRunning ? 'ai-chat__tool--running'
+                                    : 'ai-chat__tool--ok';
                                 return (
-                                    <Flex key={message.id} direction="column" align="start" gap="1">
-                                        <Flex align="center" gap="2">
-                                            <Text size="1" color="gray">Tool</Text>
-                                            <Text size="1" color="gray">
+                                    <div key={message.id}>
+                                        <div className={`ai-chat__tool ${mod}`}>
+                                            <span className="ai-chat__tool-icon">
+                                                {isRunning ? '⟳' : isError ? '✕' : '✓'}
+                                            </span>
+                                            <span>{t.title}</span>
+                                            <span className="ai-chat__tool-stamp">
                                                 {message.timestamp.toLocaleTimeString()}
-                                            </Text>
-                                        </Flex>
-                                        <Box
-                                            style={{
-                                                maxWidth: '80%',
-                                                padding: '8px 12px',
-                                                borderRadius: '8px',
-                                                backgroundColor: bg,
-                                                color: fg,
-                                                border: `1px dashed ${bd}`,
-                                            }}
-                                        >
-                                            <Flex align="center" gap="2">
-                                                {isRunning && <Spinner size="1" />}
-                                                <Text size="2" weight="medium">{t.title}</Text>
-                                            </Flex>
-                                            {isError && t.error && (
-                                                <Text size="1" color="red" style={{ display: 'block', marginTop: 4 }}>
-                                                    {t.error}
-                                                </Text>
-                                            )}
-                                            {debugMode && (
-                                                <Text size="1" color="gray" style={{ display: 'block', marginTop: 4 }}>
-                                                    {t.name}
-                                                </Text>
-                                            )}
-                                        </Box>
-                                    </Flex>
+                                            </span>
+                                        </div>
+                                        {isError && t.error && (
+                                            <div className="ai-chat__tool-detail" style={{ color: 'var(--lp-red)' }}>
+                                                {t.error}
+                                            </div>
+                                        )}
+                                        {debugMode && (
+                                            <div className="ai-chat__tool-detail">{t.name}</div>
+                                        )}
+                                    </div>
                                 );
                             }
-                            return (
-                            <Flex
-                                key={message.id}
-                                direction="column"
-                                align={message.isUser ? "end" : "start"}
-                                gap="1"
-                            >
-                                <Flex align="center" gap="2">
-                                    {!message.isUser && <PersonIcon />}
-                                    <Text size="1" color="gray">
-                                        {message.isUser
-                                            ? 'You'
-                                            : message.id.includes('guidance')
-                                                ? '🎯 Live Track Guidance'
-                                                : 'AI Assistant'
-                                        }
-                                    </Text>
-                                    {/* Show speaking indicator for AI messages */}
-                                    {!message.isUser && isTextToSpeechEnabled && isSpeaking && (
-                                        <Flex align="center" gap="1">
-                                            <SpeakerIcon />
-                                            <Text size="1" color="blue">Speaking...</Text>
-                                        </Flex>
-                                    )}
-                                    <Text size="1" color="gray">
-                                        {message.timestamp.toLocaleTimeString()}
-                                    </Text>
-                                </Flex>
-                                <Box
-                                    className={`ai-chat-message ${message.isUser ? 'user' : 'ai'}`}
-                                    style={{
-                                        maxWidth: '80%',
-                                        padding: '8px 12px',
-                                        borderRadius: '12px',
-                                        backgroundColor: message.isUser
-                                            ? 'var(--accent-9)'
-                                            : message.id.includes('guidance')
-                                                ? 'var(--green-3)'  // Special styling for guidance messages
-                                                : 'var(--gray-3)',
-                                        color: message.isUser
-                                            ? 'var(--accent-contrast)'
-                                            : message.id.includes('guidance')
-                                                ? 'var(--green-12)'  // Special color for guidance messages
-                                                : 'var(--gray-12)',
-                                        border: message.id.includes('guidance') ? '1px solid var(--green-7)' : 'none'
-                                    }}
-                                >
-                                    {message.isLoading ? (
-                                        <Flex align="center" gap="2">
-                                            <Spinner size="1" />
-                                            <Text size="2">{message.content}</Text>
-                                        </Flex>
-                                    ) : (
-                                        <>
-                                            <Text size="2" style={{ whiteSpace: 'pre-wrap' }}>
-                                                {message.content}
-                                            </Text>
 
-                                            {/* Individual message speech control for AI messages */}
-                                            {!message.isUser && neuralTtsAvailable && !message.isLoading && (
-                                                <Flex justify="end" mt="1">
-                                                    <Button
-                                                        variant="ghost"
-                                                        size="1"
-                                                        onClick={() => speakText(message.content, { isGuidance: message.id.includes('guidance') })}
+                            const isGuidance = message.id.includes('guidance');
+                            const role: 'driver' | 'acla' | 'guidance' = message.isUser
+                                ? 'driver'
+                                : isGuidance ? 'guidance' : 'acla';
+                            const avatarLabel = role === 'driver' ? 'YOU' : role === 'guidance' ? '🎯' : 'AI';
+                            const whoLabel = role === 'driver' ? 'YOU'
+                                : role === 'guidance' ? 'LIVE GUIDANCE'
+                                : 'ACLA';
+
+                            return (
+                                <div key={message.id} className={`ai-chat__msg ai-chat__msg--${role}`}>
+                                    <div className="ai-chat__msg-avatar">{avatarLabel}</div>
+                                    <div className="ai-chat__msg-body">
+                                        <div className="ai-chat__msg-meta">
+                                            <span className="ai-chat__msg-who">{whoLabel}</span>
+                                            <span className="ai-chat__msg-stamp">
+                                                {message.timestamp.toLocaleTimeString()}
+                                            </span>
+                                            {!message.isUser && isTextToSpeechEnabled && isSpeaking && (
+                                                <span className="ai-chat__msg-stamp" style={{ color: 'var(--lp-green)' }}>
+                                                    SPEAKING…
+                                                </span>
+                                            )}
+                                        </div>
+
+                                        {message.isLoading ? (
+                                            <div className="ai-chat__typing">
+                                                <span className="ai-chat__typing-dot" />
+                                                <span className="ai-chat__typing-dot" />
+                                                <span className="ai-chat__typing-dot" />
+                                            </div>
+                                        ) : (
+                                            <>
+                                                <div className="ai-chat__msg-text">{message.content}</div>
+
+                                                {!message.isUser && neuralTtsAvailable && (
+                                                    <button
+                                                        type="button"
+                                                        className="ai-chat__msg-speaker-btn"
+                                                        onClick={() => speakText(message.content, { isGuidance })}
                                                         disabled={isSpeaking}
                                                         title="Speak this message"
-                                                        style={{ opacity: 0.7 }}
                                                     >
-                                                        <SpeakerIcon />
-                                                    </Button>
-                                                </Flex>
-                                            )}
+                                                        🔊 SPEAK
+                                                    </button>
+                                                )}
 
-                                            {/* Show function execution indicator (always visible) */}
-                                            {!debugMode && message.functionResults && message.functionResults.length > 0 && (
-                                                <Box mt="2">
-                                                    <Badge
-                                                        variant="soft"
-                                                        color={message.functionResults.every(r => r.success) ? "green" : "orange"}
-                                                        size="1"
-                                                    >
-                                                        {message.functionResults.every(r => r.success)
-                                                            ? `${message.functionResults.length} command(s) executed successfully`
-                                                            : `${message.functionResults.filter(r => r.success).length}/${message.functionResults.length} commands executed`
-                                                        }
-                                                    </Badge>
-                                                </Box>
-                                            )}
+                                                {!debugMode && message.functionResults && message.functionResults.length > 0 && (
+                                                    <div style={{ marginTop: 6 }}>
+                                                        <span className={`ai-chat__chip ${message.functionResults.every(r => r.success) ? 'ai-chat__chip--green' : 'ai-chat__chip--amber'}`}>
+                                                            {message.functionResults.every(r => r.success)
+                                                                ? `${message.functionResults.length} cmd ok`
+                                                                : `${message.functionResults.filter(r => r.success).length}/${message.functionResults.length} cmd ok`}
+                                                        </span>
+                                                    </div>
+                                                )}
 
-                                            {/* Display function calls if present and debug mode is on */}
-                                            {debugMode && message.functionCalls && message.functionCalls.length > 0 && (
-                                                <Box mt="2" p="2" style={{
-                                                    backgroundColor: 'var(--gray-2)',
-                                                    borderRadius: '6px',
-                                                    border: '1px solid var(--gray-6)'
-                                                }}>
-                                                    <Text size="1" weight="bold" color="gray">
-                                                        Function Calls Executed:
-                                                    </Text>
-                                                    {message.functionCalls.map((fc, index) => (
-                                                        <Box key={index} mt="1">
-                                                            <Text size="1" color="blue">
+                                                {debugMode && message.functionCalls && message.functionCalls.length > 0 && (
+                                                    <div className="ai-chat__debug">
+                                                        <span className="ai-chat__debug-title">Function Calls</span>
+                                                        {message.functionCalls.map((fc, i) => (
+                                                            <span key={i} className="ai-chat__debug-row">
                                                                 {fc.function}({formatFunctionArgs(fc.arguments)})
-                                                            </Text>
-                                                        </Box>
-                                                    ))}
-                                                </Box>
-                                            )}
+                                                            </span>
+                                                        ))}
+                                                    </div>
+                                                )}
 
-                                            {/* Display function results if present and debug mode is on */}
-                                            {debugMode && message.functionResults && message.functionResults.length > 0 && (
-                                                <Box mt="2" p="2" style={{
-                                                    backgroundColor: message.functionResults.some(r => !r.success)
-                                                        ? 'var(--red-2)'
-                                                        : 'var(--green-2)',
-                                                    borderRadius: '6px',
-                                                    border: `1px solid ${message.functionResults.some(r => !r.success)
-                                                        ? 'var(--red-6)'
-                                                        : 'var(--green-6)'}`
-                                                }}>
-                                                    <Text size="1" weight="bold" color="gray">
-                                                        Function Results:
-                                                    </Text>
-                                                    {message.functionResults.map((fr, index) => (
-                                                        <Box key={index} mt="1">
-                                                            <Text size="1" color={fr.success ? "green" : "red"}>
-                                                                {fr.function}: {fr.success ? "✓ Success" : "✗ Error"}
-                                                                {fr.error && ` - ${fr.error}`}
-                                                            </Text>
-                                                        </Box>
-                                                    ))}
-                                                </Box>
-                                            )}
-                                        </>
-                                    )}
-                                </Box>
-                            </Flex>
+                                                {debugMode && message.functionResults && message.functionResults.length > 0 && (
+                                                    <div className="ai-chat__debug">
+                                                        <span className="ai-chat__debug-title">Function Results</span>
+                                                        {message.functionResults.map((fr, i) => (
+                                                            <span
+                                                                key={i}
+                                                                className={`ai-chat__debug-row ${fr.success ? 'ai-chat__debug-row--ok' : 'ai-chat__debug-row--error'}`}
+                                                            >
+                                                                {fr.function}: {fr.success ? '✓ ok' : '✕ err'}
+                                                                {fr.error ? ` — ${fr.error}` : ''}
+                                                            </span>
+                                                        ))}
+                                                    </div>
+                                                )}
+                                            </>
+                                        )}
+                                    </div>
+                                </div>
                             );
                         })}
                         <div ref={messagesEndRef} />
-                    </Flex>
-                </ScrollArea>
+                    </div>
+                </section>
+            </div>
 
-                {/* Input Area */}
-                <Separator />
-                <Box p="3">
-                    <Flex gap="2">
-                        <TextField.Root
-                            placeholder={
-                                voiceConversation.state === 'listening' || voiceConversation.state === 'speaking'
-                                    ? 'Type a message to the engineer…'
-                                    : 'Click the mic to start a session, then type or talk.'
-                            }
-                            value={inputValue}
-                            onChange={handleInputChange}
-                            onKeyPress={handleKeyPress}
-                            disabled={isLoading}
-                            style={{ flex: 1 }}
-                        />
-                        {/* Text-to-speech controls next to microphone */}
-                        {neuralTtsAvailable && (
-                            <IconButton
-                                onClick={isSpeaking ? stopSpeaking : toggleTextToSpeech}
-                                disabled={isLoading}
-                                size="2"
-                                variant={isTextToSpeechEnabled ? "solid" : "ghost"}
-                                color={isSpeaking ? "red" : isTextToSpeechEnabled ? "green" : "gray"}
-                                title={
-                                    isSpeaking
-                                        ? "Stop speaking"
-                                        : isTextToSpeechEnabled
-                                            ? "Disable auto text-to-speech"
-                                            : "Enable auto text-to-speech"
-                                }
-                            >
-                                {isSpeaking ? "🔇" : isTextToSpeechEnabled ? "🔊" : "🔇"}
-                            </IconButton>
-                        )}
-                        {/* Mic level meter — shows the user that their voice is reaching the system. */}
-                        <MicMeter
-                            level={voiceConversation.micLevel}
-                            active={voiceConversation.state === 'listening' || voiceConversation.state === 'speaking'}
-                        />
-                        {/* Phase 3 — Talk to coach (full voice conversation via Pipecat). */}
-                        <IconButton
-                            onClick={() => {
-                                if (voiceConversation.state === 'idle' || voiceConversation.state === 'error') {
-                                    voiceConversation.start().catch((err) => {
-                                        console.error('Voice conversation failed to start:', err);
-                                    });
-                                } else {
-                                    voiceConversation.stop();
-                                }
-                            }}
-                            disabled={isLoading || voiceConversation.state === 'connecting'}
-                            size="2"
-                            variant={voiceConversation.state === 'idle' || voiceConversation.state === 'error' ? 'ghost' : 'solid'}
-                            color={
-                                voiceConversation.state === 'error'
-                                    ? 'orange'
-                                    : voiceConversation.state === 'speaking'
-                                        ? 'blue'
-                                        : voiceConversation.state === 'listening'
-                                            ? 'red'
-                                            : 'gray'
-                            }
-                            title={
-                                voiceConversation.state === 'error'
-                                    ? `Voice error: ${voiceConversation.error}. Click to retry.`
-                                    : voiceConversation.state === 'connecting'
-                                        ? 'Connecting to voice coach...'
-                                        : voiceConversation.state === 'listening'
-                                            ? 'Listening — click to end voice session'
-                                            : voiceConversation.state === 'speaking'
-                                                ? 'Coach speaking — click to end voice session'
-                                                : 'Talk to coach (full voice conversation)'
-                            }
-                        >
-                            {voiceConversation.state === 'idle' || voiceConversation.state === 'error' ? '💬' : '🎙️'}
-                        </IconButton>
+            {/* Pills */}
+            <div className="ai-chat__pills">
+                {QUICK_PROMPTS.map(p => (
+                    <button
+                        key={p}
+                        type="button"
+                        className="ai-chat__pill"
+                        onClick={() => handleSendMessage(p)}
+                        disabled={isLoading}
+                    >
+                        {p}
+                    </button>
+                ))}
+            </div>
 
-                        <Button
-                            onClick={() => handleSendMessage()}
-                            disabled={!inputValue.trim() || isLoading}
-                            size="2"
-                        >
-                            <PaperPlaneIcon />
-                        </Button>
-                    </Flex>
-                </Box>
-            </Flex>
-        </Card>
+            {/* Input row */}
+            <div className="ai-chat__input-row">
+                <input
+                    className="ai-chat__input"
+                    placeholder={
+                        voiceActive
+                            ? 'Type a message to the engineer…'
+                            : 'Click the mic to start a session, then type or talk.'
+                    }
+                    value={inputValue}
+                    onChange={handleInputChange}
+                    onKeyDown={handleKeyDown}
+                    disabled={isLoading}
+                />
+                <button
+                    type="button"
+                    className="ai-chat__btn ai-chat__btn--primary"
+                    onClick={() => handleSendMessage()}
+                    disabled={!inputValue.trim() || isLoading}
+                    title="Send"
+                >
+                    SEND
+                </button>
+            </div>
+        </div>
     );
 };
 

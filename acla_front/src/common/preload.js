@@ -80,4 +80,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
             ipcRenderer.off('speech-recognition-complete', subscription);
         };
     },
+
+    // Floating AI-chat overlay window (always-on-top, draggable, frameless)
+    openFloatingChat: () => ipcRenderer.invoke('open-floating-chat'),
+    closeFloatingChat: () => ipcRenderer.invoke('close-floating-chat'),
+    isFloatingChatOpen: () => ipcRenderer.invoke('is-floating-chat-open'),
+    onFloatingChatClosed: (callback) => {
+        const subscription = () => callback();
+        ipcRenderer.on('floating-chat-closed', subscription);
+        return () => {
+            ipcRenderer.off('floating-chat-closed', subscription);
+        };
+    },
 });

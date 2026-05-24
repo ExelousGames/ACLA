@@ -29,17 +29,8 @@ import apiService from 'services/api.service';
 
 const MapList = () => {
 
-    const [options, setOptions] = useState([{
-        dataKey: 1,
-        name: "Track 1",
-        session_count: 0,
-
-    },
-    {
-        dataKey: 2,
-        name: "Track 2",
-        session_count: 0
-    }] as MapOption[]);
+    const [options, setOptions] = useState<MapOption[]>([]);
+    const [loaded, setLoaded] = useState(false);
 
     useEffect(() => {
 
@@ -58,18 +49,32 @@ const MapList = () => {
                 }))
 
             }).catch((e) => {
-            });
+            }).finally(() => setLoaded(true));
     }, []);
 
     return (
         <ScrollArea.Root className="MapListScrollAreaRoot">
             <ScrollArea.Viewport className="ScrollAreaViewport">
-                <Flex flexShrink="0" direction="column" gap="9">
-                    {options.map((option: MapOption) => (
-                        //each child is a list should have a unique "key" prop
-                        <MapCard key={option.dataKey} dataKey={option.dataKey} name={option.name} session_count={option.session_count} />
-                    ))}
-                </Flex>
+                {loaded && options.length === 0 ? (
+                    <div className="MapListEmptyState">
+                        <div className="MapListEmptyState__eyebrow">
+                            <span className="MapListEmptyState__dot" />
+                            NO MAPS YET
+                        </div>
+                        <h3 className="MapListEmptyState__title">Record your first session</h3>
+                        <p className="MapListEmptyState__sub">
+                            Launch Assetto Corsa Competizione and hit <strong>Start Recording</strong> below.
+                            Maps appear here once telemetry is captured.
+                        </p>
+                    </div>
+                ) : (
+                    <Flex flexShrink="0" direction="column" gap="3">
+                        {options.map((option: MapOption) => (
+                            //each child is a list should have a unique "key" prop
+                            <MapCard key={option.dataKey} dataKey={option.dataKey} name={option.name} session_count={option.session_count} />
+                        ))}
+                    </Flex>
+                )}
             </ScrollArea.Viewport>
             <ScrollArea.Scrollbar
                 className="ScrollAreaScrollbar"

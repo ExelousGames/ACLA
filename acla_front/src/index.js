@@ -1,6 +1,7 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import './index.css';
+import './styles/design-tokens.css';
 import App from './App';
 import reportWebVitals from './reportWebVitals';
 import { Theme } from "@radix-ui/themes";
@@ -12,11 +13,23 @@ const root = ReactDOM.createRoot(document.getElementById('root'));
 //define the React component that should be rendered.
 //  In "public" folder, there is an index.html file. This is where our React application will be rendered.
 //Display inside an element with the id of "root":
+// The Electron always-on-top overlay window loads the same bundle under
+// hash route #/floating-chat. Radix's <Theme> paints a full-viewport dark
+// background that would defeat the transparent BrowserWindow, so we skip
+// the Theme wrapper for that route. The overlay also doesn't need any of
+// Radix's tokens — its styles are self-contained.
+const isFloatingChat =
+  typeof window !== 'undefined' && window.location.hash.startsWith('#/floating-chat');
+
 root.render(
   <React.StrictMode>
-    <Theme>
+    {isFloatingChat ? (
       <App />
-    </Theme>
+    ) : (
+      <Theme appearance="dark" accentColor="green" grayColor="mauve" radius="medium">
+        <App />
+      </Theme>
+    )}
   </React.StrictMode>
 );
 

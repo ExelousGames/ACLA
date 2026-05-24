@@ -432,7 +432,7 @@ const SessionAnalysis = () => {
             ,
             TelemetryDataLiveStatus
         }}>
-            <Tabs.Root className="LiveAnalysisTabsRoot" defaultValue="mapLists" value={activeTab} onValueChange={setActiveTab}>
+            <Tabs.Root className={`LiveAnalysisTabsRoot ${environment === 'electron' ? 'has-recording-bar' : ''}`} defaultValue="mapLists" value={activeTab} onValueChange={setActiveTab}>
                 <Tabs.List className="live-analysis-tablists" justify="start">
                     <Tabs.Trigger value="mapLists">Maps</Tabs.Trigger>
                     {mapSelected == null ? "" : <Tabs.Trigger value="sessionLists">{mapSelected}</Tabs.Trigger>}

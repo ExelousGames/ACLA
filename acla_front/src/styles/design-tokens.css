@@ -1,0 +1,50 @@
+/* =====================================================
+   ACLA Design Tokens — shared across every view
+   Sourced from the landing page (`.lp-*`) so the app
+   and the marketing surface share one visual language.
+   ===================================================== */
+
+:root {
+  /* Surfaces */
+  --lp-bg: #0a0a0f;
+  --lp-bg-alt: #0e0e18;
+  --lp-bg-surface: #161628;
+  --lp-bg-surface-hover: #1e1e32;
+  --lp-bg-panel: linear-gradient(180deg, rgba(22, 22, 40, 0.55), rgba(14, 14, 24, 0.55));
+
+  /* Accents */
+  --lp-green: #00e676;
+  --lp-green-dim: rgba(0, 230, 118, 0.12);
+  --lp-green-glow: rgba(0, 230, 118, 0.35);
+  --lp-red: #ff1744;
+  --lp-red-dim: rgba(255, 23, 68, 0.12);
+  --lp-blue: #448aff;
+  --lp-blue-dim: rgba(68, 138, 255, 0.12);
+  --lp-amber: #ffb300;
+  --lp-amber-dim: rgba(255, 179, 0, 0.12);
+
+  /* Text */
+  --lp-white: #e8e8f0;
+  --lp-gray: #8080a0;
+  --lp-gray-dim: rgba(255, 255, 255, 0.4);
+  --lp-gray-faint: rgba(255, 255, 255, 0.3);
+
+  /* Lines */
+  --lp-border: rgba(255, 255, 255, 0.06);
+  --lp-border-strong: rgba(255, 255, 255, 0.12);
+
+  /* Typography */
+  --lp-mono: 'SF Mono', 'Fira Code', 'Cascadia Code', 'Consolas', monospace;
+  --lp-sans: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans-serif;
+
+  /* Radii */
+  --lp-radius: 12px;
+  --lp-radius-sm: 8px;
+  --lp-radius-pill: 100px;
+}
+
+/* HUD-style blink used by status dots in panels app-wide */
+@keyframes hud-led-blink {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.4; }
+}

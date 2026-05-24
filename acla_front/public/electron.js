@@ -136,7 +136,12 @@ function createWindow() {
   });
 
   mainWindow.loadURL(devMode ? 'http://localhost:3000' : `file://${path.join(__dirname, '../build/index.html')}`);
-  mainWindow.on('closed', () => mainWindow = null);
+  mainWindow.on('closed', () => {
+    mainWindow = null;
+    if (floatingChatWindow && !floatingChatWindow.isDestroyed()) {
+      floatingChatWindow.close();
+    }
+  });
 }
 
 // start running Python scripts
@@ -596,6 +601,90 @@ if __name__ == "__main__":
     return { success: false, error: error.message };
   }
 }
+
+// ── Floating AI-chat window ─────────────────────────────────────────────
+// A small frameless, always-on-top window that loads the same React bundle
+// under hash route #/floating-chat. Shares localStorage (JWT, settings) with
+// the main window since both run in the default session partition.
+//
+// "Always on top" uses the highest Windows level ('screen-saver'). Note: a
+// true exclusive-fullscreen game will still cover this — users need to run
+// the game in borderless windowed mode for the overlay to show through.
+let floatingChatWindow = null;
+
+function createFloatingChatWindow() {
+  if (floatingChatWindow && !floatingChatWindow.isDestroyed()) {
+    floatingChatWindow.show();
+    floatingChatWindow.focus();
+    return floatingChatWindow;
+  }
+
+  // Fixed-size transparent canvas sized for the pill at full expansion
+  // (~620px wide pill + a buffer for the idle pulse halo). The pill itself
+  // animates its width inside this canvas; we don't resize the OS window per
+  // state change to avoid jitter during the CSS transition.
+  floatingChatWindow = new BrowserWindow({
+    title: 'ACLA',
+    width: 640,
+    height: 110,
+    frame: false,
+    resizable: false,
+    transparent: true,
+    backgroundColor: '#00000000',
+    hasShadow: false,
+    alwaysOnTop: true,
+    skipTaskbar: true,
+    show: false,
+    parent: mainWindow || undefined,
+    webPreferences: {
+      preload: path.join(__dirname, '../src/common/preload.js'),
+    },
+  });
+
+  // 'screen-saver' is the highest level on Windows — required to float over
+  // borderless-windowed games. macOS uses the same enum.
+  floatingChatWindow.setAlwaysOnTop(true, 'screen-saver');
+  floatingChatWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+
+  const base = devMode
+    ? 'http://localhost:3000'
+    : `file://${path.join(__dirname, '../build/index.html')}`;
+  floatingChatWindow.loadURL(`${base}#/floating-chat`);
+
+  floatingChatWindow.once('ready-to-show', () => {
+    floatingChatWindow.show();
+  });
+
+  floatingChatWindow.on('closed', () => {
+    floatingChatWindow = null;
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('floating-chat-closed');
+    }
+  });
+
+  return floatingChatWindow;
+}
+
+ipcMain.handle('open-floating-chat', () => {
+  try {
+    createFloatingChatWindow();
+    return { success: true };
+  } catch (error) {
+    console.error('Failed to open floating chat window:', error);
+    return { success: false, error: error?.message || 'Unknown error' };
+  }
+});
+
+ipcMain.handle('close-floating-chat', () => {
+  if (floatingChatWindow && !floatingChatWindow.isDestroyed()) {
+    floatingChatWindow.close();
+  }
+  return { success: true };
+});
+
+ipcMain.handle('is-floating-chat-open', () => {
+  return Boolean(floatingChatWindow && !floatingChatWindow.isDestroyed());
+});
 
 ipcMain.handle('stop-speech-recognition', async (event) => {
   try {
