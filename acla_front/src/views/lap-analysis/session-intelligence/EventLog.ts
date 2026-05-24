@@ -55,6 +55,11 @@ export class EventLog {
         return this.events.filter(e => e.lap === lap);
     }
 
+    // Snapshot of all logged events (newest last).
+    all(): SessionEvent[] {
+        return this.events.slice();
+    }
+
     get length(): number {
         return this.events.length;
     }

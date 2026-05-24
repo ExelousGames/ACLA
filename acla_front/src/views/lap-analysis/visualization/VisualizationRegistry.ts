@@ -3,6 +3,7 @@ import TelemetryOverview from './charts/TelemetryOverview';
 import MapVisualization from './charts/MapVisualization';
 import ImitationGuidanceChart from './charts/ImitationGuidanceChart';
 import ExpertActionsChart from './charts/ExpertActionsChart';
+import EventLogChart from './charts/EventLogChart';
 
 export interface VisualizationProps {
     id: string;
@@ -105,6 +106,16 @@ export const initializeVisualizations = () => {
         minWidth: 380,
         minHeight: 420,
         preferredAspectRatio: 4 / 5
+    });
+
+    visualizationRegistry.register('event-log', {
+        component: EventLogChart,
+        name: 'Event Log',
+        description: 'Live list of all session events (corners, straights, crashes, overtakes) detected by the sensors',
+        defaultConfig: {},
+        minWidth: 360,
+        minHeight: 260,
+        preferredAspectRatio: 4 / 3
     });
 };
 

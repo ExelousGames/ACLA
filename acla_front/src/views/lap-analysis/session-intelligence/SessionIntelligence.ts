@@ -46,6 +46,10 @@ export class SessionIntelligence {
         return this.log.find({ ...params, currentLap: this.currentLap });
     }
 
+    getAllEvents(): SessionEvent[] {
+        return this.log.all();
+    }
+
     getNextCorner(): CornerLookahead | null {
         const corners = getCornersForTrack(this.currentTrack);
         const corner = getNextCorner(corners, this.currentPosition);

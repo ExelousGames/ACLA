@@ -856,7 +856,18 @@ class AIService:
         try:
             label_ids = await _asyncio.to_thread(_run)
         except Exception as exc:
-            return {"error": f"classifier failed: {exc}"}
+            svc = self.segment_classifier
+            present = {
+                p.name: p.exists()
+                for p in (svc.model_path, svc.mlb_path, svc.scaler_path)
+            }
+            return {
+                "error": f"classifier failed: {exc}",
+                "_debug": {
+                    "models_directory": str(svc.models_directory),
+                    "expected_files": present,
+                },
+            }
 
         names = [LABEL_MAPPING.get(lid, lid) for lid in label_ids]
         return {"labels": names, "_label_ids": label_ids}
