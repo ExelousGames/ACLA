@@ -176,6 +176,24 @@ const FloatingChat: React.FC = () => {
         updateScroll();
     }, [displayText, open]);
 
+    // Track the OS window size to the pill so there's no transparent area
+    // outside the pill (which would show the title bar of whatever sits
+    // underneath as a white frame). When opening, grow immediately so the
+    // pill has room to expand into; when closing, wait for the CSS shrink
+    // transition (700ms) before snapping the window back, so the pill
+    // isn't clipped mid-animation.
+    useEffect(() => {
+        const api = (window as unknown as { electronAPI?: { resizeFloatingChat?: (w: number, h: number) => void } }).electronAPI;
+        const resize = api?.resizeFloatingChat;
+        if (!resize) return;
+        if (open) {
+            resize(targetWidth, 72);
+            return;
+        }
+        const t = window.setTimeout(() => resize(72, 72), 720);
+        return () => window.clearTimeout(t);
+    }, [open, targetWidth]);
+
     // Click the pill itself to dismiss when it's open.
     const handlePillClick = () => {
         if (open) shrink();

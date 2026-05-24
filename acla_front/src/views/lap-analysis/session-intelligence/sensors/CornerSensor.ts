@@ -1,5 +1,5 @@
-import { SessionEvent, TelemetrySample } from '../types';
-import { CornerDefinition, getCornerAtPosition } from '../track-corners';
+import { CornerDefinition, SessionEvent, TelemetrySample } from '../types';
+import { getCornerAtPosition } from '../track-corners';
 
 export class CornerSensor {
     private corners: CornerDefinition[] = [];

@@ -85,6 +85,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     openFloatingChat: () => ipcRenderer.invoke('open-floating-chat'),
     closeFloatingChat: () => ipcRenderer.invoke('close-floating-chat'),
     isFloatingChatOpen: () => ipcRenderer.invoke('is-floating-chat-open'),
+    resizeFloatingChat: (width, height) => ipcRenderer.invoke('resize-floating-chat', { width, height }),
     onFloatingChatClosed: (callback) => {
         const subscription = () => callback();
         ipcRenderer.on('floating-chat-closed', subscription);

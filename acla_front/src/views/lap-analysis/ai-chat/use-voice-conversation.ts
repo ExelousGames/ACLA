@@ -131,7 +131,6 @@ export function useVoiceConversation(
     }, [options.onEvent]);
 
     const stop = useCallback(() => {
-        console.log('[voice] stop() called — tearing down');
         // Tear down in reverse order of construction. All steps are idempotent.
         try { workletNodeRef.current?.disconnect(); } catch { /* ignore */ }
         workletNodeRef.current = null;
@@ -162,19 +161,15 @@ export function useVoiceConversation(
     }, []);
 
     const start = useCallback(async () => {
-        console.log('[voice] start() called — current state:', state);
         if (state !== 'idle' && state !== 'error') {
-            console.log('[voice] start() ignored — already active');
             return;
         }
 
         setError(null);
         setState('connecting');
-        console.log('[voice] state → connecting');
 
         try {
             // --- 1. Request mic permission ---
-            console.log('[voice] requesting mic permission…');
             const micStream = await navigator.mediaDevices.getUserMedia({
                 audio: {
                     channelCount: 1,
@@ -185,7 +180,6 @@ export function useVoiceConversation(
                 video: false,
             });
             micStreamRef.current = micStream;
-            console.log('[voice] mic permission granted — tracks:', micStream.getAudioTracks().length);
 
             // --- 2. Set up capture AudioContext + worklet ---
             // Capture at 16kHz mono to match the server's expected input rate
@@ -204,11 +198,9 @@ export function useVoiceConversation(
                 captureContext = new AudioContext();
             }
             audioContextRef.current = captureContext;
-            console.log('[voice] capture AudioContext created — sampleRate:', captureContext.sampleRate, 'state:', captureContext.state);
 
             try {
                 await captureContext.audioWorklet.addModule('/pcm-capture-worklet.js');
-                console.log('[voice] pcm-capture-worklet loaded');
             } catch (err) {
                 console.error('[voice] failed to load pcm-capture-worklet.js — check that /pcm-capture-worklet.js is reachable:', err);
                 throw err;
@@ -222,17 +214,14 @@ export function useVoiceConversation(
             // would echo the mic back to the speakers.
 
             // --- 3. Open WebSocket ---
-            console.log('[voice] opening WebSocket /voice/stream …');
             const ws = openWs();
             ws.binaryType = 'arraybuffer';
             wsRef.current = ws;
-            console.log('[voice] WebSocket URL:', ws.url);
 
             // Hook up the worklet → WS pipe. The worklet posts two kinds of
             // messages: { type:'pcm', buffer } (forwarded over the WS) and
             // { type:'level', rms, peak } (used to drive the mic meter so
             // the user can see whether their voice is registering).
-            let micChunksSent = 0;
             workletNode.port.onmessage = (event) => {
                 const data = event.data;
                 if (data && data.type === 'level') {
@@ -246,12 +235,6 @@ export function useVoiceConversation(
                 if (ws.readyState !== WebSocket.OPEN) return;
                 try {
                     ws.send(data.buffer as ArrayBuffer);
-                    micChunksSent++;
-                    if (micChunksSent === 1) {
-                        console.log('[voice] first mic chunk sent (' + (data.buffer as ArrayBuffer).byteLength + ' bytes)');
-                    } else if (micChunksSent % 100 === 0) {
-                        console.log('[voice] sent', micChunksSent, 'mic chunks so far');
-                    }
                 } catch (err) {
                     console.warn('[voice] send failed:', err);
                 }
@@ -261,10 +244,8 @@ export function useVoiceConversation(
             const playbackContext = new AudioContext({ sampleRate: 24000 });
             playbackContextRef.current = playbackContext;
             playbackQueueTimeRef.current = playbackContext.currentTime;
-            console.log('[voice] playback AudioContext created — sampleRate:', playbackContext.sampleRate, 'state:', playbackContext.state);
 
             ws.onopen = () => {
-                console.log('[voice] WebSocket open → state listening');
                 setState('listening');
             };
 
@@ -307,14 +288,12 @@ export function useVoiceConversation(
                 }
             };
 
-            let audioFramesReceived = 0;
             ws.onmessage = (event) => {
                 // Text frame → tool-relay channel. Binary frame → PCM audio.
                 if (typeof event.data === 'string') {
                     let parsed: any;
                     try { parsed = JSON.parse(event.data); }
                     catch { console.warn('[voice/tool-relay] non-JSON text frame:', event.data); return; }
-                    console.log('[voice] ← text frame:', parsed?.type, parsed);
                     if (parsed?.type === 'tool_call') {
                         void handleToolCall(parsed);
                     } else if (parsed?.type === 'user_transcript') {
@@ -359,10 +338,6 @@ export function useVoiceConversation(
                     return;
                 }
                 if (!(event.data instanceof ArrayBuffer)) return;
-                audioFramesReceived++;
-                if (audioFramesReceived === 1) {
-                    console.log('[voice] first audio frame received from server (' + event.data.byteLength + ' bytes) → state speaking');
-                }
                 // Server sent raw PCM16 mono at the kokoro sample rate.
                 queuePlayback(event.data, playbackContext);
                 // Always set 'speaking' — setState is idempotent and the
@@ -377,7 +352,6 @@ export function useVoiceConversation(
             };
 
             ws.onclose = (event) => {
-                console.log('[voice] WS closed — code:', event.code, 'reason:', event.reason || '(empty)', 'wasClean:', event.wasClean);
                 // closure-captured `state` is stale; use the setter form.
                 setState((prev) => {
                     if (prev === 'idle') return prev;

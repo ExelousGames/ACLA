@@ -619,27 +619,42 @@ function createFloatingChatWindow() {
     return floatingChatWindow;
   }
 
-  // Fixed-size transparent canvas sized for the pill at full expansion
-  // (~620px wide pill + a buffer for the idle pulse halo). The pill itself
-  // animates its width inside this canvas; we don't resize the OS window per
-  // state change to avoid jitter during the CSS transition.
+  // Start at idle pill dimensions exactly (72x72 circle). The window
+  // grows horizontally on demand from the renderer when the pill opens
+  // to type a message — see `resize-floating-chat` IPC below. Any
+  // transparent area outside the pill would show whatever the overlay
+  // sits over (main app title bar, etc.) and read as a "white frame".
   floatingChatWindow = new BrowserWindow({
     title: 'ACLA',
-    width: 640,
-    height: 110,
+    width: 72,
+    height: 72,
     frame: false,
+    // Without thickFrame:false, Windows still attaches the WS_THICKFRAME
+    // resize-handle chrome to frameless+transparent windows. When the
+    // window loses focus that chrome renders as a visible white border
+    // (the "inactive window" frame). Disabling it kills the white frame
+    // on defocus — also disables programmatic OS resize, which we don't
+    // want anyway since the pill is a fixed-size overlay.
+    thickFrame: false,
     resizable: false,
     transparent: true,
     backgroundColor: '#00000000',
     hasShadow: false,
+    roundedCorners: false,
     alwaysOnTop: true,
     skipTaskbar: true,
     show: false,
-    parent: mainWindow || undefined,
+    useContentSize: true,
     webPreferences: {
       preload: path.join(__dirname, '../src/common/preload.js'),
     },
   });
+
+  // Force a fully transparent background post-creation — on Windows the
+  // constructor `backgroundColor` is occasionally ignored, leaving the
+  // window's surface painted with the system theme color (white in light
+  // mode), which reads as a frame around the pill.
+  floatingChatWindow.setBackgroundColor('#00000000');
 
   // 'screen-saver' is the highest level on Windows — required to float over
   // borderless-windowed games. macOS uses the same enum.
@@ -684,6 +699,24 @@ ipcMain.handle('close-floating-chat', () => {
 
 ipcMain.handle('is-floating-chat-open', () => {
   return Boolean(floatingChatWindow && !floatingChatWindow.isDestroyed());
+});
+
+// Renderer asks the OS window to track the pill's current size so there's
+// no transparent buffer area around it (which would read as a white frame
+// over the main app's title bar). We expand/contract around the window's
+// current visual center so the avatar appears to stay anchored as the
+// pill grows or shrinks.
+ipcMain.handle('resize-floating-chat', (event, payload) => {
+  if (!floatingChatWindow || floatingChatWindow.isDestroyed()) {
+    return { success: false };
+  }
+  const width = Math.max(72, Math.min(800, Math.round(Number(payload?.width) || 72)));
+  const height = Math.max(72, Math.min(200, Math.round(Number(payload?.height) || 72)));
+  const bounds = floatingChatWindow.getBounds();
+  const newX = bounds.x - Math.round((width - bounds.width) / 2);
+  const newY = bounds.y - Math.round((height - bounds.height) / 2);
+  floatingChatWindow.setBounds({ x: newX, y: newY, width, height });
+  return { success: true };
 });
 
 ipcMain.handle('stop-speech-recognition', async (event) => {
