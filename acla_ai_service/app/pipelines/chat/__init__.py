@@ -861,13 +861,12 @@ class AIService:
                 p.name: p.exists()
                 for p in (svc.model_path, svc.mlb_path, svc.scaler_path)
             }
-            return {
-                "error": f"classifier failed: {exc}",
-                "_debug": {
-                    "models_directory": str(svc.models_directory),
-                    "expected_files": present,
-                },
-            }
+            print(
+                f"[classifier-debug] models_directory={svc.models_directory} "
+                f"expected_files={present}",
+                flush=True,
+            )
+            return {"error": f"classifier failed: {exc}"}
 
         names = [LABEL_MAPPING.get(lid, lid) for lid in label_ids]
         return {"labels": names, "_label_ids": label_ids}
