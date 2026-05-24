@@ -34,12 +34,17 @@ Known limitations (deferred):
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
 from app.infra.config import settings
 
 LOGGER = logging.getLogger(__name__)
+
+# Matches a leading [emotion_name] tag (e.g. "[vibing] ") at the start of LLM output.
+_EMOTION_TAG_RE = re.compile(r'^\[([a-z]+)\]\s*')
+_VALID_EMOTIONS = frozenset(["sad", "vibing", "scared", "waiting", "hearing"])
 
 
 # ----------------------------------------------------------------------
@@ -544,22 +549,88 @@ def _build_transcript_observer():
                         if chunk:
                             self._assistant_buf.append(chunk)
                     elif isinstance(frame, LLMFullResponseEndFrame):
-                        text = "".join(self._assistant_buf).strip()
+                        raw = "".join(self._assistant_buf).strip()
                         self._assistant_buf = []
-                        if text:
-                            await self._emit("assistant_transcript", text)
+                        if raw:
+                            m = _EMOTION_TAG_RE.match(raw)
+                            emotion = m.group(1) if m and m.group(1) in _VALID_EMOTIONS else None
+                            text = raw[m.end():] if emotion else raw
+                            await self._emit("assistant_transcript", text, emotion=emotion)
             except Exception:
                 LOGGER.exception("TranscriptObserver: emit failed (role=%s)", self._role)
 
             await self.push_frame(frame, direction)
 
-        async def _emit(self, kind: str, text: str) -> None:
+        async def _emit(self, kind: str, text: str, *, emotion: Optional[str] = None) -> None:
+            payload: Dict[str, Any] = {"type": kind, "text": text}
+            if emotion:
+                payload["emotion"] = emotion
             try:
-                await self._send_text(_json.dumps({"type": kind, "text": text}))
+                await self._send_text(_json.dumps(payload))
             except Exception:
                 LOGGER.debug("%s emit failed (WS likely closed)", kind, exc_info=True)
 
     return TranscriptObserver
+
+
+def _build_emotion_tag_stripper():
+    """Strips leading [emotion] tags from LLM TextFrame output before TTS.
+
+    Sits between the LLM and Kokoro in the pipeline. Buffers the very first
+    chunk(s) until it can determine whether the response starts with a valid
+    emotion tag, then either strips it or flushes the buffer unchanged.
+
+    This keeps Kokoro from ever speaking "[vibing]" — parallel to how
+    tool_event frames are UI-only signals that also never reach TTS.
+    """
+    from pipecat.frames.frames import (
+        Frame,
+        LLMFullResponseStartFrame,
+        TextFrame,
+    )
+    from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
+
+    class EmotionTagStripper(FrameProcessor):
+        def __init__(self) -> None:
+            super().__init__()
+            self._buf: str = ""
+            self._checking: bool = True
+
+        async def process_frame(self, frame: "Frame", direction: "FrameDirection") -> None:
+            await super().process_frame(frame, direction)
+
+            if isinstance(frame, LLMFullResponseStartFrame):
+                self._buf = ""
+                self._checking = True
+                await self.push_frame(frame, direction)
+                return
+
+            # Once the tag determination is made, pass everything through.
+            if not isinstance(frame, TextFrame) or not self._checking:
+                await self.push_frame(frame, direction)
+                return
+
+            chunk = getattr(frame, "text", "") or ""
+            if not chunk:
+                return
+
+            self._buf += chunk
+            m = _EMOTION_TAG_RE.match(self._buf)
+            if m and m.group(1) in _VALID_EMOTIONS:
+                self._checking = False
+                remainder = self._buf[m.end():]
+                self._buf = ""
+                if remainder:
+                    await self.push_frame(TextFrame(text=remainder), direction)
+                return
+
+            # Clearly no tag (first char not '[', or buffer too long) — flush and stop.
+            if not self._buf.startswith("[") or len(self._buf) > 25:
+                self._checking = False
+                await self.push_frame(TextFrame(text=self._buf), direction)
+                self._buf = ""
+
+    return EmotionTagStripper
 
 
 async def build_voice_pipeline_task(
@@ -604,6 +675,7 @@ async def build_voice_pipeline_task(
     from app.voice.tool_relay import get_relay
 
     TranscriptObserver = _build_transcript_observer()
+    EmotionTagStripper = _build_emotion_tag_stripper()
 
     LOGGER.info(
         "Building voice pipeline (session=%s user=%s)",
@@ -682,8 +754,18 @@ async def build_voice_pipeline_task(
     # engineer prompt has no {track}/{car} placeholders — the LLM fetches
     # those on demand via get_session_info if it actually needs to mention
     # them.
+    #
+    # Append the emotion-signaling behavior spec loaded from the skills corpus
+    # so the instruction lives in an editable .md file, not in Python code.
+    from app.skills.racing_engineer import behavior as _skill_behavior
+    _emotion_skill = _skill_behavior("emotion")
+    _emotion_section = _emotion_skill.get("_raw_body", "") if _emotion_skill else ""
+    system_prompt = _VOICE_COACH_PROMPT_TEMPLATE
+    if _emotion_section:
+        system_prompt = f"{system_prompt.rstrip()}\n\n{_emotion_section}"
+
     context = LLMContext(
-        messages=[{"role": "system", "content": _VOICE_COACH_PROMPT_TEMPLATE}],
+        messages=[{"role": "system", "content": system_prompt}],
         tools=tools,
     )
     context_aggregator = LLMContextAggregatorPair(context)
@@ -701,6 +783,7 @@ async def build_voice_pipeline_task(
 
     user_transcript_observer = TranscriptObserver(send_text=_send_text, role="user")
     assistant_transcript_observer = TranscriptObserver(send_text=_send_text, role="assistant")
+    emotion_tag_stripper = EmotionTagStripper()
 
     # --- Pipeline composition ---
     # VAD sits between the transport input and STT so Whisper only runs
@@ -709,8 +792,11 @@ async def build_voice_pipeline_task(
     #
     # user_transcript_observer sits AFTER stt so it sees the final
     # TranscriptionFrame before context_aggregator.user() consumes it.
-    # assistant_transcript_observer sits AFTER llm so it sees the LLM
-    # text chunks before tts converts them to audio.
+    # assistant_transcript_observer sits AFTER llm so it sees LLM text chunks
+    # and emits assistant_transcript (with emotion field) over the WS.
+    # emotion_tag_stripper sits AFTER the observer and BEFORE tts so Kokoro
+    # never receives the [emotion] tag — same principle as tool_event frames
+    # being UI-only signals that never reach speech synthesis.
     pipeline = Pipeline([
         transport.input(),
         vad_processor,
@@ -719,6 +805,7 @@ async def build_voice_pipeline_task(
         context_aggregator.user(),
         llm,
         assistant_transcript_observer,
+        emotion_tag_stripper,
         tts,
         transport.output(),
         context_aggregator.assistant(),

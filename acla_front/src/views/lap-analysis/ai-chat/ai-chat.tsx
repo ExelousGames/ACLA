@@ -7,6 +7,19 @@ import { createAiCommandRegistry } from './ai-command-registry';
 import { speakWithNeuralTts, NeuralTtsPlayback } from './neural-tts';
 import { useVoiceConversation, VoiceEvent } from './use-voice-conversation';
 
+const EMOTIONS = ['sad', 'vibing', 'scared', 'waiting', 'hearing'] as const;
+type Emotion = typeof EMOTIONS[number];
+const EMOTION_GIFS_KEY = 'acla-emotion-gifs';
+const EMOTION_TAG_RE = /^\[([a-z]+)\]\s*/;
+
+function extractEmotion(text: string): { emotion: Emotion | null; cleanText: string } {
+    const m = text.match(EMOTION_TAG_RE);
+    if (m && (EMOTIONS as readonly string[]).includes(m[1])) {
+        return { emotion: m[1] as Emotion, cleanText: text.slice(m[0].length) };
+    }
+    return { emotion: null, cleanText: text };
+}
+
 type MessageKind = 'chat' | 'tool';
 
 interface Message {
@@ -67,6 +80,13 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
     const [isTextToSpeechEnabled, setIsTextToSpeechEnabled] = useState(false);
     const [isSpeaking, setIsSpeaking] = useState(false);
 
+    // Emotion GIF settings — keyed by Emotion, values are data URLs.
+    const [emotionGifs, setEmotionGifs] = useState<Partial<Record<Emotion, string>>>(() => {
+        try { return JSON.parse(localStorage.getItem(EMOTION_GIFS_KEY) || '{}'); }
+        catch { return {}; }
+    });
+    const [showEmoteSettings, setShowEmoteSettings] = useState(false);
+
     // Live clock for the transcript header (matches landing page vibe).
     const [clock, setClock] = useState(formatClock(new Date()));
     useEffect(() => {
@@ -101,11 +121,16 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
             return;
         }
         if (event.kind === 'assistant_transcript') {
+            // Backend strips the [emotion] tag before sending the transcript,
+            // but fall back to frontend parsing for robustness.
+            const { emotion, cleanText } = event.emotion
+                ? { emotion: event.emotion as Emotion, cleanText: event.text }
+                : extractEmotion(event.text);
             setMessages(prev => prev
                 .filter(m => !m.isLoading)
                 .concat({
                     id: generateUniqueId('ai-voice'),
-                    content: event.text,
+                    content: cleanText,
                     isUser: false,
                     timestamp: new Date(),
                     kind: 'chat',
@@ -115,7 +140,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
             // 'storage' events fire in other same-origin BrowserWindows but not
             // in the window that writes — perfect one-way fanout.
             try {
-                const pillText = event.text
+                const pillText = cleanText
                     .replace(/\*\*(.*?)\*\*/g, '$1')
                     .replace(/\*(.*?)\*/g, '$1')
                     .replace(/`(.*?)`/g, '$1')
@@ -126,6 +151,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
                     localStorage.setItem('acla-pill-msg', JSON.stringify({
                         text: pillText,
                         ts: Date.now(),
+                        emotion: emotion ?? undefined,
                     }));
                 }
             } catch { /* ignore storage write failures */ }
@@ -291,6 +317,27 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
 
         const statusMessage = newState ? 'Text-to-speech enabled' : 'Text-to-speech disabled';
         addStatusMessage('tts-toggle', statusMessage);
+    };
+
+    const handleGifUpload = (emotion: Emotion, e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = () => {
+            const dataUrl = reader.result as string;
+            const next = { ...emotionGifs, [emotion]: dataUrl };
+            setEmotionGifs(next);
+            localStorage.setItem(EMOTION_GIFS_KEY, JSON.stringify(next));
+        };
+        reader.readAsDataURL(file);
+        e.target.value = '';
+    };
+
+    const handleGifRemove = (emotion: Emotion) => {
+        const next = { ...emotionGifs };
+        delete next[emotion];
+        setEmotionGifs(next);
+        localStorage.setItem(EMOTION_GIFS_KEY, JSON.stringify(next));
     };
 
     useEffect(() => {
@@ -550,8 +597,54 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
                     >
                         Debug
                     </button>
+                    <button
+                        type="button"
+                        className="ai-chat__chip-btn"
+                        onClick={() => setShowEmoteSettings(!showEmoteSettings)}
+                        aria-pressed={showEmoteSettings}
+                        title="Emotion GIF settings"
+                    >
+                        Emotes
+                    </button>
                 </div>
             </div>
+
+            {/* Emotion GIF settings panel */}
+            {showEmoteSettings && (
+                <div className="ai-chat__emote-settings">
+                    <div className="ai-chat__emote-settings-title">Emotion GIFs</div>
+                    {EMOTIONS.map(em => (
+                        <div key={em} className="ai-chat__emote-row">
+                            <span className="ai-chat__emote-label">[{em}]</span>
+                            {emotionGifs[em] && (
+                                <img
+                                    src={emotionGifs[em]}
+                                    alt={em}
+                                    className="ai-chat__emote-preview"
+                                />
+                            )}
+                            <label className="ai-chat__btn ai-chat__btn--blue" style={{ cursor: 'pointer' }}>
+                                {emotionGifs[em] ? 'Change' : 'Add GIF'}
+                                <input
+                                    type="file"
+                                    accept=".gif,image/gif"
+                                    style={{ display: 'none' }}
+                                    onChange={(e: React.ChangeEvent<HTMLInputElement>) => handleGifUpload(em, e)}
+                                />
+                            </label>
+                            {emotionGifs[em] && (
+                                <button
+                                    type="button"
+                                    className="ai-chat__btn"
+                                    onClick={() => handleGifRemove(em)}
+                                >
+                                    Remove
+                                </button>
+                            )}
+                        </div>
+                    ))}
+                </div>
+            )}
 
             {/* Stage: mic panel + transcript */}
             <div className="ai-chat__stage">

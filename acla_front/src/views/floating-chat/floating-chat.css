@@ -121,6 +121,15 @@ html, body, #root, .App {
     z-index: 3;
 }
 
+/* GIF fills the avatar circle when an emotion is active */
+.pill .avatar img {
+    width: 100%;
+    height: 100%;
+    border-radius: 50%;
+    object-fit: cover;
+    display: block;
+}
+
 /* Soft pulse on idle */
 .pill:not(.open) .avatar::after {
     content: "";

@@ -14,6 +14,7 @@ import './floating-chat.css';
  */
 
 const SHARED_KEY = 'acla-pill-msg';
+const EMOTION_GIFS_KEY = 'acla-emotion-gifs';
 const TYPE_INTERVAL_MS = 28;
 const POST_TYPE_HOLD_MS = 3800;
 const MIN_W = 220;
@@ -28,6 +29,8 @@ interface PillPayload {
     ts: number;
     /** Optional override label for the name line; defaults to "ACLA". */
     name?: string;
+    /** Emotion tag emitted by the AI (e.g. "vibing", "sad"). */
+    emotion?: string;
 }
 
 const parsePayload = (raw: string | null): PillPayload | null => {
@@ -39,6 +42,7 @@ const parsePayload = (raw: string | null): PillPayload | null => {
                 text: obj.text,
                 ts: Number(obj.ts) || Date.now(),
                 name: typeof obj.name === 'string' ? obj.name : undefined,
+                emotion: typeof obj.emotion === 'string' ? obj.emotion : undefined,
             };
         }
     } catch {
@@ -47,12 +51,19 @@ const parsePayload = (raw: string | null): PillPayload | null => {
     return null;
 };
 
+const readEmotionGifs = (): Record<string, string> => {
+    try { return JSON.parse(localStorage.getItem(EMOTION_GIFS_KEY) || '{}'); }
+    catch { return {}; }
+};
+
 const FloatingChat: React.FC = () => {
     const [open, setOpen] = useState(false);
     const [displayText, setDisplayText] = useState('');
     const [showCaret, setShowCaret] = useState(false);
     const [name, setName] = useState('ACLA');
     const [targetWidth, setTargetWidth] = useState<number>(MIN_W);
+    const [currentEmotion, setCurrentEmotion] = useState<string | null>(null);
+    const [emotionGifs, setEmotionGifs] = useState<Record<string, string>>(readEmotionGifs);
 
     const sizerRef = useRef<HTMLSpanElement>(null);
     const msgRef = useRef<HTMLDivElement>(null);
@@ -109,13 +120,15 @@ const FloatingChat: React.FC = () => {
         // it doesn't peek through the avatar.
         window.setTimeout(() => {
             setDisplayText('');
+            setCurrentEmotion(null);
             resetScroll();
         }, 400);
     };
 
-    const speak = (text: string, displayName?: string) => {
+    const speak = (text: string, displayName?: string, emotion?: string) => {
         clearTimers();
         setName(displayName || 'ACLA');
+        setCurrentEmotion(emotion ?? null);
         setTargetWidth(measure(text));
         setOpen(true);
         setDisplayText('');
@@ -155,12 +168,16 @@ const FloatingChat: React.FC = () => {
         if (seed) lastTsRef.current = seed.ts;
 
         const onStorage = (event: StorageEvent) => {
+            if (event.key === EMOTION_GIFS_KEY) {
+                setEmotionGifs(readEmotionGifs());
+                return;
+            }
             if (event.key !== SHARED_KEY) return;
             const payload = parsePayload(event.newValue);
             if (!payload) return;
             if (payload.ts <= lastTsRef.current) return;
             lastTsRef.current = payload.ts;
-            speak(payload.text, payload.name);
+            speak(payload.text, payload.name, payload.emotion);
         };
         window.addEventListener('storage', onStorage);
         return () => {
@@ -211,7 +228,12 @@ const FloatingChat: React.FC = () => {
                 onClick={handlePillClick}
                 aria-live="polite"
             >
-                <div className="avatar" aria-hidden="true">AI</div>
+                <div className="avatar" aria-hidden="true">
+                    {currentEmotion && emotionGifs[currentEmotion]
+                        ? <img src={emotionGifs[currentEmotion]} alt={currentEmotion} />
+                        : 'AI'
+                    }
+                </div>
                 <div className="body">
                     <div className="name">{name}</div>
                     <div className="msg" ref={msgRef}>

@@ -642,3 +642,43 @@
   .ai-chat__mic-visual { width: 140px; height: 140px; }
   .ai-chat__mic-core { width: 80px; height: 80px; }
 }
+
+/* ── Emotion GIF settings panel ── */
+.ai-chat__emote-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px;
+  background: var(--lp-bg);
+  border: 1px solid var(--lp-border);
+  border-radius: var(--lp-radius);
+}
+
+.ai-chat__emote-settings-title {
+  font-family: var(--lp-mono);
+  font-size: 10px;
+  letter-spacing: 3px;
+  text-transform: uppercase;
+  color: var(--lp-muted);
+}
+
+.ai-chat__emote-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.ai-chat__emote-label {
+  font-family: var(--lp-mono);
+  font-size: 12px;
+  color: var(--lp-green);
+  min-width: 72px;
+}
+
+.ai-chat__emote-preview {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  object-fit: cover;
+  border: 1px solid var(--lp-border);
+}

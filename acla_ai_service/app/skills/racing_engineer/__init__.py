@@ -190,6 +190,18 @@ def feature(name: str) -> Optional[dict]:
     return _load_category("features").get(name)
 
 
+def behavior(name: str) -> Optional[dict]:
+    """Return the behavior spec for a named LLM behavior (e.g. ``"emotion"``).
+
+    Behaviors live in ``behaviors/<name>.md`` and are loaded into the system
+    prompt at pipeline build time — they define *how* the LLM should act, not
+    what it knows. See ``behaviors/`` for the file format.
+    """
+    if not name:
+        return None
+    return _load_category("behaviors").get(name)
+
+
 def reload() -> None:
     """Drop the in-memory cache so the next ``label`` / ``feature`` call
     re-reads from disk. Intended for the authoring script after writing
@@ -199,4 +211,4 @@ def reload() -> None:
         _CACHE.clear()
 
 
-__all__ = ["label", "feature", "reload"]
+__all__ = ["label", "feature", "behavior", "reload"]

@@ -42,7 +42,7 @@ export type FrontendToolHandler = (
  *  these via `onEvent` so the caller can append them to a message list. */
 export type VoiceEvent =
     | { kind: 'user_transcript'; text: string; source?: 'voice' | 'typed' }
-    | { kind: 'assistant_transcript'; text: string }
+    | { kind: 'assistant_transcript'; text: string; emotion?: string }
     | {
         kind: 'tool_event';
         name: string;
@@ -308,7 +308,8 @@ export function useVoiceConversation(
                     } else if (parsed?.type === 'assistant_transcript') {
                         const text = String(parsed.text || '').trim();
                         if (text) {
-                            onEventRef.current?.({ kind: 'assistant_transcript', text });
+                            const emotion = typeof parsed.emotion === 'string' ? parsed.emotion : undefined;
+                            onEventRef.current?.({ kind: 'assistant_transcript', text, emotion });
                         }
                     } else if (parsed?.type === 'tool_event') {
                         const name = String(parsed.name || '');

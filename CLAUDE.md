@@ -63,3 +63,30 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 ---
 
 **These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
+
+---
+
+## 5. Service Communication
+
+```
+[acla_front]
+      │
+      │  HTTP REST + WebSocket
+      ▼
+[backend_proxy (nginx)]
+      │
+      │  HTTP proxy → frontend-network
+      ▼
+[acla_backend (NestJS)]
+      │                  │
+      │  Mongoose         │  HTTP (axios)
+      │  db-network       │
+      ▼                  ▼
+[mongodb]       [acla_ai_service]
+```
+
+**Frontend → Backend:** React app communicates with the Nginx proxy over HTTP REST (axios) and WebSocket. Nginx forwards all traffic to the backend via the `frontend-network`. WebSocket path is `/voice/stream`.
+
+**Backend → MongoDB:** NestJS connects to MongoDB using Mongoose over the `db-network`. Database name is `ACLA`; credentials come from env vars.
+
+**Backend → AI Service:** NestJS calls the Python AI service over HTTP using axios. The AI service uses `network_mode: host`. Key endpoints: `/racing-session/train-model`, `/racing-session/train-multiple-models`, `/racing-session/imitation-learning-guidance`, `/voice/synthesize`, `/voice/voices`, `/health`.
