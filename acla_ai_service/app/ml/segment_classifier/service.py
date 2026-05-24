@@ -17,6 +17,7 @@ import joblib
 from pathlib import Path
 from typing import List, Dict, Any, Tuple, Optional, Iterator
 import asyncio
+import base64
 import json
 import shutil
 import random
@@ -562,8 +563,29 @@ class SegmentClassifierService:
         }
         with open(self.models_directory / "segment_config.json", "w") as f:
             json.dump(config, f)
-            
+
         print(f"Model saved to {self.model_path}")
+
+        # Push to backend so other replicas / fresh containers can hydrate
+        # from /app/ml/segment_classifier/bootstrap.py on startup. Local
+        # training is the source of truth — log and continue on failure.
+        try:
+            from app.integrations.backend.client import backend_service
+            payload = self.serialize_artifacts()
+            await backend_service.save_ai_model(
+                model_type="segment_classifier",
+                model_data=payload,
+                metadata={
+                    "max_length": self.max_length,
+                    "hidden_dim": hidden_dim,
+                    "num_layers": num_layers,
+                    "num_labels": len(self.mlb.classes_) if self.mlb is not None else 0,
+                },
+                is_active=True,
+            )
+            print("[INFO] ✓ segment_classifier uploaded to backend")
+        except Exception as upload_exc:
+            print(f"[WARN] segment_classifier backend upload failed: {upload_exc}")
 
     def load_model(self):
         """Load the trained model."""
@@ -592,6 +614,55 @@ class SegmentClassifierService:
             self.model.eval()
             return True
         return False
+
+    # Artifact filenames packed into / unpacked from the backend payload.
+    # pos_weight is optional — training may finish without one.
+    _ARTIFACT_FILES_REQUIRED = (
+        "segment_classifier.pth",
+        "segment_labels.joblib",
+        "segment_scaler.joblib",
+        "segment_config.json",
+    )
+    _ARTIFACT_FILES_OPTIONAL = ("segment_pos_weight.pt",)
+
+    def serialize_artifacts(self) -> Dict[str, Any]:
+        """Pack the on-disk model files into a JSON-safe dict for backend upload."""
+        files: Dict[str, str] = {}
+        for name in self._ARTIFACT_FILES_REQUIRED:
+            path = self.models_directory / name
+            if not path.is_file():
+                raise FileNotFoundError(f"Cannot serialize — missing required artifact: {path}")
+            files[name] = base64.b64encode(path.read_bytes()).decode("ascii")
+
+        for name in self._ARTIFACT_FILES_OPTIONAL:
+            path = self.models_directory / name
+            if path.is_file():
+                files[name] = base64.b64encode(path.read_bytes()).decode("ascii")
+
+        return {"format": "segment_classifier/v1", "files": files}
+
+    def deserialize_artifacts(self, payload: Dict[str, Any]) -> None:
+        """Write a backend-fetched payload back to ``self.models_directory``."""
+        if not isinstance(payload, dict):
+            raise ValueError(f"segment_classifier payload must be dict, got {type(payload)}")
+        files = payload.get("files")
+        if not isinstance(files, dict):
+            raise ValueError("segment_classifier payload missing 'files' dict")
+
+        for name in self._ARTIFACT_FILES_REQUIRED:
+            if name not in files:
+                raise ValueError(f"segment_classifier payload missing required artifact: {name}")
+
+        self.models_directory.mkdir(parents=True, exist_ok=True)
+        for name, encoded in files.items():
+            (self.models_directory / name).write_bytes(base64.b64decode(encoded))
+
+    def has_local_artifacts(self) -> bool:
+        """True when every required artifact already lives on disk."""
+        return all(
+            (self.models_directory / name).is_file()
+            for name in self._ARTIFACT_FILES_REQUIRED
+        )
 
     def predict_segment(self, segment_df: pd.DataFrame) -> List[str]:
         """Predict labels for a single segment DataFrame."""

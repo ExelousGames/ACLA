@@ -13,6 +13,7 @@ from app.integrations.backend.client import backend_service
 from app.llm.chat_model import ensure_chat_gguf
 from app.llm.health import check_llama_server
 from app.llm.process import LlamaServerConfig, LlamaServerProcess
+from app.ml.segment_classifier.bootstrap import ensure_segment_classifier_model
 from app.api import (
     annotation_router,
     health_router,
@@ -84,13 +85,23 @@ async def lifespan(app: FastAPI):
 
     # Establish backend connection
     print("🔌 Establishing backend connection...")
-    if await backend_service.establish_connection():
+    backend_ok = await backend_service.establish_connection()
+    if backend_ok:
         print("✅ Backend connection established successfully")
     else:
         print("⚠️  Backend connection failed - some features may not work")
         print("   Check your backend credentials in environment variables:")
         print("   - AI_SERVICE_USERNAME")
         print("   - AI_SERVICE_PASSWORD")
+
+    # Hydrate segment classifier from backend if local artifacts are missing
+    # (e.g. fresh container / named volume). Skipped when backend is down —
+    # the classifier endpoint will surface "Model not trained or found".
+    if backend_ok:
+        if await ensure_segment_classifier_model():
+            print("🧩 segment_classifier: ready")
+        else:
+            print("🧩 segment_classifier: NOT ready (no local artifacts and no active backend payload)")
 
     yield
 
