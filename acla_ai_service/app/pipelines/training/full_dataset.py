@@ -137,10 +137,10 @@ class Full_dataset_TelemetryMLService:
         
         self.llm_config = LocalLLMConfig(
             model=ModelConfig(
-                base_model="Qwen/Qwen2.5-1.5B-Instruct",
-                tokenizer_name="Qwen/Qwen2.5-1.5B-Instruct",
+                base_model="Qwen/Qwen2.5-32B-Instruct",
+                tokenizer_name="Qwen/Qwen2.5-32B-Instruct",
                 device_map="auto",
-                load_in_4bit=False,
+                load_in_4bit=True,
                 load_in_8bit=False,
                 provider="llama_cpp",
                 adapter="telemetry_descriptions_v1_train_20260320_142311",

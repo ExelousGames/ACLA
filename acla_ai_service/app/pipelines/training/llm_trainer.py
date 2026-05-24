@@ -19,7 +19,7 @@ from app.llm.local_llm import LocalLLMConfig
 from app.pipelines.chat.orchestrator import TelemetryLLMOrchestrator
 
 
-DEFAULT_MODEL = "Qwen/Qwen2.5-1.5B-Instruct"
+DEFAULT_MODEL = "Qwen/Qwen2.5-32B-Instruct"
 
 
 @dataclass
@@ -66,7 +66,7 @@ def _build_orchestrator(model: str, project_root: Path) -> TelemetryLLMOrchestra
     cfg = LocalLLMConfig()
     cfg.model.base_model = model
     cfg.model.tokenizer_name = model
-    cfg.model.load_in_4bit = False
+    cfg.model.load_in_4bit = True
     cfg.lora.use_lora = True
     cfg.training.use_gradient_checkpointing = True
 

@@ -29,7 +29,7 @@ class AIService:
     """Service for AI-powered analysis and conversation.
 
     Phase 1: the canonical chat backend is the local llama-server sidecar
-    (Qwen2.5-1.5B-Instruct GGUF via llama-cpp-python), called through an
+    (GGUF model configured via settings.llama_model_*), called through an
     AsyncOpenAI client pointed at settings.llama_server_url. The legacy
     OpenAI client is kept only as an emergency rollback path, selected
     via the `LLM_PROVIDER=openai` env var.
@@ -285,7 +285,6 @@ class AIService:
         try:
             # Prepare context information and conversation history
             try:
-                # Start with system message — tightened for a 1.5B model.
                 # Lists ONLY the tools that actually exist in get_available_functions()
                 # and gives concrete trigger phrases for each.
                 track_name = context.get('track_name', 'Unknown') if context else 'Unknown'
