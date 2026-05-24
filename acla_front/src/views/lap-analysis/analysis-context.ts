@@ -2,6 +2,7 @@ import { createContext, Dispatch, SetStateAction } from 'react';
 import { RacingSessionDetailedInfoDto } from 'data/live-analysis/live-analysis-type';
 import { ACC_STATUS } from 'data/live-analysis/live-map-data';
 import { VisualizationInstance } from './visualization/VisualizationRegistry';
+import { SessionIntelligence } from './session-intelligence/SessionIntelligence';
 
 export interface AnalysisContextType {
     mapSelected: string | null;
@@ -13,6 +14,7 @@ export interface AnalysisContextType {
     recordedSessioStaticsData: any;
     activeVisualizations: VisualizationInstance[];
     latestGuidanceMessage: string | null;
+    sessionIntelligence: SessionIntelligence | null;
     setMap: (map: string | null) => void;
     setSession: Dispatch<SetStateAction<RacingSessionDetailedInfoDto | null>>;
     setLiveSessionData: (data: {}) => void;
@@ -36,6 +38,7 @@ export const AnalysisContext = createContext<AnalysisContextType>({
     recordedSessioStaticsData: {} as any,
     activeVisualizations: [],
     latestGuidanceMessage: null,
+    sessionIntelligence: null,
     setMap: () => {
         console.warn('No provider for AnalysisContext');
     },

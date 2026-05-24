@@ -119,6 +119,10 @@ FRONTEND_TOOLS: frozenset[str] = frozenset({
     "get_lap_telemetry",
     "start_per_turn_coaching",
     "stop_per_turn_coaching",
+    "query_telemetry",
+    "get_event_log",
+    "get_next_corner",
+    "get_telemetry_schema",
 })
 
 
@@ -135,6 +139,10 @@ _TOOL_TITLES: Dict[str, str] = {
     "get_lap_telemetry": "Reading lap telemetry",
     "start_per_turn_coaching": "Starting per-turn coaching",
     "stop_per_turn_coaching": "Stopping per-turn coaching",
+    "query_telemetry": "Querying telemetry",
+    "get_event_log": "Searching event log",
+    "get_next_corner": "Looking up next corner",
+    "get_telemetry_schema": "Checking available telemetry fields",
 }
 
 
@@ -293,6 +301,92 @@ def _build_tool_schemas():
                 "Stop the per-corner monitoring agent. Use when the driver "
                 "says 'stop coaching', 'quiet for a bit', or asks to be left "
                 "alone."
+            ),
+            properties={},
+            required=[],
+        ),
+        # ── Session intelligence queries (relayed via WS) ───────────────────
+        FunctionSchema(
+            name="query_telemetry",
+            description=(
+                "Query the live telemetry buffer with a structured spec. Use for "
+                "any metric question: tyre pressure, speed, brake temp, etc. "
+                "Call get_telemetry_schema first if unsure which field names to use. "
+                "Available field groups: speed, throttle, brake, gear, steering, rpm, "
+                "tyre_pressure, tyre_temp, brake_temp, tyre_slip, g_force, "
+                "suspension, fuel, lap_delta, position, race_position."
+            ),
+            properties={
+                "fields": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Field group names (e.g. 'tyre_pressure', 'speed') or "
+                        "raw Physics_* field names."
+                    ),
+                },
+                "scope": {
+                    "type": "object",
+                    "description": (
+                        "Time/event window. One of: "
+                        "{type:'last_seconds', seconds:N}, "
+                        "{type:'event', eventType:'CORNER'|'CRASHED'|'OVERTAKE', which:'last'|'current'}, "
+                        "{type:'lap', lap:'current'|'last'|N}, "
+                        "{type:'range', start:N, end:N}"
+                    ),
+                },
+                "reduce": {
+                    "type": "string",
+                    "enum": ["raw", "avg", "min", "max", "stats"],
+                    "description": (
+                        "How to aggregate: raw=all samples, avg/min/max=single value, "
+                        "stats={avg, min, max, stddev}."
+                    ),
+                },
+            },
+            required=["fields", "scope", "reduce"],
+        ),
+        FunctionSchema(
+            name="get_event_log",
+            description=(
+                "Search the session event log for racing events. Use to find "
+                "when specific things happened before querying telemetry around them. "
+                "Returns a list of events with their sample index ranges."
+            ),
+            properties={
+                "eventType": {
+                    "type": "string",
+                    "enum": ["CORNER", "STRAIGHT", "CRASHED", "OVERTAKE"],
+                    "description": "Type of event to search for.",
+                },
+                "scope": {
+                    "type": "string",
+                    "enum": ["last", "last_n", "lap_current", "lap_last", "all"],
+                    "description": "Which events to return.",
+                },
+                "n": {
+                    "type": "integer",
+                    "description": "For last_n scope: how many events to return.",
+                },
+            },
+            required=["eventType", "scope"],
+        ),
+        FunctionSchema(
+            name="get_next_corner",
+            description=(
+                "Return the next corner ahead of the car on the current track, "
+                "with its name and normalized distance from current position. "
+                "Use when the driver asks about the upcoming corner."
+            ),
+            properties={},
+            required=[],
+        ),
+        FunctionSchema(
+            name="get_telemetry_schema",
+            description=(
+                "List all available telemetry field group names and raw Physics_* "
+                "field names that can be used in query_telemetry. Call this when "
+                "unsure which field names to request."
             ),
             properties={},
             required=[],

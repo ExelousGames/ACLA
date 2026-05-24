@@ -17,6 +17,7 @@ import { PythonShellOptions } from 'services/pythonService';
 import { createPythonStreamSession, PythonStreamEvent, PythonStreamSession } from 'services/pythonStreaming';
 import { ACC_STATUS } from 'data/live-analysis/live-map-data';
 import { AnalysisContext } from './analysis-context';
+import { SessionIntelligence } from './session-intelligence/SessionIntelligence';
 
 const normalizeAccStatus = (value: unknown): ACC_STATUS | null => {
     const numeric = typeof value === 'string' ? Number(value) : value;
@@ -56,6 +57,14 @@ const SessionAnalysis = () => {
     const [recordedTelemetryDataCount, setRecordedTelemetryDataCount] = useState<number>(0);
     const [activeVisualizations, setActiveVisualizations] = useState<VisualizationInstance[]>([]);
     const [latestGuidanceMessage, setLatestGuidanceMessage] = useState<string | null>(null);
+    const sessionIntelligenceRef = useRef<SessionIntelligence>(new SessionIntelligence());
+
+    const setLiveSessionData = (data: {}) => {
+        setLiveData(data);
+        if (Object.keys(data).length > 0) {
+            sessionIntelligenceRef.current.tick(data as any);
+        }
+    };
 
     // Use ref to persist file path during recording to prevent state reset issues
     const recordingFilePathRef = useRef<string | null>(null);
@@ -348,6 +357,7 @@ const SessionAnalysis = () => {
         recordingFilePathRef.current = null;
         setRecordedTelemetryDataCount(0);
         writeQueueRef.current = Promise.resolve();
+        sessionIntelligenceRef.current.reset();
         void disposeTelemetryWriter({ force: true });
     };
 
@@ -418,9 +428,10 @@ const SessionAnalysis = () => {
             recordedSessioStaticsData,
             activeVisualizations,
             latestGuidanceMessage,
+            sessionIntelligence: sessionIntelligenceRef.current,
             setMap,
             setSession,
-            setLiveSessionData: setLiveData,
+            setLiveSessionData,
             setRecordedSessionStaticsData,
             setRecordedSessionDataFilePath,
             writeRecordedLiveSessionData,

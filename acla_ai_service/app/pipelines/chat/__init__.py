@@ -198,6 +198,73 @@ class AIService:
                 "description": "Stop the per-corner monitoring agent.",
                 "parameters": {"type": "object", "properties": {}},
             },
+            {
+                "name": "query_telemetry",
+                "description": (
+                    "Query the live telemetry buffer with a structured spec. Use for "
+                    "metric questions: tyre pressure, speed, brake temp, etc. "
+                    "Field groups: speed, throttle, brake, gear, steering, rpm, "
+                    "tyre_pressure, tyre_temp, brake_temp, tyre_slip, g_force, "
+                    "suspension, fuel, lap_delta, position, race_position."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "fields": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Field group names or raw Physics_* field names.",
+                        },
+                        "scope": {
+                            "type": "object",
+                            "description": (
+                                "One of: {type:'last_seconds', seconds:N}, "
+                                "{type:'event', eventType:'CORNER'|'CRASHED'|'OVERTAKE', which:'last'|'current'}, "
+                                "{type:'lap', lap:'current'|'last'|N}, "
+                                "{type:'range', start:N, end:N}"
+                            ),
+                        },
+                        "reduce": {
+                            "type": "string",
+                            "enum": ["raw", "avg", "min", "max", "stats"],
+                            "description": "raw=all samples, avg/min/max=single value, stats={avg,min,max,stddev}.",
+                        },
+                    },
+                    "required": ["fields", "scope", "reduce"],
+                },
+            },
+            {
+                "name": "get_event_log",
+                "description": (
+                    "Search the session event log for racing events (corners, crashes, overtakes). "
+                    "Use to find when things happened before querying telemetry around them."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "eventType": {
+                            "type": "string",
+                            "enum": ["CORNER", "STRAIGHT", "CRASHED", "OVERTAKE"],
+                        },
+                        "scope": {
+                            "type": "string",
+                            "enum": ["last", "last_n", "lap_current", "lap_last", "all"],
+                        },
+                        "n": {"type": "integer", "description": "For last_n scope."},
+                    },
+                    "required": ["eventType", "scope"],
+                },
+            },
+            {
+                "name": "get_next_corner",
+                "description": "Return the next corner ahead of the car on the current track.",
+                "parameters": {"type": "object", "properties": {}},
+            },
+            {
+                "name": "get_telemetry_schema",
+                "description": "List available telemetry field group names and raw Physics_* field names.",
+                "parameters": {"type": "object", "properties": {}},
+            },
         ]
     
     async def process_natural_language_query(

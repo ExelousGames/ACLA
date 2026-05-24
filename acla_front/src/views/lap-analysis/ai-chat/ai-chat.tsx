@@ -3,9 +3,9 @@ import './ai-chat.css';
 import { AnalysisContext } from 'views/lap-analysis/analysis-context';
 import { visualizationController } from 'views/lap-analysis/visualization/VisualizationRegistry';
 import { detectEnvironment } from 'utils/environment';
-import { createAiCommandRegistry, VISUALIZATION_COMMAND_FUNCTIONS } from './ai-command-registry';
+import { createAiCommandRegistry } from './ai-command-registry';
 import { speakWithNeuralTts, NeuralTtsPlayback } from './neural-tts';
-import { useVoiceConversation, FrontendToolHandler, VoiceEvent } from './use-voice-conversation';
+import { useVoiceConversation, VoiceEvent } from './use-voice-conversation';
 
 type MessageKind = 'chat' | 'tool';
 
@@ -15,8 +15,6 @@ interface Message {
     isUser: boolean;
     timestamp: Date;
     isLoading?: boolean;
-    functionCalls?: FunctionCall[];
-    functionResults?: FunctionResult[];
     // Phase 2.5 — true when this AI response already streamed its own audio
     // (Kokoro chunks via SSE). The auto-speak effect skips these so we don't
     // re-synthesize the whole answer.
@@ -34,18 +32,6 @@ interface Message {
     };
 }
 
-interface FunctionCall {
-    function: string;
-    arguments: Record<string, any>;
-}
-
-interface FunctionResult {
-    function: string;
-    arguments: Record<string, any>;
-    result: any;
-    success: boolean;
-    error?: string;
-}
 
 interface AiChatProps {
     sessionId?: string;
@@ -184,25 +170,24 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
         }
     };
 
+    const startTrackGuide = () => {
+        visualizationController.openVisualization('imitation-guidance-chart', {}, {
+            title: 'AI Track Guidance',
+            autoUpdate: true,
+        });
+        setTrackGuideEnabled(true);
+    };
+
     const voiceConversation = useVoiceConversation({
         sessionId,
         onEvent: handleVoiceEvent,
-        toolHandlers: {
-            get_session_info: ((): FrontendToolHandler => async () => ({
-                track: analysisContext?.recordedSessioStaticsData?.track || '',
-                car: analysisContext?.recordedSessioStaticsData?.car || '',
-                user_id: sessionId || '',
-            }))(),
-            get_recent_telemetry: ((): FrontendToolHandler => async () => ({
-                error: 'no_live_telemetry_in_this_view',
-            }))(),
-            start_per_turn_coaching: ((): FrontendToolHandler => async () => ({
-                error: 'no_live_telemetry_in_this_view',
-            }))(),
-            stop_per_turn_coaching: ((): FrontendToolHandler => async () => ({
-                status: 'stopped',
-            }))(),
-        },
+        toolHandlers: createAiCommandRegistry({
+            sessionId,
+            analysisContext,
+            sessionIntelligence: analysisContext?.sessionIntelligence,
+            startTrackGuide,
+            setTrackGuideEnabled,
+        }),
     });
 
     // Utility function to generate unique message IDs
@@ -467,53 +452,6 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
             e.preventDefault();
             handleSendMessage();
         }
-    };
-
-    // Function execution system — preserved for future code paths that still
-    // call into the registry (function-call indicators in messages).
-    const executeFunctionCall = async (functionCall: FunctionCall, responseData: any): Promise<FunctionResult> => {
-        try {
-            const result = await findAndExecuteFunction(functionCall.function, functionCall.arguments, responseData);
-            return { function: functionCall.function, arguments: functionCall.arguments, result, success: true };
-        } catch (error) {
-            return {
-                function: functionCall.function,
-                arguments: functionCall.arguments,
-                result: null,
-                success: false,
-                error: error instanceof Error ? error.message : 'Unknown error',
-            };
-        }
-    };
-
-    const findAndExecuteFunction = async (functionName: string, args: Record<string, any>, responseData: any): Promise<any> => {
-        const registry = createAiCommandRegistry({
-            sessionId,
-            analysisContext,
-            startTrackGuide,
-            setTrackGuideEnabled
-        });
-
-        const handler = registry[functionName];
-        if (!handler) {
-            throw new Error(`Unknown function: ${functionName}`);
-        }
-        return await handler(args, responseData);
-    };
-
-    const startTrackGuide = (responseData: any) => {
-        visualizationController.openVisualization('imitation-guidance-chart', {}, {
-            title: 'AI Track Guidance',
-            autoUpdate: true
-        });
-        setTrackGuideEnabled(true);
-    };
-
-    const formatFunctionArgs = (args: Record<string, any>): string => {
-        return Object.entries(args).map(([key, value]) => {
-            if (typeof value === 'object') return `${key}: ${JSON.stringify(value)}`;
-            return `${key}: ${value}`;
-        }).join(', ');
     };
 
     // ── Voice state → mic panel display ─────────────────────────────
@@ -803,41 +741,6 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
                                                     </button>
                                                 )}
 
-                                                {!debugMode && message.functionResults && message.functionResults.length > 0 && (
-                                                    <div style={{ marginTop: 6 }}>
-                                                        <span className={`ai-chat__chip ${message.functionResults.every(r => r.success) ? 'ai-chat__chip--green' : 'ai-chat__chip--amber'}`}>
-                                                            {message.functionResults.every(r => r.success)
-                                                                ? `${message.functionResults.length} cmd ok`
-                                                                : `${message.functionResults.filter(r => r.success).length}/${message.functionResults.length} cmd ok`}
-                                                        </span>
-                                                    </div>
-                                                )}
-
-                                                {debugMode && message.functionCalls && message.functionCalls.length > 0 && (
-                                                    <div className="ai-chat__debug">
-                                                        <span className="ai-chat__debug-title">Function Calls</span>
-                                                        {message.functionCalls.map((fc, i) => (
-                                                            <span key={i} className="ai-chat__debug-row">
-                                                                {fc.function}({formatFunctionArgs(fc.arguments)})
-                                                            </span>
-                                                        ))}
-                                                    </div>
-                                                )}
-
-                                                {debugMode && message.functionResults && message.functionResults.length > 0 && (
-                                                    <div className="ai-chat__debug">
-                                                        <span className="ai-chat__debug-title">Function Results</span>
-                                                        {message.functionResults.map((fr, i) => (
-                                                            <span
-                                                                key={i}
-                                                                className={`ai-chat__debug-row ${fr.success ? 'ai-chat__debug-row--ok' : 'ai-chat__debug-row--error'}`}
-                                                            >
-                                                                {fr.function}: {fr.success ? '✓ ok' : '✕ err'}
-                                                                {fr.error ? ` — ${fr.error}` : ''}
-                                                            </span>
-                                                        ))}
-                                                    </div>
-                                                )}
                                             </>
                                         )}
                                     </div>

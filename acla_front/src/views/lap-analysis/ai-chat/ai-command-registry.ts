@@ -1,203 +1,179 @@
 import apiService from 'services/api.service';
 import { visualizationController } from 'views/lap-analysis/visualization/VisualizationRegistry';
+import { ToolHandlerContext } from 'views/lap-analysis/ai-chat/use-voice-conversation';
+import { SessionIntelligence } from 'views/lap-analysis/session-intelligence/SessionIntelligence';
 
 export interface AiCommandRegistryContext {
     sessionId?: string;
     analysisContext?: any;
-    startTrackGuide: (responseData: any) => void;
+    // Populated during live recording. Null in post-session analysis view.
+    sessionIntelligence?: SessionIntelligence | null;
+    startTrackGuide: () => void;
     setTrackGuideEnabled: (enabled: boolean) => void;
 }
 
-export const VISUALIZATION_COMMAND_FUNCTIONS = [
-    'get_visualization_capabilities',
-    'open_visualization_chart',
-    'close_visualization_chart',
-    'invoke_visualization_control',
-    'update_guidance_once'
-];
+type AiCommandHandler = (args: Record<string, any>, ctx: ToolHandlerContext) => Promise<any>;
 
-type AiCommandHandler = (args: Record<string, any>, responseData: any) => Promise<any>;
+const getSessionId = (args: Record<string, any>, context: AiCommandRegistryContext): string | undefined =>
+    args.session_id ||
+    context.sessionId ||
+    context.analysisContext?.sessionSelected?.SessionId;
 
-const getSessionIdToUse = (args: Record<string, any>, context: AiCommandRegistryContext) => {
-    return args.session_id ||
-        context.sessionId ||
-        context.analysisContext?.sessionSelected?.SessionId;
-};
+export const createAiCommandRegistry = (context: AiCommandRegistryContext): Record<string, AiCommandHandler> => ({
 
-export const createAiCommandRegistry = (context: AiCommandRegistryContext): Record<string, AiCommandHandler> => {
-    return {
-        async get_session_analysis(args) {
-            const sessionIdToUse = getSessionIdToUse(args, context);
-            return await apiService.post('/racing-session/detailed-info', {
-                id: sessionIdToUse
-            });
-        },
+    // ── Session ───────────────────────────────────────────────────────────────
 
-        async get_telemetry_data(args) {
-            const sessionIdToUse = getSessionIdToUse(args, context);
-            return await apiService.post('/racing-session/telemetry', {
-                session_id: sessionIdToUse,
-                data_types: args.data_types || ['speed', 'acceleration']
-            });
-        },
+    async get_session_info() {
+        return {
+            track:   context.analysisContext?.recordedSessioStaticsData?.track   || '',
+            car:     context.analysisContext?.recordedSessioStaticsData?.car     || '',
+            user_id: context.sessionId || '',
+        };
+    },
 
-        async compare_lap_times(args) {
-            return await apiService.post('/racing-session/compare', {
-                session_ids: args.session_ids,
-                metrics: args.metrics || ['lap_times']
-            });
-        },
+    async get_session_analysis(args) {
+        return await apiService.post('/racing-session/detailed-info', { id: getSessionId(args, context) });
+    },
 
-        async get_performance_insights(args) {
-            const sessionIdToUse = getSessionIdToUse(args, context);
-            return await apiService.post('/ai/performance-analysis', {
-                session_id: sessionIdToUse,
-                analysis_type: args.analysis_type || 'comprehensive'
-            });
-        },
+    async get_performance_insights(args) {
+        return await apiService.post('/ai/performance-analysis', {
+            session_id:    getSessionId(args, context),
+            analysis_type: args.analysis_type || 'comprehensive',
+        });
+    },
 
-        async follow_expert_line(args) {
-            const sessionIdToUse = getSessionIdToUse(args, context);
-            return await apiService.post('/ai/expert-line-guidance', {
-                session_id: sessionIdToUse,
-                data_types: args.data_types || ['speed', 'acceleration', 'braking', 'steering']
-            });
-        },
+    async compare_lap_times(args) {
+        return await apiService.post('/racing-session/compare', {
+            session_ids: args.session_ids,
+            metrics:     args.metrics || ['lap_times'],
+        });
+    },
 
-        async track_detail_for_guide(args, responseData) {
-            context.startTrackGuide(responseData);
-            return {
-                status: 'Imitation learning guidance enabled - now continuously monitoring telemetry data and displaying AI guidance chart',
-                enabled: true,
-                chartAdded: true
-            };
-        },
+    // ── Telemetry ─────────────────────────────────────────────────────────────
 
-        async disable_guide_user_racing() {
-            context.setTrackGuideEnabled(false);
-            return {
-                status: 'Imitation learning guidance disabled - no longer monitoring telemetry data and guidance chart removed',
-                enabled: false,
-                chartRemoved: true
-            };
-        },
+    async get_recent_telemetry(args) {
+        const si = context.sessionIntelligence;
+        if (!si) return { error: 'no_live_session' };
+        return si.getRecentTelemetry(args.seconds ?? 8, args.channels);
+    },
 
-        async disable_ui_component(args) {
-            if (args.component === 'chart' && context.analysisContext) {
-                console.log('Updating UI component:', args);
-                return { success: true, message: 'UI updated successfully' };
-            }
-            return { success: false, message: 'UI component not found or not supported' };
-        },
+    async query_telemetry(args) {
+        const si = context.sessionIntelligence;
+        if (!si) return { error: 'no_live_session' };
+        return si.query(args as any);
+    },
 
-        async add_imitation_guidance_chart(args) {
-            const sessionIdToUse = getSessionIdToUse(args, context);
-            const chartAddResult = visualizationController.openVisualization('imitation-guidance-chart', {
-                sessionId: sessionIdToUse,
-                manuallyAdded: true
-            }, {
-                title: args.title || 'AI Driving Guidance',
-                autoUpdate: args.autoUpdate !== false
-            });
+    async get_telemetry_schema() {
+        const si = context.sessionIntelligence;
+        if (!si) return { error: 'no_live_session' };
+        return si.getSchema();
+    },
 
-            return {
-                ...chartAddResult,
-                message: chartAddResult.success
-                    ? 'Imitation guidance chart added successfully'
-                    : 'Failed to add imitation guidance chart',
-                chartType: 'imitation-guidance-chart'
-            };
-        },
+    // ── Event log ─────────────────────────────────────────────────────────────
 
-        async remove_imitation_guidance_chart(args) {
-            const charts = visualizationController.getCurrentInstances();
-            const imitationCharts = charts.filter(chart => chart.type === 'imitation-guidance-chart');
+    async get_event_log(args) {
+        const si = context.sessionIntelligence;
+        if (!si) return { error: 'no_live_session' };
+        return { events: si.findEvents(args as any) };
+    },
 
-            let removedCount = 0;
-            if (args.chartId) {
-                const removed = visualizationController.closeVisualization({ id: args.chartId });
-                if (removed.success) removedCount = 1;
-            } else {
-                imitationCharts.forEach(chart => {
-                    const removed = visualizationController.closeVisualization({ id: chart.id });
-                    if (removed.success) removedCount++;
-                });
-            }
+    async get_next_corner() {
+        const si = context.sessionIntelligence;
+        if (!si) return { error: 'no_live_session' };
+        return si.getNextCorner() ?? { error: 'no_corner_data' };
+    },
 
-            return {
-                success: removedCount > 0,
-                message: `Removed ${removedCount} imitation guidance chart(s)`,
-                removedCount
-            };
-        },
+    // ── Coaching ──────────────────────────────────────────────────────────────
 
-        async get_visualization_capabilities() {
-            return visualizationController.getVisualizationAssistantContext();
-        },
+    async start_per_turn_coaching() {
+        return { status: 'not_yet_implemented' };
+    },
 
-        async open_visualization_chart(args) {
-            return visualizationController.openVisualization(
-                args.type,
-                args.data,
-                args.config
-            );
-        },
+    async stop_per_turn_coaching() {
+        return { status: 'stopped' };
+    },
 
-        async close_visualization_chart(args) {
-            return visualizationController.closeVisualization({
-                id: args.chartId,
-                type: args.type,
-                all: args.all === true
-            });
-        },
+    // ── Expert line ───────────────────────────────────────────────────────────
 
-        async invoke_visualization_control(args) {
-            return await visualizationController.invokeVisualizationControl({
-                control: args.control,
-                id: args.chartId,
-                type: args.type,
-                args: args.args
-            });
-        },
+    async follow_expert_line(args) {
+        return await apiService.post('/ai/expert-line-guidance', {
+            session_id: getSessionId(args, context),
+            data_types: args.data_types || ['speed', 'acceleration', 'braking', 'steering'],
+        });
+    },
 
-        async update_guidance_once(args) {
-            return await visualizationController.invokeVisualizationControl({
-                control: 'refresh_once',
-                id: args.chartId,
-                type: args.type || 'imitation-guidance-chart',
-                args: args.args
-            });
-        },
+    async get_telemetry_data(args) {
+        return await apiService.post('/racing-session/telemetry', {
+            session_id: getSessionId(args, context),
+            data_types: args.data_types || ['speed', 'acceleration'],
+        });
+    },
 
-        async get_available_functions(args) {
-            const sessionIdToUse = getSessionIdToUse(args, context);
-            return {
-                functions: getAvailableAiFunctionNames(),
-                session_context: !!context.sessionId,
-                analysis_context: !!context.analysisContext,
-                current_session: sessionIdToUse
-            };
+    // ── Visualizations ────────────────────────────────────────────────────────
+
+    async track_detail_for_guide() {
+        context.startTrackGuide();
+        return { status: 'guidance_enabled', enabled: true };
+    },
+
+    async disable_guide_user_racing() {
+        context.setTrackGuideEnabled(false);
+        return { status: 'guidance_disabled', enabled: false };
+    },
+
+    async get_visualization_capabilities() {
+        return visualizationController.getVisualizationAssistantContext();
+    },
+
+    async open_visualization_chart(args) {
+        return visualizationController.openVisualization(args.type, args.data, args.config);
+    },
+
+    async close_visualization_chart(args) {
+        return visualizationController.closeVisualization({ id: args.chartId, type: args.type, all: args.all === true });
+    },
+
+    async invoke_visualization_control(args) {
+        return await visualizationController.invokeVisualizationControl({
+            control: args.control,
+            id:      args.chartId,
+            type:    args.type,
+            args:    args.args,
+        });
+    },
+
+    async update_guidance_once(args) {
+        return await visualizationController.invokeVisualizationControl({
+            control: 'refresh_once',
+            id:      args.chartId,
+            type:    args.type || 'imitation-guidance-chart',
+            args:    args.args,
+        });
+    },
+
+    async add_imitation_guidance_chart(args) {
+        const result = visualizationController.openVisualization(
+            'imitation-guidance-chart',
+            { sessionId: getSessionId(args, context), manuallyAdded: true },
+            { title: args.title || 'AI Driving Guidance', autoUpdate: args.autoUpdate !== false },
+        );
+        return { ...result, chartType: 'imitation-guidance-chart' };
+    },
+
+    async remove_imitation_guidance_chart(args) {
+        const charts = visualizationController.getCurrentInstances()
+            .filter(c => c.type === 'imitation-guidance-chart');
+        let removed = 0;
+        if (args.chartId) {
+            if (visualizationController.closeVisualization({ id: args.chartId }).success) removed = 1;
+        } else {
+            charts.forEach(c => { if (visualizationController.closeVisualization({ id: c.id }).success) removed++; });
         }
-    };
-};
+        return { success: removed > 0, removedCount: removed };
+    },
 
-export const getAvailableAiFunctionNames = () => {
-    return [
-        'get_session_analysis',
-        'get_telemetry_data',
-        'compare_lap_times',
-        'get_performance_insights',
-        'follow_expert_line',
-        'track_detail_for_guide',
-        'disable_guide_user_racing',
-        'disable_ui_component',
-        'add_imitation_guidance_chart',
-        'remove_imitation_guidance_chart',
-        'get_visualization_capabilities',
-        'open_visualization_chart',
-        'close_visualization_chart',
-        'invoke_visualization_control',
-        'update_guidance_once',
-        'get_available_functions'
-    ];
-};
+    async disable_ui_component(args) {
+        if (args.component === 'chart' && context.analysisContext) return { success: true };
+        return { success: false };
+    },
+});
