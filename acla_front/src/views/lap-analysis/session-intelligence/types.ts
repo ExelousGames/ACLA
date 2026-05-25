@@ -18,6 +18,7 @@ export interface TelemetrySample {
 export type ReduceOp = 'raw' | 'avg' | 'min' | 'max' | 'stats';
 
 export type QueryScope =
+    | { type: 'now' }
     | { type: 'last_seconds'; seconds: number }
     | { type: 'event'; eventType: EventType; which: 'last' | 'current' }
     | { type: 'lap'; lap: 'current' | 'last' | number }

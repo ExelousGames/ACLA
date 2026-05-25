@@ -47,6 +47,9 @@ export function resolveScope(
     currentLap: number,
 ): TelemetrySample[] {
     switch (scope.type) {
+        case 'now':
+            return buffer.last(1);
+
         case 'last_seconds':
             return buffer.sliceByTime(scope.seconds * 1000);
 

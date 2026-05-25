@@ -33,6 +33,14 @@ export const QUERY_SCOPE_SCHEMA = {
         {
             type: 'object',
             properties: {
+                type: { const: 'now' },
+            },
+            required: ['type'],
+            additionalProperties: false,
+        },
+        {
+            type: 'object',
+            properties: {
                 type: { const: 'last_seconds' },
                 seconds: { type: 'number', description: 'Rolling window size in seconds.' },
             },
@@ -98,9 +106,7 @@ export const frontendToolSchemas: FrontendToolSchema[] = [
     {
         name: 'query_telemetry_metric',
         title: 'Querying telemetry',
-        description:
-            'Aggregate a telemetry metric over a scope (e.g. avg brake temp last lap, ' +
-            'peak speed lap 3).',
+        description: 'Read a telemetry metric over a scope.',
         properties: {
             fields: {
                 type: 'array',
