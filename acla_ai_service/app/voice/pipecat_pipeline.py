@@ -497,6 +497,7 @@ async def build_voice_pipeline_task(
     import json as _json
     from pipecat.adapters.schemas.tools_schema import ToolsSchema
     from pipecat.audio.vad.silero import SileroVADAnalyzer
+    from pipecat.audio.vad.vad_analyzer import VADParams
     from pipecat.pipeline.pipeline import Pipeline
     from pipecat.pipeline.task import PipelineParams, PipelineTask
     from pipecat.processors.aggregators.llm_context import LLMContext
@@ -558,7 +559,13 @@ async def build_voice_pipeline_task(
     # --- VAD (Silero, in-pipeline) ---
     # Emits VADUserStartedSpeakingFrame / VADUserStoppedSpeakingFrame which
     # the downstream STT uses to gate Whisper inference.
-    vad_processor = VADProcessor(vad_analyzer=SileroVADAnalyzer())
+    #
+    # stop_secs raised from the pipecat default (0.8s) — drivers pause
+    # mid-sentence to think, and 0.8s ends the turn before they finish,
+    # splitting one utterance into multiple STT runs.
+    vad_processor = VADProcessor(vad_analyzer=SileroVADAnalyzer(
+        params=VADParams(stop_secs=1.5),
+    ))
 
     # --- STT (faster-whisper) ---
     # Phase 3 starting point: small English model on whichever device is
