@@ -36,7 +36,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 from app.infra.config import settings
 
@@ -69,10 +69,7 @@ Tool use:
 Output rules:
 - If a tool errors or telemetry is down, say so plainly ("can't see your
   telemetry right now"). Never fabricate numbers or label names.
-- Translate label codes to natural English before speaking. The driver
-  hears "oversteer at entry", never "MS44".
-- Don't repeat the same advice. If the driver makes the same mistake
-  twice, escalate.
+- Translate label codes to natural English before speaking.
 """
 
 
@@ -96,62 +93,35 @@ class VoiceSessionConfig:
     voice: Optional[str] = None  # Kokoro voice override
 
 
-# Tool names whose execution goes through the frontend WS relay (see
-# app/voice/tool_relay.py). Everything else routes to the server-side
-# AIService._execute_function dispatcher.
-FRONTEND_TOOLS: frozenset[str] = frozenset({
-    "get_session_info",
-    "start_per_turn_coaching",
-    "stop_per_turn_coaching",
-    "query_telemetry_metric",
-    "get_event_log",
-    "get_next_corner",
-    "get_telemetry_schema",
-})
-
-
 # Human-readable titles shown in the chat UI for each tool. The driver
 # sees these in a "tool box" while the LLM is calling the function — they
 # should read like a brief status line, not the raw function name.
-_TOOL_TITLES: Dict[str, str] = {
+#
+# Frontend-tool titles arrive over the WS handshake; this map is the
+# server-side fallback for the server-implemented tools only.
+_SERVER_TOOL_TITLES: Dict[str, str] = {
     "analyze_telemetry": "Analyzing telemetry",
     "explain_label": "Looking up the term",
-    "get_session_info": "Checking session info",
-    "start_per_turn_coaching": "Starting per-turn coaching",
-    "stop_per_turn_coaching": "Stopping per-turn coaching",
-    "query_telemetry_metric": "Querying telemetry",
-    "get_event_log": "Searching event log",
-    "get_next_corner": "Looking up next corner",
-    "get_telemetry_schema": "Checking available telemetry fields",
+    "get_track_knowledge": "Pulling track notes",
+    "search_racing_knowledge": "Searching racing knowledge",
 }
 
 
-def _tool_title(name: str) -> str:
-    """Return the chat-visible title for a tool name, falling back to a
-    prettified version of the raw name."""
-    return _TOOL_TITLES.get(name) or name.replace("_", " ").strip().capitalize()
+def _prettify(name: str) -> str:
+    return name.replace("_", " ").strip().capitalize()
 
 
-def _build_tool_schemas():
-    """Return Pipecat FunctionSchemas for the racing-engineer tools.
+def _build_server_tool_schemas():
+    """Pipecat FunctionSchemas for the server-implemented tools only.
 
-    Mirrors AIService.get_available_functions() so the voice and HTTP-style
-    paths advertise the same capabilities to the LLM. Deferred import — only
-    loaded when a voice session is actually built.
+    Frontend tools come in over the WS handshake (see :mod:`app.api.voice`)
+    and are built in :func:`_build_frontend_tool_schemas`. Together they
+    form the LLM's tool surface. Deferred import — only loaded when a voice
+    session is actually built.
     """
     from pipecat.adapters.schemas.function_schema import FunctionSchema
 
-    # Shared scope description — both telemetry tools take the same shape so
-    # the LLM only learns one query language.
-    _SCOPE_DESC = (
-        "Time/event window. One of: "
-        "{type:'last_seconds', seconds:N}, "
-        "{type:'event', eventType:'CORNER'|'CRASHED'|'OVERTAKE', which:'last'|'current'}, "
-        "{type:'lap', lap:'current'|'last'|N}, "
-        "{type:'range', start:N, end:N}"
-    )
-
-    schemas = [
+    return [
         FunctionSchema(
             name="analyze_telemetry",
             description=(
@@ -160,31 +130,18 @@ def _build_tool_schemas():
                 "happened', 'why X', 'how was lap N'."
             ),
             properties={
-                "scope": {"type": "object", "description": _SCOPE_DESC},
+                "scope": {
+                    "type": "object",
+                    "description": (
+                        "Time/event window. One of: "
+                        "{type:'last_seconds', seconds:N}, "
+                        "{type:'event', eventType:'CORNER'|'CRASHED'|'OVERTAKE', which:'last'|'current'}, "
+                        "{type:'lap', lap:'current'|'last'|N}, "
+                        "{type:'range', start:N, end:N}"
+                    ),
+                },
             },
             required=["scope"],
-        ),
-        FunctionSchema(
-            name="query_telemetry_metric",
-            description=(
-                "Aggregate a telemetry metric over a scope (e.g. avg brake "
-                "temp last lap, peak speed lap 3). Call get_telemetry_schema "
-                "if unsure which fields exist."
-            ),
-            properties={
-                "fields": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Field group names or raw Physics_* names.",
-                },
-                "scope": {"type": "object", "description": _SCOPE_DESC},
-                "reduce": {
-                    "type": "string",
-                    "enum": ["avg", "min", "max", "stats"],
-                    "description": "stats = {avg,min,max,stddev}.",
-                },
-            },
-            required=["fields", "scope", "reduce"],
         ),
         FunctionSchema(
             name="explain_label",
@@ -198,71 +155,92 @@ def _build_tool_schemas():
             required=["label_id"],
         ),
         FunctionSchema(
-            name="get_session_info",
-            description="Current track / car / user. Call once if you need to reference them.",
-            properties={},
-            required=[],
-        ),
-        FunctionSchema(
-            name="start_per_turn_coaching",
+            name="get_track_knowledge",
             description=(
-                "Activate background per-corner coaching. Observations arrive "
-                "as '[OBSERVATION]' user turns. Use when driver asks to be "
-                "coached every corner."
-            ),
-            properties={},
-            required=[],
-        ),
-        FunctionSchema(
-            name="stop_per_turn_coaching",
-            description="Stop per-corner coaching. Use when driver asks to be left alone.",
-            properties={},
-            required=[],
-        ),
-        FunctionSchema(
-            name="get_event_log",
-            description=(
-                "List racing events with their sample-index ranges. Use to "
-                "find when something happened before querying telemetry around it."
+                "Per-track curated notes (overview + corner-by-corner). "
+                "Omit `corner` to get the overview plus the list of corner "
+                "names; pass a corner name to get just that section."
             ),
             properties={
-                "eventType": {
+                "track": {
                     "type": "string",
-                    "enum": ["CORNER", "STRAIGHT", "CRASHED", "OVERTAKE"],
+                    "description": "Track id (e.g. 'spa', 'silverstone').",
                 },
-                "scope": {
+                "corner": {
                     "type": "string",
-                    "enum": ["last", "last_n", "lap_current", "lap_last", "all"],
-                },
-                "n": {
-                    "type": "integer",
-                    "description": "For last_n: how many events.",
+                    "description": "Optional corner name (e.g. 'Eau Rouge').",
                 },
             },
-            required=["eventType", "scope"],
+            required=["track"],
         ),
         FunctionSchema(
-            name="get_next_corner",
-            description="Name and normalized distance of the next corner ahead.",
-            properties={},
-            required=[],
-        ),
-        FunctionSchema(
-            name="get_telemetry_schema",
-            description="List available field group names and raw Physics_* names.",
-            properties={},
-            required=[],
+            name="search_racing_knowledge",
+            description=(
+                "Semantic search over driver transcripts, race reports, and "
+                "theory notes. Use for cross-cutting questions where the right "
+                "doc isn't obvious ('what do drivers say about wet setup', "
+                "'where do most cars lose time under braking'). Returns top-k "
+                "matching snippets."
+            ),
+            properties={
+                "query": {"type": "string", "description": "Free-text question or topic."},
+                "top_k": {"type": "integer", "description": "Snippets to return (default 5)."},
+            },
+            required=["query"],
         ),
     ]
+
+
+def _build_frontend_tool_schemas(frontend_tools: Iterable[Dict[str, Any]]) -> List[Any]:
+    """Convert the frontend's tool descriptors into Pipecat FunctionSchemas.
+
+    Each ``frontend_tools`` entry is a plain dict with ``name``, ``description``,
+    ``properties`` and ``required`` (mirrors FunctionSchema's constructor).
+    Entries missing ``name`` are skipped with a warning — defensive against
+    a misbehaving frontend, since this is an untrusted boundary.
+    """
+    from pipecat.adapters.schemas.function_schema import FunctionSchema
+
+    schemas: List[Any] = []
+    for tool in frontend_tools:
+        name = tool.get("name")
+        if not isinstance(name, str) or not name:
+            LOGGER.warning("frontend_info: tool entry missing 'name': %r", tool)
+            continue
+        schemas.append(FunctionSchema(
+            name=name,
+            description=str(tool.get("description") or ""),
+            properties=dict(tool.get("properties") or {}),
+            required=list(tool.get("required") or []),
+        ))
     return schemas
 
 
-def _make_tool_handler(tool_executor, session_config: "VoiceSessionConfig", conn: Any):
+def _build_title_map(frontend_tools: Iterable[Dict[str, Any]]) -> Dict[str, str]:
+    """Merge server-tool titles with frontend-supplied titles."""
+    titles = dict(_SERVER_TOOL_TITLES)
+    for tool in frontend_tools:
+        name = tool.get("name")
+        title = tool.get("title")
+        if isinstance(name, str) and name and isinstance(title, str) and title:
+            titles[name] = title
+    return titles
+
+
+def _make_tool_handler(
+    tool_executor,
+    session_config: "VoiceSessionConfig",
+    conn: Any,
+    *,
+    frontend_tool_names: frozenset[str],
+    tool_titles: Dict[str, str],
+):
     """Build a per-session async handler with two-bucket dispatch.
 
-    * Tool names in :data:`FRONTEND_TOOLS` → forwarded to the frontend over
-      the WS via :func:`app.voice.tool_relay.get_relay().dispatch`. The
-      ``conn`` arg identifies which WS connection to send the call on.
+    * Tool names in ``frontend_tool_names`` (derived from the WS handshake)
+      → forwarded to the frontend over the WS via
+      :func:`app.voice.tool_relay.get_relay().dispatch`. The ``conn`` arg
+      identifies which WS connection to send the call on.
     * Everything else → forwarded to ``tool_executor`` (server-side path,
       typically ``AIService._execute_function``).
 
@@ -272,12 +250,16 @@ def _make_tool_handler(tool_executor, session_config: "VoiceSessionConfig", conn
 
     Each call also emits ``tool_event`` text frames (started + completed)
     on the same WS so the chat UI can render a "tool box" with the
-    human-readable title from :data:`_TOOL_TITLES`.
+    human-readable title from ``tool_titles`` (server-side fallback +
+    frontend-supplied titles from the handshake).
     """
     import json as _json
     from app.voice.tool_relay import get_relay
 
     relay = get_relay()
+
+    def _tool_title(name: str) -> str:
+        return tool_titles.get(name) or _prettify(name)
 
     async def _emit_tool_event(payload: Dict[str, Any]) -> None:
         try:
@@ -300,7 +282,7 @@ def _make_tool_handler(tool_executor, session_config: "VoiceSessionConfig", conn
         ok = True
         error_msg: Optional[str] = None
         try:
-            if function_name in FRONTEND_TOOLS:
+            if function_name in frontend_tool_names:
                 # Relayed to the Electron app over the same WS as audio.
                 # dispatch() never raises — failures come back as {"error": ...}.
                 result = await relay.dispatch(conn, function_name, arguments)
@@ -494,6 +476,8 @@ async def build_voice_pipeline_task(
     websocket: Any,
     session_config: VoiceSessionConfig,
     tool_executor: Any,
+    *,
+    frontend_tools: Optional[List[Dict[str, Any]]] = None,
 ):
     """Build a Pipecat PipelineTask bound to the given WebSocket.
 
@@ -596,14 +580,28 @@ async def build_voice_pipeline_task(
     )
 
     # --- Tool calling (Phase 3b) ---
-    # Build schemas + register handlers that delegate to the caller-provided
-    # `tool_executor` (typically AIService._execute_function, bound by
-    # api/voice.py). Voice and text paths share the same tool implementations,
-    # so behaviour stays consistent.
-    tool_schemas = _build_tool_schemas()
+    # The LLM's tool surface is the union of:
+    #   * server-side tools (analyze_telemetry, explain_label) — schemas
+    #     live in Python next to their executor.
+    #   * frontend-side tools — schemas arrive over the WS handshake from
+    #     api/voice.py (see :func:`_await_frontend_info`). Frontend owns
+    #     the schema definitions so there's a single source of truth.
+    # The handler dispatches by name: frontend names go through the WS
+    # tool relay; everything else goes through ``tool_executor`` (typically
+    # AIService._execute_function, bound by api/voice.py).
+    fe_tools = frontend_tools or []
+    frontend_tool_names = frozenset(
+        t["name"] for t in fe_tools if isinstance(t.get("name"), str)
+    )
+    tool_schemas = _build_server_tool_schemas() + _build_frontend_tool_schemas(fe_tools)
+    tool_titles = _build_title_map(fe_tools)
     tools = ToolsSchema(standard_tools=tool_schemas)
 
-    tool_handler = _make_tool_handler(tool_executor, session_config, conn=websocket)
+    tool_handler = _make_tool_handler(
+        tool_executor, session_config, conn=websocket,
+        frontend_tool_names=frontend_tool_names,
+        tool_titles=tool_titles,
+    )
     for schema in tool_schemas:
         llm.register_function(schema.name, tool_handler)
 
@@ -773,12 +771,15 @@ async def run_voice_session(
     websocket: Any,
     session_config: VoiceSessionConfig,
     tool_executor: Any,
+    *,
+    frontend_tools: Optional[List[Dict[str, Any]]] = None,
 ) -> None:
     """Bind a Pipecat pipeline to `websocket` and run it to completion.
 
     Returns when the WS closes or the pipeline exits. Caller is responsible
-    for any auth/lifecycle concerns around `websocket` and for supplying a
-    ``tool_executor`` (typically AIService._execute_function).
+    for any auth/lifecycle concerns around `websocket`, supplying a
+    ``tool_executor`` (typically AIService._execute_function), and passing
+    ``frontend_tools`` from the WS handshake (see :mod:`app.api.voice`).
 
     Also unbinds the WebSocket from :mod:`app.voice.tool_relay` on exit so
     in-flight tool-call futures are cancelled cleanly.
@@ -787,7 +788,10 @@ async def run_voice_session(
     from pipecat.pipeline.runner import PipelineRunner
     from app.voice.tool_relay import get_relay
 
-    task = await build_voice_pipeline_task(websocket, session_config, tool_executor)
+    task = await build_voice_pipeline_task(
+        websocket, session_config, tool_executor,
+        frontend_tools=frontend_tools,
+    )
     runner = PipelineRunner()
     try:
         await runner.run(task)

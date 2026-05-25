@@ -38,6 +38,19 @@ export type FrontendToolHandler = (
     ctx: ToolHandlerContext,
 ) => Promise<unknown> | unknown;
 
+/** Schema for one frontend-implemented tool. Sent to the AI service on
+ *  WS open so the LLM's tool surface is sourced from a single place
+ *  (the frontend) instead of being duplicated in Python. */
+export interface FrontendToolSchema {
+    name: string;
+    /** UI label shown in the chat's "tool box" while the call is in flight. */
+    title: string;
+    description: string;
+    /** JSON-Schema-style `properties` object. */
+    properties: Record<string, unknown>;
+    required: string[];
+}
+
 /** One event surfaced to the chat UI off the voice WS. The hook fires
  *  these via `onEvent` so the caller can append them to a message list. */
 export type VoiceEvent =
@@ -65,6 +78,10 @@ export interface VoiceConversationOptions {
      *  hook over the WS via a `tool_call` text frame; we dispatch by
      *  name. Missing handler → automatic `tool_error`. */
     toolHandlers?: Record<string, FrontendToolHandler>;
+    /** Schemas for the frontend-implemented tools. Sent to the AI service
+     *  as the first text frame on WS open so the backend has a single
+     *  source of truth for the LLM's frontend tool surface. */
+    frontendTools?: FrontendToolSchema[];
     /** Fires for each transcript / tool event the backend sends. The
      *  caller is responsible for appending to its own message list. */
     onEvent?: (event: VoiceEvent) => void;
@@ -246,6 +263,19 @@ export function useVoiceConversation(
             playbackQueueTimeRef.current = playbackContext.currentTime;
 
             ws.onopen = () => {
+                // First text frame on every voice session: hand the AI
+                // service the list of frontend-implemented tool schemas.
+                // The backend blocks the pipeline build until this arrives,
+                // so the LLM's tool surface is sourced here, not duplicated
+                // in Python. Audio frames start flowing after this.
+                try {
+                    ws.send(JSON.stringify({
+                        type: 'frontend_info',
+                        tools: options.frontendTools || [],
+                    }));
+                } catch (err) {
+                    console.warn('[voice] frontend_info send failed:', err);
+                }
                 setState('listening');
             };
 

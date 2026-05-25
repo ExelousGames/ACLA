@@ -10,8 +10,10 @@ Each connection spawns its own pipeline; interruption is built-in.
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
-from typing import Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response
@@ -187,6 +189,33 @@ async def voice_stream(
         user_id=user_id,
     )
 
+    # ── Handshake: frontend declares its tool surface ─────────────────────
+    # The first text frame on every voice session must be
+    # ``{"type": "frontend_info", "tools": [...]}``. The frontend owns the
+    # frontend-tool schemas (single source of truth); the AI service merges
+    # them with its server-tool schemas to build the LLM's tool surface.
+    # Audio frames before the handshake are dropped (we haven't built the
+    # pipeline yet anyway).
+    try:
+        frontend_tools = await _await_frontend_info(websocket, timeout=5.0)
+    except _HandshakeError as exc:
+        LOGGER.warning(
+            "Voice WS handshake failed (user=%s): %s", user_id, exc,
+        )
+        try:
+            await websocket.send_json({
+                "type": "error",
+                "message": str(exc),
+                "error_type": "HandshakeError",
+            })
+        except Exception:
+            pass
+        try:
+            await websocket.close(code=1002, reason="frontend_info handshake failed")
+        except Exception:
+            pass
+        return
+
     # Construct the tool executor here, in the inbound-adapter band, so
     # app/voice/ never imports from app/pipelines/ (see .importlinter
     # contract voice-no-pipeline-or-api).
@@ -201,11 +230,15 @@ async def voice_stream(
     filtered_ws = _TextFilteringWebSocket(websocket)
 
     LOGGER.info(
-        "Voice WS connected (session=%s user=%s)", session_id, user_id,
+        "Voice WS connected (session=%s user=%s frontend_tools=%d)",
+        session_id, user_id, len(frontend_tools),
     )
 
     try:
-        await run_voice_session(filtered_ws, config, tool_executor)
+        await run_voice_session(
+            filtered_ws, config, tool_executor,
+            frontend_tools=frontend_tools,
+        )
     except WebSocketDisconnect:
         LOGGER.info("Voice WS client disconnected (user=%s)", user_id)
     except Exception:
@@ -214,6 +247,61 @@ async def voice_stream(
             await websocket.close(code=1011, reason="voice session error")
         except Exception:
             pass
+
+
+class _HandshakeError(Exception):
+    """Raised when the frontend_info handshake fails (timeout, bad frame, etc.)."""
+
+
+async def _await_frontend_info(
+    websocket: WebSocket, *, timeout: float,
+) -> List[Dict[str, Any]]:
+    """Receive and parse the first text frame as ``frontend_info``.
+
+    Returns the ``tools`` list (possibly empty). Raises :class:`_HandshakeError`
+    on timeout, non-text first frame, malformed JSON, wrong ``type``, or
+    invalid ``tools`` shape.
+
+    Per-session — does not block the event loop or other sessions. Any
+    binary frames that arrive before the handshake are dropped.
+    """
+    deadline = asyncio.get_running_loop().time() + timeout
+    while True:
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            raise _HandshakeError("Timed out waiting for frontend_info handshake")
+        try:
+            msg = await asyncio.wait_for(websocket.receive(), timeout=remaining)
+        except asyncio.TimeoutError as exc:
+            raise _HandshakeError(
+                "Timed out waiting for frontend_info handshake",
+            ) from exc
+
+        if msg.get("type") == "websocket.disconnect":
+            raise _HandshakeError("Client disconnected before sending frontend_info")
+
+        text = msg.get("text")
+        if text is None:
+            # Stray binary frame before handshake — drop and keep waiting.
+            continue
+
+        try:
+            payload = json.loads(text)
+        except Exception as exc:
+            raise _HandshakeError(f"frontend_info: bad JSON ({exc})") from exc
+
+        if not isinstance(payload, dict) or payload.get("type") != "frontend_info":
+            raise _HandshakeError(
+                f"First text frame must have type='frontend_info' "
+                f"(got {payload.get('type') if isinstance(payload, dict) else type(payload).__name__})"
+            )
+
+        tools = payload.get("tools")
+        if tools is None:
+            tools = []
+        if not isinstance(tools, list) or not all(isinstance(t, dict) for t in tools):
+            raise _HandshakeError("frontend_info: 'tools' must be a list of objects")
+        return tools
 
 
 class _TextFilteringWebSocket:

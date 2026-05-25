@@ -1,6 +1,6 @@
 import apiService from 'services/api.service';
 import { visualizationController } from 'views/lap-analysis/visualization/VisualizationRegistry';
-import { ToolHandlerContext } from 'views/lap-analysis/ai-chat/use-voice-conversation';
+import { ToolHandlerContext, FrontendToolSchema } from 'views/lap-analysis/ai-chat/use-voice-conversation';
 import { SessionIntelligence } from 'views/lap-analysis/session-intelligence/SessionIntelligence';
 
 export interface AiCommandRegistryContext {
@@ -13,6 +13,104 @@ export interface AiCommandRegistryContext {
 }
 
 type AiCommandHandler = (args: Record<string, any>, ctx: ToolHandlerContext) => Promise<any>;
+
+// Single source of truth for the frontend-implemented tool surface exposed
+// to the voice LLM. Sent to the AI service over the WS on session start
+// (see use-voice-conversation.ts) so the backend doesn't carry a duplicate
+// copy. Server-implemented tools (analyze_telemetry, explain_label) stay
+// in Python.
+//
+// `title` is the human-readable label the chat UI renders in the "tool box"
+// while a call is in flight.
+const _SCOPE_DESC =
+    "Time/event window. One of: " +
+    "{type:'last_seconds', seconds:N}, " +
+    "{type:'event', eventType:'CORNER'|'CRASHED'|'OVERTAKE', which:'last'|'current'}, " +
+    "{type:'lap', lap:'current'|'last'|N}, " +
+    "{type:'range', start:N, end:N}";
+
+export const frontendToolSchemas: FrontendToolSchema[] = [
+    {
+        name: 'get_session_info',
+        title: 'Checking session info',
+        description: 'Current track / car / user. Call once if you need to reference them.',
+        properties: {},
+        required: [],
+    },
+    {
+        name: 'start_per_turn_coaching',
+        title: 'Starting per-turn coaching',
+        description:
+            "Activate background per-corner coaching. Observations arrive as " +
+            "'[OBSERVATION]' user turns. Use when driver asks to be coached every corner.",
+        properties: {},
+        required: [],
+    },
+    {
+        name: 'stop_per_turn_coaching',
+        title: 'Stopping per-turn coaching',
+        description: 'Stop per-corner coaching. Use when driver asks to be left alone.',
+        properties: {},
+        required: [],
+    },
+    {
+        name: 'query_telemetry_metric',
+        title: 'Querying telemetry',
+        description:
+            'Aggregate a telemetry metric over a scope (e.g. avg brake temp last lap, ' +
+            'peak speed lap 3). Call get_telemetry_schema if unsure which fields exist.',
+        properties: {
+            fields: {
+                type: 'array',
+                items: { type: 'string' },
+                description: 'Field group names or raw Physics_* names.',
+            },
+            scope: { type: 'object', description: _SCOPE_DESC },
+            reduce: {
+                type: 'string',
+                enum: ['avg', 'min', 'max', 'stats'],
+                description: 'stats = {avg,min,max,stddev}.',
+            },
+        },
+        required: ['fields', 'scope', 'reduce'],
+    },
+    {
+        name: 'get_event_log',
+        title: 'Searching event log',
+        description:
+            'List racing events with their sample-index ranges. Use to find when ' +
+            'something happened before querying telemetry around it.',
+        properties: {
+            eventType: {
+                type: 'string',
+                enum: ['CORNER', 'STRAIGHT', 'CRASHED', 'OVERTAKE'],
+            },
+            scope: {
+                type: 'string',
+                enum: ['last', 'last_n', 'lap_current', 'lap_last', 'all'],
+            },
+            n: {
+                type: 'integer',
+                description: 'For last_n: how many events.',
+            },
+        },
+        required: ['eventType', 'scope'],
+    },
+    {
+        name: 'get_next_corner',
+        title: 'Looking up next corner',
+        description: 'Name and normalized distance of the next corner ahead.',
+        properties: {},
+        required: [],
+    },
+    {
+        name: 'get_telemetry_schema',
+        title: 'Checking available telemetry fields',
+        description: 'List available field group names and raw Physics_* names.',
+        properties: {},
+        required: [],
+    },
+];
 
 const getSessionId = (args: Record<string, any>, context: AiCommandRegistryContext): string | undefined =>
     args.session_id ||

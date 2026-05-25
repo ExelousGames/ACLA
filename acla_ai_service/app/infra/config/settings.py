@@ -57,6 +57,18 @@ class Settings(BaseSettings):
     # used by the previous bash bootstrap.
     llama_startup_timeout_seconds: int = 300
 
+    # Speculative decoding — uses a tiny draft model to predict the next
+    # tokens, then the main model verifies them in parallel. Same output
+    # distribution; reported 1.5-2.5x throughput gain when accept-rate is
+    # good. Draft must share a tokenizer with the main model — Qwen2.5-0.5B
+    # is the right pairing for Qwen2.5-32B.
+    llama_speculative_enabled: bool = True
+    llama_draft_model_repo: str = "Qwen/Qwen2.5-0.5B-Instruct-GGUF"
+    llama_draft_model_file: str = "qwen2.5-0.5b-instruct-q5_k_m.gguf"
+    llama_draft_n_gpu_layers: int = 99
+    llama_draft_max: int = 16
+    llama_draft_min: int = 0
+
     # Kokoro TTS Configuration (Phase 2)
     # Neural TTS that replaces window.speechSynthesis in the frontend.
     # Apache-2.0 ONNX model — downloaded on first run, persisted in a volume.
@@ -73,6 +85,24 @@ class Settings(BaseSettings):
     )
     kokoro_default_voice: str = "af_bella"
     kokoro_sample_rate: int = 24000
+
+    # Racing-engineer knowledge base (RAG over knowledge/ + keyed tracks/).
+    # Default = BAAI/bge-large-en-v1.5 — production-grade English retrieval,
+    # 335M params / 1024-dim / ~1.3GB. Strong MTEB recall on prose, runs
+    # comfortably on GPU. Swap down to bge-base-en-v1.5 (~400MB, 768-dim)
+    # if RAM is tight, or up to a 7B-class embedder for marginal gains.
+    # Kept separate from the annotation pipeline's MiniLM so the two skills
+    # can evolve their models independently.
+    racing_kb_embedding_model: str = "BAAI/bge-large-en-v1.5"
+    # bge-en-v1.5 was trained with this query-side instruction; documents go
+    # in unprefixed. Empty string disables the prefix (use for non-bge models).
+    racing_kb_query_prefix: str = "Represent this sentence for searching relevant passages: "
+    # Default top_k for search_racing_knowledge when the LLM doesn't specify.
+    racing_kb_default_top_k: int = 5
+    # Soft cap on chunk character length when splitting a long section.
+    # 2000 chars ≈ 500 tokens for English prose — well under bge-base's
+    # 512-token max.
+    racing_kb_max_chunk_chars: int = 2000
 
     # Hugging Face Configuration
     hf_token: Optional[str] = None

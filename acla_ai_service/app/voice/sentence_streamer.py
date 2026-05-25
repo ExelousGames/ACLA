@@ -33,6 +33,14 @@ from typing import Iterator, List
 # We use lookahead to keep the punctuation attached to the sentence.
 _SENTENCE_END_RE = re.compile(r"(?<=[.!?])\s+")
 
+# Buffer ends with a sentence terminator preceded by a letter — i.e. the
+# buffer's final sentence is complete even though no trailing whitespace
+# arrived. The letter check avoids splitting on decimals ("1.2") or
+# ellipses ("Wait..."). Acronyms like "F.I.A." can split prematurely, but
+# they're vanishingly rare in engineer-voice answers; the trade favors
+# faster time-to-first-audio for the common single-sentence case.
+_TAIL_TERMINATOR_RE = re.compile(r"[A-Za-z][.!?]\s*$")
+
 
 class SentenceStreamer:
     """Stateful buffer that yields complete sentences from token deltas."""
@@ -63,13 +71,21 @@ class SentenceStreamer:
             return
 
         parts = _SENTENCE_END_RE.split(self._buffer)
-        # parts[-1] is everything after the LAST sentence terminator — may be
-        # incomplete, so we keep it in the buffer.
-        if len(parts) <= 1:
+        # parts[-1] is everything after the LAST sentence terminator — usually
+        # incomplete, BUT if it ends in [letter][.!?] it's actually a complete
+        # sentence that just lacks trailing whitespace (single-sentence LLM
+        # responses always hit this — see _TAIL_TERMINATOR_RE comment).
+        tail_is_complete = bool(parts) and bool(_TAIL_TERMINATOR_RE.search(parts[-1]))
+
+        if len(parts) <= 1 and not tail_is_complete:
             return
 
-        complete_candidates = parts[:-1]
-        tail = parts[-1]
+        if tail_is_complete:
+            complete_candidates = parts
+            tail = ""
+        else:
+            complete_candidates = parts[:-1]
+            tail = parts[-1]
 
         # Re-join short sentences with the next one until min_words is met.
         emitted: List[str] = []

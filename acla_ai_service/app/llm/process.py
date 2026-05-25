@@ -38,6 +38,11 @@ class LlamaServerConfig:
     flash_attention: bool = False
     jinja: bool = False
     startup_timeout_seconds: int = 300
+    # Speculative decoding — draft_model_path None means disabled.
+    draft_model_path: Optional[Path] = None
+    draft_n_gpu_layers: int = 99
+    draft_max: int = 16
+    draft_min: int = 0
     extra_args: List[str] = field(default_factory=list)
 
 
@@ -89,6 +94,16 @@ class LlamaServerProcess:
             cmd += ["-fa", "on"]
         if self._config.jinja:
             cmd += ["--jinja"]
+        if self._config.draft_model_path is not None:
+            # Speculative decoding flag names verified against llama.cpp
+            # common/arg.cpp: -md / --model-draft, -ngld /
+            # --n-gpu-layers-draft, --draft-max, --draft-min.
+            cmd += [
+                "-md", str(self._config.draft_model_path),
+                "-ngld", str(self._config.draft_n_gpu_layers),
+                "--draft-max", str(self._config.draft_max),
+                "--draft-min", str(self._config.draft_min),
+            ]
         cmd += list(self._config.extra_args)
 
         LOGGER.info("Starting llama-server: %s", " ".join(cmd))

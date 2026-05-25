@@ -72,12 +72,14 @@ class AIService:
     def get_available_functions(self) -> List[Dict[str, Any]]:
         """Tool schemas advertised to the LLM (OpenAI function-calling format).
 
-        Mirrored from :func:`app.voice.pipecat_pipeline._build_tool_schemas`
-        — voice and any future HTTP-style path must advertise the same
-        capabilities so the LLM behaves consistently across surfaces. Tools
-        whose execution lives on the frontend (relayed over the voice WS)
-        are listed here too; they're routed at dispatch time by the voice
-        tool handler, not by ``_execute_function``.
+        Voice path: the LLM's tool surface is built per-session from
+        :func:`app.voice.pipecat_pipeline._build_server_tool_schemas` (server
+        tools) + the frontend-supplied schemas received over the WS handshake.
+        This method is the parallel surface for any future HTTP-style path —
+        it must enumerate the same capabilities so the LLM behaves
+        consistently across surfaces. Tools whose execution lives on the
+        frontend are listed here too; they're routed at dispatch time, not
+        by ``_execute_function``.
         """
         _SCOPE_DESC = (
             "One of: {type:'last_seconds', seconds:N}, "
@@ -144,6 +146,55 @@ class AIService:
                         "label_id": {"type": "string"},
                     },
                     "required": ["label_id"],
+                },
+            },
+            # ── Track knowledge (keyed) ───────────────────────────────────
+            {
+                "name": "get_track_knowledge",
+                "description": (
+                    "Return per-track facts (overview, corner-by-corner "
+                    "notes) from the curated track corpus. Omit `corner` "
+                    "to get the overview plus the list of corner names; "
+                    "pass a corner name to get just that section."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "track": {
+                            "type": "string",
+                            "description": "Track id (e.g. 'spa', 'silverstone').",
+                        },
+                        "corner": {
+                            "type": "string",
+                            "description": "Optional corner name (e.g. 'Eau Rouge').",
+                        },
+                    },
+                    "required": ["track"],
+                },
+            },
+            # ── Knowledge-base RAG ────────────────────────────────────────
+            {
+                "name": "search_racing_knowledge",
+                "description": (
+                    "Semantic search over driver transcripts, race reports, "
+                    "and theory notes. Use for cross-cutting questions where "
+                    "the right document isn't obvious — e.g. 'what do drivers "
+                    "say about wet setup' or 'where do most cars lose time "
+                    "under braking'. Returns top-k matching snippets."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "Free-text question or topic.",
+                        },
+                        "top_k": {
+                            "type": "integer",
+                            "description": "Number of snippets to return (default 5).",
+                        },
+                    },
+                    "required": ["query"],
                 },
             },
             # ── Frontend-relayed (dispatched at the voice tool handler) ───
@@ -806,6 +857,17 @@ class AIService:
                 return await self._explain_label_impl(
                     label_id=str(arguments.get("label_id") or "").strip(),
                 )
+            if function_name == "get_track_knowledge":
+                return await self._get_track_knowledge_impl(
+                    track=str(arguments.get("track") or "").strip(),
+                    corner=(str(arguments.get("corner")).strip()
+                            if arguments.get("corner") else None),
+                )
+            if function_name == "search_racing_knowledge":
+                return await self._search_racing_knowledge_impl(
+                    query=str(arguments.get("query") or "").strip(),
+                    top_k=arguments.get("top_k"),
+                )
 
             # ── Legacy ──────────────────────────────────────────────────────
             if function_name == "track_detail_for_guide":
@@ -911,6 +973,56 @@ class AIService:
             "remedies": entry.get("remedies", []),
             "_label_id": normalised,
         }
+
+    async def _get_track_knowledge_impl(
+        self, track: str, corner: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Keyed lookup over the racing-engineer ``tracks/`` corpus.
+
+        Returns ``{error, available_tracks}`` if the track id isn't known,
+        so the LLM can recover by either retrying with the right id or
+        falling back to ``search_racing_knowledge``.
+        """
+        if not track:
+            return {"error": "track is required"}
+        try:
+            from app.skills.racing_engineer import track as _track_lookup
+            entry = _track_lookup(track, corner=corner)
+        except Exception as exc:
+            return {"error": f"track lookup failed: {exc}"}
+        if entry is None:
+            try:
+                from app.skills.racing_engineer import _load_category
+                available = sorted(_load_category("tracks").keys())
+            except Exception:
+                available = []
+            return {"error": f"track '{track}' not in corpus", "available_tracks": available}
+        return entry
+
+    async def _search_racing_knowledge_impl(
+        self, query: str, top_k: Any = None,
+    ) -> Dict[str, Any]:
+        """RAG search over the racing-engineer ``knowledge/`` corpus.
+
+        Runs in a worker thread so the SentenceTransformer encode call
+        (CPU-bound, can take ~50ms) doesn't block the event loop.
+        """
+        if not query:
+            return {"error": "query is required"}
+        # Coerce top_k — LLM may send "5" as string or skip it entirely.
+        k: Optional[int] = None
+        if top_k is not None:
+            try:
+                k = int(top_k)
+            except (TypeError, ValueError):
+                k = None
+        try:
+            from app.skills.racing_engineer import search as _kb_search
+            hits = await asyncio.to_thread(_kb_search, query, k)
+        except Exception as exc:
+            LOGGER.exception("search_racing_knowledge failed")
+            return {"error": f"knowledge search failed: {exc}"}
+        return {"query": query, "hits": hits}
 
     async def _composite_analyze_scope(self, scope: Dict[str, Any], conn: Any) -> Dict[str, Any]:
         """Canonical analyze flow for any QueryScope shape.

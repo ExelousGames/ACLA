@@ -70,4 +70,61 @@ def ensure_chat_gguf(
     return target_path
 
 
-__all__ = ["ensure_chat_gguf"]
+def ensure_draft_gguf(
+    *,
+    model_dir: str,
+    model_repo: str,
+    model_file: str,
+    hf_token: str | None = None,
+) -> Path:
+    """Resolve the speculative-decoding draft GGUF, downloading if missing.
+
+    Same shard-aware download path as :func:`ensure_chat_gguf`. Kept as a
+    separate function so the log lines say "Draft GGUF" instead of "Chat
+    GGUF" — easier to diagnose first-boot waits.
+    """
+    target_dir = Path(model_dir)
+    target_path = target_dir / model_file
+
+    if target_path.is_file():
+        return target_path
+
+    target_dir.mkdir(parents=True, exist_ok=True)
+    token = hf_token or os.environ.get("HF_TOKEN")
+
+    shard_match = _SHARD_RE.match(model_file)
+    if shard_match:
+        from huggingface_hub import snapshot_download
+        pattern = f"{shard_match.group(1)}-*.gguf"
+        LOGGER.info(
+            "Draft GGUF missing — fetching sharded %s from %s into %s",
+            pattern, model_repo, target_dir,
+        )
+        snapshot_download(
+            repo_id=model_repo,
+            allow_patterns=[pattern],
+            local_dir=str(target_dir),
+            token=token,
+        )
+    else:
+        from huggingface_hub import hf_hub_download
+        LOGGER.info(
+            "Draft GGUF missing — fetching %s from %s into %s",
+            model_file, model_repo, target_dir,
+        )
+        hf_hub_download(
+            repo_id=model_repo,
+            filename=model_file,
+            local_dir=str(target_dir),
+            token=token,
+        )
+
+    if not target_path.is_file():
+        raise FileNotFoundError(
+            f"HF download completed but {target_path} still missing. "
+            f"Check that model_file matches what {model_repo} actually publishes."
+        )
+    return target_path
+
+
+__all__ = ["ensure_chat_gguf", "ensure_draft_gguf"]
