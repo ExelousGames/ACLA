@@ -1,5 +1,11 @@
 """Pipecat TTSService wrapping our existing KokoroService (Phase 3).
 
+[LAT-DIAG] log prefix: end-to-end latency markers for a single LLM turn.
+LLM_TTFT_MS = time from LLMFullResponseStartFrame to the first TextFrame
+(local llama-server prompt-eval + first-token decode). FIRST_AUDIO_MS =
+LLMFullResponseStartFrame to the first OutputAudioRawFrame pushed
+downstream — what the driver actually hears.
+
 Pipecat's pipeline expects each component to be a `FrameProcessor` that
 consumes some frames and emits others. For TTS, the standard interface is
 `TTSService`, which inherits from `FrameProcessor` and provides:
@@ -64,13 +70,26 @@ def build_kokoro_processor():
 
         def __init__(self, sample_rate: int = 24000) -> None:
             super().__init__()
-            self._streamer = SentenceStreamer(min_words=6)
+            # min_words=3 chosen to shorten time-to-first-audio: the LLM
+            # often opens with a short clause ("Copy that.") that we'd
+            # rather speak immediately than merge into the next sentence.
+            self._streamer = SentenceStreamer(min_words=3)
             self._sample_rate = sample_rate
+            self._turn_start_t: float | None = None
+            self._first_token_logged: bool = False
+            self._first_audio_logged: bool = False
 
         async def process_frame(self, frame: "Frame", direction: "FrameDirection") -> None:
             await super().process_frame(frame, direction)
 
             if isinstance(frame, TextFrame):
+                import time
+                if not self._first_token_logged and self._turn_start_t is not None:
+                    LOGGER.info(
+                        "[LAT-DIAG] LLM_TTFT_MS=%.0f",
+                        (time.monotonic() - self._turn_start_t) * 1000,
+                    )
+                    self._first_token_logged = True
                 LOGGER.info("[STREAM-DIAG] TextFrame: %r", frame.text)
                 # LLM token / partial answer chunk.
                 self._streamer.feed(frame.text)
@@ -81,12 +100,24 @@ def build_kokoro_processor():
                 return
 
             if isinstance(frame, LLMFullResponseStartFrame):
+                import time
+                # Anchor for per-turn latency measurements.
+                self._turn_start_t = time.monotonic()
+                self._first_token_logged = False
+                self._first_audio_logged = False
+                LOGGER.info("[LAT-DIAG] turn_start")
                 # Mark the start of a new spoken response.
                 await self.push_frame(TTSStartedFrame(), direction)
                 await self.push_frame(frame, direction)
                 return
 
             if isinstance(frame, LLMFullResponseEndFrame):
+                import time
+                if self._turn_start_t is not None:
+                    LOGGER.info(
+                        "[LAT-DIAG] LLM_TOTAL_MS=%.0f",
+                        (time.monotonic() - self._turn_start_t) * 1000,
+                    )
                 LOGGER.info("[STREAM-DIAG] LLMFullResponseEndFrame (LLM done)")
                 # Flush trailing partial sentence at end of LLM stream.
                 async for sentence in self._flush():
@@ -128,6 +159,13 @@ def build_kokoro_processor():
                 LOGGER.warning("Pipecat Kokoro synth failed: %s", exc)
                 return
             LOGGER.info("[STREAM-DIAG] synth DONE in %.0fms, pushing %d pcm bytes", (time.monotonic() - t0) * 1000, len(pcm16))
+
+            if not self._first_audio_logged and self._turn_start_t is not None:
+                LOGGER.info(
+                    "[LAT-DIAG] FIRST_AUDIO_MS=%.0f",
+                    (time.monotonic() - self._turn_start_t) * 1000,
+                )
+                self._first_audio_logged = True
 
             await self.push_frame(
                 OutputAudioRawFrame(

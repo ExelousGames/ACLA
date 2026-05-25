@@ -53,56 +53,26 @@ _VALID_EMOTIONS = frozenset(["sad", "vibing", "scared", "waiting", "hearing"])
 
 _VOICE_COACH_PROMPT_TEMPLATE = """You are a race engineer speaking to your driver over the radio. Stay in character.
 
-Speak like a real engineer: short radio-style sentences, 1–3 max per turn
-unless asked to elaborate. Natural spoken English — no markdown, no bullet
-points, no headings. Use racing vocabulary freely: apex, trail-brake,
-understeer at entry, throttle pickup, traction-limited exit, slip balance,
-kerb, kerb-strike, brake bias, weight transfer.
+Voice: short radio sentences, 1-3 per turn unless asked to elaborate.
+No markdown, no bullets, no headings. Racing terms freely (apex,
+trail-brake, kerb, slip, weight transfer, etc.).
 
-Tools (call only when the question requires data you don't have):
-- analyze_telemetry: canonical "what just happened" / "how did that go"
-  tool. One call bundles classified driving actions + their engineer-voice
-  descriptions for any scope. Pass a scope object:
-    {type:"last_seconds", seconds:N}                                — recent window
-    {type:"event", eventType:"CORNER"|"CRASHED"|"OVERTAKE", which:"last"|"current"}
-    {type:"lap", lap:"current"|"last"|N}
-    {type:"range", start:N, end:N}                                  — sample-index range
-  Use for "what just happened", "why did I go wide", "how was that
-  corner", "how was lap 12", "any mistakes on lap 3".
-- query_telemetry_metric: single metric or stats for any scope. Use for
-  "what's my tyre pressure", "average brake temp last lap", "peak speed
-  on lap 3". fields = field group names (speed, throttle, brake, gear,
-  steering, rpm, tyre_pressure, tyre_temp, brake_temp, tyre_slip,
-  g_force, suspension, fuel, lap_delta, position, race_position) or raw
-  Physics_* names. scope = same shape as analyze_telemetry. reduce ∈
-  avg|min|max|stats. Call get_telemetry_schema if unsure which fields exist.
-- get_event_log: list racing events (corners, crashes, overtakes) with
-  their sample-index ranges. Use to find when something happened before
-  asking analyze_telemetry or query_telemetry_metric about it.
-- get_session_info: returns current track and car. Call ONCE per session
-  if you need to mention them; cache the answer mentally.
-- get_next_corner: name and distance of the corner ahead.
-- explain_label: definition + remedies for a specific labelled action,
-  by id or natural name.
-- start_per_turn_coaching / stop_per_turn_coaching: activate / deactivate
-  the per-corner monitoring agent. While active, the system pushes
-  observations as "[OBSERVATION]" user turns describing each completed
-  segment — respond to each with one short suggestion.
+Tool use:
+- Tool schemas are provided separately — only call one when the question
+  needs data you don't have.
+- General concept questions ("what is trail braking?") — answer in 2-3
+  sentences, no tool.
+- When analyze_telemetry returns labels with definitions and remedies,
+  pick the 1-2 that matter most and weave them into a natural comment.
+  Don't read the whole catalog aloud.
 
-When analyze_telemetry returns labels with definitions and remedies, do
-NOT read every field aloud. Pick the one or two that matter most for
-THIS corner and weave them into a natural 1–3 sentence engineer comment.
-The driver wants advice, not a catalog.
-
-Rules:
-- If a tool returns an error or the link is down, say so plainly ("can't
-  see your telemetry right now"). Never fabricate numbers or label names.
-- Translate any label codes in tool output to natural English before
-  speaking. The driver should never hear "MS44" — say "oversteer at entry".
-- For general racing questions ("what is trail braking?"), answer directly
-  in 2-3 sentences without calling any tool.
-- Don't repeat the same advice across turns. If the driver makes the same
-  mistake twice, escalate ("again — this is the third time on this corner").
+Output rules:
+- If a tool errors or telemetry is down, say so plainly ("can't see your
+  telemetry right now"). Never fabricate numbers or label names.
+- Translate label codes to natural English before speaking. The driver
+  hears "oversteer at entry", never "MS44".
+- Don't repeat the same advice. If the driver makes the same mistake
+  twice, escalate.
 """
 
 
@@ -182,148 +152,104 @@ def _build_tool_schemas():
     )
 
     schemas = [
-        # ── Telemetry surface (two tools, same scope language) ──────────────
         FunctionSchema(
             name="analyze_telemetry",
             description=(
-                "Classify driving actions over a scope and return the engineer "
-                "concept (definition, interpretation, remedies) for each. The "
-                "server fetches the rows, runs the classifier, and bundles "
-                "labels — rows never enter this conversation. Use for "
-                "'what just happened', 'why did I go wide', 'how was lap 12', "
-                "'walk me through my best lap', 'any mistakes on lap 3'."
+                "Classify driving actions over a scope; returns engineer "
+                "labels with definitions and remedies. Use for 'what just "
+                "happened', 'why X', 'how was lap N'."
             ),
             properties={
-                "scope": {
-                    "type": "object",
-                    "description": _SCOPE_DESC,
-                },
+                "scope": {"type": "object", "description": _SCOPE_DESC},
             },
             required=["scope"],
         ),
         FunctionSchema(
             name="query_telemetry_metric",
             description=(
-                "Aggregate a telemetry metric over a scope. Use for "
-                "'what's my tyre pressure', 'average brake temp last lap', "
-                "'peak speed on lap 3'. Call get_telemetry_schema if unsure "
-                "which fields exist. Field groups: speed, throttle, brake, "
-                "gear, steering, rpm, tyre_pressure, tyre_temp, brake_temp, "
-                "tyre_slip, g_force, suspension, fuel, lap_delta, position, "
-                "race_position."
+                "Aggregate a telemetry metric over a scope (e.g. avg brake "
+                "temp last lap, peak speed lap 3). Call get_telemetry_schema "
+                "if unsure which fields exist."
             ),
             properties={
                 "fields": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Field group names or raw Physics_* field names.",
+                    "description": "Field group names or raw Physics_* names.",
                 },
-                "scope": {
-                    "type": "object",
-                    "description": _SCOPE_DESC,
-                },
+                "scope": {"type": "object", "description": _SCOPE_DESC},
                 "reduce": {
                     "type": "string",
                     "enum": ["avg", "min", "max", "stats"],
-                    "description": "avg/min/max=single value, stats={avg,min,max,stddev}.",
+                    "description": "stats = {avg,min,max,stddev}.",
                 },
             },
             required=["fields", "scope", "reduce"],
         ),
-        # ── Concept lookup ──────────────────────────────────────────────────
         FunctionSchema(
             name="explain_label",
-            description=(
-                "Return the racing-engineer concept for a single action label "
-                "(definition, engineer interpretation, common remedies). Use "
-                "when the driver asks 'what does <action> mean?' or after an "
-                "analyze_telemetry call to deepen one specific finding."
-            ),
+            description="Definition, interpretation, and remedies for one action label.",
             properties={
                 "label_id": {
                     "type": "string",
-                    "description": "Label id like 'MS44' or its natural name like 'Oversteering at entry'.",
+                    "description": "Label id ('MS44') or natural name ('Oversteering at entry').",
                 },
             },
             required=["label_id"],
         ),
-        # ── Session info ────────────────────────────────────────────────────
         FunctionSchema(
             name="get_session_info",
-            description=(
-                "Return current track / car / user identity from the live "
-                "session. Call once if you need to reference the track or car "
-                "by name; the answer doesn't change during a session."
-            ),
+            description="Current track / car / user. Call once if you need to reference them.",
             properties={},
             required=[],
         ),
-        # ── Frontend monitoring activators ──────────────────────────────────
         FunctionSchema(
             name="start_per_turn_coaching",
             description=(
-                "Activate the background monitoring agent that watches for "
-                "corner-end events and pushes an observation after each one. "
-                "Returns immediately; subsequent observations arrive as "
-                "'[OBSERVATION]' user turns. Use when the driver asks to be "
-                "coached every corner / through the rest of the session."
+                "Activate background per-corner coaching. Observations arrive "
+                "as '[OBSERVATION]' user turns. Use when driver asks to be "
+                "coached every corner."
             ),
             properties={},
             required=[],
         ),
         FunctionSchema(
             name="stop_per_turn_coaching",
-            description=(
-                "Stop the per-corner monitoring agent. Use when the driver "
-                "says 'stop coaching', 'quiet for a bit', or asks to be left "
-                "alone."
-            ),
+            description="Stop per-corner coaching. Use when driver asks to be left alone.",
             properties={},
             required=[],
         ),
-        # ── Event log & geometry ────────────────────────────────────────────
         FunctionSchema(
             name="get_event_log",
             description=(
-                "Search the session event log for racing events. Use to find "
-                "when specific things happened before querying telemetry around them. "
-                "Returns a list of events with their sample index ranges."
+                "List racing events with their sample-index ranges. Use to "
+                "find when something happened before querying telemetry around it."
             ),
             properties={
                 "eventType": {
                     "type": "string",
                     "enum": ["CORNER", "STRAIGHT", "CRASHED", "OVERTAKE"],
-                    "description": "Type of event to search for.",
                 },
                 "scope": {
                     "type": "string",
                     "enum": ["last", "last_n", "lap_current", "lap_last", "all"],
-                    "description": "Which events to return.",
                 },
                 "n": {
                     "type": "integer",
-                    "description": "For last_n scope: how many events to return.",
+                    "description": "For last_n: how many events.",
                 },
             },
             required=["eventType", "scope"],
         ),
         FunctionSchema(
             name="get_next_corner",
-            description=(
-                "Return the next corner ahead of the car on the current track, "
-                "with its name and normalized distance from current position. "
-                "Use when the driver asks about the upcoming corner."
-            ),
+            description="Name and normalized distance of the next corner ahead.",
             properties={},
             required=[],
         ),
         FunctionSchema(
             name="get_telemetry_schema",
-            description=(
-                "List all available telemetry field group names and raw Physics_* "
-                "field names that can be used in query_telemetry_metric. Call "
-                "this when unsure which field names to request."
-            ),
+            description="List available field group names and raw Physics_* names.",
             properties={},
             required=[],
         ),
@@ -790,6 +716,8 @@ async def build_voice_pipeline_task(
         ``user_transcript`` text frame back so the UI shows the typed
         message immediately, even before the LLM responds.
         """
+        import time as _time
+        LOGGER.info("[LAT-DIAG] user_text_in t=%.3f chars=%d", _time.monotonic(), len(text))
         context.add_message({"role": "user", "content": text})
         try:
             loop.create_task(_send_text(_json.dumps({
