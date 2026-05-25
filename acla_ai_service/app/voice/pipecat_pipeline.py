@@ -58,10 +58,12 @@ No markdown, no bullets, no headings. Racing terms freely (apex,
 trail-brake, kerb, slip, weight transfer, etc.).
 
 Tool use:
-- Tool schemas are provided separately — only call one when the question
-  needs data you don't have.
+- Only call a tool when the question needs data you don't have.
 - General concept questions ("what is trail braking?") — answer in 2-3
   sentences, no tool.
+- Don't offer to do things — either call the tool now, or say you can't
+  and stop. No "would you like…", no "shall I…", no pivoting to a
+  different track or topic the driver didn't ask about.
 - When analyze_telemetry returns labels with definitions and remedies,
   pick the 1-2 that matter most and weave them into a natural comment.
   Don't read the whole catalog aloud.
@@ -272,6 +274,8 @@ def _make_tool_handler(
         arguments = params.arguments or {}
         title = _tool_title(function_name)
 
+        LOGGER.info("[TOOL-CALL] name=%s args=%r", function_name, arguments)
+
         await _emit_tool_event({
             "name": function_name,
             "title": title,
@@ -337,6 +341,14 @@ def _make_tool_handler(
             "ok": ok,
             "error": error_msg,
         })
+        # Truncate large payloads for log readability.
+        _payload_log = payload
+        if isinstance(_payload_log, str) and len(_payload_log) > 400:
+            _payload_log = _payload_log[:400] + f"... [+{len(payload)-400} chars]"
+        LOGGER.info(
+            "[TOOL-RESULT] name=%s ok=%s error=%r payload=%r",
+            function_name, ok, error_msg, _payload_log,
+        )
         await params.result_callback(payload)
 
     return handle_tool_call
@@ -472,6 +484,51 @@ def _build_emotion_tag_stripper():
     return EmotionTagStripper
 
 
+def _build_context_logger():
+    """Diagnostic FrameProcessor: dumps LLMContext messages on each LLM turn.
+
+    Logs at INFO level under `[CTX-DUMP]` whenever the LLM starts producing
+    a response — at that moment ``context.messages`` is exactly what was
+    sent to llama-server, so we can see prior assistant turns, tool calls,
+    and tool results in the order the model saw them.
+    """
+    from pipecat.frames.frames import Frame, LLMFullResponseStartFrame
+    from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
+
+    class ContextLogger(FrameProcessor):
+        def __init__(self, context: Any) -> None:
+            super().__init__()
+            self._context = context
+
+        async def process_frame(self, frame: "Frame", direction: "FrameDirection") -> None:
+            await super().process_frame(frame, direction)
+
+            if isinstance(frame, LLMFullResponseStartFrame):
+                try:
+                    msgs = list(getattr(self._context, "messages", []) or [])
+                    LOGGER.info("[CTX-DUMP] LLM responding — %d messages in context", len(msgs))
+                    for i, m in enumerate(msgs):
+                        if not isinstance(m, dict):
+                            LOGGER.info("[CTX-DUMP]   [%d] %r", i, m)
+                            continue
+                        role = m.get("role")
+                        content = m.get("content")
+                        if isinstance(content, str) and len(content) > 300:
+                            content = content[:300] + f"... [+{len(content) - 300} chars]"
+                        tool_calls = m.get("tool_calls")
+                        tool_call_id = m.get("tool_call_id")
+                        LOGGER.info(
+                            "[CTX-DUMP]   [%d] role=%s content=%r tool_calls=%s tool_call_id=%s",
+                            i, role, content, bool(tool_calls), tool_call_id,
+                        )
+                except Exception:
+                    LOGGER.exception("[CTX-DUMP] dump failed")
+
+            await self.push_frame(frame, direction)
+
+    return ContextLogger
+
+
 async def build_voice_pipeline_task(
     websocket: Any,
     session_config: VoiceSessionConfig,
@@ -497,7 +554,6 @@ async def build_voice_pipeline_task(
     import json as _json
     from pipecat.adapters.schemas.tools_schema import ToolsSchema
     from pipecat.audio.vad.silero import SileroVADAnalyzer
-    from pipecat.audio.vad.vad_analyzer import VADParams
     from pipecat.pipeline.pipeline import Pipeline
     from pipecat.pipeline.task import PipelineParams, PipelineTask
     from pipecat.processors.aggregators.llm_context import LLMContext
@@ -518,6 +574,7 @@ async def build_voice_pipeline_task(
 
     TranscriptObserver = _build_transcript_observer()
     EmotionTagStripper = _build_emotion_tag_stripper()
+    ContextLogger = _build_context_logger()
 
     LOGGER.info(
         "Building voice pipeline (session=%s user=%s)",
@@ -559,13 +616,7 @@ async def build_voice_pipeline_task(
     # --- VAD (Silero, in-pipeline) ---
     # Emits VADUserStartedSpeakingFrame / VADUserStoppedSpeakingFrame which
     # the downstream STT uses to gate Whisper inference.
-    #
-    # stop_secs raised from the pipecat default (0.8s) — drivers pause
-    # mid-sentence to think, and 0.8s ends the turn before they finish,
-    # splitting one utterance into multiple STT runs.
-    vad_processor = VADProcessor(vad_analyzer=SileroVADAnalyzer(
-        params=VADParams(stop_secs=1.5),
-    ))
+    vad_processor = VADProcessor(vad_analyzer=SileroVADAnalyzer())
 
     # --- STT (faster-whisper) ---
     # Phase 3 starting point: small English model on whichever device is
@@ -647,6 +698,7 @@ async def build_voice_pipeline_task(
     user_transcript_observer = TranscriptObserver(send_text=_send_text, role="user")
     assistant_transcript_observer = TranscriptObserver(send_text=_send_text, role="assistant")
     emotion_tag_stripper = EmotionTagStripper()
+    context_logger = ContextLogger(context)
 
     # --- Pipeline composition ---
     # VAD sits between the transport input and STT so Whisper only runs
@@ -660,6 +712,12 @@ async def build_voice_pipeline_task(
     # emotion_tag_stripper sits AFTER the observer and BEFORE tts so Kokoro
     # never receives the [emotion] tag — same principle as tool_event frames
     # being UI-only signals that never reach speech synthesis.
+    # context_aggregator.assistant() is the LAST processor (canonical
+    # Pipecat placement). It consumes TextFrame/LLMFullResponse{Start,End}Frame
+    # to commit spoken assistant turns to LLMContext. Requires every upstream
+    # processor (including KokoroTTSProcessor) to FORWARD TextFrames after
+    # consuming them for their own purposes — otherwise the aggregator sees
+    # empty turns and the model can't see what it just said.
     pipeline = Pipeline([
         transport.input(),
         vad_processor,
@@ -667,6 +725,7 @@ async def build_voice_pipeline_task(
         user_transcript_observer,
         context_aggregator.user(),
         llm,
+        context_logger,
         assistant_transcript_observer,
         emotion_tag_stripper,
         tts,

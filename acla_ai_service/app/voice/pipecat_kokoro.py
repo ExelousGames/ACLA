@@ -95,8 +95,11 @@ def build_kokoro_processor():
                 self._streamer.feed(frame.text)
                 async for sentence in self._drain():
                     await self._synth_and_push(sentence)
-                # Don't forward the TextFrame downstream — the transport
-                # doesn't need to see raw text; only the audio output matters.
+                # Forward the TextFrame downstream so context_aggregator.assistant()
+                # (last in the pipeline) can collect spoken text into LLMContext.
+                # Without this, multi-turn coherence breaks — the model can't see
+                # its own prior replies.
+                await self.push_frame(frame, direction)
                 return
 
             if isinstance(frame, LLMFullResponseStartFrame):
