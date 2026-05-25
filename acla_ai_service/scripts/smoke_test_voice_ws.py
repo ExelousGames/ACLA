@@ -216,13 +216,9 @@ class ToolCallRoundTrip(_Scenario):
             rows = [{"speed": 100 + i, "throttle": 0.5, "brake": 0.0} for i in range(n)]
             return {"rows": rows}
 
-        async def get_session_info(_args: Dict[str, Any]) -> Dict[str, Any]:
-            return {"track": "smoke", "car": "smoke-car", "user_id": "smoke"}
-
         async with websockets.connect(ws_url, max_size=8 * 1024 * 1024) as ws:
             frontend = FakeFrontend(ws, handlers={
                 "get_recent_telemetry": get_recent_telemetry,
-                "get_session_info": get_session_info,
             })
             frontend.start()
             try:

@@ -664,9 +664,8 @@ async def build_voice_pipeline_task(
         llm.register_function(schema.name, tool_handler)
 
     # System message + context object (Pipecat's history aggregator). The
-    # engineer prompt has no {track}/{car} placeholders — the LLM fetches
-    # those on demand via get_session_info if it actually needs to mention
-    # them.
+    # engineer prompt has no {track}/{car} placeholders — the LLM doesn't
+    # carry that state; it responds to what the driver says.
     #
     # Append behavior specs loaded from the skills corpus so the instructions
     # live in editable .md files, not in Python code.

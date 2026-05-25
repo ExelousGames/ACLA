@@ -2,7 +2,7 @@ import { SessionEvent, TelemetrySample, TelemetryQuery, QueryResult, QueryScope,
 import { TelemetryBuffer } from './TelemetryBuffer';
 import { EventLog, EventSearchParams } from './EventLog';
 import { SensorManager } from './SensorManager';
-import { executeQuery, getSchemaInfo, resolveScope } from './telemetry-query';
+import { executeQuery, resolveScope } from './telemetry-query';
 import { getCornersForTrack, getNextCorner } from './track-corners';
 
 export class SessionIntelligence {
@@ -65,10 +65,6 @@ export class SessionIntelligence {
             trackPosition: corner.from,
             distanceAhead,
         };
-    }
-
-    getSchema(): { groups: string[]; fields: string[] } {
-        return getSchemaInfo();
     }
 
     getRowsForScope(scope: QueryScope): TelemetrySample[] {

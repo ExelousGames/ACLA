@@ -158,9 +158,9 @@ async def voice_stream(
         VAD → Whisper STT → llama-server LLM → Kokoro TTS
 
     Query params kept minimal — only what the relay needs at connect
-    time. ``track_name`` / ``car_name`` are no longer query params; the
-    LLM fetches them on demand via the ``get_session_info`` frontend
-    tool. See the plan's "everything is pulled on demand" principle.
+    time. ``track_name`` / ``car_name`` are not passed in; the LLM
+    responds to what the driver says rather than carrying session
+    state. See the plan's "everything is pulled on demand" principle.
     """
     await websocket.accept()
 

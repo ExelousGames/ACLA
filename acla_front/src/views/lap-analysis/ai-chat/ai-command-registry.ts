@@ -2,6 +2,7 @@ import apiService from 'services/api.service';
 import { visualizationController } from 'views/lap-analysis/visualization/VisualizationRegistry';
 import { ToolHandlerContext, FrontendToolSchema } from 'views/lap-analysis/ai-chat/use-voice-conversation';
 import { SessionIntelligence } from 'views/lap-analysis/session-intelligence/SessionIntelligence';
+import { FIELD_GROUPS } from 'views/lap-analysis/session-intelligence/telemetry-query';
 
 export interface AiCommandRegistryContext {
     sessionId?: string;
@@ -29,14 +30,9 @@ const _SCOPE_DESC =
     "{type:'lap', lap:'current'|'last'|N}, " +
     "{type:'range', start:N, end:N}";
 
+const _FIELD_GROUP_NAMES = Object.keys(FIELD_GROUPS).join(', ');
+
 export const frontendToolSchemas: FrontendToolSchema[] = [
-    {
-        name: 'get_session_info',
-        title: 'Checking session info',
-        description: 'Current track / car / user. Call once if you need to reference them.',
-        properties: {},
-        required: [],
-    },
     {
         name: 'start_per_turn_coaching',
         title: 'Starting per-turn coaching',
@@ -58,12 +54,14 @@ export const frontendToolSchemas: FrontendToolSchema[] = [
         title: 'Querying telemetry',
         description:
             'Aggregate a telemetry metric over a scope (e.g. avg brake temp last lap, ' +
-            'peak speed lap 3). Call get_telemetry_schema if unsure which fields exist.',
+            'peak speed lap 3).',
         properties: {
             fields: {
                 type: 'array',
                 items: { type: 'string' },
-                description: 'Field group names or raw Physics_* names.',
+                description:
+                    'Field group names (preferred) or raw Physics_* names. ' +
+                    `Available groups: ${_FIELD_GROUP_NAMES}.`,
             },
             scope: { type: 'object', description: _SCOPE_DESC },
             reduce: {
@@ -103,13 +101,6 @@ export const frontendToolSchemas: FrontendToolSchema[] = [
         properties: {},
         required: [],
     },
-    {
-        name: 'get_telemetry_schema',
-        title: 'Checking available telemetry fields',
-        description: 'List available field group names and raw Physics_* names.',
-        properties: {},
-        required: [],
-    },
 ];
 
 const getSessionId = (args: Record<string, any>, context: AiCommandRegistryContext): string | undefined =>
@@ -120,14 +111,6 @@ const getSessionId = (args: Record<string, any>, context: AiCommandRegistryConte
 export const createAiCommandRegistry = (context: AiCommandRegistryContext): Record<string, AiCommandHandler> => ({
 
     // ── Session ───────────────────────────────────────────────────────────────
-
-    async get_session_info() {
-        return {
-            track:   context.analysisContext?.recordedSessioStaticsData?.track   || '',
-            car:     context.analysisContext?.recordedSessioStaticsData?.car     || '',
-            user_id: context.sessionId || '',
-        };
-    },
 
     async get_session_analysis(args) {
         return await apiService.post('/racing-session/detailed-info', { id: getSessionId(args, context) });
@@ -174,12 +157,6 @@ export const createAiCommandRegistry = (context: AiCommandRegistryContext): Reco
         const si = context.sessionIntelligence;
         if (!si) return { error: 'no_live_session' };
         return { rows: si.getRowsForScope(args.scope) };
-    },
-
-    async get_telemetry_schema() {
-        const si = context.sessionIntelligence;
-        if (!si) return { error: 'no_live_session' };
-        return si.getSchema();
     },
 
     // ── Event log ─────────────────────────────────────────────────────────────

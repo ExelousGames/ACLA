@@ -24,12 +24,6 @@ export const FIELD_GROUPS: Record<string, string[]> = {
     race_position: ['Graphics_position'],
 };
 
-export function getSchemaInfo(): { groups: string[]; fields: string[] } {
-    const groups = Object.keys(FIELD_GROUPS);
-    const fields = Array.from(new Set(Object.values(FIELD_GROUPS).flat())).sort();
-    return { groups, fields };
-}
-
 // Expand group aliases to raw field names. Unknown names passed through as-is.
 function expandFields(fields: string[]): string[] {
     const expanded: string[] = [];
