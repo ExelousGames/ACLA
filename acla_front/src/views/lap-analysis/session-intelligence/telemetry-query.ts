@@ -6,22 +6,22 @@ import { EventLog } from './EventLog';
 // LLM uses group names; executor expands to raw Physics_* field names.
 
 export const FIELD_GROUPS: Record<string, string[]> = {
-    speed:          ['Physics_speed_kmh'],
-    throttle:       ['Physics_gas'],
-    brake:          ['Physics_brake'],
-    gear:           ['Physics_gear'],
-    steering:       ['Physics_steer_angle'],
-    rpm:            ['Physics_rpm'],
-    tyre_pressure:  ['Physics_wheel_pressure_lf', 'Physics_wheel_pressure_rf', 'Physics_wheel_pressure_rl', 'Physics_wheel_pressure_rr'],
-    tyre_temp:      ['Physics_tyre_core_temperature_lf', 'Physics_tyre_core_temperature_rf', 'Physics_tyre_core_temperature_rl', 'Physics_tyre_core_temperature_rr'],
-    brake_temp:     ['Physics_brake_temp_lf', 'Physics_brake_temp_rf', 'Physics_brake_temp_rl', 'Physics_brake_temp_rr'],
-    tyre_slip:      ['Physics_tyre_slip_lf', 'Physics_tyre_slip_rf', 'Physics_tyre_slip_rl', 'Physics_tyre_slip_rr'],
-    g_force:        ['Physics_g_force_x', 'Physics_g_force_y', 'Physics_g_force_z'],
-    suspension:     ['Physics_suspension_travel_lf', 'Physics_suspension_travel_rf', 'Physics_suspension_travel_rl', 'Physics_suspension_travel_rr'],
-    fuel:           ['Physics_fuel'],
-    lap_delta:      ['Graphics_i_current_time', 'Graphics_i_last_time', 'Graphics_i_best_time'],
-    position:       ['Graphics_normalized_car_position'],
-    race_position:  ['Graphics_position'],
+    speed: ['Physics_speed_kmh'],
+    throttle: ['Physics_gas'],
+    brake: ['Physics_brake'],
+    gear: ['Physics_gear'],
+    steering: ['Physics_steer_angle'],
+    rpm: ['Physics_rpm'],
+    tyre_pressure: ['Physics_wheel_pressure_front_left', 'Physics_wheel_pressure_front_right', 'Physics_wheel_pressure_rear_left', 'Physics_wheel_pressure_rear_right'],
+    tyre_temp: ['Physics_tyre_core_temp_front_left', 'Physics_tyre_core_temp_front_right', 'Physics_tyre_core_temp_rear_left', 'Physics_tyre_core_temp_rear_right'],
+    brake_temp: ['Physics_brake_temp_front_left', 'Physics_brake_temp_front_right', 'Physics_brake_temp_rear_left', 'Physics_brake_temp_rear_right'],
+    tyre_slip: ['Physics_wheel_slip_front_left', 'Physics_wheel_slip_front_right', 'Physics_wheel_slip_rear_left', 'Physics_wheel_slip_rear_right'],
+    g_force: ['Physics_g_force_x', 'Physics_g_force_y', 'Physics_g_force_z'],
+    suspension: ['Physics_suspension_travel_front_left', 'Physics_suspension_travel_front_right', 'Physics_suspension_travel_rear_left', 'Physics_suspension_travel_rear_right'],
+    fuel: ['Physics_fuel'],
+    lap_delta: ['Graphics_current_time_str', 'Graphics_last_time_str', 'Graphics_best_time_str'],
+    position: ['Graphics_normalized_car_position'],
+    race_position: ['Graphics_position'],
 };
 
 export function getSchemaInfo(): { groups: string[]; fields: string[] } {
@@ -119,12 +119,12 @@ function reduceField(
 ): number | number[] | FieldStats {
     const values = extractValues(samples, field);
     switch (op) {
-        case 'raw':   return values;
-        case 'avg':   return values.length ? values.reduce((a, b) => a + b, 0) / values.length : 0;
-        case 'min':   return values.length ? Math.min(...values) : 0;
-        case 'max':   return values.length ? Math.max(...values) : 0;
+        case 'raw': return values;
+        case 'avg': return values.length ? values.reduce((a, b) => a + b, 0) / values.length : 0;
+        case 'min': return values.length ? Math.min(...values) : 0;
+        case 'max': return values.length ? Math.max(...values) : 0;
         case 'stats': return computeStats(values);
-        default:      return values;
+        default: return values;
     }
 }
 
