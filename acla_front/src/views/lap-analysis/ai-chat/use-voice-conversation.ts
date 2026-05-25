@@ -82,6 +82,11 @@ export interface VoiceConversationOptions {
      *  as the first text frame on WS open so the backend has a single
      *  source of truth for the LLM's frontend tool surface. */
     frontendTools?: FrontendToolSchema[];
+    /** QueryScope JSON Schema, owned by the frontend. Backend tools whose
+     *  parameters reference a query scope (e.g. analyze_telemetry) consume
+     *  this from the WS handshake instead of re-declaring the shape in
+     *  Python — single source of truth on the frontend. */
+    querySchemaScope?: object;
     /** Fires for each transcript / tool event the backend sends. The
      *  caller is responsible for appending to its own message list. */
     onEvent?: (event: VoiceEvent) => void;
@@ -272,6 +277,7 @@ export function useVoiceConversation(
                     ws.send(JSON.stringify({
                         type: 'frontend_info',
                         tools: options.frontendTools || [],
+                        query_scope_schema: options.querySchemaScope ?? null,
                     }));
                 } catch (err) {
                     console.warn('[voice] frontend_info send failed:', err);

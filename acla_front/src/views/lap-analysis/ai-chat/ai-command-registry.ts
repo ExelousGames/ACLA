@@ -23,12 +23,58 @@ type AiCommandHandler = (args: Record<string, any>, ctx: ToolHandlerContext) => 
 //
 // `title` is the human-readable label the chat UI renders in the "tool box"
 // while a call is in flight.
-const _SCOPE_DESC =
-    "Time/event window. One of: " +
-    "{type:'last_seconds', seconds:N}, " +
-    "{type:'event', eventType:'CORNER'|'CRASHED'|'OVERTAKE', which:'last'|'current'}, " +
-    "{type:'lap', lap:'current'|'last'|N}, " +
-    "{type:'range', start:N, end:N}";
+// JSON-Schema for QueryScope (see session-intelligence/types.ts). Shared
+// shape between `query_telemetry_metric` (frontend) and `analyze_telemetry`
+// (server). Keep in sync with acla_ai_service/app/voice/pipecat_pipeline.py.
+// `oneOf` + `const` lets the LLM provider discriminate on `type` instead of
+// us relying on a prose description.
+export const QUERY_SCOPE_SCHEMA = {
+    oneOf: [
+        {
+            type: 'object',
+            properties: {
+                type: { const: 'last_seconds' },
+                seconds: { type: 'number', description: 'Rolling window size in seconds.' },
+            },
+            required: ['type', 'seconds'],
+            additionalProperties: false,
+        },
+        {
+            type: 'object',
+            properties: {
+                type: { const: 'event' },
+                eventType: { enum: ['CORNER', 'STRAIGHT', 'CRASHED', 'OVERTAKE'] },
+                which: { enum: ['last', 'current'] },
+            },
+            required: ['type', 'eventType', 'which'],
+            additionalProperties: false,
+        },
+        {
+            type: 'object',
+            properties: {
+                type: { const: 'lap' },
+                lap: {
+                    oneOf: [
+                        { enum: ['current', 'last'] },
+                        { type: 'integer', description: 'Specific lap number.' },
+                    ],
+                },
+            },
+            required: ['type', 'lap'],
+            additionalProperties: false,
+        },
+        {
+            type: 'object',
+            properties: {
+                type: { const: 'range' },
+                start: { type: 'integer', description: 'Inclusive sample index.' },
+                end: { type: 'integer', description: 'Exclusive sample index.' },
+            },
+            required: ['type', 'start', 'end'],
+            additionalProperties: false,
+        },
+    ],
+} as const;
 
 const _FIELD_GROUP_NAMES = Object.keys(FIELD_GROUPS).join(', ');
 
@@ -63,7 +109,7 @@ export const frontendToolSchemas: FrontendToolSchema[] = [
                     'Field group names (preferred) or raw Physics_* names. ' +
                     `Available groups: ${_FIELD_GROUP_NAMES}.`,
             },
-            scope: { type: 'object', description: _SCOPE_DESC },
+            scope: QUERY_SCOPE_SCHEMA,
             reduce: {
                 type: 'string',
                 enum: ['avg', 'min', 'max', 'stats'],

@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response
@@ -197,7 +197,7 @@ async def voice_stream(
     # Audio frames before the handshake are dropped (we haven't built the
     # pipeline yet anyway).
     try:
-        frontend_tools = await _await_frontend_info(websocket, timeout=5.0)
+        frontend_tools, query_scope_schema = await _await_frontend_info(websocket, timeout=5.0)
     except _HandshakeError as exc:
         LOGGER.warning(
             "Voice WS handshake failed (user=%s): %s", user_id, exc,
@@ -238,6 +238,7 @@ async def voice_stream(
         await run_voice_session(
             filtered_ws, config, tool_executor,
             frontend_tools=frontend_tools,
+            query_scope_schema=query_scope_schema,
         )
     except WebSocketDisconnect:
         LOGGER.info("Voice WS client disconnected (user=%s)", user_id)
@@ -255,12 +256,16 @@ class _HandshakeError(Exception):
 
 async def _await_frontend_info(
     websocket: WebSocket, *, timeout: float,
-) -> List[Dict[str, Any]]:
+) -> Tuple[List[Dict[str, Any]], Optional[Dict[str, Any]]]:
     """Receive and parse the first text frame as ``frontend_info``.
 
-    Returns the ``tools`` list (possibly empty). Raises :class:`_HandshakeError`
-    on timeout, non-text first frame, malformed JSON, wrong ``type``, or
-    invalid ``tools`` shape.
+    Returns ``(tools, query_scope_schema)``. ``tools`` is the (possibly
+    empty) list of frontend tool schemas. ``query_scope_schema`` is the
+    frontend-owned JSON Schema for QueryScope (consumed by server-side
+    tools whose params reference a scope, e.g. ``analyze_telemetry``); may
+    be ``None`` if the frontend didn't send one. Raises
+    :class:`_HandshakeError` on timeout, non-text first frame, malformed
+    JSON, wrong ``type``, or invalid ``tools`` shape.
 
     Per-session — does not block the event loop or other sessions. Any
     binary frames that arrive before the handshake are dropped.
@@ -301,7 +306,13 @@ async def _await_frontend_info(
             tools = []
         if not isinstance(tools, list) or not all(isinstance(t, dict) for t in tools):
             raise _HandshakeError("frontend_info: 'tools' must be a list of objects")
-        return tools
+
+        query_scope_schema = payload.get("query_scope_schema")
+        if query_scope_schema is not None and not isinstance(query_scope_schema, dict):
+            raise _HandshakeError(
+                "frontend_info: 'query_scope_schema' must be an object or null"
+            )
+        return tools, query_scope_schema
 
 
 class _TextFilteringWebSocket:

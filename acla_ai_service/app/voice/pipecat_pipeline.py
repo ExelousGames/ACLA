@@ -113,14 +113,25 @@ def _prettify(name: str) -> str:
     return name.replace("_", " ").strip().capitalize()
 
 
-def _build_server_tool_schemas():
+def _build_server_tool_schemas(query_scope_schema: Optional[Dict[str, Any]]):
     """Pipecat FunctionSchemas for the server-implemented tools only.
 
     Frontend tools come in over the WS handshake (see :mod:`app.api.voice`)
     and are built in :func:`_build_frontend_tool_schemas`. Together they
     form the LLM's tool surface. Deferred import — only loaded when a voice
     session is actually built.
+
+    ``query_scope_schema`` is the frontend-owned JSON Schema for QueryScope;
+    server-side tools whose params reference a scope (``analyze_telemetry``)
+    consume it from the handshake — the AI service must NOT declare its own
+    copy. Missing → hard error (no silent fallback to a Python-defined shape).
     """
+    if not query_scope_schema:
+        raise ValueError(
+            "_build_server_tool_schemas: query_scope_schema is required "
+            "(must come from the WS frontend_info handshake)"
+        )
+
     from pipecat.adapters.schemas.function_schema import FunctionSchema
 
     return [
@@ -131,18 +142,7 @@ def _build_server_tool_schemas():
                 "labels with definitions and remedies. Use for 'what just "
                 "happened', 'why X', 'how was lap N'."
             ),
-            properties={
-                "scope": {
-                    "type": "object",
-                    "description": (
-                        "Time/event window. One of: "
-                        "{type:'last_seconds', seconds:N}, "
-                        "{type:'event', eventType:'CORNER'|'CRASHED'|'OVERTAKE', which:'last'|'current'}, "
-                        "{type:'lap', lap:'current'|'last'|N}, "
-                        "{type:'range', start:N, end:N}"
-                    ),
-                },
-            },
+            properties={"scope": query_scope_schema},
             required=["scope"],
         ),
         FunctionSchema(
@@ -535,6 +535,7 @@ async def build_voice_pipeline_task(
     tool_executor: Any,
     *,
     frontend_tools: Optional[List[Dict[str, Any]]] = None,
+    query_scope_schema: Optional[Dict[str, Any]] = None,
 ):
     """Build a Pipecat PipelineTask bound to the given WebSocket.
 
@@ -651,7 +652,7 @@ async def build_voice_pipeline_task(
     frontend_tool_names = frozenset(
         t["name"] for t in fe_tools if isinstance(t.get("name"), str)
     )
-    tool_schemas = _build_server_tool_schemas() + _build_frontend_tool_schemas(fe_tools)
+    tool_schemas = _build_server_tool_schemas(query_scope_schema) + _build_frontend_tool_schemas(fe_tools)
     tool_titles = _build_title_map(fe_tools)
     tools = ToolsSchema(standard_tools=tool_schemas)
 
@@ -838,13 +839,15 @@ async def run_voice_session(
     tool_executor: Any,
     *,
     frontend_tools: Optional[List[Dict[str, Any]]] = None,
+    query_scope_schema: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Bind a Pipecat pipeline to `websocket` and run it to completion.
 
     Returns when the WS closes or the pipeline exits. Caller is responsible
     for any auth/lifecycle concerns around `websocket`, supplying a
     ``tool_executor`` (typically AIService._execute_function), and passing
-    ``frontend_tools`` from the WS handshake (see :mod:`app.api.voice`).
+    ``frontend_tools`` plus ``query_scope_schema`` from the WS handshake
+    (see :mod:`app.api.voice`).
 
     Also unbinds the WebSocket from :mod:`app.voice.tool_relay` on exit so
     in-flight tool-call futures are cancelled cleanly.
@@ -856,6 +859,7 @@ async def run_voice_session(
     task = await build_voice_pipeline_task(
         websocket, session_config, tool_executor,
         frontend_tools=frontend_tools,
+        query_scope_schema=query_scope_schema,
     )
     runner = PipelineRunner()
     try:

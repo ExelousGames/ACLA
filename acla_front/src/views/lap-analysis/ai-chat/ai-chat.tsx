@@ -3,7 +3,7 @@ import './ai-chat.css';
 import { AnalysisContext } from 'views/lap-analysis/analysis-context';
 import { visualizationController } from 'views/lap-analysis/visualization/VisualizationRegistry';
 import { detectEnvironment } from 'utils/environment';
-import { createAiCommandRegistry, frontendToolSchemas } from './ai-command-registry';
+import { createAiCommandRegistry, frontendToolSchemas, QUERY_SCOPE_SCHEMA } from './ai-command-registry';
 import { speakWithNeuralTts, NeuralTtsPlayback } from './neural-tts';
 import { useVoiceConversation, VoiceEvent } from './use-voice-conversation';
 
@@ -216,6 +216,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
         sessionId,
         onEvent: handleVoiceEvent,
         frontendTools: frontendToolSchemas,
+        querySchemaScope: QUERY_SCOPE_SCHEMA,
         toolHandlers: createAiCommandRegistry({
             sessionId,
             analysisContext,
