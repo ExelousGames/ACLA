@@ -42,14 +42,8 @@ lerna-debug.log*
 !.vscode/extensions.json
 
 # dotenv environment variable files
-.env
-.env.development.local
-.env.test.local
-.env.production.local
-.env.local
 .env.secrets
-*.env
-!.env.secrets.template
+
 
 # GCP Service Account credentials
 **/gcp-service-account.json
