@@ -25,63 +25,36 @@ type AiCommandHandler = (args: Record<string, any>, ctx: ToolHandlerContext) => 
 // while a call is in flight.
 // JSON-Schema for QueryScope (see session-intelligence/types.ts). Shared
 // shape between `query_telemetry_metric` (frontend) and `analyze_telemetry`
-// (server). Keep in sync with acla_ai_service/app/voice/pipecat_pipeline.py.
-// `oneOf` + `const` lets the LLM provider discriminate on `type` instead of
-// us relying on a prose description.
+// (server).
+//
+// Flat shape with a `type` enum discriminator. The per-type field coupling
+// (e.g. `type='lap'` requires `lap`) is enforced by `_validate_scope` in
+// app/pipelines/chat/__init__.py before tool dispatch, not in JSON Schema.
+// Reason: Groq llama-3.3-70b's tool-call validator rejects oneOf+const
+// discriminated unions when the model picks an invalid type — the whole
+// turn fails server-side. A single flat object with an enum on `type` is
+// the shape Groq and similar providers handle reliably.
 export const QUERY_SCOPE_SCHEMA = {
-    oneOf: [
-        {
-            type: 'object',
-            properties: {
-                type: { const: 'now' },
-            },
-            required: ['type'],
-            additionalProperties: false,
+    type: 'object',
+    properties: {
+        type: {
+            type: 'string',
+            enum: ['now', 'last_seconds', 'event', 'lap', 'range'],
         },
-        {
-            type: 'object',
-            properties: {
-                type: { const: 'last_seconds' },
-                seconds: { type: 'number', description: 'Rolling window size in seconds.' },
-            },
-            required: ['type', 'seconds'],
-            additionalProperties: false,
+        seconds: { type: 'number' },
+        eventType: { type: 'string', enum: ['CORNER', 'STRAIGHT', 'CRASHED', 'OVERTAKE'] },
+        which: { type: 'string', enum: ['last', 'current'] },
+        lap: {
+            oneOf: [
+                { type: 'string', enum: ['current', 'last'] },
+                { type: 'integer' },
+            ],
         },
-        {
-            type: 'object',
-            properties: {
-                type: { const: 'event' },
-                eventType: { enum: ['CORNER', 'STRAIGHT', 'CRASHED', 'OVERTAKE'] },
-                which: { enum: ['last', 'current'] },
-            },
-            required: ['type', 'eventType', 'which'],
-            additionalProperties: false,
-        },
-        {
-            type: 'object',
-            properties: {
-                type: { const: 'lap' },
-                lap: {
-                    oneOf: [
-                        { enum: ['current', 'last'] },
-                        { type: 'integer', description: 'Specific lap number.' },
-                    ],
-                },
-            },
-            required: ['type', 'lap'],
-            additionalProperties: false,
-        },
-        {
-            type: 'object',
-            properties: {
-                type: { const: 'range' },
-                start: { type: 'integer', description: 'Inclusive sample index.' },
-                end: { type: 'integer', description: 'Exclusive sample index.' },
-            },
-            required: ['type', 'start', 'end'],
-            additionalProperties: false,
-        },
-    ],
+        start: { type: 'integer' },
+        end: { type: 'integer' },
+    },
+    required: ['type'],
+    additionalProperties: false,
 } as const;
 
 const _FIELD_GROUP_NAMES = Object.keys(FIELD_GROUPS).join(', ');

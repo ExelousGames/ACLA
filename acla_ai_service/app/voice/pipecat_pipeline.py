@@ -875,8 +875,8 @@ async def build_voice_pipeline_task(
         api_key=llm_api_key,
         settings=OpenAILLMService.Settings(
             model=llm_model,
-            temperature=0.7,
-            max_tokens=600,  # Engineer-voice answers can run a few sentences; Pipecat still stops at end-of-turn.
+            temperature=0.3,
+            max_tokens=1000,  # Engineer-voice answers can run a few sentences; Pipecat still stops at end-of-turn.
         ),
     )
 

@@ -11,6 +11,52 @@ from app.infra.config import settings
 LOGGER = logging.getLogger(__name__)
 
 
+_EVENT_TYPES = {"CORNER", "STRAIGHT", "CRASHED", "OVERTAKE"}
+_EVENT_WHICH = {"last", "current"}
+_LAP_KEYWORDS = {"current", "last"}
+
+
+def _validate_scope(scope: Any) -> Optional[str]:
+    """Validate a QueryScope object received from the LLM.
+
+    The frontend-owned JSON Schema (QUERY_SCOPE_SCHEMA in ai-command-registry.ts)
+    is a flat object with a `type` enum — it doesn't encode the per-type field
+    coupling because Groq llama-3.3-70b can't reliably emit oneOf+const
+    discriminated unions. This validator enforces the coupling server-side
+    and returns a human-readable error string so the LLM can retry with a
+    corrected call. Returns None if valid.
+    """
+    if not isinstance(scope, dict):
+        return "scope must be an object"
+    t = scope.get("type")
+    if t == "now":
+        return None
+    if t == "last_seconds":
+        sec = scope.get("seconds")
+        if not isinstance(sec, (int, float)) or sec <= 0:
+            return "scope.type='last_seconds' requires positive 'seconds' (number)"
+        return None
+    if t == "event":
+        if scope.get("eventType") not in _EVENT_TYPES:
+            return f"scope.type='event' requires 'eventType' in {sorted(_EVENT_TYPES)}"
+        if scope.get("which") not in _EVENT_WHICH:
+            return f"scope.type='event' requires 'which' in {sorted(_EVENT_WHICH)}"
+        return None
+    if t == "lap":
+        lap = scope.get("lap")
+        if not (lap in _LAP_KEYWORDS or isinstance(lap, int)):
+            return "scope.type='lap' requires 'lap' as 'current', 'last', or an integer"
+        return None
+    if t == "range":
+        start, end = scope.get("start"), scope.get("end")
+        if not isinstance(start, int) or not isinstance(end, int):
+            return "scope.type='range' requires integer 'start' and 'end'"
+        if start >= end:
+            return "scope.type='range' requires start < end"
+        return None
+    return "scope.type must be one of: now, last_seconds, event, lap, range"
+
+
 class AIService:
     """Service for AI-powered analysis and conversation.
 
@@ -249,8 +295,9 @@ class AIService:
         resolves each detected label against the racing-engineer corpus.
         Rows never re-enter the LLM context — only the labels do.
         """
-        if not isinstance(scope, dict) or "type" not in scope:
-            return {"error": "scope must be an object with a 'type' field"}
+        err = _validate_scope(scope)
+        if err is not None:
+            return {"error": err}
         return await self._composite_analyze(
             conn=conn,
             frontend_tool="_get_telemetry_for_scope",
