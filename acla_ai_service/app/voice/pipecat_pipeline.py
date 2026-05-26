@@ -273,10 +273,17 @@ def _make_tool_handler(
         except Exception:
             LOGGER.debug("tool_event emit failed (WS likely closed)", exc_info=True)
 
-    async def handle_tool_call(params):
-        function_name = params.function_name
-        arguments = params.arguments or {}
+    async def dispatch_tool(function_name: str, arguments: Dict[str, Any]) -> Any:
+        """Execute one tool by name and return the LLM-visible payload.
+
+        Shared by the Pipecat ``register_function`` handler and the
+        FunctionTagRecovery fallback. Emits tool_event start/complete frames,
+        routes frontend vs. server tools, filters underscore-prefixed side
+        products, and logs the result. Never raises — failures come back as
+        ``{"error": ...}`` so both call sites can inject cleanly.
+        """
         title = _tool_title(function_name)
+        arguments = arguments or {}
 
         LOGGER.info("[TOOL-CALL] name=%s args=%r", function_name, arguments)
 
@@ -310,7 +317,6 @@ def _make_tool_handler(
                 result = await tool_executor(function_name, arguments, context)
         except Exception as exc:
             LOGGER.exception("Voice tool %s failed", function_name)
-            ok = False
             error_msg = str(exc)
             await _emit_tool_event({
                 "name": function_name,
@@ -319,8 +325,7 @@ def _make_tool_handler(
                 "ok": False,
                 "error": error_msg,
             })
-            await params.result_callback({"error": error_msg})
-            return
+            return {"error": error_msg}
 
         # Side-product filter — underscore-prefixed keys never reach the LLM.
         if isinstance(result, dict):
@@ -348,14 +353,226 @@ def _make_tool_handler(
         # Truncate large payloads for log readability.
         _payload_log = payload
         if isinstance(_payload_log, str) and len(_payload_log) > 400:
-            _payload_log = _payload_log[:400] + f"... [+{len(payload)-400} chars]"
+            _payload_log = _payload_log[:400] + f"... [+{len(_payload_log)-400} chars]"
         LOGGER.info(
             "[TOOL-RESULT] name=%s ok=%s error=%r payload=%r",
             function_name, ok, error_msg, _payload_log,
         )
+        return payload
+
+    async def handle_tool_call(params):
+        payload = await dispatch_tool(params.function_name, params.arguments or {})
         await params.result_callback(payload)
 
-    return handle_tool_call
+    return handle_tool_call, dispatch_tool
+
+
+# Streamed-text salvage for hosted models that drop out of the OpenAI
+# tool_calls channel and emit the call inline as text.
+#
+# Matches the Llama-3 "Python tag" form
+#   <function=NAME>{json…}</function>
+# Tolerates whitespace around the JSON body and uses a non-greedy match
+# so multiple tags in one response don't collapse into one.
+_FUNCTION_TAG_RE = re.compile(
+    r"<function=([A-Za-z_][\w]*)>\s*(\{.*?\})\s*</function>",
+    re.DOTALL,
+)
+_FUNCTION_TAG_OPEN = "<function="
+_FUNCTION_TAG_CLOSE = "</function>"
+
+
+def _build_function_tag_recovery(*, dispatch_tool, context, get_task):
+    """Salvage Llama-style ``<function=name>{json}</function>`` text emissions.
+
+    Some hosted models (notably llama-3.3-70b-versatile on Groq at
+    temperature ≥ 0.5) drop out of the OpenAI ``tool_calls`` channel under
+    load and emit the call inline as text using their training-data Python-
+    tag pattern. ``OpenAILLMService`` doesn't recognise that shape, so
+    without this processor the raw tag leaks to the chat UI and TTS.
+
+    Sits between the LLM and the assistant transcript observer. Watches
+    every TextFrame, holding back any tail that *could* be the start of a
+    function tag so a chunk boundary mid-tag doesn't leak the prefix
+    (``"…<fun"`` arrives, recovery keeps the ``<fun``, then ``"ction=…"``
+    completes the match). On a full match it:
+
+    * suppresses the tag text (so neither transcript observer nor TTS sees
+      it — chat UI stays clean, Kokoro doesn't try to read XML aloud);
+    * dispatches the tool via the shared ``dispatch_tool`` so tool_event
+      frames, frontend/server routing, and side-product filtering all
+      happen exactly like a native tool_calls round-trip;
+    * injects a synthetic ``assistant(tool_calls)`` + ``tool(result)`` pair
+      into ``LLMContext`` so the next turn looks like a normal tool exchange
+      to the model;
+    * queues an ``LLMRunFrame`` so the model immediately produces a proper
+      spoken reply using the tool result.
+
+    Any prose *before* the tag (e.g. ``"Let me check…"``) is forwarded
+    normally — the driver still hears the preamble; the tool runs; then
+    the model speaks the result. Prose *after* the tag is also forwarded
+    (rare but possible).
+
+    ``get_task`` is a zero-arg callable returning the PipelineTask so the
+    processor can queue ``LLMRunFrame`` without a circular import at build
+    time (the task is constructed *after* this processor).
+    """
+    import json as _json
+    import uuid as _uuid
+
+    from pipecat.frames.frames import (
+        Frame,
+        LLMFullResponseEndFrame,
+        LLMFullResponseStartFrame,
+        LLMRunFrame,
+        TextFrame,
+    )
+    from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
+
+    class FunctionTagRecovery(FrameProcessor):
+        def __init__(self) -> None:
+            super().__init__()
+            self._held: str = ""  # tail that might still be (or be growing into) a tag
+
+        async def process_frame(self, frame: "Frame", direction: "FrameDirection") -> None:
+            await super().process_frame(frame, direction)
+
+            if isinstance(frame, LLMFullResponseStartFrame):
+                self._held = ""
+                await self.push_frame(frame, direction)
+                return
+
+            if isinstance(frame, LLMFullResponseEndFrame):
+                # Response over — whatever we still hold can't complete a tag.
+                if self._held:
+                    await self.push_frame(TextFrame(text=self._held), direction)
+                    self._held = ""
+                await self.push_frame(frame, direction)
+                return
+
+            if not isinstance(frame, TextFrame):
+                await self.push_frame(frame, direction)
+                return
+
+            text = getattr(frame, "text", "") or ""
+            if not text:
+                return
+
+            buf = self._held + text
+            self._held = ""
+            await self._drain(buf, direction)
+
+        async def _drain(self, buf: str, direction: "FrameDirection") -> None:
+            """Walk ``buf`` left-to-right: emit prose, hold tag prefixes, dispatch full tags."""
+            while buf:
+                idx = buf.find("<")
+                if idx == -1:
+                    await self.push_frame(TextFrame(text=buf), direction)
+                    return
+
+                if idx > 0:
+                    await self.push_frame(TextFrame(text=buf[:idx]), direction)
+                    buf = buf[idx:]
+
+                # buf now starts with '<'. Three cases:
+                #   1. shorter than the open marker but still a prefix of it  → hold
+                #   2. starts with the open marker but no close yet           → hold
+                #   3. starts with the open marker AND has a close            → match-or-flush
+                #   4. starts with '<' but can't be the open marker           → emit '<' and continue
+                if len(buf) < len(_FUNCTION_TAG_OPEN):
+                    if _FUNCTION_TAG_OPEN.startswith(buf):
+                        self._held = buf
+                        return
+                    await self.push_frame(TextFrame(text=buf[:1]), direction)
+                    buf = buf[1:]
+                    continue
+
+                if not buf.startswith(_FUNCTION_TAG_OPEN):
+                    await self.push_frame(TextFrame(text=buf[:1]), direction)
+                    buf = buf[1:]
+                    continue
+
+                close = buf.find(_FUNCTION_TAG_CLOSE)
+                if close == -1:
+                    self._held = buf
+                    return
+
+                tag_end = close + len(_FUNCTION_TAG_CLOSE)
+                full_tag = buf[:tag_end]
+                buf = buf[tag_end:]
+
+                m = _FUNCTION_TAG_RE.match(full_tag)
+                if not m:
+                    # Looked like a tag but the body isn't well-formed JSON-wrapped.
+                    # Treat as plain text so we don't silently swallow content.
+                    LOGGER.warning(
+                        "FunctionTagRecovery: malformed tag, passing through as text: %r",
+                        full_tag,
+                    )
+                    await self.push_frame(TextFrame(text=full_tag), direction)
+                    continue
+
+                function_name = m.group(1)
+                raw_args = m.group(2)
+                try:
+                    arguments = _json.loads(raw_args)
+                except _json.JSONDecodeError:
+                    LOGGER.warning(
+                        "FunctionTagRecovery: bad JSON args for <function=%s>: %r",
+                        function_name, raw_args,
+                    )
+                    await self.push_frame(TextFrame(text=full_tag), direction)
+                    continue
+
+                LOGGER.info(
+                    "[TOOL-CALL-RECOVERED] name=%s args=%r (from text-channel <function=…> tag)",
+                    function_name, arguments,
+                )
+                # Fire-and-forget — dispatch_tool already swallows exceptions
+                # and emits tool_event frames. We don't await here so we
+                # don't block the streaming pipeline.
+                import asyncio as _asyncio
+                _asyncio.create_task(self._recover(function_name, arguments))
+
+        async def _recover(self, function_name: str, arguments: Dict[str, Any]) -> None:
+            payload = await dispatch_tool(function_name, arguments)
+
+            tool_call_id = f"recover_{_uuid.uuid4().hex[:8]}"
+            try:
+                context.add_message({
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [{
+                        "id": tool_call_id,
+                        "type": "function",
+                        "function": {
+                            "name": function_name,
+                            "arguments": _json.dumps(arguments),
+                        },
+                    }],
+                })
+                context.add_message({
+                    "role": "tool",
+                    "tool_call_id": tool_call_id,
+                    "content": _json.dumps(payload) if not isinstance(payload, str) else payload,
+                })
+            except Exception:
+                LOGGER.exception("FunctionTagRecovery: context injection failed")
+                return
+
+            task = get_task()
+            if task is None:
+                LOGGER.warning(
+                    "FunctionTagRecovery: no PipelineTask bound, can't queue LLMRunFrame "
+                    "— tool result is in context but model won't speak until next user turn"
+                )
+                return
+            try:
+                await task.queue_frame(LLMRunFrame())
+            except Exception:
+                LOGGER.exception("FunctionTagRecovery: failed to queue LLMRunFrame")
+
+    return FunctionTagRecovery
 
 
 def _build_transcript_observer():
@@ -681,7 +898,7 @@ async def build_voice_pipeline_task(
     tool_titles = _build_title_map(fe_tools)
     tools = ToolsSchema(standard_tools=tool_schemas)
 
-    tool_handler = _make_tool_handler(
+    tool_handler, dispatch_tool = _make_tool_handler(
         tool_executor, session_config, conn=websocket,
         frontend_tool_names=frontend_tool_names,
         tool_titles=tool_titles,
@@ -725,6 +942,19 @@ async def build_voice_pipeline_task(
     emotion_tag_stripper = EmotionTagStripper()
     context_logger = ContextLogger(context)
 
+    # --- Function-tag recovery (Llama-text-channel salvage) ---
+    # See _build_function_tag_recovery for the why. ``get_task`` closes
+    # over a single-element list so the processor can resolve the task
+    # lazily — PipelineTask is built *after* the pipeline, but the
+    # processor needs to live *inside* the pipeline.
+    _task_holder: List[Any] = []
+    FunctionTagRecovery = _build_function_tag_recovery(
+        dispatch_tool=dispatch_tool,
+        context=context,
+        get_task=lambda: _task_holder[0] if _task_holder else None,
+    )
+    function_tag_recovery = FunctionTagRecovery()
+
     # --- Pipeline composition ---
     # VAD sits between the transport input and STT so Whisper only runs
     # on actual speech windows (gated by VADUserStartedSpeakingFrame /
@@ -732,8 +962,12 @@ async def build_voice_pipeline_task(
     #
     # user_transcript_observer sits AFTER stt so it sees the final
     # TranscriptionFrame before context_aggregator.user() consumes it.
-    # assistant_transcript_observer sits AFTER llm so it sees LLM text chunks
-    # and emits assistant_transcript (with emotion field) over the WS.
+    # function_tag_recovery sits immediately AFTER llm so it can suppress
+    # text-channel <function=…> emissions before they reach transcript,
+    # TTS, or the context aggregator — see its docstring for why this
+    # placement matters.
+    # assistant_transcript_observer sits AFTER recovery so it only sees
+    # legitimate spoken text (chat UI stays clean of leaked tool tags).
     # emotion_tag_stripper sits AFTER the observer and BEFORE tts so Kokoro
     # never receives the [emotion] tag — same principle as tool_event frames
     # being UI-only signals that never reach speech synthesis.
@@ -750,6 +984,7 @@ async def build_voice_pipeline_task(
         user_transcript_observer,
         context_aggregator.user(),
         llm,
+        function_tag_recovery,
         context_logger,
         assistant_transcript_observer,
         emotion_tag_stripper,
@@ -765,6 +1000,7 @@ async def build_voice_pipeline_task(
             enable_metrics=False,
         ),
     )
+    _task_holder.append(task)
 
     # --- Observation sink (frontend monitoring-agent pushes) ----------------
     # When the frontend WS sends {"type":"observation","data":{...}}, the
