@@ -18,6 +18,13 @@ LABEL_MAPPING: Dict[str, str] = {
     "MS" :"Mistake",
     ################### Detailed Expert Adherence Labels (for label EA) ###################
 
+    ################### Detailed Overtaking Labels (for label O) ###################
+    "O1": "Late-brake attack at entry",
+    "O2": "Defensive early-brake / inside cover",
+    "O3": "Outside-line sweep",
+    "O4": "Switchback",
+    "O5": "Slipstream gain on straight",
+    "O6": "Defensive lift on straight",
     ################### Detailed Recovery & Merge Labels (for label RM) ###################
     "RM1": "Recover from off-track",
     "RM2": "Exit pit lane",
@@ -151,7 +158,7 @@ LABEL_IMAGE_MAP: Dict[str, str] = {
 
 LABEL_CATEGORIES: Dict[str, List[str]] = {
     "Main Labels": ["O", "MD","EA","PS","RM","MS","brands_hatch","silverstone"],
-    "O":[],
+    "O":["O1","O2","O3","O4","O5","O6"],
     "MD":[],
     "EA":[],
     "PS":[],

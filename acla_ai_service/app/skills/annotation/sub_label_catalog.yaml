@@ -72,15 +72,31 @@ labels:
     name: "Overtaking"
     type: main
     description: >
-      Driver passing or being passed by another car.  Look for late braking,
-      line deviation to find a gap, and speed differentials between cars.
+      "Act of overtaking" as visible on a single car's telemetry — late
+      braking past the expert reference point, sustained off-line entries
+      to set up a pass or defend a position, switchback rotation, or
+      throttle/speed deltas on a straight (slipstream gain, defensive
+      lift). Opponent telemetry is NOT consulted — the signature must be
+      readable from this car alone.
     annotation_guideline: >
       How to identify the sublabels for Overtaking:
-      Analyze the driver's attempt to pass an opponent.  Look for late
-      braking, line deviation to find a gap, and speed differentials.
-      Assess if the move was successful and safe.
+      Drill into the section's brake / throttle / trajectory_offset /
+      speed traces vs the expert. Sub-labels split by intent and where
+      the signature appears:
+        - Brake-zone attack / defense (O1 / O2): brake initiation onset
+          shifted relative to expert at corner entry.
+        - Sustained off-line through entry-to-apex (O2 inside / O3
+          outside): trajectory offset held to one side without the
+          continuously growing time gap of MS.
+        - Switchback (O4): offset crosses outside-at-entry to
+          inside-at-exit, with earlier brake AND earlier throttle on
+          exit than the expert.
+        - Straight-line (O5 / O6): on a straight, speed delta vs
+          throttle delta relative to expert — speed up on equal-or-less
+          throttle (draft) vs throttle dip with no brake (defensive
+          lift).
     parent: null
-    children: []
+    children: ["O1", "O2", "O3", "O4", "O5", "O6"]
     exclusive_with: ["MD", "PS"]
 
   "MD":
@@ -979,6 +995,93 @@ labels:
     parent: MS
     children: []
     exclusive_with: ["MS48"]
+
+  # =========================================================================
+  # OVERTAKING SUB-LABELS
+  #
+  # Single-car signatures — readable from this car's telemetry vs the
+  # expert reference. No opponent telemetry is consulted; the signature
+  # is the "act of overtaking" as observed on the lap.
+  # =========================================================================
+
+  O1:
+    name: "Late-brake attack at entry"
+    type: sub
+    description: >
+      Player's brake **initiation onset is later than** the expert's at
+      corner entry, with **peak brake pressure higher than** the expert
+      across the braking phase — a deliberate over-commit to pull
+      alongside before the apex. Trajectory often **moving toward
+      negative (tightening)** into the apex as the player aims for the
+      inside.
+    parent: O
+    children: []
+    exclusive_with: ["O2", "O4"]
+
+  O2:
+    name: "Defensive early-brake / inside cover"
+    type: sub
+    description: >
+      Player's brake **initiation onset is earlier than** the expert's
+      AND/OR trajectory offset held **tighter than expert** across
+      entry-to-apex by a sustained margin — closing the inside line.
+      Distinguished from MS by the **absence of a continuously growing
+      time gap** — the inside line is a tactical choice, not a slow
+      mistake.
+    parent: O
+    children: []
+    exclusive_with: ["O1", "O3"]
+
+  O3:
+    name: "Outside-line sweep"
+    type: sub
+    description: >
+      Trajectory offset **wider than expert** across entry-to-apex by a
+      sustained margin, **without a continuously growing time delta** —
+      going around the outside on purpose. Often paired with an earlier
+      throttle pickup on exit as the wider arc allows it.
+    parent: O
+    children: []
+    exclusive_with: ["O2"]
+
+  O4:
+    name: "Switchback"
+    type: sub
+    description: >
+      Player concedes the entry and recovers it on exit — brake
+      **initiation onset is earlier than** the expert's, the trajectory
+      offset crosses from **wider than expert** at entry to **tighter
+      than expert** at exit, and throttle **application onset is
+      earlier than** the expert's around the corner exit. Time delta
+      typically shows **gap shrinks** late in the section.
+    parent: O
+    children: []
+    exclusive_with: ["O1"]
+
+  O5:
+    name: "Slipstream gain on straight"
+    type: sub
+    description: >
+      On a straight section: speed delta shows **player faster than
+      expert** while the player's throttle stays **at or below** the
+      expert's level — the speed gain is from draft, not extra input.
+      Time delta shows **gap shrinks** across the straight.
+    parent: O
+    children: []
+    exclusive_with: ["O6"]
+
+  O6:
+    name: "Defensive lift on straight"
+    type: sub
+    description: >
+      On a straight section: player's throttle drops **below expert**
+      with NO matching brake onset (outside any braking zone), causing
+      a brief speed dip not explained by track geometry — a lift to
+      manage position or check the mirrors. Time delta typically shows
+      **gap grows** briefly during the lift.
+    parent: O
+    children: []
+    exclusive_with: ["O5"]
 
   # =========================================================================
   # SEGMENT TYPE LABELS
