@@ -5,7 +5,11 @@ Builds a per-WebSocket-session pipeline:
     FastAPIWebsocketTransport.input()
         → SileroVADAnalyzer (endpoint detection)
         → faster-whisper STT
-        → OpenAILLMService(base_url=llama_server_url)  -- our local Qwen
+        → OpenAILLMService                              -- local llama-server,
+                                                           or hosted OpenAI-
+                                                           compatible endpoint
+                                                           if HOSTED_LLM_BASE_URL
+                                                           is set
         → KokoroTTSProcessor                            -- our Phase 2 engine
         → FastAPIWebsocketTransport.output()
 
@@ -627,12 +631,33 @@ async def build_voice_pipeline_task(
         # device="cuda" if available; Pipecat auto-detects via faster-whisper.
     )
 
-    # --- LLM (local llama-server via OpenAI-compatible client) ---
+    # --- LLM (OpenAI-compatible client) ---
+    # Backend = hosted endpoint if HOSTED_LLM_BASE_URL is set, else local
+    # llama-server sidecar.
+    if settings.hosted_llm_base_url:
+        missing = [
+            name for name, val in (
+                ("HOSTED_LLM_API_KEY", settings.hosted_llm_api_key),
+                ("HOSTED_LLM_MODEL", settings.hosted_llm_model),
+            ) if not val
+        ]
+        if missing:
+            raise RuntimeError(
+                f"HOSTED_LLM_BASE_URL is set; also requires {', '.join(missing)}"
+            )
+        llm_base_url = settings.hosted_llm_base_url
+        llm_api_key = settings.hosted_llm_api_key
+        llm_model = settings.hosted_llm_model
+    else:
+        llm_base_url = settings.llama_server_url
+        llm_api_key = "not-needed"  # llama-server ignores auth; OpenAI client requires non-empty.
+        llm_model = settings.llama_model_name
+
     llm = OpenAILLMService(
-        base_url=settings.llama_server_url,
-        api_key="not-needed",
+        base_url=llm_base_url,
+        api_key=llm_api_key,
         settings=OpenAILLMService.Settings(
-            model=settings.llama_model_name,
+            model=llm_model,
             temperature=0.7,
             max_tokens=600,  # Engineer-voice answers can run a few sentences; Pipecat still stops at end-of-turn.
         ),

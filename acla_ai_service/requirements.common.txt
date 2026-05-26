@@ -44,7 +44,6 @@ streamlit>=1.41.0
 einops
 gguf
 timm
-google-genai
 langgraph>=0.2.0
 langchain-core>=0.3.0
 claude-agent-sdk>=0.1.0

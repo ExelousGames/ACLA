@@ -27,14 +27,6 @@ class Settings(BaseSettings):
     ai_service_username: Optional[str] = None
     ai_service_password: Optional[str] = None
     
-    # OpenAI Configuration (legacy — being phased out in favor of local llama-server)
-    openai_api_key: Optional[str] = None
-
-    # Active chat backend selector. "llama" uses the local llama-server sidecar
-    # (canonical, Phase 1+). "openai" reverts to the legacy gpt-4o path — only
-    # useful as a rollback during Phase 1 rollout and requires OPENAI_API_KEY.
-    llm_provider: str = "llama"
-
     # Local LLM (llama-server / llama-cpp-python) Configuration
     # llama-server runs as a sidecar inside the ai_service container and exposes
     # an OpenAI-compatible HTTP API at this URL. The chat code calls it as if it
@@ -68,6 +60,16 @@ class Settings(BaseSettings):
     llama_draft_n_gpu_layers: int = 99
     llama_draft_max: int = 16
     llama_draft_min: int = 0
+
+    # Hosted LLM (OpenAI-compatible third-party endpoint). When
+    # HOSTED_LLM_BASE_URL is set, the chat + voice pipelines use it instead
+    # of the local llama-server sidecar. Works with Groq, Cerebras, Together,
+    # Fireworks, OpenRouter, etc., by just changing the base_url. If
+    # HOSTED_LLM_BASE_URL is set, HOSTED_LLM_API_KEY and HOSTED_LLM_MODEL
+    # are required — missing values fail loudly at startup.
+    hosted_llm_base_url: Optional[str] = None   # e.g. https://api.groq.com/openai/v1
+    hosted_llm_api_key: Optional[str] = None
+    hosted_llm_model: Optional[str] = None      # e.g. qwen/qwen3-32b
 
     # Kokoro TTS Configuration (Phase 2)
     # Neural TTS that replaces window.speechSynthesis in the frontend.

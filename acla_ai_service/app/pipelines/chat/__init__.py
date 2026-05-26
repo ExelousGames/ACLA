@@ -14,44 +14,43 @@ LOGGER = logging.getLogger(__name__)
 class AIService:
     """Service for AI-powered analysis and conversation.
 
-    Phase 1: the canonical chat backend is the local llama-server sidecar
-    (GGUF model configured via settings.llama_model_*), called through an
-    AsyncOpenAI client pointed at settings.llama_server_url. The legacy
-    OpenAI client is kept only as an emergency rollback path, selected
-    via the `LLM_PROVIDER=openai` env var.
+    Backend is chosen by whether ``HOSTED_LLM_BASE_URL`` is set:
+      * unset → local llama-server sidecar (GGUF model configured via
+        ``settings.llama_model_*``).
+      * set   → any OpenAI-compatible hosted endpoint (Groq, Cerebras,
+        Together, Fireworks, OpenRouter, …). Also requires
+        ``HOSTED_LLM_API_KEY`` + ``HOSTED_LLM_MODEL``.
+
+    Both paths use the same ``AsyncOpenAI`` client; only base_url / api_key /
+    model differ.
     """
 
     def __init__(self):
-        # Local llama-server (canonical chat backend going forward).
-        # llama-server does not authenticate, but the OpenAI client refuses
-        # to construct without an api_key — any non-empty string works.
-        self.llama_client = AsyncOpenAI(
-            base_url=settings.llama_server_url,
-            api_key="not-needed",
-        )
-
-        # Legacy OpenAI client. Kept for rollback (LLM_PROVIDER=openai) and
-        # for /query/health reporting. Constructed lazily so a missing
-        # api_key during normal llama-mode operation isn't an error.
-        self.openai_client = (
-            AsyncOpenAI(api_key=settings.openai_api_key)
-            if settings.openai_api_key else None
-        )
-
-        # Pick the active chat client based on settings.llm_provider.
-        # Default = "llama". Set LLM_PROVIDER=openai in env to revert.
-        if settings.llm_provider == "openai":
-            if not self.openai_client:
+        if settings.hosted_llm_base_url:
+            missing = [
+                name for name, val in (
+                    ("HOSTED_LLM_API_KEY", settings.hosted_llm_api_key),
+                    ("HOSTED_LLM_MODEL", settings.hosted_llm_model),
+                ) if not val
+            ]
+            if missing:
                 raise RuntimeError(
-                    "LLM_PROVIDER=openai requires OPENAI_API_KEY to be set"
+                    f"HOSTED_LLM_BASE_URL is set; also requires {', '.join(missing)}"
                 )
-            self.llm_client = self.openai_client
-            self.chat_model = "gpt-4o"
-            self.llm_provider = "openai"
+            self.llm_client = AsyncOpenAI(
+                base_url=settings.hosted_llm_base_url,
+                api_key=settings.hosted_llm_api_key,
+            )
+            self.chat_model = settings.hosted_llm_model
         else:
-            self.llm_client = self.llama_client
+            # llama-server does not authenticate, but the OpenAI client
+            # refuses to construct without an api_key — any non-empty string
+            # works.
+            self.llm_client = AsyncOpenAI(
+                base_url=settings.llama_server_url,
+                api_key="not-needed",
+            )
             self.chat_model = settings.llama_model_name
-            self.llm_provider = "llama"
 
     async def _execute_function(self, function_name: str, arguments: Dict[str, Any], context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Execute the called function to retrieve data from local AI models and telemetry systems

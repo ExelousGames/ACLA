@@ -91,12 +91,8 @@ services:
     environment:
       - BACKEND_SERVER_IP=${BACKEND_SERVER_IP_FOR_AI}
       - BACKEND_PROXY_PORT=${BACKEND_PORT}
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - GEMINI_API_KEY=${GEMINI_API_KEY}
       - AI_SERVICE_USERNAME=${AI_SERVICE_USERNAME}
       - AI_SERVICE_PASSWORD=${AI_SERVICE_PASSWORD}
-      - GOOGLE_APPLICATION_CREDENTIALS=${GOOGLE_APPLICATION_CREDENTIALS}
-      - GEMINI_BATCH_GCS_BUCKET=${GEMINI_BATCH_GCS_BUCKET}
       - HF_TOKEN=${HF_TOKEN}
       # Telemetry storage backend: 'lance' (Lance-backed columnar store) or
       # 'zarr' (legacy chunked-JSON-over-Zarr). Defaults to 'lance' after the

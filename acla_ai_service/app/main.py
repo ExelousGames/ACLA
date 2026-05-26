@@ -73,7 +73,10 @@ async def lifespan(app: FastAPI):
     print("✅ Using new structured application")
     print(f"🏁 {settings.app_name} v{settings.app_version}")
     print(f"🔧 Backend URL: {settings.backend_server_ip}")
-    print(f"🤖 OpenAI API: {'Configured (legacy)' if settings.openai_api_key else 'Not configured'}")
+    if settings.hosted_llm_base_url:
+        print(f"🤖 LLM: hosted ({settings.hosted_llm_base_url} / {settings.hosted_llm_model})")
+    else:
+        print(f"🤖 LLM: local llama-server ({settings.llama_model_name})")
 
     # Bring up the chat sidecar (downloads model on first boot — may take minutes).
     # Run in an executor so the event loop isn't blocked during the wait.

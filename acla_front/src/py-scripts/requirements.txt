@@ -11,8 +11,6 @@ scipy==1.11.1
 SpeechRecognition==3.10.0
 # Older PyAudio wheels required a system PortAudio SDK. The 0.2.14 wheels vendor the dependency for Windows.
 pyaudio==0.2.14
-# pocketsphinx 0.1.x relies on distutils which was removed in Python 3.12. Keep a 5.x release to avoid the legacy build path.
-pocketsphinx==5.0.3
 soundfile==0.12.1
 librosa==0.10.0
 noisereduce==3.0.0

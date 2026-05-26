@@ -277,7 +277,7 @@ class EnhancedSpeechRecognizer:
                 # Try recognition methods in order of preference
                 recognition_results = []
                 
-                # Method 1: Whisper (highest quality)
+                # Whisper (highest quality)
                 if WHISPER_AVAILABLE:
                     whisper_result = self.recognize_with_whisper(enhanced_audio)
                     if whisper_result:
@@ -286,31 +286,7 @@ class EnhancedSpeechRecognizer:
                             "text": whisper_result,
                             "confidence": 0.9
                         })
-                
-                # Method 2: Google Speech-to-Text (online)
-                try:
-                    google_result = self.recognizer.recognize_google(enhanced_audio, language='en-US')
-                    if google_result:
-                        recognition_results.append({
-                            "method": "google",
-                            "text": google_result,
-                            "confidence": 0.8
-                        })
-                except (sr.UnknownValueError, sr.RequestError):
-                    pass
-                
-                # Method 3: Sphinx (offline fallback)
-                try:
-                    sphinx_result = self.recognizer.recognize_sphinx(enhanced_audio)
-                    if sphinx_result:
-                        recognition_results.append({
-                            "method": "sphinx",
-                            "text": sphinx_result,
-                            "confidence": 0.6
-                        })
-                except (sr.UnknownValueError, sr.RequestError):
-                    pass
-                
+
                 # Select best result
                 if recognition_results:
                     best_result = max(recognition_results, key=lambda x: x['confidence'])
